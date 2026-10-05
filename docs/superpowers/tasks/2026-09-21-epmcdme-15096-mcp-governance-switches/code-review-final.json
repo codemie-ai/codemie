@@ -1,0 +1,24 @@
+{
+  "decision": "approve",
+  "rationale": "Edge-case and acceptance lenses both ran clean (compact profile; blind/verification-gap n/a by design); all 10 spec goals/acceptance/non-goal items pass and are corroborated against source (router auth deps, YAML default, access-control call sites, test file). One edge-case finding (silent dict-key-collision on a future declaration) is deferred: the flagged comprehension predates this change and is unaffected by it. Standards audit not expected for this profile — no gap. 0 findings dismissed.",
+  "confidence": "high",
+  "risk_flags": ["security"],
+  "business_review": [
+    { "kind": "spec", "item": "Admins/maintainers can flip mcpCustomServersDisabled on/off without a YAML edit + redeploy", "status": "pass", "notes": "Declaration registered in DECLARATIONS; PUT/DELETE already require authenticate + require_customer_config_write for any declared component_id." },
+    { "kind": "spec", "item": "Any authenticated-or-not caller of GET /v1/config can read the current state once it's on", "status": "pass", "notes": "get_config() has no auth dependency; resolve_components() returns the resolved component generically." },
+    { "kind": "spec", "item": "Default state remains off (custom MCP servers allowed) — unchanged from today's YAML default", "status": "pass", "notes": "customer-config.yaml:252-254 still sets enabled: false; no DB override row exists until an admin writes one." },
+    { "kind": "spec", "item": "Zero behavior change to existing enforcement or existing endpoints beyond making the flag's source of truth dynamic", "status": "pass", "notes": "Diff touches only customer_config_declarations.py and its test file; access_control.py and the router are untouched." },
+    { "kind": "spec", "item": "1. Admin-only write via PUT/DELETE /v1/config/declarations/mcpCustomServersDisabled", "status": "pass", "notes": "Router dependencies apply unconditionally for any declared component_id; registering the id makes it resolvable instead of 404ing." },
+    { "kind": "spec", "item": "2. Everyone can read once toggled on via GET /v1/config", "status": "pass", "notes": "get_config() has no dependencies; resolver is generic to any declared component." },
+    { "kind": "spec", "item": "3. Default off — DB has no override row until an admin writes one", "status": "pass", "notes": "With no snapshot entry, resolution falls through to the YAML component (enabled: false)." },
+    { "kind": "spec", "item": "4. Enforcement (MCPAccessControlService) inherits the toggle for free via the shared resolver", "status": "pass", "notes": "access_control.py:102,139 call is_component_enabled(\"mcpCustomServersDisabled\"), unchanged by this diff." },
+    { "kind": "spec", "item": "5. Admin settings page — GET /v1/config/declarations iterates the full DECLARATIONS tuple", "status": "pass", "notes": "list_settings() iterates DECLARATIONS generically; the new entry appears automatically." },
+    { "kind": "spec", "item": "No changes to customer_config.py router, access_control.py, or UI/SDK", "status": "pass", "notes": "Diff is scoped to customer_config_declarations.py and its test file only; confirmed no other files touched." }
+  ],
+  "standards_review": [
+    { "kind": "commit-format", "status": "na", "notes": "Standards audit not expected for the compact review profile." },
+    { "kind": "code-quality", "status": "na", "notes": "Standards audit not expected for the compact review profile." },
+    { "kind": "security", "status": "na", "notes": "Standards audit not expected for the compact review profile." }
+  ],
+  "findings": []
+}

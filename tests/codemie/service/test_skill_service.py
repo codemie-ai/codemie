@@ -741,6 +741,75 @@ class TestUpdateSkill:
 
 
 # =============================================================================
+# MCP Governance Tests (EPMCDME-15098)
+# =============================================================================
+
+
+class TestSkillMcpGovernance:
+    """Regression guard: create/update must route mcp_servers through
+    MCPAccessControlService.sanitize_for_save before persisting (AC1, AC5, AC6)."""
+
+    def test_create_restricted_mode_rejects_handwritten_server(self, owner_user):
+        from codemie.rest_api.models.assistant import MCPServerDetails
+        from codemie.core.exceptions import ValidationException
+
+        request = SkillCreateRequest(
+            name="new-skill",
+            description="d" * 10,
+            content="Content " * 20,
+            project="project-a",
+            visibility=SkillVisibility.PRIVATE,
+            categories=[],
+            mcp_servers=[MCPServerDetails(name="rogue", command="npx", enabled=True)],
+        )
+        mode = MagicMock()
+        mode.is_component_enabled.return_value = True
+        with (
+            patch("codemie.service.mcp.access_control.customer_config", mode),
+            patch.object(SkillRepository, "get_by_name_author_project", return_value=None),
+        ):
+            with pytest.raises(ValidationException, match="rogue"):
+                SkillService.create_skill(request, owner_user)
+
+    def test_create_open_mode_allows_handwritten_server(self, owner_user, sample_skill):
+        from codemie.rest_api.models.assistant import MCPServerDetails
+
+        request = SkillCreateRequest(
+            name="new-skill",
+            description="d" * 10,
+            content="Content " * 20,
+            project="project-a",
+            visibility=SkillVisibility.PRIVATE,
+            categories=[],
+            mcp_servers=[MCPServerDetails(name="ok", command="npx", enabled=True)],
+        )
+        mode = MagicMock()
+        mode.is_component_enabled.return_value = False
+        with (
+            patch("codemie.service.mcp.access_control.customer_config", mode),
+            patch.object(SkillRepository, "get_by_name_author_project", return_value=None),
+            patch.object(SkillRepository, "create", return_value=sample_skill),
+            patch.object(SkillRepository, "count_assistants_using_skill", return_value=0),
+        ):
+            result = SkillService.create_skill(request, owner_user)
+        assert result is not None
+
+    def test_update_restricted_mode_rejects_handwritten_server(self, owner_user, sample_skill):
+        from codemie.rest_api.models.assistant import MCPServerDetails
+        from codemie.core.exceptions import ValidationException
+
+        request = SkillUpdateRequest(mcp_servers=[MCPServerDetails(name="rogue", command="npx", enabled=True)])
+        mode = MagicMock()
+        mode.is_component_enabled.return_value = True
+        with (
+            patch("codemie.service.mcp.access_control.customer_config", mode),
+            patch.object(SkillRepository, "get_by_id", return_value=sample_skill),
+        ):
+            with pytest.raises(ValidationException, match="rogue"):
+                SkillService.update_skill(sample_skill.id, request, owner_user)
+
+
+# =============================================================================
 # Delete Skill Tests
 # =============================================================================
 

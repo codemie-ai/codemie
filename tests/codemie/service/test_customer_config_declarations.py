@@ -16,6 +16,7 @@ import pytest
 
 from codemie.service.customer_config_declarations import (
     DECLARATIONS,
+    MCP_CUSTOM_SERVERS_DISABLED,
     SCHEDULERS,
     FieldDeclaration,
     FieldType,
@@ -159,3 +160,23 @@ def test_by_component_id_finds_schedulers():
     decl = by_component_id("features:schedulersView")
     assert decl is not None
     assert decl is SCHEDULERS
+
+
+def test_mcp_custom_servers_disabled_declaration_registered():
+    ids = [d.component_id for d in DECLARATIONS]
+    assert "mcpCustomServersDisabled" in ids
+
+
+def test_mcp_custom_servers_disabled_has_enabled_switch():
+    assert MCP_CUSTOM_SERVERS_DISABLED.component_id == "mcpCustomServersDisabled"
+    assert MCP_CUSTOM_SERVERS_DISABLED.label == "MCP Custom Servers Disabled"
+    field_names = {f.name for f in MCP_CUSTOM_SERVERS_DISABLED.fields}
+    assert field_names == {"enabled"}
+    enabled_field = next(f for f in MCP_CUSTOM_SERVERS_DISABLED.fields if f.name == "enabled")
+    assert enabled_field.type is FieldType.SWITCH
+
+
+def test_by_component_id_finds_mcp_custom_servers_disabled():
+    decl = by_component_id("mcpCustomServersDisabled")
+    assert decl is not None
+    assert decl is MCP_CUSTOM_SERVERS_DISABLED

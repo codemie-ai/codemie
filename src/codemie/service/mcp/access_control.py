@@ -61,6 +61,11 @@ class MCPAccessControlService:
                     f"Custom MCP servers are not allowed in restricted mode. "
                     f"Server '{server.name}' must reference a catalog entry via mcp_config_id."
                 )
+            if server.use_custom_config:
+                raise ValidationException(
+                    f"Field 'use_custom_config' is not allowed when mcp_config_id is set "
+                    f"in restricted mode (server '{server.name}')."
+                )
             for field in MCPServerDetails.model_fields:
                 if field not in _CATALOG_REF_ALLOWED_FIELDS and getattr(server, field, None) is not None:
                     raise ValidationException(
@@ -113,6 +118,15 @@ class MCPAccessControlService:
 
         catalog_map = _build_catalog_map(catalog_refs)
         MCPAccessControlService._validate_catalog_entries(catalog_refs, catalog_map)
+
+    @staticmethod
+    def validate_on_restore(mcp_servers: list[MCPServerDetails] | None) -> None:
+        """Validate servers being restored from stored data (e.g. a version rollback).
+
+        Enforces restricted mode only; catalog availability is not re-checked, so open-mode restores are unchanged.
+        """
+        if mcp_servers and customer_config.is_component_enabled("mcpCustomServersDisabled"):
+            MCPAccessControlService._validate_restricted_mode(mcp_servers)
 
     @staticmethod
     def _strip_one(server: MCPServerDetails) -> MCPServerDetails:

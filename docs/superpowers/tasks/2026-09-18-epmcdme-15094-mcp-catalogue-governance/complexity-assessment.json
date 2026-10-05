@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "task": "Make the existing mcpCustomServersDisabled toggle runtime-overridable and authoritative, enforcing catalogue-only MCP server creation across all backend save paths, the web UI builders, and the SDK.",
+  "generated": "2026-09-18T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 6, "label": "XXL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 22,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Spans three repositories (codemie backend, codemie-ui, codemie-sdk) that must share one governance contract — the mcpCustomServersDisabled semantics and the _CATALOG_REF_ALLOWED_FIELDS allow-list. New touch points per repo: the config-declaration registry (codemie), the workflow-editor and skill-builder UI subsystems that currently have zero restricted-mode awareness (codemie-ui), and the SDK model layer (codemie-sdk). This crosses service/system boundaries with a shared contract, which is the XXL definition itself, independent of any red-flag bump." },
+    { "dimension": "file_change_estimate", "reason": "Backend: customer_config_declarations.py plus test updates (~2 modified, 1 new). UI: 5 workflow-editor files (ToolForm.tsx, ToolSelector.tsx, VirtualAssistantForm.tsx, AssistantTab.tsx, ToolTab.tsx) + 4 skill-builder files (SkillForm.tsx, SkillDetails.tsx, useSkillForm.tsx, skillValidation.ts) modified, plus new tests for both (no existing restricted-mode test coverage there per technical-analysis). SDK: model/service files modified plus new governance tests. Aggregate lands around 13 modified / 6-7 new files across three repos and several directories — XL band, near the XXL boundary on new-file count." },
+    { "dimension": "technical_risk", "reason": "Backend enforcement (MCPAccessControlService) is an exact, already-tested precedent, so that slice alone is low risk. But the UI (workflow editor, skill builder) and SDK have no existing client-side mirror of the allowed-fields governance logic — undocumented-pattern work per technical-analysis — and the change is governance/security-relevant (admin-gated catalogue lock-down). Security/governance red flag bumps this from M to L." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from M to L: governance/security-relevant enforcement (admin-gated catalogue lock, no existing client-side precedent in the UI workflow-editor/skill-builder or the SDK)"
+  ],
+  "split_recommendation": null
+}

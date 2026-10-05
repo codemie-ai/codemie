@@ -1965,3 +1965,242 @@ def test_materialize_invalid_template_returns_materialization_failed(mock_get_by
 
     assert response.status_code == status.HTTP_400_BAD_REQUEST
     assert response.json()["error"]["details"] == {"error_type": "materialization_failed"}
+
+
+@pytest.mark.asyncio
+async def test_create_workflow_restricted_mode_rejects_handwritten_mcp_server(request_header):
+    """Regression guard: create must reject a hand-written MCP server on any assistant
+    via MCPAccessControlService (AC1, AC5, AC6)."""
+    from codemie.core.workflow_models import CreateWorkflowRequest, WorkflowAssistant
+    from codemie.rest_api.models.assistant import MCPServerDetails
+
+    request = CreateWorkflowRequest(
+        name="Governed Workflow",
+        description="d",
+        project="demo",
+        icon_url="i",
+        yaml_config=test_yaml_config,
+        mode=WorkflowMode.SEQUENTIAL,
+        assistants=[
+            WorkflowAssistant(id="a1", mcp_servers=[MCPServerDetails(name="rogue", command="npx", enabled=True)])
+        ],
+        states=[],
+    )
+    mode = MagicMock()
+    mode.is_component_enabled.return_value = True
+    with (
+        patch("codemie.service.mcp.access_control.customer_config", mode),
+        patch("codemie.rest_api.routers.workflow.project_access_check"),
+    ):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.post("/v1/workflows", json=request.model_dump(), headers=request_header)
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    # Same shape as update_workflow: the reason is in error.message, details is None.
+    assert "rogue" in response.json()["error"]["message"]
+    assert response.json()["error"]["details"] is None
+
+
+_YAML_WITH_HANDWRITTEN_ASSISTANT_SERVER = """
+assistants:
+  - id: va
+    model: gpt-4.1
+    system_prompt: test
+    mcp_servers:
+      - name: rogue
+        enabled: true
+        config:
+          command: npx
+          args: ['-y', 'x']
+states:
+  - id: va
+    assistant_id: va
+    task: say ok
+    next:
+      state_id: end
+"""
+
+_YAML_WITH_HANDWRITTEN_TOOL_SERVER = """
+assistants:
+  - id: va
+    model: gpt-4.1
+    system_prompt: test
+tools:
+  - id: t1
+    tool: some_tool
+    mcp_server:
+      name: rogue
+      enabled: true
+      config:
+        command: npx
+        args: ['-y', 'x']
+states:
+  - id: va
+    assistant_id: va
+    task: say ok
+    next:
+      state_id: end
+"""
+
+_YAML_WITH_CATALOG_REF_SERVER = """
+assistants:
+  - id: va
+    model: gpt-4.1
+    system_prompt: test
+    mcp_servers:
+      - name: cat
+        enabled: true
+        mcp_config_id: cfg-1
+states:
+  - id: va
+    assistant_id: va
+    task: say ok
+    next:
+      state_id: end
+"""
+
+
+async def _post_yaml_only_workflow(request_header, yaml_config, *, restricted: bool, catalog_entries=()):
+    """POST /v1/workflows the way the UI/SDK do: the MCP servers live only in yaml_config,
+    the request's separate `assistants`/`tools` fields stay empty."""
+    from codemie.core.workflow_models import CreateWorkflowRequest
+
+    request = CreateWorkflowRequest(
+        name="Yaml Only Workflow",
+        description="d",
+        project="demo",
+        icon_url="i",
+        yaml_config=yaml_config,
+        mode=WorkflowMode.SEQUENTIAL,
+        states=[],
+    )
+    assert not request.assistants  # guard: the test must not feed servers through the parsed field
+    mode = MagicMock()
+    mode.is_component_enabled.return_value = restricted
+    with (
+        patch("codemie.service.mcp.access_control.customer_config", mode),
+        patch("codemie.service.mcp.access_control.MCPConfig.get_by_ids", return_value=list(catalog_entries)),
+        patch("codemie.rest_api.routers.workflow.project_access_check"),
+        patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_entity_guardrail_assignments"),
+        patch("codemie.service.workflow_service.WorkflowService.create_workflow", return_value=workflow_config_data),
+        patch("codemie.service.workflow_service.WorkflowService.save_workflow_schema"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow"),
+    ):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            return await ac.post("/v1/workflows", json=request.model_dump(), headers=request_header)
+
+
+@pytest.mark.asyncio
+async def test_create_workflow_restricted_mode_rejects_handwritten_assistant_server_declared_only_in_yaml(
+    request_header,
+):
+    """Clients send only yaml_config: the restricted-mode check must read the servers from the YAML."""
+    response = await _post_yaml_only_workflow(request_header, _YAML_WITH_HANDWRITTEN_ASSISTANT_SERVER, restricted=True)
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert "rogue" in response.json()["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_create_workflow_restricted_mode_rejects_handwritten_tool_server_declared_only_in_yaml(
+    request_header,
+):
+    """Same for a tool-node server (`tools[].mcp_server`) declared only in yaml_config."""
+    response = await _post_yaml_only_workflow(request_header, _YAML_WITH_HANDWRITTEN_TOOL_SERVER, restricted=True)
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert "rogue" in response.json()["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_create_workflow_restricted_mode_accepts_catalog_ref_server_declared_only_in_yaml(request_header):
+    """The YAML-based check must not over-block a clean catalogue reference."""
+    entry = MagicMock(id="cfg-1", is_active=True, is_public=True)
+
+    response = await _post_yaml_only_workflow(
+        request_header, _YAML_WITH_CATALOG_REF_SERVER, restricted=True, catalog_entries=[entry]
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+
+
+@pytest.mark.asyncio
+async def test_create_workflow_open_mode_accepts_handwritten_server_declared_only_in_yaml(request_header):
+    """Toggle off: the YAML-based check changes nothing for hand-written servers."""
+    response = await _post_yaml_only_workflow(request_header, _YAML_WITH_HANDWRITTEN_ASSISTANT_SERVER, restricted=False)
+
+    assert response.status_code == status.HTTP_200_OK
+
+
+@pytest.mark.asyncio
+async def test_update_workflow_restricted_mode_rejects_handwritten_mcp_server(request_header, workflow_config):
+    """Regression guard: update must reject a hand-written MCP server carried in the
+    re-parsed yaml_config via MCPAccessControlService (AC1, AC5, AC6)."""
+    from codemie.core.workflow_models import UpdateWorkflowRequest
+
+    # yaml_config carries assistants for update — insert mcp_servers under the first assistant.
+    violating_yaml = test_yaml_config.replace(
+        "model: 'gpt-4o-2024-11-20'\n  - id: onboarder",
+        "model: 'gpt-4o-2024-11-20'\n    mcp_servers:\n      - name: rogue\n        command: npx\n        enabled: true\n  - id: onboarder",
+    )
+    request = UpdateWorkflowRequest(
+        name="Updated",
+        description="d",
+        project="demo",
+        icon_url="i",
+        yaml_config=violating_yaml,
+        mode=WorkflowMode.SEQUENTIAL,
+    )
+    mode = MagicMock()
+    mode.is_component_enabled.return_value = True
+    with (
+        patch("codemie.service.workflow_service.WorkflowService.get_workflow", return_value=workflow_config),
+        patch("codemie.core.ability.Ability.can", return_value=True),
+        patch("codemie.service.mcp.access_control.customer_config", mode),
+    ):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.put(
+                f"/v1/workflows/{workflow_config.id}", json=request.model_dump(), headers=request_header
+            )
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    # update_workflow's `except ValidationException: raise` lets the exception reach the
+    # global domain_validation_exception_handler unchanged, which puts the message in
+    # error.message and leaves error.details as None (unlike create_workflow's wrapping).
+    assert "rogue" in response.json()["error"]["message"]
+
+
+@pytest.mark.asyncio
+@patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_entity_guardrail_assignments")
+async def test_create_workflow_open_mode_allows_handwritten_mcp_server(mock_guardrails, request_header):
+    """AC8: toggle off, same payload, save succeeds."""
+    from codemie.core.workflow_models import CreateWorkflowRequest, WorkflowAssistant
+    from codemie.rest_api.models.assistant import MCPServerDetails
+
+    mock_guardrails.return_value = None
+    request = CreateWorkflowRequest(
+        name="Open Workflow",
+        description="d",
+        project="demo",
+        icon_url="i",
+        yaml_config=test_yaml_config,
+        mode=WorkflowMode.SEQUENTIAL,
+        assistants=[WorkflowAssistant(id="a1", mcp_servers=[MCPServerDetails(name="ok", command="npx", enabled=True)])],
+        states=[],
+    )
+    mode = MagicMock()
+    mode.is_component_enabled.return_value = False
+    with (
+        patch("codemie.service.mcp.access_control.customer_config", mode),
+        patch("codemie.rest_api.routers.workflow.project_access_check"),
+        patch("codemie.service.workflow_service.WorkflowService.create_workflow", return_value=workflow_config_data),
+        patch("codemie.service.workflow_service.WorkflowService.save_workflow_schema"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow"),
+    ):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.post("/v1/workflows", json=request.model_dump(), headers=request_header)
+    assert response.status_code == status.HTTP_200_OK

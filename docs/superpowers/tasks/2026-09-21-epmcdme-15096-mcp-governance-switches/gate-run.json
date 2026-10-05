@@ -1,0 +1,111 @@
+{
+  "schema": 1,
+  "branch": "feature/EPMCDME-15094-mcp-catalogue-governance",
+  "head": "9400b861a9a83cf957e2ac3911857d59fe0a39de",
+  "runner": "poetry",
+  "started_at": "2026-09-21T15:47:42Z",
+  "completed_at": "2026-09-21T16:04:42Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 4627,
+      "command": "poetry run ruff format && poetry run ruff check --fix && poetry run ruff check",
+      "exit_code": 0,
+      "notes": "`make` binary is not installed on this host; ran the `ruff` target's exact underlying commands directly (via `python -m poetry` since the bare `poetry` shim is also not on PATH here). Previous run's E501 finding at src/codemie/service/customer_config_declarations.py:174 is resolved by commit 9400b861a (description string wrapped); ruff format left 2580 files unchanged and both check passes report \"All checks passed!\"."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 21236,
+      "command": "poetry build",
+      "exit_code": 0,
+      "notes": "`make` unavailable on this host; ran the `build` target's underlying command directly. Built codemie-0.8.0 sdist and wheel."
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2389,
+      "command": "poetry run python scripts/license_headers/check_license_headers.py --check --quiet",
+      "exit_code": 0,
+      "notes": "`make` unavailable on this host; ran the `license-check` target's underlying command directly. 2295 files checked, 0 missing headers."
+    },
+    {
+      "id": "secrets-ci",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 213,
+      "command": "docker run --rm -v \"$(pwd):/workspace\" ghcr.io/gitleaks/gitleaks:v8.30.1 dir --no-banner --verbose --config=/workspace/.gitleaks.toml /workspace",
+      "exit_code": 1,
+      "notes": "Guide's explicit Skip-if for this gate: Docker unavailable. Rancher Desktop's docker daemon is still not running on this host: \"failed to connect to the docker API at npipe:////./pipe/docker_engine ... open //./pipe/docker_engine: The system cannot find the file specified.\" Start Rancher Desktop / Docker Desktop to run this locally; CI/verify still owes this check."
+    },
+    {
+      "id": "secrets-staged",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 1047,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": 1,
+      "notes": "Guide lists \"no container engine is available\" under this gate's Fail criteria (no Skip-if is defined for the local pre-commit variant; it is designed fail-closed, unlike the CI variant's explicit Docker Skip-if). Output: \"codemie-gitleaks: Docker daemon is not running / Start Docker Desktop to enable secrets detection locally\". No changes are currently staged (branch work already committed), so even with an engine running this pass would scan an empty diff; use secrets-ci (full-tree) for actual branch-diff coverage once Docker is available."
+    },
+    {
+      "id": "commit-msg",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 1197,
+      "command": "for each commit subject in 54783518862bb723fe39b147370d53f1522be71b..HEAD: bash scripts/git-hooks/commit_msg.sh <tmpfile-with-subject>",
+      "exit_code": 0,
+      "notes": "commit-msg hook is not represented in quality-gates.md; added from .pre-commit-config.yaml. 2 commits now in range (\"EPMCDME-15096: Register mcpCustomServersDisabled as a runtime-toggleable setting declaration\", \"EPMCDME-15096: Wrap MCP description string to satisfy E501 line-length gate\") both satisfy the EPMCDME-<n>: prefix."
+    },
+    {
+      "id": "ruff-staged",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 214,
+      "command": "bash scripts/git-hooks/_ruff_staged.sh",
+      "exit_code": 0,
+      "notes": "Self-skip: \"[pre-commit] No staged Python files - skipping Ruff format/fix check.\" No staged changes exist right now (branch work already committed). Stage the diff and re-run to exercise this fast-path pre-commit check; the whole-repo `lint` gate above already covers the changed file and now passes."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 854349,
+      "command": "poetry run pytest tests/",
+      "exit_code": 1,
+      "notes": "`make` unavailable on this host; ran the `test` target's underlying command directly. 151 failed, 16715 passed, 189 skipped, 229 warnings in 849.06s. None of the failures are in tests/codemie/service/test_customer_config_declarations.py (the file touched by this branch) - that file's tests passed, and the fixed lint line introduces no new failures. Failure clusters are the same environment-specific set seen on the prior run (one fewer failure than before, 151 vs 152, consistent with xdist non-determinism rather than a code change): (1) all tests/enterprise/** fail with `ModuleNotFoundError: No module named 'codemie_enterprise'` - the enterprise extra is not installed in this poetry env; (2) tests/scripts/test_commit_msg_hook.py, test_pre_commit_fast_hook.py, test_pre_push_hook.py, test_ruff_staged_hook.py fail under pytest-xdist on this Windows host despite the equivalent hook scripts passing when invoked directly above; (3) tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py fails broadly on win32 (POSIX-only assumptions: /proc/self/fd, symlinks, ctypes dlopen escapes); (4) test_git_loader.py/test_svn_loader.py unsupported-mime-type tests depend on platform-specific libmagic/file-type detection; (5) test_a2ui_frontend_contract.py needs a sibling frontend repository checkout not present here; several other single-file environment-dependent failures (docx export, matplotlib/openpyxl-adjacent sandbox tests, oauth adapter/enterprise bridge tests requiring the enterprise extra). Recorded as FAIL per gate policy regardless of suspected root cause; a gate that could not run cleanly is unverified, not passed. Rerun with the enterprise extra installed and/or in CI (Linux) to separate environment noise from real regressions."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 205,
+      "command": "node scripts/sonar/run-local-sonar.js",
+      "exit_code": 0,
+      "notes": "Self-skip: \"[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.\" Matches guide's Skip-if (Sonar credentials unavailable). Set SONAR_TOKEN with access to https://sonar.core.kuberocketci.io (per .sonarlint/connectedMode.json) to run this locally; still owed before merge."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "SKIPPED",
+      "command": "poetry run pytest tests/ -W ignore::DeprecationWarning --cov --cov-report=html",
+      "notes": "Guide Skip-if: coverage was not explicitly requested for this run."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "SKIPPED",
+      "command": "uvx codemie-test-harness --sanity-api",
+      "notes": "Guide Skip-if: not opening a merge request in this run (local iteration only); requires a running docker stack, superadmin fixtures, and ~/.codemie/test-harness.json which were not set up here."
+    }
+  ],
+  "failures": {
+    "secrets-staged": "codemie-gitleaks: Docker daemon is not running\nStart Docker Desktop to enable secrets detection locally\n(Set CODEMIE_PRECOMMIT_ENABLED=false to skip the whole pre-commit hook.)",
+    "unit": "FAILED tests/scripts/test_commit_msg_hook.py::test_valid_prefix_accepted - As...\nFAILED tests/scripts/test_commit_msg_hook.py::test_missing_prefix_rejected - ...\nFAILED tests/scripts/test_commit_msg_hook.py::test_prefix_without_colon_rejected\nFAILED tests/scripts/test_commit_msg_hook.py::test_merge_commit_message_bypassed\nFAILED tests/scripts/test_commit_msg_hook.py::test_fixup_message_bypassed - A...\nFAILED tests/scripts/test_commit_msg_hook.py::test_squash_message_bypassed - ...\nFAILED tests/scripts/test_commit_msg_hook.py::test_amend_message_bypassed - A...\nFAILED tests/scripts/test_commit_msg_hook.py::test_revert_message_bypassed - ...\nFAILED tests/scripts/test_commit_msg_hook.py::test_merge_head_present_bypasses_validation\nFAILED tests/scripts/test_commit_msg_hook.py::test_rebase_head_present_bypasses_validation\nFAILED tests/scripts/test_commit_msg_hook.py::test_cherry_pick_head_present_bypasses_validation\nFAILED tests/scripts/test_commit_msg_hook.py::test_leading_comment_lines_ignored\nFAILED tests/scripts/test_pre_commit_fast_hook.py::test_fast_path_passes_without_heavy_steps\nFAILED tests/scripts/test_pre_commit_fast_hook.py::test_source_has_no_pytest_or_sonar_invocation\nFAILED tests/scripts/test_pre_push_hook.py::test_passes_when_pytest_and_sonar_pass\nFAILED tests/scripts/test_pre_push_hook.py::test_pytest_receives_enterprise_ignore\nFAILED tests/scripts/test_pre_push_hook.py::test_pytest_failure_blocks_and_skips_sonar\nFAILED tests/scripts/test_pre_push_hook.py::test_skipped_when_not_enabled - A...\nFAILED tests/scripts/test_pre_push_hook.py::test_numeric_one_enabled_runs - A...\nFAILED tests/scripts/test_pre_push_hook.py::test_on_enabled_runs - AssertionE...\nFAILED tests/scripts/test_pre_push_hook.py::test_legacy_precommit_enabled_runs_and_warns\nFAILED tests/scripts/test_ruff_staged_hook.py::test_no_staged_py_files_exits_zero\nFAILED tests/scripts/test_ruff_staged_hook.py::test_clean_staged_plus_unstaged_garbage_exits_zero\nFAILED tests/scripts/test_ruff_staged_hook.py::test_ruff_reformats_staged_file_exits_one\nFAILED tests/scripts/test_ruff_staged_hook.py::test_missing_trailing_newline_exits_one\nFAILED tests/scripts/test_ruff_staged_hook.py::test_syntax_error_in_staged_file_reports_clearly\nFAILED tests/scripts/test_ruff_staged_hook.py::test_partial_staging_clean_hunk_dirty_unstaged_exits_zero\nFAILED tests/enterprise/mcp_auth/test_client_metadata_bridge.py::test_enabled_cimd_route_returns_public_document_headers_and_does_not_require_auth\nFAILED tests/enterprise/mcp_auth/test_client_metadata_bridge.py::test_enabled_cimd_route_rejects_query_without_echoing_tainted_inputs\nFAILED tests/enterprise/mcp_auth/test_client_metadata_bridge.py::test_enabled_cimd_route_sanitizes_invalid_configured_base_url_without_echoing_tainted_values\n== 151 failed, 16715 passed, 189 skipped, 229 warnings in 849.06s (0:14:09) ==="
+  }
+}

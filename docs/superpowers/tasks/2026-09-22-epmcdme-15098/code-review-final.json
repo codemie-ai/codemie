@@ -1,0 +1,48 @@
+{
+  "decision": "request-changes",
+  "rationale": "Edge-case lens surfaced one legacy runtime-filter gap (filter_for_runtime/resolve_catalog_config never recheck use_custom_config) that predates this diff and sits outside EPMCDME-15098's save-path-only scope, so it is deferred rather than blocking. The standards audit found 2 blocking commit-format violations (the 'EPMCDME-15094 complexity assessment...' and 'epmcdme-15096-mcp-governance-switches: add planning artifacts' subjects both miss the ticket-prefixed 'EPMCDME-####: Description' format), forcing request-changes; code-quality and security standards passed with no coverage gap. Acceptance did not run (no spec/story artifact supplied), which caps confidence at low; 0 findings were dismissed as noise.",
+  "confidence": "low",
+  "risk_flags": ["security"],
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "partial",
+      "notes": "7 of 9 subjects in range match 'EPMCDME-####: Description'; 2 do not (see blocking findings)."
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "access_control.py and customer_config_declarations.py carry Apache header, future annotations, modern typing, no Ruff line-length violations."
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "New _validate_restricted_mode check fails closed on use_custom_config/extra fields; no secrets/config bodies logged; no auth code touched."
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "commit message: 'EPMCDME-15094 complexity assessment and technical analysis'",
+      "title": "Commit subject missing ticket-colon format",
+      "problem": "Commit subject 'EPMCDME-15094 complexity assessment and technical analysis' omits the colon and capitalized description required by git-workflow.md's 'EPMCDME-####: Description' format.",
+      "impact": "Breaks the documented commit-format standard for a commit landing in this review range, weakening traceable, consistent history for the ticket.",
+      "recommendation": "Reword to 'EPMCDME-15094: Complexity assessment and technical analysis' (squash-time rewrite)."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "commit message: 'epmcdme-15096-mcp-governance-switches: add planning artifacts'",
+      "title": "Commit subject uses branch-slug not ticket prefix",
+      "problem": "Commit subject uses a lowercase branch-slug ('epmcdme-15096-mcp-governance-switches') instead of the ticket-prefixed 'EPMCDME-####:' format required by git-workflow.md.",
+      "impact": "Breaks the documented commit-format standard for a commit landing in this review range.",
+      "recommendation": "Reword to 'EPMCDME-15096: Add planning artifacts' (squash-time rewrite)."
+    }
+  ]
+}

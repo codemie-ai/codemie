@@ -786,6 +786,104 @@ class TestCreateAssistantSlug:
         assert "Slug conflict" not in (exc_info.value.message or "")
 
 
+class TestAssistantMcpGovernance:
+    """Regression guard: create/update must reject a violating payload via
+    MCPAccessControlService, and admin status must not bypass it (AC1, AC5, AC6, AC7, AC8)."""
+
+    def _request(self, mcp_servers):
+        from codemie.rest_api.models.assistant import AssistantRequest
+
+        return AssistantRequest(
+            name="Governed Assistant",
+            description="d",
+            system_prompt="p",
+            project="demo",
+            llm_model_type="gpt-4o",
+            skip_integration_validation=True,
+            mcp_servers=mcp_servers,
+        )
+
+    def test_create_restricted_mode_rejects_handwritten_server(self):
+        from codemie.rest_api.routers.assistant import create_assistant
+        from codemie.rest_api.models.assistant import MCPServerDetails
+        from codemie.core.exceptions import ValidationException
+
+        request = self._request([MCPServerDetails(name="rogue", command="npx", enabled=True)])
+        mode = MagicMock()
+        mode.is_component_enabled.return_value = True
+        with patch("codemie.service.mcp.access_control.customer_config", mode):
+            with pytest.raises(ValidationException, match="rogue"):
+                create_assistant(request, user=MagicMock(spec=User))
+
+    def test_create_admin_user_violating_payload_still_rejected(self):
+        # AC7: admin/maintainer is not a bypass — set the flags explicitly on the mock.
+        from codemie.rest_api.routers.assistant import create_assistant
+        from codemie.rest_api.models.assistant import MCPServerDetails
+        from codemie.core.exceptions import ValidationException
+
+        request = self._request([MCPServerDetails(name="rogue", command="npx", enabled=True)])
+        mode = MagicMock()
+        mode.is_component_enabled.return_value = True
+        user = MagicMock(spec=User)
+        user.is_admin = True
+        user.is_maintainer = True
+        with patch("codemie.service.mcp.access_control.customer_config", mode):
+            with pytest.raises(ValidationException, match="rogue"):
+                create_assistant(request, user=user)
+
+    def test_update_restricted_mode_rejects_handwritten_server(self):
+        from codemie.rest_api.routers.assistant import update_assistant
+        from codemie.rest_api.models.assistant import MCPServerDetails, Assistant
+        from codemie.core.exceptions import ValidationException
+
+        request = self._request([MCPServerDetails(name="rogue", command="npx", enabled=True)])
+        mode = MagicMock()
+        mode.is_component_enabled.return_value = True
+        existing = MagicMock(spec=Assistant)
+        existing.project = "demo"
+        with (
+            patch("codemie.service.mcp.access_control.customer_config", mode),
+            patch("codemie.rest_api.routers.assistant.project_access_check"),
+            patch("codemie.rest_api.routers.assistant._get_assistant_by_id_or_raise", return_value=existing),
+            patch("codemie.rest_api.routers.assistant._check_user_can_access_assistant"),
+            patch("codemie.rest_api.routers.assistant._validate_remote_entities_and_raise"),
+        ):
+            with pytest.raises(ValidationException, match="rogue"):
+                update_assistant("assistant-1", request, background_tasks=MagicMock(), user=MagicMock(spec=User))
+
+    def test_create_open_mode_allows_handwritten_server(self):
+        # AC8: toggle off, same payload, save succeeds — reuses TestCreateAssistantSlug's
+        # _patches()/fake-save shape (Assistant.save patched to a no-op).
+        from codemie.rest_api.routers.assistant import create_assistant
+        from codemie.rest_api.models.assistant import MCPServerDetails, Assistant
+
+        request = self._request([MCPServerDetails(name="ok", command="npx", enabled=True)])
+        mode = MagicMock()
+        mode.is_component_enabled.return_value = False
+        patches = [
+            patch("codemie.rest_api.routers.assistant.project_access_check"),
+            patch("codemie.rest_api.routers.assistant.ensure_application_exists"),
+            patch("codemie.service.assistant.assistant_version_service.AssistantVersionService.create_initial_version"),
+            patch("codemie.rest_api.routers.assistant.GuardrailService.sync_guardrail_assignments_for_entity"),
+            patch("codemie.rest_api.routers.assistant._track_mcp_usage_on_create"),
+            patch("codemie.rest_api.routers.assistant._track_assistant_management_metric"),
+        ]
+        for p in patches:
+            p.start()
+        try:
+            with (
+                patch("codemie.service.mcp.access_control.customer_config", mode),
+                patch.object(Assistant, "save", new=lambda self, *a, **kw: None),
+            ):
+                user = MagicMock(spec=User, id="u1", username="u1")
+                user.name = "u1"
+                response = create_assistant(request, user=user)
+        finally:
+            for p in patches:
+                p.stop()
+        assert response.message == "Specified assistant saved"
+
+
 class TestCreateAssistantCloneTracking:
     """Tests for clone_count tracking wired into create_assistant via source_assistant_id."""
 
@@ -1052,6 +1150,56 @@ class TestAskVirtualAssistantSingleUserInvariant:
         passed_user = call_args[4]
         assert passed_assistant.project == "caller-project"
         assert passed_user is mock_user
+
+
+class TestAskVirtualAssistantMcpGovernance:
+    """Regression guard: the virtual (non-persisting) assistant endpoint still runs
+    the MCP payload through MCPAccessControlService (AC1, AC5, AC8)."""
+
+    @pytest.mark.asyncio
+    async def test_restricted_mode_rejects_handwritten_server(self):
+        from codemie.rest_api.routers.assistant import ask_virtual_assistant, VirtualAssistantChatRequest
+        from codemie.rest_api.models.assistant import MCPServerDetails
+        from codemie.core.exceptions import ValidationException
+
+        async def _noop():
+            return None
+
+        raw_request = MagicMock()
+        raw_request.state.wait_for_disconnect = MagicMock(return_value=_noop())
+        request = VirtualAssistantChatRequest(mcp_servers=[MCPServerDetails(name="rogue", command="npx", enabled=True)])
+        mode = MagicMock()
+        mode.is_component_enabled.return_value = True
+        user = MagicMock(spec=User)
+        user.current_project = "demo"
+        user.name = "demo-user"
+
+        with patch("codemie.service.mcp.access_control.customer_config", mode):
+            with pytest.raises(ValidationException, match="rogue"):
+                await ask_virtual_assistant(raw_request, MagicMock(), request, user)
+
+    @pytest.mark.asyncio
+    async def test_open_mode_allows_handwritten_server(self):
+        from codemie.rest_api.routers.assistant import ask_virtual_assistant, VirtualAssistantChatRequest
+        from codemie.rest_api.models.assistant import MCPServerDetails
+
+        async def _noop():
+            return None
+
+        raw_request = MagicMock()
+        raw_request.state.wait_for_disconnect = MagicMock(return_value=_noop())
+        request = VirtualAssistantChatRequest(mcp_servers=[MCPServerDetails(name="ok", command="npx", enabled=True)])
+        mode = MagicMock()
+        mode.is_component_enabled.return_value = False
+        user = MagicMock(spec=User)
+        user.current_project = "demo"
+        user.name = "demo-user"
+
+        with (
+            patch("codemie.service.mcp.access_control.customer_config", mode),
+            patch("codemie.rest_api.routers.assistant.asyncio.to_thread", return_value={"response": "ok"}),
+        ):
+            await ask_virtual_assistant(raw_request, MagicMock(), request, user)
 
 
 def test_resume_tool_call_never_had_and_still_has_no_billing_user_param():

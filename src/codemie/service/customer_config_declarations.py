@@ -202,12 +202,29 @@ SCHEDULERS = SettingDeclaration(
     ],
 )
 
+MCP_CUSTOM_SERVERS_DISABLED = SettingDeclaration(
+    component_id="mcpCustomServersDisabled",
+    label="MCP Custom Servers Disabled",
+    description=(
+        "When enabled, restricts users to catalog-referenced MCP servers only. "
+        "Custom inline MCP server configuration is not permitted."
+    ),
+    fields=[
+        FieldDeclaration(
+            name="enabled",
+            type=FieldType.SWITCH,
+            label="Restrict to catalog MCP servers",
+        ),
+    ],
+)
+
 DECLARATIONS: tuple[SettingDeclaration, ...] = (
     CHAT_DISCLAIMER,
     RELEASE_NOTES_RECENT_COUNT,
     BANNER,
     WEB_SEARCH,
     SCHEDULERS,
+    MCP_CUSTOM_SERVERS_DISABLED,
 )
 
 _BY_COMPONENT_ID = {declaration.component_id: declaration for declaration in DECLARATIONS}

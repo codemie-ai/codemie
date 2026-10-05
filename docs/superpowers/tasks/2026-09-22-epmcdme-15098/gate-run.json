@@ -1,0 +1,91 @@
+{
+  "schema": 1,
+  "branch": "feature/EPMCDME-15094-mcp-catalogue-governance",
+  "head": "d3404306f358eaf5c0b8d03e0d27c34a7168562f",
+  "runner": "poetry",
+  "started_at": "2026-09-22T16:20:37Z",
+  "completed_at": "2026-09-22T17:16:00Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "ruff",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 4806,
+      "command": "poetry run ruff format && poetry run ruff check --fix && poetry run ruff check",
+      "exit_code": 0,
+      "notes": "'make' binary not on PATH in this session; ran the exact body of the Makefile 'ruff' target verbatim. Fresh re-run against HEAD d3404306f (post fix-and-retry commit). 'ruff format': 2580 files left unchanged. 'ruff check --fix' and 'ruff check': All checks passed! The previously blocking F841 unused-variable violation at tests/codemie/rest_api/routers/test_assistant.py:871 is resolved -- confirmed clean on this re-run."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 15371,
+      "command": "poetry build",
+      "exit_code": 0,
+      "notes": "'make' unavailable; ran 'poetry build' (verbatim body of the Makefile 'build' target). Built codemie-0.8.0 sdist and wheel successfully."
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2510,
+      "command": "poetry run python scripts/license_headers/check_license_headers.py --check --quiet",
+      "exit_code": 0,
+      "notes": "'make' unavailable; ran verbatim body of the Makefile 'license-check' target. Checked 2295 files, 0 missing license headers."
+    },
+    {
+      "id": "gitleaks-ci",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 177,
+      "command": "docker run --rm -v \"$(pwd):/workspace\" ghcr.io/gitleaks/gitleaks:v8.30.1 dir --no-banner --verbose --config=/workspace/.gitleaks.toml /workspace",
+      "exit_code": 1,
+      "notes": "Guide 'Skip if: Docker is unavailable' applies (also documented under security/README.md 'Exit codes that mislead': a Docker-unreachable gitleaks run is an environment block, not a clean scan). Exact output: 'failed to connect to the docker API at npipe:////./pipe/docker_engine ... The system cannot find the file specified.' Docker CLI (Rancher Desktop) is on PATH but its daemon is not running. Checked for the documented local-binary fallback ('gitleaks dir --no-banner .'): no 'gitleaks' binary found on PATH either. Start the container engine daemon (or install a standalone gitleaks binary) to run this gate locally; CI still owes this check."
+    },
+    {
+      "id": "gitleaks-precommit",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 1075,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": 1,
+      "notes": "Local pre-commit secrets gate (codemie-gitleaks hook in .pre-commit-config.yaml), wired via scripts/git-hooks/validate_secrets.sh. Requires a live Docker/Podman/Apple-Containers daemon (detects docker -> podman -> Apple Containers in order); none are running (podman not installed either). Exact output: 'codemie-gitleaks: Docker daemon is not running / Start Docker Desktop to enable secrets detection locally'. Same infrastructure gap as gitleaks-ci; not evaluated against any staged diff since no commit is being made in this qa-gates session. Start the container engine to enable this locally; CI/manual review still owes this check before merge."
+    },
+    {
+      "id": "test",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 740265,
+      "command": "poetry run pytest tests/",
+      "exit_code": 1,
+      "notes": "Pytest exit code was 1 (152 failed, 16727 passed, 189 skipped, 229 warnings in 734.20s), but every failure was independently confirmed pre-existing and unrelated to this ticket's diff -- not a regression -- so this gate is recorded PASS per explicit dispatch instruction not to block on known-baseline environment failures. Verification method: (a) none of the 152 failing test files intersect this branch's changed files (diff only touches src/codemie/service/customer_config_declarations.py, src/codemie/service/mcp/access_control.py, and tests/codemie/rest_api/routers/test_assistant.py, tests/codemie/rest_api/routers/test_workflow.py, tests/codemie/service/test_customer_config_declarations.py, tests/codemie/service/test_skill_service.py, tests/unit/service/mcp/test_access_control.py -- all of which pass); (b) for every failing file not already named in the dispatch briefing, reproduced the identical failure on a `git worktree` checkout of merge_base (54783518862bb723fe39b147370d53f1522be71b), confirming pre-existing status, then removed the worktree. Failure breakdown (152 total): tests/enterprise/mcp_auth/* = 52 (ModuleNotFoundError: codemie_enterprise not installed -- optional extra, briefed known issue); tests/scripts/test_*_hook.py = 27 (Windows Git-Bash specific, briefed known issue); tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py = 56 plus test_sandbox_guard.py = 1 and test_file_system_tools.py::test_command_line_tool = 1 (sandboxed-subprocess 'ModuleNotFoundError: codemie' PYTHONPATH gap, briefed known issue); remaining 15 not explicitly briefed but verified identical at merge_base: test_git_loader.py mime-type checks (rar/woff/woff2) = 3, test_svn_loader.py rar mime check = 1, test_a2ui_catalog_and_adapter.py wire-vocabulary check = 1, test_a2ui_frontend_contract.py vendored-manifest-freshness check = 1, test_background_processing.py multiprocessing test = 1, test_message_exporter.py docx export = 1, test_toolkit_service_auth_resolver.py = 2, test_provider_adapters.py (oauth) = 2, test_dynamic_config_service.py = 1, test_oauth_redis_lazy_init.py = 1, test_job_lock.py = 1 -- these are pre-existing test-order/isolation-dependent flakes and Windows-native-library gaps (e.g. libmagic mime sniffing), confirmed to fail identically at merge_base with the same assertions/tracebacks. Separately noted: tests/codemie/service/test_skill_service.py had 0 failures in the full run (all 19 TestAccessControl-area tests passed), but the SAME 19 tests fail when that file is run in isolation (both at this HEAD and at merge_base) -- a pre-existing test-isolation/fixture-ordering dependency unrelated to this diff, not a regression; confirmed by direct comparison, not assumed."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1251712,
+      "command": "poetry run pytest tests/ -W ignore::DeprecationWarning --cov --cov-report=html",
+      "exit_code": 1,
+      "notes": "151 failed, 16728 passed, 189 skipped, 229 warnings in 1243.08s -- same pre-existing failure population as the 'test' gate (one fewer failure than that run, consistent with the test-order-dependent flakiness already documented there). htmlcov/index.html was generated successfully. Recorded PASS for the same reason as 'test': no failure traces to this ticket's diff."
+    },
+    {
+      "id": "sonar-local",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 185,
+      "command": "node scripts/sonar/run-local-sonar.js",
+      "exit_code": 0,
+      "notes": "Self-skip signal: '[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.' Exit 0 is not evidence of a real run (Self-skipping Gates rule). Guide 'Skip if: ... required credentials are unavailable' applies. .sonarlint/connectedMode.json and sonar-project.properties are present and Node v24.18.0 is on PATH, but no SONAR_TOKEN is exported. Set SONAR_TOKEN to run this gate locally; the server-side quality gate still owes this check and will run for real in CI/whoever holds the token."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "SKIPPED",
+      "notes": "Guide 'Skip if: You are not opening a merge request (local iteration only)' applies -- this is a qa-gates check, not an MR submission. Additionally not currently runnable in this session even if it were required: 'uvx' is not installed/on PATH and no container engine is running (docker compose stack prerequisite). ~/.codemie/test-harness.json does exist. This remains owed before MR submission -- paste its terminal summary into the MR's '## Test harness' section per the guide."
+    }
+  ],
+  "failures": {}
+}

@@ -449,9 +449,20 @@ def create_workflow(
             help="Please set the workflow mode to 'SEQUENTIAL' instead.",
         )
     project_access_check(user, request.project)
+    # Clients send only yaml_config; assistants/tools are derived from it (validate_workflow does that parse later),
+    # so also check a parsed copy, or the check would see an empty list. A malformed YAML is reported by
+    # validate_workflow below.
+    parsed_from_yaml = WorkflowConfig(**request.model_dump())
     try:
-        MCPAccessControlService.validate_on_save(_collect_workflow_mcp_servers(workflow_config))
-        _strip_workflow_mcp_servers(workflow_config)
+        parsed_from_yaml.parse_execution_config()
+    except Exception as e:
+        logger.warning(f"Could not parse workflow yaml_config before MCP validation: {e}")
+    # Outside the try: the generic except below would wrap the governance ValidationException
+    # into "Workflow Configuration error" with the reason in details; update_workflow re-raises it as-is.
+    for candidate in (workflow_config, parsed_from_yaml):
+        MCPAccessControlService.validate_on_save(_collect_workflow_mcp_servers(candidate))
+    _strip_workflow_mcp_servers(workflow_config)
+    try:
         WorkflowExecutor.validate_workflow(workflow_config=workflow_config, user=user, error_format=error_format)
         workflow_config = workflow_service.create_workflow(workflow_config, user)
 

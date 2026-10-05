@@ -1,0 +1,13 @@
+{
+  "score": 22,
+  "breakdown": {
+    "component_scope": 6,
+    "requirements_clarity": 3,
+    "technical_risk": 4,
+    "file_change_estimate": 5,
+    "dependencies": 1,
+    "affected_layers": 3
+  },
+  "routing": "brainstorming",
+  "rationale": "Spans three repositories (codemie backend, codemie-ui, codemie-sdk) that must share one governance contract — the mcpCustomServersDisabled semantics and the _CATALOG_REF_ALLOWED_FIELDS allow-list. New touch points per repo: the config-declaration registry (codemie), the workflow-editor and skill-builder UI subsystems that currently have zero restricted-mode awareness (codemie-ui), and the SDK model layer (codemie-sdk). This crosses service/system boundaries with a shared contract, which is the XXL definition itself, independent of any red-flag bump. Backend: customer_config_declarations.py plus test updates (~2 modified, 1 new). UI: 5 workflow-editor files (ToolForm.tsx, ToolSelector.tsx, VirtualAssistantForm.tsx, AssistantTab.tsx, ToolTab.tsx) + 4 skill-builder files (SkillForm.tsx, SkillDetails.tsx, useSkillForm.tsx, skillValidation.ts) modified, plus new tests for both (no existing restricted-mode test coverage there per technical-analysis). SDK: model/service files modified plus new governance tests. Aggregate lands around 13 modified / 6-7 new files across three repos and several directories — XL band, near the XXL boundary on new-file count. Backend enforcement (MCPAccessControlService) is an exact, already-tested precedent, so that slice alone is low risk. But the UI (workflow editor, skill builder) and SDK have no existing client-side mirror of the allowed-fields governance logic — undocumented-pattern work per technical-analysis — and the change is governance/security-relevant (admin-gated catalogue lock-down). Security/governance red flag bumps this from M to L."
+}

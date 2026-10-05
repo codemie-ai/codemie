@@ -441,6 +441,75 @@ class TestRollbackToVersion:
         mock_assistant.update.assert_called_once()
         assert mock_assistant.version_count == 4
 
+    @staticmethod
+    def _toggle(restricted: bool) -> MagicMock:
+        toggle = MagicMock()
+        toggle.is_component_enabled.return_value = restricted
+        return toggle
+
+    @patch('codemie.service.assistant.assistant_version_service.AssistantConfiguration')
+    @patch.object(AssistantVersionService, 'get_version')
+    def test_rollback_restricted_mode_refuses_version_with_handwritten_mcp_server(
+        self, mock_get_version, mock_config_class, mock_assistant, mock_config, mock_user
+    ):
+        """A saved hand-written server must not come back through a rollback while restricted mode is on."""
+        from codemie.core.exceptions import ValidationException
+        from codemie.rest_api.models.assistant import MCPServerDetails
+
+        mock_assistant.version_count = 3
+        mock_config.mcp_servers = [MCPServerDetails(name="rogue", command="npx", enabled=True)]
+        mock_get_version.return_value = mock_config
+
+        with patch("codemie.service.mcp.access_control.customer_config", self._toggle(True)):
+            with pytest.raises(ValidationException, match="rogue"):
+                AssistantVersionService.rollback_to_version(
+                    assistant=mock_assistant, target_version_number=1, user=mock_user
+                )
+
+        mock_config_class.assert_not_called()  # no new version row built
+        mock_assistant.update.assert_not_called()  # master record untouched
+        assert mock_assistant.version_count == 3
+
+    @patch('codemie.service.assistant.assistant_version_service.AssistantConfiguration')
+    @patch.object(AssistantVersionService, 'get_version')
+    def test_rollback_restricted_mode_allows_version_with_catalog_ref_server(
+        self, mock_get_version, mock_config_class, mock_assistant, mock_config, mock_user
+    ):
+        """A clean catalogue reference is still restorable."""
+        from codemie.rest_api.models.assistant import MCPServerDetails
+
+        mock_assistant.version_count = 3
+        mock_config.mcp_servers = [MCPServerDetails(name="cat", enabled=True, mcp_config_id="cfg-1")]
+        mock_get_version.return_value = mock_config
+
+        with patch("codemie.service.mcp.access_control.customer_config", self._toggle(True)):
+            AssistantVersionService.rollback_to_version(
+                assistant=mock_assistant, target_version_number=1, user=mock_user
+            )
+
+        mock_assistant.update.assert_called_once()
+        assert mock_assistant.version_count == 4
+
+    @patch('codemie.service.assistant.assistant_version_service.AssistantConfiguration')
+    @patch.object(AssistantVersionService, 'get_version')
+    def test_rollback_open_mode_restores_version_with_handwritten_mcp_server(
+        self, mock_get_version, mock_config_class, mock_assistant, mock_config, mock_user
+    ):
+        """Toggle off: rollback behaves exactly as before."""
+        from codemie.rest_api.models.assistant import MCPServerDetails
+
+        mock_assistant.version_count = 3
+        mock_config.mcp_servers = [MCPServerDetails(name="ok", command="npx", enabled=True)]
+        mock_get_version.return_value = mock_config
+
+        with patch("codemie.service.mcp.access_control.customer_config", self._toggle(False)):
+            AssistantVersionService.rollback_to_version(
+                assistant=mock_assistant, target_version_number=1, user=mock_user
+            )
+
+        mock_assistant.update.assert_called_once()
+        assert mock_assistant.version_count == 4
+
     @patch.object(AssistantVersionService, 'get_version')
     def test_rollback_to_current_version_fails(self, mock_get_version, mock_assistant, mock_user):
         """Test rollback to current version raises exception"""

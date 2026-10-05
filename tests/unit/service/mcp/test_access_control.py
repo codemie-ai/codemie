@@ -202,6 +202,13 @@ class TestValidateOnSaveRestrictedMode:
             with pytest.raises(ValidationException, match="Custom MCP servers are not allowed"):
                 MCPAccessControlService.validate_on_save(servers)
 
+    def test_use_custom_config_true_raises_in_restricted_mode(self):
+        # AC3: declaring custom mode on a catalog-ref server is itself an override.
+        servers = [_server("s1", mcp_config_id="cat-1", use_custom_config=True)]
+        with _restricted_mode():
+            with pytest.raises(ValidationException, match="use_custom_config"):
+                MCPAccessControlService.validate_on_save(servers)
+
 
 # ── strip_inline_config ───────────────────────────────────────────────
 
@@ -377,3 +384,26 @@ class TestResolveCatalogConfig:
         with patch(_FIND_BY_ID, return_value=entry):
             result = MCPAccessControlService.resolve_catalog_config(server)
         assert result is None
+
+
+class TestValidateOnRestore:
+    """Restoring stored servers (version rollback): restricted mode only, no catalog availability re-check."""
+
+    def test_restricted_mode_refuses_inline_server(self):
+        with _restricted_mode():
+            with pytest.raises(ValidationException, match="rogue"):
+                MCPAccessControlService.validate_on_restore([_server("rogue", command="npx")])
+
+    def test_restricted_mode_allows_clean_catalog_ref_without_catalog_lookup(self):
+        with _restricted_mode(), patch(_GET_BY_IDS) as get_by_ids:
+            MCPAccessControlService.validate_on_restore([_server("cat", mcp_config_id="cfg-1")])
+        get_by_ids.assert_not_called()
+
+    @pytest.mark.parametrize("servers", [None, []])
+    def test_restricted_mode_ignores_missing_servers(self, servers):
+        with _restricted_mode():
+            MCPAccessControlService.validate_on_restore(servers)
+
+    def test_open_mode_allows_inline_server(self):
+        with _open_mode():
+            MCPAccessControlService.validate_on_restore([_server("ok", command="npx")])

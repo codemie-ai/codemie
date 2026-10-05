@@ -1,0 +1,3 @@
+# Deferred from code review — 2026-09-21-epmcdme-15096-mcp-governance-switches (2026-09-21)
+
+- **Dict-comprehension key-collision guard** — `src/codemie/service/customer_config_declarations.py:192-193` — A future declaration whose derived `component_id`/key collides with an existing one is silently dropped by the dict comprehensions building `_BY_COMPONENT_ID`/`_BY_KEY` (last entry wins, no assertion). Pre-existing: this comprehension predates the change and is untouched by it; the diff only appends a fifth tuple entry (`MCP_CUSTOM_SERVERS_DISABLED`) through the same pattern already used for `WEB_SEARCH`/`SCHEDULERS`, and no collision exists among the current five keys.

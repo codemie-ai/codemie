@@ -25,6 +25,7 @@ from codemie.rest_api.models.assistant import (
     AssistantVersionHistoryResponse,
 )
 from codemie.rest_api.security.user import User
+from codemie.service.mcp.access_control import MCPAccessControlService
 from codemie.core.models import CreatedByUser
 from codemie.core.exceptions import ExtendedHTTPException
 from fastapi import status
@@ -258,6 +259,9 @@ class AssistantVersionService:
 
         # Get target version
         target_config = cls.get_version(assistant.id, target_version_number)
+
+        # A version saved before restricted mode was enabled may hold servers that are no longer allowed
+        MCPAccessControlService.validate_on_restore(target_config.mcp_servers)
 
         # Create new version with target configuration
         new_version_number = assistant.version_count + 1
