@@ -289,7 +289,7 @@ Run `alembic upgrade head` to apply on a fresh environment.
 
 ## Related Guides
 
-- `.codemie/guides/agents/custom-tool-creation.md` — tool base classes and registration
-- `.codemie/guides/development/performance-patterns.md` — async I/O, concurrency patterns
-- `.codemie/guides/integration/external-services.md` — DSP provider setup
-- `.codemie/guides/api/rest-api-patterns.md` — assistant CRUD endpoint patterns
+- `.ai-run/guides/agents/custom-tool-creation.md` — tool base classes and registration
+- `.ai-run/guides/development/performance-patterns.md` — async I/O, concurrency patterns
+- `.ai-run/guides/integration/external-services.md` — DSP provider setup
+- `.ai-run/guides/api/rest-api-patterns.md` — assistant CRUD endpoint patterns

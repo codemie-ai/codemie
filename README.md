@@ -330,9 +330,9 @@ Two-layer design:
 #### Contributing to Tools
 
 To add or modify a tool, work directly in `src/codemie_tools/`. For architecture patterns and step-by-step guides:
-- `.codemie/guides/agents/agent-tools.md` — base classes, execution flow, metadata
-- `.codemie/guides/agents/custom-tool-creation.md` — creating new tools
-- `.codemie/guides/agents/tool-overview.md` — SmartToolSelector and `DiscoverableToolkit`
+- `.ai-run/guides/agents/agent-tools.md` — base classes, execution flow, metadata
+- `.ai-run/guides/agents/custom-tool-creation.md` — creating new tools
+- `.ai-run/guides/agents/tool-overview.md` — SmartToolSelector and `DiscoverableToolkit`
 
 ## License Compliance
 
