@@ -1,0 +1,107 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15572",
+  "head": "68cc25e60c22b3bfac871cb68b31a4231ecd366e",
+  "runner": "poetry",
+  "started_at": "2026-10-05T06:22:44Z",
+  "completed_at": "2026-10-05T06:34:50Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2118,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 6456,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1443,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "gitleaks-ci",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 18476,
+      "command": "make gitleaks",
+      "exit_code": 0
+    },
+    {
+      "id": "gitleaks-precommit",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 16,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": 0,
+      "notes": "Self-skip: 'codemie-gitleaks: skipped (CODEMIE_PRECOMMIT_ENABLED=false)' — the shell env has CODEMIE_PRECOMMIT_ENABLED=false set. Docker is actually live, so this is skipping unnecessarily per the guide's bypass note ('use only when Docker/Podman is unavailable'). Diagnostic rerun with CODEMIE_PRECOMMIT_ENABLED=true (and the branch's two changed files staged via a temporary soft-reset to merge_base) confirmed the scan runs clean (0 leaks) when enabled. To run for real locally: unset CODEMIE_PRECOMMIT_ENABLED or set it to true."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 136010,
+      "command": "make test",
+      "exit_code": 1,
+      "notes": "24 failed, 23 errors, 17837 passed, 175 skipped. All failures are in files unrelated to this branch's diff (test_vsdx_loader.py, test_dependencies_tagging_headers.py, test_permission_models.py, test_oauth_redis_lazy_init.py, test_custom_git_api_wrapper.py, test_github_app_auth.py, test_toolkit.py) and reproduce in isolation with environment-level root causes confirmed by direct re-run: ModuleNotFoundError: No module named 'validators' (langchain_google_vertexai transitive dependency missing from this venv) and TypeError: 'PydanticDescriptorProxy' object is not callable (pydantic version mismatch). Pre-existing/environment-related, not caused by src/codemie/enterprise/litellm/models.py or tests/enterprise/litellm/test_models.py changes — but this is still a blocking FAIL per gate policy; the environment needs a dependency fix (e.g. poetry install --sync / pin review) before 'make test' can be relied on."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "SKIPPED",
+      "command": "make coverage",
+      "exit_code": null,
+      "notes": "Skip if: user did not request coverage — not requested in this dispatch."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 113,
+      "command": "make sonar-local",
+      "exit_code": 0,
+      "notes": "Self-skip: '[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.' To run for real locally: populate SONAR_TOKEN (and SONAR_HOST_URL if needed) in .env.local per scripts/sonar/run-local-sonar.js; only CI/a configured local token will settle this one."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "SKIPPED",
+      "command": "make verify",
+      "exit_code": null,
+      "notes": "Skip if: environment prerequisites are missing / task scope does not call for full verification — 'verify' composes exactly ruff+license+gitleaks+test, all of which already ran individually in this pass (test already failed above); re-running the composite would only duplicate the same ~2.5 min test run for no new signal."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "SKIPPED",
+      "command": "make test-harness",
+      "exit_code": null,
+      "notes": "Skip if: you are not opening a merge request (local iteration only) — this dispatch did not instruct opening an MR. Infra is actually available if a future run needs it: docker compose stack is up (postgres/elasticsearch/litellm/codemie/codemie-ui containers running) and ~/.codemie/test-harness.json is present."
+    },
+    {
+      "id": "commit-msg-format",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 16,
+      "command": "git log --format=%s 3ac75fa1f2f49446cceac15bb36ead24e141cdb2..HEAD",
+      "exit_code": 0,
+      "notes": "codemie-commit-msg pre-commit hook enforces '^EPMCDME-[0-9]+:' subject prefix (scripts/git-hooks/commit_msg.sh); not already covered by quality-gates.md. The single commit on this branch ('EPMCDME-15572: Expose LiteLLM max_output_tokens in model mapping') matches."
+    }
+  ],
+  "failures": {
+    "unit": "FAILED tests/codemie/datasource/loader/test_vsdx_loader.py::test_page_text_and_name_in_content\nFAILED tests/codemie/datasource/loader/test_vsdx_loader.py::test_skips_pages_without_text\nFAILED tests/codemie/datasource/loader/test_vsdx_loader.py::test_no_documents_when_diagram_has_no_text\nFAILED tests/codemie/datasource/loader/test_vsdx_loader.py::test_yields_nothing_when_visiofile_raises\nFAILED tests/codemie/core/test_dependencies_tagging_headers.py::TestVertexTaggingHeaders::test_tags_injected_into_client_options\nFAILED tests/codemie/rest_api/models/test_permission_models.py::TestResourceType::test_resource_class\nFAILED tests/codemie/rest_api/models/test_permission_models.py::TestResourceType::test_for_instance\nFAILED tests/codemie/rest_api/models/test_permission_models.py::TestResourceType::test_for_instance_not_found\nFAILED tests/codemie/rest_api/routers/test_oauth_redis_lazy_init.py::test_app_starts_without_redis_package_when_pkce_disabled\nFAILED tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_validate_environment_success\nFAILED tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_validate_environment_success\nFAILED tests/codemie_tools/git/test_github_app_auth.py::test_custom_github_api_wrapper_pat_auth\nFAILED tests/codemie_tools/git/test_github_app_auth.py::test_custom_github_api_wrapper_github_app_auth\nFAILED tests/codemie_tools/git/test_github_app_auth.py::test_custom_github_api_wrapper_pat_auth_with_ghe_base_url\nFAILED tests/codemie_tools/git/test_github_app_auth.py::test_custom_github_api_wrapper_pat_auth_github_com_no_base_url\nFAILED tests/codemie_tools/git/test_github_app_auth.py::test_custom_github_api_wrapper_github_app_auth_with_ghe_base_url\nFAILED tests/codemie_tools/git/test_github_app_auth.py::test_custom_github_api_wrapper_github_app_auth_github_com_no_base_url\nFAILED tests/codemie_tools/git/test_github_app_auth.py::test_custom_github_api_wrapper_github_app_auto_detect_installation\nFAILED tests/codemie_tools/git/test_github_app_auth.py::test_custom_github_api_wrapper_github_app_no_installations\nFAILED tests/codemie_tools/research/test_toolkit.py::TestResearchToolkit::test_get_tools\nFAILED tests/codemie_tools/research/test_toolkit.py::TestResearchToolkit::test_get_wikipedia_tool\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_branch_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_branch_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_set_active_branch_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_set_active_branch_failur\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_list_branches_in_repo_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_list_branches_in_repo_exception\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_replace_file_content_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_replace_file_content_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_file_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_delete_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_delete_file_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_issue_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_update_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_update_issue_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_find_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_comment_on_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_comment_on_issue_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_file_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_delete_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_delete_file_failure\n= 24 failed, 17837 passed, 175 skipped, 246 warnings, 23 errors in 132.29s (0:02:12) =\nmake: *** [test] Error 1\n\nIsolated re-run confirming root cause (unrelated to this diff):\ntests/codemie_tools/git/test_github_app_auth.py::test_custom_github_api_wrapper_pat_auth\n  TypeError: 'PydanticDescriptorProxy' object is not callable\ntests/codemie/core/test_dependencies_tagging_headers.py::TestVertexTaggingHeaders::test_tags_injected_into_client_options\n  ModuleNotFoundError: No module named 'validators' (langchain_google_vertexai._anthropic_utils transitive import)"
+  }
+}

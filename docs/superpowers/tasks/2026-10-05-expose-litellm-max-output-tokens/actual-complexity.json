@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "generated": "2026-10-05T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 1, "label": "XS" },
+    "requirements_clarity": { "score": 1, "label": "XS" },
+    "technical_risk":       { "score": 1, "label": "XS" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 7,
+  "size": "XS",
+  "band_range": "6-9",
+  "files_changed": 2,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "file_change_estimate", "reason": "2 files touched: src/codemie/enterprise/litellm/models.py (two lines added inside map_litellm_to_llm_model: extracting model_info['max_output_tokens'] and passing it to the existing LLMModel.max_output_tokens field) and tests/enterprise/litellm/test_models.py (two new unit tests, present/absent cases), accounting for all 37 insertions and 0 deletions in the diffstat." },
+    { "dimension": "component_scope", "reason": "Single function (map_litellm_to_llm_model) modified in place; no new component, module, or layer boundary introduced — the new extraction line sits directly beside the pre-existing sibling line for max_input_tokens, which follows the identical dict.get()-then-pass-through pattern." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

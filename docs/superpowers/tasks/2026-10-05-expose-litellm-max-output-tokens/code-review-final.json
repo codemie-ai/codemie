@@ -1,0 +1,13 @@
+{
+  "decision": "approve",
+  "rationale": "Compact profile ran edge-case only (blind/verification-gap not applicable to this profile; acceptance skipped as no-spec — no story/spec ArtifactRef found), with no lens failures and no standards audit expected for this profile. All 4 edge-case candidates verified live against src/codemie/core/dependecies.py and src/codemie/enterprise/litellm/dependencies.py/models.py and deferred as pre-existing: two are an unmodified max_tokens-fallback bug in dependecies.py predating this change by git blame, and two mirror the already-established unvalidated model_info.get(...) pattern used by the sibling max_input_tokens field, consistent with the task's explicit 'no schema/router/service changes needed' scope. 0 dismissed. Confidence is low solely because this is a genuine no-spec round.",
+  "confidence": "low",
+  "risk_flags": ["public-api"],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "commit-format", "status": "na", "notes": "Standards audit not expected for the compact review profile." },
+    { "kind": "code-quality", "status": "na", "notes": "Standards audit not expected for the compact review profile." },
+    { "kind": "security", "status": "na", "notes": "Standards audit not expected for the compact review profile." }
+  ],
+  "findings": []
+}

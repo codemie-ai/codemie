@@ -159,6 +159,7 @@ def map_litellm_to_llm_model(litellm_model: dict[str, Any]) -> "LLMModel":
     forbidden_for_web = model_info.get("forbidden_for_web", False)
     api_version = litellm_params.get("api_version", None)
     max_input_tokens = model_info.get("max_input_tokens")
+    max_output_tokens = model_info.get("max_output_tokens")
 
     # Return core LLMModel instance
     return LLMModel(
@@ -177,6 +178,7 @@ def map_litellm_to_llm_model(litellm_model: dict[str, Any]) -> "LLMModel":
         forbidden_for_web=forbidden_for_web,
         api_version=api_version,
         max_input_tokens=max_input_tokens,
+        max_output_tokens=max_output_tokens,
         switchyard=switchyard,
         litellm_router=litellm_router,
     )

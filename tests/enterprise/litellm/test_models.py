@@ -62,6 +62,41 @@ class TestMapLiteLLMToLLMModel:
 
         assert result.api_version == "2025-04-01-preview"
 
+    def test_maps_max_output_tokens_when_present(self):
+        litellm_model = {
+            "model_name": "azure/gpt-4",
+            "model_info": {
+                "litellm_provider": "azure",
+                "id": "gpt-4",
+                "label": "GPT-4",
+                "enabled": True,
+                "max_output_tokens": 32768,
+            },
+        }
+
+        from codemie.enterprise.litellm.models import map_litellm_to_llm_model
+
+        result = map_litellm_to_llm_model(litellm_model)
+
+        assert result.max_output_tokens == 32768
+
+    def test_maps_max_output_tokens_when_absent(self):
+        litellm_model = {
+            "model_name": "azure/gpt-4",
+            "model_info": {
+                "litellm_provider": "azure",
+                "id": "gpt-4",
+                "label": "GPT-4",
+                "enabled": True,
+            },
+        }
+
+        from codemie.enterprise.litellm.models import map_litellm_to_llm_model
+
+        result = map_litellm_to_llm_model(litellm_model)
+
+        assert result.max_output_tokens is None
+
     def test_handles_empty_api_version_correctly(self):
         litellm_model = {
             "model_name": "azure/gpt-4",
