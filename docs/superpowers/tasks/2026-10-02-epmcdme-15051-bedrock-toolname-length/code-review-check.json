@@ -1,0 +1,141 @@
+{
+  "decision": "approve",
+  "rationale": "Targeted check: both prior blocking findings resolved at HEAD dfdab00b. CR-001: _extract_tool_records now uses _replayable_tool_name, keeping names that fullmatch [a-zA-Z0-9_-]+ and are <= MAX_TOOL_NAME_LENGTH verbatim; CR-002: new 87-char title-cased ' #2' replay test asserts records, tool_calls and ToolMessage names. Test pass is Stage 7 evidence; no deferred items re-checked.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "on_supervisor_handoff passes destination as serialized['tool_name']; serialized['name'] stays display name",
+      "status": "pass",
+      "notes": "langgraph_event_adapter.py:108; covered by adapter tests"
+    },
+    {
+      "kind": "spec",
+      "item": "AgentStreamingCallback forwards serialized.get('tool_name') to create_thought as replay_tool_name",
+      "status": "pass",
+      "notes": "agent_streaming_callback.py:63,87,330"
+    },
+    {
+      "kind": "spec",
+      "item": "AgentInvokeCallback uses serialized.get('tool_name') for metadata; display name kept as author_name",
+      "status": "pass",
+      "notes": "agent_invoke_callback.py:175,196,291"
+    },
+    {
+      "kind": "spec",
+      "item": "Callbacks ignoring the extra serialized key behave as before",
+      "status": "pass",
+      "notes": "additive key; replay_tool_name defaults to None"
+    },
+    {
+      "kind": "spec",
+      "item": "_extract_tool_records normalizes every metadata.tool_name; fallback normalizes author_name",
+      "status": "pass",
+      "notes": "history_projection_service.py:166"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goals: no changes to excluded functions, name generation, migration, or src/codemie-repos/",
+      "status": "pass",
+      "notes": "diff touches only the four listed source files"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC1: streaming handoff persists metadata.tool_name equal to destination",
+      "status": "pass",
+      "notes": "test_on_tool_start_handoff_persists_real_tool_name (streaming)"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC2: same for invoke (non-streaming) supervisor callback path",
+      "status": "pass",
+      "notes": "test_on_tool_start_handoff_persists_real_tool_name (invoke)"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC3: handoff thought author_name (incl. #N suffix) unchanged",
+      "status": "pass",
+      "notes": "author_name derivation untouched; tests assert '#2' display name"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC4: non-handoff tool thoughts persist same metadata.tool_name as before",
+      "status": "pass",
+      "notes": "fallback to tool_name; tests in both callback files"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC5: _extract_tool_records returns <=64-char [a-z0-9_-]+ name for any stored tool_name",
+      "status": "pass",
+      "notes": "_normalize_tool_name applied at :166"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC6: NATIVE_TOOLS_MODE replay yields <=64-char charset-valid tool_calls and ToolMessage names",
+      "status": "pass",
+      "notes": "test_build_for_request_normalizes_overlong_stored_tool_name"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC7: existing tests pass; new tests cover AC1, AC2, AC3, AC5 and AC6",
+      "status": "partial",
+      "notes": "AC5 80+ char display-derived case not exercised (longest stored name 73 chars, no spaces); suite pass is Stage 7 evidence"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "all 4 subjects in 7c0fbf0f..HEAD match the git-workflow.md 'EPMCDME-####: Description' format (ticket prefix, colon, capitalized description)"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "4 source files touched with small edits; new replay_tool_name params are annotated 'str | None' per the Types And Imports rule, no Optional/bare generics, no new modules (license headers n/a), no new concern appended to an existing module; Ruff conformance not executed (gate runs are out of scope)"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "change threads an internal handoff destination name into tool metadata and normalizes stored tool names at history replay; no auth paths, secrets, logging of sensitive values, or untrusted-input parsing touched; the replay normalization feeds provider tool-name constraints, not a security decision, so the Untrusted Input Handling rule does not apply"
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/conversation/history_projection_service.py",
+      "line": 166,
+      "title": "Replay rewrites already-valid stored tool names",
+      "problem": "_extract_tool_records now passes every stored metadata.tool_name through _normalize_tool_name, which lowercases, collapses consecutive underscores and strips leading/trailing underscores. Previously a stored tool_name was replayed verbatim. Bound MCP tools are named by agents/utils.py sanitize_tool_name, which lowercases and replaces invalid chars but does not collapse '__' or strip edge '_' (and appends a hash suffix on overflow), so a valid bound name like 'server__tool' or 'name_' replays as 'server_tool'/'name'.",
+      "impact": "Replayed AIMessage.tool_calls/ToolMessage names in native-tools mode can diverge from the currently bound tool names, so the model sees history calls to tools that do not exist and may imitate them. The available_tool_names filter normalizes both sides, so the record is not dropped, which hides the mismatch. Reachability to a user-visible failure is unconfirmed: it depends on tool names containing '__' or edge underscores.",
+      "recommendation": "Keep a stored name unchanged when it already fully matches [a-zA-Z0-9_-]+ and is <= MAX_TOOL_NAME_LENGTH; apply _normalize_tool_name only to invalid or overlong names (e.g. name if TOOL_NAME_REGEX.fullmatch(name) and len(name) <= MAX_TOOL_NAME_LENGTH else cls._normalize_tool_name(name)). Add a test that a valid name with '__' survives replay unchanged."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "tests/codemie/service/conversation/test_history_projection_service.py",
+      "line": 580,
+      "title": "AC7 missing 80+ char display-name replay test",
+      "problem": "AC7 requires new tests covering AC5 including an 80+ char display-derived name. test_build_for_request_normalizes_overlong_stored_tool_name uses a 73-char snake_case name and test_extract_tool_records_normalizes_stored_tool_name covers only 'long_agent_name_#2', '###' and 'search_docs'. No test feeds an 80+ char title-cased name with spaces and ' #N' through _extract_tool_records.",
+      "impact": "A required story acceptance criterion is only partially met; the exact broken-history shape from the incident (long title-cased sub-assistant display name with ' #N') has no regression guard.",
+      "recommendation": "Add a test that stores an 80+ char title-cased display name with spaces and a ' #2' suffix as metadata.tool_name and asserts _extract_tool_records (and build_for_request in NATIVE_TOOLS_MODE) yields a <= 64-char name matching [a-z0-9_-]+."
+    }
+  ],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "resolved",
+      "notes": "history_projection_service.py:167,524 _replayable_tool_name returns valid <=64 names verbatim; test asserts 'mcp__server__tool' preserved"
+    },
+    {
+      "id": "CR-002",
+      "status": "resolved",
+      "notes": "test_build_for_request_normalizes_long_display_name_with_suffix (test file :630) covers 80+ char display name with ' #2' via extract and native replay"
+    }
+  ]
+}

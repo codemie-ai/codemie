@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import uuid
+from unittest.mock import patch
 
 import pytest
 from codemie.chains.base import Thought
@@ -282,3 +283,31 @@ def test_on_llm_end_reads_canonical_routing_info_from_raw_aimessage() -> None:
 
     assert callback._routing_tracker.current is not None
     assert callback._routing_tracker.current.routed_model == "claude-4-5-haiku"
+
+
+@patch('codemie.agents.callbacks.callback_utils._is_conversation_replay_v2_enabled', return_value=True)
+def test_on_tool_start_handoff_persists_real_tool_name(_mock_replay_v2) -> None:
+    callback = AgentInvokeCallback()
+    run_id = uuid.uuid4()
+
+    callback.on_tool_start(
+        {"name": "Long Agent Name #2", "tool_name": "transfer_to_long_agent_name"},
+        "task",
+        run_id=run_id,
+    )
+
+    thought = callback._get_current_thought(None, run_id=run_id)
+    assert thought.metadata["tool_name"] == "transfer_to_long_agent_name"
+    assert thought.author_name == "Long Agent Name #2"
+
+
+@patch('codemie.agents.callbacks.callback_utils._is_conversation_replay_v2_enabled', return_value=True)
+def test_on_tool_start_without_real_tool_name_keeps_metadata(_mock_replay_v2) -> None:
+    callback = AgentInvokeCallback()
+    run_id = uuid.uuid4()
+
+    callback.on_tool_start({"name": "search_docs"}, "query", run_id=run_id)
+
+    thought = callback._get_current_thought(None, run_id=run_id)
+    assert thought.metadata["tool_name"] == "search_docs"
+    assert thought.author_name == "Search Docs"

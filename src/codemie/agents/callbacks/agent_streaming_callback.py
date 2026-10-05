@@ -60,8 +60,12 @@ class ThoughtInMemoryStorage(dict[str, Thought]):
         input_text: str = '',
         output_format: ThoughtOutputFormat | None = None,
         by_run_id: bool = False,
+        replay_tool_name: str | None = None,
     ) -> Thought:
-        """Create and store a new in-progress thought for run_id."""
+        """Create and store a new in-progress thought for run_id.
+
+        ``replay_tool_name`` overrides the display-derived name stored in replay metadata.
+        """
         output_format = output_format or ThoughtOutputFormat.TEXT
         is_agent_tool = tool_name.startswith(ToolNamePrefix.AGENT.value)
         if is_agent_tool:
@@ -80,7 +84,7 @@ class ThoughtInMemoryStorage(dict[str, Thought]):
             input_text=input_text,
             message='',
             in_progress=True,
-            metadata=_build_tool_metadata(tool_name, input_text) if input_text else {},
+            metadata=_build_tool_metadata(replay_tool_name or tool_name, input_text) if input_text else {},
         )
         self[str(run_id)] = thought
         return thought
@@ -323,6 +327,7 @@ class AgentStreamingCallback(StreamingStdOutCallbackHandler):
             input_text=input_str,
             output_format=output_format,
             by_run_id=True,
+            replay_tool_name=serialized.get('tool_name'),
         )
         last_routing = self._routing_tracker.current
         if last_routing is not None and last_routing.routed_model is not None and thought.metadata is not None:

@@ -575,3 +575,78 @@ def test_normalize_tool_name_combined_scenarios():
     result = normalize(valid_chars)
     assert result == valid_chars.lower()
     assert TOOL_NAME_REGEX.match(result)
+
+
+def test_build_for_request_normalizes_overlong_stored_tool_name():
+    conversation = _build_conversation_with_tool_turn(
+        assistant_message="Here are the release notes highlights.",
+        tool_output="release notes tool output",
+    )
+    stored_name = "customer_onboarding_and_account_provisioning_workflow_specialist_agent_#2"
+    assert len(stored_name) > MAX_TOOL_NAME_LENGTH
+    conversation.history[1].thoughts[0].metadata["tool_name"] = stored_name
+
+    messages = ConversationHistoryProjectionService.build_for_request(
+        conversation=conversation,
+        mode=NATIVE_TOOLS_MODE,
+        max_full_tool_turns=1,
+        max_summarized_tool_turns=0,
+        available_tool_names=None,
+    )
+
+    ai_message = next(m for m in messages if isinstance(m, AIMessage) and m.tool_calls)
+    tool_message = next(m for m in messages if isinstance(m, ToolMessage))
+    for name in (ai_message.tool_calls[0]["name"], tool_message.additional_kwargs["name"]):
+        assert len(name) <= MAX_TOOL_NAME_LENGTH
+        assert re.fullmatch(r"[a-z0-9_-]+", name)
+
+
+def _replay_message_with_stored_tool_name(tool_name: str) -> GeneratedMessage:
+    thought = Thought(
+        id="tool-call-1",
+        author_name="Search Tool",
+        author_type=ThoughtAuthorType.Tool.value,
+        input_text="{}",
+        message="output",
+        metadata={"replay_type": TOOL_REPLAY_TYPE, "tool_name": tool_name, "status": TOOL_STATUS_COMPLETED},
+    )
+    return GeneratedMessage(role=ChatRole.ASSISTANT, message="done", history_index=0, thoughts=[thought])
+
+
+def test_extract_tool_records_normalizes_stored_tool_name():
+    extract = ConversationHistoryProjectionService._extract_tool_records
+
+    assert extract(_replay_message_with_stored_tool_name("long_agent_name_#2"))[0].tool_name == "long_agent_name_2"
+    assert extract(_replay_message_with_stored_tool_name("###"))[0].tool_name == "unknown_tool"
+    assert extract(_replay_message_with_stored_tool_name("search_docs"))[0].tool_name == "search_docs"
+
+
+def test_extract_tool_records_preserves_valid_stored_tool_name_verbatim():
+    extract = ConversationHistoryProjectionService._extract_tool_records
+
+    assert extract(_replay_message_with_stored_tool_name("mcp__server__tool"))[0].tool_name == "mcp__server__tool"
+
+
+def test_build_for_request_normalizes_long_display_name_with_suffix():
+    conversation = _build_conversation_with_tool_turn(
+        assistant_message="Here are the release notes highlights.",
+        tool_output="release notes tool output",
+    )
+    stored_name = "Customer Onboarding And Account Provisioning Workflow Orchestration Specialist Agent #2"
+    assert len(stored_name) >= 80
+    conversation.history[1].thoughts[0].metadata["tool_name"] = stored_name
+
+    records = ConversationHistoryProjectionService._extract_tool_records(conversation.history[1])
+    messages = ConversationHistoryProjectionService.build_for_request(
+        conversation=conversation,
+        mode=NATIVE_TOOLS_MODE,
+        max_full_tool_turns=1,
+        max_summarized_tool_turns=0,
+        available_tool_names=None,
+    )
+
+    ai_message = next(m for m in messages if isinstance(m, AIMessage) and m.tool_calls)
+    tool_message = next(m for m in messages if isinstance(m, ToolMessage))
+    for name in (records[0].tool_name, ai_message.tool_calls[0]["name"], tool_message.additional_kwargs["name"]):
+        assert len(name) <= MAX_TOOL_NAME_LENGTH
+        assert TOOL_NAME_REGEX.match(name)

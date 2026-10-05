@@ -172,6 +172,7 @@ class AgentInvokeCallback(StreamingStdOutCallbackHandler):
         output_format: ThoughtOutputFormat = ThoughtOutputFormat.TEXT,
         author: str | None = None,
         run_id: Any | None = None,
+        replay_tool_name: str | None = None,
     ):
         run_key = self._get_run_key(run_id)
         author_thoughts = self._get_author_thoughts(author)
@@ -192,7 +193,7 @@ class AgentInvokeCallback(StreamingStdOutCallbackHandler):
             input_text=input_text,
             message='',
             in_progress=True,
-            metadata=_build_tool_metadata(tool_name, input_text) if input_text else {},
+            metadata=_build_tool_metadata(replay_tool_name or tool_name, input_text) if input_text else {},
         )
         self._latest_run_keys[author] = run_key
 
@@ -287,6 +288,7 @@ class AgentInvokeCallback(StreamingStdOutCallbackHandler):
             output_format=output_format,
             author=author,
             run_id=run_id,
+            replay_tool_name=serialized.get('tool_name'),
         )
 
         current_thought = self._get_current_thought(author, run_id=run_id)

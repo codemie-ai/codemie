@@ -105,7 +105,7 @@ class LangGraphCallbackBridge:
         author: str | None = None,
         display_name: str | None = None,
     ) -> None:
-        serialized = {"name": display_name or destination}
+        serialized = {"name": display_name or destination, "tool_name": destination}
         metadata = {OUTPUT_FORMAT: ThoughtOutputFormat.MARKDOWN.value}
         for callback in self.agent.supervisor_callbacks:
             try:

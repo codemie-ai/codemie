@@ -19,7 +19,7 @@ from uuid import uuid4
 import pytest
 from langchain_core.messages import AIMessage
 
-from codemie.agents.langgraph_event_adapter import LangGraphEventAdapter
+from codemie.agents.langgraph_event_adapter import LangGraphCallbackBridge, LangGraphEventAdapter
 
 
 class TestLangGraphEventAdapter:
@@ -160,3 +160,28 @@ class TestLangGraphEventAdapter:
 
         assert "\\u" not in tool_args_str
         assert json.loads(tool_args_str) == {"query": "hello world", "count": 3}
+
+
+class TestLangGraphCallbackBridgeSupervisorHandoff:
+    def test_on_supervisor_handoff_forwards_real_tool_name(self):
+        callback = MagicMock()
+        agent = MagicMock()
+        agent.supervisor_callbacks = [callback]
+        bridge = LangGraphCallbackBridge(agent, get_logger=MagicMock())
+        run_id = uuid4()
+
+        bridge.on_supervisor_handoff("transfer_to_x", run_id, "task", display_name="X #2")
+
+        serialized = callback.on_tool_start.call_args.args[0]
+        assert serialized == {"name": "X #2", "tool_name": "transfer_to_x"}
+
+    def test_on_supervisor_handoff_without_display_name_uses_destination(self):
+        callback = MagicMock()
+        agent = MagicMock()
+        agent.supervisor_callbacks = [callback]
+        bridge = LangGraphCallbackBridge(agent, get_logger=MagicMock())
+
+        bridge.on_supervisor_handoff("transfer_to_x", uuid4(), "task")
+
+        serialized = callback.on_tool_start.call_args.args[0]
+        assert serialized == {"name": "transfer_to_x", "tool_name": "transfer_to_x"}

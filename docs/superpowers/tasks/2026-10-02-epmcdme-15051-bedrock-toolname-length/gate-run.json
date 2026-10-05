@@ -1,0 +1,121 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15051",
+  "head": "dfdab00bf1f3db165f6767ec01b678729a31e74c",
+  "runner": "poetry",
+  "started_at": "2026-10-02T12:43:44Z",
+  "completed_at": "2026-10-02T12:46:14Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "ruff",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 5255,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 14265,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 3121,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 438,
+      "command": "make gitleaks",
+      "exit_code": 2,
+      "notes": "Skip if Docker unavailable: '/usr/bin/sh: line 1: docker: command not found'. Podman is installed; enable with Docker Desktop or a docker->podman alias."
+    },
+    {
+      "id": "test",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 3642,
+      "command": "make test",
+      "exit_code": 2,
+      "notes": "Stale env: pytest.ini addopts '-n 3' needs pytest-xdist (declared in pyproject.toml, not installed in poetry venv). 'poetry install' should fix. Also covers pre-push hook pytest step."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make coverage",
+      "exit_code": null,
+      "notes": "Skip if: user did not request coverage."
+    },
+    {
+      "id": "sonar-local",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 329,
+      "command": "make sonar-local",
+      "exit_code": 0,
+      "notes": "Self-skip: '[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.' Set SONAR_TOKEN to run. Also covers pre-push hook sonar step."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make verify",
+      "exit_code": null,
+      "notes": "Composite of ruff, license, gitleaks, test; each run individually above."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "exit_code": null,
+      "notes": "Needs docker compose stack, superadmin fixtures and ~/.codemie/test-harness.json; required in MR description before opening the MR."
+    },
+    {
+      "id": "codemie-gitleaks",
+      "source": "hook",
+      "status": "FAIL",
+      "duration_ms": 3065,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": 125,
+      "notes": "Scan did not run (not a secret finding): podman rejected the Windows git-dir volume mount ('invalid option type'). Staged diff is empty; hook hard-blocks commits on this machine."
+    },
+    {
+      "id": "codemie-commit-msg",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 3720,
+      "command": "bash scripts/git-hooks/commit_msg.sh <msg> (per commit in merge_base..HEAD)",
+      "exit_code": 0,
+      "notes": "All 5 branch commit subjects match ^EPMCDME-[0-9]+:. Pre-commit ruff/license steps covered by ruff + license-check; pre-push (opt-in) covered by test + sonar-local."
+    },
+    {
+      "id": "wait-ci-init",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": ".wait-ci-init-template (epm-cdme/codemie-gitlab-templates@0.1.1)",
+      "exit_code": null,
+      "notes": "Remote template waiting on external ci-pipeline and compliance-report contexts; only CI can settle. Mismatch: quality-gates.md says no .gitlab-ci.yml exists, but one does (pre-ci-guard stage)."
+    }
+  ],
+  "failures": {
+    "test": "poetry run pytest tests/\nERROR: usage: pytest [options] [file_or_dir] [file_or_dir] [...]\npytest: error: unrecognized arguments: -n\n  inifile: C:\\Users\\kostiantyn_pshenych1\\Documents\\cdme\\codemie\\pytest.ini\n  rootdir: C:\\Users\\kostiantyn_pshenych1\\Documents\\cdme\\codemie\n\nmake: *** [Makefile:31: test] Error 4\n",
+    "codemie-gitleaks": "codemie-gitleaks: scanning staged changes with podman (ghcr.io/gitleaks/gitleaks:v8.30.1)\nError: invalid option type \"\\\\Users\\\\kostiantyn_pshenych1\\\\Documents\\\\cdme\\\\codemie\\\\.git\"\n\ncodemie-gitleaks: scan failed to run (exit 125) - this is NOT a secret finding.\nCommon causes: image pull failed (offline), container OOM, or git 'dubious ownership' inside the container.\nFix the environment and retry; do not bypass the secrets gate for scan-run failures.\n"
+  }
+}

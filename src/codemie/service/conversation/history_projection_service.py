@@ -41,6 +41,7 @@ NATIVE_TOOLS_MODE = "native_tools"
 PLAIN_CHAT_MODE = "plain_chat"
 GENERIC_THOUGHT_NAMES = {"CodeMie Thoughts"}
 NORMALIZED_GENERIC_THOUGHT_NAMES = {"codemie_thoughts"}
+VALID_TOOL_NAME_PATTERN = re.compile(r"[a-zA-Z0-9_\-]+")
 
 
 @dataclass(slots=True)
@@ -163,7 +164,7 @@ class ConversationHistoryProjectionService:
             if not cls._is_replayable_tool(thought.author_name, thought.author_type, metadata):
                 continue
 
-            tool_name = str(metadata.get("tool_name") or cls._normalize_tool_name(thought.author_name))
+            tool_name = cls._replayable_tool_name(str(metadata.get("tool_name") or thought.author_name))
             args_text = str(metadata.get("tool_args_text") or thought.input_text or "")
             args = cls._coerce_tool_args(metadata.get("tool_args"), args_text)
             status = cls._normalize_status(
@@ -518,6 +519,12 @@ class ConversationHistoryProjectionService:
         if status in {TOOL_STATUS_COMPLETED, TOOL_STATUS_ERROR, TOOL_STATUS_INTERRUPTED}:
             return status
         return TOOL_STATUS_COMPLETED
+
+    @classmethod
+    def _replayable_tool_name(cls, name: str) -> str:
+        if len(name) <= MAX_TOOL_NAME_LENGTH and VALID_TOOL_NAME_PATTERN.fullmatch(name):
+            return name
+        return cls._normalize_tool_name(name)
 
     @classmethod
     def _normalize_tool_name(cls, author_name: str | None) -> str:
