@@ -14,14 +14,12 @@
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from codemie.configs import config
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.routers.project_budget_router import (
     RebalanceProjectBudgetRequest,
@@ -30,29 +28,12 @@ from codemie.rest_api.routers.project_budget_router import (
     get_project_budget,
     rebalance_project_budget,
 )
-from codemie.rest_api.security.user import User
-
-
-def _admin_user() -> User:
-    with patch.object(config, "ENV", "dev"), patch.object(config, "ENABLE_USER_MANAGEMENT", True):
-        return User(id="admin-1", username="admin@example.com", email="admin@example.com", is_admin=True)
-
-
-def _project_admin_user(projects: list[str]) -> User:
-    with patch.object(config, "ENV", "dev"), patch.object(config, "ENABLE_USER_MANAGEMENT", True):
-        return User(
-            id="proj-admin-1",
-            username="proj-admin@example.com",
-            email="proj-admin@example.com",
-            is_admin=False,
-            admin_project_names=projects,
-            project_names=projects,
-        )
-
-
-@asynccontextmanager
-async def _mock_session_ctx(session):
-    yield session
+from tests.codemie.rest_api.routers.project_budget_helpers import (
+    admin_user,
+    maintainer_user,
+    mock_session_ctx,
+    project_admin_user,
+)
 
 
 def test_member_budget_id_falls_back_to_top_level_provider_budget_id():
@@ -82,7 +63,7 @@ async def test_project_admin_cannot_get_budget_for_unowned_project():
     with (
         patch(
             "codemie.rest_api.routers.project_budget_router.get_async_session",
-            return_value=_mock_session_ctx(session),
+            return_value=mock_session_ctx(session),
         ),
         patch(
             "codemie.rest_api.routers.project_budget_router.project_budget_service.get_project_budget",
@@ -90,7 +71,7 @@ async def test_project_admin_cannot_get_budget_for_unowned_project():
         ),
     ):
         with pytest.raises(ExtendedHTTPException) as exc_info:
-            await get_project_budget("proj-budget-1", user=_project_admin_user(["proj-b"]))
+            await get_project_budget("proj-budget-1", user=project_admin_user(["proj-b"]))
 
     assert exc_info.value.code == 403
 
@@ -101,7 +82,7 @@ async def test_rebalance_project_budget_rejects_deferred_execution():
         await rebalance_project_budget(
             budget_id="proj-budget-1",
             payload=RebalanceProjectBudgetRequest(apply_immediately=False),
-            user=_admin_user(),
+            user=admin_user(),
             _=None,
         )
 
@@ -141,12 +122,16 @@ async def test_clear_member_override_returns_reloaded_budget_response():
     with (
         patch(
             "codemie.rest_api.routers.project_budget_router.get_async_session",
-            return_value=_mock_session_ctx(session),
+            return_value=mock_session_ctx(session),
         ),
         patch(
             "codemie.rest_api.routers.project_budget_router.project_budget_service.clear_member_override",
             new=AsyncMock(),
         ) as mock_clear_override,
+        patch(
+            "codemie.rest_api.routers.project_budget_router.project_budget_service.get_project_budget_project_name",
+            new=AsyncMock(return_value="proj-a"),
+        ),
         patch(
             "codemie.rest_api.routers.project_budget_router.project_budget_service.get_project_budget",
             new=AsyncMock(return_value=(budget, assignment, [allocation])),
@@ -155,15 +140,14 @@ async def test_clear_member_override_returns_reloaded_budget_response():
         result = await clear_member_override(
             budget_id="proj-budget-1",
             user_id="user-1",
-            user=_admin_user(),
-            _=None,
+            user=maintainer_user(),
         )
 
     mock_clear_override.assert_awaited_once_with(
         session,
         budget_id="proj-budget-1",
         user_id="user-1",
-        actor_id="admin-1",
+        actor_id="maint-1",
     )
     assert result.member_allocations[0].budget_id == "member-budget-7"
     assert result.member_allocations[0].allocation_mode == "fixed"

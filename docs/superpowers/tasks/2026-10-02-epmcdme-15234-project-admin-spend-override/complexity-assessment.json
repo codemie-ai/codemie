@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "task": "Allow Project Admins (in addition to Maintainers) to override and clear personal spend allocation on the project budget member endpoints, consolidating duplicated 'elevated role OR project admin of X' permission checks in the backend.",
+  "generated": "2026-10-02T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 18,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Core change is two endpoints (override_member_allocation, clear_member_override) in project_budget_router plus a project-scoped manage-access helper (M). Consolidating the duplicated 'elevated OR project admin of X' predicate touches shared security helpers in authentication.py/user.py, and possibly the analytics, projects and project_settings routers, so it is bumped to L." },
+    { "dimension": "requirements_clarity", "reason": "The ticket says Admin and Maintainer can override today, but the code allows only Maintainer on both backend and UI, so whether plain Admin gains access is an open decision. How far consolidation reaches (the budget router only, or all seven duplicated checks across four routers) and whether 403 should become 404 to prevent enumeration are also undecided. Several gaps carry a real rework risk." },
+    { "dimension": "technical_risk", "reason": "Closest pattern is the inline project-admin write check in update_project_budget_group, which covers the authz shape, so the base is M. There are three hazards: clear_member_override mutates before resolving the project, so the check must run in the router first; is_maintainer, is_admin_or_maintainer and is_admin are inconsistent predicates that can silently widen or narrow access; and two route-dependency tests assert maintainer_access_only on these paths. Bumped to L for the authorization red flag. The calibration example epmcdme-10203 (M, TR=S) has no authz surface, so the higher score here is deliberate." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from M to L: touches core shared security utilities (authentication.py guards, User role helpers) for consolidation",
+    "Technical Risk bumped from M to L: affects authorization (project-scoped write access to spend overrides)"
+  ],
+  "split_recommendation": null
+}

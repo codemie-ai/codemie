@@ -1003,16 +1003,25 @@ class ProjectBudgetService:
         self,
         session: AsyncSession,
         budget_id: str,
-    ) -> tuple[Budget, ProjectBudgetAssignment | None, list[ProjectMemberBudgetAssignment]]:
+    ) -> tuple[Budget, ProjectBudgetAssignment, list[ProjectMemberBudgetAssignment]]:
         """Fetch project budget with its assignment and member allocations. 404 if not found."""
         budget = await budget_repository.get_by_id(session, budget_id)
         if budget is None or budget.budget_type != BudgetType.PROJECT.value:
             raise ExtendedHTTPException(code=404, message=f"Project budget not found: {budget_id}")
+        assignment = await self._get_active_assignment_or_404(session, budget_id)
+        allocations = await project_member_budget_assignment_repository.get_active_by_budget_id(session, budget_id)
+        return budget, assignment, allocations
+
+    async def get_project_budget_project_name(self, session: AsyncSession, budget_id: str) -> str:
+        """Return the project that owns an active project budget. 404 if not found."""
+        assignment = await self._get_active_assignment_or_404(session, budget_id)
+        return assignment.project_name
+
+    async def _get_active_assignment_or_404(self, session: AsyncSession, budget_id: str) -> ProjectBudgetAssignment:
         assignment = await project_budget_assignment_repository.get_active_by_budget_id(session, budget_id)
         if assignment is None:
             raise ExtendedHTTPException(code=404, message=f"Project budget not found: {budget_id}")
-        allocations = await project_member_budget_assignment_repository.get_active_by_budget_id(session, budget_id)
-        return budget, assignment, allocations
+        return assignment
 
     async def list_project_budgets(
         self,

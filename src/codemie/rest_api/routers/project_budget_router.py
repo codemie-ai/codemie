@@ -15,13 +15,14 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, NoReturn, Optional
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from codemie.clients.postgres import get_async_session
+from codemie.configs.logger import logger
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.repository.project_budget_repository import (
     project_budget_assignment_repository,
@@ -226,10 +227,19 @@ def _member_budget_id(allocation: ProjectMemberBudgetAssignment | dict[str, Any]
     return None
 
 
+def _raise_access_denied(details: str) -> NoReturn:
+    raise ExtendedHTTPException(
+        code=403,
+        message=_ACCESS_DENIED_MESSAGE,
+        details=details,
+        help=_ACCESS_DENIED_HELP,
+    )
+
+
 def _can_read_project_budget(user: User, project_name: str) -> bool:
     if user.is_admin_or_maintainer or getattr(user, "is_auditor", False):
         return True
-    return project_name in (user.admin_project_names or [])
+    return user.is_application_admin(project_name)
 
 
 _PROJECT_ADMIN_ALLOWED_FIELDS = {"categories", "soft_limit_notification_enabled"}
@@ -252,12 +262,22 @@ def _ensure_allowed_budget_group_update_fields(user: User, payload: "ProjectBudg
 def _ensure_project_budget_read_access(user: User, project_name: str) -> None:
     if _can_read_project_budget(user, project_name):
         return
-    raise ExtendedHTTPException(
-        code=403,
-        message=_ACCESS_DENIED_MESSAGE,
-        details=f"You do not have permission to access project budgets for '{project_name}'.",
-        help=_ACCESS_DENIED_HELP,
+    _raise_access_denied(f"You do not have permission to access project budgets for '{project_name}'.")
+
+
+def _can_manage_project_budget_members(user: User, project_name: str) -> bool:
+    """Maintainers and Project Admins of the budget's project may override member allocations."""
+    return user.is_maintainer or user.is_application_admin(project_name)
+
+
+def _ensure_can_manage_project_budget_members(user: User, project_name: str, budget_id: str) -> None:
+    if _can_manage_project_budget_members(user, project_name):
+        return
+    logger.warning(
+        f"access_denied_project_budget_members_manage: actor_user_id={user.id}, resource={project_name}, "
+        f"budget_id={budget_id}, domain=project_budget"
     )
+    _raise_access_denied(f"You do not have permission to manage member budgets for '{project_name}'.")
 
 
 # ==================== Endpoints ====================
@@ -310,11 +330,8 @@ async def list_project_budgets(
     if not (user.is_admin_or_maintainer or getattr(user, "is_auditor", False)):
         allowed_projects = list(user.admin_project_names or [])
         if not allowed_projects:
-            raise ExtendedHTTPException(
-                code=403,
-                message=_ACCESS_DENIED_MESSAGE,
-                details="This action requires administrator, maintainer, auditor, or project administrator privileges.",
-                help=_ACCESS_DENIED_HELP,
+            _raise_access_denied(
+                "This action requires administrator, maintainer, auditor, or project administrator privileges."
             )
         if project_name is not None:
             _ensure_project_budget_read_access(user, project_name)
@@ -341,8 +358,7 @@ async def get_project_budget(
     _require_budgeting_enabled()
     async with get_async_session() as session:
         budget, assignment, allocations = await project_budget_service.get_project_budget(session, budget_id)
-        if assignment is not None:
-            _ensure_project_budget_read_access(user, assignment.project_name)
+        _ensure_project_budget_read_access(user, assignment.project_name)
         response = _build_project_budget_response(budget, assignment, allocations)
     return response
 
@@ -407,10 +423,8 @@ async def list_project_budget_members(
     _require_budgeting_enabled()
     async with get_async_session() as session:
         budget, assignment, allocations = await project_budget_service.get_project_budget(session, budget_id)
-        if assignment is not None:
-            _ensure_project_budget_read_access(user, assignment.project_name)
-    project_name = assignment.project_name if assignment else ""
-    enforce_limit = SettingsService.get_enforce_member_spend_limits(project_name)
+        _ensure_project_budget_read_access(user, assignment.project_name)
+    enforce_limit = SettingsService.get_enforce_member_spend_limits(assignment.project_name)
     return ProjectBudgetMembersResponse(
         data=[
             ProjectBudgetMemberAllocationResponse(
@@ -451,11 +465,12 @@ async def override_member_allocation(
     user_id: str,
     payload: OverrideMemberAllocationRequest,
     user: User = Depends(authenticate),
-    _: None = Depends(maintainer_access_only),
 ):
     """Set a fixed member allocation override and rebalance remaining members."""
     _require_budgeting_enabled()
     async with get_async_session() as session:
+        project_name = await project_budget_service.get_project_budget_project_name(session, budget_id)
+        _ensure_can_manage_project_budget_members(user, project_name, budget_id)
         await project_budget_service.override_member_allocation(
             session,
             budget_id=budget_id,
@@ -476,11 +491,12 @@ async def clear_member_override(
     budget_id: str,
     user_id: str,
     user: User = Depends(authenticate),
-    _: None = Depends(maintainer_access_only),
 ):
     """Clear a fixed member allocation override and rebalance the category."""
     _require_budgeting_enabled()
     async with get_async_session() as session:
+        project_name = await project_budget_service.get_project_budget_project_name(session, budget_id)
+        _ensure_can_manage_project_budget_members(user, project_name, budget_id)
         await project_budget_service.clear_member_override(
             session,
             budget_id=budget_id,
@@ -716,13 +732,8 @@ async def update_project_budget_group(
     async with get_async_session() as session:
         current = await project_budget_service.get_project_budget_group(session, group_id)
         project_name = current.group.project_name
-        if not (user.is_admin_or_maintainer or project_name in (user.admin_project_names or [])):
-            raise ExtendedHTTPException(
-                code=403,
-                message=_ACCESS_DENIED_MESSAGE,
-                details=f"You do not have permission to update budget groups for '{project_name}'.",
-                help=_ACCESS_DENIED_HELP,
-            )
+        if not (user.is_admin_or_maintainer or user.is_application_admin(project_name)):
+            _raise_access_denied(f"You do not have permission to update budget groups for '{project_name}'.")
         _ensure_allowed_budget_group_update_fields(user, payload)
         await project_budget_service.update_project_budget_group(
             session, group_id=group_id, data=payload, actor_id=user.id

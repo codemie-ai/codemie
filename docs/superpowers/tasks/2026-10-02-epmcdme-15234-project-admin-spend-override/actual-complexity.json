@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "generated": "2026-10-02T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 11,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 3,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "technical_risk", "reason": "Authorization change: override_member_allocation and clear_member_override in project_budget_router moved from maintainer-only to _ensure_project_budget_manage_access (maintainer or project admin of the budget's project). Closest pattern is the existing _ensure_project_budget_read_access helper, which covers the authz shape, so only the auth/authz red-flag bump applies (S to M)." },
+    { "dimension": "component_scope", "reason": "Single component: two member-override endpoints plus access helpers in the project budget router; existing project_budget_service methods are reused unchanged." },
+    { "dimension": "file_change_estimate", "reason": "3 files changed (1 router, 2 router test modules), 214 insertions, all under rest_api/routers in src and tests." },
+    { "dimension": "affected_layers", "reason": "API layer only; no service, persistence, schema migration, infrastructure, or external changes in the diff." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from S to M: affects authorization (project admins granted write access to member spend overrides)"
+  ],
+  "split_recommendation": null
+}

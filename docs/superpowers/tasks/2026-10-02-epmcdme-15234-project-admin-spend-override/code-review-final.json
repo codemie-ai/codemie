@@ -1,0 +1,39 @@
+{
+  "decision": "approve",
+  "rationale": "All four lenses ran and every candidate was checked against source. None of the 12 deduped candidates blocks: 11 were dismissed as spec-approved behaviour (self-override AC6, plain-Admin and auditor rules, no 403-to-404), already guarded (get_project_budget 404s on a missing assignment, is_application_admin has no local-mode bypass), or below the floor. 1 deferred to code-review-deferred.md (budget-id 404/403 oracle, already exposed by GET /{budget_id}). The standards security row is passed through as partial, but its two blocking items were adjudicated non-blocking against the approved spec, so confidence is capped at medium.",
+  "confidence": "medium",
+  "risk_flags": ["security"],
+  "business_review": [
+    {"kind": "spec", "item": "Override/clear allowed when user.is_maintainer or user.is_application_admin(budget project_name)", "status": "pass", "notes": "_can_manage_project_budget_members at router.py:263-265, used by both endpoints"},
+    {"kind": "spec", "item": "Plain Admins and auditors (unless Project Admin of target) stay denied", "status": "pass", "notes": "predicate ignores is_admin/is_auditor; predicate tests cover plain-admin, auditor, auditor-project-admin"},
+    {"kind": "spec", "item": "Router-local predicate + ensure-function raising 403 'Access denied' naming the project", "status": "pass", "notes": "router.py:263-276; module message constants reused"},
+    {"kind": "spec", "item": "Only override_member_allocation and clear_member_override use the helper", "status": "pass", "notes": "called only at router.py:475 and :501"},
+    {"kind": "spec", "item": "Remove Depends(maintainer_access_only) from both endpoints", "status": "pass", "notes": "removed from both signatures"},
+    {"kind": "spec", "item": "Resolve project via get_project_budget then ensure-function before service call; no None branch", "status": "pass", "notes": "router.py:474-475, 500-501; service raises 404 when assignment is None"},
+    {"kind": "spec", "item": "Unknown budget_id / non-project budget returns 404", "status": "pass", "notes": "propagates from get_project_budget; covered by unknown-budget test"},
+    {"kind": "spec", "item": "Known budget and failing caller gets 403, not converted to 404", "status": "pass", "notes": "ensure-function raises 403 directly"},
+    {"kind": "spec", "item": "Self-override allowed with no actor-vs-target check; activity event records actor", "status": "pass", "notes": "no comparison added; actor_id=user.id passed to service"},
+    {"kind": "spec", "item": "Service, repository, schemas and provider sync unchanged", "status": "pass", "notes": "diff touches router and two test files only"},
+    {"kind": "story-ac", "item": "AC1: Project Admin of P can override and clear on budget of P; 200 with refreshed payload", "status": "pass", "notes": "endpoints re-fetch and build response; allow test"},
+    {"kind": "story-ac", "item": "AC2: Project Admin of P gets 403 for budget of project Q", "status": "pass", "notes": "deny test param project-admin-of-q"},
+    {"kind": "story-ac", "item": "AC3: Maintainer can still override and clear on any project's budget", "status": "pass", "notes": "is_maintainer short-circuits predicate"},
+    {"kind": "story-ac", "item": "AC4: Plain Admin, auditor, and regular user get 403", "status": "pass", "notes": "deny test params for both endpoints"},
+    {"kind": "story-ac", "item": "AC5: Non-existent budget_id still returns 404", "status": "pass", "notes": "unknown-budget test asserts 404, service not awaited"},
+    {"kind": "story-ac", "item": "AC6: Project Admin can override own allocation", "status": "pass", "notes": "self-target test"},
+    {"kind": "story-ac", "item": "AC7: Denied caller on clear_member_override performs no mutation", "status": "pass", "notes": "check precedes service call; deny test asserts service not awaited"},
+    {"kind": "story-ac", "item": "AC8: Route-dependency tests updated; other write routes keep maintainer_access_only; pure auditors denied", "status": "pass", "notes": "member paths dropped from maintainer set; new dependency test; auditor covered by body-gate deny test"},
+    {"kind": "story-ac", "item": "AC9: Spend read paths behave as before", "status": "pass", "notes": "no read endpoint or _can_read_project_budget change"},
+    {"kind": "spec", "item": "Non-goal: no role change for create/update/delete/reset/rebalance of budgets or groups", "status": "pass", "notes": "other write routes untouched"},
+    {"kind": "spec", "item": "Non-goal: override/clear not widened to plain Admins", "status": "pass", "notes": "predicate uses is_maintainer, not is_admin_or_maintainer"},
+    {"kind": "spec", "item": "Non-goal: no 403-to-404 conversion, self-override restriction, or target-membership validation", "status": "pass", "notes": "none added"},
+    {"kind": "spec", "item": "Non-goal: no service, repository, schema, migration or frontend changes", "status": "pass", "notes": "changed files limited to router and tests"},
+    {"kind": "spec", "item": "Dependency: codemie-ui gate becomes isMaintainer || isProjectAdmin", "status": "na", "notes": "out of this repo's scope; tracked in sibling repo, not a required backend criterion"},
+    {"kind": "spec", "item": "Testing: endpoint tests AC1-7, predicate unit test, route-dependency test update", "status": "pending-stage-7", "notes": "tests present in diff; passing suite owned by Stage 7"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "git-workflow.md requires EPMCDME-####: Description; both review-range subjects conform"},
+    {"kind": "code-quality", "status": "pass", "notes": "new router helpers typed; module has future annotations; no new files; untyped test defs match baseline test files"},
+    {"kind": "security", "status": "partial", "notes": "security-patterns.md prefers helper dependencies over inline role checks; member endpoints use in-body check after lookup; project admin may override own allocation"}
+  ],
+  "findings": []
+}

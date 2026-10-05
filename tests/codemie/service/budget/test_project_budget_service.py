@@ -593,3 +593,82 @@ async def test_legacy_carry_alias_premium_fallback():
     ):
         result = await svc._legacy_carry_alias(session=session, project_name="proj", budget_category="premium_models")
     assert result == "proj-old"
+
+
+# ── get_project_budget ──────────────────────────────────────────────────────
+
+_SERVICE_MODULE = "codemie.service.budget.project_budget_service"
+
+
+def _patch_project_budget_lookup(budget, assignment, allocations=()):
+    return (
+        patch(f"{_SERVICE_MODULE}.budget_repository.get_by_id", new=AsyncMock(return_value=budget)),
+        patch(
+            f"{_SERVICE_MODULE}.project_budget_assignment_repository.get_active_by_budget_id",
+            new=AsyncMock(return_value=assignment),
+        ),
+        patch(
+            f"{_SERVICE_MODULE}.project_member_budget_assignment_repository.get_active_by_budget_id",
+            new=AsyncMock(return_value=list(allocations)),
+        ),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("budget", "assignment"),
+    [
+        (None, SimpleNamespace(project_name="proj-a")),
+        (SimpleNamespace(budget_type="global"), SimpleNamespace(project_name="proj-a")),
+        (SimpleNamespace(budget_type="project"), None),
+    ],
+    ids=["missing-budget", "not-a-project-budget", "missing-assignment"],
+)
+async def test_get_project_budget_returns_404(budget, assignment):
+    budget_patch, assignment_patch, allocations_patch = _patch_project_budget_lookup(budget, assignment)
+
+    with budget_patch, assignment_patch, allocations_patch, pytest.raises(ExtendedHTTPException) as exc_info:
+        await ProjectBudgetService().get_project_budget(AsyncMock(), "proj-budget-1")
+
+    assert exc_info.value.code == 404
+    assert exc_info.value.message == "Project budget not found: proj-budget-1"
+
+
+@pytest.mark.asyncio
+async def test_get_project_budget_returns_budget_assignment_and_allocations():
+    budget = SimpleNamespace(budget_type="project")
+    assignment = SimpleNamespace(project_name="proj-a")
+    allocation = SimpleNamespace(user_id="user-1")
+    budget_patch, assignment_patch, allocations_patch = _patch_project_budget_lookup(budget, assignment, [allocation])
+
+    with budget_patch, assignment_patch, allocations_patch:
+        result = await ProjectBudgetService().get_project_budget(AsyncMock(), "proj-budget-1")
+
+    assert result == (budget, assignment, [allocation])
+
+
+# ── get_project_budget_project_name ─────────────────────────────────────────
+
+
+def _patch_active_assignment(assignment):
+    return patch(
+        f"{_SERVICE_MODULE}.project_budget_assignment_repository.get_active_by_budget_id",
+        new=AsyncMock(return_value=assignment),
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_project_budget_project_name_returns_owning_project():
+    with _patch_active_assignment(SimpleNamespace(project_name="proj-a")):
+        result = await ProjectBudgetService().get_project_budget_project_name(AsyncMock(), "proj-budget-1")
+
+    assert result == "proj-a"
+
+
+@pytest.mark.asyncio
+async def test_get_project_budget_project_name_returns_404_without_active_assignment():
+    with _patch_active_assignment(None), pytest.raises(ExtendedHTTPException) as exc_info:
+        await ProjectBudgetService().get_project_budget_project_name(AsyncMock(), "proj-budget-1")
+
+    assert exc_info.value.code == 404
+    assert exc_info.value.message == "Project budget not found: proj-budget-1"
