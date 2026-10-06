@@ -325,10 +325,13 @@ components:
       description: "Allow scripts run in the workspace sandbox to call the backend during their run"
 
 preconfigured_assistants:
+  # Optional settings.llm_model_type overrides the assistant model on creation and every deployment.
+  # Use a model ID available in this deployment; omit it to keep the existing model fallback behavior.
   - id: "codemie-onboarding"
     settings:
       enabled: true
       index_name: "codemie-onboarding"
+      # llm_model_type: "gpt-4o"
   - id: "ai-run-chatbot"
     settings:
       enabled: true

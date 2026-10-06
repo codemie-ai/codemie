@@ -50,6 +50,7 @@ CONFIG_IDS = {
 class AssistantSetting(BaseModel):
     enabled: bool = Field()
     index_name: Optional[str] = Field(default=None)
+    llm_model_type: Optional[str] = Field(default=None, description="Model override applied on every deployment")
 
     model_config = ConfigDict(extra="allow")
 
@@ -331,6 +332,16 @@ class CustomerConfig(BaseModel):
     def get_assistant_target_project(self, assistant_slug: str) -> Optional[str]:
         return next(
             (assistant.project for assistant in self.preconfigured_assistants if assistant.id == assistant_slug),
+            None,
+        )
+
+    def get_assistant_model_override(self, assistant_slug: str) -> Optional[str]:
+        return next(
+            (
+                assistant.settings.llm_model_type
+                for assistant in self.preconfigured_assistants
+                if assistant.id == assistant_slug
+            ),
             None,
         )
 

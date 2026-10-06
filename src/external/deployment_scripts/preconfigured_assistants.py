@@ -160,7 +160,9 @@ def update_assistant_content(
         'conversation_starters': assistant_template.conversation_starters,
         'toolkits': assistant_template.toolkits,
         'icon_url': assistant_template.icon_url,
-        'llm_model_type': llm_service.default_llm_model,
+        'llm_model_type': (
+            customer_config.get_assistant_model_override(existing_assistant.slug) or llm_service.default_llm_model
+        ),
         'categories': assistant_template.categories,
         'mcp_servers': validated_mcp_servers,
     }
@@ -242,7 +244,11 @@ def create_preconfigured_assistant(assistant_slug: str, project_name: str = CODE
         slug=assistant_template.slug,
         context=all_contexts,
         project=project_name,
-        llm_model_type=assistant_template.llm_model_type or llm_service.default_llm_model,
+        llm_model_type=(
+            customer_config.get_assistant_model_override(assistant_slug)
+            or assistant_template.llm_model_type
+            or llm_service.default_llm_model
+        ),
         is_global=assistant_template.is_global,
         shared=assistant_template.shared,
         temperature=assistant_template.temperature,
