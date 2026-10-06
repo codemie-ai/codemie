@@ -1,0 +1,66 @@
+{
+  "decision": "approve",
+  "rationale": "Final implementation resolves all prior findings: (1) CR-001 README FEATURE_* omission — FIXED by qualifying README statement re: generic FEATURE_<ID> override mechanism still applying to features:cliAnalytics; (2-4) CR-002/CR-003/CR-004 invalid YAML escape, inheritance claim, null tool_defaults in customer-config.example.yaml — all RESOLVED by deleting the file entirely and using canonical config/customer/customer-config.yaml as the template; (5) new docker-compose.external-config.yml with ${CODEMIE_EXTERNAL_CONFIG:?error} guard satisfies fail-fast requirement and is validated to work with both stacks; (6) required ClickHouse/OTLP vars documented in .env.standalone.example with correct service names matching analytics compose; (7) live smoke test confirmed readonly bind mount works, Compose config validation passes both stacks, all fixes implemented and validated. No unresolved request-changes remain.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "commit-format", "status": "na", "notes": "Standards audit not expected for compact review profile." },
+    { "kind": "code-quality", "status": "na", "notes": "Standards audit not expected for compact review profile." },
+    { "kind": "security", "status": "na", "notes": "Standards audit not expected for compact review profile." }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "standalone/README.md",
+      "line": 157,
+      "title": "CLI Analytics gating claim omits env override",
+      "problem": "README states CLI Analytics is gated by features:cliAnalytics in the customer configuration, 'not by environment variables,' but customer_config.py's _apply_feature_env_override still applies a FEATURE_CLI_ANALYTICS env var to any features:cliAnalytics component loaded from YAML, overriding its enabled value at load time.",
+      "impact": "A leftover FEATURE_CLI_ANALYTICS value in the user's local .env.standalone (which must not be modified per scope) can silently force the mounted YAML's cliAnalytics setting the opposite way, and the doc's blanket claim gives no hint to look there when troubleshooting.",
+      "recommendation": "Qualify the claim to note the generic FEATURE_<ID> env override (intentionally preserved) still applies to features:cliAnalytics like any other features:* component, and advise checking/unsetting FEATURE_CLI_ANALYTICS if it is set.",
+      "resolution": "FIXED — README.md updated to qualify the FEATURE_* override caveat verbatim."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "standalone/customer-config.example.yaml",
+      "line": 35,
+      "title": "Invalid YAML escape breaks example config",
+      "problem": "Line 35 has \"^speckit\\.\" — a single backslash before a literal dot inside a double-quoted YAML scalar, which is not a valid YAML escape sequence. config/customer/customer-config.yaml:141 correctly double-escapes the same regex as \"^speckit\\\\.\"",
+      "impact": "yaml.safe_load raises a ScannerError on this file; CustomerConfig._load_config wraps it into ValueError, so a user who mounts this example verbatim to enable CLI Analytics — the documented path in README.md — gets a crash-looping container instead of a working config.",
+      "recommendation": "Escape the backslash: regex: \"^speckit\\\\.\" to match config/customer/customer-config.yaml:141.",
+      "resolution": "RESOLVED — standalone/customer-config.example.yaml file deleted entirely; users must use canonical config/customer/customer-config.yaml instead, which has correct escaping."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "standalone/customer-config.example.yaml",
+      "line": 50,
+      "title": "Comment wrongly claims component inheritance",
+      "problem": "Line 50 states 'All other components inherit their values from the bundled config/customer/customer-config.yaml,' but component_resolution.resolve() returns None (not configured/disabled) for any component id absent from the mounted YAML — the bundled file is never consulted once an external file is mounted.",
+      "impact": "Directly contradicts the task's no-merge/no-overlay requirement and the README's own accurate Important-notes section; a user relying on this comment will omit components expecting bundled defaults and get them silently disabled instead.",
+      "recommendation": "Correct the comment to state that omitted components default to disabled/absent, not inherited, matching the README's Important notes.",
+      "resolution": "RESOLVED — file deleted; no misleading inheritance comment remains."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "standalone/customer-config.example.yaml",
+      "line": 57,
+      "title": "Null tool_defaults crashes on first use",
+      "problem": "Lines 57-59 leave tool_defaults: followed only by comments, which YAML parses to tool_defaults: null; customer_config.py's self.tool_defaults = config_data.get(\"tool_defaults\", {}) returns the key's actual None value (get()'s default only applies when the key is absent) with no isinstance guard, unlike the parallel preconfigured_assistants case which is guarded.",
+      "impact": "get_tool_default() calls self.tool_defaults.get(tool), and it runs at module-import time as a Pydantic Field default in every codemie_tools/*/models.py (Jira, Confluence, SharePoint, etc.); with tool_defaults=None this raises AttributeError on the very first such import, crashing app startup for anyone who copies this example as their starting external config, exactly as its own header comment instructs.",
+      "recommendation": "Write tool_defaults: {} (and likewise for preconfigured_assistants) instead of a bare key with only comments beneath it.",
+      "resolution": "RESOLVED — file deleted; users get config/customer/customer-config.yaml (canonical) which has valid tool_defaults structure."
+    }
+  ]
+}

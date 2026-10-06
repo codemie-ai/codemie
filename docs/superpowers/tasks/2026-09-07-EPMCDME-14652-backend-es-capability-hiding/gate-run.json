@@ -1,0 +1,99 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-14652-backend-es-capability-hiding",
+  "head": "198a0a4d84f7628f26aa3bd75769b80e1bf17a4b",
+  "post_rebase_target": "543ef884f1b5067a066db310d2862cedc3d34a17",
+  "runner": "poetry",
+  "started_at": "2026-09-08T13:06:00Z",
+  "completed_at": "2026-09-08T14:07:38Z",
+  "status": "FAIL-accepted",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 8000,
+      "command": "poetry run ruff format && poetry run ruff check --fix && poetry run ruff check",
+      "exit_code": 0,
+      "notes": "ruff format reformatted 1 file (tests/codemie/rest_api/routers/test_analytics_capability_guards.py); final ruff check exited 0. Working-tree change needs staging and a follow-up commit before push."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 15000,
+      "command": "poetry build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 8000,
+      "command": "poetry run python scripts/license_headers/check_license_headers.py --check --quiet",
+      "exit_code": 0
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "docker run --rm -v \"$(pwd):/workspace\" ghcr.io/gitleaks/gitleaks:v8.30.1 dir --no-banner --verbose --config=/workspace/.gitleaks.toml /workspace",
+      "exit_code": null,
+      "notes": "Docker unavailable on this machine (docker info returned non-zero). Run 'docker info' to diagnose. Enable Docker/Podman to run this gate; CI will execute it as 'make gitleaks' on merge."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "classification": "pre-existing-environment-collection-failure",
+      "duration_ms": 98040,
+      "command": "poetry run pytest tests/",
+      "exit_code": 1,
+      "baseline_sha": "e11e77d51",
+      "baseline_reproduces": true,
+      "baseline_evidence": "All 5 a2ui test files were committed in 70e245c52 (EPMCDME-13912), which is an ancestor of e11e77d51. git log e11e77d51..70e245c52 is empty — the files predate our baseline, confirming identical failure at that SHA.",
+      "affected_files": [
+        "tests/codemie/agents/test_assistant_agent/test_interactive_turn_end.py",
+        "tests/codemie/agents/tools/test_request_user_input.py",
+        "tests/codemie/core/test_a2ui_catalog_and_adapter.py",
+        "tests/codemie/core/test_a2ui_frontend_contract.py",
+        "tests/codemie/service/conversation/test_a2ui_intake.py"
+      ],
+      "collection_error": "ModuleNotFoundError: No module named 'a2ui'\n  Traceback: tests/..../test_interactive_turn_end.py:31 → codemie/agents/tools/interactive/request_user_input.py:35 → codemie/core/a2ui/adapter.py:25 → codemie/core/a2ui/config.py:40: from a2ui.basic_catalog.provider import BasicCatalog",
+      "t1_t8_tests": "202 passed, 0 failed (38.14s) — tests/codemie/enterprise/test_loader.py, tests/codemie/rest_api/routers/test_analytics.py, tests/codemie/rest_api/routers/test_analytics_capability_guards.py, tests/codemie/service/analytics/test_analytics_service.py, tests/codemie/service/test_customer_config_service.py, tests/codemie/service/tools/test_toolkit_lookup_service.py",
+      "notes": "Pre-existing stale-environment collection failure (quality-gates guide §'Exit codes that mislead'). No a2ui production or test files modified. Fix: poetry install -E enterprise. Requires human disposition."
+    },
+    {
+      "id": "post-rebase-changed-tests",
+      "source": "manual-follow-up",
+      "status": "PASS",
+      "duration_ms": 24760,
+      "command": "poetry run pytest tests/codemie/configs/test_customer_config.py tests/codemie/enterprise/test_loader.py tests/codemie/rest_api/routers/test_analytics.py tests/codemie/rest_api/routers/test_analytics_capability_guards.py tests/codemie/rest_api/routers/test_analytics_leaderboard.py tests/codemie/rest_api/routers/test_conversation_analysis.py tests/codemie/rest_api/routers/test_logs.py tests/codemie/rest_api/test_main_stale_datasource_setup.py tests/codemie/service/analytics/test_analytics_service.py tests/codemie/service/test_customer_config_service.py tests/codemie/service/tools/test_toolkit_lookup_service.py tests/codemie/service/tools/test_toolkit_service.py -q",
+      "exit_code": 0,
+      "notes": "337 passed, 0 failed across 12 relevant test files after rebasing onto 543ef884f1b5067a066db310d2862cedc3d34a17 and fixing stale customer_config.version mocks. Ruff format --check and ruff check also passed for tests/codemie/configs/test_customer_config.py."
+    },
+    {
+      "id": "hook-pre-push-sonar",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "bash scripts/git-hooks/pre_push.sh",
+      "exit_code": null,
+      "notes": "Pre-push hook is opt-in only; self-skips when CODEMIE_PREPUSH_ENABLED is not 'true'. Set CODEMIE_PREPUSH_ENABLED=true to enable full pytest + sonar-local before push."
+    },
+    {
+      "id": "ci-wait-ci-init",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "N/A — waits for external GitLab CI contexts: ci-pipeline, compliance-report",
+      "exit_code": null,
+      "notes": "Defined in .gitlab-ci.yml; runs only on GitLab MR pipelines targeting main. Cannot execute locally."
+    }
+  ],
+  "failures": {
+    "unit": "ERROR tests/codemie/agents/test_assistant_agent/test_interactive_turn_end.py\nERROR tests/codemie/agents/tools/test_request_user_input.py\nERROR tests/codemie/core/test_a2ui_catalog_and_adapter.py\nERROR tests/codemie/core/test_a2ui_frontend_contract.py\nERROR tests/codemie/service/conversation/test_a2ui_intake.py\n\nAll 5 are collection failures from missing optional enterprise package:\n  ModuleNotFoundError: No module named 'a2ui'\n\nTraceback (representative):\n  tests/codemie/core/test_a2ui_catalog_and_adapter.py:22 in <module>\n    from codemie.agents.tools.interactive.request_user_input import RequestUserInputTool\n  src/codemie/agents/tools/interactive/request_user_input.py:35 in <module>\n    from codemie.core.a2ui import adapter, catalog\n  src/codemie/core/a2ui/config.py:40 in <module>\n    from a2ui.basic_catalog.provider import BasicCatalog\n  ModuleNotFoundError: No module named 'a2ui'\n\nPre-existing: introduced in EPMCDME-13912, not by this branch.\nFix: poetry install -E enterprise\n\nBranch-changed test files: 202 passed, 0 failed (23.39s)\n  tests/codemie/enterprise/test_loader.py\n  tests/codemie/rest_api/routers/test_analytics.py\n  tests/codemie/rest_api/routers/test_analytics_capability_guards.py\n  tests/codemie/service/analytics/test_analytics_service.py\n  tests/codemie/service/test_customer_config_service.py\n  tests/codemie/service/tools/test_toolkit_lookup_service.py\n\n!!!!!!!!!!!!!!!!!!! Interrupted: 5 errors during collection !!!!!!!!!!!!!!!!!!!\n============= 1 skipped, 9 warnings, 5 errors in 98.04s (0:01:38) ============="
+  }
+}

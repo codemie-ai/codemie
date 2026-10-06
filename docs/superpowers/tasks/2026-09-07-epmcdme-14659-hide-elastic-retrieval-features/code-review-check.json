@@ -1,0 +1,47 @@
+{
+  "decision": "approve",
+  "rationale": "All six prior blocking findings are accounted for: four (CR-001, CR-002, CR-003, CR-004) are fixed and verified directly in current source across the fix-up's changed files, and two (CR-005, CR-006) were re-investigated per the check-round dispatch's explicit waiver of the changed_files requirement — CR-005's premise does not hold against current source (the Codebase Tools catalogue entry contains only the credentialed Sonar tool, unrelated to retrieval) and CR-006's residual risk is documented with a legitimate rationale in the approved spec.md section 6. No new findings raised; this round verifies only prior ids.",
+  "confidence": "high",
+  "risk_flags": ["public-api"],
+  "business_review": [
+    {"kind": "story-ac", "item": "AC26: starting against a PostgreSQL that cannot provide vector storage yields a running container serving everything not depending on retrieval", "status": "pass", "notes": "Both import-time ES hazards fixed; index.router conditionally registered; PROVIDER context unaffected."},
+    {"kind": "story-ac", "item": "AC27: startup output names retrieval as the unavailable capability and states what would make it available", "status": "pass", "notes": "main.py logger.warning fires when unavailable, names RETRIEVAL_BACKEND; covered by test_main_lifespan.py."},
+    {"kind": "story-ac", "item": "AC29: knowledge bases, datasources and code indexing are absent, not present and failing when used", "status": "pass", "notes": "FE config, tool catalogue and add_context_tools gated; tool_execution_service._get_context_tools now gated too (CR-004 fixed)."},
+    {"kind": "spec", "item": "RETRIEVAL_BACKEND config key added adjacent to ELASTIC_* keys, default \"elasticsearch\"", "status": "pass", "notes": "config.py:79"},
+    {"kind": "spec", "item": "retrieval_available(cfg) helper as single source of truth, imported everywhere needed", "status": "pass", "notes": "config.py:1053; used across customer_config, main, provider_service, toolkit_service, tools_info_service, utils"},
+    {"kind": "spec", "item": "Three CONFIG_IDS entries (knowledgeBases, datasources, codeIndexing) added, each enabled=retrieval_available(config)", "status": "pass", "notes": "customer_config.py:30-32, 191-210"},
+    {"kind": "spec", "item": "New components excluded from YAML/dynamic-config-DB override in get_enabled_components/resolve_components", "status": "pass", "notes": "customer_config.py:218-232; service/customer_config_service.py:147-156"},
+    {"kind": "spec", "item": "Drive-by fix: is_feature_enabled() docstring corrected from claiming default True to actual default False", "status": "pass", "notes": "customer_config.py:293-294"},
+    {"kind": "spec", "item": "index.router conditionally registered", "status": "pass", "notes": "main.py:902-903"},
+    {"kind": "spec", "item": "Testing approach: retrieval_available() tested directly as a pure function", "status": "pass", "notes": "tests/codemie/configs/test_config.py"},
+    {"kind": "spec", "item": "Import-time hazard #1: GoogleDocDatasourceProcessor class-attribute ES client construction removed", "status": "pass", "notes": "google_doc_datasource_processor.py"},
+    {"kind": "spec", "item": "Import-time hazard #2: StateImportService().import_indexes() gated", "status": "pass", "notes": "main.py:894-895; regression test added (CR-003 fixed)"},
+    {"kind": "spec", "item": "Toolkit gating seam #1: tools_info_service.get_tools_info() skips KB toolkit and code-toolkit merge", "status": "pass", "notes": "tools_info_service.py:77-81; Codebase Tools entry confirmed Sonar-only, no gap (CR-005)"},
+    {"kind": "spec", "item": "Toolkit gating seam #2: toolkit_service.add_context_tools() rejects KB/CODE context", "status": "pass", "notes": "toolkit_service.py:1179-1182; sibling _get_context_tools now also gated (CR-004 fixed)"},
+    {"kind": "spec", "item": "Provider datasource-schema listing rejects with ExtendedHTTPException", "status": "pass", "notes": "provider_service.py:80-87"},
+    {"kind": "spec", "item": "Workflow code search rejects with existing rejection pattern", "status": "pass", "notes": "utils.py:291-292"},
+    {"kind": "spec", "item": "Test-breakage awareness: five exact len() assertions updated", "status": "pass", "notes": "tests/codemie/configs/test_customer_config.py"},
+    {"kind": "spec", "item": "Test-breakage awareness: unavailable-branch tests explicitly set RETRIEVAL_BACKEND=none", "status": "pass", "notes": "across test_customer_config, test_provider_service, test_toolkit_service, test_tools_info_service, test_utils"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "all 8 commit subjects match EPMCDME-#### format"},
+    {"kind": "code-quality", "status": "partial", "notes": "retrieval_available(cfg) untyped cfg parameter (see CR-002)"},
+    {"kind": "security", "status": "pass", "notes": "no violations found"}
+  ],
+  "findings": [
+    {"id": "CR-001", "kind": "code", "severity": "major", "triage": "patch", "file": "src/codemie/configs/config.py", "line": 79, "title": "RETRIEVAL_BACKEND lacks value validation", "problem": "RETRIEVAL_BACKEND is declared as a plain str with no Literal/enum constraint.", "impact": "A typo or unimplemented value silently evaluates as available.", "recommendation": "Constrain the field via Literal or a field_validator."},
+    {"id": "CR-002", "kind": "code", "severity": "major", "triage": "patch", "file": "src/codemie/configs/config.py", "line": 1046, "title": "retrieval_available() cfg parameter untyped", "problem": "cfg parameter lacks a type annotation.", "impact": "Violates the project's code-quality standard.", "recommendation": "Annotate the parameter with Config."},
+    {"id": "CR-003", "kind": "code", "severity": "major", "triage": "patch", "file": "src/codemie/rest_api/main.py", "line": 894, "title": "No regression test for RETRIEVAL_BACKEND=none boot branches", "problem": "No test exercises either module-scope conditional.", "impact": "An inversion would go undetected.", "recommendation": "Add a test importing main.py with RETRIEVAL_BACKEND=none."},
+    {"id": "CR-004", "kind": "code", "severity": "critical", "triage": "patch", "file": "src/codemie/service/tools/tool_execution_service.py", "line": 301, "title": "Direct tool invocation bypasses retrieval gating", "problem": "_get_context_tools builds KB/code tools without checking retrieval_available(config).", "impact": "POST /v1/tools/{tool_name}/invoke reachable via unconditionally-registered tool.router, present-and-failing against AC29.", "recommendation": "Apply the same guard used in add_context_tools."},
+    {"id": "CR-005", "kind": "code", "severity": "major", "triage": "patch", "file": "src/codemie/service/tools/tools_info_service.py", "line": 77, "title": "Codebase Tools catalogue entry not fully hidden", "problem": "Skipping _merge_code_toolkit may leave an autodiscovered entry visible.", "impact": "Uncertain, capped at major.", "recommendation": "Verify and filter if needed."},
+    {"id": "CR-006", "kind": "code", "severity": "major", "triage": "patch", "file": "src/codemie/triggers/actors/datasource.py", "line": 343, "title": "Datasource re-index trigger actor not gated", "problem": "No retrieval_available guard in this file.", "impact": "Present-and-failing rather than absent.", "recommendation": "Add the same guard used at other gated call sites."}
+  ],
+  "finding_status": [
+    {"id": "CR-001", "status": "resolved", "notes": "config.py finalize_settings (model_validator) now raises ValueError when RETRIEVAL_BACKEND is outside {elasticsearch, none}. Verified at config.py:970-975."},
+    {"id": "CR-002", "status": "resolved", "notes": "retrieval_available(cfg: Config) -> bool now carries an explicit Config annotation. Verified at config.py:1053."},
+    {"id": "CR-003", "status": "resolved", "notes": "tests/codemie/rest_api/test_main_retrieval_backend_disabled.py runs a fresh subprocess import with RETRIEVAL_BACKEND=none and asserts both import_indexes() is never called and index.router routes are not registered, directly exercising main.py:894 and :902."},
+    {"id": "CR-004", "status": "resolved", "notes": "tool_execution_service.py:312-313 now raises ToolException for KNOWLEDGE_BASE/CODE context when retrieval_available(config) is False, mirroring ToolkitService.add_context_tools; three new tests confirm the guard and the unaffected-when-available path."},
+    {"id": "CR-005", "status": "resolved", "notes": "Re-investigated against current source (waived from changed_files per dispatch): src/codemie_tools/code/toolkit.py's CODEBASE_TOOLS entry (CodeToolkitUI) contains only the credentialed Sonar tool, unrelated to the ES-backed KB/code-search path. AC29 does not require hiding it; the original concern does not hold."},
+    {"id": "CR-006", "status": "resolved", "notes": "Re-investigated against fix_evidence and spec.md (waived from changed_files per dispatch): spec.md section 6 (\"Remaining entry points\") explicitly documents the datasource.py trigger actor as an accepted residual risk, reasoning it has no live trigger path since degraded mode already prevents creating the datasource it would fire for. Legitimate, pre-approved basis for leaving it unguarded; datasource.py itself confirms no retrieval_available guard was added."}
+  ]
+}

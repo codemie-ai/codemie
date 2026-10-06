@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "task": "Hide Elasticsearch-dependent retrieval features (Knowledge Bases, Datasources, Code Indexing) from the backend when RETRIEVAL_BACKEND=none, via a new config key, three runtime customer-config components, conditional router registration, two boot-hazard fixes, agent-toolkit/catalogue gating, and a startup capability banner.",
+  "generated": "2026-09-07",
+  "dimensions": {
+    "component_scope":      { "score": 6, "label": "XXL" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 21,
+  "size": "L",
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Six-plus components across four layers: Config (config.py new key + customer_config.py three runtime components), Service (toolkit_service.py chat-time gating, tools_info_service.py catalogue filtering), REST API (main.py app assembly, conditional index.router registration, AC27 startup banner), and Datasource ingestion (google_doc_datasource_processor.py boot fix). Bumped from XL to XXL by two red flags: touches core shared utilities (the customer_config runtime-component mechanism and the ElasticSearchClient chokepoint) and affects multiple agent toolkits/chat runtimes (KB and code toolkits reached from assistant, a2a, ide, and workflow_executions routers)." },
+    { "dimension": "technical_risk", "reason": "Two import-time Elasticsearch boot hazards must both be fixed (google_doc_datasource_processor.py class-body client construction, and main.py's StateImportService().import_indexes() at module scope) or the container cannot start at all under RETRIEVAL_BACKEND=none. No existing test precedent for asserting conditional router registration in a module-scope FastAPI app with no create_app() factory. A subtle mock-default hazard (@patch(...config) installs a truthy MagicMock) could make new guard tests silently pass with retrieval reported as enabled. Two AC29 gaps (tool catalogue in tools_info_service.py, chat runtime in add_context_tools) require genuinely new feature-gating code with no existing pattern to copy — held at L rather than XL because the whole feature sits behind a single config flag and is fully reversible." },
+    { "dimension": "file_change_estimate", "reason": "Roughly six core implementation files (config.py, customer_config.py, main.py, google_doc_datasource_processor.py, toolkit_service.py, tools_info_service.py) plus three-plus test files needing modification (five exact len() assertions break in test_customer_config.py per the analysis's R-4, plus toolkit-service and customer-config-service tests) and two-to-three new test files (a router-fencing test needs a new test-design approach). Spans four-plus directories: configs/, rest_api/, datasource/google_doc/, service/tools/, mirrored under tests/." },
+    { "dimension": "affected_layers", "reason": "Config, Service (toolkit assembly + tool catalogue), REST API (app assembly/router registration), and Agent-Tool (KB/code toolkit gating) — a cross-cutting feature-flag capability spread across four layers, though no DB schema change or migration is involved." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from XL (5) to XXL (6, capped): touches core shared utilities — the customer_config runtime-component mechanism and the ElasticSearchClient chokepoint",
+    "Component Scope: affects multiple agent toolkits/workflows — KB and code toolkits reached from assistant, a2a, ide, and workflow_executions chat runtimes (score already capped at 6, no further increase possible)"
+  ],
+  "split_recommendation": null
+}

@@ -14,12 +14,13 @@
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 from pydantic import ValidationError
 
-from codemie.configs.config import Config, load_env_files
+from codemie.configs.config import Config, load_env_files, retrieval_available
 
 
 def test_is_local_local():
@@ -142,3 +143,13 @@ class TestLoadEnvFiles:
 
     def test_missing_files_are_ignored(self, tmp_path: Path) -> None:
         load_env_files(tmp_path)
+
+
+def test_retrieval_available_true_for_elasticsearch():
+    cfg = SimpleNamespace(RETRIEVAL_BACKEND="elasticsearch")
+    assert retrieval_available(cfg) is True
+
+
+def test_retrieval_available_false_for_none():
+    cfg = SimpleNamespace(RETRIEVAL_BACKEND="none")
+    assert retrieval_available(cfg) is False

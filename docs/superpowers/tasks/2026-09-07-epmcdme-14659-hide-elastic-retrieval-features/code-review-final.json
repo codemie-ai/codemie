@@ -1,0 +1,105 @@
+{
+  "decision": "request-changes",
+  "rationale": "All four lenses and the standards audit ran with parseable output; six candidates were dismissed after verifying reachability against source (docstring fix confirmed correct, GoogleDoc client construction confirmed handled by the base class __init__, PROVIDER context confirmed unrelated to the retrieval backend since IndexInfo is Postgres-backed, exception-type variance confirmed to match each layer's own existing convention, main.py's router-vs-service-layer gating split confirmed intentional, and the code-index error wording is cosmetic). Six findings survive, one critical: tool_execution_service.py's direct-invoke path bypasses the retrieval gate the rest of the diff applies (CR-004), plus an ungated re-index trigger actor (CR-006), an unvalidated RETRIEVAL_BACKEND value (CR-001), a standards-flagged untyped helper parameter (CR-002), no regression test for main.py's disabled-branch conditionals (CR-003), and an unconfirmed Codebase Tools catalogue entry whose external package contents could not be fully verified within budget, capped at major (CR-005). No decision_needed items and nothing deferred.",
+  "confidence": "medium",
+  "risk_flags": ["public-api"],
+  "business_review": [
+    { "kind": "story-ac", "item": "AC26: starting against a PostgreSQL that cannot provide vector storage yields a running container serving everything not depending on retrieval", "status": "pass", "notes": "Both import-time ES hazards fixed; index.router conditionally registered; PROVIDER context unaffected." },
+    { "kind": "story-ac", "item": "AC27: startup output names retrieval as the unavailable capability and states what would make it available", "status": "pass", "notes": "main.py logger.warning fires when unavailable, names RETRIEVAL_BACKEND; covered by test_main_lifespan.py." },
+    { "kind": "story-ac", "item": "AC29: knowledge bases, datasources and code indexing are absent, not present and failing when used", "status": "pass", "notes": "FE config, tool catalogue and add_context_tools gated; but tool_execution_service._get_context_tools is not (see CR-004)." },
+    { "kind": "spec", "item": "RETRIEVAL_BACKEND config key added adjacent to ELASTIC_* keys, default \"elasticsearch\"", "status": "pass", "notes": "config.py:79" },
+    { "kind": "spec", "item": "retrieval_available(cfg) helper as single source of truth, imported everywhere needed", "status": "pass", "notes": "config.py:1046; used across customer_config, main, provider_service, toolkit_service, tools_info_service, utils" },
+    { "kind": "spec", "item": "Three CONFIG_IDS entries (knowledgeBases, datasources, codeIndexing) added, each enabled=retrieval_available(config)", "status": "pass", "notes": "customer_config.py:30-32, 191-210" },
+    { "kind": "spec", "item": "New components excluded from YAML/dynamic-config-DB override in get_enabled_components/resolve_components", "status": "pass", "notes": "customer_config.py:218-232; service/customer_config_service.py:147-156" },
+    { "kind": "spec", "item": "Drive-by fix: is_feature_enabled() docstring corrected from claiming default True to actual default False", "status": "pass", "notes": "customer_config.py:293-294; doc-only, matches pre-existing is_component_enabled fallback behavior" },
+    { "kind": "spec", "item": "index.router conditionally registered with if retrieval_available(config): app.include_router(index.router)", "status": "pass", "notes": "main.py:902-903; style matches existing precedent (is_litellm_enabled, ENABLE_USER_MANAGEMENT)" },
+    { "kind": "spec", "item": "Testing approach: retrieval_available() tested directly as a pure function against both config values", "status": "pass", "notes": "tests/codemie/configs/test_config.py" },
+    { "kind": "spec", "item": "Import-time hazard #1: GoogleDocDatasourceProcessor class-attribute ES client construction removed", "status": "pass", "notes": "google_doc_datasource_processor.py; verified base class __init__ still sets self.client at instantiation" },
+    { "kind": "spec", "item": "Import-time hazard #2: StateImportService().import_indexes() gated behind retrieval_available(config)", "status": "pass", "notes": "main.py:894-895; no regression test for the skipped branch (see CR-003)" },
+    { "kind": "spec", "item": "Toolkit gating seam #1: tools_info_service.get_tools_info() skips KB toolkit and code-toolkit merge when unavailable", "status": "pass", "notes": "tools_info_service.py:77-81; autodiscovered Codebase Tools entry may still list (see CR-005)" },
+    { "kind": "spec", "item": "Toolkit gating seam #2: toolkit_service.add_context_tools() rejects KB/CODE context when retrieval unavailable", "status": "pass", "notes": "toolkit_service.py:1179-1182; sibling _get_context_tools in tool_execution_service.py is not gated (CR-004)" },
+    { "kind": "spec", "item": "Provider datasource-schema listing rejects with ExtendedHTTPException when retrieval unavailable", "status": "pass", "notes": "provider_service.py:80-87" },
+    { "kind": "spec", "item": "Workflow code search (workflows/utils/utils.py) rejects with existing rejection pattern when retrieval unavailable", "status": "pass", "notes": "utils.py:291-292" },
+    { "kind": "spec", "item": "Test-breakage awareness: five exact len() assertions on get_enabled_components() counts updated", "status": "pass", "notes": "tests/codemie/configs/test_customer_config.py" },
+    { "kind": "spec", "item": "Test-breakage awareness: unavailable-branch tests explicitly set RETRIEVAL_BACKEND=none rather than relying on MagicMock truthiness", "status": "pass", "notes": "across test_customer_config, test_provider_service, test_toolkit_service, test_tools_info_service, test_utils" }
+  ],
+  "standards_review": [
+    { "kind": "commit-format", "status": "pass", "notes": "all 8 commit subjects in the review range match the documented EPMCDME-#### format" },
+    { "kind": "code-quality", "status": "partial", "notes": "retrieval_available(cfg) -> bool has an untyped cfg parameter; every other changed site is fully typed (see CR-002)" },
+    { "kind": "security", "status": "pass", "notes": "no violations found; no secrets/tokens logged; import-time ES hazard fixes confirmed as the only module/class-scope construction sites" }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/configs/config.py",
+      "line": 79,
+      "title": "RETRIEVAL_BACKEND lacks value validation",
+      "problem": "RETRIEVAL_BACKEND is declared as a plain str (default \"elasticsearch\") with no Literal/enum constraint; retrieval_available() only special-cases the exact string \"none\".",
+      "impact": "A typo, casing variant (\"None\"/\"NONE\"), stray whitespace, or an unimplemented future value (e.g. the inline-commented \"pgvector\") silently evaluates as available, leaving KB/datasource/code-indexing features turned on against a backend that isn't actually configured -- the opposite of AC29's intent.",
+      "recommendation": "Constrain the field, e.g. RETRIEVAL_BACKEND: Literal[\"elasticsearch\", \"none\"] = \"elasticsearch\", or add a field_validator that normalizes/rejects unrecognized values."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/configs/config.py",
+      "line": 1046,
+      "title": "retrieval_available() cfg parameter untyped",
+      "problem": "def retrieval_available(cfg) -> bool leaves the cfg parameter without a type annotation, while the return type is annotated and every other new function/site in this diff is fully typed.",
+      "impact": "Violates the project's documented code-quality standard requiring explicit parameter and return types on new public functions.",
+      "recommendation": "Annotate the parameter: def retrieval_available(cfg: Config) -> bool:"
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/main.py",
+      "line": 894,
+      "title": "No regression test for RETRIEVAL_BACKEND=none boot branches",
+      "problem": "Both module-scope conditionals gating the ES-backed StateImportService().import_indexes() call (main.py:894-895) and the index.router registration (main.py:902-903) have no test exercising the RETRIEVAL_BACKEND=none branch; plan.md explicitly notes no black-box router-absence test is planned, and the two existing main.py-importing tests re-run only under the default (elasticsearch) config.",
+      "impact": "If either condition were ever inverted or checked the wrong flag, the app would either crash on boot (import_indexes attempting an ES bulk import with no backend) or keep leaking /v1/index/* endpoints (present-and-failing, the outcome AC29 forbids) -- and no test in the suite would catch it.",
+      "recommendation": "Add a test that imports codemie.rest_api.main with RETRIEVAL_BACKEND=none (patch + reload or subprocess import) and asserts both that StateImportService.import_indexes is never called and that no /v1/index/* route is present on app.routes."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/service/tools/tool_execution_service.py",
+      "line": 301,
+      "title": "Direct tool invocation bypasses retrieval gating",
+      "problem": "ToolExecutionService._get_context_tools builds SearchKBTool/CodeToolkit tools for KNOWLEDGE_BASE/CODE context (lines 311-321) without checking retrieval_available(config), unlike the sibling ToolkitService.add_context_tools which this diff makes raise ToolException for the same two context types.",
+      "impact": "POST /v1/tools/{tool_name}/invoke -> invoke_tool_with_system_integration -> _get_context_tools is reachable via tool.router, which is registered unconditionally (main.py:928). With RETRIEVAL_BACKEND=none, a client can still hit this path and reach Elasticsearch-backed tool construction, failing deep inside instead of getting the clean disabled-feature error the rest of the diff establishes -- present-and-failing rather than absent, contradicting AC29.",
+      "recommendation": "Apply the same `if context.context_type in (ContextType.KNOWLEDGE_BASE, ContextType.CODE) and not retrieval_available(config): raise ...` guard inside _get_context_tools (or its caller) before dispatching to KB/code tool construction."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/tools/tools_info_service.py",
+      "line": 77,
+      "title": "Codebase Tools catalogue entry not fully hidden",
+      "problem": "When retrieval is unavailable, get_tools_info() skips _merge_code_toolkit entirely (line 77-78), but the autodiscovered toolkits list from toolkit_provider.get_available_toolkits_info() may already contain a CODEBASE_TOOLS entry independent of the ES-backed merge.",
+      "impact": "The tool catalogue could still list a 'Codebase Tools' toolkit when retrieval is disabled, missing only the merged backend tools -- contradicting the hide-features goal if that entry has no non-retrieval tools of its own. Reachability inside the external codemie_tools package could not be fully confirmed within budget; graded uncertain and capped at major.",
+      "recommendation": "Verify what toolkit_provider.get_available_toolkits_info() registers under CODEBASE_TOOLS; if it depends on the ES-backed merge to be non-empty/meaningful, filter it out explicitly when retrieval is unavailable, mirroring the KB toolkit's gating."
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/triggers/actors/datasource.py",
+      "line": 343,
+      "title": "Datasource re-index trigger actor not gated",
+      "problem": "The scheduled/triggered Google Doc re-index actor instantiates GoogleDocDatasourceProcessor and runs .reprocess/.index unconditionally; no retrieval_available(config) guard exists anywhere in this file, unlike the other ES-backed call sites this diff gates.",
+      "impact": "A cron-scheduled or triggered re-index for a pre-existing datasource fires even when RETRIEVAL_BACKEND=none, instantiating an ES-backed processor (the base class __init__ still constructs an ElasticSearchClient) and attempting indexing against a disabled backend instead of failing cleanly -- present-and-failing rather than absent, the outcome AC29 forbids.",
+      "recommendation": "Add the same `if not retrieval_available(config): logger.warning(...); return` guard used at other gated call sites, before constructing GoogleDocDatasourceProcessor."
+    }
+  ]
+}

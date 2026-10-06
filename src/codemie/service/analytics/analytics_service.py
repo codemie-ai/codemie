@@ -55,7 +55,7 @@ class AnalyticsService:
             user: Authenticated user for access control and filtering
         """
         self._user = user
-        self._repository = MetricsElasticRepository()
+        self._repository_instance: MetricsElasticRepository | None = None
 
         # Lazy-loaded handlers (created on first access)
         self._summary_handler_instance: SummaryHandler | None = None
@@ -74,6 +74,13 @@ class AnalyticsService:
         self._engagement_handler_instance: EngagementHandler | None = None
         self._leaderboard_handler_instance: LeaderboardHandler | None = None
         self._routing_handler_instance: RoutingHandler | None = None
+
+    @property
+    def _repository(self) -> MetricsElasticRepository:
+        """Lazy-load Elasticsearch repository (avoids ES coupling when only PostgreSQL paths are used)."""
+        if self._repository_instance is None:
+            self._repository_instance = MetricsElasticRepository(fail_open_on_unavailable=True)
+        return self._repository_instance
 
     @property
     def _summary_handler(self) -> SummaryHandler:

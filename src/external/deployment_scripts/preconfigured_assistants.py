@@ -17,6 +17,7 @@ from typing import Dict
 from codemie.core.exceptions import ValidationException
 from codemie.rest_api.models.assistant import Assistant, Context
 from codemie.configs import logger
+from codemie.clients.elasticsearch import ElasticSearchClient
 from codemie.configs.customer_config import customer_config
 from codemie.rest_api.models.guardrail import GuardrailEntity
 from codemie.rest_api.utils.default_applications import CODEMIE_PROJECT_NAME
@@ -123,6 +124,12 @@ def get_all_contexts(assistant_slug: str, assistant_template: Assistant) -> list
     Get all contexts for an assistant, merging static and dynamic contexts.
     Static contexts (from customer config) take priority over template contexts.
     """
+    if not ElasticSearchClient.is_configured():
+        logger.info(
+            f"Skipping retrieval contexts for preconfigured assistant '{assistant_slug}': RETRIEVAL_BACKEND=none"
+        )
+        return []
+
     contexts_by_name: dict[str, Context] = {}
 
     # Add static context first (if configured)

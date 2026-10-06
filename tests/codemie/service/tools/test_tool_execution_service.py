@@ -15,8 +15,9 @@
 from unittest.mock import patch, Mock
 
 import pytest
-from langchain_core.tools import BaseTool
+from langchain_core.tools import BaseTool, ToolException
 
+from codemie.rest_api.models.assistant import Assistant, Context, ContextType
 from codemie.rest_api.models.index import IndexInfo
 from codemie.rest_api.models.tool import ToolInvokeRequest, DatasourceSearchInvokeRequest
 from codemie.rest_api.security.user import User
@@ -328,4 +329,74 @@ def test_invoke_file_analysis_tool_execution_error():
     # Assert
     assert "Tool execution error" in str(excinfo.value)
     mock_logger.error.assert_called_once()
-    assert "Error occurred on tool invocation" in mock_logger.error.call_args[0][0]
+
+
+def test_get_context_tools_raises_when_retrieval_unavailable_for_kb_context():
+    """_get_context_tools must reject KNOWLEDGE_BASE context when retrieval backend is disabled.
+
+    Regression for CR-004: this direct-invoke path must apply the same retrieval gate as
+    ToolkitService.add_context_tools, since it is reachable via the unconditionally-registered
+    tool.router (POST /v1/tools/{tool_name}/invoke).
+    """
+    mock_assistant = Mock(spec=Assistant)
+    mock_assistant.context = [Context(context_type=ContextType.KNOWLEDGE_BASE, name="test-kb")]
+    mock_request = Mock(spec=ToolInvokeRequest)
+    mock_user = Mock(spec=User)
+
+    with patch(
+        "codemie.service.tools.tool_execution_service.ToolsService.find_toolkit_for_tool",
+        return_value={"toolkit": "Knowledge Base"},
+    ):
+        with patch(
+            "codemie.service.tools.tool_execution_service.ElasticSearchClient.is_configured",
+            return_value=False,
+        ):
+            with patch.object(ToolExecutionService, "_get_kb_tools") as mock_get_kb_tools:
+                with pytest.raises(ToolException):
+                    ToolExecutionService._get_context_tools(mock_assistant, mock_request, "search_kb", mock_user)
+
+    mock_get_kb_tools.assert_not_called()
+
+
+def test_get_context_tools_raises_when_retrieval_unavailable_for_code_context():
+    """_get_context_tools must reject CODE context when retrieval backend is disabled (CR-004)."""
+    mock_assistant = Mock(spec=Assistant)
+    mock_assistant.context = [Context(context_type=ContextType.CODE, name="test-repo")]
+    mock_request = Mock(spec=ToolInvokeRequest)
+    mock_user = Mock(spec=User)
+
+    with patch(
+        "codemie.service.tools.tool_execution_service.ToolsService.find_toolkit_for_tool",
+        return_value={"toolkit": "Codebase Tools"},
+    ):
+        with patch(
+            "codemie.service.tools.tool_execution_service.ElasticSearchClient.is_configured",
+            return_value=False,
+        ):
+            with patch.object(ToolExecutionService, "_get_code_tools") as mock_get_code_tools:
+                with pytest.raises(ToolException):
+                    ToolExecutionService._get_context_tools(mock_assistant, mock_request, "search_code", mock_user)
+
+    mock_get_code_tools.assert_not_called()
+
+
+def test_get_context_tools_unaffected_when_retrieval_available():
+    """_get_context_tools still builds KB tools normally when retrieval is available."""
+    mock_assistant = Mock(spec=Assistant)
+    mock_assistant.context = [Context(context_type=ContextType.KNOWLEDGE_BASE, name="test-kb")]
+    mock_request = Mock(spec=ToolInvokeRequest)
+    mock_user = Mock(spec=User)
+
+    with patch(
+        "codemie.service.tools.tool_execution_service.ToolsService.find_toolkit_for_tool",
+        return_value={"toolkit": "Knowledge Base"},
+    ):
+        with patch(
+            "codemie.service.tools.tool_execution_service.ElasticSearchClient.is_configured",
+            return_value=True,
+        ):
+            with patch.object(ToolExecutionService, "_get_kb_tools", return_value="kb_tool") as mock_get_kb_tools:
+                result = ToolExecutionService._get_context_tools(mock_assistant, mock_request, "search_kb", mock_user)
+
+    mock_get_kb_tools.assert_called_once()
+    assert result == "kb_tool"

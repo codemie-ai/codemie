@@ -28,7 +28,8 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.cors import CORSMiddleware
 from codemie.configs import config
 from codemie.configs.customer_config import customer_config as _customer_config
-from codemie.configs.config import ENV_LOCAL
+from codemie.clients.elasticsearch import ElasticSearchClient
+from codemie.configs.config import ENV_LOCAL, retrieval_available
 from codemie.enterprise.observability import get_observability_provider
 from codemie.enterprise.litellm import (
     close_llm_proxy_client,
@@ -116,6 +117,12 @@ from codemie.service.oauth_security import (
     assert_oauth_state_signing_secret_configured,
     assert_token_vault_available,
     warn_insecure_oauth_storage_for_enabled_providers,
+)
+from codemie.service.model_provider_readiness import (
+    ModelProviderReadiness,
+    ModelProviderStatus,
+    check_model_provider_readiness,
+    log_model_provider_readiness,
 )
 
 # User management routers (EPMCDME-10160)
@@ -283,6 +290,46 @@ async def _initialize_plugin_service():
     except Exception as e:
         logger.error(f"Failed to initialize plugin service: {e}", exc_info=True)
         return None
+
+
+_MODEL_PROVIDER_READINESS_TIMEOUT_SECONDS = 5
+
+
+async def _check_model_provider_readiness(app: FastAPI) -> None:
+    """Compute model-provider startup readiness once, store it, and log it.
+
+    Never blocks startup — the app must start whether or not a provider is configured
+    (EPMCDME-14653). The check runs its synchronous, potentially slow work (the AWS
+    credential chain has no overall deadline of its own) off the event loop via
+    asyncio.to_thread, bounded by a wait_for timeout so a hanging credential_process
+    cannot stall startup. A bug in, or timeout of, the check itself must not be able to
+    abort startup either, so both degrade to a "not checked" readiness rather than
+    propagating.
+    """
+    try:
+        readiness = await asyncio.wait_for(
+            asyncio.to_thread(check_model_provider_readiness),
+            timeout=_MODEL_PROVIDER_READINESS_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Model provider readiness check timed out after %ss; treating as not checked",
+            _MODEL_PROVIDER_READINESS_TIMEOUT_SECONDS,
+        )
+        readiness = ModelProviderReadiness(
+            status=ModelProviderStatus.NOT_CHECKED,
+            provider=None,
+            missing=["model provider readiness check timed out; see startup logs"],
+        )
+    except Exception:
+        logger.exception("Model provider readiness check failed")
+        readiness = ModelProviderReadiness(
+            status=ModelProviderStatus.NOT_CHECKED,
+            provider=None,
+            missing=["model provider readiness check failed; see startup logs"],
+        )
+    app.state.model_provider_readiness = readiness
+    log_model_provider_readiness(readiness)
 
 
 async def _initialize_enterprise_services(app: FastAPI):
@@ -781,6 +828,13 @@ async def _shutdown_services(app: FastAPI, tasks: list):
 async def lifespan(app: FastAPI):
     logger.info(f"Starting CodeMie application. Config={config.to_safe_dict()}")
 
+    if not retrieval_available(config):
+        logger.warning(
+            "Retrieval capability unavailable (RETRIEVAL_BACKEND=none). Knowledge bases, "
+            "datasources and code indexing are disabled. To enable retrieval, set "
+            "RETRIEVAL_BACKEND to a supported backend and configure its connection settings."
+        )
+
     from codemie.core.event_loop import set_main_event_loop
 
     set_main_event_loop(asyncio.get_running_loop())
@@ -866,6 +920,7 @@ async def lifespan(app: FastAPI):
     assert_oauth_state_signing_secret_configured()
     assert_token_vault_available()
     warn_insecure_oauth_storage_for_enabled_providers()
+    await _check_model_provider_readiness(app)
     _initialize_deployment_version()
 
     # Start background tasks
@@ -969,14 +1024,16 @@ async def _friendly_rate_limit_handler(request: Request, exc: RateLimitExceeded)
 app.add_exception_handler(RateLimitExceeded, _friendly_rate_limit_handler)
 app.add_middleware(SlowAPIMiddleware)
 
-StateImportService().import_indexes()
+if ElasticSearchClient.is_configured():
+    StateImportService().import_indexes()
 
 app.include_router(a2a.router)
 app.include_router(assistant_mapping.router)
 app.include_router(assistant.router)
 app.include_router(assistant_prompt_variable_mapping.router)
 app.include_router(category.router)
-app.include_router(index.router)
+if ElasticSearchClient.is_configured():
+    app.include_router(index.router)
 app.include_router(common.router)
 app.include_router(feedback.router)
 app.include_router(admin.router)

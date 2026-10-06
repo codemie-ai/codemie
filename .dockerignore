@@ -3,7 +3,19 @@ venv
 .mypy_cache
 .vscode
 .env.*
+# .env.example is a tracked, secret-free template, not a real env file. Dockerfile.test
+# copies it so tests/codemie/configs/test_env_example.py can assert against it.
+!.env.example
 .envrc
 notebooks
 utils
 build
+.git
+__pycache__
+.pytest_cache
+.env
+credentials.json
+google_credentials.json
+.idea
+node_modules
+standalone-build/

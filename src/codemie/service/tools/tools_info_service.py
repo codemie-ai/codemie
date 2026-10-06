@@ -26,6 +26,7 @@ from codemie_tools.research.toolkit import ResearchToolkit
 from codemie.agents.tools.kb.kb_toolkit import KBToolkit
 from codemie.agents.tools.platform import PlatformToolkit
 from codemie.configs import logger
+from codemie.clients.elasticsearch import ElasticSearchClient
 from codemie.rest_api.security.user import User
 from codemie.service.provider import ProviderToolkitsFactory
 
@@ -73,9 +74,10 @@ class ToolsInfoService:
 
         toolkits.extend(standard_toolkits)
 
-        ToolsInfoService._merge_code_toolkit(toolkits, show_for_ui)
+        if ElasticSearchClient.is_configured():
+            ToolsInfoService._merge_code_toolkit(toolkits, show_for_ui)
 
-        if not show_for_ui:
+        if ElasticSearchClient.is_configured() and not show_for_ui:
             toolkits.append(KBToolkit.get_tools_ui_info())
 
         toolkits.append(PlatformToolkit.get_tools_ui_info(show_admin_tools))

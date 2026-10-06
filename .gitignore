@@ -10,6 +10,8 @@ google_credentials.json
 .env
 .env.local
 .env_local
+.env.standalone
+standalone/.env.standalone
 
 .venv
 venv
@@ -42,6 +44,7 @@ src/.openapi-generator/
 !.codemie/virtual_assistants/codemie-dev-agent.yaml
 !.codemie/guides
 !.codemie/specs
+.codemie-storage/*
 
 .claude/settings.local.json
 .claude/commands/bmad*
@@ -125,6 +128,10 @@ docs/superpowers/runs/*/**/*.local.*
 docs/superpowers/qa-tasks/*/**/*.local.*
 credentials.json
 .code-graph/
+standalone/*.log
+standalone/.env.standalone
+standalone/external-config/*
+!standalone/external-config/.gitkeep
 
 # CLI Analytics engine comparison and integration testing: local tooling, not committed
 /scripts/cli_analytics_testing/

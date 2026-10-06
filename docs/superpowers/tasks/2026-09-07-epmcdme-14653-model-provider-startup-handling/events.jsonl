@@ -1,0 +1,7 @@
+{"event":"lifecycle_emission","intent":"artifact_published","artifact_kind":"plan","status":"failed"}
+{"event":"work_item.adapter_warning","reason":"skill codemie-jira-assistant not resolvable in session","intent":"artifact_published"}
+{"event":"lifecycle_emission","intent":"artifact_published","artifact_kind":"plan","status":"succeeded"}
+{"event":"work_item.adapter_receipt","intent":"artifact_published","status":"succeeded","note":"attached plan.md to EPMCDME-14653 via codemie CLI assistant chat fallback"}
+{"schema":1,"event":"decision.recorded","phase":5,"actor":"decision-router","summary":"Decision recorded for code-review.final: Fix all 3, re-review","artifacts":["decisions.jsonl"],"data":{"gate_id":"code-review.final","mode":"hitl","decision":"Fix all 3, re-review","source":"hitl","escalated":false}}
+{"schema":1,"event":"decision.recorded","phase":5,"actor":"decision-router","summary":"Decision recorded for code-review.check: Approve, continue to QA gates","artifacts":["decisions.jsonl"],"data":{"gate_id":"code-review.check","mode":"hitl","decision":"Approve, continue to QA gates","source":"hitl","escalated":false}}
+{"event":"lifecycle_emission","intent":"record_complexity_score","assessment_mode":"actual","status":"succeeded"}

@@ -305,6 +305,8 @@ class ToolkitLookupService:
             List of ToolKit objects, each containing one or more Tools from search results.
             Tools from the same toolkit are grouped together in a single ToolKit object.
         """
+        if not config.TOOL_SELECTION_ENABLED:
+            return []
         try:
             index_name = getattr(config, 'TOOLS_INDEX_NAME', 'codemie_tools')
 

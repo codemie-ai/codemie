@@ -128,3 +128,24 @@ def test_delete(mock_delete, mock_find_by_id, mock_provider, user):
     assert result is True
     mock_find_by_id.assert_called_once_with("test_id")
     mock_delete.assert_called_once()
+
+
+@patch("codemie.service.provider.provider_service.ElasticSearchClient.is_configured", return_value=False)
+def test_index_schemas_raises_when_retrieval_unavailable(mock_is_configured, user):
+    with pytest.raises(ExtendedHTTPException) as exc:
+        ProviderService.index_schemas(user=user)
+
+    assert exc.value.code == 503
+    assert exc.value.message == "Datasource schemas are not available on this instance."
+    assert exc.value.details == "The retrieval backend is disabled (RETRIEVAL_BACKEND=none)."
+
+
+@patch("codemie.service.provider.provider_service.ElasticSearchClient.is_configured", return_value=True)
+@patch("codemie.service.provider.provider_service.ProviderDatasourceSchemaService.get_all")
+def test_index_schemas_returns_schemas_when_retrieval_available(mock_get_all, mock_is_configured, user):
+    mock_get_all.return_value = ["schema1"]
+
+    result = ProviderService.index_schemas(user=user)
+
+    assert result == ["schema1"]
+    mock_get_all.assert_called_once_with(user)

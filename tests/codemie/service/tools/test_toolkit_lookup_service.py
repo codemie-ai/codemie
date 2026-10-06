@@ -154,9 +154,12 @@ class TestToolkitLookupService:
             assert "name" in doc.metadata
             assert doc.metadata["name"] in ["test_tool", "another_tool", "different_tool"]
 
+    @patch("codemie.service.tools.toolkit_lookup_service.config")
     @patch("codemie.service.tools.toolkit_lookup_service.SearchAndRerankTool")
-    def test_get_tools_by_query(self, mock_search_and_rerank_class, mock_search_and_rerank_tool):
+    def test_get_tools_by_query(self, mock_search_and_rerank_class, mock_config, mock_search_and_rerank_tool):
         """Test get_tools_by_query method."""
+        mock_config.TOOL_SELECTION_ENABLED = True
+        mock_config.TOOLS_INDEX_NAME = "codemie_tools"
         # Setup mocks
         mock_search_and_rerank_class.return_value = mock_search_and_rerank_tool
 
@@ -186,8 +189,21 @@ class TestToolkitLookupService:
         assert diff_toolkit.tools[0].name == "different_tool"
 
     @patch("codemie.service.tools.toolkit_lookup_service.SearchAndRerankTool")
-    def test_get_tools_by_query_handles_errors(self, mock_search_and_rerank_class):
+    @patch("codemie.service.tools.toolkit_lookup_service.config")
+    def test_get_tools_by_query_returns_empty_when_disabled(self, mock_config, mock_search_and_rerank_class):
+        """get_tools_by_query must return [] immediately when TOOL_SELECTION_ENABLED=False."""
+        mock_config.TOOL_SELECTION_ENABLED = False
+
+        result = ToolkitLookupService.get_tools_by_query("test query")
+
+        assert result == []
+        mock_search_and_rerank_class.assert_not_called()
+
+    @patch("codemie.service.tools.toolkit_lookup_service.config")
+    @patch("codemie.service.tools.toolkit_lookup_service.SearchAndRerankTool")
+    def test_get_tools_by_query_handles_errors(self, mock_search_and_rerank_class, mock_config):
         """Test get_tools_by_query handles exceptions properly."""
+        mock_config.TOOL_SELECTION_ENABLED = True
         # Setup mock to raise an exception
         mock_search_and_rerank = Mock()
         mock_search_and_rerank.execute.side_effect = Exception("Search failed")
@@ -201,27 +217,33 @@ class TestToolkitLookupService:
         mock_search_and_rerank_class.assert_called_once()
         mock_search_and_rerank.execute.assert_called_once()
 
+    @patch("codemie.service.tools.toolkit_lookup_service.config")
     @patch("codemie.service.tools.toolkit_lookup_service.SearchAndRerankTool")
-    def test_get_tools_by_query_handles_malformed_data(self, mock_search_and_rerank_class, mock_search_and_rerank_tool):
-        """Test get_tools_by_query handles malformed document data."""
-        # Setup mock to return malformed document metadata
-        mock_search_and_rerank_tool.execute.return_value = [
+    def test_get_tools_by_query_handles_malformed_data(self, mock_search_and_rerank_class, mock_config):
+        """Test get_tools_by_query handles malformed document data gracefully.
+
+        The Document has valid .metadata (a real dict) but is missing the required
+        'toolkit' field, so _reconstruct_toolkit_from_metadata raises a pydantic
+        ValidationError inside the per-document try/except, and the overall result
+        is [].  The assertions confirm the guard was bypassed and reconstruction
+        was actually attempted.
+        """
+        mock_config.TOOL_SELECTION_ENABLED = True
+        mock_instance = Mock()
+        mock_instance.execute.return_value = [
             Document(
                 page_content="invalid content",
-                metadata={
-                    "name": "test_tool",
-                    # Missing required toolkit field
-                },
+                metadata={"name": "test_tool"},  # Missing required 'toolkit' field
                 id=str(uuid.uuid4()),
             )
         ]
-        mock_search_and_rerank_class.return_value = mock_search_and_rerank_tool
+        mock_search_and_rerank_class.return_value = mock_instance
 
-        # Call the method - should handle the malformed data gracefully
         result = ToolkitLookupService.get_tools_by_query("test query")
 
-        # Assertions
-        assert result == []  # No valid toolkits could be reconstructed
+        assert result == []
+        mock_search_and_rerank_class.assert_called_once()
+        mock_instance.execute.assert_called_once()
 
     def test_build_search_query_with_history(self):
         """Test build_search_query_with_history method."""

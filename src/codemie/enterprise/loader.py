@@ -23,6 +23,7 @@ CRITICAL: This loader ONLY handles imports and flags. NO business logic.
 from __future__ import annotations
 
 from contextlib import nullcontext
+from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, version
 
 # LangFuse imports
@@ -214,6 +215,16 @@ except PackageNotFoundError:
 def has_mcp_auth() -> bool:
     """Check if MCP Auth enterprise feature is available."""
     return HAS_MCP_AUTH
+
+
+@lru_cache(maxsize=1)
+def has_enterprise() -> bool:
+    """Check if the codemie-enterprise package is installed."""
+    try:
+        version("codemie-enterprise")
+        return True
+    except PackageNotFoundError:
+        return False
 
 
 # Export all

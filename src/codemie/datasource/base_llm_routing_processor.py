@@ -35,7 +35,6 @@ from elasticsearch import NotFoundError
 from elasticsearch.helpers import bulk
 from langchain_core.documents import Document
 
-from codemie.clients.elasticsearch import ElasticSearchClient
 from codemie.configs import logger
 from codemie.core.models import KnowledgeBase
 from codemie.datasource.base_datasource_processor import BaseDatasourceProcessor
@@ -43,8 +42,6 @@ from codemie.datasource.base_datasource_processor import BaseDatasourceProcessor
 
 class BaseLLMRoutingDatasourceProcessor(BaseDatasourceProcessor):
     """Shared indexing and retrieval behavior for whole-article LLM-routing datasources."""
-
-    client = ElasticSearchClient.get_client()
 
     @property
     def _index_name(self) -> str:

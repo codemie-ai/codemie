@@ -12,13 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, status
 
 from codemie.configs import config
 from codemie.core.constants import APP_DESCRIPTION
 from codemie.core.models import DeploymentVersionItem, DeploymentVersionsResponse, InfoResponse
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
+from codemie.service.model_provider_readiness import ModelProviderStatus
 
 router = APIRouter(
     tags=["Common"],
@@ -62,4 +63,16 @@ def healthcheck():
         "memory_usage_mb": process.memory_info().rss / 1024 / 1024,
         "cpu_percent": process.cpu_percent(),
         "worker_pid": os.getpid(),
+    }
+
+
+@router.get("/healthcheck/model", include_in_schema=False)
+def model_provider_healthcheck(request: Request):
+    readiness = getattr(request.app.state, "model_provider_readiness", None)
+    if readiness is None:
+        return {"status": ModelProviderStatus.NOT_CHECKED.value, "provider": None, "missing": []}
+    return {
+        "status": readiness.status.value,
+        "provider": readiness.provider,
+        "missing": readiness.missing,
     }

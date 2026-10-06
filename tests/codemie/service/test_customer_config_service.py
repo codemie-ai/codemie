@@ -422,3 +422,104 @@ async def test_a_row_missing_a_declared_field_keeps_the_yaml_value(yaml_with_dis
     disclaimer = _find(components, "chatDisclaimer")
     assert disclaimer is not None
     assert disclaimer.settings.text == "From YAML"
+
+
+# --- T4: aiChampionsLeaderboard ceiling suppression ---
+
+
+@pytest.mark.asyncio
+async def test_leaderboard_ceiling_hides_component_when_disabled(patched_yaml):
+    """aiChampionsLeaderboard must be absent from resolved config when LEADERBOARD_ENABLED=False."""
+    patched_yaml.components = [
+        Component(id="aiChampionsLeaderboard", settings=ComponentSetting(enabled=True)),
+        Component(id="features:webSearch", settings=ComponentSetting(enabled=True)),
+    ]
+
+    with _patch_rows([]):
+        with patch("codemie.service.customer_config_service.config") as mock_cfg:
+            mock_cfg.LEADERBOARD_ENABLED = False
+            components = await resolve_components()
+
+    assert _find(components, "aiChampionsLeaderboard") is None
+    assert _find(components, "features:webSearch") is not None
+
+
+@pytest.mark.asyncio
+async def test_leaderboard_ceiling_allows_component_when_enabled(patched_yaml):
+    """aiChampionsLeaderboard must be present when LEADERBOARD_ENABLED=True and YAML enables it."""
+    patched_yaml.components = [
+        Component(id="aiChampionsLeaderboard", settings=ComponentSetting(enabled=True)),
+    ]
+
+    with _patch_rows([]):
+        with patch("codemie.service.customer_config_service.config") as mock_cfg:
+            mock_cfg.LEADERBOARD_ENABLED = True
+            components = await resolve_components()
+
+    assert _find(components, "aiChampionsLeaderboard") is not None
+
+
+# --- T4: features:metricsAnalytics config projection ---
+
+
+def test_metrics_analytics_present_in_runtime_config_when_enterprise_present():
+    """features:metricsAnalytics must appear enabled in runtime config when enterprise is installed."""
+    from codemie.configs.customer_config import customer_config as real_config
+
+    with patch("codemie.enterprise.has_enterprise", return_value=True):
+        runtime = real_config.get_runtime_components()
+
+    component = next((c for c in runtime if c.id == "features:metricsAnalytics"), None)
+    assert component is not None
+    assert component.settings.enabled is True
+
+
+def test_metrics_analytics_absent_from_config_when_enterprise_absent():
+    """features:metricsAnalytics must be disabled in runtime config when enterprise is not installed."""
+    from codemie.configs.customer_config import customer_config as real_config
+
+    with patch("codemie.enterprise.has_enterprise", return_value=False):
+        runtime = real_config.get_runtime_components()
+
+    enabled_ids = {c.id for c in runtime if c.settings.enabled}
+    assert "features:metricsAnalytics" not in enabled_ids
+
+
+# --- T6: config projection regression tests ---
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("has_ent,expected_present", [(True, True), (False, False)])
+async def test_metrics_analytics_projection_toggles_with_enterprise(has_ent, expected_present):
+    """features:metricsAnalytics is included in resolved components iff enterprise is installed."""
+    with patch("codemie.enterprise.has_enterprise", return_value=has_ent), _patch_rows([]):
+        components = await resolve_components()
+    assert (_find(components, "features:metricsAnalytics") is not None) == expected_present
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_conversation_analytics_follows_config_flag(enabled):
+    """conversationAnalytics runtime projection must track CONVERSATION_ANALYSIS_ENABLED."""
+    from codemie.configs.customer_config import customer_config as real_config
+
+    with patch("codemie.configs.customer_config.config") as mock_cfg:
+        mock_cfg.CONVERSATION_ANALYSIS_ENABLED = enabled
+        runtime = real_config.get_runtime_components()
+
+    component = _find(runtime, "features:conversationAnalytics")
+    assert component is not None
+    assert component.settings.enabled is enabled
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_smart_tool_selection_follows_config_flag(enabled):
+    """smartToolSelection runtime projection must track TOOL_SELECTION_ENABLED."""
+    from codemie.configs.customer_config import customer_config as real_config
+
+    with patch("codemie.configs.customer_config.config") as mock_cfg:
+        mock_cfg.TOOL_SELECTION_ENABLED = enabled
+        runtime = real_config.get_runtime_components()
+
+    component = _find(runtime, "features:smartToolSelection")
+    assert component is not None
+    assert component.settings.enabled is enabled

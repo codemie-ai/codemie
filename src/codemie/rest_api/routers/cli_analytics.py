@@ -621,6 +621,7 @@ async def get_session_detail(
     user: User = Depends(authenticate),
     trace_id: str = Path(..., description="Session id"),
 ) -> JSONResponse:
+    # An unavailable ClickHouse is indistinguishable from a missing trace here; preserve the 404 contract.
     _ensure_enabled()
     start_ns = time.monotonic_ns()
     detail, unpriced = await _handler().get_session_detail(trace_id)

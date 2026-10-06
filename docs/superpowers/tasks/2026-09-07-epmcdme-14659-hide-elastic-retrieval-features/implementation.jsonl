@@ -1,0 +1,7 @@
+{"task_id":"1","status":"done","commit":"30db8906a","test_command":"poetry run pytest tests/codemie/configs/test_config.py -k retrieval_available -v"}
+{"task_id":"2","status":"done","commit":"ace33aa29","test_command":"poetry run pytest tests/codemie/configs/test_customer_config.py -v"}
+{"task_id":"3","status":"done","commit":"48ba852b4","test_command":"poetry run python -c \"import ast; ast.parse(open(\x27src/codemie/rest_api/main.py\x27, encoding=\x27utf-8\x27).read())\""}
+{"task_id":"4","status":"done","commit":"a01264e8d","test_command":"poetry run pytest tests/codemie/datasource/google_doc/test_google_doc_datasource_processor.py -v"}
+{"task_id":"5","status":"done","commit":"adb6852b4","test_command":"poetry run pytest tests/codemie/service/tools/test_tools_info_service.py tests/codemie/service/tools/test_toolkit_service.py -v"}
+{"task_id":"6","status":"done","commit":"51e146112","test_command":"poetry run pytest tests/codemie/service/provider/test_provider_service.py tests/codemie/workflows/utils/test_utils.py -v"}
+{"task_id":"7","status":"done","commit":"07c057f9b","test_command":"poetry run pytest tests/codemie/rest_api/test_main_lifespan.py -v"}

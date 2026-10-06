@@ -57,6 +57,10 @@ from codemie.service.customer_config_declarations import (
 )
 from codemie.service.dynamic_config_service import DynamicConfigService
 
+# Component ID for the AI Champions leaderboard entry in customer-config.yaml.
+# Kept as a constant so any rename is caught at a single source rather than silently bypassing the ceiling filter.
+_LEADERBOARD_COMPONENT_ID = "aiChampionsLeaderboard"
+
 
 class OverrideCache:
     """Process-local cache of customer-config overrides with a bounded staleness window.
@@ -158,7 +162,12 @@ async def resolve_components() -> list[Component]:
         customer_config.get_runtime_components(),
         set(CONFIG_IDS.values()),
     )
-    return [component for component in resolved if component.settings.enabled]
+    enabled = [component for component in resolved if component.settings.enabled]
+
+    if not config.LEADERBOARD_ENABLED:
+        enabled = [component for component in enabled if component.id != _LEADERBOARD_COMPONENT_ID]
+
+    return enabled
 
 
 _INVALID_VALUE_MESSAGE = "Invalid configuration value"

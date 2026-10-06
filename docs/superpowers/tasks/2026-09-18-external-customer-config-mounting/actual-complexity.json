@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "generated": "2026-09-18T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 1, "label": "XS" },
+    "technical_risk":       { "score": 1, "label": "XS" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 9,
+  "size": "XS",
+  "band_range": "6-9",
+  "files_changed": 5,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "One self-contained packaging concern (external customer-config.yaml mounting) touching docker-compose.standalone.yml, docker-compose.standalone.analytics.yml, .env.standalone.example, README.md, and new docker-compose.external-config.yml, all under standalone/; no application code layer (API/Service/DB) crossed." },
+    { "dimension": "file_change_estimate", "reason": "2 modified base Compose files + 1 modified env example + 1 modified README + 1 new external-config Compose file, all within standalone/ — 5 product files total (4 modified, 1 added)." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null,
+  "notes": "The final branch does not add a second customer-config example. It introduces a reusable docker-compose.external-config.yml option and directs users to the canonical config/customer/customer-config.yaml as the sole version-matched template."
+}

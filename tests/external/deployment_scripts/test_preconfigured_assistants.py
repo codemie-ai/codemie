@@ -210,6 +210,30 @@ def test_create_preconfigured_assistant_new(
     mock_logger.info.assert_called_with(f"Assistant '{mock_assistant.slug}' created successfully.")
 
 
+def test_create_preconfigured_assistant_new_without_retrieval_contexts(mock_assistant_template):
+    """A fresh standalone startup still creates assistants without touching retrieval storage."""
+    module = 'external.deployment_scripts.preconfigured_assistants'
+
+    with (
+        patch(f'{module}.Assistant') as mock_assistant_class,
+        patch(f'{module}.assistant_service.get_assistant_template_by_slug', return_value=mock_assistant_template),
+        patch(f'{module}.ElasticSearchClient.is_configured', return_value=False),
+        patch(f'{module}.get_assistant_index_name') as mock_get_assistant_index_name,
+        patch(f'{module}.create_context_from_index') as mock_create_context_from_index,
+        patch(f'{module}.get_index_info') as mock_get_index_info,
+    ):
+        mock_assistant_class.get_by_fields.return_value = None
+        mock_assistant_class.return_value.id = 'standalone-assistant-id'
+
+        create_preconfigured_assistant(mock_assistant_template.slug)
+
+    assert mock_assistant_class.call_args.kwargs['context'] == []
+    mock_assistant_class.return_value.save.assert_called_once_with(refresh=True)
+    mock_get_assistant_index_name.assert_not_called()
+    mock_create_context_from_index.assert_not_called()
+    mock_get_index_info.assert_not_called()
+
+
 @patch('external.deployment_scripts.preconfigured_assistants.get_assistant_index_name')
 @patch('external.deployment_scripts.preconfigured_assistants.create_context_from_index')
 @patch('external.deployment_scripts.preconfigured_assistants.get_index_info')
@@ -284,6 +308,29 @@ def test_get_all_contexts_no_contexts(mock_get_assistant_index_name, mock_assist
     result = get_all_contexts("test-assistant", mock_assistant_template)
 
     assert result == []
+
+
+@patch('external.deployment_scripts.preconfigured_assistants.get_assistant_index_name')
+@patch('external.deployment_scripts.preconfigured_assistants.create_context_from_index')
+@patch('external.deployment_scripts.preconfigured_assistants.get_index_info')
+@patch('external.deployment_scripts.preconfigured_assistants.ElasticSearchClient.is_configured', return_value=False)
+def test_get_all_contexts_skips_retrieval_when_backend_disabled(
+    mock_is_configured,
+    mock_get_index_info,
+    mock_create_context_from_index,
+    mock_get_assistant_index_name,
+    mock_assistant_template,
+):
+    """Preconfigured assistants must not resolve ES-backed contexts in degraded mode."""
+    mock_assistant_template.context = [MagicMock(spec=Context)]
+
+    result = get_all_contexts("codemie-onboarding", mock_assistant_template)
+
+    assert result == []
+    mock_is_configured.assert_called_once()
+    mock_get_assistant_index_name.assert_not_called()
+    mock_create_context_from_index.assert_not_called()
+    mock_get_index_info.assert_not_called()
 
 
 @patch('external.deployment_scripts.preconfigured_assistants.logger')

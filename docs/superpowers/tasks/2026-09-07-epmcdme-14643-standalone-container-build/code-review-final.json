@@ -1,0 +1,98 @@
+{
+  "decision": "request-changes",
+  "rationale": "Six patch findings in Build-image.ps1: Resolve-Path before Test-Path (validation order), missing daemon-liveness check, git stderr captured as branch/SHA on failure, fixed ctx/ path collides on concurrent invocations, nginx.conf copied without CRLF stripping, and ctx/ not removed after failed build. No spec artifact; acceptance lens not applicable; confidence is low. Zero findings deferred or dismissed.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "na",
+      "notes": "Standards review not applicable; no project standards guides defined for this profile (standards_expected: false)."
+    },
+    {
+      "kind": "code-quality",
+      "status": "na",
+      "notes": "Standards review not applicable; no project standards guides defined for this profile (standards_expected: false)."
+    },
+    {
+      "kind": "security",
+      "status": "na",
+      "notes": "Standards review not applicable; no project standards guides defined for this profile (standards_expected: false)."
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "standalone-build/Build-image.ps1",
+      "line": 15,
+      "title": "Resolve-Path runs before friendly directory guard",
+      "problem": "Resolve-Path is called at lines 15–17 before the Test-Path/throw guard at lines 25–27. A non-existent user-supplied root path triggers a cryptic PowerShell termination error from Resolve-Path, so the actionable 'Required directory not found' message is never reached.",
+      "impact": "A user passing a wrong BackendRoot, FrontendRoot, or PackagingRoot receives an opaque exception rather than the diagnostic the validation block was written to provide, making misconfiguration harder to diagnose.",
+      "recommendation": "Move the Resolve-Path calls to after the Test-Path validation loop at lines 25–27, or replace each Resolve-Path call with an inline Test-Path check and throw before calling Resolve-Path."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "standalone-build/Build-image.ps1",
+      "line": 20,
+      "title": "No daemon-liveness check before context assembly",
+      "problem": "Lines 20–22 verify only that the engine binary exists on PATH. A stopped podman machine or non-running Docker Desktop is not detected; the script proceeds to assemble the full source context (steps 7–9) before failing at the build step with an opaque connection error.",
+      "impact": "Every invocation with a non-running daemon wastes time and performs unnecessary disk I/O copying backend, frontend, and packaging sources before the real error is surfaced.",
+      "recommendation": "After the binary check, add: '& $Engine info 2>&1 | Out-Null; if ($LASTEXITCODE -ne 0) { throw \"Engine ''$Engine'' daemon not reachable.\" }' to fail fast before context assembly."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "standalone-build/Build-image.ps1",
+      "line": 78,
+      "title": "Git stderr captured as branch or SHA on rev-parse failure",
+      "problem": "Lines 78–79 use 2>&1 to redirect stderr into the capture but have no $LASTEXITCODE guard. If git fails (non-git directory, missing HEAD, etc.) the error text is stored in $branch or $sha and written to the build log as if it were a real ref.",
+      "impact": "The build log records false provenance — e.g. 'branch=fatal: not a git repository sha=fatal: not a git repository' — visually indistinguishable from a real branch name, undermining post-build traceability.",
+      "recommendation": "After each rev-parse call, check $LASTEXITCODE and substitute '(unknown)' on failure, matching the pattern already used for $dirtyLabel at line 81."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "standalone-build/Build-image.ps1",
+      "line": 88,
+      "title": "Fixed ctx/ path collides on concurrent invocations",
+      "problem": "The context directory is always '$PSScriptRoot/ctx' (line 88). A second concurrent invocation from the same script location removes the first run's context at lines 89–95 mid-build.",
+      "impact": "Parallel CI jobs or overlapping developer retries from the same checkout produce non-deterministic build failures; reachability depends on usage patterns but the collision is confirmed possible on concurrent use.",
+      "recommendation": "Use a per-invocation path such as 'ctx-' + [System.Diagnostics.Process]::GetCurrentProcess().Id, or serialize invocations with a lock file before the Remove-Item."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "standalone-build/Build-image.ps1",
+      "line": 104,
+      "title": "nginx.conf copied without CRLF stripping",
+      "problem": "Line 104 copies nginx.conf with Copy-Item, preserving any CRLF line endings from a Windows checkout (git autocrlf=true). The CRLF stripping applied to entrypoint.sh at lines 107–110 is not applied to nginx.conf.",
+      "impact": "On Windows with autocrlf enabled, nginx.conf enters the Linux container with \\r\\n endings; depending on the nginx version and directive, this may cause config parse errors and prevent the container from starting.",
+      "recommendation": "Apply the same ReadAllText/Replace/WriteAllText CRLF-stripping pattern used for entrypoint.sh to nginx.conf immediately after line 104."
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "standalone-build/Build-image.ps1",
+      "line": 165,
+      "title": "ctx/ not removed after failed build",
+      "problem": "Lines 165–169 run the engine build and exit with its exit code but do not remove $ctxDir on failure. The only cleanup is at the start of the next invocation (lines 89–95), so a failed run always leaves the full context tree on disk.",
+      "impact": "Repeated failed builds leave behind large ctx/ trees containing backend and frontend sources. On developer machines or CI agents running retries, this accumulates significant disk usage.",
+      "recommendation": "Wrap the build step in a try/finally block that removes $ctxDir when $buildExit is non-zero, or register a trap handler before the build invocation."
+    }
+  ]
+}

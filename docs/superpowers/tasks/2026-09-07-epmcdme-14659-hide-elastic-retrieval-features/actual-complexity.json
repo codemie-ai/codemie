@@ -1,0 +1,97 @@
+{
+  "task": "Gate Elasticsearch-backed retrieval features (knowledge bases, datasources, code indexing) behind a configurable RETRIEVAL_BACKEND flag across config, API routing, service layer, and workflow utilities",
+  "generated": "2026-09-08T00:00:00Z",
+  "dimensions": {
+    "component_scope": {
+      "score": 6,
+      "label": "XXL",
+      "affected": "Config, CustomerConfig, REST API app bootstrap/router registration (main.py), ProviderService, ToolExecutionService, ToolkitService, ToolsInfoService, workflows/utils/utils.py, GoogleDocDatasourceProcessor",
+      "layers": "Config/Infra, API, Service, Workflow, Datasource"
+    },
+    "requirements_clarity": {
+      "score": 2,
+      "label": "S",
+      "status": "Clear",
+      "gaps": null
+    },
+    "technical_risk": {
+      "score": 3,
+      "label": "M",
+      "risk_factors": "Cross-cutting feature gate touches many independent entry points with a different exception type per layer (404 ExtendedHTTPException in ProviderService, ToolException in ToolExecutionService/ToolkitService, ValueError in workflows/utils.py); a missed guard anywhere would surface as a runtime failure only when RETRIEVAL_BACKEND=none",
+      "mitigation": "Backward-compatible default (RETRIEVAL_BACKEND=elasticsearch) preserves existing behavior for all current deployments; RETRIEVAL_BACKEND value is validated in Config.finalize_settings; startup warning logged when retrieval is disabled; extensive regression tests added across every touched module including a dedicated boot-branch test file"
+    },
+    "file_change_estimate": {
+      "score": 6,
+      "label": "XXL",
+      "modified_files": 19,
+      "modified_file_list": [
+        ".gitignore",
+        "src/codemie/configs/config.py",
+        "src/codemie/configs/customer_config.py",
+        "src/codemie/datasource/google_doc/google_doc_datasource_processor.py",
+        "src/codemie/rest_api/main.py",
+        "src/codemie/service/provider/provider_service.py",
+        "src/codemie/service/tools/tool_execution_service.py",
+        "src/codemie/service/tools/toolkit_service.py",
+        "src/codemie/service/tools/tools_info_service.py",
+        "src/codemie/workflows/utils/utils.py",
+        "tests/codemie/configs/test_config.py",
+        "tests/codemie/configs/test_customer_config.py",
+        "tests/codemie/datasource/google_doc/test_google_doc_datasource_processor.py",
+        "tests/codemie/rest_api/test_main_lifespan.py",
+        "tests/codemie/service/provider/test_provider_service.py",
+        "tests/codemie/service/tools/test_tool_execution_service.py",
+        "tests/codemie/service/tools/test_toolkit_service.py",
+        "tests/codemie/service/tools/test_tools_info_service.py",
+        "tests/codemie/workflows/utils/test_utils.py"
+      ],
+      "new_files": 1,
+      "new_file_list": [
+        "tests/codemie/rest_api/test_main_retrieval_backend_disabled.py"
+      ],
+      "affected_dirs": [
+        "src/codemie/configs",
+        "src/codemie/datasource/google_doc",
+        "src/codemie/rest_api",
+        "src/codemie/service/provider",
+        "src/codemie/service/tools",
+        "src/codemie/workflows/utils",
+        "tests/codemie/configs",
+        "tests/codemie/datasource/google_doc",
+        "tests/codemie/rest_api",
+        "tests/codemie/service/provider",
+        "tests/codemie/service/tools",
+        "tests/codemie/workflows/utils"
+      ]
+    },
+    "dependencies": {
+      "score": 1,
+      "label": "XS",
+      "new_packages": [],
+      "version_changes": []
+    },
+    "affected_layers": {
+      "score": 5,
+      "label": "XL",
+      "layers_changed": ["Config/Infra", "API", "Service", "Workflow", "Datasource"],
+      "schema_migration": false,
+      "cross_system": false
+    }
+  },
+  "total": 23,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 20,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "The retrieval_available() gate was propagated across 9 distinct components spanning config, REST API bootstrap, four service classes, workflow utilities, and a datasource processor — a shared abstraction applied consistently across multiple subsystems, plus red flags for touching core shared config utilities and multiple agent/tool/workflow paths pushed this to the cap." },
+    { "dimension": "file_change_estimate", "reason": "20 files changed per diffstat (16+ maps to XXL); 9 source files modified plus 10 test files touched/added to cover the new gating behavior at every layer." },
+    { "dimension": "affected_layers", "reason": "Five distinct layers changed — Config/Infra (RETRIEVAL_BACKEND setting + validation), API (conditional router registration and startup warning in main.py), Service (ProviderService, ToolExecutionService, ToolkitService, ToolsInfoService), Workflow (workflows/utils.py document-tree lookup), and Datasource (GoogleDocDatasourceProcessor) — a cross-cutting feature-flag concern layered onto an existing full-stack surface." },
+    { "dimension": "technical_risk", "reason": "Moderate risk: each layer raises a different exception type for the disabled case, but the change is backward-compatible by default and is backed by comprehensive new/extended tests including a dedicated boot-branch regression test." }
+  ],
+  "red_flags_applied": [
+    "Touches core shared utilities: config.py and customer_config.py are used throughout the application — bumped Component Scope",
+    "Affects multiple workflows or agents: ToolExecutionService, ToolkitService, and workflows/utils.py all gate agent/workflow tool paths — bumped Component Scope (capped at XXL)"
+  ],
+  "split_recommendation": null
+}

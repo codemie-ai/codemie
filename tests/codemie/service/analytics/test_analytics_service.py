@@ -53,8 +53,8 @@ class TestAnalyticsServiceInitialization:
         """Verify handlers use lazy initialization pattern.
 
         Tests that:
-        - Repository is initialized immediately
-        - All 11 handler instances are None after initialization (not created yet)
+        - Repository is NOT initialized eagerly (lazy property)
+        - All handler instances are None after initialization (not created yet)
         - Handlers are only created on first access (lazy loading)
         """
         # Arrange
@@ -64,8 +64,8 @@ class TestAnalyticsServiceInitialization:
         # Act
         service = AnalyticsService(mock_user)
 
-        # Assert - Repository initialized immediately
-        mock_repository.assert_called_once()
+        # Assert - Repository NOT initialized eagerly (D16 fix)
+        mock_repository.assert_not_called()
 
         # Assert - All handler instances are None (not initialized yet)
         assert service._summary_handler_instance is None

@@ -20,12 +20,20 @@ correctly initializes LiteLLM services, models, and cleanup tasks.
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import ExitStack
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
+
+from codemie.service.model_provider_readiness import ModelProviderReadiness, ModelProviderStatus
+
+# Stub result for the startup readiness check. lifespan() runs the real check otherwise, which for a
+# Bedrock-default profile (MODELS_ENV=aws) resolves the AWS credential chain and can reach IMDS/STS —
+# unit tests must not depend on ambient AWS configuration or make network calls.
+_STUB_READINESS = ModelProviderReadiness(status=ModelProviderStatus.NOT_CHECKED, provider=None, missing=[])
 
 
 @pytest.fixture
@@ -70,7 +78,11 @@ def mock_non_litellm_startup():
                                                         "codemie.rest_api.main.get_observability_provider",
                                                         return_value=mock_provider,
                                                     ):
-                                                        yield
+                                                        with patch(
+                                                            "codemie.rest_api.main.check_model_provider_readiness",
+                                                            return_value=_STUB_READINESS,
+                                                        ):
+                                                            yield
 
 
 def test_initialize_database_and_defaults_runs_only_migrations_and_default_apps():
@@ -167,6 +179,7 @@ async def test_preconfigured_content_runs_after_litellm_init_in_lifespan():
         patch("codemie.rest_api.main.get_observability_provider", return_value=mock_provider),
         patch("codemie.rest_api.main._setup_memory_profiling_scheduler"),
         patch("codemie.rest_api.main._setup_activity_events_retention_scheduler"),
+        patch("codemie.rest_api.main.check_model_provider_readiness", return_value=_STUB_READINESS),
     ]
 
     with ExitStack() as stack:
@@ -477,3 +490,149 @@ class TestMCPAuthStartupValidation:
                                     pass
 
                                 mock_shutdown_mcp_auth.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_lifespan_computes_model_provider_readiness_and_stores_it_on_app_state(
+    mock_app, mock_non_litellm_startup
+):
+    """lifespan() must actually reach the readiness check.
+
+    The unit tests below drive _check_model_provider_readiness() directly, so they stay green even if
+    the lifespan() call site is removed — at which point readiness silently never runs and
+    GET /healthcheck reports status "unknown" forever. This test covers that wiring.
+    """
+    from codemie.rest_api.main import lifespan
+
+    fake_result = ModelProviderReadiness(
+        status=ModelProviderStatus.CONFIGURED,
+        provider="azure_openai",
+        missing=[],
+    )
+
+    with patch("codemie.rest_api.main.initialize_litellm_from_config", return_value=None):
+        with patch("codemie.rest_api.main.is_litellm_enabled", return_value=False):
+            with patch("codemie.rest_api.main.set_global_litellm_service"):
+                with patch("codemie.rest_api.main.close_llm_proxy_client", new_callable=AsyncMock):
+                    with patch(
+                        "codemie.rest_api.main.check_model_provider_readiness",
+                        return_value=fake_result,
+                    ) as mock_check:
+                        async with lifespan(mock_app):
+                            assert mock_app.state.model_provider_readiness == fake_result
+
+    mock_check.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_check_model_provider_readiness_stores_result_on_app_state_and_logs():
+    from codemie.rest_api import main
+
+    app = FastAPI()
+    fake_result = ModelProviderReadiness(
+        status=ModelProviderStatus.CONFIGURED,
+        provider="azure_openai",
+        missing=[],
+    )
+    logged = []
+
+    with patch("codemie.rest_api.main.check_model_provider_readiness", return_value=fake_result):
+        with patch("codemie.rest_api.main.log_model_provider_readiness", side_effect=logged.append):
+            await main._check_model_provider_readiness(app)
+
+    assert app.state.model_provider_readiness == fake_result
+    assert logged == [fake_result]
+
+
+@pytest.mark.asyncio
+async def test_check_model_provider_readiness_does_not_raise_when_not_configured():
+    """The app must still start when no model provider is configured."""
+    from codemie.rest_api import main
+
+    app = FastAPI()
+    fake_result = ModelProviderReadiness(
+        status=ModelProviderStatus.NOT_CONFIGURED,
+        provider=None,
+        missing=["AZURE_OPENAI_API_KEY", "AZURE_OPENAI_URL"],
+    )
+
+    with patch("codemie.rest_api.main.check_model_provider_readiness", return_value=fake_result):
+        with patch("codemie.rest_api.main.log_model_provider_readiness"):
+            await main._check_model_provider_readiness(app)  # must not raise
+
+    assert app.state.model_provider_readiness == fake_result
+
+
+@pytest.mark.asyncio
+async def test_check_model_provider_readiness_swallows_exceptions_and_still_starts():
+    """CR-001: a bug in the readiness check itself must never abort startup."""
+    from codemie.rest_api import main
+
+    app = FastAPI()
+
+    with patch("codemie.rest_api.main.check_model_provider_readiness", side_effect=RuntimeError("boom")):
+        with patch("codemie.rest_api.main.logger.exception") as mock_exception_log:
+            with patch("codemie.rest_api.main.log_model_provider_readiness") as mock_log:
+                await main._check_model_provider_readiness(app)  # must not raise
+
+    assert app.state.model_provider_readiness.status == ModelProviderStatus.NOT_CHECKED
+    assert app.state.model_provider_readiness.provider is None
+    assert app.state.model_provider_readiness.missing == ["model provider readiness check failed; see startup logs"]
+    assert "boom" not in app.state.model_provider_readiness.missing[0]
+    mock_exception_log.assert_called_once_with("Model provider readiness check failed")
+    mock_log.assert_called_once_with(app.state.model_provider_readiness)
+
+
+@pytest.mark.asyncio
+async def test_check_model_provider_readiness_runs_off_the_event_loop():
+    """CR-003: the synchronous check must not block the event loop — other async work
+    scheduled concurrently must be able to run while the check is in flight."""
+    from codemie.rest_api import main
+
+    app = FastAPI()
+    marker = {"other_task_ran": False}
+
+    def slow_sync_check():
+        # Runs inside asyncio.to_thread; sleeping here must not block the loop.
+        import time
+
+        time.sleep(0.2)
+        return ModelProviderReadiness(status=ModelProviderStatus.CONFIGURED, provider="azure_openai", missing=[])
+
+    async def other_task():
+        await asyncio.sleep(0.01)
+        marker["other_task_ran"] = True
+
+    with patch("codemie.rest_api.main.check_model_provider_readiness", side_effect=slow_sync_check):
+        with patch("codemie.rest_api.main.log_model_provider_readiness"):
+            other = asyncio.create_task(other_task())
+            await main._check_model_provider_readiness(app)
+            await other
+
+    assert marker["other_task_ran"] is True
+    assert app.state.model_provider_readiness.status == ModelProviderStatus.CONFIGURED
+
+
+@pytest.mark.asyncio
+async def test_check_model_provider_readiness_times_out_without_blocking_startup():
+    """CR-003: a hanging credential_process (no deadline of its own) must not hang startup —
+    the bounded wait_for must fire and startup must continue with NOT_CHECKED."""
+    from codemie.rest_api import main
+
+    app = FastAPI()
+
+    def hanging_sync_check():
+        import time
+
+        time.sleep(5)  # far longer than the test's patched timeout
+        return ModelProviderReadiness(status=ModelProviderStatus.CONFIGURED, provider="aws_bedrock", missing=[])
+
+    with patch("codemie.rest_api.main.check_model_provider_readiness", side_effect=hanging_sync_check):
+        with patch("codemie.rest_api.main._MODEL_PROVIDER_READINESS_TIMEOUT_SECONDS", 0.05):
+            with patch("codemie.rest_api.main.logger.warning") as mock_warning:
+                with patch("codemie.rest_api.main.log_model_provider_readiness"):
+                    await main._check_model_provider_readiness(app)  # must not raise or hang
+
+    assert app.state.model_provider_readiness.status == ModelProviderStatus.NOT_CHECKED
+    assert app.state.model_provider_readiness.provider is None
+    assert any("timed out" in str(call.args[0]) for call in mock_warning.call_args_list)

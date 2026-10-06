@@ -1,0 +1,38 @@
+[
+  {
+    "location": "standalone-build/Build-image.ps1:15-17",
+    "trigger_condition": "User supplies non-existent custom root path for any parameter",
+    "guard_snippet": "foreach ($p in @($BackendRoot,$FrontendRoot,$PackagingRoot)) { if (-not (Test-Path $p -PathType Container)) { throw \"Required directory not found: $p\" } }; then Resolve-Path",
+    "potential_consequence": "Resolve-Path throws cryptic termination error; friendly validation message never reached"
+  },
+  {
+    "location": "standalone-build/Build-image.ps1:104",
+    "trigger_condition": "nginx.conf checked out on Windows with git autocrlf=true (CRLF line endings)",
+    "guard_snippet": "$ncText = [IO.File]::ReadAllText($ncSrc).Replace(\"`r`n\",\"`n\"); [IO.File]::WriteAllText($ncDst, $ncText, [Text.UTF8Encoding]::new($false))",
+    "potential_consequence": "CRLF in nginx.conf may cause nginx config parse errors inside Linux container"
+  },
+  {
+    "location": "standalone-build/Build-image.ps1:78-79",
+    "trigger_condition": "Repo path is not a git repository or HEAD is detached on rev-parse",
+    "guard_snippet": "if ($LASTEXITCODE -ne 0) { $branch = '(unknown)' }; if ($LASTEXITCODE -ne 0) { $sha = '(unknown)' }",
+    "potential_consequence": "Git error text logged verbatim as branch/SHA; misleading source-state record persists in build log"
+  },
+  {
+    "location": "standalone-build/Build-image.ps1:165-169",
+    "trigger_condition": "Container engine build exits non-zero after ctx/ assembly",
+    "guard_snippet": "trap { Remove-Item -LiteralPath $ctxDir -Recurse -Force -ErrorAction SilentlyContinue }; exit $buildExit",
+    "potential_consequence": "Potentially large ctx/ tree left on disk after every failed build; accumulates on repeated retries"
+  },
+  {
+    "location": "standalone-build/Build-image.ps1:20-22",
+    "trigger_condition": "Engine binary on PATH but container daemon not running (e.g. podman machine stopped)",
+    "guard_snippet": "& $Engine info 2>&1 | Out-Null; if ($LASTEXITCODE -ne 0) { throw \"Engine '$Engine' daemon not reachable.\" }",
+    "potential_consequence": "Script assembles full context then fails at step 10 with an opaque daemon-connection error"
+  },
+  {
+    "location": "standalone-build/Build-image.ps1:88-97",
+    "trigger_condition": "Two concurrent script invocations share the same PSScriptRoot",
+    "guard_snippet": "use a per-invocation ctx dir, e.g. ctx-<PID> or ctx-<timestamp>, or place a lock file before Remove-Item",
+    "potential_consequence": "Second run deletes first run's ctx/ mid-build; non-deterministic build failure for parallel invocations"
+  }
+]

@@ -25,13 +25,30 @@ Tests cover:
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+from elastic_transport import ApiResponseMeta, TransportError
+from elasticsearch import ApiError
+from elasticsearch import ConnectionError as ESConnectionError
 from elasticsearch import NotFoundError
 from fastapi import status
 
 from codemie.repository.metrics_elastic_repository import MetricsElasticRepository
 from codemie.core.exceptions import ExtendedHTTPException
+
+
+def _make_api_error(status_code: int = 400, message: str = "bad query syntax") -> ApiError:
+    """Build a real ApiError instance (not TransportError's kin) for fallback-scope tests."""
+    meta = ApiResponseMeta(
+        status=status_code,
+        http_version="1.1",
+        headers={},
+        duration=0.0,
+        node=MagicMock(),
+    )
+    return ApiError(message=message, meta=meta, body={"error": {"type": "parsing_exception"}})
 
 
 class TestMetricsElasticRepository:
@@ -66,12 +83,16 @@ class TestMetricsElasticRepository:
         not where DEFINED (in original modules).
         """
         with patch(
-            'codemie.repository.metrics_elastic_repository.ElasticSearchClient.get_async_client',
-            return_value=mock_es_client,
+            'codemie.repository.metrics_elastic_repository.ElasticSearchClient.is_configured',
+            return_value=True,
         ):
-            with patch('codemie.repository.metrics_elastic_repository.config', mock_config):
-                repo = MetricsElasticRepository()
-                return repo
+            with patch(
+                'codemie.repository.metrics_elastic_repository.ElasticSearchClient.get_async_client',
+                return_value=mock_es_client,
+            ):
+                with patch('codemie.repository.metrics_elastic_repository.config', mock_config):
+                    repo = MetricsElasticRepository()
+                    return repo
 
     @pytest.fixture
     def sample_esql_result(self):
@@ -118,11 +139,15 @@ class TestMetricsElasticRepository:
         """Verify repository initialization with Elasticsearch client and index configuration."""
         # Arrange & Act
         with patch(
-            'codemie.repository.metrics_elastic_repository.ElasticSearchClient.get_async_client',
-            return_value=mock_es_client,
+            'codemie.repository.metrics_elastic_repository.ElasticSearchClient.is_configured',
+            return_value=True,
         ):
-            with patch('codemie.repository.metrics_elastic_repository.config', mock_config):
-                repository = MetricsElasticRepository()
+            with patch(
+                'codemie.repository.metrics_elastic_repository.ElasticSearchClient.get_async_client',
+                return_value=mock_es_client,
+            ):
+                with patch('codemie.repository.metrics_elastic_repository.config', mock_config):
+                    repository = MetricsElasticRepository()
 
         # Assert
         assert repository._client == mock_es_client
@@ -467,3 +492,120 @@ class TestMetricsElasticRepository:
         # Verify exception chaining preserves original error
         assert exc_info.value.__cause__ == original_error
         assert isinstance(exc_info.value.__cause__, ValueError)
+
+
+# ================================================================================
+# Opt-in fail-open fallback tests (fail_open_on_unavailable)
+# ================================================================================
+
+
+@pytest.mark.anyio
+async def test_opt_in_repository_returns_empty_when_es_not_configured():
+    with patch("codemie.repository.metrics_elastic_repository.ElasticSearchClient") as mock_client_cls:
+        mock_client_cls.is_configured.return_value = False
+        repo = MetricsElasticRepository(fail_open_on_unavailable=True)
+        agg = await repo.execute_aggregation_query({"query": {"match_all": {}}})
+        esql = await repo.execute_esql_query("FROM x")
+        search = await repo.execute_search_query({"match_all": {}})
+    assert agg == {"hits": {"hits": [], "total": {"value": 0}}, "aggregations": {}}
+    assert esql == {"columns": [], "values": []}
+    assert search == {"hits": {"hits": [], "total": {"value": 0}}}
+
+
+@pytest.mark.anyio
+async def test_opt_in_repository_returns_empty_on_connection_error():
+    with patch("codemie.repository.metrics_elastic_repository.ElasticSearchClient") as mock_client_cls:
+        mock_client_cls.is_configured.return_value = True
+        mock_async_client = AsyncMock()
+        mock_async_client.search.side_effect = ESConnectionError("refused")
+        mock_client_cls.get_async_client.return_value = mock_async_client
+        repo = MetricsElasticRepository(fail_open_on_unavailable=True)
+        result = await repo.execute_aggregation_query({"query": {"match_all": {}}})
+    assert result == {"hits": {"hits": [], "total": {"value": 0}}, "aggregations": {}}
+
+
+@pytest.mark.anyio
+async def test_default_repository_still_raises_when_es_not_configured():
+    """Default (opt-out) mode — the mode Leaderboard/StaleDatasource callers use — stays fail-closed."""
+    with patch("codemie.repository.metrics_elastic_repository.ElasticSearchClient") as mock_client_cls:
+        mock_client_cls.is_configured.return_value = False
+        repo = MetricsElasticRepository()
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            await repo.execute_aggregation_query({"query": {"match_all": {}}})
+    assert exc_info.value.code == 503
+
+
+@pytest.mark.anyio
+async def test_opt_in_repository_returns_empty_on_transport_error():
+    """CR-002: bare elastic_transport.TransportError (not just its ConnectionError subclass)
+    must also trigger the opt-in fallback."""
+    with patch("codemie.repository.metrics_elastic_repository.ElasticSearchClient") as mock_client_cls:
+        mock_client_cls.is_configured.return_value = True
+        mock_async_client = AsyncMock()
+        mock_async_client.search.side_effect = TransportError("transport failure")
+        mock_client_cls.get_async_client.return_value = mock_async_client
+        repo = MetricsElasticRepository(fail_open_on_unavailable=True)
+        agg = await repo.execute_aggregation_query({"query": {"match_all": {}}})
+
+        mock_async_client.search.side_effect = TransportError("transport failure")
+        search = await repo.execute_search_query({"match_all": {}})
+
+        mock_async_client.esql = MagicMock()
+        mock_async_client.esql.query = AsyncMock(side_effect=TransportError("transport failure"))
+        esql = await repo.execute_esql_query("FROM x")
+
+    assert agg == {"hits": {"hits": [], "total": {"value": 0}}, "aggregations": {}}
+    assert search == {"hits": {"hits": [], "total": {"value": 0}}}
+    assert esql == {"columns": [], "values": []}
+
+
+@pytest.mark.anyio
+async def test_opt_in_repository_returns_empty_on_asyncio_timeout_error():
+    """CR-002: asyncio.TimeoutError must also trigger the opt-in fallback in all three methods."""
+    with patch("codemie.repository.metrics_elastic_repository.ElasticSearchClient") as mock_client_cls:
+        mock_client_cls.is_configured.return_value = True
+        mock_async_client = AsyncMock()
+        mock_async_client.search.side_effect = asyncio.TimeoutError("timed out")
+        mock_client_cls.get_async_client.return_value = mock_async_client
+        repo = MetricsElasticRepository(fail_open_on_unavailable=True)
+        agg = await repo.execute_aggregation_query({"query": {"match_all": {}}})
+
+        mock_async_client.search.side_effect = asyncio.TimeoutError("timed out")
+        search = await repo.execute_search_query({"match_all": {}})
+
+        mock_async_client.esql = MagicMock()
+        mock_async_client.esql.query = AsyncMock(side_effect=asyncio.TimeoutError("timed out"))
+        esql = await repo.execute_esql_query("FROM x")
+
+    assert agg == {"hits": {"hits": [], "total": {"value": 0}}, "aggregations": {}}
+    assert search == {"hits": {"hits": [], "total": {"value": 0}}}
+    assert esql == {"columns": [], "values": []}
+
+
+@pytest.mark.anyio
+async def test_opt_in_repository_does_not_fallback_on_api_error():
+    """CR-002: a genuine ApiError (bad query syntax etc.) must NOT be absorbed by the
+    connector-availability fallback, even in opt-in mode — it must keep failing."""
+    with patch("codemie.repository.metrics_elastic_repository.ElasticSearchClient") as mock_client_cls:
+        mock_client_cls.is_configured.return_value = True
+        mock_async_client = AsyncMock()
+        mock_async_client.search.side_effect = _make_api_error()
+        mock_client_cls.get_async_client.return_value = mock_async_client
+        repo = MetricsElasticRepository(fail_open_on_unavailable=True)
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            await repo.execute_aggregation_query({"query": {"match_all": {}}})
+        assert exc_info.value.code == status.HTTP_503_SERVICE_UNAVAILABLE
+
+
+@pytest.mark.anyio
+async def test_default_repository_still_raises_on_connection_error():
+    with patch("codemie.repository.metrics_elastic_repository.ElasticSearchClient") as mock_client_cls:
+        mock_client_cls.is_configured.return_value = True
+        mock_async_client = AsyncMock()
+        mock_async_client.search.side_effect = ESConnectionError("refused")
+        mock_client_cls.get_async_client.return_value = mock_async_client
+        repo = MetricsElasticRepository()
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            await repo.execute_aggregation_query({"query": {"match_all": {}}})
+    assert exc_info.value.code == 503

@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "task": "Add per-capability *_ENABLED config flags, API-level enforcement guards, GET /v1/config capability projection, and scheduler guards for 6 Elasticsearch-dependent features (Leaderboard, Conversation Analytics, Metrics Analytics, Smart Tool Selection, Admin Log Lookup, Stale-Datasource Detection), with tests for supported and unsupported states.",
+  "generated": "2026-09-07T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 21,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "6 capabilities each requiring changes across config.py, one or more routers, one or more service files, and the customer_config.py runtime contract — 4+ subsystems touched. Red flag triggered: 4 background schedulers (LeaderboardScheduler, ConversationAnalysisScheduler, StaleDatasourceScheduler, MetricsRotationScheduler) plus SmartToolSelector agent all fall within scope, bumping from L(4) to XL(5)."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "The per-capability config flag and scheduler-guard patterns are well-established, but three complications raise risk beyond M: (1) D16 — AnalyticsService.__init__ eagerly constructs MetricsElasticRepository regardless of handler, meaning an analytics router guard must not break the PostgreSQL-backed AI Adoption path; (2) TOOL_SELECTION_ENABLED currently gates startup indexing only, not the request-time get_tools_by_query() call path in toolkit_lookup_service.py — extending to cover call-time is new work; (3) auto-bump applied: task explicitly requires tests for supported and unsupported states, but no existing test fixture covers ES-absent or capability-disabled router surface testing — no template to follow."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "Estimated 8-9 files modified: config.py (2 new flags), customer_config.py (6 new runtime entries), logs router, analytics router, main.py (startup/scheduler guards), analytics_service.py (D16 fix), toolkit_lookup_service.py (extend flag to call-time), conversation_analysis router (review), and possibly smart_tool_selector.py. Plus 2-3 new test files across 5+ directories — consistent with L(4): 8-10 modified, 2-4 new."
+    },
+    {
+      "dimension": "affected_layers",
+      "reason": "Three distinct layers: API (logs, analytics, conversation_analysis, customer_config routers), Service (analytics_service, logs service, toolkit_lookup service, stale_datasource service), and Infrastructure/Config (config.py, customer_config.py, main.py startup and scheduler registration). No DB schema migration and no new external dependency introduced — M(3) is correct."
+    }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L(4) to XL(5): affects multiple workflows and agents — 4 background schedulers (LeaderboardScheduler, ConversationAnalysisScheduler, StaleDatasourceScheduler, MetricsRotationScheduler) and SmartToolSelector agent are all within scope.",
+    "Technical Risk auto-bumped from M(3) to L(4): task explicitly requires tests for supported/unsupported states but no existing test fixture covers ES-absent or capability-disabled router surface testing — no defensive test pattern template exists in the codebase for this scenario."
+  ],
+  "split_recommendation": null
+}

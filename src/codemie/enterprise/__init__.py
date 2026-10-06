@@ -42,6 +42,7 @@ from .loader import (
     build_agent_metadata,
     build_workflow_metadata,
     enterprise_mcp_auth_alembic_locations,
+    has_enterprise,
     has_idp,
     has_langfuse,
     has_litellm,
@@ -143,6 +144,7 @@ __all__ = [
     "build_agent_metadata",
     "build_workflow_metadata",
     "enterprise_mcp_auth_alembic_locations",
+    "has_enterprise",
     "has_langfuse",  # kept for backward compatibility; prefer has_llm_observability
     "has_litellm",
     "has_llm_observability",

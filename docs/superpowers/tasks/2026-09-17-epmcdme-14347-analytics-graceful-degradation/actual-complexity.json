@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "generated": "2026-09-18T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 6, "label": "XXL" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 6, "label": "XXL" }
+  },
+  "total": 29,
+  "size": "XL",
+  "band_range": "27-31",
+  "files_changed": 125,
+  "routing": "split-required",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Diff touches analytics service, provider readiness, customer config, enterprise loader, tool services (execution/lookup/toolkit/info), ClickHouse and Elasticsearch clients, triggers/job_lock, and workflows/utils — many independent components and subsystems, not one coherent feature slice." },
+    { "dimension": "affected_layers", "reason": "API (rest_api/routers: analytics, common, logs), Service, Repository/DB-Persistence (metrics_elastic_repository), External (clickhouse.py, elasticsearch.py clients), and Infrastructure (standalone/Dockerfile, docker-compose x2, nginx.conf, entrypoint.sh) are all touched, with two external integrations (ES + ClickHouse) going through graceful-degradation paths simultaneously." },
+    { "dimension": "file_change_estimate", "reason": "Diffstat reports 125 files changed / 9466 insertions, mapping to the 16+ file XXL band regardless of how much is test/doc versus source." },
+    { "dimension": "technical_risk", "reason": "Startup/readiness behavior for two external systems (Elasticsearch, ClickHouse) is being made fault-tolerant; model_provider_readiness.py and customer_config_service.py changes affect app boot path — a regression here is high-blast-radius and not easily covered by an existing pattern." },
+    { "dimension": "requirements_clarity", "reason": "The diff includes a distinct fix-up pass (CR-002 through CR-006 code-review findings, plus a separate Sonar new-code-findings commit) layered on top of the original graceful-degradation commits, indicating the initial implementation needed material rework after review rather than landing clean." }
+  ],
+  "red_flags_applied": [
+    "Affected Layers bumped toward XXL: two simultaneous external integrations (Elasticsearch + ClickHouse) plus standalone infrastructure changes in the same diff",
+    "Component Scope bumped to XXL: touches multiple independent subsystems/workflows (analytics, provider readiness, tool services, enterprise loader) rather than one feature slice"
+  ],
+  "split_recommendation": "This diff mixes at least two distinct units of work that should have been separate stories/runs: (1) ES/ClickHouse graceful-degradation core (clients, repository, model_provider_readiness, analytics_service, customer_config) — by-feature; (2) standalone deployment/infrastructure assets (Dockerfile, docker-compose, nginx, entrypoint) — by-component, since they are infra-only and dependency-free from the degradation logic. The CR-002..CR-006 and Sonar fix-up commits are rework of (1) and should not be counted as new scope going forward."
+}

@@ -526,6 +526,44 @@ class TestToolkitService:
         # Assertions
         assert result is False
 
+    def test_toolkit_service_unaffected_when_query_returns_empty(
+        self, mock_assistant, mock_user, mock_request, mock_tool
+    ):
+        """get_tools continues normally when smart selection runs but get_tools_by_query returns [].
+
+        Exercises the real ToolkitService.get_tools production path: assistant has no configured
+        toolkits so the smart-selection branch is entered, but the query returns nothing.
+        Core tools must still be collected and returned — ordinary tool resolution must not be
+        bypassed just because smart selection came up empty.
+        """
+        mock_assistant.toolkits = []
+        mock_assistant.skill_ids = []
+
+        with patch(
+            "codemie.service.tools.toolkit_service.ToolkitLookupService.build_search_query_with_history",
+            return_value="test query",
+        ):
+            with patch(
+                "codemie.service.tools.toolkit_service.ToolkitLookupService.get_tools_by_query",
+                return_value=[],
+            ) as mock_gtbq:
+                with patch.object(ToolkitService, "get_core_tools", return_value=[mock_tool]):
+                    with patch.object(ToolkitService, "add_context_tools", return_value=[]):
+                        with patch.object(ToolkitService, "_get_tools", return_value=[]):
+                            result = ToolkitService.get_tools(
+                                assistant=mock_assistant,
+                                request=mock_request,
+                                user=mock_user,
+                                llm_model="gpt-4",
+                                request_uuid="test-uuid",
+                                smart_tool_selection_enabled=True,
+                            )
+
+        # Smart selection ran: a non-empty query was built so get_tools_by_query was called
+        mock_gtbq.assert_called_once()
+        # Core tool is present — ordinary tool resolution was not skipped
+        assert mock_tool in result
+
     @patch("codemie.service.tools.toolkit_service.ToolsPreprocessorFactory")
     def test_process_final_tools_traditional(self, mock_preprocessor_factory, mock_assistant, mock_tool):
         """Test _process_final_tools_traditional processes tools correctly."""
@@ -858,6 +896,67 @@ class TestToolkitService:
 
         # Assertions
         assert len(tools) == 0
+
+    def test_add_context_tools_raises_when_retrieval_unavailable_for_kb_context(self, mock_assistant, mock_user):
+        """Test add_context_tools raises ToolException for KB context when retrieval backend is disabled."""
+        context = Context(context_type=ContextType.KNOWLEDGE_BASE, name="test-kb")
+        mock_assistant.context = [context]
+
+        with patch("codemie.service.tools.toolkit_service.config.RETRIEVAL_BACKEND", "none"):
+            with patch.object(ToolkitService, "_add_kb_tools") as mock_add_kb_tools:
+                with pytest.raises(ToolException):
+                    ToolkitService.add_context_tools(
+                        assistant=mock_assistant,
+                        request=None,
+                        llm_model="gpt-4",
+                        user=mock_user,
+                        request_uuid="test-uuid",
+                    )
+
+        mock_add_kb_tools.assert_not_called()
+
+    def test_add_context_tools_raises_when_retrieval_unavailable_for_code_context(self, mock_assistant, mock_user):
+        """Test add_context_tools raises ToolException for CODE context when retrieval backend is disabled."""
+        context = Context(context_type=ContextType.CODE, name="test-repo")
+        mock_assistant.context = [context]
+
+        with patch("codemie.service.tools.toolkit_service.config.RETRIEVAL_BACKEND", "none"):
+            with patch.object(ToolkitService, "_add_code_tools") as mock_add_code_tools:
+                with pytest.raises(ToolException):
+                    ToolkitService.add_context_tools(
+                        assistant=mock_assistant,
+                        request=None,
+                        llm_model="gpt-4",
+                        user=mock_user,
+                        request_uuid="test-uuid",
+                    )
+
+        mock_add_code_tools.assert_not_called()
+
+    def test_add_context_tools_unaffected_when_retrieval_available(self, mock_assistant, mock_user):
+        """Test add_context_tools builds tools normally for PROVIDER context when retrieval is available."""
+        context = Context(context_type=ContextType.PROVIDER, name="test-provider-context")
+        mock_assistant.context = [context]
+
+        mock_provider_tool = Mock(spec=BaseTool)
+
+        def fake_add_provider_context_tools(tools, *args, **kwargs):
+            tools.append(mock_provider_tool)
+
+        with patch("codemie.service.tools.toolkit_service.config.RETRIEVAL_BACKEND", "elasticsearch"):
+            with patch.object(
+                ToolkitService, "_add_provider_context_tools", side_effect=fake_add_provider_context_tools
+            ) as mock_add_provider_context_tools:
+                tools = ToolkitService.add_context_tools(
+                    assistant=mock_assistant,
+                    request=None,
+                    llm_model="gpt-4",
+                    user=mock_user,
+                    request_uuid="test-uuid",
+                )
+
+        mock_add_provider_context_tools.assert_called_once()
+        assert tools == [mock_provider_tool]
 
     @patch.object(CodeIndexInfo, 'filter_by_project_and_repo')
     def test_find_code_index(self, mock_filter):

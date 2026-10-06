@@ -77,6 +77,8 @@ class Config(BaseSettings):
     ELASTIC_USERNAME: str = ""
     ELASTIC_DATASOURCE_REPLICAS: int = 1
 
+    RETRIEVAL_BACKEND: Literal["elasticsearch", "none"] = "elasticsearch"
+
     # Mermaid diagram rendering configuration
     MERMAID_SERVER_URL: str = "http://localhost:8082"  # URL of the local Mermaid rendering server
     MERMAID_SERVER_TIMEOUT: int = 50  # Timeout (in seconds) for requests to the Mermaid server
@@ -790,6 +792,7 @@ class Config(BaseSettings):
     # 1. Dynamic tool selection for agents (selecting subset from available tools)
     # 2. Smart tool lookup when no toolkits configured (finding relevant tools from all available)
     TOOL_SELECTION_ENABLED: bool = False
+    ADMIN_LOG_LOOKUP_ENABLED: bool = True  # default True; standalone (non-ES) deployments must set False
     # Minimum number of tools required to trigger smart selection (below this uses all tools)
     TOOL_SELECTION_THRESHOLD: int = 3
     # Maximum number of tools to select per query
@@ -1013,6 +1016,7 @@ class Config(BaseSettings):
 
         if self.STALE_DATASOURCE_DELETION_ENABLED and not self.STALE_DATASOURCE_ENABLED:
             raise ValueError("STALE_DATASOURCE_DELETION_ENABLED=True requires STALE_DATASOURCE_ENABLED=True")
+
         return self
 
     @computed_field
@@ -1089,6 +1093,10 @@ class Config(BaseSettings):
     def is_local(self) -> bool:
         """Check if the environment is local"""
         return self.ENV == ENV_LOCAL
+
+
+def retrieval_available(cfg: Config) -> bool:
+    return cfg.RETRIEVAL_BACKEND != "none"
 
 
 class HealthCheckFilter(logging.Filter):

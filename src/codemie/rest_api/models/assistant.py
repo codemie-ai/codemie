@@ -102,6 +102,10 @@ class ContextType(str, Enum):
     CODE = "code"
     PROVIDER = "provider"
 
+    @property
+    def is_retrieval_dependent(self) -> bool:
+        return self in {ContextType.KNOWLEDGE_BASE, ContextType.CODE}
+
 
 class SettingsConfigLevel(StrEnum):
     """Level at which settings should be configured for a tool."""

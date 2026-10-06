@@ -20,6 +20,7 @@ from unittest.mock import MagicMock, patch, call, Mock
 import pytest
 from langchain_core.documents import Document
 
+from codemie.datasource.base_llm_routing_processor import BaseLLMRoutingDatasourceProcessor
 from codemie.rest_api.security.user import User
 from codemie.datasource.google_doc.google_doc_datasource_processor import (
     GoogleDocDatasourceProcessor,
@@ -132,9 +133,14 @@ def processor(mock_elastic, mock_loader):
 
 
 class TestGoogleDocDatasourceProcessor:
+    def test_client_is_not_a_class_attribute(self):
+        """Test that the Elasticsearch client is not constructed at class/import time."""
+        assert "client" not in BaseLLMRoutingDatasourceProcessor.__dict__
+        assert "client" not in GoogleDocDatasourceProcessor.__dict__
+
     def test_parse_google_doc_id(self):
         """Test parsing of Google Doc ID from URL."""
-        with patch("codemie.datasource.base_llm_routing_processor.ElasticSearchClient"):
+        with patch("codemie.datasource.base_datasource_processor.ElasticSearchClient"):
             processor = GoogleDocDatasourceProcessor(
                 datasource_name="test",
                 project_name="test",
@@ -402,7 +408,7 @@ class TestGoogleDocDatasourceProcessor:
 
     def test_init_loader_without_setting_id_raises_error(self):
         """Test that _init_loader raises ValueError when setting_id is None."""
-        with patch("codemie.datasource.base_llm_routing_processor.ElasticSearchClient"):
+        with patch("codemie.datasource.base_datasource_processor.ElasticSearchClient"):
             processor = GoogleDocDatasourceProcessor(
                 datasource_name="test",
                 project_name="test",
@@ -421,7 +427,7 @@ class TestGoogleDocDatasourceProcessor:
     def test_init_loader_with_setting_id(self):
         """Test that _init_loader works correctly when setting_id is provided."""
         with (
-            patch("codemie.datasource.base_llm_routing_processor.ElasticSearchClient"),
+            patch("codemie.datasource.base_datasource_processor.ElasticSearchClient"),
             patch(
                 "codemie.datasource.google_doc.google_doc_datasource_processor.GoogleOAuthTokenManager"
             ) as mock_token_manager,

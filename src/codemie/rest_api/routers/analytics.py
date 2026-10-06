@@ -29,7 +29,7 @@ from datetime import datetime, timezone
 from functools import wraps
 from typing import Any
 
-from fastapi import APIRouter, Depends, Path, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -553,7 +553,10 @@ async def get_summaries(
 
 
 @router.get(
-    "/assistants-chats", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True
+    "/assistants-chats",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
 )
 @handle_analytics_errors("assistants chats analytics")
 async def get_assistants_chats(
@@ -576,7 +579,12 @@ async def get_assistants_chats(
     return _create_response(data, TabularResponse)
 
 
-@router.get("/workflows", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True)
+@router.get(
+    "/workflows",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
+)
 @handle_analytics_errors("workflows analytics")
 async def get_workflows(
     user: User = Depends(authenticate),
@@ -599,7 +607,10 @@ async def get_workflows(
 
 
 @router.get(
-    "/tools-usage", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True
+    "/tools-usage",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
 )
 @handle_analytics_errors("tools usage analytics")
 async def get_tools_usage(
@@ -621,7 +632,10 @@ async def get_tools_usage(
 
 
 @router.get(
-    "/agents-usage", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True
+    "/agents-usage",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
 )
 @handle_analytics_errors("agents usage analytics")
 async def get_agents_usage(
@@ -643,7 +657,10 @@ async def get_agents_usage(
 
 
 @router.get(
-    "/power-users", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True
+    "/power-users",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
 )
 @handle_analytics_errors("power users analytics")
 async def get_power_users(
@@ -667,7 +684,10 @@ async def get_power_users(
 
 
 @router.get(
-    "/knowledge-sharing", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True
+    "/knowledge-sharing",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
 )
 @handle_analytics_errors("knowledge sharing analytics")
 async def get_knowledge_sharing(
@@ -689,7 +709,10 @@ async def get_knowledge_sharing(
 
 
 @router.get(
-    "/top-agents-usage", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True
+    "/top-agents-usage",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
 )
 @handle_analytics_errors("top agents usage analytics")
 async def get_top_agents_usage(
@@ -767,7 +790,10 @@ async def get_published_to_marketplace(
 
 
 @router.get(
-    "/webhooks-invocation", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True
+    "/webhooks-invocation",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
 )
 @handle_analytics_errors("webhooks invocation analytics")
 async def get_webhooks_invocation(
@@ -791,7 +817,10 @@ async def get_webhooks_invocation(
 
 
 @router.get(
-    "/mcp-servers", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True
+    "/mcp-servers",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
 )
 @handle_analytics_errors("MCP servers analytics")
 async def get_mcp_servers(
@@ -838,7 +867,10 @@ async def get_mcp_servers_by_users(
 
 
 @router.get(
-    "/projects-spending", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True
+    "/projects-spending",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
 )
 @handle_analytics_errors("projects spending analytics")
 async def get_projects_spending(
@@ -861,7 +893,12 @@ async def get_projects_spending(
     return _create_response(data, TabularResponse)
 
 
-@router.get("/llms-usage", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True)
+@router.get(
+    "/llms-usage",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
+)
 @handle_analytics_errors("LLMs usage analytics")
 async def get_llms_usage(
     user: User = Depends(authenticate),
@@ -884,7 +921,10 @@ async def get_llms_usage(
 
 
 @router.get(
-    "/embeddings-usage", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True
+    "/embeddings-usage",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
 )
 @handle_analytics_errors("embeddings usage analytics")
 async def get_embeddings_usage(
@@ -906,7 +946,10 @@ async def get_embeddings_usage(
 
 
 @router.get(
-    "/users-spending", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True
+    "/users-spending",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
 )
 @handle_analytics_errors("users spending analytics")
 async def get_users_spending(
@@ -930,7 +973,10 @@ async def get_users_spending(
 
 
 @router.get(
-    "/budget-soft-limit", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True
+    "/budget-soft-limit",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
 )
 @handle_analytics_errors("budget soft limit analytics")
 async def get_budget_soft_limit(
@@ -952,7 +998,10 @@ async def get_budget_soft_limit(
 
 
 @router.get(
-    "/budget-hard-limit", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True
+    "/budget-hard-limit",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
 )
 @handle_analytics_errors("budget hard limit analytics")
 async def get_budget_hard_limit(
@@ -974,7 +1023,10 @@ async def get_budget_hard_limit(
 
 
 @router.get(
-    "/users-activity", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True
+    "/users-activity",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
 )
 @handle_analytics_errors("users activity analytics")
 async def get_users_activity(
@@ -996,7 +1048,10 @@ async def get_users_activity(
 
 
 @router.get(
-    "/users-unique-daily", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True
+    "/users-unique-daily",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
 )
 @handle_analytics_errors("unique daily users analytics")
 async def get_users_unique_daily(
@@ -1131,7 +1186,10 @@ async def get_users_list(
 
 
 @router.get(
-    "/projects-activity", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True
+    "/projects-activity",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
 )
 @handle_analytics_errors("projects activity analytics")
 async def get_projects_activity(
@@ -1213,7 +1271,10 @@ async def get_projects_unique_daily(
 
 
 @router.get(
-    "/cli-summary", status_code=status.HTTP_200_OK, response_model=SummariesResponse, response_model_by_alias=True
+    "/cli-summary",
+    status_code=status.HTTP_200_OK,
+    response_model=SummariesResponse,
+    response_model_by_alias=True,
 )
 @handle_analytics_errors("CLI summary analytics")
 async def get_cli_summary(
@@ -1236,7 +1297,12 @@ async def get_cli_summary(
     return _create_response(data, SummariesResponse)
 
 
-@router.get("/cli-agents", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True)
+@router.get(
+    "/cli-agents",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
+)
 @handle_analytics_errors("CLI agents analytics")
 async def get_cli_agents(
     user: User = Depends(authenticate),
@@ -1256,7 +1322,12 @@ async def get_cli_agents(
     return _create_response(data, TabularResponse)
 
 
-@router.get("/cli-llms", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True)
+@router.get(
+    "/cli-llms",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
+)
 @handle_analytics_errors("CLI LLMs analytics")
 async def get_cli_llms(
     user: User = Depends(authenticate),
@@ -1278,7 +1349,12 @@ async def get_cli_llms(
     return _create_response(data, TabularResponse)
 
 
-@router.get("/cli-users", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True)
+@router.get(
+    "/cli-users",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
+)
 @handle_analytics_errors("CLI users analytics")
 async def get_cli_users(
     user: User = Depends(authenticate),
@@ -1298,7 +1374,12 @@ async def get_cli_users(
     return _create_response(data, TabularResponse)
 
 
-@router.get("/cli-errors", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True)
+@router.get(
+    "/cli-errors",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
+)
 @handle_analytics_errors("CLI errors analytics")
 async def get_cli_errors(
     user: User = Depends(authenticate),
@@ -1319,7 +1400,10 @@ async def get_cli_errors(
 
 
 @router.get(
-    "/cli-repositories", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True
+    "/cli-repositories",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
 )
 @handle_analytics_errors("CLI repositories analytics")
 async def get_cli_repositories(
@@ -1341,7 +1425,10 @@ async def get_cli_repositories(
 
 
 @router.get(
-    "/cli-top-performers", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True
+    "/cli-top-performers",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
 )
 @handle_analytics_errors("CLI top performers analytics")
 async def get_cli_top_performers(
@@ -1363,7 +1450,10 @@ async def get_cli_top_performers(
 
 
 @router.get(
-    "/cli-top-versions", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True
+    "/cli-top-versions",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
 )
 @handle_analytics_errors("CLI top versions analytics")
 async def get_cli_top_versions(
@@ -1960,7 +2050,10 @@ async def _run_enriched_user_insight(
     return _create_response(data, TabularResponse)
 
 
-@router.get("/cli-insights-by-enriched-user-primary-skill", **_ENRICHED_USER_ROUTE_PARAMS)
+@router.get(
+    "/cli-insights-by-enriched-user-primary-skill",
+    **_ENRICHED_USER_ROUTE_PARAMS,
+)
 @handle_analytics_errors("CLI insights by enriched user primary skill")
 async def get_cli_insights_by_enriched_user_primary_skill(
     user: User = Depends(authenticate),
@@ -1970,7 +2063,10 @@ async def get_cli_insights_by_enriched_user_primary_skill(
     return await _run_enriched_user_insight(user, EnrichedUserScope.PRIMARY_SKILL, params)
 
 
-@router.get("/cli-insights-by-enriched-user-country", **_ENRICHED_USER_ROUTE_PARAMS)
+@router.get(
+    "/cli-insights-by-enriched-user-country",
+    **_ENRICHED_USER_ROUTE_PARAMS,
+)
 @handle_analytics_errors("CLI insights by enriched user country")
 async def get_cli_insights_by_enriched_user_country(
     user: User = Depends(authenticate),
@@ -1980,7 +2076,10 @@ async def get_cli_insights_by_enriched_user_country(
     return await _run_enriched_user_insight(user, EnrichedUserScope.COUNTRY, params)
 
 
-@router.get("/cli-insights-by-enriched-user-city", **_ENRICHED_USER_ROUTE_PARAMS)
+@router.get(
+    "/cli-insights-by-enriched-user-city",
+    **_ENRICHED_USER_ROUTE_PARAMS,
+)
 @handle_analytics_errors("CLI insights by enriched user city")
 async def get_cli_insights_by_enriched_user_city(
     user: User = Depends(authenticate),
@@ -1990,7 +2089,10 @@ async def get_cli_insights_by_enriched_user_city(
     return await _run_enriched_user_insight(user, EnrichedUserScope.CITY, params)
 
 
-@router.get("/cli-insights-by-enriched-user-job-title", **_ENRICHED_USER_ROUTE_PARAMS)
+@router.get(
+    "/cli-insights-by-enriched-user-job-title",
+    **_ENRICHED_USER_ROUTE_PARAMS,
+)
 @handle_analytics_errors("CLI insights by enriched user job title")
 async def get_cli_insights_by_enriched_user_job_title(
     user: User = Depends(authenticate),
@@ -2000,7 +2102,10 @@ async def get_cli_insights_by_enriched_user_job_title(
     return await _run_enriched_user_insight(user, EnrichedUserScope.JOB_TITLE, params)
 
 
-@router.get("/cli-insights-by-enriched-user-job-title-group", **_ENRICHED_USER_ROUTE_PARAMS)
+@router.get(
+    "/cli-insights-by-enriched-user-job-title-group",
+    **_ENRICHED_USER_ROUTE_PARAMS,
+)
 @handle_analytics_errors("CLI insights by enriched user job title group")
 async def get_cli_insights_by_enriched_user_job_title_group(
     user: User = Depends(authenticate),
@@ -2405,6 +2510,12 @@ async def get_spending_by_users_cli(
 # ── Leaderboard endpoints (read: admin/maintainer/auditor, compute: admin-only) ──
 
 
+def _require_leaderboard_enabled() -> None:
+    """Dependency: raises 503 when LEADERBOARD_ENABLED is False."""
+    if not config.LEADERBOARD_ENABLED:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Leaderboard is not enabled")
+
+
 @router.get(
     "/leaderboard/summary",
     status_code=status.HTTP_200_OK,
@@ -2412,7 +2523,7 @@ async def get_spending_by_users_cli(
     response_model_by_alias=True,
     summary="Get leaderboard summary metrics",
     description="Returns high-level leaderboard metrics: total users, tier counts, top score, etc.",
-    dependencies=[Depends(admin_or_maintainer_or_auditor_access)],
+    dependencies=[Depends(admin_or_maintainer_or_auditor_access), Depends(_require_leaderboard_enabled)],
 )
 @handle_analytics_errors("leaderboard summary")
 async def get_leaderboard_summary(
@@ -2434,7 +2545,7 @@ async def get_leaderboard_summary(
     response_model_by_alias=True,
     summary="Get leaderboard entries table",
     description="Returns paginated leaderboard entries with scores and tier info.",
-    dependencies=[Depends(admin_or_maintainer_or_auditor_access)],
+    dependencies=[Depends(admin_or_maintainer_or_auditor_access), Depends(_require_leaderboard_enabled)],
 )
 @handle_analytics_errors("leaderboard entries")
 async def get_leaderboard_entries(
@@ -2491,7 +2602,7 @@ async def get_leaderboard_entries(
     summary="Get leaderboard detail for a specific user",
     description="Returns detailed leaderboard data for a single user including dimension breakdowns. "
     "Accepts either a user ID or user email as the path parameter. Admin only.",
-    dependencies=[Depends(admin_or_maintainer_or_auditor_access)],
+    dependencies=[Depends(admin_or_maintainer_or_auditor_access), Depends(_require_leaderboard_enabled)],
 )
 @handle_analytics_errors("leaderboard user detail")
 async def get_leaderboard_user_detail(
@@ -2521,7 +2632,7 @@ async def get_leaderboard_user_detail(
     response_model_by_alias=True,
     summary="Get tier distribution",
     description="Returns user count and percentage per tier.",
-    dependencies=[Depends(admin_or_maintainer_or_auditor_access)],
+    dependencies=[Depends(admin_or_maintainer_or_auditor_access), Depends(_require_leaderboard_enabled)],
 )
 @handle_analytics_errors("leaderboard tier distribution")
 async def get_leaderboard_tier_distribution(
@@ -2543,7 +2654,7 @@ async def get_leaderboard_tier_distribution(
     response_model_by_alias=True,
     summary="Get score distribution",
     description="Returns histogram of user scores in 10-point bins.",
-    dependencies=[Depends(admin_or_maintainer_or_auditor_access)],
+    dependencies=[Depends(admin_or_maintainer_or_auditor_access), Depends(_require_leaderboard_enabled)],
 )
 @handle_analytics_errors("leaderboard score distribution")
 async def get_leaderboard_score_distribution(
@@ -2565,7 +2676,7 @@ async def get_leaderboard_score_distribution(
     response_model_by_alias=True,
     summary="Get dimension breakdown",
     description="Returns average scores per scoring dimension across all users.",
-    dependencies=[Depends(admin_or_maintainer_or_auditor_access)],
+    dependencies=[Depends(admin_or_maintainer_or_auditor_access), Depends(_require_leaderboard_enabled)],
 )
 @handle_analytics_errors("leaderboard dimension breakdown")
 async def get_leaderboard_dimension_breakdown(
@@ -2587,7 +2698,7 @@ async def get_leaderboard_dimension_breakdown(
     response_model_by_alias=True,
     summary="Get top performers",
     description="Returns top N leaderboard entries by total score.",
-    dependencies=[Depends(admin_or_maintainer_or_auditor_access)],
+    dependencies=[Depends(admin_or_maintainer_or_auditor_access), Depends(_require_leaderboard_enabled)],
 )
 @handle_analytics_errors("leaderboard top performers")
 async def get_leaderboard_top_performers(
@@ -2610,7 +2721,7 @@ async def get_leaderboard_top_performers(
     response_model_by_alias=True,
     summary="Get leaderboard snapshots",
     description="Returns paginated list of leaderboard computation snapshots.",
-    dependencies=[Depends(admin_or_maintainer_or_auditor_access)],
+    dependencies=[Depends(admin_or_maintainer_or_auditor_access), Depends(_require_leaderboard_enabled)],
 )
 @handle_analytics_errors("leaderboard snapshots")
 async def get_leaderboard_snapshots(
@@ -2638,7 +2749,7 @@ async def get_leaderboard_snapshots(
     response_model_by_alias=True,
     summary="Get available leaderboard seasons",
     description="Returns available completed monthly or quarterly leaderboard seasons for UI selectors.",
-    dependencies=[Depends(admin_or_maintainer_or_auditor_access)],
+    dependencies=[Depends(admin_or_maintainer_or_auditor_access), Depends(_require_leaderboard_enabled)],
 )
 @handle_analytics_errors("leaderboard seasons")
 async def get_leaderboard_seasons(
@@ -2662,7 +2773,7 @@ async def get_leaderboard_seasons(
     response_model_by_alias=True,
     summary="Trigger leaderboard computation",
     description="Manually triggers a leaderboard computation. Admin only.",
-    dependencies=[Depends(admin_access_only)],
+    dependencies=[Depends(admin_access_only), Depends(_require_leaderboard_enabled)],
 )
 @handle_analytics_errors("leaderboard compute")
 async def trigger_leaderboard_computation(
@@ -2692,7 +2803,7 @@ async def trigger_leaderboard_computation(
     description="Returns static scoring framework metadata: dimension descriptions, "
     "component explanations, tier definitions, intent definitions, and scoring principles. "
     "This data is static and can be cached indefinitely by the client.",
-    dependencies=[Depends(admin_or_maintainer_or_auditor_access)],
+    dependencies=[Depends(admin_or_maintainer_or_auditor_access), Depends(_require_leaderboard_enabled)],
 )
 @handle_analytics_errors("leaderboard framework")
 async def get_leaderboard_framework(

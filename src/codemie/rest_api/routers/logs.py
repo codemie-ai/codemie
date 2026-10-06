@@ -12,9 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, status
+
+from codemie.configs.config import config
 from codemie.rest_api.models.logs import LogEntry, LogRetrieveRequest
-from codemie.rest_api.security.authentication import authenticate, admin_access_only
+from codemie.rest_api.security.authentication import admin_access_only, authenticate
 from codemie.service.logs import LogService
 from codemie.core.exceptions import ExtendedHTTPException
 
@@ -40,6 +42,8 @@ def get_logs_by_target_field(target_field: LogRetrieveRequest):
     Returns:
         list[LogEntry]: A list of matched log entries.
     """
+    if not config.ADMIN_LOG_LOOKUP_ENABLED:
+        raise HTTPException(status_code=503, detail="Admin Log Lookup is not enabled")
     try:
         return LogService.get_logs_by_target_field(target_field)
     except Exception as e:

@@ -1,0 +1,70 @@
+{
+  "task": "Add a non-blocking startup-time readiness check for the configured model provider (Azure OpenAI, AWS Bedrock, or LiteLLM proxy) and surface it on the existing /healthcheck endpoint.",
+  "generated": "2026-09-07",
+  "dimensions": {
+    "component_scope": {
+      "score": 3,
+      "label": "M",
+      "affected": "model_provider_readiness (new service module), main.py lifespan startup wiring, common.py /healthcheck endpoint",
+      "layers": "Service, Workflow/Bootstrap, API"
+    },
+    "requirements_clarity": {
+      "score": 2,
+      "label": "S",
+      "status": "Partially Clear",
+      "gaps": "LiteLLM LLM_PROXY_MODE spec-compliance nuance and a missing exception guard were only caught during the review's fix-up round, not fully nailed down upfront; otherwise the provider matrix (Azure OpenAI / AWS Bedrock / LiteLLM proxy / other) was clearly specified"
+    },
+    "technical_risk": {
+      "score": 3,
+      "label": "M",
+      "risk_factors": "Change sits on the app startup path where an unguarded failure could block boot; boto3 local credential-chain probing (get_credentials()) used in a new context; first review pass flagged a missing exception guard and a healthcheck AttributeError fallback gap",
+      "mitigation": "check_model_provider_readiness() call wrapped in try/except in main.py that degrades to a 'not configured' result rather than raising; healthcheck reads app.state via getattr with a None-safe fallback; module explicitly mirrors the existing oauth_security precedent's shape (pure functions, no framework, never logs secret values)"
+    },
+    "file_change_estimate": {
+      "score": 3,
+      "label": "M",
+      "modified_files": 2,
+      "modified_file_list": [
+        "src/codemie/rest_api/main.py",
+        "src/codemie/rest_api/routers/common.py"
+      ],
+      "new_files": 4,
+      "new_file_list": [
+        "src/codemie/service/model_provider_readiness.py",
+        "tests/codemie/rest_api/routers/test_common_healthcheck.py",
+        "tests/codemie/rest_api/test_startup_integration.py",
+        "tests/codemie/service/test_model_provider_readiness.py"
+      ],
+      "affected_dirs": [
+        "src/codemie/rest_api",
+        "src/codemie/service",
+        "tests/codemie/rest_api",
+        "tests/codemie/service"
+      ]
+    },
+    "dependencies": {
+      "score": 1,
+      "label": "XS",
+      "new_packages": [],
+      "version_changes": []
+    },
+    "affected_layers": {
+      "score": 3,
+      "label": "M",
+      "layers_changed": ["Service", "API", "Workflow/Bootstrap (startup lifespan)"],
+      "schema_migration": false,
+      "cross_system": false
+    }
+  },
+  "total": 15,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 7,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Three components touched (new readiness service module, main.py startup wiring, common.py healthcheck field) across Service, Bootstrap, and API layers — coordinated but each piece is small" },
+    { "dimension": "technical_risk", "reason": "Sits on the app-boot critical path and required a review fix-up round for a missing exception guard and a LiteLLM spec-compliance gap, but follows an established precedent module's shape and is defensively guarded end to end" }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

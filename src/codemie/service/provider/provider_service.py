@@ -15,6 +15,7 @@
 from typing import List, Optional
 from fastapi import status
 
+from codemie.clients.elasticsearch import ElasticSearchClient
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.security.user import User
 from codemie.rest_api.models.provider import Provider, ProviderBase, CreateProviderRequest, UpdateProviderRequest
@@ -76,6 +77,13 @@ class ProviderService:
     @classmethod
     def index_schemas(cls, user: User) -> List:
         """Returns all datasource schemas"""
+        if not ElasticSearchClient.is_configured():
+            raise ExtendedHTTPException(
+                code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                message="Datasource schemas are not available on this instance.",
+                details="The retrieval backend is disabled (RETRIEVAL_BACKEND=none).",
+                help="Set RETRIEVAL_BACKEND to a supported backend to enable datasource schemas.",
+            )
         return ProviderDatasourceSchemaService.get_all(user)
 
     @staticmethod

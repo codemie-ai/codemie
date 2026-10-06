@@ -1,0 +1,20 @@
+[
+  {
+    "location": "tests/codemie/service/tools/test_toolkit_service.py:529-547 — test_toolkit_service_unaffected_when_query_returns_empty",
+    "trigger_condition": "Test body assigns `result = mock_merge.return_value` directly and never calls any ToolkitService method; both assertions trivially pass.",
+    "guard_snippet": "assert mock_get_tools_by_query.assert_not_called() passes trivially because no production code ran — the test must call ToolkitService.get_tools(..., smart_tool_selection_enabled=True) with non-empty merged toolkits, then assert get_tools_by_query was not called.",
+    "potential_consequence": "If ToolkitService.get_tools() were changed to invoke get_tools_by_query even when selected_toolkits is non-empty (inverting the `if not selected_toolkits` guard at toolkit_service.py:517), this test would not fail — mock_get_tools_by_query.assert_not_called() still passes because the production method is never invoked by the test.",
+    "gap_shape": "broken-verification-gap",
+    "consumer": "ToolkitService.get_tools() at src/codemie/service/tools/toolkit_service.py:517 — the branch that skips smart selection when toolkits are already configured",
+    "evidence": "Read test body at test_toolkit_service.py:529-547: line 544 is `result = mock_merge.return_value` with no call to any ToolkitService method; line 547 `mock_get_tools_by_query.assert_not_called()` trivially passes. The pre-existing test test_get_tools_smart_selection_skipped_when_skills_provide_toolkits at line 1805-1842 correctly calls ToolkitService.get_tools() and asserts the same invariant, confirming the new test adds nothing."
+  },
+  {
+    "location": "src/codemie/rest_api/routers/analytics.py:3399-3407 — GET /leaderboard/user/{user_id} (get_leaderboard_user_detail) gains Depends(_require_leaderboard_enabled)",
+    "trigger_condition": "The parametrized 503 test in test_analytics_leaderboard.py covers nine endpoints but omits /v1/analytics/leaderboard/user/{user_id}.",
+    "guard_snippet": "assert response.status_code == 503 for GET /v1/analytics/leaderboard/user/some-id when LEADERBOARD_ENABLED=False — the path must be added to _LEADERBOARD_READ_ENDPOINTS in test_analytics_leaderboard.py:418-428.",
+    "potential_consequence": "If `Depends(_require_leaderboard_enabled)` were removed from get_leaderboard_user_detail while LEADERBOARD_ENABLED=False, the parametrized test test_leaderboard_read_returns_503_when_disabled would not fail because the user-detail URL is not in its list; the endpoint would return data instead of 503 with no test catching the regression.",
+    "gap_shape": "regression-gap",
+    "consumer": "GET /leaderboard/user/{user_id} endpoint at src/codemie/rest_api/routers/analytics.py:3399, consumed by any caller performing per-user leaderboard lookup",
+    "evidence": "Read _LEADERBOARD_READ_ENDPOINTS list at tests/codemie/rest_api/routers/test_analytics_leaderboard.py:418-428 — nine paths listed, none matching /leaderboard/user/{user_id}. Searched tests/ for 'leaderboard/user' and 'user_detail.*503' — only test_analytics_auditor.py:145-155 calls get_leaderboard_user_detail directly (bypassing dependencies), which does not exercise the 503 guard."
+  }
+]

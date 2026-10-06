@@ -1,0 +1,52 @@
+{
+  "findings": [
+    {
+      "id": "CR-004",
+      "status": "fixed",
+      "commit": "af9a06f76",
+      "evidence": "src/codemie/service/tools/tool_execution_service.py:_get_context_tools now raises ToolException for KNOWLEDGE_BASE/CODE context when retrieval_available(config) is False, mirroring ToolkitService.add_context_tools.",
+      "tests": [
+        "tests/codemie/service/tools/test_tool_execution_service.py::test_get_context_tools_raises_when_retrieval_unavailable_for_kb_context",
+        "tests/codemie/service/tools/test_tool_execution_service.py::test_get_context_tools_raises_when_retrieval_unavailable_for_code_context",
+        "tests/codemie/service/tools/test_tool_execution_service.py::test_get_context_tools_unaffected_when_retrieval_available"
+      ]
+    },
+    {
+      "id": "CR-001",
+      "status": "fixed",
+      "commit": "474ad67f7",
+      "evidence": "src/codemie/configs/config.py:Config.finalize_settings now rejects any RETRIEVAL_BACKEND value outside {\"elasticsearch\", \"none\"}, following the same model_validator(mode=\"after\") pattern used for STALE_DATASOURCE_SCHEDULE.",
+      "tests": [
+        "tests/codemie/configs/test_config.py (existing suite re-run green; no new positive-value test needed since valid values are unchanged)"
+      ]
+    },
+    {
+      "id": "CR-002",
+      "status": "fixed",
+      "commit": "474ad67f7",
+      "evidence": "src/codemie/configs/config.py:1053 retrieval_available(cfg: Config) -> bool now carries an explicit parameter annotation.",
+      "tests": ["ruff check passes (no untyped-parameter findings); tests/codemie/configs/test_config.py green"]
+    },
+    {
+      "id": "CR-003",
+      "status": "fixed",
+      "commit": "730d8904d",
+      "evidence": "tests/codemie/rest_api/test_main_retrieval_backend_disabled.py imports codemie.rest_api.main fresh in a subprocess with RETRIEVAL_BACKEND=none and asserts StateImportService.import_indexes() was never called and no index.router route is present on app.routes. Verified RED without the main.py guard (temporarily removed the index.router conditional, test failed listing the leaked /v1/index/* routes; guard restored, test green) before committing.",
+      "tests": ["tests/codemie/rest_api/test_main_retrieval_backend_disabled.py::test_main_skips_index_import_and_router_when_retrieval_backend_none"]
+    },
+    {
+      "id": "CR-005",
+      "status": "not_applicable",
+      "commit": null,
+      "evidence": "Investigated src/codemie_tools/code/toolkit.py (the autodiscovered DiscoverableToolkit registered under ToolSet.CODEBASE_TOOLS / \"Codebase Tools\"): its CodeToolkitUI definition contains only Tool.from_metadata(SONAR_TOOL) -- the Sonar static-analysis integration, which has no dependency on the ES-backed retrieval path. tools_info_service.ToolsInfoService._merge_code_toolkit only merges the backend's ES-backed CodeToolkit tools (search/tree/read) into this entry; skipping that merge when retrieval is unavailable correctly leaves the Sonar-only entry visible, since Sonar tooling is unrelated to knowledge-base/code-index retrieval and AC29 only requires hiding retrieval-dependent surfaces. No code change made.",
+      "tests": []
+    },
+    {
+      "id": "CR-006",
+      "status": "skipped_by_user",
+      "commit": null,
+      "evidence": "User decision: accepted residual risk, explicitly documented in the approved spec.md section 6 -- the cron/webhook trigger actor at src/codemie/triggers/actors/datasource.py:343 has no live trigger path since degraded mode already prevents datasource creation. Not treated as a new gap.",
+      "tests": []
+    }
+  ]
+}

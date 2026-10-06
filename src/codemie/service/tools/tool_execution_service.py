@@ -19,7 +19,7 @@ from codemie_tools.file_analysis.toolkit import FileAnalysisToolkit
 from codemie_tools.git.toolkit import GitToolkit, CustomGitHubToolkit, CustomGitLabToolkit, CustomBitbucketToolkit
 from codemie_tools.vision.tool_vars import IMAGE_TOOL
 from codemie_tools.vision.toolkit import VisionToolkit
-from langchain_core.tools import BaseTool
+from langchain_core.tools import BaseTool, ToolException
 from pydantic import ValidationError
 
 from codemie.agents.tools import BaseToolkit
@@ -32,6 +32,7 @@ from codemie.agents.tools.kb.search_kb import SearchKBTool
 
 # Plugin toolkit now provided via enterprise package
 from codemie.configs import logger
+from codemie.clients.elasticsearch import ElasticSearchClient
 from codemie.core.constants import REQUEST_ID
 from codemie.core.dependecies import get_llm_by_credentials
 from codemie.core.models import CodeFields
@@ -308,6 +309,9 @@ class ToolExecutionService:
             return
 
         context = next(iter(assistant.context))
+        if context.context_type.is_retrieval_dependent and not ElasticSearchClient.is_configured():
+            raise ToolException("Knowledge base / code context is unavailable: retrieval backend is disabled.")
+
         if context.context_type == ContextType.KNOWLEDGE_BASE:
             return cls._get_kb_tools(context, request)
 

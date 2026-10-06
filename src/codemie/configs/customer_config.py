@@ -18,7 +18,6 @@ import yaml
 from functools import reduce
 from pathlib import Path
 from typing import Dict, List, Optional, Union
-from importlib.metadata import version, PackageNotFoundError
 from pydantic import BaseModel, Field, ConfigDict, field_validator
 from codemie.configs.config import config
 from codemie.configs.component_resolution import (  # re-exported: five modules import these from here
@@ -39,6 +38,12 @@ CONFIG_IDS = {
     "gitlabOauth": "features:gitlabOauth",
     "jiraOauth": "features:jiraOauth",
     "confluenceOauth": "features:confluenceOauth",
+    "knowledgeBases": "features:knowledgeBases",
+    "datasources": "features:datasources",
+    "codeIndexing": "features:codeIndexing",
+    "conversationAnalytics": "features:conversationAnalytics",
+    "smartToolSelection": "features:smartToolSelection",
+    "metricsAnalytics": "features:metricsAnalytics",
 }
 
 
@@ -147,11 +152,11 @@ class CustomerConfig(BaseModel):
         runtime_config = []
 
         # Enterprise Edition - automatic detection via package presence
-        try:
-            version("codemie-enterprise")
-            is_enterprise = True
-        except PackageNotFoundError:
-            is_enterprise = False
+        from codemie.enterprise import has_enterprise  # noqa: PLC0415
+
+        from codemie.clients.elasticsearch import ElasticSearchClient  # noqa: PLC0415
+
+        is_enterprise = has_enterprise()
 
         runtime_config.append(
             Component(
@@ -223,6 +228,48 @@ class CustomerConfig(BaseModel):
             Component(
                 id=CONFIG_IDS["confluenceOauth"],
                 settings=ComponentSetting(enabled=config.CONFLUENCE_OAUTH_ENABLED),
+            )
+        )
+
+        runtime_config.append(
+            Component(
+                id=CONFIG_IDS["knowledgeBases"],
+                settings=ComponentSetting(enabled=ElasticSearchClient.is_configured()),
+            )
+        )
+
+        runtime_config.append(
+            Component(
+                id=CONFIG_IDS["datasources"],
+                settings=ComponentSetting(enabled=ElasticSearchClient.is_configured()),
+            )
+        )
+
+        runtime_config.append(
+            Component(
+                id=CONFIG_IDS["codeIndexing"],
+                settings=ComponentSetting(enabled=ElasticSearchClient.is_configured()),
+            )
+        )
+
+        runtime_config.append(
+            Component(
+                id=CONFIG_IDS["conversationAnalytics"],
+                settings=ComponentSetting(enabled=config.CONVERSATION_ANALYSIS_ENABLED),
+            )
+        )
+
+        runtime_config.append(
+            Component(
+                id=CONFIG_IDS["smartToolSelection"],
+                settings=ComponentSetting(enabled=config.TOOL_SELECTION_ENABLED),
+            )
+        )
+
+        runtime_config.append(
+            Component(
+                id=CONFIG_IDS["metricsAnalytics"],
+                settings=ComponentSetting(enabled=is_enterprise),
             )
         )
 

@@ -1,0 +1,65 @@
+name: codemie-standalone
+services:
+  codemie:
+    extra_hosts:
+      #│ Allows to access resources on host machine via http://host.docker.internal
+      #│ For example, if you're making HTTP requests to this service, change:                                  │
+      #│                                                                                                       │
+      #│  • From: http://localhost:10000/api/endpoint                                                          │
+      #│  • To: http://host.docker.internal:10000/api/endpoint
+      - "host.docker.internal:host-gateway"
+    container_name: codemie
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Image produced by `standalone/build-image.sh --image-tag localhost/codemie:local`
+    # (backend + frontend + nginx baked into one image); this compose file only ever
+    # references the tag, it never builds it. Defaults to that local tag for the
+    # source-repository workflow — set CODEMIE_IMAGE to the exact released image tag when
+    # running from a published standalone release bundle instead of a local build.
+    image: ${CODEMIE_IMAGE:-localhost/codemie:local}
+    env_file:
+      - .env.standalone
+    volumes:
+      - codemie_repos:/app/codemie-repos
+      - codemie_storage:/app/codemie-storage
+      # Optional external customer config directory. If it contains customer-config.yaml,
+      # the entrypoint uses it as a full replacement for the bundled config; otherwise the
+      # bundled config is used as-is. See the External customer configuration section in
+      # standalone/README.md.
+      - ${CODEMIE_EXTERNAL_CONFIG_DIR:-./external-config}:/app/external-config:ro
+    # nginx listens on 8080 inside the image (standalone/docker/nginx.conf, EXPOSE 8080
+    # in standalone/Dockerfile).
+    ports:
+      - 8080:8080
+    restart: on-failure
+    environment:
+      - PG_URL=postgresql://postgres:password@postgres:5432/postgres
+      - KEYCLOAK_LOGOUT_URL=http://localhost:5010/docs
+
+  postgres:
+    image: docker.io/library/postgres:17
+    container_name: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=postgres
+    ports:
+      - 5432:5432
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+# NOTE: These named volumes replace Windows-incompatible bind mounts (./codemie-storage,
+# ./codemie-repos). If you had data in those host directories,
+# migrate it once before running docker compose up:
+#   docker run --rm -v ./codemie-storage:/src -v codemie_storage:/dst docker.io/library/alpine:latest sh -c "cp -a /src/. /dst/"
+#   docker run --rm -v ./codemie-repos:/src -v codemie_repos:/dst docker.io/library/alpine:latest sh -c "cp -a /src/. /dst/"
+volumes:
+  postgres_data:
+  codemie_storage:
+  codemie_repos:

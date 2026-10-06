@@ -1,0 +1,140 @@
+{
+  "decision": "approve",
+  "rationale": "All 4 lenses and the standards audit ran clean; 12 candidates verified against current HEAD — all dismissed (trigger endpoint and leaderboard constant already correct; partial test-coverage and D16 guard gaps reported by prior lenses were addressed by commits after the lens pass). Zero deferred.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "ADMIN_LOG_LOOKUP_ENABLED: bool = True added to Config; default True for backward compatibility",
+      "status": "pass",
+      "notes": "config.py: ADMIN_LOG_LOOKUP_ENABLED: bool = True with backward-compat comment"
+    },
+    {
+      "kind": "spec",
+      "item": "POST /logs returns HTTP 503 when ADMIN_LOG_LOOKUP_ENABLED=False; no ES call made",
+      "status": "pass",
+      "notes": "logs.py: guard added before try/except; ES call unreachable when False"
+    },
+    {
+      "kind": "spec",
+      "item": "Leaderboard read endpoints return HTTP 503 when LEADERBOARD_ENABLED=False",
+      "status": "pass",
+      "notes": "analytics.py: _require_leaderboard_enabled on all 10 read routes incl. user-detail; compute POST also gated"
+    },
+    {
+      "kind": "spec",
+      "item": "get_tools_by_query() returns [] when TOOL_SELECTION_ENABLED=False; ordinary toolkit resolution unaffected",
+      "status": "pass",
+      "notes": "toolkit_lookup_service.py: early-return guard; test sets TOOL_SELECTION_ENABLED=True and confirms SearchAndRerankTool+execute called"
+    },
+    {
+      "kind": "spec",
+      "item": "conversationAnalytics and smartToolSelection added to CONFIG_IDS and _get_runtime_config()",
+      "status": "pass",
+      "notes": "customer_config.py: both IDs in CONFIG_IDS; two runtime_config.append() calls in _get_runtime_config()"
+    },
+    {
+      "kind": "spec",
+      "item": "aiChampionsLeaderboard absent from GET /v1/config when LEADERBOARD_ENABLED=False; YAML primary when True",
+      "status": "pass",
+      "notes": "_LEADERBOARD_COMPONENT_ID constant used in ceiling filter; ID not in CONFIG_IDS so YAML remains primary when enabled"
+    },
+    {
+      "kind": "spec",
+      "item": "conversationAnalytics absent when CONVERSATION_ANALYSIS_ENABLED=False; present when True",
+      "status": "pass",
+      "notes": "runtime entry with enabled=config.CONVERSATION_ANALYSIS_ENABLED; resolve_components() filters by c.settings.enabled"
+    },
+    {
+      "kind": "spec",
+      "item": "smartToolSelection absent when TOOL_SELECTION_ENABLED=False; present when True",
+      "status": "pass",
+      "notes": "same runtime-entry mechanism as conversationAnalytics; not in customer-config.yaml"
+    },
+    {
+      "kind": "spec",
+      "item": "Tests cover disabled and enabled states for each new guard and each new/modified projection entry",
+      "status": "pass",
+      "notes": "ValidateToolsNode empty-RAG test pre-exists; toolkit test calls ToolkitService.get_tools(); user-detail URL in _LEADERBOARD_READ_ENDPOINTS"
+    },
+    {
+      "kind": "spec",
+      "item": "Stale-Datasource scheduler does not register when STALE_DATASOURCE_ENABLED=False (existing guard confirmed, no change)",
+      "status": "pass",
+      "notes": "test_main_stale_datasource_setup.py verifies both skip and register paths"
+    },
+    {
+      "kind": "spec",
+      "item": "Conversation Analytics trigger returns HTTP 400 (not 503) when CONVERSATION_ANALYSIS_ENABLED=False (existing behavior preserved)",
+      "status": "pass",
+      "notes": "test_conversation_analysis.py: test_trigger_analysis_returns_400_when_disabled asserts status_code == 400"
+    },
+    {
+      "kind": "spec",
+      "item": "Metrics Analytics gated by enterprise presence; metricsAnalytics exposed in GET /v1/config via is_enterprise; no new env flag (CR-1)",
+      "status": "pass",
+      "notes": "CONFIG_IDS[metricsAnalytics] and _get_runtime_config() emit entry with enabled=is_enterprise; MetricsElasticRepository lazy-init confirmed"
+    },
+    {
+      "kind": "spec",
+      "item": "AI Adoption endpoints return 200 when codemie-enterprise absent (D16 regression guard)",
+      "status": "pass",
+      "notes": "test patches HAS_ENTERPRISE=False; spy_repo_init.assert_not_called() confirms MetricsElasticRepository.__init__ never reached"
+    },
+    {
+      "kind": "spec",
+      "item": "No METRICS_ANALYTICS_ENABLED flag introduced; enterprise package presence is the sole gate",
+      "status": "pass",
+      "notes": "config.py diff adds only ADMIN_LOG_LOOKUP_ENABLED; metricsAnalytics gated by is_enterprise, not a new flag"
+    },
+    {
+      "kind": "spec",
+      "item": "No adminLogLookup or staleDatasourceDetection in GET /v1/config (non-goal)",
+      "status": "pass",
+      "notes": "Neither ID in CONFIG_IDS additions or diff"
+    },
+    {
+      "kind": "spec",
+      "item": "GoogleDocDatasourceProcessor class-attribute ES call resolved (Yevhenii scope)",
+      "status": "na",
+      "notes": "Explicitly Yevhenii's scope; not implemented here"
+    },
+    {
+      "kind": "spec",
+      "item": "manage_preconfigured_assistants() startup ES call resolved (Yevhenii scope)",
+      "status": "na",
+      "notes": "Explicitly Yevhenii's scope; not implemented here"
+    },
+    {
+      "kind": "spec",
+      "item": "Frontend consumes aiChampionsLeaderboard, conversationAnalytics, smartToolSelection from GET /v1/config (EPMCDME-14657)",
+      "status": "na",
+      "notes": "Frontend follow-up; owned by EPMCDME-14657"
+    },
+    {
+      "kind": "spec",
+      "item": "aiChampionsLeaderboard registered in FEATURE_FLAGS constant (EPMCDME-14657)",
+      "status": "na",
+      "notes": "Frontend follow-up; owned by EPMCDME-14657"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "5 subjects in the review range all match the documented EPMCDME-####: Description format (e.g. 'EPMCDME-14652: Add ADMIN_LOG_LOOKUP_ENABLED flag and POST /logs 503 guard')"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "All 4 new files carry the Apache 2.0 header. New code introduces one typed helper function (_require_leaderboard_enabled() -> None). Raw literal 503 at logs.py:46 not flagged by the enabled Ruff rule-set (no PLR2004 in selected rules)."
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "Auth ordering correct: authenticate at router level runs before route-level _require_leaderboard_enabled. No credentials logged; new code reads config booleans only."
+    }
+  ],
+  "findings": []
+}

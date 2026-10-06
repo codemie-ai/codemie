@@ -40,6 +40,7 @@ from codemie_tools.research.tools_vars import (
 )
 from codemie_tools.data_management.code_executor.tools_vars import CODE_EXECUTOR_TOOL
 from codemie.configs import config
+from codemie.clients.elasticsearch import ElasticSearchClient
 from codemie.configs.customer_config import customer_config
 from codemie.configs.logger import logger
 from codemie.core.constants import CodeIndexType, ToolType
@@ -1145,6 +1146,11 @@ class ToolkitService:
                     )
         return tools
 
+    @staticmethod
+    def _ensure_context_retrieval_available(context: Context) -> None:
+        if context.context_type.is_retrieval_dependent and not ElasticSearchClient.is_configured():
+            raise ToolException("Knowledge base / code context is unavailable: retrieval backend is disabled.")
+
     @classmethod
     def add_context_tools(
         cls,
@@ -1176,6 +1182,8 @@ class ToolkitService:
         has_code_context = False
 
         for context in assistant.context:
+            cls._ensure_context_retrieval_available(context)
+
             if context.context_type == ContextType.KNOWLEDGE_BASE:
                 cls._add_kb_tools(tools, context, assistant, llm_model)
             elif context.context_type == ContextType.PROVIDER:

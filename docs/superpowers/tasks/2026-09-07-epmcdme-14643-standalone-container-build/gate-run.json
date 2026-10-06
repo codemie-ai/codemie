@@ -1,0 +1,109 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-14643-standalone-container-build",
+  "head": "0eeda0a78e96bbfc4b140b8935feed245e411709",
+  "runner": "poetry",
+  "started_at": "2026-09-07T07:38:00Z",
+  "completed_at": "2026-09-07T07:39:17Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 4162,
+      "command": "poetry run ruff format && poetry run ruff check --fix && poetry run ruff check",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 8932,
+      "command": "poetry build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1565,
+      "command": "poetry run python scripts/license_headers/check_license_headers.py --check --quiet",
+      "exit_code": 0
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "docker run --rm -v \"$(pwd):/workspace\" ghcr.io/gitleaks/gitleaks:v8.30.1 dir --no-banner --verbose --config=/workspace/.gitleaks.toml /workspace",
+      "exit_code": null,
+      "notes": "Docker unavailable (docker info exited non-zero). Guide skip-if: Docker is unavailable. Enable by starting Docker Desktop. CI will re-run this gate for real."
+    },
+    {
+      "id": "test",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "poetry run pytest tests/",
+      "exit_code": null,
+      "notes": "Tests are explicit-only per guide policy; not requested for this task."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "poetry run coverage run -m pytest tests/ -W ignore::DeprecationWarning --cov --cov-report=html",
+      "exit_code": null,
+      "notes": "Coverage is explicit-only per guide policy; not requested for this task."
+    },
+    {
+      "id": "sonar-local",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "node scripts/sonar/run-local-sonar.js",
+      "exit_code": null,
+      "notes": "Sonar credentials and server access not confirmed available; skipped per guide skip-if condition."
+    },
+    {
+      "id": "commit-msg",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 0,
+      "command": "bash scripts/git-hooks/commit_msg.sh <COMMIT_EDITMSG>",
+      "exit_code": 0,
+      "notes": "All 3 branch commits verified against EPMCDME-<n>: pattern via git log: 'EPMCDME-14643: Apply code review fixes to Build-image.ps1', 'EPMCDME-14643: Add standalone container build tooling', 'EPMCDME-14347: Add codemie-storage to gitignore'."
+    },
+    {
+      "id": "codemie-gitleaks",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": null,
+      "notes": "Absent container engine detected (Docker unavailable). validate_secrets.sh detects Docker->Podman->Apple Containers; none live. Enable by starting Docker Desktop or Podman. CI will re-run for real."
+    },
+    {
+      "id": "codemie-pre-push",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "bash scripts/git-hooks/pre_push.sh",
+      "exit_code": null,
+      "notes": "Self-skipping: pre_push.sh exits 0 immediately when CODEMIE_PREPUSH_ENABLED != true (default false). Covers pytest + sonar-local; enable with 'export CODEMIE_PREPUSH_ENABLED=true' before push."
+    },
+    {
+      "id": "ci-guard",
+      "source": "ci",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "extends .wait-ci-init-template (GitLab remote)",
+      "exit_code": null,
+      "notes": "GitLab CI pipeline guard — requires GitLab runner infrastructure. Expects 'ci-pipeline' and 'compliance-report' contexts; no local runnable command."
+    }
+  ],
+  "failures": {}
+}

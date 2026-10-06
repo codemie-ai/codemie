@@ -17,11 +17,17 @@ import os
 from elasticsearch import AsyncElasticsearch, Elasticsearch
 
 from codemie.configs import config
+from codemie.configs.config import retrieval_available
 
 
 class ElasticSearchClient:
     _clients: dict[int, Elasticsearch] = {}
     _async_clients: dict[int, AsyncElasticsearch] = {}
+
+    @classmethod
+    def is_configured(cls) -> bool:
+        """ES is configured only when the retrieval backend is enabled and a URL is set."""
+        return retrieval_available(config) and bool(config.ELASTIC_URL)
 
     @classmethod
     def get_client(cls) -> Elasticsearch:

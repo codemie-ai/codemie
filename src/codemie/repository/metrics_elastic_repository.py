@@ -20,10 +20,14 @@ executing ES|QL queries and aggregations.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
+from elastic_transport import TransportError
 from elasticsearch import ApiError, AsyncElasticsearch, NotFoundError
+from elasticsearch import ConnectionError as ESConnectionError
+from elasticsearch import ConnectionTimeout
 from fastapi import status
 
 from codemie.clients.elasticsearch import ElasticSearchClient
@@ -47,6 +51,8 @@ CIRCUIT_BREAKER_DETAILS_PREFIX = "Query requires too much memory"
 ES_SERVICE_ERROR_DETAILS_PREFIX = "Elasticsearch service error"
 UNEXPECTED_ERROR_DETAILS_PREFIX = "Unexpected error"
 
+NOT_CONFIGURED_REASON = "not configured"
+
 DEFAULT_REQUEST_TIMEOUT = 60
 
 # Log message templates
@@ -64,10 +70,33 @@ LOG_SEARCH_UNEXPECTED_ERROR_MSG = "Search query failed with unexpected error: {e
 class MetricsElasticRepository:
     """Repository for querying metrics from Elasticsearch."""
 
-    def __init__(self):
-        """Initialize repository with async Elasticsearch client."""
-        self._client: AsyncElasticsearch = ElasticSearchClient.get_async_client()
+    def __init__(self, *, fail_open_on_unavailable: bool = False):
+        """Initialize repository with async Elasticsearch client.
+
+        Args:
+            fail_open_on_unavailable: When True, an unconfigured/unreachable ES returns an
+                empty-shaped result instead of raising. Only AnalyticsService's Analytics HTTP
+                read path opts in; every other caller (LeaderboardService/Scheduler,
+                LeaderboardHandler's background computation, StaleDatasourceService/Scheduler)
+                keeps the default fail-closed behavior.
+        """
+        self._fail_open_on_unavailable = fail_open_on_unavailable
         self._index = config.ELASTIC_METRICS_INDEX
+        self._client: AsyncElasticsearch | None = (
+            ElasticSearchClient.get_async_client() if ElasticSearchClient.is_configured() else None
+        )
+
+    def _handle_unavailable(self, empty_result: dict, *, reason: str) -> dict:
+        if self._fail_open_on_unavailable:
+            logger.warning(f"Elasticsearch unavailable ({reason}), returning empty results")
+            return empty_result
+        logger.exception(f"Elasticsearch unavailable ({reason})")
+        raise ExtendedHTTPException(
+            code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            message=ANALYTICS_QUERY_FAILED_MSG,
+            details=f"{ES_SERVICE_ERROR_DETAILS_PREFIX}: {reason}",
+            help=ANALYTICS_QUERY_HELP_MSG,
+        )
 
     async def execute_esql_query(self, query: str, filter_query: dict | None = None) -> dict:
         """Execute ES|QL query with optional filters and return results.
@@ -82,6 +111,8 @@ class MetricsElasticRepository:
         Raises:
             ExtendedHTTPException: If query execution fails
         """
+        if self._client is None:
+            return self._handle_unavailable({"columns": [], "values": []}, reason=NOT_CONFIGURED_REASON)
         try:
             logger.debug(f"Executing ES|QL query: query={query}, filter={filter_query}")
             start_time = time.time()
@@ -98,6 +129,8 @@ class MetricsElasticRepository:
             logger.info(f"ES|QL query completed in {execution_time:.2f}ms")
 
             return result
+        except (ESConnectionError, ConnectionTimeout, TransportError, asyncio.TimeoutError) as e:
+            return self._handle_unavailable({"columns": [], "values": []}, reason=str(e))
         except ApiError as e:
             # Handle circuit breaker exceptions (429) - query too expensive
             if e.status_code == 429 or "circuit_breaking_exception" in str(e):
@@ -139,6 +172,10 @@ class MetricsElasticRepository:
         Raises:
             ExtendedHTTPException: If query execution fails
         """
+        if self._client is None:
+            return self._handle_unavailable(
+                {"hits": {"hits": [], "total": {"value": 0}}, "aggregations": {}}, reason=NOT_CONFIGURED_REASON
+            )
         try:
             logger.debug(f"Executing aggregation query on index {self._index}, body={body}")
             start_time = time.time()
@@ -156,6 +193,10 @@ class MetricsElasticRepository:
         except NotFoundError:
             logger.warning(f"Index {self._index} not found, returning empty results")
             return {"hits": {"hits": [], "total": {"value": 0}}, "aggregations": {}}
+        except (ESConnectionError, ConnectionTimeout, TransportError, asyncio.TimeoutError) as e:
+            return self._handle_unavailable(
+                {"hits": {"hits": [], "total": {"value": 0}}, "aggregations": {}}, reason=str(e)
+            )
         except ApiError as e:
             # Handle circuit breaker exceptions (429) - query too expensive
             if e.status_code == 429 or "circuit_breaking_exception" in str(e):
@@ -198,6 +239,8 @@ class MetricsElasticRepository:
         Raises:
             ExtendedHTTPException: If query execution fails
         """
+        if self._client is None:
+            return self._handle_unavailable({"hits": {"hits": [], "total": {"value": 0}}}, reason=NOT_CONFIGURED_REASON)
         try:
             body = {"query": query, "size": size, "from": from_}
             logger.debug(f"Executing search query on index {self._index}, body={body}")
@@ -211,6 +254,8 @@ class MetricsElasticRepository:
         except NotFoundError:
             logger.warning(f"Index {self._index} not found, returning empty results")
             return {"hits": {"hits": [], "total": {"value": 0}}}
+        except (ESConnectionError, ConnectionTimeout, TransportError, asyncio.TimeoutError) as e:
+            return self._handle_unavailable({"hits": {"hits": [], "total": {"value": 0}}}, reason=str(e))
         except ApiError as e:
             # Handle circuit breaker exceptions (429) - query too expensive
             if e.status_code == 429 or "circuit_breaking_exception" in str(e):

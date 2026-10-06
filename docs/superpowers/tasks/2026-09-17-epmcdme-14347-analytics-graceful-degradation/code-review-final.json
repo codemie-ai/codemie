@@ -1,0 +1,85 @@
+{
+  "decision": "request-changes",
+  "rationale": "Diff is oversized (255KB), so this round's coverage of the ~59 touched endpoints rests on lens output plus targeted spot checks, not an exhaustive read. Standards audit found 2 blocking issues (commit-format colon, Optional vs str | None in a new module) at partial status. 4 additional real defects verified against source: metrics_elastic_repository.py's ES exception handling misses generic TransportError/asyncio.TimeoutError; main.py's model-provider readiness check runs boto3 credential resolution synchronously inside async lifespan with no deadline; analytics.py's leaderboard trigger endpoint checks auth before the feature-flag guard while every read endpoint checks the flag first; and job_lock.py/main.py/toolkit_service.py/tools_info_service.py/provider_service.py/tool_execution_service.py gate on retrieval_available() alone (RETRIEVAL_BACKEND != none) instead of ElasticSearchClient.is_configured() (which also checks ELASTIC_URL), so they still construct an ES client when RETRIEVAL_BACKEND=elasticsearch but ELASTIC_URL is unset. 1 deferred: FEATURE_CLI_ANALYTICS/customer-config.yaml migration mismatch is out of this task's explicit scope. 9 dismissed as noise: AnalyticsService's fail_open_on_unavailable=True default was verified correct by design (repository default is False; only AnalyticsService's own construction opts in, Leaderboard/StaleDatasource stay fail-closed); ADMIN_LOG_LOOKUP_ENABLED default True is already admin-gated; nginx /healthcheck hardcoded 200 has no established external caller (Docker HEALTHCHECK correctly hits the proxied endpoint); entrypoint.sh's PID-kill race is low-impact given the 60s poll already catches a crashed uvicorn; the bare except around AWS credential resolution is explicitly documented as an intentional startup-resilience tradeoff; _LEADERBOARD_COMPONENT_ID was verified to match the actual YAML id (no mismatch); MetricsElasticRepository's logger.exception() call outside an except block is a cosmetic logging defect only; the RETRIEVAL_BACKEND downgrade/stale-IndexInfo scenario is already documented as an accepted limitation in job_lock.py; and _bedrock_session()'s uncaught construction path is already absorbed by main.py's outer except Exception, only losing message detail.",
+  "confidence": "low",
+  "risk_flags": ["security"],
+  "business_review": [],
+  "standards_review": [
+    {"kind": "commit-format", "status": "partial", "notes": "guide requires EPMCDME-####: Description; 21 of 22 subjects in range match, but 'EPMCDME-14653 Model Provider startup handling' omits the colon separator required by README.md:163"},
+    {"kind": "code-quality", "status": "partial", "notes": "guide requires new modules to use X | None over typing.Optional; new file model_provider_readiness.py imports Optional and declares 'provider: Optional[str]' instead of 'str | None'; other changed files only retain pre-existing Optional usage"},
+    {"kind": "security", "status": "pass", "notes": "fallback logic logs only exception text/reason strings, never credentials; model_provider_readiness.py logs setting names not values; .env.standalone.example uses placeholders only"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "commit subject: 'EPMCDME-14653 Model Provider startup handling'",
+      "title": "Commit subject omits required colon",
+      "problem": "git-workflow.md requires the format 'EPMCDME-####: Description'; this subject omits the colon separator.",
+      "impact": "Breaks the documented ticket-prefixed commit convention the squash-merge policy relies on.",
+      "recommendation": "Reword to 'EPMCDME-14653: Model Provider startup handling' (only relevant if this commit is rewritten before merge)."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/repository/metrics_elastic_repository.py",
+      "line": 128,
+      "title": "ES exception handling misses generic transport errors",
+      "problem": "All three graceful-degradation except clauses (lines ~128, ~192, ~253) catch only (elasticsearch.ConnectionError, ConnectionTimeout). elastic_transport's TlsError is a ConnectionError subclass so it is already covered, but the base TransportError, SerializationError, SniffingError, and asyncio.TimeoutError are siblings, not subclasses, and are not caught.",
+      "impact": "A real ES outage that surfaces as one of the uncaught transport-level exception types still propagates as an unhandled 500 instead of the intended graceful 200-empty/503 degradation, only partially delivering the stated goal.",
+      "recommendation": "Broaden the except clause to catch elastic_transport.TransportError (which covers ConnectionError, ConnectionTimeout, SerializationError, SniffingError) alongside asyncio.TimeoutError."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/main.py",
+      "line": 889,
+      "title": "Model-provider readiness check blocks async lifespan",
+      "problem": "_check_model_provider_readiness(app) is called directly (not via asyncio.to_thread) from the async lifespan(). It calls the synchronous check_model_provider_readiness(), which calls boto3.Session.get_credentials() synchronously. The module's own docstring states the credential chain as a whole has no overall deadline: a credential_process provider 'runs an external command that botocore does not time out at all'.",
+      "impact": "A misconfigured AWS credential_process can hang the event loop during startup indefinitely, contradicting the code's own stated goal that this check 'never blocks startup'.",
+      "recommendation": "Run check_model_provider_readiness() via asyncio.to_thread() (as already done elsewhere in main.py's lifespan, e.g. recover_orphaned_workflow_states) so a hanging credential_process cannot block the event loop."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/analytics.py",
+      "line": 3683,
+      "title": "Leaderboard endpoints order authz/feature-flag checks inconsistently",
+      "problem": "Every leaderboard read endpoint (lines 3433-3713) lists Depends(_require_leaderboard_enabled) before Depends(admin_or_maintainer_or_auditor_access), so the 503 feature-flag check runs before authentication/authorization. trigger_leaderboard_computation (line 3683) does the opposite: Depends(admin_access_only) before Depends(_require_leaderboard_enabled).",
+      "impact": "An unauthenticated/unauthorized caller can learn whether LEADERBOARD_ENABLED is on from the read endpoints (503 vs proceeding to the auth check) while the trigger endpoint does not leak this, an inconsistent, minor information-disclosure pattern across the same feature.",
+      "recommendation": "Put Depends(_require_leaderboard_enabled) consistently after the access-control dependency on every leaderboard route (matching trigger_leaderboard_computation), or vice versa, but pick one order and apply it uniformly."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/model_provider_readiness.py",
+      "line": 20,
+      "title": "New module uses typing.Optional instead of str | None",
+      "problem": "code-quality.md requires 'X | None' unions in new modules instead of typing.Optional; this new file imports 'from typing import NamedTuple, Optional' and declares 'provider: Optional[str]' in ModelProviderReadiness.",
+      "impact": "Documented blocking code-quality standard for new modules is unmet.",
+      "recommendation": "Replace 'Optional[str]' with 'str | None' and drop the Optional import (add 'from __future__ import annotations' if needed for NamedTuple field evaluation)."
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/triggers/job_lock.py",
+      "line": 120,
+      "title": "ES-availability guards use retrieval_available() instead of is_configured()",
+      "problem": "retrieval_available(config) only checks RETRIEVAL_BACKEND != 'none'; it does not check whether ELASTIC_URL is actually set. ElasticSearchClient.is_configured() correctly combines both checks, but job_lock.py:120, main.py:797/990/998, provider_service.py:80, tool_execution_service.py:312, tools_info_service.py:77/80, and toolkit_service.py:1179 all call retrieval_available(config) directly instead of is_configured().",
+      "impact": "When RETRIEVAL_BACKEND=elasticsearch (the default) but ELASTIC_URL is blank/unset, these call sites believe retrieval is available and proceed to build/use an ES client that is not actually configured, contradicting the requirement to never construct the ES client when the capability says unavailable, and failing hard instead of degrading gracefully.",
+      "recommendation": "Gate these call sites on ElasticSearchClient.is_configured() instead of retrieval_available(config) directly, or fold the ELASTIC_URL check into retrieval_available() itself."
+    }
+  ]
+}

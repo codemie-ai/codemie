@@ -1,0 +1,46 @@
+{
+  "decision": "approve",
+  "rationale": "Reviewed the standalone deployment work covering EPMCDME-14643, EPMCDME-14652, EPMCDME-14653, and EPMCDME-14659. The combined changes enable standalone operation without Elasticsearch, correctly hide Elasticsearch-dependent functionality, and ensure startup remains operational in degraded environments. Validation included code-quality, licensing, secret-scanning, and test-harness execution. No unresolved blocking issues remain.",
+  "confidence": "high",
+  "risk_flags": ["public-api"],
+  "business_review": [
+    {
+      "kind": "validation",
+      "item": "Code-quality verification",
+      "status": "pass",
+      "notes": "make ruff completed successfully. Ruff formatting and lint checks passed without findings."
+    },
+    {
+      "kind": "validation",
+      "item": "License-header verification",
+      "status": "pass",
+      "notes": "make license-check completed successfully: 2299 files checked, 0 missing license headers."
+    },
+    {
+      "kind": "validation",
+      "item": "Secret scanning",
+      "status": "pass",
+      "notes": "gitleaks completed successfully with no leaks found."
+    },
+    {
+      "kind": "validation",
+      "item": "Test harness execution",
+      "status": "pass",
+      "notes": "make test-harness completed successfully: 187 passed, 10 skipped, 2 rerun, 0 failed."
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "Ruff format and lint checks passed."
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "Gitleaks scan reported no secrets or credential leaks."
+    }
+  ],
+  "findings": [],
+  "finding_status": []
+}

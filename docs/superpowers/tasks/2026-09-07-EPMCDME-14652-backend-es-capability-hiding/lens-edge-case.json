@@ -1,0 +1,32 @@
+[
+  {
+    "location": "src/codemie/rest_api/routers/analytics.py:3571-3578",
+    "trigger_condition": "LEADERBOARD_ENABLED=False; admin POSTs to /leaderboard/compute",
+    "guard_snippet": "dependencies=[Depends(_require_leaderboard_enabled), Depends(admin_access_only)]",
+    "potential_consequence": "Compute endpoint reachable when feature flagged off; inconsistent guard coverage"
+  },
+  {
+    "location": "src/codemie/rest_api/routers/analytics.py:3325,3347,3404,3434,3456,3478,3500,3523,3551,3605",
+    "trigger_condition": "Authenticated non-admin user hits leaderboard endpoint when LEADERBOARD_ENABLED=False",
+    "guard_snippet": "dependencies=[Depends(admin_or_maintainer_or_auditor_access), Depends(_require_leaderboard_enabled)]",
+    "potential_consequence": "503 vs 403 reveals LEADERBOARD_ENABLED state to unauthorized-but-authenticated callers"
+  },
+  {
+    "location": "src/codemie/service/customer_config_service.py:157",
+    "trigger_condition": "YAML component ID uses variant spelling or casing of aiChampionsLeaderboard",
+    "guard_snippet": "LEADERBOARD_COMPONENT_ID = \"aiChampionsLeaderboard\"; use constant in filter",
+    "potential_consequence": "Ceiling check silently misses; disabled leaderboard component appears in resolved config"
+  },
+  {
+    "location": "src/codemie/configs/customer_config.py:30-31 (hunk)",
+    "trigger_condition": "Deployment has conversationAnalytics or smartToolSelection in YAML or DB overrides",
+    "guard_snippet": "Log warning or startup assertion when runtime_ids overlaps existing YAML component IDs",
+    "potential_consequence": "Previously-effective YAML or DB overrides for these IDs silently stop taking effect"
+  },
+  {
+    "location": "tests/codemie/service/tools/test_toolkit_service.py:730-748",
+    "trigger_condition": "Regression in ToolkitService smart-selection bypass when toolkits already configured",
+    "guard_snippet": "Call actual service method; assert result from real code path, not mock_merge.return_value directly",
+    "potential_consequence": "Claimed regression guard is vacuous; ToolkitService bypass logic goes untested"
+  }
+]

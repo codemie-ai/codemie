@@ -34,6 +34,7 @@ import threading
 from contextlib import contextmanager
 
 from codemie.clients.postgres import PostgresClient
+from codemie.clients.elasticsearch import ElasticSearchClient
 from codemie.configs import config, logger
 from codemie.rest_api.models.index import IndexInfo
 from codemie.utils.leader_lock import LeaderLockContext
@@ -95,11 +96,20 @@ def with_datasource_job_lock(func):
     """Run a datasource actor only if no other process is reindexing that datasource.
 
     Accepts both actor shapes: those taking a reindex payload and those taking an
-    ``IndexInfo`` directly.
+    ``IndexInfo`` directly. Also refuses to run any actor at all when retrieval is
+    unavailable — see the guard in ``wrapper`` for why that check lives here.
     """
 
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
+        # Block scheduled and stale reindex work when retrieval is unavailable.
+        if not ElasticSearchClient.is_configured():
+            logger.warning(
+                "Skipping %s - Elasticsearch is not configured (RETRIEVAL_BACKEND=none or ELASTIC_URL unset)",
+                func.__name__,
+            )
+            return None
+
         # The scheduler dispatches reindex actors with a keyword argument
         # (kwargs={"payload": payload}) while the stale-indexing watchdog calls
         # resume_stale_datasource positionally, so accept both and pass through
