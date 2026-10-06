@@ -108,8 +108,8 @@ def _kind(value: object) -> str:
 def _parse_payload(payload: Mapping[str, object]) -> tuple[str, Mapping[str, object]]:
     unknown = sorted(str(key) for key in payload if key not in _PAYLOAD_FIELDS)
     if unknown:
-        # A setting of a call (story 3 adds one) is accepted only once the backend knows it; until then a script that
-        # sends one is told, not ignored.
+        # The 'alias' field is deferred to the future Integration Control for Scripts story. Unknown fields
+        # are refused, not silently dropped, so scripts know their input was unexpected.
         raise ToolCallRefused(CODE_BAD_ARGUMENTS, f"Unknown field in the call: {', '.join(unknown)}.")
     name = payload.get("name")
     if not isinstance(name, str) or not name:

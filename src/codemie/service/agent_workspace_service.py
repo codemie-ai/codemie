@@ -17,11 +17,13 @@ from __future__ import annotations
 import functools
 import hashlib
 import mimetypes
+from collections.abc import Sequence
 from pathlib import PurePosixPath
 from typing import Any
 
 from sqlalchemy.exc import IntegrityError
 
+from codemie.configs import logger
 from codemie.core.exceptions import ValidationException
 from codemie.core.models import UserEntity
 from codemie.repository.agent_workspace_repository import AgentWorkspaceRepository
@@ -38,6 +40,8 @@ from codemie.rest_api.models.agent_workspace import (
     WorkspaceGrepMatchResponse,
 )
 from codemie.rest_api.security.user import User
+from codemie.service.file_service.blob_ref_rules import is_safe_blob_ref
+from codemie.service.file_service.download_rules import can_download
 from codemie.service.script_tool_calls.context import ScriptRunContext
 from codemie.service.script_tool_calls.handler import build_tool_call_handlers
 from codemie.service.workspace_script_bridge import resolve_tool_calling_settings
@@ -115,12 +119,13 @@ class AgentWorkspaceService:
         )
         return f"{SANDBOX_FILE_PREFIX}{file_object.to_encoded_url()}"
 
-    def create_workspace(self, request: CreateAgentWorkspaceRequest, user: User) -> AgentWorkspaceResponse:
-        existing = self.repository.get_by_conversation_for_user(request.conversation_id, user.id)
+    def create_workspace(self, request: CreateAgentWorkspaceRequest, user: User | UserEntity) -> AgentWorkspaceResponse:
+        user_id = self._user_id(user)
+        existing = self.repository.get_by_conversation_for_user(request.conversation_id, user_id)
         if existing is None:
             workspace = AgentWorkspace(
                 conversation_id=request.conversation_id,
-                user_id=user.id,
+                user_id=user_id,
                 name=request.name,
             )
             try:
@@ -129,7 +134,7 @@ class AgentWorkspaceService:
                 # A concurrent caller (e.g. another bare tool state in the same workflow
                 # execution) won the race to create this (conversation_id, user_id) workspace;
                 # uq_agent_workspaces_conversation_user already prevents duplicate rows.
-                existing = self.repository.get_by_conversation_for_user(request.conversation_id, user.id)
+                existing = self.repository.get_by_conversation_for_user(request.conversation_id, user_id)
                 if existing is None:
                     raise
             else:
@@ -169,6 +174,9 @@ class AgentWorkspaceService:
             file_object = self._decode_workspace_file_url(file_url)
             if not file_object:
                 continue
+            if not is_safe_blob_ref(file_object):
+                logger.warning("Skipping unsafe file reference while syncing uploaded files to workspace")
+                continue
 
             blob_key = self._blob_identity_key(file_object.owner, file_object.name, file_object.mime_type)
             workspace_path = self._normalize_uploaded_file_path(file_object)
@@ -181,6 +189,53 @@ class AgentWorkspaceService:
             known_paths.add(workspace_path)
 
         return synced_files
+
+    def register_run_files(self, execution_id: str, file_urls: Sequence[str], user: User | UserEntity) -> None:
+        """Seed the workspace keyed by the execution id with the run's input files.
+
+        Every token must be well formed, safe and backed by an existing blob; otherwise a ValidationException
+        is raised before anything is persisted. Ownership is not checked here because callers hold only a
+        UserEntity: the run-start route checks it with the authenticated User via ``validate_run_files``.
+        Re-running with the same execution id adds nothing new. Database errors propagate.
+        """
+        if not file_urls:
+            return
+
+        for file_url in file_urls:
+            self._assert_blob_readable(self._decode_safe_run_file(file_url))
+        self.sync_uploaded_files(execution_id, list(file_urls), user)
+
+    def validate_run_files(self, file_urls: Sequence[str], user: User, *, check_blob_exists: bool = True) -> None:
+        """Raise ValidationException unless every token is well formed, safe and downloadable by the user.
+
+        With ``check_blob_exists`` each blob must also be readable from the file repository. Share grants
+        (download rule E) need a share token that a run request does not carry, so they never apply here.
+        """
+        for file_url in file_urls:
+            file_object = self._decode_safe_run_file(file_url)
+            if not can_download(file_object, user, None, self._normalize_file_url(file_url), self.repository):
+                raise ValidationException(f"File '{file_object.name}' is not available to this user")
+            if check_blob_exists:
+                self._assert_blob_readable(file_object)
+
+    def _decode_safe_run_file(self, file_url: str) -> FileObject:
+        file_object = self._decode_workspace_file_url(file_url)
+        if file_object is None:
+            raise ValidationException("Invalid file reference")
+        if not is_safe_blob_ref(file_object):
+            raise ValidationException(f"File '{file_object.name}' is not available to this user")
+        return file_object
+
+    def _assert_blob_readable(self, file_object: FileObject) -> None:
+        try:
+            self.file_repository.read_file(
+                file_name=file_object.name, owner=file_object.owner, mime_type=file_object.mime_type
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Backends signal a missing blob differently (FileNotFoundError, KeyError, botocore ClientError,
+            # Azure ResourceNotFoundError); none of them may surface as a 500 for a bad client reference.
+            logger.warning(f"Run file blob could not be read: {type(exc).__name__}")
+            raise ValidationException(f"File '{file_object.name}' was not found") from exc
 
     def get_workspace(self, workspace_id: str, user: User) -> AgentWorkspace:
         workspace = self.repository.get_by_id_for_user(workspace_id, user.id)
@@ -697,7 +752,7 @@ class AgentWorkspaceService:
         return file_urls
 
     def _get_or_create_workspace(self, conversation_id: str, user: User | UserEntity) -> AgentWorkspace:
-        user_id = user.user_id if isinstance(user, UserEntity) else user.id
+        user_id = self._user_id(user)
         workspace = self.repository.get_by_conversation_for_user(conversation_id, user_id)
         if workspace:
             return workspace
@@ -707,6 +762,10 @@ class AgentWorkspaceService:
         if not workspace:
             raise ValidationException(f"Workspace for conversation '{conversation_id}' not found")
         return workspace
+
+    @staticmethod
+    def _user_id(user: User | UserEntity) -> str:
+        return user.user_id if isinstance(user, UserEntity) else user.id
 
     @staticmethod
     def _normalize_file_url(file_url: str) -> str:

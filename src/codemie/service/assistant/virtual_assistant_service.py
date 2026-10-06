@@ -154,5 +154,6 @@ class VirtualAssistantService:
         keys = set(cls.assistants.keys())
 
         for key in keys:
-            if cls.assistants[key].execution_id == execution_id:
-                del cls.assistants[key]
+            assistant = cls.assistants.get(key)
+            if assistant is not None and assistant.execution_id == execution_id:
+                cls.assistants.pop(key, None)

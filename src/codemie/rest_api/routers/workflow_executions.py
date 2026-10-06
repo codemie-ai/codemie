@@ -13,16 +13,17 @@
 # limitations under the License.
 
 import json
-from typing import Dict, Optional, List, Annotated
+from collections.abc import Sequence
+from typing import Annotated, Dict, List, NoReturn, Optional
 
 from elasticsearch import NotFoundError
 from fastapi import APIRouter, Query, status, Depends, BackgroundTasks, Body, Request
 from starlette.responses import StreamingResponse
 
-from codemie.configs import logger
+from codemie.configs import config, logger
 from codemie.core.ability import Ability, Action
 from codemie.core.dependecies import set_disable_prompt_cache
-from codemie.core.exceptions import ExtendedHTTPException
+from codemie.core.exceptions import ExtendedHTTPException, ValidationException
 from codemie.core.models import BaseResponse
 from codemie.core.thread import ThreadedGenerator
 from codemie.core.dual_queue import DualQueue
@@ -258,6 +259,7 @@ def create_workflow_execution(
     _validate_remote_entities_and_raise(workflow_config)
     file_names = request.file_names or ([request.file_name] if request.file_name else [])
     _validate_workflow_supports_files_and_raise(workflow_config, file_names)
+    _validate_run_files_and_raise(file_names, user)
 
     if request.conversation_id and file_names:
         AgentWorkspaceService().sync_uploaded_files(
@@ -904,6 +906,33 @@ def _validate_remote_entities_and_raise(entity: WorkflowConfigBase):
             details=f"We haven't found the entity '{deleted_entity_name}' on the vendor.",
             help="Make sure that the entity exists on the vendor side and reimport.",
         )
+
+
+def _raise_invalid_run_files(details: str) -> NoReturn:
+    raise ExtendedHTTPException(
+        code=status.HTTP_400_BAD_REQUEST,
+        message="Invalid workflow run files",
+        details=details,
+        help="Upload the files again and pass the returned file references.",
+    )
+
+
+def _validate_run_files_and_raise(file_names: Sequence[str], user: User) -> None:
+    """
+    Rejects a run request whose input files exceed the cap, or whose tokens are malformed,
+    unsafe or not downloadable by the user.
+    """
+    if not file_names:
+        return
+
+    max_count = config.WORKFLOW_RUN_FILES_MAX_COUNT
+    if len(file_names) > max_count:
+        _raise_invalid_run_files(f"At most {max_count} files can be attached to a workflow run.")
+
+    try:
+        AgentWorkspaceService().validate_run_files(file_names, user, check_blob_exists=False)
+    except ValidationException as exc:
+        _raise_invalid_run_files(str(exc))
 
 
 def _validate_workflow_supports_files_and_raise(workflow: WorkflowConfigBase, file_names: list[str]):

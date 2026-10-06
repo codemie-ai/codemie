@@ -1,0 +1,74 @@
+{
+ "schema": 1,
+ "branch": "EPMCDME-15559_custom-tools",
+ "head": "3c686da9c8d38b97b385f37eaf5c06f434cd3329",
+ "runner": "poetry",
+ "started_at": "2026-10-06T00:00:00Z",
+ "completed_at": "2026-10-06T00:10:00Z",
+ "status": "BLOCKED",
+ "drift_detected": false,
+ "gates": [
+  {
+   "id": "lint",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 1000,
+   "command": "make ruff",
+   "exit_code": 0
+  },
+  {
+   "id": "build",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 121000,
+   "command": "make build",
+   "exit_code": 0
+  },
+  {
+   "id": "license",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 500,
+   "command": "make license-check",
+   "exit_code": 0
+  },
+  {
+   "id": "secrets",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 23000,
+   "command": "make gitleaks",
+   "exit_code": 0
+  },
+  {
+   "id": "unit",
+   "source": "guide",
+   "status": "FAIL",
+   "duration_ms": 113000,
+   "command": "make test",
+   "exit_code": 2,
+   "notes": "9 failures in tests/codemie_tools/data_management/test_file_system_toolkit.py; also fail on main (pre-existing)"
+  },
+  {
+   "id": "sonar",
+   "source": "hook",
+   "status": "N/A",
+   "duration_ms": 0,
+   "command": "make sonar-local",
+   "exit_code": null,
+   "notes": "pre-push hook (opt-in via CODEMIE_PREPUSH_ENABLED); needs Sonar credentials/network; owed to CI/reviewer"
+  },
+  {
+   "id": "test-harness",
+   "source": "guide",
+   "status": "N/A",
+   "duration_ms": 0,
+   "command": "make test-harness",
+   "exit_code": null,
+   "notes": "MR-only; needs docker stack and fixtures"
+  }
+ ],
+ "failures": {
+  "unit": "E       AssertionError: Admin without env vars should see only 1 tool in UI\nE       assert 8 == 1\nE        +  where 8 = len([{'description': 'Use this tool when you need to read file from file system or disk. You are able to do that.', 'label...on', 'label': 'Read Generate Update File (diff)', 'name': 'diff_update_file_tool', 'settings_config': False, ...}, ...])\nE       AssertionError: Admin with env var should see 7 tools in UI (executor gated off)\nE       assert 8 == 7\nE        +  where 8 = len([{'description': 'Use this tool when you need to read file from file system or disk. You are able to do that.', 'label...on', 'label': 'Read Generate Update File (diff)', 'name': 'diff_update_file_tool', 'settings_config': False, ...}, ...])\nE       AssertionError: Non-admin should see only 1 tool in UI\nE       assert 2 == 1\nE        +  where 2 = len([{'description': '\\n    Generate image tool based on user description.\\n    Useful when user needs to generate an imag...d sandbox with timeout protection.', 'label': 'Code Executor', 'name': 'code_executor', 'settings_config': False, ...}])\nE       AssertionError: Non-admin should see only 1 tool in UI even with env var\nE       assert 2 == 1\nE        +  where 2 = len([{'description': '\\n    Generate image tool based on user description.\\n    Useful when user needs to generate an imag...d sandbox with timeout protection.', 'label': 'Code Executor', 'name': 'code_executor', 'settings_config': False, ...}])\nE       AssertionError: Non-admin should only get 1 safe tool\nE       assert 8 == 1\nE        +  where 8 = len([GenerateImageTool(), CodeExecutorTool(args_schema=<class 'codemie_tools.data_management.code_executor.code_executor_t...ty=<SecurityIssueSeverity.MEDIUM: 2>)])), ReadFileTool(), ListDirectoryTool(), WriteFileTool(), CommandLineTool(), ...])\nE       AssertionError: Without env vars should only get 1 safe tool\nE       assert 8 == 1\nE        +  where 8 = len([GenerateImageTool(), CodeExecutorTool(args_schema=<class 'codemie_tools.data_management.code_executor.code_executor_t...ty=<SecurityIssueSeverity.MEDIUM: 2>)])), ReadFileTool(), ListDirectoryTool(), WriteFileTool(), CommandLineTool(), ...])\nE       AssertionError: With env var should get 7 tools (executor gated off)\nE       assert 8 == 7\nE        +  where 8 = len([GenerateImageTool(), CodeExecutorTool(args_schema=<class 'codemie_tools.data_management.code_executor.code_executor_t...ty=<SecurityIssueSeverity.MEDIUM: 2>)])), ReadFileTool(), ListDirectoryTool(), WriteFileTool(), CommandLineTool(), ...])\nE       assert 'code_executor' not in ['generate_image_tool', 'code_executor']\nE        +  where 'code_executor' = ToolMetadata(name='code_executor', description=\"Execute Python code for data analysis, plotting, calculations, or file...he code executes securely with all files isolated in a sandbox environment.', settings_config=False, config_class=None).name\nE       assert 'code_executor' not in ['read_file_from_file_system', 'write_file_to_file_system', 'list_directory_from_file_system', 'run_command_line_tool', 'generate_image_tool', 'diff_update_file_tool', ...]\nE        +  where 'code_executor' = ToolMetadata(name='code_executor', description=\"Execute Python code for data analysis, plotting, calculations, or file...he code executes securely with all files isolated in a sandbox environment.', settings_config=False, config_class=None).name\nFAILED tests/codemie_tools/data_management/test_file_system_toolkit.py::TestFileSystemToolkit::test_get_tools_ui_info_admin_without_env_var\nFAILED tests/codemie_tools/data_management/test_file_system_toolkit.py::TestFileSystemToolkit::test_get_tools_ui_info_admin_with_env_var\nFAILED tests/codemie_tools/data_management/test_file_system_toolkit.py::TestFileSystemToolkit::test_get_tools_ui_info_non_admin\nFAILED tests/codemie_tools/data_management/test_file_system_toolkit.py::TestFileSystemToolkit::test_get_tools_ui_info_non_admin_with_env_var\nFAILED tests/codemie_tools/data_management/test_file_system_toolkit.py::TestFileSystemToolkit::test_get_tools_non_admin\nFAILED tests/codemie_tools/data_management/test_file_system_toolkit.py::TestFileSystemToolkit::test_get_tools_without_env_var\nFAILED tests/codemie_tools/data_management/test_file_system_toolkit.py::TestFileSystemToolkit::test_get_tools_with_env_var\nFAILED tests/codemie_tools/data_management/test_file_system_toolkit.py::TestFileSystemToolkit::test_get_tools_ui_info_code_executor_disabled_by_default\nFAILED tests/codemie_tools/data_management/test_file_system_toolkit.py::TestFileSystemToolkit::test_get_tools_ui_info_code_executor_disabled_admin_with_fs\n\n(Same 9 failures reproduce on main; pre-existing, unrelated to branch diff.)"
+ }
+}

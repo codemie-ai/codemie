@@ -41,8 +41,10 @@ class TestWorkflowExecutionsRouterWithHeaders:
     @patch('codemie.rest_api.routers.workflow_executions.Ability')
     @patch('codemie.rest_api.routers.workflow_executions._validate_remote_entities_and_raise')
     @patch('codemie.rest_api.routers.workflow_executions._validate_workflow_supports_files_and_raise')
+    @patch('codemie.rest_api.routers.workflow_executions._validate_run_files_and_raise')
     def test_create_workflow_execution_with_header_propagation(
         self,
+        mock_validate_run_files,
         mock_validate_files,
         mock_validate_remote,
         mock_ability,

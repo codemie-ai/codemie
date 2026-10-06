@@ -1,0 +1,35 @@
+{
+  "decision": "approve",
+  "rationale": "All four prior blocking findings are resolved on kind-appropriate proof: CR-001 and CR-003 and CR-004 verified in current source, CR-002 via the user's recorded decision with reject tests present. No defer findings re-checked; working-tree HEAD differs from reviewed_head, source read from the working tree.",
+  "confidence": "high",
+  "risk_flags": ["security", "data-contract"],
+  "business_review": [
+    {"kind": "spec", "item": "AC1: tool step runs a script from run input", "status": "pass", "notes": "seam tests; real jobs-mode run stays manual"},
+    {"kind": "spec", "item": "AC2: run-start files registered under execution id before conversation write", "status": "pass", "notes": "register_run_files; ordering, no-conversation, DB error, missing blob tests"},
+    {"kind": "spec", "item": "AC3: files changed by the script persist for later steps", "status": "pass", "notes": "test against in-memory fake workspace"},
+    {"kind": "spec", "item": "AC4: missing script path fails the step with a clear message", "status": "pass", "notes": ""},
+    {"kind": "spec", "item": "AC5: failing script reports step failed with output", "status": "pass", "notes": ""},
+    {"kind": "spec", "item": "AC6: tool step resolves non-excluded catalog tool with running user's lookup", "status": "pass", "notes": "test_workflow_tool_step_scope.py"},
+    {"kind": "spec", "item": "AC7: assistant step only has its own tools", "status": "pass", "notes": ""},
+    {"kind": "spec", "item": "AC8: global workflow tool step uses running user's lookup", "status": "pass", "notes": "test_tool_node_running_user.py"},
+    {"kind": "spec", "item": "AC9: run file registered only if safe and downloadable; router 400; count cap", "status": "partial", "notes": "share_token always None so rule E cannot pass; own workspace-<id> and share-grant accept tests absent at register_run_files/router"},
+    {"kind": "spec", "item": "AC10: workflow id reaches channel handler thread", "status": "pass", "notes": "test_workflow_context.py"},
+    {"kind": "spec", "item": "AC11: delete_by_execution_id no KeyError under concurrent deletes", "status": "pass", "notes": "get + pop(key, None); racy-dict test"},
+    {"kind": "spec", "item": "Item 5: router sync kept, conversation workspace still seeded", "status": "pass", "notes": ""},
+    {"kind": "spec", "item": "Item 3: shape rule inside sync_uploaded_files", "status": "pass", "notes": "unsafe skipped and logged"},
+    {"kind": "spec", "item": "Deferred: handler.py comment updated; no alias added", "status": "pass", "notes": ""},
+    {"kind": "spec", "item": "Item 9: strict typing in new code", "status": "pass", "notes": ""}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "9 subjects in the review range all match the documented EPMCDME-####: Description format"},
+    {"kind": "code-quality", "status": "partial", "notes": "New run-file validation appended to ~958-line workflow_executions.py router and duplicates AgentWorkspaceService._validate_run_file."},
+    {"kind": "security", "status": "pass", "notes": "is_safe_blob_ref applied before all download rules and in workspace sync; cap and ownership checked on the route; unsafe tokens skipped without logging values."}
+  ],
+  "findings": [],
+  "finding_status": [
+    {"id": "CR-001", "status": "resolved", "notes": "Router now delegates to AgentWorkspaceService.validate_run_files; only the count cap remains in the router."},
+    {"id": "CR-002", "status": "resolved", "notes": "User decision recorded in fix_evidence (rule E not applicable at run start); reject tests exist at service and router level."},
+    {"id": "CR-003", "status": "resolved", "notes": "_assert_blob_readable maps any read exception to ValidationException; router validates with check_blob_exists=False, so blobs are not loaded at request time."},
+    {"id": "CR-004", "status": "resolved", "notes": "create_workflow_execution cleans up the workspace best-effort via delete_by_execution_id on any failure after registration; tests assert cleanup and non-masking."}
+  ]
+}

@@ -141,6 +141,8 @@ class Config(BaseSettings):
     FILES_STORAGE_TYPE: Literal["filesystem", "aws", "azure", "gcp"] = 'filesystem'
     FILES_STORAGE_MAX_UPLOAD_SIZE: int = 100 * 1024 * 1024  # 100 MB
     FILE_DATASOURCE_MAX_UPLOAD_COUNT: int = Field(default=10, gt=0)
+    # Max input files accepted on one workflow run request.
+    WORKFLOW_RUN_FILES_MAX_COUNT: int = Field(default=20, gt=0)
     # Aggregate cap across all files in one upload request. The file-count limit above used to
     # be a de facto aggregate size cap (count x FILES_STORAGE_MAX_UPLOAD_SIZE); now that the
     # count is independently configurable, this restores that ceiling explicitly.

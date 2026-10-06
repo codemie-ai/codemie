@@ -1515,7 +1515,7 @@ async def test_read_file_authorization_backend_failure_denies(mocker, authentica
     """A share lookup blowing up must not become a 500: that would signal the blob exists."""
     _setup_read_file_mock(mocker, b"data", "text/plain", "file.txt", owner="someone-else")
     mocker.patch(
-        "codemie.rest_api.routers.files.SharedConversation.get_by_fields",
+        "codemie.service.file_service.download_rules.SharedConversation.get_by_fields",
         side_effect=RuntimeError("elasticsearch is down"),
     )
     transport = ASGITransport(app=app)
@@ -1597,10 +1597,10 @@ def _setup_workflow_schema_mock(mocker, bucket_name, *, workflow_found=True, can
     mocker.patch.object(_config, "CODEMIE_STORAGE_BUCKET_NAME", bucket_name)
     _setup_read_file_mock(mocker, b"<svg/>", "image/svg+xml", "workflows/abc-123.svg", owner=bucket_name)
     mocker.patch(
-        "codemie.rest_api.routers.files.WorkflowConfig.find_by_id",
+        "codemie.service.file_service.download_rules.WorkflowConfig.find_by_id",
         return_value=mocker.Mock() if workflow_found else None,
     )
-    mocker.patch("codemie.rest_api.routers.files.Ability.can", return_value=can_read)
+    mocker.patch("codemie.service.file_service.download_rules.Ability.can", return_value=can_read)
 
 
 # Test #5: 200 — workflow schema readable by a user who may read the workflow (Rule B)
@@ -1722,11 +1722,11 @@ async def test_read_file_share_grant_via_file_names(mocker, authenticated_user):
     mock_shared.shared_by_user_id = "alice_user_id"
 
     mocker.patch(
-        "codemie.rest_api.routers.files.SharedConversation.get_by_fields",
+        "codemie.service.file_service.download_rules.SharedConversation.get_by_fields",
         return_value=mock_shared,
     )
     mocker.patch(
-        "codemie.rest_api.routers.files.Conversation.find_by_id",
+        "codemie.service.file_service.download_rules.Conversation.find_by_id",
         return_value=mock_conv,
     )
 
@@ -1775,11 +1775,11 @@ async def test_read_file_share_grant_via_find_by_blob_reference_written(mocker, 
     mock_workspace.id = "ws-1"
 
     mocker.patch(
-        "codemie.rest_api.routers.files.SharedConversation.get_by_fields",
+        "codemie.service.file_service.download_rules.SharedConversation.get_by_fields",
         return_value=mock_shared,
     )
     mocker.patch(
-        "codemie.rest_api.routers.files.Conversation.find_by_id",
+        "codemie.service.file_service.download_rules.Conversation.find_by_id",
         return_value=mock_conv,
     )
     mocker.patch(
@@ -1841,11 +1841,11 @@ async def test_read_file_workspace_blob_rule_d_miss_rule_e_hit(mocker, authentic
         return_value=None,  # Rule D miss
     )
     mocker.patch(
-        "codemie.rest_api.routers.files.SharedConversation.get_by_fields",
+        "codemie.service.file_service.download_rules.SharedConversation.get_by_fields",
         return_value=mock_shared,
     )
     mocker.patch(
-        "codemie.rest_api.routers.files.Conversation.find_by_id",
+        "codemie.service.file_service.download_rules.Conversation.find_by_id",
         return_value=mock_conv,
     )
     mocker.patch(

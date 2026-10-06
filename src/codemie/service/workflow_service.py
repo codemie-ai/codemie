@@ -41,6 +41,7 @@ from codemie.core.workflow_models import (
     YamlConfigHistory,
 )
 from codemie.core.workflow_models.workflow_config import WorkflowConfigBase
+from codemie.repository.agent_workspace_repository import AgentWorkspaceRepository
 from codemie.repository.repository_factory import FileRepositoryFactory
 from codemie.rest_api.models.conversation import GeneratedMessage
 from codemie.rest_api.security.user import User
@@ -234,6 +235,8 @@ class WorkflowService:
         conversation_id: Optional[str] = None,
         parent_execution_id: Optional[str] = None,
     ) -> WorkflowExecution:
+        execution_id: str | None = None
+        run_files_registered = False
         try:
             file_names = file_names or []
             # Only create conversation history for streamable executions (when conversation_id is provided)
@@ -244,13 +247,19 @@ class WorkflowService:
                 user_input, conversation_id, workflow_config.id
             )
 
+            # Mint the execution id first so run files are registered before any conversation write
+            execution_id = str(uuid.uuid4())
+
+            if file_names:
+                # A failure from here on removes the workspace keyed by this execution id (see except below).
+                # A client retry mints a new execution id, so the first workspace stays orphaned in that case.
+                run_files_registered = True
+                AgentWorkspaceService().register_run_files(execution_id, file_names, user)
+
             if is_chat_execution:
                 conversation_id, conversation, history_index, _ = WorkflowService._get_or_create_conversation(
                     conversation_id, workflow_config, user
                 )
-
-            # Create execution
-            execution_id = str(uuid.uuid4())
 
             # Create history for WorkflowExecution (for standalone executions and backward compatibility)
             execution_history = [
@@ -346,7 +355,17 @@ class WorkflowService:
             return execution_config
         except Exception as e:
             logger.error(f"Failed to create workflow execution: {e}", exc_info=True)
+            if run_files_registered and execution_id:
+                WorkflowService._cleanup_run_files_workspace(execution_id, user.user_id)
             raise e
+
+    @staticmethod
+    def _cleanup_run_files_workspace(execution_id: str, user_id: str) -> None:
+        """Best-effort removal of the run-files workspace of an execution that was never created."""
+        try:
+            AgentWorkspaceRepository().delete_by_execution_id(execution_id, user_id)
+        except Exception as cleanup_error:  # noqa: BLE001
+            logger.warning(f"Failed to clean up run files workspace for execution {execution_id}: {cleanup_error}")
 
     @classmethod
     def find_workflow_execution_by_id(cls, execution_id: str) -> WorkflowExecution:

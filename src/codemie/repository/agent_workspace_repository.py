@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 from typing import Optional
 from uuid import uuid4
 
-from sqlmodel import Session, select
+from sqlmodel import Session, col, delete, select
 
 from codemie.rest_api.models.agent_workspace import AgentWorkspace, AgentWorkspaceFile
 
@@ -118,5 +118,24 @@ class AgentWorkspaceRepository:
             workspace_file.deleted_at = now
             workspace_file.update_date = now
             session.add(workspace_file)
+            session.commit()
+            return True
+
+    def delete_by_execution_id(self, execution_id: str, user_id: str) -> bool:
+        """Delete the (execution_id, user) workspace and all its file rows; False when none exists.
+
+        Workflow runs key their workspace by execution id as the conversation id. Blobs are not touched.
+        """
+        with Session(AgentWorkspace.get_engine()) as session:
+            statement = select(AgentWorkspace).where(
+                AgentWorkspace.conversation_id == execution_id,
+                AgentWorkspace.user_id == user_id,
+            )
+            workspace = session.exec(statement).first()
+            if workspace is None:
+                return False
+
+            session.exec(delete(AgentWorkspaceFile).where(col(AgentWorkspaceFile.workspace_id) == workspace.id))
+            session.delete(workspace)
             session.commit()
             return True

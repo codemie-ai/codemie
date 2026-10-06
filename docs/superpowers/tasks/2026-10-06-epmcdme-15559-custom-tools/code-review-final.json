@@ -1,0 +1,78 @@
+{
+  "decision": "request-changes",
+  "rationale": "AC9 is partial (share grant never applies at run start, needs a decision) and three code defects were verified: router duplication, 500 on missing blob for non-filesystem backends, orphaned workspace on later failure. 1 deferred (basename-only path collision, pre-existing; see code-review-deferred.md), 22 dismissed as noise or handled.",
+  "confidence": "low",
+  "risk_flags": ["security", "data-contract"],
+  "business_review": [
+    {"kind": "spec", "item": "AC1: tool step runs a script from run input", "status": "pass", "notes": "seam tests; real jobs-mode run stays manual"},
+    {"kind": "spec", "item": "AC2: run-start files registered under execution id before conversation write", "status": "pass", "notes": "register_run_files; ordering, no-conversation, DB error, missing blob tests"},
+    {"kind": "spec", "item": "AC3: files changed by the script persist for later steps", "status": "pass", "notes": "test against in-memory fake workspace"},
+    {"kind": "spec", "item": "AC4: missing script path fails the step with a clear message", "status": "pass", "notes": ""},
+    {"kind": "spec", "item": "AC5: failing script reports step failed with output", "status": "pass", "notes": ""},
+    {"kind": "spec", "item": "AC6: tool step resolves non-excluded catalog tool with running user's lookup", "status": "pass", "notes": "test_workflow_tool_step_scope.py"},
+    {"kind": "spec", "item": "AC7: assistant step only has its own tools", "status": "pass", "notes": ""},
+    {"kind": "spec", "item": "AC8: global workflow tool step uses running user's lookup", "status": "pass", "notes": "test_tool_node_running_user.py"},
+    {"kind": "spec", "item": "AC9: run file registered only if safe and downloadable; router 400; count cap", "status": "partial", "notes": "share_token always None so rule E cannot pass; own workspace-<id> and share-grant accept tests absent at register_run_files/router"},
+    {"kind": "spec", "item": "AC10: workflow id reaches channel handler thread", "status": "pass", "notes": "test_workflow_context.py"},
+    {"kind": "spec", "item": "AC11: delete_by_execution_id no KeyError under concurrent deletes", "status": "pass", "notes": "get + pop(key, None); racy-dict test"},
+    {"kind": "spec", "item": "Item 5: router sync kept, conversation workspace still seeded", "status": "pass", "notes": ""},
+    {"kind": "spec", "item": "Item 3: shape rule inside sync_uploaded_files", "status": "pass", "notes": "unsafe skipped and logged"},
+    {"kind": "spec", "item": "Deferred: handler.py comment updated; no alias added", "status": "pass", "notes": ""},
+    {"kind": "spec", "item": "Item 9: strict typing in new code", "status": "pass", "notes": ""}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "9 subjects in the review range all match the documented EPMCDME-####: Description format"},
+    {"kind": "code-quality", "status": "partial", "notes": "New run-file validation appended to ~958-line workflow_executions.py router and duplicates AgentWorkspaceService._validate_run_file."},
+    {"kind": "security", "status": "pass", "notes": "is_safe_blob_ref applied before all download rules and in workspace sync; cap and ownership checked on the route; unsafe tokens skipped without logging values."}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/workflow_executions.py",
+      "line": 922,
+      "title": "Run-file validation duplicated in router",
+      "problem": "_validate_run_files_and_raise repeats the decode, safe-ref and can_download checks already in AgentWorkspaceService._validate_run_file, calls private _decode_workspace_file_url and _normalize_file_url from outside the class, and adds a new concern to a ~958-line router (code-quality Module Cohesion).",
+      "impact": "Blocking code-quality standard in this workflow; the two copies of safety and ownership checks can drift apart. Only the service copy checks blob existence.",
+      "recommendation": "Expose a public service method (reuse _validate_run_file logic) or a small module for run-file validation, and have the router call it; keep the count cap check in one place."
+    },
+    {
+      "id": "CR-002",
+      "kind": "decision",
+      "severity": "critical",
+      "triage": "decision_needed",
+      "file": "src/codemie/rest_api/routers/workflow_executions.py",
+      "line": 940,
+      "title": "Share grant (rule E) unreachable at run start",
+      "problem": "Both the router check and AgentWorkspaceService._validate_run_file call can_download with share_token=None, so rule E can never pass. AC9 requires the same rules A-E; own workspace-<id> and share-grant accept tests are absent at register_run_files and router level.",
+      "impact": "A user running a workflow on files from a conversation shared with them gets a 400, and AC9 is only partially met. Whether this is intended is not stated in the spec; fixing it requires a request-shape or contract decision (e.g. accepting a share token).",
+      "recommendation": "Decide: either accept a share token on the run request and pass it through both checks (with accept tests), or amend the spec/AC to exclude rule E and document it."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/agent_workspace_service.py",
+      "line": 215,
+      "title": "Missing blob can yield 500; existence check reads blob",
+      "problem": "_validate_run_file catches only FileNotFoundError around file_repository.read_file. The AWS repository re-raises BotoCoreError/ClientError and the Azure repository re-raises generic exceptions, so a missing blob on those backends escapes as a non-ValidationException. The check also loads up to 20 files of full content into memory just to test existence.",
+      "impact": "Missing-blob requests return 500 instead of 400 on cloud storage backends (the AC2 missing-blob rejection holds only for filesystem/GCP), and each run request can cause large memory and latency spikes. Reachability confirmed by reading the repository implementations.",
+      "recommendation": "Use a metadata or exists check where available, and map backend not-found errors (FileNotFoundError, KeyError, OSError, ClientError NoSuchKey, Azure ResourceNotFound) to ValidationException(...) from exc."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/workflow_service.py",
+      "line": 250,
+      "title": "Registered run files orphaned on later failure",
+      "problem": "register_run_files persists a workspace and file rows keyed by the newly minted execution_id before conversation creation and WorkflowExecution.save. If either later step raises, nothing removes the workspace; test_db_error_on_save_fails_creation asserts only propagation.",
+      "impact": "Orphan workspace and file rows for an execution id that never existed accumulate on each failed run creation.",
+      "recommendation": "Wrap the later steps in try/except that calls AgentWorkspaceRepository().delete_by_execution_id(execution_id) (best-effort) and re-raises; add a test asserting cleanup."
+    }
+  ]
+}

@@ -39,7 +39,9 @@ from codemie.core.workflow_models import (
     YamlConfigHistory,
 )
 
-from codemie.core.exceptions import ExtendedHTTPException
+from codemie.core.exceptions import ExtendedHTTPException, ValidationException
+from codemie.service.agent_workspace_service import AgentWorkspaceService
+from codemie_tools.base.file_object import FileObject
 from codemie.rest_api.models.conversation import Conversation, GeneratedMessage
 from codemie.rest_api.security.user import User
 from codemie.service.workflow_service import WorkflowService
@@ -1570,3 +1572,165 @@ def test_update_workflow_values_propagates_categories(
     workflow_service._update_workflow_values(workflow_config, updated_config, user)
 
     assert workflow_config.categories == ["cat-1", "cat-2"]
+
+
+class TestCreateWorkflowExecutionRegistersRunFiles:
+    EXEC_ID = "12345678-1234-5678-1234-567812345678"
+
+    def _run(
+        self,
+        workflow_config: WorkflowConfig,
+        user_model: UserEntity,
+        file_names: list[str] | None,
+        conversation_id: str | None,
+        register_side_effect: Exception | None = None,
+        save_side_effect: Exception | None = None,
+        cleanup_side_effect: Exception | None = None,
+    ) -> tuple[MagicMock, MagicMock, MagicMock, MagicMock, WorkflowExecution | None, Exception | None]:
+        conversation = MagicMock()
+        conversation.history = []
+        manager = MagicMock()
+        workspace = MagicMock()
+        self.repo = MagicMock()
+        self.repo.delete_by_execution_id.side_effect = cleanup_side_effect
+        workspace.register_run_files.side_effect = register_side_effect
+        manager.attach_mock(workspace.register_run_files, "register")
+        get_conv = MagicMock(return_value=(conversation_id, conversation, 0, False))
+        manager.attach_mock(get_conv, "get_conv")
+        manager.attach_mock(conversation.update, "conv_update")
+        result: WorkflowExecution | None = None
+        error: Exception | None = None
+        with (
+            patch('uuid.uuid4', return_value=UUID(self.EXEC_ID)),
+            patch('codemie.service.workflow_service.AgentWorkspaceService', return_value=workspace),
+            patch('codemie.service.workflow_service.AgentWorkspaceRepository', return_value=self.repo),
+            patch.object(WorkflowService, '_get_or_create_conversation', get_conv),
+            patch.object(WorkflowService, '_augment_user_input_with_history', return_value="input"),
+            patch.object(WorkflowExecution, 'save', side_effect=save_side_effect),
+        ):
+            try:
+                result = WorkflowService.create_workflow_execution(
+                    workflow_config,
+                    user_model,
+                    "task input",
+                    file_names=file_names,
+                    conversation_id=conversation_id,
+                )
+            except Exception as e:  # noqa: BLE001
+                error = e
+        return manager, workspace, get_conv, conversation.update, result, error
+
+    def test_registers_once_under_execution_id_without_conversation(self, workflow_config, user_model):
+        _, workspace, get_conv, _, result, error = self._run(workflow_config, user_model, ["f1"], None)
+        assert error is None
+        workspace.register_run_files.assert_called_once_with(self.EXEC_ID, ["f1"], user_model)
+        get_conv.assert_not_called()
+        assert result.execution_id == self.EXEC_ID
+
+    def test_registers_before_conversation_save_with_conversation(self, workflow_config, user_model):
+        manager, workspace, _, _, _, error = self._run(workflow_config, user_model, ["f1"], "conv-1")
+        assert error is None
+        workspace.register_run_files.assert_called_once_with(self.EXEC_ID, ["f1"], user_model)
+        names = [c[0] for c in manager.mock_calls if c[0] in ("register", "get_conv", "conv_update")]
+        assert names.index("register") < names.index("get_conv")
+        assert names.index("register") < names.index("conv_update")
+
+    def test_registration_failure_leaves_no_conversation_side_effects(self, workflow_config, user_model):
+        _, _, get_conv, conv_update, result, error = self._run(
+            workflow_config, user_model, ["bad"], "conv-1", register_side_effect=ValueError("bad token")
+        )
+        assert isinstance(error, ValueError)
+        assert result is None
+        get_conv.assert_not_called()
+        conv_update.assert_not_called()
+
+    def test_empty_file_names_registers_nothing(self, workflow_config, user_model):
+        _, workspace, _, _, _, error = self._run(workflow_config, user_model, [], None)
+        assert error is None
+        workspace.register_run_files.assert_not_called()
+
+    def test_db_error_on_save_fails_creation(self, workflow_config, user_model):
+        _, _, _, _, result, error = self._run(
+            workflow_config, user_model, ["f1"], None, save_side_effect=RuntimeError("db down")
+        )
+        assert isinstance(error, RuntimeError)
+        assert result is None
+
+    def test_failure_after_registration_removes_execution_workspace(self, workflow_config, user_model):
+        _, _, _, _, _, error = self._run(
+            workflow_config, user_model, ["f1"], None, save_side_effect=RuntimeError("db down")
+        )
+        assert isinstance(error, RuntimeError)
+        self.repo.delete_by_execution_id.assert_called_once_with(self.EXEC_ID, user_model.user_id)
+
+    def test_conversation_failure_after_registration_removes_execution_workspace(self, workflow_config, user_model):
+        conversation = MagicMock()
+        conversation.history = []
+        conversation.update.side_effect = RuntimeError("es down")
+        get_conv = MagicMock(return_value=("conv-1", conversation, 0, False))
+        repo = MagicMock()
+        with (
+            patch('uuid.uuid4', return_value=UUID(self.EXEC_ID)),
+            patch('codemie.service.workflow_service.AgentWorkspaceService'),
+            patch('codemie.service.workflow_service.AgentWorkspaceRepository', return_value=repo),
+            patch.object(WorkflowService, '_get_or_create_conversation', get_conv),
+            patch.object(WorkflowService, '_augment_user_input_with_history', return_value="input"),
+            pytest.raises(RuntimeError, match="es down"),
+        ):
+            WorkflowService.create_workflow_execution(
+                workflow_config, user_model, "task input", file_names=["f1"], conversation_id="conv-1"
+            )
+        repo.delete_by_execution_id.assert_called_once_with(self.EXEC_ID, user_model.user_id)
+
+    def test_cleanup_error_does_not_mask_original_error(self, workflow_config, user_model):
+        _, _, _, _, _, error = self._run(
+            workflow_config,
+            user_model,
+            ["f1"],
+            None,
+            save_side_effect=RuntimeError("db down"),
+            cleanup_side_effect=ValueError("cleanup broke"),
+        )
+        assert isinstance(error, RuntimeError)
+        assert str(error) == "db down"
+
+    def test_no_cleanup_without_run_files(self, workflow_config, user_model):
+        self._run(workflow_config, user_model, [], None, save_side_effect=RuntimeError("db down"))
+        self.repo.delete_by_execution_id.assert_not_called()
+
+    def _real_service(self, read_error: Exception | None = None) -> AgentWorkspaceService:
+        service = AgentWorkspaceService.__new__(AgentWorkspaceService)
+        service.repository = MagicMock()
+        service.repository.get_by_conversation_for_user.return_value = MagicMock(id="ws-1")
+        service.repository.list_files.return_value = []
+        service.repository.get_file.return_value = None
+        service.repository.find_by_blob.return_value = None
+        service.repository.save_file.side_effect = lambda workspace_file: workspace_file
+        service.file_repository = MagicMock()
+        service.file_repository.read_file.return_value = MagicMock(content=b"data")
+        service.file_repository.read_file.side_effect = read_error
+        return service
+
+    def test_real_user_entity_and_real_workspace_service_register_owned_file(self, workflow_config, user_model):
+        token = FileObject(name="a.pdf", mime_type="application/pdf", owner=user_model.user_id).to_encoded_url()
+        service = self._real_service()
+        with (
+            patch('uuid.uuid4', return_value=UUID(self.EXEC_ID)),
+            patch('codemie.service.workflow_service.AgentWorkspaceService', return_value=service),
+            patch.object(WorkflowService, '_augment_user_input_with_history', return_value="input"),
+            patch.object(WorkflowExecution, 'save'),
+        ):
+            result = WorkflowService.create_workflow_execution(workflow_config, user_model, "x", file_names=[token])
+        assert result.execution_id == self.EXEC_ID
+
+    def test_real_user_entity_missing_blob_raises_validation_error(self, workflow_config, user_model):
+        token = FileObject(name="a.pdf", mime_type="application/pdf", owner=user_model.user_id).to_encoded_url()
+        service = self._real_service(read_error=FileNotFoundError("gone"))
+        with (
+            patch('uuid.uuid4', return_value=UUID(self.EXEC_ID)),
+            patch('codemie.service.workflow_service.AgentWorkspaceService', return_value=service),
+            patch('codemie.service.workflow_service.AgentWorkspaceRepository'),
+            patch.object(WorkflowService, '_augment_user_input_with_history', return_value="input"),
+            pytest.raises(ValidationException),
+        ):
+            WorkflowService.create_workflow_execution(workflow_config, user_model, "x", file_names=[token])
