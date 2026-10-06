@@ -204,3 +204,50 @@ class TestRunEvaluationTask:
         # past run_experiment (which the real SDK would catch internally).
         _, captured, _ = self._run(stream_side_effect=RuntimeError("boom"))
         assert isinstance(captured.get("item_exception"), RuntimeError)
+
+    def test_item_task_passes_unique_uuid_as_session_id(self):
+        """create_executor must receive a per-item UUID as session_id, not the experiment name."""
+        import uuid as _uuid
+
+        item = MagicMock()
+        item.input = "q"
+        dataset = MagicMock()
+
+        def fake_run_experiment(name, task, max_concurrency):
+            task(item=item)
+            return MagicMock()
+
+        dataset.run_experiment.side_effect = fake_run_experiment
+        mock_langfuse = MagicMock()
+        mock_langfuse.get_dataset.return_value = dataset
+
+        execution = MagicMock()
+        execution.execution_id = "exec-1"
+        completed = MagicMock()
+        completed.output = "out"
+
+        with (
+            patch(f"{SERVICE_MODULE}.require_langfuse_client", return_value=mock_langfuse),
+            patch(f"{SERVICE_MODULE}.WorkflowService.create_workflow_execution", return_value=execution),
+            patch(f"{SERVICE_MODULE}.WorkflowService.find_workflow_execution_by_id", return_value=completed),
+            patch(
+                f"{SERVICE_MODULE}.WorkflowExecutor.create_executor", return_value=MagicMock()
+            ) as mock_create_executor,
+        ):
+            WorkflowEvaluationService._run_evaluation_task(
+                workflow_config=MagicMock(),
+                dataset_id="ds-1",
+                experiment_name="exp-1",
+                max_concurrency=1,
+                user=MagicMock(),
+                raw_request=MagicMock(),
+            )
+
+        _, kwargs = mock_create_executor.call_args
+        session_id = kwargs["session_id"]
+        _uuid.UUID(session_id)  # raises if not a valid UUID
+        assert session_id != "exp-1"
+
+        # propagate_attributes must be called with the same session_id passed to create_executor
+        _, prop_kwargs = mock_langfuse.propagate_attributes.call_args
+        assert prop_kwargs["session_id"] == session_id

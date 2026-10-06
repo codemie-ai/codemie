@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import uuid
 from typing import TYPE_CHECKING
 
 from fastapi import BackgroundTasks, Request
@@ -134,20 +135,25 @@ class WorkflowEvaluationService:
         def item_task(*, item: ExperimentItem) -> str | None:
             """Run a single dataset item through the workflow and return its output."""
             try:
+                conversation_id = str(uuid.uuid4())
                 user_input = item.input
-                execution = WorkflowService.create_workflow_execution(
-                    workflow_config,
-                    user=user.as_user_model(),
-                    user_input=user_input,
-                )
-                executor = WorkflowExecutor.create_executor(
-                    workflow_config=workflow_config,
-                    user_input=user_input,
-                    user=user,
-                    execution_id=execution.execution_id,
-                )
-                # Blocks until the workflow finishes.
-                executor.stream()
+                with langfuse.propagate_attributes(
+                    session_id=conversation_id, metadata={"workflow_id": workflow_config.id}
+                ):
+                    execution = WorkflowService.create_workflow_execution(
+                        workflow_config,
+                        user=user.as_user_model(),
+                        user_input=user_input,
+                    )
+                    executor = WorkflowExecutor.create_executor(
+                        workflow_config=workflow_config,
+                        user_input=user_input,
+                        user=user,
+                        execution_id=execution.execution_id,
+                        session_id=conversation_id,
+                    )
+                    # Blocks until the workflow finishes.
+                    executor.stream()
 
                 completed = WorkflowService.find_workflow_execution_by_id(execution.execution_id)
                 return completed.output

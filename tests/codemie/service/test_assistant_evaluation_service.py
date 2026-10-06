@@ -79,3 +79,50 @@ class TestRunEvaluationTask:
         mock_handler = _make_context(system_prompt="custom override")
         chat_request = mock_handler.process_request.call_args[0][0]
         assert chat_request.system_prompt == "custom override"
+
+    def test_conversation_id_is_unique_uuid_per_item(self):
+        """Each item gets its own UUID as conversation_id so its trace links to a unique session."""
+        import uuid as _uuid
+
+        mock_handler = _make_context(system_prompt=None)
+        chat_request = mock_handler.process_request.call_args[0][0]
+        _uuid.UUID(chat_request.conversation_id)  # raises if not a valid UUID
+        assert chat_request.conversation_id != "exp-1"
+
+    def test_propagate_attributes_receives_same_id_as_conversation_id(self):
+        """propagate_attributes session_id must equal the conversation_id sent to CodeMie."""
+        import uuid as _uuid
+
+        mock_response = MagicMock()
+        mock_response.generated = "response text"
+        mock_handler = MagicMock()
+        mock_handler.process_request.return_value = mock_response
+
+        item = MagicMock()
+        item.input = "test query"
+        dataset = MagicMock()
+        dataset.items = [item]
+
+        def _run_experiment(name, task):
+            return MagicMock(item_results=[task(item=item)])
+
+        dataset.run_experiment = _run_experiment
+
+        mock_langfuse = MagicMock()
+        mock_langfuse.get_dataset.return_value = dataset
+
+        with (
+            patch("codemie.service.assistant_evaluation_service.get_request_handler", return_value=mock_handler),
+            patch("codemie.service.assistant_evaluation_service.require_langfuse_client", return_value=mock_langfuse),
+        ):
+            AssistantEvaluationService._run_evaluation_task(
+                assistant=MagicMock(),
+                dataset_id="ds-1",
+                experiment_name="exp-1",
+                system_prompt=None,
+            )
+
+        chat_request = mock_handler.process_request.call_args[0][0]
+        _, prop_kwargs = mock_langfuse.propagate_attributes.call_args
+        assert prop_kwargs["session_id"] == chat_request.conversation_id
+        _uuid.UUID(prop_kwargs["session_id"])
