@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "task": "Fix the supervisor history compactor so a sub-agent's intermediate tool-call AIMessage is never mistaken for its terminal handoff answer, add a tool_calls guard to _consume_pending_handoff_message, and cover the exact bug shape with a regression test.",
+  "generated": "2026-09-12",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 1, "label": "XS" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 11,
+  "size": "S",
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "The change is a single, self-contained guard in _consume_pending_handoff_message (src/codemie/agents/supervisor/history.py), but that function is shared infrastructure invoked for every supervisor-based multi-agent handoff in the system — a targeted fix with system-wide behavioral reach." },
+    { "dimension": "technical_risk", "reason": "No exact precedent exists on main for this specific guard (a similar concept exists only on the unmerged EPMCDME-13889 reference branch), and the 603-line existing regression suite exercises many overlapping message-shape scenarios (parallel handoffs, placeholders, orphan sanitization) that the change must not break; the trailing sanitize_rich_history_for_llm sweep can also mask the true effect of the fix, requiring careful assertions rather than just 'no crash'." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from S to M: fix touches core shared supervisor handoff-compaction logic used across multiple multi-agent workflows (Affects multiple workflows or agents)"
+  ],
+  "split_recommendation": null
+}

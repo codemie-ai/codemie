@@ -185,7 +185,11 @@ class AgentInvokeCallback(StreamingStdOutCallbackHandler):
         display_name = resolve_tool_display_name(tool_name, self.name_resolver)
 
         author_thoughts[run_key] = Thought(
-            id=str(uuid.uuid4()),
+            # SupervisorCoordinator (coordinator.py) sets a nested child's parent_id to
+            # str(run_id), so this thought's own id must equal run_id too — otherwise every
+            # child of a handoff/tool run is orphaned (EPMCDME-14859: the UI then renders
+            # nested tool calls as flat siblings instead of nested under their parent).
+            id=str(run_id) if run_id is not None else str(uuid.uuid4()),
             author_name=display_name,
             parent_id=self._get_parent_id(author),
             author_type=ThoughtAuthorType.Tool.value,

@@ -14,6 +14,7 @@
 
 """Supervisor-focused tests for LangGraph multi-assistant behavior."""
 
+import json
 from collections import deque
 from uuid import uuid4
 
@@ -205,6 +206,11 @@ class TestLangGraphMultiAssistantSupervisor:
                 assert call_kwargs["add_handoff_back_messages"] is False
                 assert call_kwargs["output_mode"] == "last_message"
                 assert callable(call_kwargs["pre_model_hook"])
+                # EPMCDME-14859: the supervisor's own prompt gets the result-synthesis
+                # instruction appended, without losing the assistant's own configured prompt.
+                assert "You are a supervisor assistant managing subagents." in call_kwargs["prompt"]
+                assert "you have ALREADY" in call_kwargs["prompt"]
+                assert "received the answer" in call_kwargs["prompt"]
 
     def test_regular_agent_uses_create_react_agent(self, mock_user, mock_request, mock_regular_tool):
         assistant = MagicMock()
@@ -303,6 +309,42 @@ class TestLangGraphMultiAssistantSupervisor:
         call_args = supervisor_agent.agent_executor.stream.call_args
         assert call_args[1]["subgraphs"] is True
         assert result == "final_result"
+
+    def test_stream_graph_falls_back_to_subassistant_answer_when_primary_is_empty(self, supervisor_agent):
+        # EPMCDME-14859 secondary defect: reproduces the supervisor's second (post-handoff)
+        # turn producing no text of its own. Without the fallback, _stream_graph would
+        # return "" (or stale earlier-turn text); with it, the sub-agent's real answer
+        # (captured via _on_subassistant_back during the run) is used instead.
+        mock_stream = [
+            ("supervisor", "updates", {"supervisor": {"messages": [AIMessage(content="")]}}),
+        ]
+
+        supervisor_agent.agent_executor = MagicMock()
+        supervisor_agent.agent_executor.stream.return_value = iter(mock_stream)
+        supervisor_agent.process_chunk = MagicMock()
+        supervisor_agent._on_chain_end = MagicMock()
+        supervisor_agent._get_last_ai_message_content = MagicMock(return_value="")
+        supervisor_agent._last_subassistant_answer = "The workspace contains no files (Total files: 0)."
+
+        result = supervisor_agent._stream_graph({"input": "test"})
+
+        assert result == "The workspace contains no files (Total files: 0)."
+
+    def test_stream_graph_prefers_own_final_message_over_subassistant_fallback(self, supervisor_agent):
+        mock_stream = [
+            ("supervisor", "updates", {"supervisor": {"messages": [AIMessage(content="own synthesis")]}}),
+        ]
+
+        supervisor_agent.agent_executor = MagicMock()
+        supervisor_agent.agent_executor.stream.return_value = iter(mock_stream)
+        supervisor_agent.process_chunk = MagicMock()
+        supervisor_agent._on_chain_end = MagicMock()
+        supervisor_agent._get_last_ai_message_content = MagicMock(return_value="own synthesis")
+        supervisor_agent._last_subassistant_answer = "stale sub-answer that should not be used"
+
+        result = supervisor_agent._stream_graph({"input": "test"})
+
+        assert result == "own synthesis"
 
     def test_stream_graph_without_subagents(self, mock_user, mock_request, mock_regular_tool):
         assistant = MagicMock()
@@ -706,6 +748,22 @@ class TestLangGraphMultiAssistantSupervisor:
         mock_callback.on_tool_end.assert_called_once()
         assert mock_callback.on_tool_end.call_args[0][0] == output
 
+    def test_on_subassistant_back_stores_last_subassistant_answer(self, supervisor_agent):
+        # EPMCDME-14859 secondary defect: this stash is the fallback source _stream_graph
+        # uses when the supervisor's own final turn produces no text of its own.
+        assert supervisor_agent._last_subassistant_answer == ""
+
+        supervisor_agent._on_subassistant_back("The workspace contains no files (Total files: 0).")
+
+        assert supervisor_agent._last_subassistant_answer == "The workspace contains no files (Total files: 0)."
+
+    def test_on_subassistant_back_ignores_empty_output(self, supervisor_agent):
+        supervisor_agent._last_subassistant_answer = "previous answer"
+
+        supervisor_agent._on_subassistant_back("")
+
+        assert supervisor_agent._last_subassistant_answer == "previous answer"
+
     def test_supervisor_callback_error_handling(self, supervisor_agent):
         mock_callback = MagicMock(spec=BaseCallbackHandler)
         mock_callback.on_tool_start.side_effect = Exception("Callback error")
@@ -749,6 +807,21 @@ class TestLangGraphMultiAssistantSupervisor:
 
         content = agent._get_last_ai_message_content(chunk)
         assert content == "Regular agent response"
+
+    def test_get_last_ai_message_content_excludes_tool_calling_preamble(self, supervisor_agent):
+        # EPMCDME-14859: an AIMessage that still declares tool_calls is a preamble to a
+        # handoff/tool invocation, never the turn's final answer. Capturing its content as
+        # "the last message" is what causes a later empty completion to silently fall back
+        # to this stale preamble text instead of a genuine final answer.
+        preamble = AIMessage(content="I will delegate this task to my sub-assistant.")
+        preamble.tool_calls = [
+            {"name": "transfer_to_analyst", "args": {"task": "do it"}, "id": "call-1", "type": "tool_call"}
+        ]
+        chunk = ("updates", {"supervisor": {"messages": [preamble]}})
+
+        content = supervisor_agent._get_last_ai_message_content(chunk)
+
+        assert content == ""
 
     def test_parse_supervisor_message_type_valid_ai_message(self, supervisor_agent):
         ai_message = AIMessage(content="Processing request")
@@ -947,3 +1020,42 @@ class TestSubagentToolConfirmationPolicy:
                 LangGraphAgent(**base_config)
 
             mock_create_smart_react.assert_called_once()
+
+
+class TestSendErrorToThreadPreservesSuccessfulAnswer(TestLangGraphMultiAssistantSupervisor):
+    def test_send_error_to_thread_does_not_append_error_when_answer_already_succeeded(self, supervisor_agent):
+        # Reproduces the secondary presentation defect from EPMCDME-14859: when a sub-agent
+        # already streamed a successful answer into chunks_collector and a LATER model call
+        # then raises, _send_error_to_thread must not concatenate the raw/friendly error text
+        # onto the already-successful content.
+        supervisor_agent.thread_generator = MagicMock()
+        supervisor_agent.thread_context = None
+        chunks_collector = ["The Jira issue summary is: manual or guarded"]
+
+        supervisor_agent._send_error_to_thread(
+            RuntimeError("litellm.BadRequestError: AzureException BadRequestError"),
+            execution_start=0.0,
+            chunks_collector=chunks_collector,
+        )
+
+        sent_json = supervisor_agent.thread_generator.send.call_args[0][0]
+        sent_payload = json.loads(sent_json)
+        assert sent_payload["generated"] == "The Jira issue summary is: manual or guarded"
+        assert sent_payload["execution_error"] is not None
+
+    def test_send_error_to_thread_appends_error_when_nothing_succeeded_yet(self, supervisor_agent):
+        # Preserves existing behavior: if nothing succeeded before the exception, the
+        # user-facing error message must still be surfaced.
+        supervisor_agent.thread_generator = MagicMock()
+        supervisor_agent.thread_context = None
+        chunks_collector = []
+
+        supervisor_agent._send_error_to_thread(
+            RuntimeError("boom"),
+            execution_start=0.0,
+            chunks_collector=chunks_collector,
+        )
+
+        sent_json = supervisor_agent.thread_generator.send.call_args[0][0]
+        sent_payload = json.loads(sent_json)
+        assert sent_payload["generated"] != ""

@@ -601,3 +601,154 @@ class TestLangGraphMultiAssistantHandoffs:
                 HumanMessage(content="Follow-up"),
             ]
         }
+
+    def test_strip_handoff_back_messages_pre_model_hook_preserves_subagent_tool_call_before_terminal_answer(self):
+        # Reproduces EPMCDME-14859: the sub-agent (jiratesthelp) itself calls a tool
+        # (generic_jira_tool) before producing its terminal answer. Before the fix,
+        # _consume_pending_handoff_message matched the FIRST AIMessage named "jiratesthelp"
+        # (the intermediate tool-call message) as the handoff's terminal result, stripping
+        # the assistant tool-call declaration while leaving the ToolMessage in place — an
+        # orphaned role='tool' message that Azure/OpenAI rejects with a 400.
+        #
+        # Fix design: defer (not drop) the supervisor's own handoff-call AIMessage. Every
+        # message is preserved; the supervisor's call is re-emitted later, directly beside
+        # its own answer, once the sub-agent's nested tool exchange resolves.
+        supervisor_handoff_call = AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "transfer_to_jiratesthelp",
+                    "args": {"task": "Get the Jira issue summary"},
+                    "id": "call-123",
+                    "type": "tool_call",
+                }
+            ],
+        )
+        single_parent_handoff = ToolMessage(
+            content="Get the Jira issue summary",
+            name="transfer_to_jiratesthelp",
+            tool_call_id="call-123",
+            additional_kwargs={METADATA_KEY_SUBAGENT_TASK: True},
+            response_metadata={METADATA_KEY_HANDOFF_DESTINATION: "jiratesthelp"},
+        )
+        subagent_tool_call = AIMessage(
+            content="",
+            name="jiratesthelp",
+            tool_calls=[
+                {
+                    "name": "generic_jira_tool",
+                    "args": {"issue": "EPMCDME-14859"},
+                    "id": "jira-call-1",
+                    "type": "tool_call",
+                }
+            ],
+        )
+        subagent_tool_result = ToolMessage(
+            content="Summary: manual or guarded",
+            name="generic_jira_tool",
+            tool_call_id="jira-call-1",
+        )
+        subagent_terminal_answer = AIMessage(
+            content="The Jira issue summary is: manual or guarded",
+            name="jiratesthelp",
+        )
+
+        result = _strip_handoff_back_messages_pre_model_hook(
+            {
+                "messages": [
+                    HumanMessage(content="What is the Jira issue summary?"),
+                    supervisor_handoff_call,
+                    single_parent_handoff,
+                    subagent_tool_call,
+                    subagent_tool_result,
+                    subagent_terminal_answer,
+                ]
+            }
+        )
+
+        assert result["llm_input_messages"] == [
+            HumanMessage(content="What is the Jira issue summary?"),
+            subagent_tool_call,
+            subagent_tool_result,
+            supervisor_handoff_call,
+            ToolMessage(
+                content="The Jira issue summary is: manual or guarded",
+                name="transfer_to_jiratesthelp",
+                tool_call_id="call-123",
+            ),
+        ]
+
+        # Protocol-level assertion: every ToolMessage in the output has a preceding
+        # AIMessage.tool_calls entry with a matching id — the exact invariant Azure/OpenAI
+        # enforces and this bug violated.
+        llm_input = result["llm_input_messages"]
+        seen_tool_call_ids = set()
+        for message in llm_input:
+            if isinstance(message, AIMessage):
+                seen_tool_call_ids.update(tc["id"] for tc in message.tool_calls)
+            elif isinstance(message, ToolMessage):
+                assert message.tool_call_id in seen_tool_call_ids, (
+                    f"orphaned ToolMessage: tool_call_id={message.tool_call_id!r} has no "
+                    "preceding AIMessage.tool_calls entry"
+                )
+
+    def test_strip_handoff_back_messages_pre_model_hook_reemits_deferred_call_before_no_response_placeholder(self):
+        # The supervisor's handoff-call AIMessage is deferred once a nested sub-agent tool
+        # exchange begins (see the test above). If the sub-agent never produces a terminal
+        # answer, the deferred call must be re-emitted before its [no response] placeholder —
+        # not silently lost.
+        supervisor_handoff_call = AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "transfer_to_jiratesthelp",
+                    "args": {"task": "Get the Jira issue summary"},
+                    "id": "call-123",
+                    "type": "tool_call",
+                }
+            ],
+        )
+        single_parent_handoff = ToolMessage(
+            content="Get the Jira issue summary",
+            name="transfer_to_jiratesthelp",
+            tool_call_id="call-123",
+            additional_kwargs={METADATA_KEY_SUBAGENT_TASK: True},
+            response_metadata={METADATA_KEY_HANDOFF_DESTINATION: "jiratesthelp"},
+        )
+        subagent_tool_call = AIMessage(
+            content="",
+            name="jiratesthelp",
+            tool_calls=[
+                {
+                    "name": "generic_jira_tool",
+                    "args": {"issue": "EPMCDME-14859"},
+                    "id": "jira-call-1",
+                    "type": "tool_call",
+                }
+            ],
+        )
+        subagent_tool_result = ToolMessage(
+            content="Summary: manual or guarded",
+            name="generic_jira_tool",
+            tool_call_id="jira-call-1",
+        )
+
+        result = _strip_handoff_back_messages_pre_model_hook(
+            {
+                "messages": [
+                    HumanMessage(content="What is the Jira issue summary?"),
+                    supervisor_handoff_call,
+                    single_parent_handoff,
+                    subagent_tool_call,
+                    subagent_tool_result,
+                ]
+            }
+        )
+
+        assert result["llm_input_messages"] == [
+            HumanMessage(content="What is the Jira issue summary?"),
+            subagent_tool_call,
+            subagent_tool_result,
+            supervisor_handoff_call,
+            ToolMessage(content="[no response]", name="transfer_to_jiratesthelp", tool_call_id="call-123"),
+        ]

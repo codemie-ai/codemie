@@ -79,10 +79,30 @@ def _build_handoff_tool_call_message(message: ToolMessage) -> AIMessage:
     )
 
 
+def _pop_matching_supervisor_call(filtered_messages: list[BaseMessage], tool_call_id: str | None) -> AIMessage | None:
+    """Pop and return the last message in ``filtered_messages`` if it is the supervisor's own
+    AIMessage declaring the handoff tool call identified by ``tool_call_id``.
+
+    Only pops when that AIMessage is the *immediately preceding* message — i.e. nothing has
+    been appended since (no already-visible result, no placeholder) — so an already-resolved
+    call/response pair is never disturbed. Returns None otherwise, leaving filtered_messages
+    unchanged.
+    """
+    if not tool_call_id or not filtered_messages:
+        return None
+    last_message = filtered_messages[-1]
+    if not isinstance(last_message, AIMessage):
+        return None
+    if not any(tool_call.get("id") == tool_call_id for tool_call in last_message.tool_calls):
+        return None
+    return filtered_messages.pop()
+
+
 def _queue_pending_handoff_message(
     message: BaseMessage,
+    filtered_messages: list[BaseMessage],
     pending_parallel_handoffs: dict[str, deque[AIMessage]],
-    pending_single_handoffs: dict[str, deque[tuple[str, str | None]]],
+    pending_single_handoffs: dict[str, deque[AIMessage | tuple[str, str | None]]],
 ) -> bool:
     if not isinstance(message, ToolMessage):
         return False
@@ -94,7 +114,16 @@ def _queue_pending_handoff_message(
         pending_parallel_handoffs.setdefault(destination, deque()).append(_build_handoff_tool_call_message(message))
         return True
     if message.additional_kwargs.get(METADATA_KEY_SUBAGENT_TASK):
-        pending_single_handoffs.setdefault(destination, deque()).append((message.name, message.tool_call_id))
+        # Defer (don't drop) the supervisor's own handoff-call AIMessage when it immediately
+        # precedes this task message: hold it back so it can be re-emitted later, right next to
+        # its own answer, once the sub-agent's nested tool exchange (if any) has fully resolved.
+        # This keeps every message in the nested exchange intact while still producing a
+        # provider-valid sequence (EPMCDME-14859) — see _consume_pending_handoff_message and
+        # _append_pending_handoffs for where the deferred AIMessage is re-emitted.
+        deferred_call = _pop_matching_supervisor_call(filtered_messages, message.tool_call_id)
+        pending_single_handoffs.setdefault(destination, deque()).append(
+            deferred_call if deferred_call is not None else (message.name, message.tool_call_id)
+        )
         return True
     return False
 
@@ -103,9 +132,17 @@ def _consume_pending_handoff_message(
     message: BaseMessage,
     filtered_messages: list[BaseMessage],
     pending_parallel_handoffs: dict[str, deque[AIMessage]],
-    pending_single_handoffs: dict[str, deque[tuple[str, str | None]]],
+    pending_single_handoffs: dict[str, deque[AIMessage | tuple[str, str | None]]],
 ) -> bool:
     if not isinstance(message, AIMessage):
+        return False
+    if message.tool_calls:
+        # An AIMessage that still declares tool_calls is an intermediate step, never the
+        # terminal handoff answer. Consuming it here would strip the assistant's tool-call
+        # declaration while leaving its matching ToolMessage in place, producing an orphaned
+        # role='tool' message that Azure/OpenAI rejects (EPMCDME-14859). Let it fall through
+        # to _append_unique_message so it (and its ToolMessage response) stay intact; the
+        # pending handoff remains queued until this sub-agent's real terminal AIMessage arrives.
         return False
 
     author_name = message.name or ""
@@ -123,7 +160,16 @@ def _consume_pending_handoff_message(
         return True
 
     if author_name and pending_single_handoffs.get(author_name):
-        tool_name, tool_call_id = pending_single_handoffs[author_name].popleft()
+        pending_item = pending_single_handoffs[author_name].popleft()
+        if isinstance(pending_item, AIMessage):
+            # The supervisor's own handoff-call AIMessage was deferred (a nested sub-agent tool
+            # exchange happened first). Re-emit it now, immediately before its answer, so the
+            # replayed sequence stays valid without losing any message.
+            tool_name = pending_item.tool_calls[0]["name"]
+            tool_call_id = pending_item.tool_calls[0]["id"]
+            _append_unique_message(filtered_messages, pending_item)
+        else:
+            tool_name, tool_call_id = pending_item
         _append_unique_message(
             filtered_messages,
             ToolMessage(
@@ -172,9 +218,9 @@ def _process_handoff_message(
     message: BaseMessage,
     filtered_messages: list[BaseMessage],
     pending_parallel_handoffs: dict[str, deque[AIMessage]],
-    pending_single_handoffs: dict[str, deque[tuple[str, str | None]]],
+    pending_single_handoffs: dict[str, deque[AIMessage | tuple[str, str | None]]],
 ) -> None:
-    if _queue_pending_handoff_message(message, pending_parallel_handoffs, pending_single_handoffs):
+    if _queue_pending_handoff_message(message, filtered_messages, pending_parallel_handoffs, pending_single_handoffs):
         return
     if _is_parallel_supervisor_handoff_message(message, pending_parallel_handoffs):
         return
@@ -191,7 +237,7 @@ def _process_handoff_message(
 def _append_pending_handoffs(
     filtered_messages: list[BaseMessage],
     pending_parallel_handoffs: dict[str, deque[AIMessage]],
-    pending_single_handoffs: dict[str, deque[tuple[str, str | None]]],
+    pending_single_handoffs: dict[str, deque[AIMessage | tuple[str, str | None]]],
 ) -> None:
     for queued_handoffs in pending_parallel_handoffs.values():
         for queued_handoff in queued_handoffs:
@@ -206,7 +252,17 @@ def _append_pending_handoffs(
             )
 
     for queued_handoffs in pending_single_handoffs.values():
-        for tool_name, tool_call_id in queued_handoffs:
+        for pending_item in queued_handoffs:
+            if isinstance(pending_item, AIMessage):
+                # The supervisor's own handoff-call AIMessage was deferred waiting for a nested
+                # sub-agent tool exchange to resolve, but the sub-agent never produced a terminal
+                # answer. Re-emit the deferred call before its [no response] placeholder so it
+                # isn't silently lost.
+                tool_name = pending_item.tool_calls[0]["name"]
+                tool_call_id = pending_item.tool_calls[0]["id"]
+                _append_unique_message(filtered_messages, pending_item)
+            else:
+                tool_name, tool_call_id = pending_item
             _append_unique_message(
                 filtered_messages,
                 ToolMessage(content="[no response]", name=tool_name, tool_call_id=tool_call_id),
@@ -220,7 +276,7 @@ def _strip_handoff_back_messages_pre_model_hook(state: dict[str, Any]) -> dict[s
 
     filtered_messages: list[BaseMessage] = []
     pending_parallel_handoffs: dict[str, deque[AIMessage]] = {}
-    pending_single_handoffs: dict[str, deque[tuple[str, str | None]]] = {}
+    pending_single_handoffs: dict[str, deque[AIMessage | tuple[str, str | None]]] = {}
 
     for message in messages:
         if _is_handoff_back_message(message):

@@ -100,6 +100,33 @@ def test_set_current_thought(callback):
     assert callback.current_thought.author_type == "Tool"
 
 
+def test_set_current_thought_with_run_id_uses_run_id_as_thought_id(callback):
+    # EPMCDME-14859: SupervisorCoordinator (coordinator.py) sets a nested child's parent_id
+    # to str(run_id), assuming that equals the parent handoff thought's own .id. Before this
+    # fix, set_current_thought always generated an unrelated fresh uuid4() for .id, so a
+    # handoff's own thought.id never matched the run_id its own children referenced as
+    # parent_id — orphaning every nested child (the UI then renders them as flat siblings
+    # instead of nested under the handoff).
+    run_id = uuid.uuid4()
+
+    callback.set_current_thought("transfer_to_analyst", author="supervisor", run_id=run_id)
+    thought = callback._get_current_thought(author="supervisor", run_id=run_id)
+
+    assert thought is not None
+    assert thought.id == str(run_id)
+
+
+def test_set_current_thought_without_run_id_still_generates_a_unique_id(callback):
+    callback.set_current_thought("test_tool")
+    first_id = callback.current_thought.id
+
+    callback.set_current_thought("test_tool")
+    second_id = callback.current_thought.id
+
+    assert first_id != second_id
+    uuid.UUID(first_id)  # does not raise: still a valid uuid
+
+
 def test_reset_current_thought(callback):
     callback.set_current_thought("test_tool")
     assert callback.current_thought is not None

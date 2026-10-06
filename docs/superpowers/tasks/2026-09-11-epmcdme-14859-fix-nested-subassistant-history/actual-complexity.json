@@ -1,0 +1,77 @@
+{
+  "task": "Fix nested sub-assistant message-history corruption in the LangGraph supervisor pre-model hook (EPMCDME-14859) by deferring and re-emitting the supervisor's handoff-call AIMessage around nested sub-agent tool exchanges, and avoid overwriting an already-successful streamed answer with a later error message",
+  "generated": "2026-09-12T00:00:00Z",
+  "dimensions": {
+    "component_scope": {
+      "score": 3,
+      "label": "M",
+      "affected": "LangGraphAgent (langgraph_agent.py), supervisor pre-model-hook message reconstruction (supervisor/history.py)",
+      "layers": "Agent-Tool, Workflow"
+    },
+    "requirements_clarity": {
+      "score": 2,
+      "label": "S",
+      "status": "Clear",
+      "gaps": null
+    },
+    "technical_risk": {
+      "score": 4,
+      "label": "L",
+      "risk_factors": "Modifies core message-history reconstruction logic that feeds directly into LLM provider API calls (Azure/OpenAI); malformed tool_call/tool_response sequences cause production-breaking 400 errors across every supervisor-based multi-agent conversation; the defer/re-emit state machine for the supervisor's handoff-call AIMessage has no exact prior pattern in the codebase",
+      "mitigation": "Comprehensive unit tests added covering single-handoff, parallel-handoff, deferred re-emit, and no-response placeholder paths, including a protocol-level invariant assertion that every ToolMessage is preceded by a matching AIMessage.tool_calls entry"
+    },
+    "file_change_estimate": {
+      "score": 4,
+      "label": "L",
+      "modified_files": 4,
+      "modified_file_list": [
+        "src/codemie/agents/langgraph_agent.py",
+        "src/codemie/agents/supervisor/history.py",
+        "tests/codemie/agents/test_langgraph_multi_assistant_handoffs.py",
+        "tests/codemie/agents/test_langgraph_multi_assistant_supervisor.py"
+      ],
+      "new_files": 6,
+      "new_file_list": [
+        "docs/superpowers/tasks/2026-09-11-epmcdme-14859-fix-nested-subassistant-history/code-review-final.json",
+        "docs/superpowers/tasks/2026-09-11-epmcdme-14859-fix-nested-subassistant-history/complexity-assessment.json",
+        "docs/superpowers/tasks/2026-09-11-epmcdme-14859-fix-nested-subassistant-history/events.jsonl",
+        "docs/superpowers/tasks/2026-09-11-epmcdme-14859-fix-nested-subassistant-history/plan.md",
+        "docs/superpowers/tasks/2026-09-11-epmcdme-14859-fix-nested-subassistant-history/spec.md",
+        "docs/superpowers/tasks/2026-09-11-epmcdme-14859-fix-nested-subassistant-history/technical-analysis.md"
+      ],
+      "affected_dirs": [
+        "docs/superpowers/tasks/2026-09-11-epmcdme-14859-fix-nested-subassistant-history",
+        "src/codemie/agents",
+        "src/codemie/agents/supervisor",
+        "tests/codemie/agents"
+      ]
+    },
+    "dependencies": {
+      "score": 1,
+      "label": "XS",
+      "new_packages": [],
+      "version_changes": []
+    },
+    "affected_layers": {
+      "score": 2,
+      "label": "S",
+      "layers_changed": ["Agent-Tool", "Workflow"],
+      "schema_migration": false,
+      "cross_system": false
+    }
+  },
+  "total": 16,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 10,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "technical_risk", "reason": "The fix rewrites the defer/re-emit logic for supervisor handoff-call AIMessages inside a pre-model hook that runs on every supervisor turn; getting the message-sequence invariant wrong causes 400 errors from Azure/OpenAI across all multi-agent conversations, and no equivalent pattern existed in the codebase before this change." },
+    { "dimension": "file_change_estimate", "reason": "10 total files changed per diffstat (mapped via the actual-mode N-to-score table to L); 4 are real modified source/test files (langgraph_agent.py, history.py, 2 test files) and 6 are SDLC planning artifacts newly created under the task's docs run_dir." },
+    { "dimension": "component_scope", "reason": "Component Scope bumped from S to M: the pre_model_hook in supervisor/history.py is shared by every supervisor-based agent with subagents, so the fix affects multiple workflows/agents, not a single isolated call site." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from S to M: touches the shared supervisor pre_model_hook used by all multi-agent (subagent) workflows, satisfying the 'affects multiple workflows or agents' red flag."
+  ],
+  "split_recommendation": null
+}

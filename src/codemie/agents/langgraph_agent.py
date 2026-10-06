@@ -108,7 +108,7 @@ from codemie.service.dynamic_config_service import DynamicConfigService
 from codemie.service.file_service.image_service import ImageService
 from codemie.service.llm_service.llm_service import LLMService
 from codemie.service.llm_service.utils import set_llm_context
-from codemie.templates.agents.assistant_base import markdown_response_prompt
+from codemie.templates.agents.assistant_base import markdown_response_prompt, supervisor_result_synthesis_prompt
 from codemie.core.exceptions import MCPAuthenticationRequiredException, TokenLimitExceededException
 from codemie.core.otel_tracing import get_otel_context_for_thread, propagated_span, record_exception_on_span, traced
 
@@ -194,6 +194,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
         self.trace_context = trace_context
         self._current_llm_run_id: uuid.UUID | None = None  # tracks active LLM invocation
         self._sub_assistant_name_mapping: dict[str, str] = {}
+        self._last_subassistant_answer: str = ""
         self.history_compaction_pre_model_hook = (
             ConversationHistoryCompactionService.build_langgraph_pre_model_hook(
                 llm_model=llm_model,
@@ -292,12 +293,19 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
     def _build_supervisor_agent(self, llm, system_prompt: str):
         handoff_tools = self._create_handoff_tools()
         all_tools = (self.tools or []) + handoff_tools
+        # EPMCDME-14859: a resolved handoff whose sub-agent itself called a tool is replayed to
+        # the supervisor with that nested exchange positioned before the supervisor's own
+        # handoff call (see _pop_matching_supervisor_call in supervisor/history.py) so nothing is
+        # dropped from the replay. That shape occasionally reads, to the model, as if its own
+        # delegation just happened and no reply has arrived yet, even though the reply is right
+        # there — this instruction corrects that misreading.
+        supervisor_prompt = system_prompt + "\n\n" + supervisor_result_synthesis_prompt
 
         builder = create_supervisor(
             model=llm,
             agents=self.subagents,
             tools=all_tools,
-            prompt=system_prompt,
+            prompt=supervisor_prompt,
             add_handoff_back_messages=False,
             output_mode="last_message",
             response_format=self.output_schema,
@@ -845,7 +853,13 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
             if config.HIDE_AGENT_STREAMING_EXCEPTIONS
             else self.extended_error(error_response, e)
         )
-        chunks_collector.append(user_message)
+        if not "".join(chunks_collector).strip():
+            # Only surface the error text when nothing succeeded yet. If a sub-agent already
+            # streamed a complete answer and a later model call then raised, concatenating the
+            # raw/friendly error onto that answer would corrupt an otherwise successful
+            # user-facing response (EPMCDME-14859 secondary defect). execution_error below still
+            # carries llm_error_code regardless, so the failure is still tracked internally.
+            chunks_collector.append(user_message)
         generated, execution_error = self._process_chunks(chunks_collector, config, llm_error_code)
         self.thread_generator.send(
             StreamedGenerationResult(
@@ -941,6 +955,12 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
                         )
                     stream.close()
                     break
+
+        if not last_message and self._last_subassistant_answer:
+            # The supervisor's own final turn produced no text of its own after a handoff
+            # resolved; show the sub-agent's real answer instead of an empty/stale response
+            # (EPMCDME-14859 secondary defect).
+            last_message = self._last_subassistant_answer
 
         self._finalize_stream_result(last_message)
 
@@ -1118,7 +1138,14 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
         if chunk_type == "updates":
             target_field = "agent" if not self.subagents else "supervisor"
             node_state = value.get(target_field)
-            if isinstance(node_state, dict) and self.is_valid_ai_message(message := node_state["messages"][-1]):
+            if (
+                isinstance(node_state, dict)
+                and self.is_valid_ai_message(message := node_state["messages"][-1])
+                and not message.tool_calls
+            ):
+                # A message that still declares tool_calls is a preamble to a handoff/tool
+                # invocation, never the turn's final answer (EPMCDME-14859: capturing it here
+                # is what let a later empty completion fall back to this stale preamble text).
                 result = extract_text_from_llm_output(message.content)
             elif response := value.get("generate_structured_response"):
                 result = response["structured_response"]
@@ -1442,6 +1469,10 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
         )
 
     def _on_subassistant_back(self, output, run_id: str | None = None, author: str | None = None):
+        if output:
+            # Fallback source for _stream_graph when the supervisor's own final turn
+            # produces no text of its own (EPMCDME-14859 secondary defect).
+            self._last_subassistant_answer = output
         self._callback_bridge.on_subassistant_back(output, run_id=run_id, author=author)
 
     def _on_tool_error(self, output, run_id: UUID | None = None, author: str | None = None):

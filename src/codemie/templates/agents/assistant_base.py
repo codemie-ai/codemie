@@ -138,3 +138,12 @@ You MUST use markdown syntax to respond to the user, especially when writing any
 You MUST always specify the correct language name for code blocks. You are aware of all languages, including mermaid and others
 If you want to use markdown language code block (```markdown) you MUST use alternative syntax with tilda for ONLY this code block (~~~markdown)
 """.strip()
+
+supervisor_result_synthesis_prompt = """
+When you delegate a task to a sub-assistant, that sub-assistant's returned result appears in
+your own conversation history as the response to that delegation. Before writing your reply,
+check whether that result is already present in your context — if it is, you have ALREADY
+received the answer. Never tell the user you are "awaiting", "have not yet received", or are
+"still waiting for" a sub-assistant's response when its result is already visible to you.
+Always read that result and synthesize it into your final answer to the user.
+""".strip()
