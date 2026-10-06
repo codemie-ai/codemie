@@ -66,6 +66,59 @@ class TestTransferSettingsRequest:
         with pytest.raises(ValidationError):
             TransferSettingsRequest(source_project_name="", target_project_name="y", mode="move")
 
+    def test_type_of_integration_defaults_to_both_true(self):
+        req = TransferSettingsRequest(source_project_name="x", target_project_name="y", mode="move")
+        assert req.type_of_integration.user_integrations is True
+        assert req.type_of_integration.project_integrations is True
+
+    def test_type_of_integration_accepts_user_only(self):
+        req = TransferSettingsRequest(
+            source_project_name="x",
+            target_project_name="y",
+            mode="move",
+            type_of_integration={"user_integrations": True, "project_integrations": False},
+        )
+        assert req.type_of_integration.user_integrations is True
+        assert req.type_of_integration.project_integrations is False
+
+    def test_type_of_integration_missing_property_defaults_to_false(self):
+        # When type_of_integration is present but a property is absent, it must default to False.
+        req = TransferSettingsRequest(
+            source_project_name="x",
+            target_project_name="y",
+            mode="move",
+            type_of_integration={"user_integrations": True},
+        )
+        assert req.type_of_integration.user_integrations is True
+        assert req.type_of_integration.project_integrations is False
+
+    def test_integrations_list_defaults_to_none(self):
+        req = TransferSettingsRequest(source_project_name="x", target_project_name="y", mode="move")
+        assert req.integrations_list is None
+
+    def test_integrations_list_accepts_alias_list_via_json_alias(self):
+        req = TransferSettingsRequest(
+            **{
+                "source_project_name": "x",
+                "target_project_name": "y",
+                "mode": "move",
+                "list": ["jira-prod", "git-main"],
+            }
+        )
+        assert req.integrations_list == ["jira-prod", "git-main"]
+
+    def test_integrations_list_accepts_by_python_name(self):
+        req = TransferSettingsRequest(
+            source_project_name="x",
+            target_project_name="y",
+            mode="move",
+            integrations_list=["jira-prod"],
+        )
+        assert req.integrations_list == ["jira-prod"]
+
+
+_ALL_TYPES = {SettingType.USER, SettingType.PROJECT}
+
 
 class TestSelectCandidates:
     def test_litellm_prefix_matches_budget_provider_adapter(self):
@@ -88,7 +141,7 @@ class TestSelectCandidates:
         ]
 
         # Act
-        result = SettingsTransferService._select_candidates("source")
+        result = SettingsTransferService._select_candidates("source", _ALL_TYPES, None)
 
         # Assert
         assert [s.alias for s in result] == ["jira-prod"]
@@ -103,10 +156,158 @@ class TestSelectCandidates:
         ]
 
         # Act
-        result = SettingsTransferService._select_candidates("source")
+        result = SettingsTransferService._select_candidates("source", _ALL_TYPES, None)
 
         # Assert
         assert {s.alias for s in result} == {"project-cred", "user-cred"}
+
+
+class TestSelectCandidatesFiltering:
+    @patch("codemie.service.settings.settings_transfer_service.Settings.get_all_by_fields")
+    def test_user_only_excludes_project_rows(self, mock_get_all):
+        mock_get_all.return_value = [
+            _setting("proj-cred", setting_type=SettingType.PROJECT),
+            _setting("user-cred", setting_type=SettingType.USER),
+        ]
+        result = SettingsTransferService._select_candidates("source", {SettingType.USER}, None)
+        assert [s.alias for s in result] == ["user-cred"]
+
+    @patch("codemie.service.settings.settings_transfer_service.Settings.get_all_by_fields")
+    def test_project_only_excludes_user_rows(self, mock_get_all):
+        mock_get_all.return_value = [
+            _setting("proj-cred", setting_type=SettingType.PROJECT),
+            _setting("user-cred", setting_type=SettingType.USER),
+        ]
+        result = SettingsTransferService._select_candidates("source", {SettingType.PROJECT}, None)
+        assert [s.alias for s in result] == ["proj-cred"]
+
+    @patch("codemie.service.settings.settings_transfer_service.Settings.get_all_by_fields")
+    def test_both_flags_keeps_all_types(self, mock_get_all):
+        mock_get_all.return_value = [
+            _setting("proj-cred", setting_type=SettingType.PROJECT),
+            _setting("user-cred", setting_type=SettingType.USER),
+        ]
+        result = SettingsTransferService._select_candidates("source", _ALL_TYPES, None)
+        assert {s.alias for s in result} == {"proj-cred", "user-cred"}
+
+    @patch("codemie.service.settings.settings_transfer_service.Settings.get_all_by_fields")
+    def test_list_filter_returns_subset(self, mock_get_all):
+        mock_get_all.return_value = [
+            _setting("jira-prod", setting_type=SettingType.PROJECT),
+            _setting("git-main", setting_type=SettingType.PROJECT),
+            _setting("slack-ops", setting_type=SettingType.PROJECT),
+        ]
+        result = SettingsTransferService._select_candidates("source", {SettingType.PROJECT}, ["jira-prod", "git-main"])
+        assert {s.alias for s in result} == {"jira-prod", "git-main"}
+
+    @patch("codemie.service.settings.settings_transfer_service.Settings.get_all_by_fields")
+    def test_list_with_unknown_alias_raises_422(self, mock_get_all):
+        mock_get_all.return_value = [_setting("jira-prod", setting_type=SettingType.PROJECT)]
+        with pytest.raises(ExtendedHTTPException) as excinfo:
+            SettingsTransferService._select_candidates("source", {SettingType.PROJECT}, ["jira-prod", "ghost-alias"])
+        assert excinfo.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert "ghost-alias" in excinfo.value.details
+
+    @patch("codemie.service.settings.settings_transfer_service.Settings.get_all_by_fields")
+    def test_alias_excluded_by_type_filter_raises_type_mismatch_error(self, mock_get_all):
+        # user-cred exists but has SettingType.USER; caller requests only PROJECT types.
+        # Should raise a specific "type mismatch" error, not the generic "not found" error.
+        mock_get_all.return_value = [_setting("user-cred", setting_type=SettingType.USER)]
+        with pytest.raises(ExtendedHTTPException) as excinfo:
+            SettingsTransferService._select_candidates("source", {SettingType.PROJECT}, ["user-cred"])
+        assert excinfo.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert "user-cred" in excinfo.value.details
+        assert "type mismatch" in excinfo.value.message.lower()
+
+    @patch("codemie.service.settings.settings_transfer_service.Settings.get_all_by_fields")
+    def test_subsystem_managed_alias_in_list_raises_reserved_error(self, mock_get_all):
+        mock_get_all.return_value = [
+            _setting("jira-prod", setting_type=SettingType.PROJECT),
+            _setting("__internal__IDE_abc", setting_type=SettingType.PROJECT),
+        ]
+        with pytest.raises(ExtendedHTTPException) as excinfo:
+            SettingsTransferService._select_candidates(
+                "source", {SettingType.PROJECT}, ["jira-prod", "__internal__IDE_abc"]
+            )
+        assert excinfo.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert "__internal__IDE_abc" in excinfo.value.details
+        assert "reserved" in excinfo.value.message.lower()
+
+    @patch("codemie.service.settings.settings_transfer_service.Settings.get_all_by_fields")
+    def test_alias_genuinely_absent_from_project_raises_422(self, mock_get_all):
+        # ghost-alias does not exist at all — should raise 422 regardless of type filter.
+        mock_get_all.return_value = [_setting("jira-prod", setting_type=SettingType.PROJECT)]
+        with pytest.raises(ExtendedHTTPException) as excinfo:
+            SettingsTransferService._select_candidates("source", {SettingType.PROJECT}, ["ghost-alias"])
+        assert excinfo.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert "ghost-alias" in excinfo.value.details
+
+    @patch("codemie.service.settings.settings_transfer_service.Settings.get_all_by_fields")
+    def test_empty_list_raises_422(self, mock_get_all):
+        mock_get_all.return_value = [_setting("jira-prod", setting_type=SettingType.PROJECT)]
+        with pytest.raises(ExtendedHTTPException) as excinfo:
+            SettingsTransferService._select_candidates("source", {SettingType.PROJECT}, [])
+        assert excinfo.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert "empty" in excinfo.value.details.lower()
+
+    @patch("codemie.service.settings.settings_transfer_service.Settings.get_all_by_fields")
+    def test_null_setting_type_treated_as_user(self, mock_get_all):
+        # Legacy rows with setting_type=None should be treated as SettingType.USER.
+        row = _setting("legacy-cred")
+        row.setting_type = None
+        mock_get_all.return_value = [row]
+        result = SettingsTransferService._select_candidates("source", {SettingType.USER}, None)
+        assert [s.alias for s in result] == ["legacy-cred"]
+
+    @patch("codemie.service.settings.settings_transfer_service.Settings.get_all_by_fields")
+    def test_null_setting_type_excluded_when_only_project_requested(self, mock_get_all):
+        row = _setting("legacy-cred")
+        row.setting_type = None
+        mock_get_all.return_value = [row]
+        result = SettingsTransferService._select_candidates("source", {SettingType.PROJECT}, None)
+        assert result == []
+
+
+class TestTransferNonTransferableInList:
+    @patch("codemie.service.settings.settings_transfer_service.get_session")
+    @patch.object(SettingsTransferService, "_validate_no_collisions")
+    @patch.object(SettingsTransferService, "_validate_projects")
+    @patch.object(SettingsTransferService, "_select_candidates")
+    def test_copy_blocked_alias_in_list_raises_422(self, mock_select, _mp, _ma, mock_get_session):
+        # Webhook is copy-blocked; if the caller explicitly listed it, abort rather than skip silently.
+        hook = _setting("gitlab-hook", CredentialTypes.WEBHOOK, id_="row-1")
+        mock_select.return_value = [hook]
+
+        with pytest.raises(ExtendedHTTPException) as excinfo:
+            SettingsTransferService.transfer("source", "target", TransferMode.COPY, _ALL_TYPES, ["gitlab-hook"])
+
+        assert excinfo.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert "gitlab-hook" in excinfo.value.details
+        mock_get_session.assert_not_called()
+
+    @patch("codemie.service.settings.settings_transfer_service.get_session")
+    @patch.object(SettingsTransferService, "_validate_no_collisions")
+    @patch.object(SettingsTransferService, "_validate_projects")
+    @patch.object(SettingsTransferService, "_select_candidates")
+    def test_copy_blocked_alias_without_list_is_silently_skipped(self, mock_select, _mp, _ma, mock_get_session):
+        # When list is not provided, copy-blocked aliases are still skipped without error.
+        hook = _setting("gitlab-hook", CredentialTypes.WEBHOOK, id_="row-1")
+        mock_select.return_value = [hook]
+
+        response = SettingsTransferService.transfer("source", "target", TransferMode.COPY, _ALL_TYPES, None)
+
+        assert response.transferred_count == 0
+        assert response.skipped_count == 1
+        assert response.skipped[0].alias == "gitlab-hook"
+        mock_get_session.assert_not_called()
+
+
+class TestTransferBothFlagsFalse:
+    def test_both_flags_false_raises_422(self):
+        with pytest.raises(ExtendedHTTPException) as excinfo:
+            SettingsTransferService.transfer("source", "target", TransferMode.MOVE, set(), None)
+        assert excinfo.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert "at least one integration type" in excinfo.value.details.lower()
 
 
 class TestPartition:
@@ -439,7 +640,7 @@ class TestApplyOrdersLockingBeforeValidation:
             side_effect=lambda **kwargs: calls.append(kwargs["alias"]) or True,
         ):
             # Act
-            SettingsTransferService.transfer("source", "target", TransferMode.MOVE)
+            SettingsTransferService.transfer("source", "target", TransferMode.MOVE, _ALL_TYPES, None)
 
         # Assert — the lock comes first, then the alias of the re-read row, not the stale one
         lock_sql, lock_params = calls[0]
@@ -463,7 +664,7 @@ class TestApplyDoesNotLeakOrmState:
         mock_get_session.return_value.__enter__.return_value = session
 
         # Act
-        response = SettingsTransferService.transfer("source", "target", TransferMode.MOVE)
+        response = SettingsTransferService.transfer("source", "target", TransferMode.MOVE, _ALL_TYPES, None)
 
         # Assert — commit really did expire the instance, yet the payload is intact
         assert session.commit_calls == 1
@@ -488,7 +689,7 @@ class TestApplyDoesNotLeakOrmState:
         mock_get_session.return_value.__enter__.return_value = session
 
         # Act
-        response = SettingsTransferService.transfer("source", "target", TransferMode.COPY)
+        response = SettingsTransferService.transfer("source", "target", TransferMode.COPY, _ALL_TYPES, None)
 
         # Assert
         assert session.commit_calls == 1
@@ -516,7 +717,7 @@ class TestTransfer:
         mock_get_session.return_value.__enter__.return_value = session
 
         # Act
-        response = SettingsTransferService.transfer("source", "target", TransferMode.MOVE)
+        response = SettingsTransferService.transfer("source", "target", TransferMode.MOVE, _ALL_TYPES, None)
 
         # Assert
         assert row.project_name == "target"
@@ -540,7 +741,7 @@ class TestTransfer:
         mock_get_session.return_value.__enter__.return_value = session
 
         # Act
-        response = SettingsTransferService.transfer("source", "target", TransferMode.COPY)
+        response = SettingsTransferService.transfer("source", "target", TransferMode.COPY, _ALL_TYPES, None)
 
         # Assert
         assert row.project_name == "source"
@@ -572,7 +773,7 @@ class TestTransfer:
         mock_get_session.return_value.__enter__.return_value = session
 
         # Act
-        SettingsTransferService.transfer("source", "target", TransferMode.COPY)
+        SettingsTransferService.transfer("source", "target", TransferMode.COPY, _ALL_TYPES, None)
 
         # Assert
         added = session.add.call_args_list[-1].args[0]
@@ -599,7 +800,7 @@ class TestTransfer:
         ):
             # Act / Assert
             with pytest.raises(ExtendedHTTPException) as excinfo:
-                SettingsTransferService.transfer("source", "target", TransferMode.MOVE)
+                SettingsTransferService.transfer("source", "target", TransferMode.MOVE, _ALL_TYPES, None)
 
         assert excinfo.value.code == status.HTTP_409_CONFLICT
         assert "b" in excinfo.value.details
@@ -623,7 +824,7 @@ class TestTransfer:
 
         # Act / Assert
         with pytest.raises(ExtendedHTTPException) as excinfo:
-            SettingsTransferService.transfer("source", "target", TransferMode.COPY)
+            SettingsTransferService.transfer("source", "target", TransferMode.COPY, _ALL_TYPES, None)
 
         assert excinfo.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY
         assert "row-1" in excinfo.value.details
@@ -643,7 +844,7 @@ class TestTransfer:
         mock_get_session.return_value.__enter__.return_value = self._session_mock({"row-1": row})
 
         # Act
-        SettingsTransferService.transfer("source", "target", TransferMode.MOVE)
+        SettingsTransferService.transfer("source", "target", TransferMode.MOVE, _ALL_TYPES, None)
 
         # Assert
         mock_clear.assert_called_once_with(None)
@@ -660,7 +861,7 @@ class TestTransfer:
         mock_get_session.return_value.__enter__.return_value = self._session_mock({"row-1": row})
 
         # Act
-        SettingsTransferService.transfer("source", "target", TransferMode.MOVE)
+        SettingsTransferService.transfer("source", "target", TransferMode.MOVE, _ALL_TYPES, None)
 
         # Assert
         mock_clear.assert_not_called()
@@ -674,7 +875,7 @@ class TestTransfer:
         mock_select.return_value = []
 
         # Act
-        response = SettingsTransferService.transfer("source", "target", TransferMode.MOVE)
+        response = SettingsTransferService.transfer("source", "target", TransferMode.MOVE, _ALL_TYPES, None)
 
         # Assert
         assert response.transferred_count == 0
@@ -692,7 +893,7 @@ class TestTransfer:
         mock_select.return_value = [hook]
 
         # Act
-        response = SettingsTransferService.transfer("source", "target", TransferMode.COPY)
+        response = SettingsTransferService.transfer("source", "target", TransferMode.COPY, _ALL_TYPES, None)
 
         # Assert
         assert response.transferred_count == 0

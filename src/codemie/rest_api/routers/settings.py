@@ -19,6 +19,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, status
 
 from codemie.configs.logger import logger
+from codemie.rest_api.models.settings import SettingType
 from codemie.rest_api.models.settings_transfer import TransferSettingsRequest, TransferSettingsResponse
 from codemie.rest_api.security.authentication import User, admin_or_maintainer_access_only, authenticate
 from codemie.service.settings.settings_transfer_service import SettingsTransferService
@@ -38,36 +39,62 @@ router = APIRouter(
 )
 def transfer_settings(request: TransferSettingsRequest, user: User = Depends(authenticate)):
     """
-    Move or copy every transferable integration from one project to another.
+    Transfer integrations from one project to another.
 
-    Requires administrator or maintainer privileges. Both project-scoped and user-scoped
-    integrations are transferred; the original owner and creator are preserved in every case,
-    and only which project the integration is attached to changes.
+    Requires administrator or maintainer privileges.
 
-    **`move`** updates each integration in place, so entities that reference an integration by
-    id (datasources, assistants, Bedrock entities, A2A) keep working. References made *by alias*
-    resolve against the referencing entity's own project and will fail after a move: workflow
-    tool nodes raise an error, per-user MCP integration overrides are ignored, and re-saving an
-    assistant-user mapping to a moved integration is rejected. This matches existing behaviour
-    for integrations that become unavailable.
+    ### Modes
 
-    **`copy`** duplicates each integration into the target project and leaves the source
-    untouched. Webhook and scheduler integrations are **not** copied — copying a trigger would
-    duplicate its firing — and are listed in `skipped`. They are transferred normally by `move`.
+    **`move`** — reassigns each integration to the target project. Integration IDs are unchanged,
+    so datasources, assistants, and other entities that reference integrations by ID continue to
+    work without reconfiguration.
 
-    The operation is all-or-nothing: if any alias already exists in the target project, or either
-    project is missing, nothing is changed.
+    **`copy`** — duplicates each integration into the target project. The source is unchanged.
+    Webhook and scheduler integrations are excluded from copy and returned in `skipped`.
+    They can be transferred with `move`.
+
+    ### Filters
+
+    **`type_of_integration`** — controls which integration types are included. Omitting this field
+    transfers both types. When the field is present, any omitted property defaults to `false`.
+
+    | `user_integrations` | `project_integrations` | Effect |
+    |---|---|---|
+    | `true` (default) | `true` (default) | All integrations |
+    | `true` | `false` | User-owned integrations only |
+    | `false` | `true` | Project-scoped integrations only |
+    | `false` | `false` | 422 — at least one type must be selected |
+
+    **`list`** — optional list of aliases to transfer. When provided, only the listed integrations
+    are transferred. An alias that does not exist in the source project, is excluded by the type
+    filter, is managed by an internal subsystem, or cannot be transferred in the chosen mode
+    returns a 422 with a specific error message.
+
+    Note: user-type integrations are scoped per user, so multiple users in the same project
+    can each own an integration with the same alias. When `list` contains such an alias and
+    `user_integrations` is `true`, all of them are transferred.
     """
+    type_of_integration = request.type_of_integration
+    setting_types: set[SettingType] = set()
+    if type_of_integration.user_integrations:
+        setting_types.add(SettingType.USER)
+    if type_of_integration.project_integrations:
+        setting_types.add(SettingType.PROJECT)
+
     logger.info(
-        "settings_transfer_requested: actor_user_id=%s mode=%s source=%r target=%r",
+        "settings_transfer_requested: actor_user_id=%s mode=%s source=%r target=%r types=%s list=%s",
         user.id,
         request.mode.value,
         request.source_project_name,
         request.target_project_name,
+        {t.value for t in setting_types},
+        request.integrations_list,
     )
 
     return SettingsTransferService.transfer(
         source_project_name=request.source_project_name,
         target_project_name=request.target_project_name,
         mode=request.mode,
+        setting_types=setting_types,
+        integrations_list=request.integrations_list,
     )

@@ -1,0 +1,57 @@
+{
+  "decision": "request-changes",
+  "rationale": "Three independent lenses produced three major findings that each represent a silent data-integrity gap or a misleading error contract: (1) an empty list silently transfers nothing and returns HTTP 200, indistinguishable from an empty source project; (2) aliases excluded by the type filter are falsely reported as 'not found in project' rather than 'excluded by type filter'; (3) rows with a NULL setting_type are silently dropped from every transfer. Zero deferred findings; two dismissed (duplicate-alias deduplication has correct outcome; service-layer HTTP guard is redundant but harmless). All three standards checks pass.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "spec", "item": "Filter by user integrations", "status": "pass", "notes": "SettingType.USER added to setting_types when user_integrations=True; covered by test_user_only_excludes_project_rows and test_transfer_user_only_filter."},
+    {"kind": "spec", "item": "Filter by project integrations", "status": "pass", "notes": "SettingType.PROJECT added when project_integrations=True; covered by test_project_only_excludes_user_rows and test_transfer_project_only_filter."},
+    {"kind": "spec", "item": "Transfer both in one request (both flags True default)", "status": "pass", "notes": "TypeOfIntegration defaults both to True; backward-compatible; confirmed by test_transfer_move_success."},
+    {"kind": "spec", "item": "Optional list field with alias='list'", "status": "pass", "notes": "Field declared with alias and populate_by_name=True; both JSON and Python names accepted and tested."},
+    {"kind": "spec", "item": "Omitted list transfers all matching", "status": "pass", "notes": "integrations_list is None path skips list filter entirely; confirmed by test_transfer_move_success (integrations_list=None)."},
+    {"kind": "spec", "item": "Provided list transfers subset only", "status": "pass", "notes": "Alias-set filter applied in _select_candidates; confirmed by test_list_filter_returns_subset and test_transfer_with_list_filter."},
+    {"kind": "spec", "item": "Both flags False raises 422", "status": "pass", "notes": "Router and service both guard; confirmed by test_transfer_both_flags_false_returns_422 and TestTransferBothFlagsFalse."},
+    {"kind": "spec", "item": "Unknown alias (post-type-filter) raises 422", "status": "partial", "notes": "422 fires correctly but error message format deviates from spec: aliases appear in details field, not appended to the message field. Functional but contract deviation. Not blocking (information is present in the response)."},
+    {"kind": "spec", "item": "Clear response (transferred/skipped/failed)", "status": "pass", "notes": "Spec body explicitly states TransferSettingsResponse is unchanged; 'failed' in AC table refers to error paths handled by exceptions, not a new response field. Implementation matches spec body intent."}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "All three EPMCDME-13982 commits follow 'EPMCDME-NNNNN: Description' format per git-workflow.md."},
+    {"kind": "code-quality", "status": "pass", "notes": "make ruff: all checks passed, 2256 files left unchanged."},
+    {"kind": "security", "status": "pass", "notes": "Admin-only endpoint (admin_or_maintainer_access_only dependency). No new injection surface. source_project_name reflected in error detail is acceptable for an authenticated admin API."}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/settings/settings_transfer_service.py",
+      "line": 84,
+      "title": "Empty integrations_list silently transfers nothing",
+      "problem": "When integrations_list=[] (not None), the branch is entered, requested=set(), unknown check passes vacuously, and the final filter 'row.alias in requested' returns no candidates. The endpoint returns HTTP 200 with transferred_count=0 and message 'No transferable integrations found'.",
+      "impact": "A caller who accidentally passes an empty list gets a silent no-op response indistinguishable from a source project that genuinely has no transferable integrations. Operational errors are invisible.",
+      "recommendation": "Add a guard before the integrations_list branch: 'if integrations_list is not None and len(integrations_list) == 0: raise ExtendedHTTPException(422, message=\"Invalid transfer request\", details=\"integration list must not be empty — omit the field to transfer all integrations.\")'. Add a corresponding test."
+    },
+    {
+      "id": "CR-002",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/settings/settings_transfer_service.py",
+      "line": 86,
+      "title": "Aliases excluded by type filter reported as 'not found in project'",
+      "problem": "matched_aliases is built from candidates after the type filter has already been applied. An alias that exists in the source project under a different setting_type than requested is not in matched_aliases and is reported as 'not found in project <X>: <alias>' — factually incorrect.",
+      "impact": "Example: project has alias 'my-api' as SettingType.USER. Caller sets project_integrations=True, user_integrations=False, list=['my-api']. The alias exists but is type-excluded; error says 'my-api was not found in project X'. The caller cannot distinguish 'alias does not exist' from 'alias exists but wrong type'. Debugging is unnecessarily confusing.",
+      "recommendation": "Build matched_aliases from all non-subsystem-managed rows (before the type filter), or change the error message to say 'These aliases were not found among the selected integration types in project ...' to accurately reflect the filtered scope."
+    },
+    {
+      "id": "CR-003",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/settings/settings_transfer_service.py",
+      "line": 81,
+      "title": "Rows with setting_type=NULL silently excluded from all transfers",
+      "problem": "SettingsBase.setting_type is Optional[SettingType] with a default of SettingType.USER. The filter 'row.setting_type in setting_types' evaluates None in {SettingType.USER, SettingType.PROJECT} as False, silently excluding any NULL-typed rows.",
+      "impact": "A 'transfer everything' request (both flags True) silently skips rows whose setting_type is NULL. The caller receives no indication that rows were dropped. Any legacy rows stored without a setting_type are permanently excluded from transfers.",
+      "recommendation": "Apply a NULL coalesce before the type filter: use '(row.setting_type or SettingType.USER) in setting_types' consistent with the column default. Add a test: a row with setting_type=None should be treated as SettingType.USER and included when user_integrations=True."
+    }
+  ]
+}

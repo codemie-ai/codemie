@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from codemie_tools.base.models import CredentialTypes
 
@@ -30,10 +30,21 @@ class TransferMode(str, Enum):
     COPY = "copy"
 
 
+class TypeOfIntegration(BaseModel):
+    user_integrations: bool = False
+    project_integrations: bool = False
+
+
 class TransferSettingsRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     source_project_name: str = Field(min_length=1)
     target_project_name: str = Field(min_length=1)
     mode: TransferMode
+    type_of_integration: TypeOfIntegration = Field(
+        default_factory=lambda: TypeOfIntegration(user_integrations=True, project_integrations=True)
+    )
+    integrations_list: list[str] | None = Field(default=None, alias="list")
 
 
 class TransferItem(BaseModel):

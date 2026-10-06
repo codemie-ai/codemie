@@ -28,7 +28,7 @@ from codemie.clients.postgres import get_session
 from codemie.configs.logger import logger
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.repository.application_repository import application_repository
-from codemie.rest_api.models.settings import PROJECT_NAME_TERM, CredentialValues, Settings
+from codemie.rest_api.models.settings import PROJECT_NAME_TERM, CredentialValues, Settings, SettingType
 from codemie.rest_api.models.settings_transfer import (
     TransferMode,
     TransferItem,
@@ -51,6 +51,8 @@ class SettingsTransferService:
         hashlib.sha256(b"codemie:settings_transfer").digest()[:8], byteorder="big", signed=True
     )
 
+    _INVALID_TRANSFER_REQUEST = "Invalid transfer request"
+
     # Alias prefixes owned by other subsystems; rows carrying them are never transferred.
     SUBSYSTEM_MANAGED_PREFIXES = (
         SettingsService.INTERNAL_PREFIX,
@@ -69,16 +71,90 @@ class SettingsTransferService:
         return any(alias.startswith(prefix) for prefix in cls.SUBSYSTEM_MANAGED_PREFIXES)
 
     @classmethod
-    def _select_candidates(cls, source_project_name: str) -> list[Settings]:
-        """All integrations attached to the source project, both scopes, minus subsystem-managed rows."""
+    def _select_candidates(
+        cls,
+        source_project_name: str,
+        setting_types: set[SettingType],
+        integrations_list: list[str] | None,
+    ) -> list[Settings]:
+        """All integrations attached to the source project, filtered by type and optional alias list."""
         rows = Settings.get_all_by_fields({PROJECT_NAME_TERM: source_project_name})
-        candidates = [row for row in rows if not cls._is_subsystem_managed(row.alias)]
+        requested: set[str] | None = None
+
+        type_filtered = [
+            row
+            for row in rows
+            if not cls._is_subsystem_managed(row.alias) and (row.setting_type or SettingType.USER) in setting_types
+        ]
+
+        if integrations_list is not None:
+            if len(integrations_list) == 0:
+                raise ExtendedHTTPException(
+                    code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    message=cls._INVALID_TRANSFER_REQUEST,
+                    details="The integration list must not be empty. Omit the field to transfer all integrations.",
+                    help="Either remove the 'list' field or provide at least one alias.",
+                )
+            requested = set(integrations_list)
+
+            eligible = {row.alias for row in type_filtered if row.alias is not None}
+            reserved = {
+                row.alias
+                for row in rows
+                if row.alias is not None and cls._is_subsystem_managed(row.alias) and row.alias in requested
+            }
+
+            if reserved:
+                reserved_str = ", ".join(sorted(str(a) for a in reserved))
+                raise ExtendedHTTPException(
+                    code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    message="Reserved integration identifiers",
+                    details=(
+                        f"These aliases are managed by internal subsystems and cannot be transferred: {reserved_str}."
+                    ),
+                    help="Remove the reserved aliases from the 'list' field.",
+                )
+
+            not_eligible = requested - eligible
+            if not_eligible:
+                all_transferable_aliases = {
+                    row.alias for row in rows if row.alias is not None and not cls._is_subsystem_managed(row.alias)
+                }
+                type_mismatch = not_eligible & all_transferable_aliases
+                not_in_project = not_eligible - type_mismatch
+
+                if type_mismatch:
+                    mismatch_str = ", ".join(sorted(str(a) for a in type_mismatch))
+                    requested_types = ", ".join(t.value for t in sorted(setting_types, key=lambda t: t.value))
+                    raise ExtendedHTTPException(
+                        code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        message="Integration type mismatch",
+                        details=(
+                            f"These aliases exist in project '{source_project_name}' but are not of the "
+                            f"requested type ({requested_types}): {mismatch_str}."
+                        ),
+                        help=(
+                            "Adjust type_of_integration to include the integration's type, "
+                            "or remove the alias from the list."
+                        ),
+                    )
+
+                unknown_str = ", ".join(sorted(str(a) for a in not_in_project))
+                raise ExtendedHTTPException(
+                    code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    message="Unknown integration identifiers",
+                    details=f"These aliases were not found in project '{source_project_name}': {unknown_str}.",
+                    help="Check the alias names and try again.",
+                )
+
+        candidates = [row for row in type_filtered if requested is None or row.alias in requested]
 
         logger.info(
-            "settings_transfer: selected %s of %s rows in project %r",
+            "settings_transfer: selected %s row(s) in project %r (types=%s, list=%s)",
             len(candidates),
-            len(rows),
             source_project_name,
+            {t.value for t in setting_types},
+            integrations_list,
         )
 
         return candidates
@@ -274,15 +350,41 @@ class SettingsTransferService:
 
     @classmethod
     def transfer(
-        cls, source_project_name: str, target_project_name: str, mode: TransferMode
+        cls,
+        source_project_name: str,
+        target_project_name: str,
+        mode: TransferMode,
+        setting_types: set[SettingType],
+        integrations_list: list[str] | None,
     ) -> TransferSettingsResponse:
-        """Move or copy every transferable integration from the source project to the target project."""
+        """Move or copy filtered integrations from the source project to the target project."""
+        if not setting_types:
+            raise ExtendedHTTPException(
+                code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                message=cls._INVALID_TRANSFER_REQUEST,
+                details="At least one integration type must be selected.",
+                help="Set user_integrations or project_integrations (or both) to true.",
+            )
+
         cls._validate_projects(source_project_name, target_project_name)
 
-        candidates = cls._select_candidates(source_project_name)
+        candidates = cls._select_candidates(source_project_name, setting_types, integrations_list)
         cls._validate_aliases_present(candidates)
 
         transferable, skipped = cls._partition(candidates, mode)
+
+        if integrations_list is not None and skipped:
+            blocked = ", ".join(sorted(row.alias for row in skipped if row.alias))
+            raise ExtendedHTTPException(
+                code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                message="Non-transferable integrations in list",
+                details=(
+                    f"These integrations cannot be transferred in {mode.value} mode: {blocked}. "
+                    f"Remove them from the 'list' or omit the field to skip them automatically."
+                ),
+                help="Webhook and scheduler integrations are never transferred in copy mode.",
+            )
+
         skipped_payload = [
             TransferItem(id=row.id, alias=row.alias, credential_type=row.credential_type) for row in skipped
         ]

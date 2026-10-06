@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "task": "Enhance POST /v1/settings/transfer to support type_of_integration filter (user_integrations, project_integrations booleans) and optional list of integration identifiers to limit transfer scope.",
+  "generated": "2026-08-11T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 15,
+  "size": "M",
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Three components touched: Pydantic request model (settings_transfer.py), FastAPI router call site (routers/settings.py), and SettingsTransferService (transfer() + _select_candidates()) — spanning API-model, router, and service layers."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "Signature propagation from transfer() through _select_candidates() requires careful threading; unknown-identifier validation has no existing helper and must be authored; _partition copy-blocking must remain orthogonal to new setting_type filtering — these are moderate decisions with no exact precedent for the combination, but the advisory-lock and collision logic are untouched."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "Five files modified: settings_transfer.py (model), routers/settings.py, settings_transfer_service.py, test_settings_transfer.py (router tests — all assertion signatures update), test_settings_transfer_service.py (9 TestTransfer tests need parameter updates plus new filter coverage). No new files needed."
+    }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

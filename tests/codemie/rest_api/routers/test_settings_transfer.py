@@ -21,6 +21,7 @@ from fastapi import FastAPI, status
 from httpx import ASGITransport, AsyncClient
 
 from codemie.core.exceptions import ExtendedHTTPException
+from codemie.rest_api.models.settings import SettingType
 from codemie.rest_api.models.settings_transfer import TransferMode, TransferSettingsResponse
 from codemie.rest_api.routers.settings import router
 from codemie.rest_api.security.authentication import admin_or_maintainer_access_only
@@ -82,7 +83,11 @@ async def test_transfer_move_success(mock_authenticate, mock_transfer, admin_use
     assert body["transferred_count"] == 1
     assert body["mode"] == "move"
     mock_transfer.assert_called_once_with(
-        source_project_name="source", target_project_name="target", mode=TransferMode.MOVE
+        source_project_name="source",
+        target_project_name="target",
+        mode=TransferMode.MOVE,
+        setting_types={SettingType.USER, SettingType.PROJECT},
+        integrations_list=None,
     )
 
 
@@ -182,3 +187,116 @@ async def test_transfer_propagates_service_errors(mock_authenticate, mock_transf
             )
 
     assert excinfo.value.code == status.HTTP_409_CONFLICT
+
+
+@pytest.mark.anyio
+@patch("codemie.rest_api.routers.settings.SettingsTransferService.transfer")
+@patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
+async def test_transfer_user_only_filter(mock_authenticate, mock_transfer, admin_user):
+    mock_authenticate.return_value = admin_user
+    mock_transfer.return_value = _ok_response()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.post(
+            "/v1/settings/transfer",
+            headers={"user-id": "admin-1"},
+            json={
+                "source_project_name": "source",
+                "target_project_name": "target",
+                "mode": "move",
+                "type_of_integration": {"user_integrations": True, "project_integrations": False},
+            },
+        )
+
+    assert response.status_code == status.HTTP_200_OK
+    mock_transfer.assert_called_once_with(
+        source_project_name="source",
+        target_project_name="target",
+        mode=TransferMode.MOVE,
+        setting_types={SettingType.USER},
+        integrations_list=None,
+    )
+
+
+@pytest.mark.anyio
+@patch("codemie.rest_api.routers.settings.SettingsTransferService.transfer")
+@patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
+async def test_transfer_project_only_filter(mock_authenticate, mock_transfer, admin_user):
+    mock_authenticate.return_value = admin_user
+    mock_transfer.return_value = _ok_response()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.post(
+            "/v1/settings/transfer",
+            headers={"user-id": "admin-1"},
+            json={
+                "source_project_name": "source",
+                "target_project_name": "target",
+                "mode": "move",
+                "type_of_integration": {"user_integrations": False, "project_integrations": True},
+            },
+        )
+
+    assert response.status_code == status.HTTP_200_OK
+    mock_transfer.assert_called_once_with(
+        source_project_name="source",
+        target_project_name="target",
+        mode=TransferMode.MOVE,
+        setting_types={SettingType.PROJECT},
+        integrations_list=None,
+    )
+
+
+@pytest.mark.anyio
+@patch("codemie.rest_api.routers.settings.SettingsTransferService.transfer")
+@patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
+async def test_transfer_with_list_filter(mock_authenticate, mock_transfer, admin_user):
+    mock_authenticate.return_value = admin_user
+    mock_transfer.return_value = _ok_response()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.post(
+            "/v1/settings/transfer",
+            headers={"user-id": "admin-1"},
+            json={
+                "source_project_name": "source",
+                "target_project_name": "target",
+                "mode": "move",
+                "list": ["jira-prod", "git-main"],
+            },
+        )
+
+    assert response.status_code == status.HTTP_200_OK
+    mock_transfer.assert_called_once_with(
+        source_project_name="source",
+        target_project_name="target",
+        mode=TransferMode.MOVE,
+        setting_types={SettingType.USER, SettingType.PROJECT},
+        integrations_list=["jira-prod", "git-main"],
+    )
+
+
+@pytest.mark.anyio
+@patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
+async def test_transfer_both_flags_false_returns_422(mock_authenticate, admin_user):
+    mock_authenticate.return_value = admin_user
+
+    transport = ASGITransport(app=app)
+    with pytest.raises(ExtendedHTTPException) as excinfo:
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            await ac.post(
+                "/v1/settings/transfer",
+                headers={"user-id": "admin-1"},
+                json={
+                    "source_project_name": "source",
+                    "target_project_name": "target",
+                    "mode": "move",
+                    "type_of_integration": {"user_integrations": False, "project_integrations": False},
+                },
+            )
+
+    assert excinfo.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY
+    assert "at least one integration type" in excinfo.value.details.lower()

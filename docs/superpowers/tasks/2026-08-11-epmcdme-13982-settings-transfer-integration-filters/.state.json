@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "flow": "sdlc-standard",
+  "slug": "epmcdme-13982-settings-transfer-integration-filters",
+  "branch": "EPMCDME-13982_settings-transfer-integration-filters",
+  "phase": "maintenance",
+  "started_at": "2026-08-11T00:00:00Z",
+  "completed_at": "2026-08-11T14:00:00Z",
+  "last_sync_commit": "774a0357701240430bcb830b19d1666d253d2238"
+}
