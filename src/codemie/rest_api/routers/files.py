@@ -30,7 +30,7 @@ from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import AssistantChatRequest
 from codemie.core.constants import MermaidContentType, MermaidResponseType, MermaidMimeType
 from codemie.repository.repository_factory import FileRepositoryFactory
-from codemie.rest_api.models.files import WriteFileResponse, MermaidRequest, BulkWriteFileResponse
+from codemie.rest_api.models.files import WriteFileResponse, MermaidRequest, BulkWriteFileResponse, FailedFile
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
 from codemie.service.file_service.download_rules import can_download
@@ -362,7 +362,12 @@ def write_files_bulk(files: List[UploadFile] = File(...), user: User = Depends(a
         except Exception as e:
             failed_files[file.filename] = str(e)
 
-    return BulkWriteFileResponse(files=successful_files, failed_files=failed_files if failed_files else None)
+    return BulkWriteFileResponse(
+        files=successful_files,
+        failed_files=[FailedFile(filename=fname, error=err) for fname, err in failed_files.items()]
+        if failed_files
+        else None,
+    )
 
 
 @router.post(

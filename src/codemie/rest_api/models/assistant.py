@@ -649,7 +649,7 @@ class AssistantBase(CommonBaseModel, Owned):
     created_by: Optional[CreatedByUser] = SQLField(default=None, sa_column=Column(PydanticType(CreatedByUser)))
     project: str = SQLField(default=DEMO_PROJECT, index=True)
     icon_url: Optional[str] = SQLField(default=None, index=True)
-    llm_model_type: Optional[str] = None
+    llm_model_type: Optional[str] = SQLField(default=None, max_length=255)
     enable_image_generation: Optional[bool] = False
     image_generation_model: Optional[str] = None
     toolkits: list[ToolKitDetails] = SQLField(default_factory=list, sa_column=Column(PydanticListType(ToolKitDetails)))

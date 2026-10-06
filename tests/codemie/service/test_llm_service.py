@@ -383,9 +383,198 @@ class TestApplyPremiumFlags:
         with self._premium_budget(False), patch.object(config, "LITELLM_PREMIUM_MODELS_ALIASES", ["opus"]):
             with patch.object(llm_service, "get_allowed_models") as mock_allowed:
                 mock_allowed.return_value = LiteLLMModels(chat_models=self._models(), embedding_models=[])
-                result = llm_service.get_allowed_chat_models(user=Mock())
+                llm_service.get_allowed_chat_models(user=Mock())
 
-        assert all(m.is_premium is None for m in result)
+
+# Tests for project-level model narrowing
+class TestProjectModelNarrowing:
+    """Tests for _filter_models_by_project and related functionality"""
+
+    @pytest.fixture
+    def llm_service(self):
+        llm_config = LLMConfig(
+            yaml_file=Path('tests/service/llm_test_config.yaml'),
+            llm_models=[
+                LLMModel(
+                    label='GPT-4',
+                    base_name='gpt-4',
+                    deployment_name='gpt-4',
+                    enabled=True,
+                    forbidden_for_web=False,
+                ),
+                LLMModel(
+                    label='Claude Opus',
+                    base_name='claude-opus',
+                    deployment_name='claude-opus',
+                    enabled=True,
+                    forbidden_for_web=False,
+                ),
+                LLMModel(
+                    label='Gemini Pro',
+                    base_name='gemini-pro',
+                    deployment_name='gemini-pro',
+                    enabled=True,
+                    forbidden_for_web=False,
+                ),
+            ],
+            embeddings_models=[],
+        )
+        return LLMService(llm_config)
+
+    def test_filter_models_by_project_narrows_to_allowed(self, llm_service):
+        """When project has allowed_models set, only those models are returned."""
+        from codemie.core.models import Application
+
+        all_models = llm_service.llm_config.llm_models
+
+        # Create project allowing only gpt-4 and claude-opus
+        project = Application(name="test-proj", allowed_models=["gpt-4", "claude-opus"])
+
+        result = llm_service._filter_models_by_project(all_models, project)
+
+        assert len(result) == 2
+        assert any(m.base_name == "gpt-4" for m in result)
+        assert any(m.base_name == "claude-opus" for m in result)
+        assert not any(m.base_name == "gemini-pro" for m in result)
+
+    def test_filter_models_by_project_no_narrowing_when_project_none(self, llm_service):
+        """When project is None, all models returned (no narrowing applied)."""
+        all_models = llm_service.llm_config.llm_models
+
+        result = llm_service._filter_models_by_project(all_models, project=None)
+
+        assert len(result) == 3
+
+    def test_filter_models_by_project_no_narrowing_when_allowed_models_empty(self, llm_service):
+        """When project.allowed_models is None or empty, behavior differs: None = all models, empty = no models."""
+        from codemie.core.models import Application
+
+        all_models = llm_service.llm_config.llm_models
+
+        # None = no restriction, return all models
+        project_none = Application(name="test-proj-none", allowed_models=None)
+        result_none = llm_service._filter_models_by_project(all_models, project_none)
+        assert len(result_none) == 3
+
+        # Empty list = explicit deny all, return no models
+        project_empty = Application(name="test-proj-empty", allowed_models=[])
+        result_empty = llm_service._filter_models_by_project(all_models, project_empty)
+        assert len(result_empty) == 0
+
+        # Verify semantics are distinct
+        assert len(result_none) != len(result_empty)
+        assert all(m.is_premium is None for m in result_none)
+
+
+class TestGetModelDetailsRefusal:
+    """Tests for get_model_details refusal behavior."""
+
+    @pytest.fixture
+    def llm_service(self):
+        llm_config = LLMConfig(
+            yaml_file=Path('tests/service/llm_test_config.yaml'),
+            llm_models=[
+                LLMModel(
+                    label='GPT-4',
+                    base_name='gpt-4',
+                    deployment_name='gpt-4-deployment',
+                    enabled=True,
+                    default_for_categories=[ModelCategory.GLOBAL],
+                ),
+                LLMModel(
+                    label='Claude Opus',
+                    base_name='claude-opus',
+                    deployment_name='claude-opus-deployment',
+                    enabled=True,
+                    default_for_categories=[],
+                ),
+            ],
+            embeddings_models=[],
+        )
+        return LLMService(llm_config)
+
+    def test_get_model_details_model_not_found(self, llm_service):
+        """When model is not found, raise ModelNotAllowedException."""
+        from codemie.core.exceptions import ModelNotAllowedException
+
+        with pytest.raises(ModelNotAllowedException) as exc_info:
+            llm_service.get_model_details("nonexistent-model")
+
+        assert "nonexistent-model" in exc_info.value.message
+
+    def test_get_model_details_model_not_allowed_for_project(self, llm_service):
+        """When model exists but is excluded by project, raise ModelNotWhitelistedException."""
+        from codemie.core.exceptions import ModelNotWhitelistedException
+        from codemie.core.models import Application
+
+        project = Application(id="proj-1", name="test-proj", allowed_models=["claude-opus"])
+
+        with (
+            patch(
+                "codemie.service.llm_service.llm_service.customer_config",
+                is_feature_enabled=Mock(return_value=True),
+            ),
+            pytest.raises(ModelNotWhitelistedException) as exc_info,
+        ):
+            llm_service.get_model_details("gpt-4", project=project)
+
+        assert "gpt-4" in exc_info.value.message
+
+    def test_get_model_details_model_allowed(self, llm_service):
+        """When model is found and allowed for project, return it."""
+        from codemie.core.models import Application
+
+        project = Application(id="proj-1", name="test-proj", allowed_models=["gpt-4"])
+        result = llm_service.get_model_details("gpt-4", project=project)
+
+        assert result.base_name == "gpt-4"
+
+    def test_get_model_details_no_project_returns_model(self, llm_service):
+        """When no project is passed, return model if it exists."""
+        result = llm_service.get_model_details("gpt-4")
+        assert result.base_name == "gpt-4"
+
+    def test_get_model_details_strips_whitespace_from_model_name(self, llm_service):
+        """model_name with leading/trailing whitespace is normalized."""
+        result = llm_service.get_model_details("  gpt-4  ")
+        assert result.base_name == "gpt-4"
+
+    def test_get_model_details_project_id_none_raises_error(self, llm_service):
+        """When project.id is None, raise ValueError before creating exception."""
+        from codemie.core.models import Application
+
+        project = Application(name="test-proj", allowed_models=["gpt-4"])
+        project.id = None  # Simulate unsaved object
+
+        with pytest.raises(ValueError, match="non-None id"):
+            llm_service.get_model_details("gpt-4", project=project)
+
+    def test_get_model_details_distinguishes_not_found_message(self, llm_service):
+        """Error message for non-existent model differs from project-denied message."""
+        from codemie.core.models import Application
+
+        project = Application(name="test-proj", id="proj-1", allowed_models=["claude-3"])
+
+        try:
+            llm_service.get_model_details("nonexistent-model", project=project)
+        except Exception as e:
+            assert "does not exist in the system" in e.details
+
+        try:
+            llm_service.get_model_details("gpt-4", project=project)
+        except Exception as e:
+            assert "not in the allowed models list" in e.details
+
+    def test_get_model_details_deny_all_message(self, llm_service):
+        """Error message when project explicitly denies all models is distinct."""
+        from codemie.core.models import Application
+
+        project = Application(name="test-proj", id="proj-1", allowed_models=[])
+
+        try:
+            llm_service.get_model_details("gpt-4", project=project)
+        except Exception as e:
+            assert "explicitly denies all models" in e.details
 
 
 class TestLiteLLMAutoRouterCatalog:

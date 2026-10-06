@@ -728,6 +728,7 @@ def test_build_new_conversation_with_assistant(
     mock_assistant.toolkits = [mock_toolkit]
     mock_assistant.enable_image_generation = True
     mock_assistant.image_generation_model = "gpt-image-1"
+    mock_assistant.project = "test-project"
 
     mock_get_by_ids.return_value = [mock_assistant]
 
@@ -978,6 +979,7 @@ def test_build_new_conversation_with_workflow(
     mock_workflow.id = "wf-1"
     mock_workflow.name = "My Workflow"
     mock_workflow.icon_url = "http://wf-icon"
+    mock_workflow.project = "test-project"
     mock_get_by_id.return_value = mock_workflow
 
     result = ConversationService.build_new_conversation(

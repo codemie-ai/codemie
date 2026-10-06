@@ -28,8 +28,8 @@ from codemie.agents.utils import validate_json_schema
 from codemie.configs import config
 from codemie.configs.logger import logger
 from codemie.configs.customer_config import customer_config
-from codemie.core.dependecies import get_disable_prompt_cache, set_disable_prompt_cache
-from codemie.core.models import AssistantChatRequest, IdeChatRequest, ToolCallPolicy, ToolConfig
+from codemie.core.dependecies import get_disable_prompt_cache, set_disable_prompt_cache, enforce_allowed_model
+from codemie.core.models import AssistantChatRequest, IdeChatRequest, ToolCallPolicy, ToolConfig, Application
 from codemie.core.template_security import render_system_prompt_template, TemplateSecurityError
 from codemie.core.thread import MessageQueue
 from codemie.core.utils import build_unique_file_objects, build_unique_file_objects_list, append_random_suffix
@@ -549,8 +549,14 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
 
         # Determine LLM model and agent type
         llm_model = request.llm_model or assistant.llm_model_type
+
+        # Enforce project-level model restrictions before any agent/subagent initialization
+        project = Application.get_by_id(assistant.project) if assistant.project and not assistant.is_global else None
+        llm_model = enforce_allowed_model(llm_model, project)
+        assistant.llm_model_type = llm_model
+
         if request.llm_model:
-            assistant.llm_model_type = request.llm_model
+            request.llm_model = llm_model
 
         is_react = llm_model in llm_service.get_react_llms()
 
@@ -794,11 +800,14 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
         trace_context=None,  # For workflow trace unification
         disable_cache: Optional[bool] = False,
         owner_user_id: str | None = None,
+        is_global: bool = False,
     ):
         # Load and configure assistant for workflow execution
         assistant = cls._load_and_configure_workflow_assistant(
             workflow_assistant, user, project_name, execution_id, owner_user_id=owner_user_id
         )
+        if is_global and not assistant.is_global:
+            assistant = assistant.model_copy(update={"is_global": True})
 
         llm_model = assistant.llm_model_type
         is_react = assistant.is_react

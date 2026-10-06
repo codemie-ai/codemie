@@ -1,4 +1,4 @@
-# Copyright 2026 EPAM Systems, Inc. (“EPAM”)test_proxy
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -48,6 +48,8 @@ from codemie.enterprise.litellm.proxy_router import (
     _augment_models_list_response,
     _build_premium_budget_error_body,
     _check_cli_version,
+    _create_global_budget_body_stream,
+    _create_project_runtime_body_stream,
     _extract_model,
     _extract_request_info,
     _finalize_stream_usage_tracking,
@@ -60,6 +62,7 @@ from codemie.enterprise.litellm.proxy_router import (
     _resolve_tracking_identity,
     _read_request_body,
     _resolve_project_budget_runtime,
+    _validate_project_header,
     register_proxy_endpoints,
 )
 from codemie.rest_api.models.settings import LiteLLMCredentials
@@ -176,6 +179,150 @@ class TestExtractModel:
         request_info = {LLM_MODEL: "claude-haiku-4-5"}
 
         assert _extract_model(body_json, request_info, path_params=None) == "claude-haiku-4-5"
+
+
+class TestValidateProjectHeader:
+    """Test _validate_project_header function.
+
+    Regression for CR-009: the username fallback used to be accepted on presence
+    alone (`user and user.username`), without verifying it names a real project.
+    """
+
+    def test_project_header_present_passes(self):
+        headers = Headers({HEADER_CODEMIE_CLI_PROJECT: "my-project"})
+        user = MagicMock()
+        user.username = "someone"
+
+        _validate_project_header(headers, user)  # should not raise
+
+    def test_background_consumer_exempt(self):
+        headers = Headers({HEADER_CODEMIE_INTEGRATION: "integration-123"})
+
+        _validate_project_header(headers, user=None)  # should not raise
+
+    def test_username_fallback_accepted_when_it_resolves_to_a_real_project(self):
+        headers = Headers({})
+        user = MagicMock()
+        user.username = "user@example.com"
+
+        with patch("codemie.core.models.Application.find_by_id", return_value=MagicMock()) as mock_find:
+            _validate_project_header(headers, user)  # should not raise
+
+        mock_find.assert_called_once_with("user@example.com")
+
+    def test_username_fallback_rejected_when_it_does_not_resolve(self):
+        from codemie.core.project_validator import ProjectRequiredException
+
+        headers = Headers({})
+        user = MagicMock()
+        user.username = "not-a-real-project"
+
+        with patch("codemie.core.models.Application.find_by_id", return_value=None):
+            with pytest.raises(ProjectRequiredException):
+                _validate_project_header(headers, user)
+
+    def test_no_header_and_no_user_raises(self):
+        from codemie.core.project_validator import ProjectRequiredException
+
+        headers = Headers({})
+
+        with pytest.raises(ProjectRequiredException):
+            _validate_project_header(headers, user=None)
+
+
+class TestBudgetBodyStreamWhitespaceUsername:
+    """Regression for CR-010: a whitespace-only username/project-runtime-user already
+    skipped the litellm_customer_id header (via .strip()), but was still passed as
+    user_id into the outgoing request body, unlike a None/empty value."""
+
+    @pytest.mark.asyncio
+    async def test_project_runtime_whitespace_username_not_injected_as_user_id(self):
+        from codemie.enterprise.litellm.runtime_budget_selection import RuntimeBudgetMode
+
+        user = MagicMock()
+        user.id = "user-123"
+        user.username = "someone"
+        request_info = {}
+        project_runtime = MagicMock()
+        project_runtime.body_overrides = {"user": "   "}
+
+        with (
+            patch(
+                "codemie.enterprise.litellm.proxy_router.select_runtime_budget_mode",
+                return_value=MagicMock(mode=RuntimeBudgetMode.PROJECT_BUDGET_WITH_MEMBER_TRACKING),
+            ),
+            patch("codemie.enterprise.litellm.proxy_router._inject_user_into_request_body_from_bytes") as mock_inject,
+        ):
+            await _create_project_runtime_body_stream(
+                body_bytes=b"{}",
+                user=user,
+                request_info=request_info,
+                category=BudgetCategory.PLATFORM,
+                llm_model="gpt-4",
+                project_name="my-project",
+                project_runtime=project_runtime,
+            )
+
+        assert "litellm_customer_id" not in request_info
+        assert mock_inject.call_args.kwargs["user_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_global_budget_whitespace_username_not_injected_as_user_id(self):
+        user = MagicMock()
+        user.id = "user-123"
+        user.username = "someone"
+        request_info = {}
+
+        with (
+            patch(
+                "codemie.enterprise.litellm.proxy_router.budget_service.track_proxy_budget_assignment_for_request",
+                new_callable=AsyncMock,
+            ),
+            patch("codemie.enterprise.litellm.proxy_router.check_user_budget"),
+            patch("codemie.enterprise.litellm.proxy_router._inject_user_into_request_body_from_bytes") as mock_inject,
+        ):
+            await _create_global_budget_body_stream(
+                body_bytes=b"{}",
+                user=user,
+                request_info=request_info,
+                category=BudgetCategory.PLATFORM,
+                username="   ",
+                tracking_budget_id="budget-1",
+                llm_model="gpt-4",
+                project_name=None,
+            )
+
+        assert "litellm_customer_id" not in request_info
+        assert mock_inject.call_args.kwargs["user_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_global_budget_valid_username_still_injected(self):
+        user = MagicMock()
+        user.id = "user-123"
+        user.username = "someone"
+        request_info = {}
+
+        with (
+            patch(
+                "codemie.enterprise.litellm.proxy_router.budget_service.track_proxy_budget_assignment_for_request",
+                new_callable=AsyncMock,
+            ),
+            patch("codemie.enterprise.litellm.proxy_router.check_user_budget"),
+            patch("codemie.enterprise.litellm.proxy_router._inject_user_into_request_body_from_bytes") as mock_inject,
+        ):
+            await _create_global_budget_body_stream(
+                body_bytes=b"{}",
+                user=user,
+                request_info=request_info,
+                category=BudgetCategory.PLATFORM,
+                username="real-user@example.com",
+                tracking_budget_id="budget-1",
+                llm_model="gpt-4",
+                project_name=None,
+            )
+
+        assert request_info["litellm_customer_id"] == "real-user@example.com"
+        assert mock_inject.call_args.kwargs["user_id"] == "real-user@example.com"
 
 
 class TestExtractRequestInfo:
@@ -1801,13 +1948,13 @@ class TestProxyToLLMProxy:
                         with patch("codemie.enterprise.litellm.proxy_router.config") as mock_config:
                             mock_config.LLM_PROXY_TIMEOUT = 300
                             mock_config.LLM_PROXY_TRACK_USAGE = False
-
-                            result = await _proxy_to_llm_proxy(
-                                request=mock_request,
-                                user=mock_user,
-                                endpoint="/v1/chat/completions",
-                                background_tasks=mock_background_tasks,
-                            )
+                            with patch("codemie.core.models.Application.find_by_id", return_value=MagicMock()):
+                                result = await _proxy_to_llm_proxy(
+                                    request=mock_request,
+                                    user=mock_user,
+                                    endpoint="/v1/chat/completions",
+                                    background_tasks=mock_background_tasks,
+                                )
 
         # Verify response
         assert result is not None
@@ -1853,6 +2000,7 @@ class TestProxyToLLMProxy:
             patch("codemie.enterprise.litellm.proxy_router._prepare_proxy_headers") as mock_headers,
             patch("codemie.enterprise.litellm.proxy_router.get_llm_proxy_client") as mock_client_factory,
             patch("codemie.enterprise.litellm.proxy_router.config") as mock_config,
+            patch("codemie.core.models.Application.find_by_id", return_value=MagicMock()),
         ):
 
             async def body_stream():
@@ -1930,6 +2078,7 @@ class TestProxyToLLMProxy:
             patch("codemie.enterprise.litellm.proxy_router.get_llm_proxy_client") as mock_get_client,
             patch("codemie.enterprise.litellm.proxy_router.config") as mock_config,
             patch("codemie.service.llm_service.llm_service.llm_service") as mock_llm_service,
+            patch("codemie.core.models.Application.find_by_id", return_value=MagicMock()),
         ):
 
             async def body_stream():
@@ -1974,13 +2123,14 @@ class TestProxyToLLMProxy:
             with patch("codemie.enterprise.litellm.proxy_router.config") as mock_config:
                 mock_config.LLM_PROXY_ENABLED = False
 
-                with pytest.raises(HTTPException) as exc_info:
-                    await _proxy_to_llm_proxy(
-                        request=mock_request,
-                        user=mock_user,
-                        endpoint="/v1/chat/completions",
-                        background_tasks=mock_background_tasks,
-                    )
+                with patch("codemie.core.models.Application.find_by_id", return_value=MagicMock()):
+                    with pytest.raises(HTTPException) as exc_info:
+                        await _proxy_to_llm_proxy(
+                            request=mock_request,
+                            user=mock_user,
+                            endpoint="/v1/chat/completions",
+                            background_tasks=mock_background_tasks,
+                        )
 
         assert exc_info.value.status_code == 400
         assert "not available" in exc_info.value.detail
@@ -2023,12 +2173,13 @@ class TestProxyToLLMProxy:
                         with patch("codemie.enterprise.litellm.proxy_router.config") as mock_config:
                             mock_config.LLM_PROXY_TIMEOUT = 300
 
-                            result = await _proxy_to_llm_proxy(
-                                request=mock_request,
-                                user=mock_user,
-                                endpoint="/v1/chat/completions",
-                                background_tasks=mock_background_tasks,
-                            )
+                            with patch("codemie.core.models.Application.find_by_id", return_value=MagicMock()):
+                                result = await _proxy_to_llm_proxy(
+                                    request=mock_request,
+                                    user=mock_user,
+                                    endpoint="/v1/chat/completions",
+                                    background_tasks=mock_background_tasks,
+                                )
 
         # Should return error response
         assert result.status_code == 503

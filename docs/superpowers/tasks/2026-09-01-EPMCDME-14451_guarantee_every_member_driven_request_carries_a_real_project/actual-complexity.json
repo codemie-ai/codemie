@@ -1,0 +1,101 @@
+{
+  "task": "Guarantee every member-driven request carries a real project by validating projects at authentication, assistant operations, proxy routing, and CLI boundaries.",
+  "generated": "2026-09-03T00:00:00Z",
+  "dimensions": {
+    "component_scope": {
+      "score": 3,
+      "label": "M",
+      "affected": "ProjectValidator module, PersonalProjectService, ProxyRouter, PlatformTool, AssistantGenerator validation utils, RegistrationService, AuthenticationService",
+      "layers": "Service, API/Router, Agent-Tools, Security"
+    },
+    "requirements_clarity": {
+      "score": 4,
+      "label": "L",
+      "status": "Partially Clear",
+      "gaps": "DEMO_PROJECT scope pause introduced controlled ambiguity (deferred until AC resume); background consumer identification relies on integration header heuristic; unclear whether CLI enforcement is backend or CLI-side"
+    },
+    "technical_risk": {
+      "score": 3,
+      "label": "M",
+      "risk_factors": "Validation exceptions added at critical auth paths; PersonalProjectService behavior change (now raises instead of silent failure); silent failure propagation in ensure_personal_project_async caught and re-raised; multiple fallback chains require coordinated validation",
+      "mitigation": "Explicit is_background_consumer check exempts background consumers; ProjectRequiredException caught at proxy_router boundary; tests verify exemption path; non-blocking changes preserved backward compatibility"
+    },
+    "file_change_estimate": {
+      "score": 3,
+      "label": "M",
+      "modified_files": 7,
+      "modified_file_list": [
+        "src/codemie/core/project_validator.py",
+        "src/codemie/enterprise/litellm/proxy_router.py",
+        "src/codemie/service/project/personal_project_service.py",
+        "src/codemie/agents/tools/platform/platform_tool.py",
+        "src/codemie/workflows/assistant_generator/nodes/validation/utils.py",
+        "src/codemie/rest_api/routers/files.py",
+        "src/codemie/rest_api/models/files.py"
+      ],
+      "new_files": 2,
+      "new_file_list": [
+        "src/codemie/core/project_validator.py",
+        "tests/codemie/core/test_project_validator.py",
+        "scripts/report_empty_project_assistants.py"
+      ],
+      "affected_dirs": [
+        "src/codemie/core/",
+        "src/codemie/enterprise/litellm/",
+        "src/codemie/service/project/",
+        "src/codemie/agents/tools/platform/",
+        "src/codemie/workflows/assistant_generator/",
+        "src/codemie/rest_api/",
+        "scripts/",
+        "tests/codemie/core/"
+      ]
+    },
+    "dependencies": {
+      "score": 1,
+      "label": "XS",
+      "new_packages": [],
+      "version_changes": []
+    },
+    "affected_layers": {
+      "score": 4,
+      "label": "L",
+      "layers_changed": [
+        "Service",
+        "API/Router",
+        "Agent-Tools",
+        "Security/Auth",
+        "Workflow"
+      ],
+      "schema_migration": false,
+      "cross_system": false
+    }
+  },
+  "total": 18,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 9,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "affected_layers",
+      "reason": "Five distinct layers touched: Service (PersonalProjectService), API/Router (proxy_router validation), Agent-Tools (PlatformTool), Security (ProjectRequiredException), and Workflow (assistant_generator validation). Requires coordination across multiple subsystems."
+    },
+    {
+      "dimension": "requirements_clarity",
+      "reason": "Partially clear: 6 well-defined acceptance criteria, but DEMO_PROJECT scope pause introduced controlled ambiguity (deferred until AC resume). Background consumer exemption relies on integration header heuristic with no explicit marker in code. CLI enforcement scope underspecified (backend vs CLI-side)."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "Medium risk: Validation exceptions added at critical authentication paths; PersonalProjectService behavior changed from silent failure to raising ProjectRequiredException; multiple fallback chains require coordinated validation to prevent regressions. All changes tested (16 tests, 100% coverage of new module)."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "9 files touched across 8 directories. Includes 1 new core module (project_validator.py, 76 lines), 1 new test suite (test_project_validator.py, 85 lines), 1 migration script, and 6 modified files in service/proxy/agent layers."
+    }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from S to M: Authentication path validation added; PersonalProjectService now raises (was silent); requires careful rollback plan",
+    "Affected Layers bumped from M to L: Five distinct layers touched (Service, API/Router, Agent-Tools, Security, Workflow); cross-layer coordination required"
+  ],
+  "split_recommendation": null
+}

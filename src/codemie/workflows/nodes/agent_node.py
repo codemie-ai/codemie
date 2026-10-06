@@ -13,13 +13,15 @@
 # limitations under the License.
 
 from typing import Type, Optional, Any
+from codemie.configs import logger
 
 from codemie.agents.assistant_agent import AIToolsAgent, TaskResult
-from codemie.configs import logger
 from codemie.enterprise.observability import get_observability_provider
 from codemie.core.exceptions import TaskException
 from codemie.core.thought_queue import ThoughtQueue
 from codemie.rest_api.security.user import User
+from codemie.configs.customer_config import customer_config
+from codemie.service.llm.model_availability_service import PROJECT_MODEL_OVERRIDE_FEATURE
 from codemie.service.tools.dynamic_value_utils import process_string
 from codemie.service.workflow_execution import WorkflowExecutionService
 from codemie.workflows.callbacks.base_callback import BaseCallback
@@ -37,6 +39,7 @@ from codemie.workflows.utils import (
     get_messages_from_state_schema,
     find_assistant_by_id,
     initialize_assistant,
+    AssistantExecutionOptions,
     should_summarize_memory,
 )
 from codemie_tools.base.file_object import FileObject
@@ -169,9 +172,28 @@ class AgentNode(BaseNode[AgentMessages]):
             return parent_result
 
         messages = get_messages_from_state_schema(state_schema)
-        _, should_summarize = should_summarize_memory(self.workflow_config, messages)
+        total_tokens, should_summarize = should_summarize_memory(self.workflow_config, messages)
+
+        logger.info(
+            f"agent_before_execution_summarize_check "
+            f"state_id={self.workflow_state.id} "
+            f"node={self.node_name} "
+            f"execution_id={self.execution_id} "
+            f"summarize_history={self.summarize_history} "
+            f"messages_count={len(messages)} "
+            f"total_tokens={total_tokens} "
+            f"messages_limit={getattr(self.workflow_config, 'messages_limit_before_summarization', None)} "
+            f"tokens_limit={getattr(self.workflow_config, 'tokens_limit_before_summarization', None)} "
+            f"should_summarize={should_summarize}"
+        )
+
         if self.summarize_history and should_summarize:
-            logger.info(f"Memory too large, should summarize: {self.workflow_state.id}")
+            logger.info(
+                f"agent_before_execution_redirect_to_summarize "
+                f"state_id={self.workflow_state.id} "
+                f"execution_id={self.execution_id} "
+                f"goto={SUMMARIZE_MEMORY_NODE}"
+            )
             return Command(goto=SUMMARIZE_MEMORY_NODE)
 
     def after_execution(self, state_schema: Type[StateSchemaType], result: Any, *args, **kwargs):
@@ -227,6 +249,21 @@ class AgentNode(BaseNode[AgentMessages]):
             assistants=self.workflow_config.assistants, assistant_id=self.workflow_state.assistant_id
         )
 
+        # Stage 2: Resolve model availability - fallback to project default if needed
+        #
+        # This runs inside generate_execution_context(), which BaseNode.__call__ invokes
+        # before its own try/except block starts. fail_open=True keeps a resolution
+        # failure here from escaping uncaught and aborting the whole workflow execution
+        # instead of just this node.
+        if (
+            workflow_assistant
+            and workflow_assistant.model
+            and customer_config.is_feature_enabled(PROJECT_MODEL_OVERRIDE_FEATURE)
+        ):
+            resolved_model, _ = self.resolve_execution_model(workflow_assistant.model, fail_open=True)
+            # Create a copy of the workflow_assistant with the resolved model
+            workflow_assistant = workflow_assistant.model_copy(update={"model": resolved_model})
+
         # Retrieve workflow trace context for trace unification
         trace_context = None
         provider = get_observability_provider()
@@ -242,16 +279,19 @@ class AgentNode(BaseNode[AgentMessages]):
             workflow_state=self.workflow_state,
             user_input=self.user_input,
             user=self.user,
-            thought_queue=self.thought_queue,
-            resume_execution=self.resume_execution,
-            execution_id=self.execution_id,
-            project_name=self.workflow_config.project,
-            file_names=self.file_names,
-            mcp_server_args_preprocessor=mcp_server_args_preprocessor,
-            request_headers=self.request_headers,
-            trace_context=trace_context,  # Pass trace context for nested traces
-            disable_cache=self.disable_cache,
-            owner_user_id=owner_user_id,
+            options=AssistantExecutionOptions(
+                thought_queue=self.thought_queue,
+                resume_execution=self.resume_execution,
+                execution_id=self.execution_id,
+                project_name=self.workflow_config.project,
+                file_names=self.file_names,
+                mcp_server_args_preprocessor=mcp_server_args_preprocessor,
+                request_headers=self.request_headers,
+                trace_context=trace_context,  # Pass trace context for nested traces
+                disable_cache=self.disable_cache,
+                owner_user_id=owner_user_id,
+                is_global=self.workflow_config.is_global,
+            ),
         )
 
     def get_node_name(self, state_schema: Type[AgentMessages]):

@@ -1,0 +1,1 @@
+{"stage": "code-review.final", "decision": "request-changes", "finding_id": "CR-001", "severity": "major", "reason": "Response model description field should be Optional[str] to match ProjectDetailResponse pattern and preserve null semantics"}

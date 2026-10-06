@@ -919,6 +919,7 @@ class ConversationService:
     ):
         conversation_id = str(uuid.uuid4())
         initial_image_settings = {"enable_image_generation": None, "image_generation_model": None}
+        project = None
 
         if initial_assistant_id and not is_workflow_conversation:
             from codemie.rest_api.models.assistant import Assistant
@@ -926,6 +927,8 @@ class ConversationService:
             assistants = Assistant.get_by_ids(ids=[initial_assistant_id], user=user)
             assistant = assistants[0] if assistants else None
             initial_image_settings = cls._get_initial_image_generation_settings(assistant)
+            # Capture project from assistant so chat can filter models by project (EPMCDME-14452)
+            project = assistant.project if assistant else None
 
         conversation = Conversation(
             id=conversation_id,
@@ -941,6 +944,7 @@ class ConversationService:
             image_generation_model=initial_image_settings["image_generation_model"],
             mcp_server_single_usage=mcp_server_single_usage,
             is_workflow_conversation=is_workflow_conversation,
+            project=project,
         )
         conversation.save(refresh=True)
 
@@ -1064,6 +1068,7 @@ class ConversationService:
         assistant_data: list[AssistantDetails] = []
         assistant_ids: list[str] = []
         initial_image_settings = {"enable_image_generation": None, "image_generation_model": None}
+        project = None
 
         if initial_assistant_id:
             assistant_ids = [initial_assistant_id]
@@ -1081,6 +1086,8 @@ class ConversationService:
                             conversation_starters=[],
                         )
                     ]
+                    # For workflows, get project from workflow if available
+                    project = getattr(workflow, "project", None)
                 except KeyError:
                     raise ExtendedHTTPException(
                         code=404,
@@ -1109,6 +1116,8 @@ class ConversationService:
                 ]
                 assistant = assistants[0]
                 initial_image_settings = cls._get_initial_image_generation_settings(assistant)
+                # Capture project from assistant so chat can filter models by project (EPMCDME-14452)
+                project = assistant.project
 
         return Conversation(
             id="new",
@@ -1122,7 +1131,7 @@ class ConversationService:
             assistant_ids=assistant_ids,
             assistant_data=assistant_data,
             initial_assistant_id=initial_assistant_id,
-            project=getattr(user, "current_project", None),
+            project=project,
             enable_image_generation=initial_image_settings["enable_image_generation"],
             image_generation_model=initial_image_settings["image_generation_model"],
             mcp_server_single_usage=False,

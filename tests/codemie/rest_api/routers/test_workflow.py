@@ -183,9 +183,16 @@ def mock_serve_data():
 def override_auth():
     """Override authentication to return the global user instance."""
     from codemie.rest_api.security.authentication import authenticate
+    from codemie.core.models import Application
+
+    # Mock Application with no model whitelist configured (backward compat)
+    mock_app = MagicMock()
+    mock_app.allowed_models = None
+    mock_app.default_model = None
 
     app.dependency_overrides[authenticate] = lambda: user
-    yield
+    with patch.object(Application, "get_by_id", return_value=mock_app):
+        yield
     app.dependency_overrides = {}
 
 
@@ -329,9 +336,14 @@ async def test_create_workflow(mock_get_guardrail_assignments, create_workflow_r
         assert response.status_code == status.HTTP_200_OK
         assert response.json()["message"] == "Workflow created successfully"
         assert response.json()["data"] == workflow_config_data.model_dump()
-        workflow_executor.assert_called_once_with(
-            workflow_config=WorkflowConfig(**create_workflow_request.model_dump()), user=user, error_format='string'
-        )
+
+        # create_workflow parses yaml_config into assistants/states, normalizes model ids,
+        # and rewrites yaml_config from the parsed objects before validating - mirror that here.
+        expected_config = WorkflowConfig(**create_workflow_request.model_dump())
+        expected_config.parse_execution_config()
+        workflow_router._normalize_workflow_model_ids(expected_config, user)
+        workflow_router._rewrite_yaml_config_from_objects(expected_config)
+        workflow_executor.assert_called_once_with(workflow_config=expected_config, user=user, error_format='string')
 
 
 @pytest.mark.asyncio
@@ -2322,3 +2334,41 @@ async def test_update_workflow_categories_omitted_vs_empty(
         async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
             await ac.put(f"/v1/workflows/{workflow_config.id}", json=payload, headers=request_header)
     assert mock_update.call_args.args[1].categories == expected
+
+
+@pytest.mark.asyncio
+@patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_entity_guardrail_assignments")
+async def test_create_workflow_preserves_unavailable_assistant_models(
+    mock_get_guardrail_assignments, create_workflow_request, request_header
+):
+    restricted_project = MagicMock(allowed_models=["project-default"], default_model="project-default")
+    with (
+        patch("codemie.core.models.Application.get_by_id", return_value=restricted_project),
+        patch(
+            "codemie.service.llm.model_availability_service.customer_config",
+            is_feature_enabled=MagicMock(return_value=True),
+        ),
+        patch(
+            "codemie.service.workflow_service.WorkflowService.create_workflow",
+            return_value=workflow_config_data,
+        ) as create_workflow,
+        patch(
+            "codemie.service.workflow_service.WorkflowService.save_workflow_schema",
+        ),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow") as workflow_executor,
+        patch("codemie.rest_api.routers.workflow.project_access_check"),
+    ):
+        mock_get_guardrail_assignments.return_value = None
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.post("/v1/workflows", json=create_workflow_request.model_dump(), headers=request_header)
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["message"] == "Workflow created successfully"
+        assert response.json()["data"] == workflow_config_data.model_dump()
+
+        saved_config = create_workflow.call_args.args[0]
+        assert [assistant.model for assistant in saved_config.assistants] == ["gpt-4o-2024-11-20"] * 3
+        assert all(assistant.model not in restricted_project.allowed_models for assistant in saved_config.assistants)
+        workflow_executor.assert_called_once()

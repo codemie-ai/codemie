@@ -20,9 +20,18 @@ from typing import Generic, TypeVar, Type, Any, Optional
 
 from langgraph.types import Command
 
-from codemie.chains.base import StreamedGenerationResult, WorkflowStateEvent, WorkflowStateEventType
+from codemie.chains.base import (
+    StreamedGenerationResult,
+    WorkflowStateEvent,
+    WorkflowStateEventType,
+)
 from codemie.configs import logger
-from codemie.core.exceptions import MCPAuthenticationRequiredException, TaskException
+from codemie.core.exceptions import (
+    MCPAuthenticationRequiredException,
+    ModelAvailabilityException,
+    NotFoundException,
+    TaskException,
+)
 from codemie.core.workflow_models import (
     WorkflowExecutionStatusEnum,
     WorkflowExecutionState,
@@ -34,6 +43,7 @@ from codemie.rest_api.models.assistant import AssistantBase
 from codemie.rest_api.models.guardrail import GuardrailEntity, GuardrailSource
 from codemie.service.guardrail.guardrail_service import GuardrailService
 from codemie.service.guardrail.utils import EntityConfig
+from codemie.service.llm.model_availability_service import ModelAvailabilityService
 from codemie.service.workflow_execution import WorkflowExecutionService
 from codemie.service.workflow_service import WorkflowService
 from codemie.workflows.callbacks.base_callback import BaseCallback
@@ -111,6 +121,58 @@ class BaseNode(ABC, Generic[StateSchemaType]):
         self.workflow_config: Optional[WorkflowConfig] = workflow_config
         self.args = args
         self.kwargs = kwargs
+
+    def resolve_execution_model(
+        self, requested_model: Optional[str], fallback_model: str = "", fail_open: bool = False
+    ) -> tuple[str, bool]:
+        """Resolve the model to use for this node, falling back to the project default when needed.
+
+        Shared by every node that needs project-aware model resolution so the lookup
+        and logging aren't duplicated per node.
+
+        Args:
+            fail_open: When True, a ModelAvailabilityException/NotFoundException from
+                resolution is caught and swallowed, returning the originally requested
+                model unchanged. Use this when the call happens outside the node's own
+                try/except (e.g. during execution-context setup, before BaseNode.__call__'s
+                error handling is active) so a resolution failure can't abort the whole
+                workflow run instead of just degrading this node's model choice.
+
+        Returns:
+            (actual_model, was_fallback_applied)
+        """
+        if not self.workflow_config:
+            return requested_model or fallback_model, False
+
+        try:
+            resolved_model, was_fallback = ModelAvailabilityService.resolve_model_for_execution(
+                requested_model=requested_model,
+                project_name=self.workflow_config.project,
+                is_global=self.workflow_config.is_global,
+                fallback_model=fallback_model,
+            )
+        except (ModelAvailabilityException, NotFoundException) as e:
+            if not fail_open:
+                raise
+            logger.warning(
+                f"model_availability=resolution_failed "
+                f"requested_model={requested_model or 'None'} "
+                f"project={self.workflow_config.project} "
+                f"execution_id={self.execution_id} "
+                f"error={e}"
+            )
+            return requested_model or fallback_model, False
+
+        if was_fallback:
+            logger.info(
+                f"model_availability=fallback_applied "
+                f"requested_model={requested_model or 'None'} "
+                f"fallback_model={resolved_model} "
+                f"project={self.workflow_config.project} "
+                f"execution_id={self.execution_id}"
+            )
+
+        return resolved_model, was_fallback
 
     @abstractmethod
     def execute(self, state_schema: Type[StateSchemaType], execution_context: dict) -> Any:

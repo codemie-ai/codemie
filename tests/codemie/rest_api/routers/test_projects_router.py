@@ -3263,6 +3263,229 @@ class TestChargebackAttributionField:
         assert response.chargeback_attribution == "cost_center"
 
 
+class TestAllowedModelsEndpoint:
+    @patch("codemie.rest_api.routers.projects.config")
+    @patch("codemie.rest_api.routers.projects.project_service")
+    @patch("codemie.rest_api.routers.projects._resolve_cost_center_name")
+    @patch("codemie.rest_api.routers.projects.application_repository")
+    @patch("codemie.rest_api.routers.projects.get_session")
+    def test_update_allowed_models_success(
+        self,
+        mock_get_session,
+        mock_app_repo,
+        mock_resolve_cost_center_name,
+        mock_project_service,
+        mock_config,
+        regular_user,
+    ):
+        mock_config.ENABLE_USER_MANAGEMENT = True
+        mock_resolve_cost_center_name.return_value = None
+
+        project = MagicMock()
+        project.name = "my-project"
+        project.display_name = None
+        project.description = "Project"
+        project.project_type = "shared"
+        project.created_by = "user-1"
+        project.date = datetime(2026, 2, 10, tzinfo=UTC)
+        project.cost_center_id = None
+        project.allowed_models = ["gpt-4", "claude-3-sonnet"]
+        project.default_model = None
+        mock_project_service.update_allowed_models.return_value = project
+
+        from codemie.rest_api.routers.projects import (
+            AllowedModelsUpdateRequest,
+            update_allowed_models,
+        )
+
+        response = update_allowed_models(
+            payload=AllowedModelsUpdateRequest(allowed_models=["gpt-4", "claude-3-sonnet"]),
+            project_name="my-project",
+            user=regular_user,
+        )
+
+        assert response.name == "my-project"
+        assert response.allowed_models == ["gpt-4", "claude-3-sonnet"]
+        mock_project_service.update_allowed_models.assert_called_once_with(
+            regular_user, "my-project", ["gpt-4", "claude-3-sonnet"], None
+        )
+
+    @patch("codemie.rest_api.routers.projects.config")
+    @patch("codemie.rest_api.routers.projects._resolve_cost_center_name")
+    @patch("codemie.rest_api.routers.projects.application_repository")
+    @patch("codemie.rest_api.routers.projects.get_session")
+    def test_update_allowed_models_rejects_empty_string_default_model(
+        self,
+        mock_get_session,
+        mock_app_repo,
+        mock_resolve_cost_center_name,
+        mock_config,
+        regular_user,
+    ):
+        """Regression for CR-014: `if payload.default_model:` was a falsy check, so an
+        explicit empty-string default_model skipped validate_default_model entirely and
+        was then persisted as-is."""
+        mock_config.ENABLE_USER_MANAGEMENT = True
+        mock_resolve_cost_center_name.return_value = None
+
+        project = MagicMock()
+        project.id = "proj-id-1"
+        project.default_model = "gpt-4"
+        mock_app_repo.get_by_name_case_insensitive.return_value = project
+
+        mock_session = MagicMock()
+        mock_get_session.return_value.__enter__.return_value = mock_session
+
+        from codemie.rest_api.routers.projects import (
+            AllowedModelsUpdateRequest,
+            update_allowed_models,
+        )
+
+        with (
+            patch(
+                "codemie.rest_api.routers.projects.project_service.validate_allowed_models",
+                return_value=["gpt-4", "claude-3-sonnet"],
+            ),
+            patch("codemie.rest_api.routers.projects.project_service.validate_at_least_one_chat_model_allowed"),
+            patch("codemie.rest_api.routers.projects.project_service.check_allowed_models_authorization"),
+        ):
+            with pytest.raises(ExtendedHTTPException) as exc_info:
+                update_allowed_models(
+                    payload=AllowedModelsUpdateRequest(allowed_models=["gpt-4", "claude-3-sonnet"], default_model=""),
+                    project_name="my-project",
+                    user=regular_user,
+                )
+
+        assert exc_info.value.code == 400
+
+    @patch("codemie.rest_api.routers.projects.config")
+    @patch("codemie.rest_api.routers.projects._resolve_cost_center_name")
+    @patch("codemie.rest_api.routers.projects.application_repository")
+    @patch("codemie.rest_api.routers.projects.get_session")
+    def test_update_allowed_models_rejects_stale_default_not_in_narrowed_list(
+        self,
+        mock_get_session,
+        mock_app_repo,
+        mock_resolve_cost_center_name,
+        mock_config,
+        regular_user,
+    ):
+        """Regression for CR-014: narrowing allowed_models while omitting default_model
+        used to leave the project's existing (now stale) default_model unchecked against
+        the new, narrower list."""
+        mock_config.ENABLE_USER_MANAGEMENT = True
+        mock_resolve_cost_center_name.return_value = None
+
+        project = MagicMock()
+        project.id = "proj-id-1"
+        project.default_model = "claude-3-sonnet"  # no longer in the narrowed list below
+        mock_app_repo.get_by_name_case_insensitive.return_value = project
+
+        mock_session = MagicMock()
+        mock_get_session.return_value.__enter__.return_value = mock_session
+
+        from codemie.rest_api.routers.projects import (
+            AllowedModelsUpdateRequest,
+            update_allowed_models,
+        )
+
+        with (
+            patch(
+                "codemie.rest_api.routers.projects.project_service.validate_allowed_models",
+                return_value=["gpt-4"],
+            ),
+            patch("codemie.rest_api.routers.projects.project_service.validate_at_least_one_chat_model_allowed"),
+            patch("codemie.rest_api.routers.projects.project_service.check_allowed_models_authorization"),
+        ):
+            with pytest.raises(ExtendedHTTPException) as exc_info:
+                update_allowed_models(
+                    payload=AllowedModelsUpdateRequest(allowed_models=["gpt-4"]),
+                    project_name="my-project",
+                    user=regular_user,
+                )
+
+        assert exc_info.value.code == 400
+
+    @patch("codemie.rest_api.routers.projects.project_service")
+    def test_validate_allowed_models_rejects_empty_list(self, mock_project_service):
+        from codemie.service.project.project_service import ProjectService
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectService.validate_allowed_models([])
+
+        assert exc_info.value.code == 400
+        assert "At least one chat model is required" in exc_info.value.message
+
+    def test_validate_allowed_models_accepts_none(self):
+        from codemie.service.project.project_service import ProjectService
+
+        result = ProjectService.validate_allowed_models(None)
+        assert result is None
+
+    def test_validate_allowed_models_accepts_single_model(self):
+        from codemie.service.project.project_service import ProjectService
+
+        result = ProjectService.validate_allowed_models(["gpt-4"])
+        assert result == ["gpt-4"]
+
+    def test_validate_allowed_models_preserves_order(self):
+        from codemie.service.project.project_service import ProjectService
+
+        models = ["gpt-4", "claude-3-sonnet", "gpt-3.5-turbo"]
+        result = ProjectService.validate_allowed_models(models)
+        assert result == models
+
+    @patch("codemie.service.llm_service.llm_service.llm_service")
+    def test_validate_at_least_one_chat_model_accepts_none(self, mock_llm_service):
+        """Test that None (all models allowed) is always valid."""
+        from codemie.service.project.project_service import ProjectService
+
+        # Should not raise any exception
+        ProjectService.validate_at_least_one_chat_model_allowed(None)
+        # llm_service should not be called when allowed_models is None
+        mock_llm_service.get_all_llm_model_info.assert_not_called()
+
+    @patch("codemie.service.llm_service.llm_service.llm_service")
+    def test_validate_at_least_one_chat_model_accepts_valid_models(self, mock_llm_service):
+        """Test that a list with valid chat models is accepted.
+
+        Regression for CR-017: validated against llm_service.get_all_llm_model_info()
+        (the platform's declared catalog) directly, not via a synthetic-user
+        get_allowed_chat_models call.
+        """
+        from codemie.service.project.project_service import ProjectService
+        from codemie.configs.llm_config import LLMModel
+
+        # Mock the platform's declared catalog
+        mock_llm_service.get_all_llm_model_info.return_value = [
+            LLMModel(base_name="gpt-4", deployment_name="gpt-4", enabled=True),
+            LLMModel(base_name="claude-3-sonnet", deployment_name="claude-3-sonnet", enabled=True),
+        ]
+
+        # Should not raise any exception
+        ProjectService.validate_at_least_one_chat_model_allowed(["gpt-4"])
+        mock_llm_service.get_all_llm_model_info.assert_called_once()
+
+    @patch("codemie.service.llm_service.llm_service.llm_service")
+    def test_validate_at_least_one_chat_model_rejects_no_chat_models(self, mock_llm_service):
+        """Test that a list with no chat models is rejected."""
+        from codemie.service.project.project_service import ProjectService
+        from codemie.configs.llm_config import LLMModel
+        from codemie.core.exceptions import ExtendedHTTPException
+
+        # Mock catalog (only embedding models)
+        mock_llm_service.get_all_llm_model_info.return_value = [
+            LLMModel(base_name="text-embedding-ada-002", deployment_name="text-embedding-ada-002", enabled=True),
+        ]
+
+        # Should raise exception when trying to select only non-chat models
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectService.validate_at_least_one_chat_model_allowed(["non-existent-model"])
+
+        assert exc_info.value.code == 400
+        assert "At least one chat model is required" in exc_info.value.message
+
+
 class TestProjectDescriptionOptional:
     """Tests for optional description (EPMCDME-14336)."""
 

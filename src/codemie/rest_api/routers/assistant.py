@@ -79,6 +79,7 @@ from codemie.rest_api.models.conversation import (
     ConversationMetrics,
     ConversationMetricsOut,
 )
+from codemie.service.llm.model_availability_service import ModelAvailabilityService
 from codemie.rest_api.models.index import IndexInfo, SortOrder
 from codemie.rest_api.models.settings import SettingType
 from codemie.rest_api.models.prebuilt_assistants import PrebuiltAssistant
@@ -280,6 +281,39 @@ def get_assistant_users(
     return result
 
 
+def _enrich_nested_assistants(assistant: Assistant, user: User, tools_info) -> None:
+    """Attach nested assistants and enrich their toolkits' settings_config."""
+    assistant.nested_assistants = Assistant.get_by_ids(user, assistant.assistant_ids, parent_assistant=assistant)
+    for nested_assistant in assistant.nested_assistants:
+        if nested_assistant.toolkits:
+            _enrich_toolkit_settings_config(nested_assistant.toolkits, tools_info)
+
+
+def _get_skills_data(assistant: Assistant, user: User) -> list[dict]:
+    """Enrich skills with full details (id, name, description)."""
+    if not assistant.skill_ids:
+        return []
+
+    from codemie.service.skill_service import SkillService
+
+    skills = SkillService.get_skills_by_ids(assistant.skill_ids, user)
+    return [skill.to_basic_info().model_dump() for skill in skills]
+
+
+def _resolve_effective_llm_model(assistant: Assistant, response_data: dict) -> tuple[str, str]:
+    """Resolve the effective LLM model for an assistant, honoring project restrictions."""
+    effective_llm_model = assistant.llm_model_type
+    picked, overridden = ModelAvailabilityService.resolve_requested_model(
+        assistant.project, effective_llm_model, is_global=assistant.is_global
+    )
+    if not overridden:
+        return effective_llm_model, "assistant"
+
+    # Ensure UI form doesn't display a disabled model
+    response_data["llm_model_type"] = picked
+    return picked, "project_default"
+
+
 def _build_assistant_detail_response(assistant: Assistant, user: User) -> JSONResponse:
     """
     Enrich a single assistant record and build its detail JSON response.
@@ -300,20 +334,8 @@ def _build_assistant_detail_response(assistant: Assistant, user: User) -> JSONRe
     if assistant.toolkits:
         _enrich_toolkit_settings_config(assistant.toolkits, tools_info)
 
-    assistant.nested_assistants = Assistant.get_by_ids(user, assistant.assistant_ids, parent_assistant=assistant)
-
-    # Enrich toolkits in nested assistants so that user mapping settings can be displayed
-    for nested_assistant in assistant.nested_assistants:
-        if nested_assistant.toolkits:
-            _enrich_toolkit_settings_config(nested_assistant.toolkits, tools_info)
-
-    # Enrich skills with full details (id, name, description)
-    skills_data = []
-    if assistant.skill_ids:
-        from codemie.service.skill_service import SkillService
-
-        skills = SkillService.get_skills_by_ids(assistant.skill_ids, user)
-        skills_data = [skill.to_basic_info().model_dump() for skill in skills]
+    _enrich_nested_assistants(assistant, user, tools_info)
+    skills_data = _get_skills_data(assistant, user)
 
     _get_categories_data(assistant)
 
@@ -334,6 +356,11 @@ def _build_assistant_detail_response(assistant: Assistant, user: User) -> JSONRe
     # Convert to dict and add skills
     response_data = jsonable_encoder(assistant)
     response_data["skills"] = skills_data
+
+    # Add effective model (project restrictions)
+    effective_llm_model, effective_llm_model_source = _resolve_effective_llm_model(assistant, response_data)
+    response_data["effective_llm_model"] = effective_llm_model
+    response_data["effective_llm_model_source"] = effective_llm_model_source
 
     return JSONResponse(content=response_data, status_code=status.HTTP_200_OK)
 
@@ -719,27 +746,8 @@ def _validate_integrations_or_response(request: AssistantRequest, user: User) ->
     )
 
 
-@router.post(
-    "/assistants",
-    status_code=status.HTTP_200_OK,
-    response_model=AssistantCreateResponse,
-    response_model_by_alias=True,
-)
-def create_assistant(request: AssistantRequest, user: User = Depends(authenticate)):
-    """
-    Save user-specific assistant to DB with project field and create initial version.
-    Validates toolkit credentials unless skip_integration_validation is True.
-    """
-    from codemie.service.assistant.assistant_version_service import AssistantVersionService
-
-    project_access_check(user, request.project)
-
-    validation_response = _validate_integrations_or_response(request, user)
-    if validation_response:
-        return validation_response
-
-    request.mcp_servers = MCPAccessControlService.sanitize_for_save(request.mcp_servers)
-
+def _build_assistant_from_create_request(request: AssistantRequest, user: User) -> Assistant:
+    """Construct a new, unsaved Assistant from a create request."""
     assistant = Assistant(
         **request.model_dump(exclude={"guardrail_assignments", "skip_integration_validation", "source_assistant_id"})
     )
@@ -772,9 +780,12 @@ def create_assistant(request: AssistantRequest, user: User = Depends(authenticat
     if request.agent_card and request.agent_card.bedrock_agentcore:
         assistant.origin = AssistantOrigin.BEDROCK_AGENT_CORE
 
-    # Ensure Application exists for the project
-    if request.project:
-        ensure_application_exists(request.project)
+    return assistant
+
+
+def _save_new_assistant(assistant: Assistant, request: AssistantRequest, user: User) -> None:
+    """Persist a newly built assistant, mapping known integrity errors to friendly responses."""
+    from codemie.service.assistant.assistant_version_service import AssistantVersionService
 
     try:
         assistant.save(refresh=True)
@@ -821,6 +832,51 @@ def create_assistant(request: AssistantRequest, user: User = Depends(authenticat
             "create_assistant", assistant, user, False, {"error_class": e.__class__.__name__}
         )
         _raise_assistant_operation_error("save", e)
+
+
+@router.post(
+    "/assistants",
+    status_code=status.HTTP_200_OK,
+    response_model=AssistantCreateResponse,
+    response_model_by_alias=True,
+)
+def create_assistant(request: AssistantRequest, user: User = Depends(authenticate)):
+    """
+    Save user-specific assistant to DB with project field and create initial version.
+    Validates toolkit credentials unless skip_integration_validation is True.
+    """
+    from codemie.service.llm.model_availability_service import ModelAvailabilityService
+    from codemie.core.exceptions import ModelNotWhitelistedException
+
+    project_access_check(user, request.project)
+
+    # Stage 1: Validate model is whitelisted for project
+    if request.llm_model_type and not request.is_global:
+        try:
+            ModelAvailabilityService.validate_model_for_asset_creation(
+                request.llm_model_type,
+                request.project,
+            )
+        except ModelNotWhitelistedException as e:
+            raise ExtendedHTTPException(
+                code=e.code,
+                message=e.message,
+                details=e.details,
+            ) from e
+
+    validation_response = _validate_integrations_or_response(request, user)
+    if validation_response:
+        return validation_response
+
+    request.mcp_servers = MCPAccessControlService.sanitize_for_save(request.mcp_servers)
+
+    assistant = _build_assistant_from_create_request(request, user)
+
+    # Ensure Application exists for the project
+    if request.project:
+        ensure_application_exists(request.project)
+
+    _save_new_assistant(assistant, request, user)
 
     return AssistantCreateResponse(message="Specified assistant saved", assistant_id=str(assistant.id))
 
@@ -2088,6 +2144,34 @@ def _apply_skill_ids_to_assistant(assistant: Assistant, request_skill_ids: list[
     )
 
 
+def _apply_version_or_default(assistant: Assistant, request: AssistantChatRequest) -> Assistant:
+    """Apply a specific version's configuration, or ensure the current version is populated."""
+    if request.version is not None:
+        return AssistantVersionService.apply_version_to_assistant(assistant, request.version)
+
+    # Set the current version number if not already set
+    if not hasattr(assistant, 'version') or assistant.version is None:
+        assistant.version = assistant.version_count if hasattr(assistant, 'version_count') else 1
+    return assistant
+
+
+def _resolve_chosen_execution_model(assistant: Assistant, request: AssistantChatRequest) -> str | None:
+    """
+    Resolve "Assistant Default" model according to project rules:
+    - request.llm_model overrides everything when set
+    - otherwise use assistant.llm_model_type
+    - if assistant model is not allowed by project, fallback to project default
+    """
+    chosen_model = request.llm_model or assistant.llm_model_type
+    if not chosen_model:
+        return chosen_model
+
+    picked, _ = ModelAvailabilityService.resolve_requested_model(
+        assistant.project, chosen_model, is_global=assistant.is_global
+    )
+    return picked
+
+
 def _prepare_assistant_for_execution(assistant: Assistant, request: AssistantChatRequest) -> Assistant:
     """
     Prepares an assistant for execution, either using current configuration or a specific version.
@@ -2101,19 +2185,17 @@ def _prepare_assistant_for_execution(assistant: Assistant, request: AssistantCha
     Returns:
         Assistant instance with configuration mapped from the specified version and merged skill_ids
     """
-    # Apply specific version configuration if requested
-    if request.version is not None:
-        assistant = AssistantVersionService.apply_version_to_assistant(assistant, request.version)
-    else:
-        # Set the current version number if not already set
-        if not hasattr(assistant, 'version') or assistant.version is None:
-            assistant.version = assistant.version_count if hasattr(assistant, 'version_count') else 1
+    assistant = _apply_version_or_default(assistant, request)
 
     # Merge request skill_ids with assistant's existing skill_ids if provided
     if request.skill_ids is not None:
         # Create a new assistant instance to avoid modifying the database object
         assistant = Assistant(**assistant.model_dump())
         _apply_skill_ids_to_assistant(assistant, request.skill_ids)
+
+    chosen_model = _resolve_chosen_execution_model(assistant, request)
+    if chosen_model:
+        assistant.llm_model_type = chosen_model
 
     return assistant
 

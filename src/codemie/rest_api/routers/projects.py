@@ -234,6 +234,8 @@ class ProjectDetailResponse(BaseModel):
     enforce_member_spend_limits: bool = False
     chargeback_enabled: bool = False
     chargeback_attribution: str = "project"
+    allowed_models: Optional[list[str]] = None
+    default_model: Optional[str] = None
     members: list[ProjectMember]
     spending: Optional[ProjectSpendingDetail] = None
     spending_widget: Optional[ProjectSpendingWidget] = None
@@ -258,6 +260,7 @@ class ProjectCreateResponse(BaseModel):
     enforce_member_spend_limits: bool = False
     chargeback_enabled: bool = False
     chargeback_attribution: str = "project"
+    allowed_models: Optional[list[str]] = None
 
 
 class ProjectUpdateRequest(BaseModel):
@@ -294,6 +297,24 @@ class ProjectUpdateRequest(BaseModel):
         if self.description is not None and self.clear_description:
             raise ValueError("Provide either description or clear_description")
         return self
+
+
+class AllowedModelsUpdateRequest(BaseModel):
+    allowed_models: Optional[list[str]] = None
+    default_model: Optional[str] = None
+
+
+class AllowedModelsUpdateResponse(BaseModel):
+    name: str
+    display_name: Optional[str] = None
+    description: str
+    project_type: str
+    created_by: str
+    created_at: datetime
+    cost_center_id: Optional[UUID] = None
+    cost_center_name: Optional[str] = None
+    allowed_models: Optional[list[str]] = None
+    default_model: Optional[str] = None
 
 
 class ProjectAssignmentRequest(BaseModel):
@@ -972,6 +993,8 @@ def _build_project_detail_response(project_detail: dict, project_name: str) -> P
         enforce_member_spend_limits=SettingsService.get_enforce_member_spend_limits(project_name),
         chargeback_enabled=project_detail.get("chargeback_enabled", False),
         chargeback_attribution=project_detail.get("chargeback_attribution", "project"),
+        allowed_models=project_detail.get("allowed_models"),
+        default_model=project_detail.get("default_model"),
         members=[ProjectMember(**m) for m in project_detail["members"]],
     )
 
@@ -1185,6 +1208,38 @@ def update_project(
         enforce_member_spend_limits=SettingsService.get_enforce_member_spend_limits(project.name),
         chargeback_enabled=project.chargeback_enabled,
         chargeback_attribution=project.chargeback_attribution,
+        allowed_models=getattr(project, "allowed_models", None),
+    )
+
+
+@router.patch("/projects/{projectName}/allowed-models", response_model=AllowedModelsUpdateResponse)
+def update_allowed_models(
+    payload: AllowedModelsUpdateRequest,
+    project_name: str = Path(alias="projectName"),
+    user: User = Depends(authenticate),
+):
+    """Update the allowed_models field for a project.
+
+    Only project admins and maintainers can update this field.
+    Returns 400 if allowed_models is empty or contains no chat models.
+    Returns 403 if user lacks admin/maintainer role.
+    Returns 404 if project doesn't exist.
+    """
+    _ensure_user_management_enabled()
+
+    project = project_service.update_allowed_models(user, project_name, payload.allowed_models, payload.default_model)
+
+    return AllowedModelsUpdateResponse(
+        name=project.name,
+        display_name=project.display_name,
+        description=project.description or "",
+        project_type=project.project_type,
+        created_by=project.created_by or user.id,
+        created_at=project.date or datetime.now(UTC),
+        cost_center_id=getattr(project, "cost_center_id", None),
+        cost_center_name=_resolve_cost_center_name(getattr(project, "cost_center_id", None)),
+        allowed_models=project.allowed_models,
+        default_model=project.default_model,
     )
 
 

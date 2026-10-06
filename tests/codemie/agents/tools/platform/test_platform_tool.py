@@ -353,3 +353,71 @@ class TestGetKeySpendingTool(unittest.TestCase):
             parsed = json.loads(result)
             self.assertEqual(parsed["total_keys"], 0)
             self.assertEqual(parsed["total_spend_across_keys"], 0.0)
+
+
+# ==================== Assistant Transformation Tests ====================
+
+
+class TestTransformAssistant:
+    """Test assistant transformation with project validation."""
+
+    def test_transform_assistant_with_valid_project(self):
+        """Test transformation succeeds with valid project."""
+        from codemie.agents.tools.platform.platform_tool import _transform_assistant
+
+        assistant = MagicMock()
+        assistant.id = "asst-123"
+        assistant.name = "Test Assistant"
+        assistant.description = "Test description"
+        assistant.system_prompt = "Test prompt"
+        assistant.project = "valid-project"
+        assistant.created_by = None
+        assistant.created_date = None
+        assistant.update_date = None
+        assistant.llm_model_type = "gpt-4"
+
+        result = _transform_assistant(assistant)
+
+        assert result.project == "valid-project"
+        assert result.name == "Test Assistant"
+
+    def test_transform_assistant_falls_back_for_none_project(self):
+        """Regression for CR-003: a legacy assistant with project=None must use the
+        'legacy_migration' fallback instead of crashing -- the function's own docstring
+        documents this, but the computed fallback used to be discarded in favor of a
+        second, unguarded require_valid_project(assistant.project) call."""
+        from codemie.agents.tools.platform.platform_tool import _transform_assistant
+
+        assistant = MagicMock()
+        assistant.id = "asst-456"
+        assistant.name = "No Project Assistant"
+        assistant.description = "Test description"
+        assistant.system_prompt = "Test prompt"
+        assistant.project = None
+        assistant.created_by = None
+        assistant.created_date = None
+        assistant.update_date = None
+        assistant.llm_model_type = "gpt-4"
+
+        result = _transform_assistant(assistant)
+
+        assert result.project == "legacy_migration"
+
+    def test_transform_assistant_falls_back_for_empty_project(self):
+        """Same fallback as the None case, for an empty-string project."""
+        from codemie.agents.tools.platform.platform_tool import _transform_assistant
+
+        assistant = MagicMock()
+        assistant.id = "asst-789"
+        assistant.name = "Empty Project Assistant"
+        assistant.description = "Test description"
+        assistant.system_prompt = "Test prompt"
+        assistant.project = ""
+        assistant.created_by = None
+        assistant.created_date = None
+        assistant.update_date = None
+        assistant.llm_model_type = "gpt-4"
+
+        result = _transform_assistant(assistant)
+
+        assert result.project == "legacy_migration"

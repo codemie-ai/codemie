@@ -15,7 +15,8 @@
 import asyncio
 import base64
 import json
-from typing import Any, Dict, List, Optional
+import yaml
+from typing import Any, Dict, List, Optional, cast
 
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -25,6 +26,10 @@ from codemie.rest_api.models.workflow_generator import WorkflowGeneratorRequest,
 from codemie.service.llm_service.utils import set_llm_context
 from codemie.service.workflow_generator_service import WorkflowGeneratorService
 
+from codemie.clients.postgres import get_session
+from codemie.configs.llm_config import LLMModel
+from codemie.repository.application_repository import application_repository
+from codemie.service.llm_service.llm_service import llm_service
 from codemie.configs import config, logger
 from codemie.configs.customer_config import customer_config
 from codemie.core.ability import Ability, Action
@@ -80,6 +85,66 @@ workflow_monitoring_service = WorkflowMonitoringService()
 WORKFLOW_STARTED_BG_MSG = "Workflow has been triggered in the background"
 WORKFLOW_CONFIGURATION_ERROR = "Workflow Configuration error"
 WORKFLOW_ERROR_FORMAT_DESCRIPTION = "Error format: 'string' or 'json'"
+
+
+def _get_project_for_workflow(project_name: str):
+    """
+    Fetch Application for project filtering when normalizing model ids.
+    We keep this local to avoid import cycles elsewhere.
+    """
+    if not project_name:
+        return None
+    with get_session() as session:
+        return application_repository.get_by_name(session, project_name)
+
+
+def _normalize_workflow_model_ids(workflow_config: WorkflowConfig, user: User) -> None:
+    """
+    Normalize assistant/custom-node model ids from base_name (e.g. 'o1') to deployment_name
+    (e.g. 'o1-2024-12-17') so that:
+      - YAML saved to DB/storage is consistent
+      - model whitelist checks work reliably
+      - executions don't unexpectedly fall back
+    """
+    project = None if workflow_config.is_global else _get_project_for_workflow(workflow_config.project)
+
+    # Build base_name -> deployment_name mapping using the same catalog as /v1/llm_models
+    models = list(llm_service.get_allowed_chat_models(user, include_all=True, project=project))
+    by_base = {
+        cast(LLMModel, m).base_name: cast(LLMModel, m).deployment_name
+        for m in models
+        if isinstance(m, LLMModel) and getattr(m, "deployment_name", None)
+    }
+
+    for assistant in workflow_config.assistants or []:
+        if assistant.model and assistant.model in by_base:
+            assistant.model = by_base[assistant.model]
+
+    for cn in workflow_config.custom_nodes or []:
+        if cn.model and cn.model in by_base:
+            cn.model = by_base[cn.model]
+
+
+def _rewrite_yaml_config_from_objects(workflow_config: WorkflowConfig) -> None:
+    """
+    The UI YAML panel is driven by workflow_config.yaml_config (raw YAML string).
+    We normalize models in assistants/custom_nodes, so we must also rewrite yaml_config
+    to persist deployment_name identifiers (e.g. o1-2024-12-17).
+    """
+    execution_config: dict[str, Any] = {
+        "messages_limit_before_summarization": workflow_config.messages_limit_before_summarization,
+        "tokens_limit_before_summarization": workflow_config.tokens_limit_before_summarization,
+        "enable_summarization_node": workflow_config.enable_summarization_node,
+        "assistants": [a.model_dump(exclude_none=True) for a in (workflow_config.assistants or [])],
+        "custom_nodes": [cn.model_dump(exclude_none=True) for cn in (workflow_config.custom_nodes or [])],
+        "tools": [t.model_dump(exclude_none=True) for t in (workflow_config.tools or [])],
+        "states": [s.model_dump(exclude_none=True) for s in (workflow_config.states or [])],
+    }
+
+    # Drop None values to avoid empty keys in YAML
+    execution_config = {k: v for k, v in execution_config.items() if v is not None}
+
+    workflow_config.yaml_config = yaml.safe_dump(execution_config, sort_keys=False)
 
 
 def _collect_workflow_mcp_servers(workflow_config: WorkflowConfig) -> list[MCPServerDetails]:
@@ -428,33 +493,20 @@ class ValidateWorkflowResponse(BaseResponse):
     warnings: list[dict[str, object]] = []
 
 
-@router.post(
-    "/workflows",
-    status_code=status.HTTP_200_OK,
-    response_model=WorkflowSaveResponse,
-    response_model_by_alias=True,
-)
-def create_workflow(
+def _persist_and_finalize_new_workflow(
+    workflow_config: WorkflowConfig,
     request: CreateWorkflowRequest,
     background_tasks: BackgroundTasks,
-    user: User = Depends(authenticate),
-    error_format: WorkflowErrorFormat = Query(
-        WorkflowErrorFormat.STRING, description=WORKFLOW_ERROR_FORMAT_DESCRIPTION
-    ),
-):
-    workflow_config = WorkflowConfig(**request.model_dump())
-    # Prevent creation of autonomous workflows
-    if workflow_config.mode == WorkflowMode.AUTONOMOUS:
-        raise ExtendedHTTPException(
-            code=status.HTTP_410_GONE,
-            message="Autonomous workflows are disabled",
-            details="Creating autonomous workflows is not allowed. Only sequential workflows can be created.",
-            help="Please set the workflow mode to 'SEQUENTIAL' instead.",
-        )
-    project_access_check(user, request.project)
-    # Clients send only yaml_config; assistants/tools are derived from it (validate_workflow does that parse later),
-    # so also check a parsed copy, or the check would see an empty list. A malformed YAML is reported by
-    # validate_workflow below.
+    user: User,
+    error_format: WorkflowErrorFormat,
+) -> dict:
+    """Validate, save, and enrich a newly created workflow, raising a formatted error on failure."""
+    # workflow_config has already been parsed/normalized by the caller, which overwrites
+    # assistants/tools from yaml_config and would hide a server hand-written directly on the
+    # request's own assistants/tools fields. Re-check the raw request fields as submitted, and
+    # also a freshly parsed copy for clients (UI/SDK) that send only yaml_config - a parse failure
+    # there is left to validate_workflow below to report.
+    raw_from_request = WorkflowConfig(**request.model_dump())
     parsed_from_yaml = WorkflowConfig(**request.model_dump())
     try:
         parsed_from_yaml.parse_execution_config()
@@ -462,7 +514,7 @@ def create_workflow(
         logger.warning(f"Could not parse workflow yaml_config before MCP validation: {e}")
     # Outside the try: the generic except below would wrap the governance ValidationException
     # into "Workflow Configuration error" with the reason in details; update_workflow re-raises it as-is.
-    for candidate in (workflow_config, parsed_from_yaml):
+    for candidate in (raw_from_request, parsed_from_yaml):
         MCPAccessControlService.validate_on_save(_collect_workflow_mcp_servers(candidate))
     _strip_workflow_mcp_servers(workflow_config)
     try:
@@ -515,6 +567,48 @@ def create_workflow(
         ) from e
 
 
+@router.post(
+    "/workflows",
+    status_code=status.HTTP_200_OK,
+    response_model=WorkflowSaveResponse,
+    response_model_by_alias=True,
+)
+def create_workflow(
+    request: CreateWorkflowRequest,
+    background_tasks: BackgroundTasks,
+    user: User = Depends(authenticate),
+    error_format: WorkflowErrorFormat = Query(
+        WorkflowErrorFormat.STRING, description=WORKFLOW_ERROR_FORMAT_DESCRIPTION
+    ),
+):
+    workflow_config = WorkflowConfig(**request.model_dump())
+    # Ensure assistants/custom_nodes/states are populated from yaml_config (if present).
+    # Parsing errors are deferred to WorkflowExecutor.validate_workflow below, which validates
+    # the original yaml_config against the JSON schema and reports a precise, path-aware error -
+    # a plain `except Exception: raise` here would short-circuit with a raw pydantic error instead,
+    # and (if we still normalized/rewrote yaml_config afterwards) could persist a half-parsed config.
+    try:
+        workflow_config.parse_execution_config()
+    except Exception as e:
+        logger.warning(f"Could not parse workflow yaml_config before model-id normalization: {e}")
+    else:
+        # Normalize model ids early so validation/save/execution use deployment ids
+        _normalize_workflow_model_ids(workflow_config, user)
+        _rewrite_yaml_config_from_objects(workflow_config)
+
+    # Prevent creation of autonomous workflows
+    if workflow_config.mode == WorkflowMode.AUTONOMOUS:
+        raise ExtendedHTTPException(
+            code=status.HTTP_410_GONE,
+            message="Autonomous workflows are disabled",
+            details="Creating autonomous workflows is not allowed. Only sequential workflows can be created.",
+            help="Please set the workflow mode to 'SEQUENTIAL' instead.",
+        )
+    project_access_check(user, request.project)
+
+    return _persist_and_finalize_new_workflow(workflow_config, request, background_tasks, user, error_format)
+
+
 @router.put(
     "/workflows/{workflow_id}",
     status_code=status.HTTP_200_OK,
@@ -546,6 +640,10 @@ async def update_workflow(
         if request.categories is None:
             # WorkflowConfig coerces None to []; keep None so an omitted field preserves stored categories
             updated_config.categories = None
+
+        # Normalize model ids before validation/save so YAML persists deployment ids
+        _normalize_workflow_model_ids(updated_config, user)
+        _rewrite_yaml_config_from_objects(updated_config)
     except Exception as e:
         raise ExtendedHTTPException(
             code=status.HTTP_400_BAD_REQUEST,

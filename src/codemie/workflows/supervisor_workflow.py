@@ -83,7 +83,12 @@ class SupervisorWorkflowExecutor(WorkflowExecutor):
             )
         workflow.add_node(
             SUMMARIZE_MEMORY_NODE,
-            SummarizeConversationNode(self.callbacks, self.workflow_execution_service, self.thought_queue),
+            SummarizeConversationNode(
+                self.callbacks,
+                self.workflow_execution_service,
+                self.thought_queue,
+                workflow_config=self.workflow_config,
+            ),
         )
 
         for assistant_config in self.workflow_config.assistants:

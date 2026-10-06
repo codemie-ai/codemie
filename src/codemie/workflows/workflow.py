@@ -93,6 +93,7 @@ from codemie.workflows.utils import (
     get_messages_from_state_schema,
     evaluate_conditional_route as evaluate,
     initialize_assistant,
+    AssistantExecutionOptions,
     get_context_store_from_state_schema,
     serialize_state,
     check_state_size,
@@ -108,6 +109,7 @@ from codemie.workflows.validation import (
 )
 from codemie.workflows.utils.json_utils import UnwrappingJsonPointerEvaluator
 from codemie.configs.pyroscope_config import pyroscope_profile
+
 
 _SENSITIVE_HEADER_NAMES: frozenset[str] = frozenset(
     {
@@ -442,6 +444,12 @@ class WorkflowExecutor:
                     execution_id=self.execution_id,
                 )
             )
+            logger.info(
+                f"summarize_memory_node_delegate_set "
+                f"execution_id={self.execution_id} "
+                f"node_name={SUMMARIZE_MEMORY_NODE} "
+                f"enabled=True"
+            )
 
         if self.workflow_config.enable_summarization_node:
             finalizer_slot = slots.get(RESULT_FINALIZER_NODE)
@@ -671,14 +679,17 @@ class WorkflowExecutor:
             workflow_assistant=assistant,
             workflow_state=workflow_state,
             user_input=self.user_input,
-            file_names=self.file_names,
             user=self.user,
-            thought_queue=self.thought_queue,
-            resume_execution=self.resume_execution,
-            execution_id=self.execution_id,
-            project_name=self.workflow_config.project,
-            request_headers=self.request_headers,
-            disable_cache=self.disable_cache,
+            options=AssistantExecutionOptions(
+                file_names=self.file_names,
+                thought_queue=self.thought_queue,
+                resume_execution=self.resume_execution,
+                execution_id=self.execution_id,
+                project_name=self.workflow_config.project,
+                is_global=self.workflow_config.is_global,
+                request_headers=self.request_headers,
+                disable_cache=self.disable_cache,
+            ),
         )
 
     @classmethod

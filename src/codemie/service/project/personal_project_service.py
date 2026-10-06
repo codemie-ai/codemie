@@ -43,7 +43,7 @@ class PersonalProjectService:
 
     @staticmethod
     async def ensure_personal_project_async(user_id: str, user_email: str) -> bool:
-        """Ensure personal project exists for user (idempotent, non-blocking, isolated transaction)
+        """Ensure personal project exists for user (idempotent, isolated transaction)
 
         Creates personal project automatically after authentication if missing.
         Uses SEPARATE SESSION to ensure failures do not affect parent authentication transaction.
@@ -53,7 +53,6 @@ class PersonalProjectService:
         - project_type = 'personal'
         - created_by = user_id
         - User assigned as member with is_project_admin=false
-        - Non-blocking: failures are logged but do not prevent authentication
 
         Args:
             user_id: User UUID
@@ -61,12 +60,12 @@ class PersonalProjectService:
 
         Returns:
             True if personal project exists or was created successfully
-            False if creation failed (errors are logged)
+            False if creation failed (non-blocking)
 
         Note:
             This method is idempotent - safe to call multiple times.
-            Errors do NOT raise exceptions to ensure authentication flow continues.
             ISOLATED TRANSACTION: Uses separate session to prevent rollback affecting auth.
+            NON-BLOCKING: Failures are logged but do not prevent authentication from continuing.
         """
         from codemie.clients.postgres import get_async_session
 
@@ -99,12 +98,13 @@ class PersonalProjectService:
                 return True
 
         except Exception as e:
-            # NON-BLOCKING: Log error but do not raise (FR-7.1)
+            # Log error with full context
             # Security: Do not log email (PII leakage)
             logger.error(
-                f"Personal project creation failed (non-blocking): user_id={user_id}, project_type=personal, error={e}",
+                f"Personal project creation failed: user_id={user_id}, project_type=personal, error={e}",
                 exc_info=True,
             )
+            # Non-blocking: return False instead of raising (allows auth to continue)
             return False
 
     @staticmethod

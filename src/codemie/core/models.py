@@ -53,8 +53,8 @@ from codemie.rest_api.models.base import (
     PydanticListType,
 )
 from codemie.rest_api.models.standard import PostResponse
-from sqlalchemy import Boolean, text
-from sqlalchemy.dialects.postgresql import TIMESTAMP
+from sqlalchemy import Boolean, text, String as SQLString
+from sqlalchemy.dialects.postgresql import TIMESTAMP, ARRAY
 from sqlmodel import (
     SQLModel,
     Field as SQLField,
@@ -395,6 +395,8 @@ class Application(BaseModelWithSQLSupport, Owned, table=True):
     deleted_at: Optional[datetime] = SQLField(default=None)  # Soft-delete timestamp for project lifecycle
     chargeback_enabled: bool = SQLField(default=False, nullable=False)
     chargeback_attribution: str = SQLField(default="project", nullable=False)
+    allowed_models: Optional[list[str]] = SQLField(default=None, sa_column=Column(ARRAY(SQLString)))
+    default_model: Optional[str] = SQLField(default=None, max_length=255)
 
     # Custom PostgreSQL indexes
     # ix_applications_name: GIN trigram index for ILIKE search performance

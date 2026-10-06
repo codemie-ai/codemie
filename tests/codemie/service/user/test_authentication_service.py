@@ -1925,3 +1925,92 @@ class TestLoginActivityEvent:
 
         # No event should be emitted on failure
         mock_activity.async_insert.assert_not_called()
+
+
+class TestAuthenticationPersonalProjectFailure:
+    """Test authentication fails when personal project creation fails."""
+
+    @pytest.mark.asyncio
+    async def test_finalize_authentication_raises_when_personal_project_fails_for_regular_user(self):
+        """Test _finalize_authentication raises when personal project creation fails for regular user."""
+        from codemie.core.project_validator import ProjectRequiredException
+        from codemie.rest_api.security.user import User
+
+        # Arrange: regular user with personal project creation failing
+        user = User(
+            id="user-123",
+            email="test@example.com",
+            username="testuser",
+            user_type="regular",
+            abilities=[],
+            project_names=[],
+            admin_project_names=[],
+            knowledge_bases=[],
+        )
+
+        with (
+            patch("codemie.rest_api.security.user_type_validator.is_personal_project_excluded", return_value=False),
+            patch(
+                "codemie.service.project.personal_project_service.PersonalProjectService.ensure_personal_project_async",
+                new_callable=AsyncMock,
+                side_effect=ProjectRequiredException(
+                    "Failed to create personal project. Please contact support if this issue persists."
+                ),
+            ) as mock_ensure,
+        ):
+            # Act & Assert: should raise ProjectRequiredException
+            with pytest.raises(ProjectRequiredException) as exc_info:
+                await AuthenticationService._finalize_authentication(user, "test")
+
+            # Verify exception details
+            assert exc_info.value.code == 400
+            assert "project" in exc_info.value.message.lower()
+            mock_ensure.assert_awaited_once_with(user.id, user.email)
+
+    @pytest.mark.asyncio
+    async def test_finalize_authentication_succeeds_for_excluded_user_type(self):
+        """Test _finalize_authentication succeeds for excluded user types even when project creation fails."""
+        from codemie.rest_api.security.user import User
+
+        # Arrange: external user (excluded from personal project requirement)
+        user = User(
+            id="user-456",
+            email="external@example.com",
+            username="externaluser",
+            user_type="external",
+            abilities=[],
+            project_names=[],
+            admin_project_names=[],
+            knowledge_bases=[],
+        )
+
+        with (
+            patch("codemie.rest_api.security.user_type_validator.is_personal_project_excluded", return_value=True),
+            patch(
+                "codemie.service.project.personal_project_service.PersonalProjectService.ensure_personal_project_async",
+                new_callable=AsyncMock,
+                return_value=False,
+            ) as mock_ensure,
+            patch("codemie.clients.postgres.get_async_session") as mock_get_session,
+            patch(
+                "codemie.repository.user_project_repository.user_project_repository.aget_by_user_id",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch(
+                "codemie.repository.user_kb_repository.user_kb_repository.aget_by_user_id",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+        ):
+            mock_session = AsyncMock()
+            mock_get_session.return_value = _make_async_session_cm(mock_session)
+
+            # Act: should NOT raise
+            result = await AuthenticationService._finalize_authentication(user, "test")
+
+            # Assert: authentication succeeds
+            assert result.id == user.id
+            assert result.user_type == "external"
+            # ensure_personal_project_async should NOT be called for excluded user types
+            mock_ensure.assert_not_called()

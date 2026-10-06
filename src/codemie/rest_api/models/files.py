@@ -13,16 +13,21 @@
 # limitations under the License.
 
 from pydantic import BaseModel
-from typing import List, Dict, Optional
+from typing import List, Optional
 
 
 class WriteFileResponse(BaseModel):
     file_url: str
 
 
+class FailedFile(BaseModel):
+    filename: str
+    error: str
+
+
 class BulkWriteFileResponse(BaseModel):
     files: List[WriteFileResponse]
-    failed_files: Optional[Dict[str, str]] = None
+    failed_files: Optional[List[FailedFile]] = None
 
 
 class MermaidRequest(BaseModel):

@@ -267,6 +267,12 @@ components:
       name: "Teams Bot Integration"
       description: "Enable project-level assistant configuration for Microsoft Teams Bot integration."
 
+  - id: "features:projectModelOverride"
+    settings:
+      enabled: false
+      name: "Project Model Override"
+      description: "Enable Project model override configuration."
+
   - id: "mcpAuthTimeoutSeconds"
     settings:
       enabled: true

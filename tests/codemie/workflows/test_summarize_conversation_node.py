@@ -23,7 +23,9 @@ from openai import APIConnectionError, APITimeoutError, RateLimitError
 from codemie.workflows.nodes.summarize_conversation_node import (
     SKIP_SUMMARIZATION,
     SummarizeConversationCommandNode,
+    SummarizeConversationNode,
 )
+from codemie.service.llm_service.llm_service import llm_service
 from codemie.core.workflow_models import WorkflowConfig, WorkflowState, WorkflowExecutionStatusEnum
 from codemie.core.workflow_models.workflow_models import WorkflowNextState
 from codemie.workflows.constants import MESSAGES_VARIABLE, CONTEXT_STORE_VARIABLE, NEXT_KEY
@@ -157,3 +159,41 @@ def test_finalize_and_update_state_skip_with_missing_next_key_does_not_crash(nod
     state_without_next = {MESSAGES_VARIABLE: [], CONTEXT_STORE_VARIABLE: {}}
     result = node.finalize_and_update_state(SKIP_SUMMARIZATION, "null", True, state_without_next)
     assert isinstance(result, Command)
+
+
+class TestFallbackToPlatformDefaultModel:
+    """Regression for CR-023: a falsy resolved/actual model used to be passed as
+    llm_model=None explicitly to get_llm_by_credentials, overriding its own
+    `llm_model: str = llm_service.default_llm_model` default and raising
+    ModelNotAllowedException("Model 'None' does not exist") instead of using the
+    platform default."""
+
+    @patch("codemie.workflows.nodes.summarize_conversation_node.get_llm_by_credentials")
+    def test_execute_with_no_workflow_config_uses_platform_default(self, mock_get_llm, mock_service):
+        node = SummarizeConversationNode(
+            callbacks=[],
+            workflow_execution_service=mock_service,
+            thought_queue=Mock(),
+            workflow_config=None,
+        )
+        mock_get_llm.return_value.invoke.return_value.content = "summary"
+
+        node.execute(_state_schema(), {})
+
+        assert mock_get_llm.call_args.kwargs["llm_model"] == llm_service.default_llm_model
+
+    @patch("codemie.workflows.nodes.summarize_conversation_node.get_llm_by_credentials")
+    def test_summarize_single_with_none_resolved_model_uses_platform_default(self, mock_get_llm, node):
+        mock_get_llm.return_value.invoke.return_value.content = "summary"
+
+        node._summarize_single(messages=[], resolved_model=None)
+
+        assert mock_get_llm.call_args.kwargs["llm_model"] == llm_service.default_llm_model
+
+    @patch("codemie.workflows.nodes.summarize_conversation_node.get_llm_by_credentials")
+    def test_summarize_in_batches_with_none_resolved_model_uses_platform_default(self, mock_get_llm, node):
+        mock_get_llm.return_value.invoke.return_value.content = "summary"
+
+        node._summarize_in_batches(messages=[Mock()], resolved_model=None)
+
+        assert mock_get_llm.call_args.kwargs["llm_model"] == llm_service.default_llm_model

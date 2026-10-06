@@ -26,6 +26,7 @@ from typing import Optional, Any
 from codemie.agents.callbacks.tokens_callback import TokensCalculationCallback
 from codemie.clients.elasticsearch import ElasticSearchClient
 from codemie.configs import config, logger
+from codemie.configs.customer_config import customer_config
 from codemie.configs.llm_config import LLMProvider, LLMModel
 from codemie.configs.logger import current_user_email, logging_user_id
 from codemie.core.constants import (
@@ -35,7 +36,9 @@ from codemie.core.constants import (
     HEADER_CODEMIE_VERSION,
     HEADER_CODEMIE_TAGGING_PROJECT,
 )
+from codemie.core.exceptions import ModelNotWhitelistedException
 from codemie.core.models import ElasticSearchKwargs, GitRepo, SVNRepo, CodeFields, Application
+from codemie.service.llm.model_availability_service import ModelAvailabilityService
 from codemie.rest_api.models.settings import DialCredentials, LiteLLMContext
 from codemie.service.llm_service.llm_service import llm_service, LLMService
 
@@ -218,16 +221,63 @@ def _resolve_user_email(user_email: str | None) -> str | None:
     return user_email
 
 
+def enforce_allowed_model(
+    requested_model: str,
+    project: Application | None = None,
+) -> str:
+    """Enforce project-level model constraints. Return the model to use.
+
+    If project has allowed_models configured, enforce the constraint:
+     - Return the model if not blank and in the whitelist
+     - Return the project default if requested model is blank or not allowed
+     - Hardened: fallback to first allowed model if default is missing
+
+    Backward compatible: if project is None or has no whitelist, return requestedModel unchanged.
+    """
+    if not project:
+        return requested_model
+
+    if not customer_config.is_feature_enabled("projectModelOverride"):
+        return requested_model
+
+    if not requested_model:
+        requested_model = ""
+
+    # None means the project does not restrict models at all (unconfigured).
+    # get_project_models() normalizes this to an empty list, which would be
+    # indistinguishable from "configured but empty" (deny-all) below — so the
+    # raw Application field must be checked first.
+    if project.allowed_models is None:
+        return requested_model or project.default_model or ""
+
+    config = ModelAvailabilityService.get_project_models(project.id)
+
+    if not config.allowed_models:
+        raise ModelNotWhitelistedException(
+            requested_model,
+            project.id,
+            details="Project has no allowed models. Admin must configure the whitelist.",
+        )
+
+    return ModelAvailabilityService.pick_allowed_model(requested_model, config.allowed_models, config.default_model)
+
+
 def get_llm_by_credentials(
     llm_model: str = llm_service.default_llm_model,
     temperature: Optional[float] = None,
     top_p: Optional[float] = None,
     streaming: bool = True,
     request_id: Optional[str] = None,
+    project: Optional[Application] = None,
+    fallback_to_default: bool = False,
 ):
+    # Enforce project-level model restrictions before any provider calls
+    llm_model = enforce_allowed_model(llm_model, project)
     from codemie.enterprise.litellm import get_litellm_chat_model
 
-    llm_model_details = llm_service.get_model_details(llm_model)
+    llm_model_details = llm_service.get_model_details(
+        llm_model, project=project, fallback_to_default=fallback_to_default
+    )
 
     context = litellm_context.get(None)
     user_email = _resolve_user_email(current_user_email.get())
@@ -247,7 +297,7 @@ def get_llm_by_credentials(
         llm = litellm_llm
         is_using_litellm = True
     else:
-        llm = get_llm_by_credentials_raw(llm_model, temperature, top_p, streaming)
+        llm = get_llm_by_credentials_raw(llm_model_details.base_name, temperature, top_p, streaming)
         is_using_litellm = False
 
     if _should_wrap_llm_client(llm_model_details, llm):

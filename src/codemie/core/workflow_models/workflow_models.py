@@ -319,7 +319,7 @@ class WorkflowNextState(BaseModel):
         return values
 
     @model_validator(mode='after')
-    def validate(cls, values: WorkflowNextState) -> WorkflowNextState:
+    def validate_mutually_exclusive_fields(cls, values: "WorkflowNextState") -> "WorkflowNextState":
         if values.condition and values.switch:
             raise ValueError("Only one of 'condition' or 'switch' must be provided.")
         if values.state_ids and values.state_id:

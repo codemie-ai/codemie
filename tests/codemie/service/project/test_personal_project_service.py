@@ -774,7 +774,7 @@ class TestPersonalProjectServiceEdgeCases:
                 assert result is False  # Non-blocking failure
                 mock_logger.error.assert_called_once()
                 error_call = mock_logger.error.call_args
-                assert "Personal project creation failed (non-blocking)" in error_call[0][0]
+                assert "Personal project creation failed" in error_call[0][0]
                 assert f"user_id={user_id}" in error_call[0][0]
 
     @pytest.mark.asyncio

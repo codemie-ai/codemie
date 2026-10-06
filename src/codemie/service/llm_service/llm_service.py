@@ -11,11 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 from enum import Enum
 from typing import TYPE_CHECKING, List, Optional
 
 from codemie.configs import config, logger
+from codemie.configs.customer_config import customer_config
 from codemie.configs.llm_config import (
     CostConfig,
     LiteLLMModels,
@@ -31,6 +31,7 @@ from codemie.configs.llm_config import (
 )
 
 if TYPE_CHECKING:
+    from codemie.core.models import Application
     from codemie.rest_api.security.user import User
 
 
@@ -258,38 +259,125 @@ class LLMService:
 
         return self.get_deployment_name(embeddings_model, active_embeddings, self.default_embedding_model)
 
-    def get_model_details(self, model_name: str) -> LLMModel:
-        """Retrieve the model details for a model based on its name.
-
-        Searches both LLM models and embedding models collections. If the name
-        matches a Switchyard router, the capable underlying model is returned so
-        callers that do not implement routing still get a usable LLM.
-        """
-        # Get the active model sources (LiteLLM or YAML)
-        active_llm_models = self.get_all_llm_model_info()
-        active_embedding_models = self.get_all_embedding_model_info()
-
-        # Search for the model in both LLM and embedding models collections
+    def _find_model_or_router_target(
+        self, model_name: str, active_llm_models: list, active_embedding_models: list
+    ) -> Optional[LLMModel]:
+        """Find a model by base/deployment name, resolving Switchyard routers to their capable model."""
         all_models = [*active_llm_models, *active_embedding_models]
         found_model = next(
             (model for model in all_models if model_name == model.base_name or model_name == model.deployment_name),
             None,
         )
-        if not found_model:
-            # If the name is a router, resolve to its capable model.
-            router = next(
-                (r for r in self.get_llm_routers() if r.base_name == model_name and r.enabled),
-                None,
-            )
-            if router:
-                found_model = next(
-                    (model for model in active_llm_models if model.base_name == router.switchyard.capable_model),
-                    None,
+        if found_model:
+            return found_model
+
+        router = next(
+            (r for r in self.get_llm_routers() if r.base_name == model_name and r.enabled),
+            None,
+        )
+        if not router:
+            return None
+        return next(
+            (model for model in active_llm_models if model.base_name == router.switchyard.capable_model),
+            None,
+        )
+
+    def _resolve_model_not_found(
+        self, model_name: str, active_llm_models: list, project: 'Application | None', fallback_to_default: bool
+    ) -> LLMModel:
+        """Handle the not-found case for get_model_details: fall back to default or raise."""
+        from codemie.core.exceptions import ModelNotAllowedException
+
+        logger.error(f"Model '{model_name}' not found in active models")
+        if fallback_to_default:
+            allowed = self._filter_models_by_project(active_llm_models, project)
+            default = self._select_default_model(allowed, project)
+            if default:
+                logger.warning(f"Model '{model_name}' not found; using default '{default.base_name}'")
+                return default
+        raise ModelNotAllowedException(
+            model_name=model_name,
+            project_id=project.id if project else None,
+            details=f"Model '{model_name}' does not exist in the system.",
+        )
+
+    def _resolve_model_not_allowed(
+        self,
+        model_name: str,
+        active_llm_models: list,
+        project: 'Application | None',
+        fallback_to_default: bool,
+    ) -> LLMModel:
+        """Handle the not-allowed-for-project case for get_model_details: fall back or raise.
+
+        project is always non-None here: _filter_models_by_project returns models
+        unfiltered when project is None, so get_model_details can only reach this
+        method with a project that actually narrows the model set.
+        """
+        from codemie.core.exceptions import ModelNotWhitelistedException
+
+        logger.warning(f"Model '{model_name}' requested for project '{project.id}' but not in allowed_models list")
+        if fallback_to_default:
+            allowed = self._filter_models_by_project(active_llm_models, project)
+            default = self._select_default_model(allowed, project)
+            if default:
+                logger.warning(
+                    f"Model '{model_name}' not allowed for project '{project.id}'; "
+                    f"using project default '{default.base_name}'"
                 )
-        # If not found, get the default model
+                return default
+
+        # Provide differentiated details for deny-all vs model-not-in-list cases
+        if project.allowed_models is not None and len(project.allowed_models) == 0:
+            details = f"Project '{project.id}' explicitly denies all models."
+        else:
+            details = f"Model '{model_name}' is not in the allowed models list for project '{project.id}'."
+        raise ModelNotWhitelistedException(model_id=model_name, project_name=project.id, details=details)
+
+    def get_model_details(
+        self, model_name: str, project: 'Application | None' = None, fallback_to_default: bool = False
+    ) -> LLMModel:
+        """Retrieve model details by name, enforcing project narrowing.
+
+        Searches both LLM models and embedding models collections. If the name
+        matches a Switchyard router, the capable underlying model is returned so
+        callers that do not implement routing still get a usable LLM.
+
+        Args:
+            model_name: Base name or deployment name of the model
+            project: Project to check allowance against (optional)
+            fallback_to_default: If True and model not allowed, return project's default model instead of raising
+
+        Returns:
+            LLMModel object
+
+        Raises:
+            ModelNotAllowedException: If model does not exist in the system (unless fallback_to_default=True)
+            ModelNotWhitelistedException: If model exists but is excluded by the project's
+                allowed_models whitelist (unless fallback_to_default=True)
+            ValueError: If project exists but project.id is None
+        """
+        # Validate project.id is not None when project is provided
+        if project and not project.id:
+            raise ValueError("Project object must have a non-None id for model validation")
+
+        if project and not customer_config.is_feature_enabled("projectModelOverride"):
+            project = None
+
+        # Normalize model_name: strip leading/trailing whitespace
+        model_name = model_name.strip() if model_name else model_name
+
+        # Get the active model sources (LiteLLM or YAML)
+        active_llm_models = self.get_all_llm_model_info()
+        active_embedding_models = self.get_all_embedding_model_info()
+
+        found_model = self._find_model_or_router_target(model_name, active_llm_models, active_embedding_models)
         if not found_model:
-            found_model = next((model for model in all_models if model.default), None)
-            logger.error(f"Model {model_name} not found. Getting default model {found_model} details.")
+            return self._resolve_model_not_found(model_name, active_llm_models, project, fallback_to_default)
+
+        # Check project narrowing
+        if not self._filter_models_by_project([found_model], project):
+            return self._resolve_model_not_allowed(model_name, active_llm_models, project, fallback_to_default)
 
         return found_model
 
@@ -322,6 +410,29 @@ class LLMService:
         found_model = next((model for model in active_llm_models if model.base_name == base_name), None)
         return found_model.deployment_name if found_model else None
 
+    def normalize_chat_model_id(
+        self,
+        model_id: str | None,
+        *,
+        user,
+        project: object | None = None,
+        include_all: bool = True,
+    ) -> str | None:
+        """
+        Normalize base_name -> deployment_name when possible.
+        Leaves unknown model strings unchanged.
+        """
+        if not model_id:
+            return model_id
+
+        models = self.get_allowed_chat_models(user, include_all=include_all, project=project)
+        by_base = {
+            m.base_name: m.deployment_name
+            for m in models
+            if isinstance(m, LLMModel) and getattr(m, "deployment_name", None)
+        }
+        return by_base.get(model_id, model_id)
+
     def get_multimodal_llms(self) -> List[str]:
         # Get the active model source (LiteLLM or YAML)
         active_models = self.get_all_llm_model_info()
@@ -331,6 +442,40 @@ class LLMService:
         # Get the active model source (LiteLLM or YAML)
         active_models = self.get_all_llm_model_info()
         return [model.base_name for model in active_models if model.react_agent]
+
+    def resolve_model_with_project_availability(
+        self,
+        requested_model: str,
+        project_name: str,
+    ) -> tuple[str, bool]:
+        """
+        Stage 2: Resolve model to use at execution time with fallback.
+
+        When a workflow executes and requests a model, check if it's in the project's
+        whitelist. If not, fall back to the project's default model. Returns a tuple
+        with the actual model to use and a flag indicating whether fallback was applied.
+
+        Returns:
+            (actual_model, was_fallback_applied)
+
+        Raises:
+            ModelNotWhitelistedException: if model not in whitelist and no default available
+            NoDefaultModelException: if project has no default model
+            NotFoundException: if project doesn't exist
+        """
+        from codemie.service.llm.model_availability_service import ModelAvailabilityService
+
+        actual_model, was_fallback = ModelAvailabilityService.resolve_model_for_execution(requested_model, project_name)
+
+        if was_fallback:
+            logger.info(
+                f"model_availability_event=fallback_applied "
+                f"requested_model={requested_model!r} "
+                f"project={project_name!r} "
+                f"fallback_model={actual_model!r}"
+            )
+
+        return actual_model, was_fallback
 
     def create_model_types_enum(self):
         """Dynamically create an Enum with model deployment names from the configuration."""
@@ -603,9 +748,95 @@ class LLMService:
 
         return filtered_models
 
-    def get_allowed_chat_models(self, user: 'User', include_all: bool = False) -> List[LLMModel]:
+    def _filter_models_by_project(self, models: list[LLMModel], project: 'Application | None') -> list[LLMModel]:
+        """Filter models based on project's allowed_models list.
+
+        None allowed_models = no restriction (all models pass through).
+        Empty allowed_models = explicit deny all (no models pass through).
         """
-        Get list of LLM models allowed for user, optionally filtering out web-forbidden models.
+        from codemie.service.llm.model_availability_service import ModelAvailabilityService
+
+        if project is None:
+            return models
+
+        if project.allowed_models is None:
+            return models
+
+        if not project.allowed_models:
+            logger.debug(f"Project {project.id} has empty allowed_models; returning no models")
+            return []
+
+        allowed_set = set(project.allowed_models)
+        filtered = [
+            model
+            for model in models
+            if ModelAvailabilityService.is_model_allowed([model.base_name, model.deployment_name], allowed_set)
+        ]
+
+        logger.debug(
+            f"Filtered models by project {project.id}: {len(models)} total, "
+            f"{len(filtered)} allowed by project, {len(models) - len(filtered)} excluded"
+        )
+
+        return filtered
+
+    def _select_default_model(self, allowed_models: list[LLMModel], project: 'Application | None') -> LLMModel | None:
+        """Select a default model, respecting project-level allowed_models narrowing.
+
+        When the project's allowed_models set excludes the platform default, this method
+        selects the first allowed model as a fallback default.
+
+        Args:
+            allowed_models: List of models to choose from
+            project: Optional project for narrowing (already applied to allowed_models by caller)
+
+        Returns:
+            The admin-configured project default if set and in allowed_models,
+            otherwise the platform default model if it's in allowed_models,
+            otherwise the first allowed model,
+            otherwise None if the allowed_models list is empty.
+        """
+        if not allowed_models:
+            logger.debug("No allowed models available; cannot select a default")
+            return None
+
+        # Check stored project default first
+        if project and project.default_model:
+            stored_default = next(
+                (
+                    m
+                    for m in allowed_models
+                    if (m.base_name == project.default_model or m.deployment_name == project.default_model)
+                ),
+                None,
+            )
+            if stored_default:
+                logger.debug(
+                    f"Selecting admin-configured default model '{stored_default.base_name}' (project={project.id})"
+                )
+                return stored_default
+
+        # Try to return the platform default if it's in the allowed list
+        default_model = next((m for m in allowed_models if m.default), None)
+        if default_model:
+            logger.debug(
+                f"Selecting default model '{default_model.base_name}' (project={project.id if project else 'None'})"
+            )
+            return default_model
+
+        # Platform default is not allowed; use first allowed model as fallback
+        fallback = allowed_models[0]
+        logger.debug(
+            f"Platform default is excluded by project; selecting fallback '{fallback.base_name}' "
+            f"(project={project.id if project else 'None'})"
+        )
+        return fallback
+
+    def get_allowed_chat_models(
+        self, user: 'User', include_all: bool = False, project: 'Application | None' = None
+    ) -> list[LLMModel]:
+        """
+        Get list of LLM models allowed for user, optionally filtering out web-forbidden models and by project.
 
         Logic:
         - If LLM_PROXY_ENABLED is False: return all enabled models from config
@@ -615,21 +846,26 @@ class LLMService:
             - If found: return models from user's LiteLLM integration
             - If not found: return default LiteLLM models from startup
         - If include_all is False: filter out models where forbidden_for_web=True
+        - If project is provided: filter models to only those in project's allowed_models
+        - When a project excludes the platform default: _select_default_model() provides a fallback
 
         Args:
             user: User object with id, user_type, and applications
             include_all: If True, return all models. If False (default), filter out models forbidden for web
+            project: Optional Application object to apply project-level model narrowing
 
         Returns:
-            List of LLMModel instances accessible to user, filtered by visibility rules
+            List of LLMModel instances accessible to user, filtered by visibility and project rules
         """
+        if project and not customer_config.is_feature_enabled("projectModelOverride"):
+            project = None
+
         user_models = self.get_allowed_models(user)
-        # A model declared as a LiteLLM auto-router (is_declared_litellm_router()) is not a
-        # real deployment — it belongs only in get_allowed_router_options, never in the plain
-        # chat-model catalog (same "routers are not models" principle as switchyard routers,
-        # which are a wholly separate LLMRouter entity and never reach this list at all).
+
         chat_models = [m for m in user_models.chat_models if not m.is_declared_litellm_router()]
         models = self._filter_models_by_visibility(chat_models, include_all)
+        models = self._filter_models_by_project(models, project)
+
         return self._apply_premium_flags(models)
 
     @staticmethod

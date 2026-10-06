@@ -501,3 +501,123 @@ class TestProjectServiceValidateDisplayName:
         # 152 chars total but only 150 after stripping 1 space on each side — should pass
         result = ProjectService._validate_display_name(" " + "a" * 150 + " ")
         assert len(result) == 150
+
+
+class TestValidateAtLeastOneChatModelAllowed:
+    """Regression for CR-017: the validator used to build a synthetic internal User just to
+    call get_allowed_chat_models, which for an internal user resolves to
+    llm_service.get_all_llm_model_info() anyway -- so it now calls that directly instead of
+    routing through a fake user context."""
+
+    def _model(self, deployment_name, is_router=False):
+        model = MagicMock()
+        model.deployment_name = deployment_name
+        model.is_declared_litellm_router.return_value = is_router
+        return model
+
+    def test_none_allowed_models_is_always_valid(self):
+        ProjectService.validate_at_least_one_chat_model_allowed(None)  # should not raise
+
+    def test_empty_list_is_valid_here_handled_elsewhere(self):
+        ProjectService.validate_at_least_one_chat_model_allowed([])  # should not raise
+
+    def test_raises_when_no_allowed_model_matches_the_catalog(self):
+        catalog = [self._model("gpt-4"), self._model("claude-3-sonnet")]
+        with patch(
+            "codemie.service.llm_service.llm_service.llm_service.get_all_llm_model_info",
+            return_value=catalog,
+        ):
+            with pytest.raises(ExtendedHTTPException) as exc_info:
+                ProjectService.validate_at_least_one_chat_model_allowed(["nonexistent-model"])
+        assert exc_info.value.code == 400
+
+    def test_passes_when_an_allowed_model_matches_the_catalog(self):
+        catalog = [self._model("gpt-4"), self._model("claude-3-sonnet")]
+        with patch(
+            "codemie.service.llm_service.llm_service.llm_service.get_all_llm_model_info",
+            return_value=catalog,
+        ):
+            ProjectService.validate_at_least_one_chat_model_allowed(["gpt-4", "nonexistent-model"])
+
+    def test_router_only_catalog_entry_does_not_count_as_a_chat_model(self):
+        catalog = [self._model("gpt-smart-router", is_router=True)]
+        with patch(
+            "codemie.service.llm_service.llm_service.llm_service.get_all_llm_model_info",
+            return_value=catalog,
+        ):
+            with pytest.raises(ExtendedHTTPException):
+                ProjectService.validate_at_least_one_chat_model_allowed(["gpt-smart-router"])
+
+
+class TestCheckAllowedModelsAuthorization:
+    """Regression for CR-018: the hand-rolled check `user.is_admin or (up and
+    up.is_project_admin)` omitted the platform-level maintainer role its own docstring and
+    ALLOWED_MODELS_UNAUTHORIZED message promise, and duplicated a separate
+    user_project_repository lookup instead of reusing the shared
+    Application.is_managed_by(user) authorization every other project-mutating endpoint
+    uses."""
+
+    def _user(self, is_admin=False, is_maintainer=False, admin_project_names=None):
+        user = User(
+            id="user-1",
+            username="someone",
+            name="Someone",
+            email="someone@example.com",
+            is_admin=is_admin,
+            is_maintainer=is_maintainer,
+            admin_project_names=admin_project_names or [],
+        )
+        # pytest.ini forces ENV=local, which the User validator unconditionally promotes
+        # to is_admin=True; force the requested value back so non-admin cases are testable.
+        user.is_admin = is_admin
+        return user
+
+    @patch("codemie.service.project.project_service.application_repository")
+    def test_global_admin_is_authorized(self, mock_app_repo):
+        mock_app_repo.get_by_name_case_insensitive.return_value = SimpleNamespace(
+            name="my-project", is_managed_by=lambda user: user.is_admin
+        )
+        ProjectService.check_allowed_models_authorization(MagicMock(), self._user(is_admin=True), "my-project")
+
+    @patch("codemie.service.project.project_service.application_repository")
+    def test_platform_maintainer_is_authorized(self, mock_app_repo):
+        """The actual regression: a platform maintainer (not a global admin) must be
+        authorized, matching the docstring/error message's promise."""
+        from codemie.core.models import Application
+
+        project = Application(name="my-project")
+        mock_app_repo.get_by_name_case_insensitive.return_value = project
+
+        ProjectService.check_allowed_models_authorization(MagicMock(), self._user(is_maintainer=True), "my-project")
+
+    @patch("codemie.service.project.project_service.application_repository")
+    def test_per_project_admin_is_authorized(self, mock_app_repo):
+        from codemie.core.models import Application
+
+        project = Application(name="my-project")
+        mock_app_repo.get_by_name_case_insensitive.return_value = project
+
+        ProjectService.check_allowed_models_authorization(
+            MagicMock(), self._user(admin_project_names=["my-project"]), "my-project"
+        )
+
+    @patch("codemie.service.project.project_service.application_repository")
+    def test_regular_user_is_rejected(self, mock_app_repo):
+        from codemie.core.models import Application
+
+        project = Application(name="my-project")
+        mock_app_repo.get_by_name_case_insensitive.return_value = project
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectService.check_allowed_models_authorization(MagicMock(), self._user(), "my-project")
+
+        assert exc_info.value.code == 403
+
+    @patch("codemie.service.project.project_service.application_repository")
+    def test_missing_project_raises_404(self, mock_app_repo):
+        mock_app_repo.get_by_name_case_insensitive.return_value = None
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectService.check_allowed_models_authorization(MagicMock(), self._user(is_admin=True), "ghost-project")
+
+        assert exc_info.value.code == 404

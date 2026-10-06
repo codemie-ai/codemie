@@ -409,8 +409,48 @@ def _check_cli_version(request: Request) -> None:
         )
 
 
+def _validate_project_header(headers: Headers | httpx.Headers | dict, user: User | None = None) -> None:
+    """Validate project header is present and non-empty.
+
+    Background consumers (identified by HEADER_CODEMIE_INTEGRATION) are exempt.
+    Requests with a valid username fallback are also allowed (for backward compatibility).
+
+    Args:
+        headers: Request headers
+        user: Authenticated user (optional)
+
+    Raises:
+        ProjectRequiredException: If project header is missing or empty for non-exempt requests
+    """
+    from codemie.core.models import Application
+    from codemie.core.project_validator import ProjectRequiredException, is_background_consumer, require_valid_project
+
+    # Exempt integration/background requests
+    if is_background_consumer(dict(headers)):
+        return
+
+    project = headers.get(HEADER_CODEMIE_CLI_PROJECT)
+
+    # If no header, fall back to the user's username only if it actually names a project
+    if not project and user and user.username and Application.find_by_id(user.username):
+        return  # Valid fallback exists, allow the request
+
+    # Validate using shared validator
+    try:
+        require_valid_project(project)
+    except ProjectRequiredException:
+        # Re-raise with CLI-specific message
+        raise ProjectRequiredException(
+            "Project is required for API requests. "
+            "Please set the project header (X-CodeMie-Project) or configure your CLI with a valid project."
+        )
+
+
 def _extract_request_info(headers: Headers | httpx.Headers | dict, user: User | None = None) -> dict:
-    """Extract request metadata from headers (uses codemie constants)."""
+    """Extract request metadata from headers (uses codemie constants).
+
+    Note: Project header is validated by _validate_project_header before this function.
+    """
     project = headers.get(HEADER_CODEMIE_CLI_PROJECT) or (user.username if user else "")
     return {
         CLIENT_TYPE: headers.get(HEADER_CODEMIE_CLIENT, UNKNOWN),
@@ -772,33 +812,46 @@ async def _create_body_stream_with_optional_injection(
     )
     project_name = request_info.get(PROJECT) or None
     if project_runtime is not None:
-        selection = select_runtime_budget_mode(
-            has_user_litellm_credentials=False,
+        return await _create_project_runtime_body_stream(
+            body_bytes=body_bytes,
+            user=user,
+            request_info=request_info,
+            category=category,
+            llm_model=llm_model,
             project_name=project_name,
-            project_member_tracking_enabled=True,
-            resolved_project_budget=True,
+            project_runtime=project_runtime,
         )
-        project_runtime_username = project_runtime.body_overrides.get("user")
-        if selection.mode == RuntimeBudgetMode.PROJECT_BUDGET_WITH_MEMBER_TRACKING:
-            if not isinstance(project_runtime_username, str) or not project_runtime_username:
-                raise RuntimeError(
-                    f"Project member runtime selected but provider returned no runtime user for {project_name!r}"
-                )
-            username = project_runtime_username
-            logger.debug(
-                f"budget_event=runtime_mode_selected component=proxy_router user_id={user.id!r} "
-                f"username={user.username!r} project_name={project_name!r} "
-                f"budget_category={category.value!r} model={llm_model!r} "
-                f"mode={selection.mode.value!r} provider_member_ref={project_runtime_username!r} "
-                f"litellm_customer_key={project_runtime_username!r}"
-            )
-            request_info["litellm_customer_id"] = username
-            return _inject_user_into_request_body_from_bytes(
-                body_bytes=body_bytes,
-                user_id=username,
-                request_info=request_info,
-            )
 
+    return await _create_global_budget_body_stream(
+        body_bytes=body_bytes,
+        user=user,
+        request_info=request_info,
+        category=category,
+        username=username,
+        tracking_budget_id=tracking_budget_id,
+        llm_model=llm_model,
+        project_name=project_name,
+    )
+
+
+async def _create_project_runtime_body_stream(
+    *,
+    body_bytes: bytes,
+    user: User,
+    request_info: dict,
+    category: BudgetCategory,
+    llm_model: str,
+    project_name: str | None,
+    project_runtime,
+):
+    """Handle body stream creation when a project-scoped budget runtime applies."""
+    selection = select_runtime_budget_mode(
+        has_user_litellm_credentials=False,
+        project_name=project_name,
+        project_member_tracking_enabled=True,
+        resolved_project_budget=True,
+    )
+    if selection.mode != RuntimeBudgetMode.PROJECT_BUDGET_WITH_MEMBER_TRACKING:
         logger.debug(
             f"budget_event=runtime_mode_selected component=proxy_router user_id={user.id!r} "
             f"username={user.username!r} project_name={project_name!r} "
@@ -807,6 +860,39 @@ async def _create_body_stream_with_optional_injection(
         )
         return _stream_body_bytes(body_bytes)
 
+    project_runtime_username = project_runtime.body_overrides.get("user")
+    if not isinstance(project_runtime_username, str) or not project_runtime_username:
+        raise RuntimeError(
+            f"Project member runtime selected but provider returned no runtime user for {project_name!r}"
+        )
+    logger.debug(
+        f"budget_event=runtime_mode_selected component=proxy_router user_id={user.id!r} "
+        f"username={user.username!r} project_name={project_name!r} "
+        f"budget_category={category.value!r} model={llm_model!r} "
+        f"mode={selection.mode.value!r} provider_member_ref={project_runtime_username!r} "
+        f"litellm_customer_key={project_runtime_username!r}"
+    )
+    if project_runtime_username.strip():
+        request_info["litellm_customer_id"] = project_runtime_username
+    return _inject_user_into_request_body_from_bytes(
+        body_bytes=body_bytes,
+        user_id=project_runtime_username if project_runtime_username.strip() else None,
+        request_info=request_info,
+    )
+
+
+async def _create_global_budget_body_stream(
+    *,
+    body_bytes: bytes,
+    user: User,
+    request_info: dict,
+    category: BudgetCategory,
+    username: str,
+    tracking_budget_id: str | None,
+    llm_model: str,
+    project_name: str | None,
+):
+    """Handle body stream creation for the global/personal budget path."""
     budget_id = tracking_budget_id or get_category_budget_id(category)
     await budget_service.track_proxy_budget_assignment_for_request(
         user_id=user.id,
@@ -830,9 +916,15 @@ async def _create_body_stream_with_optional_injection(
     )
 
     check_user_budget(user_email=username, budget_id=budget_id, user_id=user.id)
-    request_info["litellm_customer_id"] = username
+    username_is_valid = bool(username and username.strip())
+    if username_is_valid:
+        request_info["litellm_customer_id"] = username
 
-    return _inject_user_into_request_body_from_bytes(body_bytes=body_bytes, user_id=username, request_info=request_info)
+    return _inject_user_into_request_body_from_bytes(
+        body_bytes=body_bytes,
+        user_id=username if username_is_valid else None,
+        request_info=request_info,
+    )
 
 
 async def _resolve_project_budget_runtime(user: User, category: BudgetCategory, request_info: dict):
@@ -1734,6 +1826,9 @@ async def _proxy_to_llm_proxy(
 
     # Check CLI version
     _check_cli_version(request)
+
+    # Validate project header (rejects requests without valid project, exempts background consumers)
+    _validate_project_header(request.headers, user)
 
     # Extract request info (uses codemie constants)
     request_info = _extract_request_info(request.headers, user)

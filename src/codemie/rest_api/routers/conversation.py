@@ -83,6 +83,22 @@ router = APIRouter(
     prefix="/v1",
     dependencies=[Depends(authenticate)],
 )
+
+
+def _use_global_models_for_conversation(conversation: Conversation, user: User) -> bool:
+    """A marketplace asset's owning project does not constrain the chat model picker."""
+    asset_id = conversation.initial_assistant_id
+    if not asset_id:
+        return False
+    if conversation.is_workflow_conversation:
+        try:
+            return bool(WorkflowConfig.get_by_id(asset_id).is_global)
+        except KeyError:
+            return False
+    assistants = Assistant.get_by_ids(ids=[asset_id], user=user)
+    return bool(assistants and assistants[0].is_global)
+
+
 conversation_monitoring_service = ConversationMonitoringService()
 
 EXPORT_FORMAT_NOT_SUPPORTED_MESSAGE = "Export format not supported"
@@ -123,7 +139,9 @@ def search_conversations(
         )
 
 
-def _enrich_conv_with_workflow(conversation: Conversation, conversation_id: str) -> Conversation:
+def _enrich_conv_with_workflow(
+    conversation: Conversation, conversation_id: str
+) -> tuple[Conversation, Optional[WorkflowConfig]]:
     """Populate workflow assistant details for workflow-based conversations.
 
     Args:
@@ -132,7 +150,9 @@ def _enrich_conv_with_workflow(conversation: Conversation, conversation_id: str)
 
     Returns:
         The same conversation instance with `assistant_data` populated from workflow
-        config, or fallback data when workflow config is missing.
+        config, or fallback data when workflow config is missing, alongside the
+        fetched WorkflowConfig (or None if it no longer exists) so callers don't
+        need to fetch it again.
     """
     try:
         workflow = WorkflowConfig.get_by_id(conversation.initial_assistant_id)
@@ -158,7 +178,8 @@ def _enrich_conv_with_workflow(conversation: Conversation, conversation_id: str)
                 conversation_starters=[],
             )
         ]
-    return conversation
+        workflow = None
+    return conversation, workflow
 
 
 def _is_pagination_required(page: int | None, per_page: int | None, sort_order: SortOrder | None) -> bool:
@@ -191,7 +212,68 @@ def get_conversation_template(
     )
 
     response = ConversationResponse.model_validate(template)
+    if _use_global_models_for_conversation(template, user):
+        response.project = None
     return response
+
+
+def _resolve_conversation_page(
+    conversation_id: str,
+    page: Optional[int],
+    per_page: Optional[int],
+    sort_order: Optional[SortOrder],
+):
+    """Resolve the conversation (with optional history pagination) and its timestamp bounds."""
+    if not _is_pagination_required(page, per_page, sort_order):
+        conversation = Conversation.find_by_id(conversation_id)
+        very_first_msg_at, very_last_msg_at = (
+            get_timestamp_bounds(conversation.history) if conversation else (None, None)
+        )
+        return conversation, None, very_first_msg_at, very_last_msg_at
+
+    page_val = DEFAULT_PAGE if page is None else page
+    per_page_val = DEFAULT_HISTORY_ITEMS_PER_PAGE if per_page is None else per_page
+    conversation, total, very_first_msg_at, very_last_msg_at = ConversationService.get_conversation_history_slice(
+        conversation_id=conversation_id,
+        page=page_val,
+        per_page=per_page_val,
+        sort_order=sort_order,
+    )
+    offset = page_val * per_page_val
+    pages = (total + per_page_val - 1) // per_page_val if per_page_val > 0 else 0
+    pagination_data = ConversationHistoryPaginationData(
+        page=page_val,
+        per_page=per_page_val,
+        total=total,
+        pages=pages,
+        has_next=offset + per_page_val < total,
+        has_previous=page_val > 0,
+    )
+    return conversation, pagination_data, very_first_msg_at, very_last_msg_at
+
+
+def _enrich_conversation_with_assistant_or_workflow_data(
+    conversation: Conversation, conversation_id: str, user: User
+) -> Optional[WorkflowConfig]:
+    """Populate assistant/workflow-derived fields on the conversation. Returns the workflow, if any."""
+    if conversation.is_workflow_conversation:
+        _, workflow = _enrich_conv_with_workflow(conversation, conversation_id)
+        return workflow
+
+    assistants = Assistant.get_by_ids(ids=conversation.assistant_ids, user=user)
+    conversation.assistant_data = [
+        AssistantDetails(
+            assistant_id=a.id,
+            assistant_type=a.type,
+            assistant_name=a.name,
+            assistant_icon=a.icon_url,
+            context=a.context,
+            conversation_starters=a.conversation_starters,
+            tools=[Tool(name=tool.name, label=tool.label) for toolkit in a.toolkits for tool in toolkit.tools],
+        )
+        for a in assistants
+    ]
+    return None
 
 
 @router.get(
@@ -216,32 +298,9 @@ def get_conversation_by_id(
 
     When no new params are provided, response is identical to before (backward compatible).
     """
-    very_first_msg_at: Optional[datetime] = None
-    very_last_msg_at: Optional[datetime] = None
-
-    if _is_pagination_required(page, per_page, sort_order):
-        page_val = DEFAULT_PAGE if page is None else page
-        per_page_val = DEFAULT_HISTORY_ITEMS_PER_PAGE if per_page is None else per_page
-        conversation, total, very_first_msg_at, very_last_msg_at = ConversationService.get_conversation_history_slice(
-            conversation_id=conversation_id,
-            page=page_val,
-            per_page=per_page_val,
-            sort_order=sort_order,
-        )
-        offset = page_val * per_page_val
-        pages = (total + per_page_val - 1) // per_page_val if per_page_val > 0 else 0
-        pagination_data: ConversationHistoryPaginationData | None = ConversationHistoryPaginationData(
-            page=page_val,
-            per_page=per_page_val,
-            total=total,
-            pages=pages,
-            has_next=offset + per_page_val < total,
-            has_previous=page_val > 0,
-        )
-    else:
-        pagination_data = None
-        if conversation := Conversation.find_by_id(conversation_id):
-            very_first_msg_at, very_last_msg_at = get_timestamp_bounds(conversation.history)
+    conversation, pagination_data, very_first_msg_at, very_last_msg_at = _resolve_conversation_page(
+        conversation_id, page, per_page, sort_order
+    )
 
     if not conversation:
         raise ExtendedHTTPException(
@@ -254,26 +313,17 @@ def get_conversation_by_id(
     if not Ability(user).can(Action.READ, conversation):
         raise_access_denied("view")
 
-    if conversation.is_workflow_conversation:
-        conversation = _enrich_conv_with_workflow(conversation, conversation_id)
-    else:
-        assistants = Assistant.get_by_ids(ids=conversation.assistant_ids, user=user)
-        conversation.assistant_data = [
-            AssistantDetails(
-                assistant_id=a.id,
-                assistant_type=a.type,
-                assistant_name=a.name,
-                assistant_icon=a.icon_url,
-                context=a.context,
-                conversation_starters=a.conversation_starters,
-                tools=[Tool(name=tool.name, label=tool.label) for toolkit in a.toolkits for tool in toolkit.tools],
-            )
-            for a in assistants
-        ]
+    workflow = _enrich_conversation_with_assistant_or_workflow_data(conversation, conversation_id, user)
 
     conversation.conversation_name = conversation.get_conversation_name()
 
     response = ConversationResponse.model_validate(conversation)
+    if conversation.is_workflow_conversation:
+        is_global = bool(workflow and workflow.is_global)
+    else:
+        is_global = _use_global_models_for_conversation(conversation, user)
+    if is_global:
+        response.project = None
 
     response.pagination = pagination_data
     response.very_first_msg_at = very_first_msg_at

@@ -59,6 +59,9 @@ WORKFLOW_AI_REFINE_TOTAL_METRIC = "codemie_workflow_ai_refine_total"
 
 CONVERSATION_ANALYSIS_TOTAL_METRIC = "codemie_conversation_analysis_total"
 
+MODEL_AVAILABILITY_VALIDATIONS_TOTAL_METRIC = "codemie_model_availability_validations_total"
+MODEL_AVAILABILITY_FALLBACKS_TOTAL_METRIC = "codemie_model_availability_fallbacks_total"
+
 
 class MetricsAttributes:
     USER_ID = "user_id"

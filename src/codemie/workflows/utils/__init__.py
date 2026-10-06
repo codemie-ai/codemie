@@ -13,6 +13,7 @@
 # limitations under the License.
 
 __all__ = [
+    "AssistantExecutionOptions",
     "check_state_size",
     "convert_value",
     "DotDict",
@@ -36,6 +37,7 @@ __all__ = [
 ]
 from .safe_eval import SafeEvalError, safe_eval
 from .utils import (
+    AssistantExecutionOptions,
     check_state_size,
     convert_value,
     DotDict,

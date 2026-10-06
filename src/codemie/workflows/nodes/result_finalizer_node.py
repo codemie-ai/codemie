@@ -15,6 +15,7 @@
 import time
 import random
 from typing import Optional
+from codemie.service.llm_service.llm_service import llm_service
 
 from langchain_core.messages import HumanMessage
 from openai import InternalServerError, RateLimitError
@@ -66,7 +67,21 @@ class ResultFinalizerNode(BaseNode[AgentMessages]):
 
     def execute(self, state_schema: AgentMessages, execution_context: dict):
         messages = get_messages_from_state_schema(state_schema=state_schema)
-        llm = get_llm_by_credentials(request_id=self.request_id)
+
+        # WorkflowConfig instances from older versions may not have `default_model`.
+        requested_model_from_config = None
+        if self.workflow_config:
+            requested_model_from_config = getattr(self.workflow_config, "default_model", None)
+
+        resolved_model, _ = self.resolve_execution_model(requested_model_from_config, llm_service.default_llm_model)
+
+        logger.info(
+            f"result_finalizer_model_selected "
+            f"node={self.node_name} "
+            f"execution_id={self.execution_id} "
+            f"resolved_model={resolved_model}"
+        )
+        llm = get_llm_by_credentials(request_id=self.request_id, llm_model=resolved_model)
 
         prompt_content = self._validate_prompt()
         if not prompt_content:

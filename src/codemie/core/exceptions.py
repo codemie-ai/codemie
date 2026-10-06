@@ -86,6 +86,27 @@ class ExtendedHTTPException(Exception):
         self.help = help
 
 
+class ModelNotAllowedException(ExtendedHTTPException):
+    """Raised when a requested model does not exist in the system.
+
+    For a model that exists but is excluded by a project's allowed_models whitelist,
+    use ModelNotWhitelistedException instead.
+
+    Callers MUST provide explicit details.
+    """
+
+    def __init__(self, model_name: str, project_id: Optional[str] = None, details: str = ""):
+        message = f"Model '{model_name}' is not allowed"
+        if project_id:
+            message += f" for project '{project_id}'"
+
+        # Require explicit details; do not provide misleading fallback
+        if not details:
+            raise ValueError("ModelNotAllowedException requires explicit details parameter to distinguish error case")
+
+        super().__init__(code=400, message=message, details=details)
+
+
 class GitLabOAuthNotConnected(ExtendedHTTPException):
     """Raised when the acting user has no OAuth token row for a GitLab integration.
 
@@ -310,3 +331,29 @@ class TokenLimitExceededException(ValueError):
         self.model = model
         self.truncation_reason = truncation_reason
         super().__init__(message)
+
+
+class ModelAvailabilityException(ExtendedHTTPException):
+    """Base exception for model availability enforcement."""
+
+    pass
+
+
+class ModelNotWhitelistedException(ModelAvailabilityException):
+    """Raised when a model is not in the project's whitelist."""
+
+    def __init__(self, model_id: str, project_name: str, details: str = ""):
+        message = f"Model '{model_id}' is not allowed for project '{project_name}'"
+        if not details:
+            details = "Model is not in the project's whitelist. Please use available models."
+        super().__init__(code=400, message=message, details=details)
+
+
+class NoDefaultModelException(ModelAvailabilityException):
+    """Raised when a project has no default model configured."""
+
+    def __init__(self, project_name: str, details: str = ""):
+        message = f"Project '{project_name}' has no default model configured"
+        if not details:
+            details = "Admin must configure a default model for the project."
+        super().__init__(code=500, message=message, details=details)

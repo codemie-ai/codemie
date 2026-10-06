@@ -97,6 +97,7 @@ def test_initialize_llm(mock_get_llm_by_credentials, agent_factory, test_params)
         temperature=test_params["temperature"],
         top_p=test_params["top_p"],
         request_id=test_params["request_uuid"],
+        fallback_to_default=True,
     )
 
     # Assert that the method returns the expected LLM instance
@@ -121,6 +122,7 @@ def test_initialize_llm_without_temperature(mock_get_llm_by_credentials, agent_f
         temperature=None,
         top_p=test_params["top_p"],
         request_id=test_params["request_uuid"],
+        fallback_to_default=True,
     )
 
     # Assert that the method returns the expected LLM instance
@@ -145,6 +147,7 @@ def test_initialize_llm_without_top_p(mock_get_llm_by_credentials, agent_factory
         temperature=test_params["temperature"],
         top_p=None,
         request_id=test_params["request_uuid"],
+        fallback_to_default=True,
     )
 
     # Assert that the method returns the expected LLM instance
@@ -175,6 +178,7 @@ def test_initialize_llm_with_different_models(mock_get_llm_by_credentials, agent
             temperature=test_params["temperature"],
             top_p=test_params["top_p"],
             request_id=test_params["request_uuid"],
+            fallback_to_default=True,
         )
 
         # Assert that the method returns the expected LLM instance

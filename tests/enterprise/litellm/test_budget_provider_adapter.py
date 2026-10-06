@@ -826,3 +826,144 @@ async def test_update_project_budget_no_legacy_key_alias_when_metadata_absent():
 
     _, kwargs = mock_recreate.call_args
     assert kwargs["legacy_key_alias"] is None
+
+
+# ── Task 5: Adapter Verification Tests for models parameter ──
+
+
+class TestAdapterModelsParameter:
+    """Verify that adapter methods pass models parameter correctly."""
+
+    @pytest.mark.asyncio
+    async def test_build_project_budget_state_from_key_state_stores_models_in_metadata(self):
+        """Verify _build_project_budget_state_from_key_state stores models in metadata."""
+        key_state = {
+            "key_hash": "key-hash-789",
+            "key_alias": "codemie:project:proj-c:category:premium_models",
+            "api_key": "sk-test-key-3",
+            "budget_reset_at": "2026-09-04T12:00:00Z",
+        }
+
+        models = ["claude-3-opus", "claude-3-sonnet"]
+
+        result = LiteLLMBudgetEnforcementProvider._build_project_budget_state_from_key_state(
+            key_state=key_state,
+            models=models,
+        )
+
+        assert result is not None
+        assert result.provider == "litellm"
+        assert result.provider_budget_ref == "codemie:project:proj-c:category:premium_models"
+        assert result.metadata.get("models") == models
+        assert result.sync_status == SyncStatus.OK
+
+    @pytest.mark.asyncio
+    async def test_build_project_budget_state_from_key_state_stores_none_models_in_metadata(self):
+        """Verify _build_project_budget_state_from_key_state stores empty list when models is None."""
+        key_state = {
+            "key_hash": "key-hash-000",
+            "key_alias": "codemie:project:proj-d:category:platform",
+            "api_key": "sk-test-key-4",
+            "budget_reset_at": "2026-09-04T12:00:00Z",
+        }
+
+        result = LiteLLMBudgetEnforcementProvider._build_project_budget_state_from_key_state(
+            key_state=key_state,
+            models=None,
+        )
+
+        assert result is not None
+        assert result.provider == "litellm"
+        assert result.metadata.get("models") == []
+        assert result.sync_status == SyncStatus.OK
+
+    @pytest.mark.asyncio
+    async def test_recreate_project_budget_key_alias_passes_models_to_generate_project_key(self):
+        """Verify _recreate_project_budget_key_alias passes models to _generate_project_key."""
+        mock_service = SimpleNamespace(
+            _generate_project_key=MagicMock(),
+            _get_project_key_by_alias=MagicMock(),
+        )
+        adapter = LiteLLMBudgetEnforcementProvider(service=mock_service)
+
+        key_state = {
+            "key_hash": "key-hash-123",
+            "key_alias": "codemie:project:proj-a:category:platform",
+            "api_key": "sk-test-key",
+            "budget_reset_at": "2026-09-04T00:00:00Z",
+        }
+
+        models = ["gpt-4", "gpt-3.5-turbo"]
+        mock_service._generate_project_key.return_value = key_state
+        mock_service._get_project_key_by_alias.return_value = None
+
+        with (
+            patch.object(adapter, "_delete_project_provider_key_alias", new=AsyncMock()),
+            patch.object(adapter, "_delete_project_api_key", new=AsyncMock()),
+            patch.object(adapter, "_persist_project_api_key", new=AsyncMock()),
+            patch.object(adapter, "_carry_spend_forward", new=AsyncMock()),
+            patch(
+                "codemie.enterprise.litellm.budget_provider_adapter.asyncio.to_thread",
+                side_effect=lambda fn, *args, **kwargs: fn(*args, **kwargs),
+            ),
+        ):
+            result = await adapter._recreate_project_budget_key_alias(
+                service=mock_service,
+                project_name="proj-a",
+                budget_category=BudgetCategory.PLATFORM,
+                budget_id="budget-1",
+                max_budget=Decimal("100.0"),
+                budget_duration="30d",
+                models=models,
+            )
+
+        assert result.provider == "litellm"
+        assert result.metadata.get("models") == models
+        mock_service._generate_project_key.assert_called_once()
+        call_kwargs = mock_service._generate_project_key.call_args[1]
+        assert call_kwargs["models"] == models
+
+    @pytest.mark.asyncio
+    async def test_recreate_project_budget_key_alias_passes_none_models_to_generate_project_key(self):
+        """Verify _recreate_project_budget_key_alias passes models=None when not provided."""
+        mock_service = SimpleNamespace(
+            _generate_project_key=MagicMock(),
+            _get_project_key_by_alias=MagicMock(),
+        )
+        adapter = LiteLLMBudgetEnforcementProvider(service=mock_service)
+
+        key_state = {
+            "key_hash": "key-hash-456",
+            "key_alias": "codemie:project:proj-b:category:cli",
+            "api_key": "sk-test-key-2",
+            "budget_reset_at": "2026-09-04T00:00:00Z",
+        }
+
+        mock_service._generate_project_key.return_value = key_state
+        mock_service._get_project_key_by_alias.return_value = None
+
+        with (
+            patch.object(adapter, "_delete_project_provider_key_alias", new=AsyncMock()),
+            patch.object(adapter, "_delete_project_api_key", new=AsyncMock()),
+            patch.object(adapter, "_persist_project_api_key", new=AsyncMock()),
+            patch.object(adapter, "_carry_spend_forward", new=AsyncMock()),
+            patch(
+                "codemie.enterprise.litellm.budget_provider_adapter.asyncio.to_thread",
+                side_effect=lambda fn, *args, **kwargs: fn(*args, **kwargs),
+            ),
+        ):
+            result = await adapter._recreate_project_budget_key_alias(
+                service=mock_service,
+                project_name="proj-b",
+                budget_category=BudgetCategory.CLI,
+                budget_id="budget-2",
+                max_budget=Decimal("50.0"),
+                budget_duration="30d",
+                models=None,
+            )
+
+        assert result.provider == "litellm"
+        assert result.metadata.get("models") == []
+        mock_service._generate_project_key.assert_called_once()
+        call_kwargs = mock_service._generate_project_key.call_args[1]
+        assert call_kwargs["models"] is None

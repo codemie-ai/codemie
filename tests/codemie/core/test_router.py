@@ -162,7 +162,7 @@ def test_create_router_litellm_resolution_is_fresh_every_call_not_a_singleton():
     with patch("codemie.service.llm_service.llm_service.llm_service") as mock_service:
         mock_service.is_router_model.return_value = False
 
-        def fake_details(name):
+        def fake_details(name, fallback_to_default=False):
             counterfactual = "gpt-5.6-terra-2026-07-09" if name == "router-a" else "gpt-5.6-luna-2026-07-09"
             return LLMModel(
                 base_name=name,

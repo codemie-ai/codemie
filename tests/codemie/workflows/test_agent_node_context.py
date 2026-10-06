@@ -677,3 +677,63 @@ def test_tc_anc_010_agent_context_generation(
     # Context should include kwargs
     assert "extra_param" in context
     assert context["extra_param"] == "extra_value"
+
+
+@patch(
+    "codemie.workflows.nodes.agent_node.customer_config",
+    is_feature_enabled=MagicMock(return_value=True),
+)
+@patch("codemie.workflows.nodes.agent_node.initialize_assistant")
+@patch("codemie.workflows.nodes.agent_node.find_assistant_by_id")
+@patch("codemie.workflows.nodes.base_node.ModelAvailabilityService.resolve_model_for_execution")
+def test_init_assistant_fails_open_when_model_resolution_raises(
+    mock_resolve,
+    mock_find_assistant,
+    mock_initialize_assistant,
+    _mock_customer_config,
+    mock_workflow_execution_service,
+    mock_thought_queue,
+    mock_callbacks,
+    mock_workflow_config,
+    mock_user,
+):
+    """Regression for CR-019: init_assistant() runs inside generate_execution_context(),
+    which BaseNode.__call__ invokes before its own try/except block. A
+    ModelAvailabilityException/NotFoundException escaping resolve_model_for_execution here
+    would abort the whole workflow execution instead of just this node, so resolution
+    failures must fail open to the originally requested model instead of propagating."""
+    from codemie.core.exceptions import NotFoundException
+    from codemie.core.workflow_models import WorkflowAssistant
+
+    mock_resolve.side_effect = NotFoundException("Project 'test_project' not found")
+
+    workflow_assistant = Mock(spec=WorkflowAssistant)
+    workflow_assistant.model = "gpt-4"
+    workflow_assistant.model_copy.return_value = workflow_assistant
+    mock_find_assistant.return_value = workflow_assistant
+    mock_initialize_assistant.return_value = Mock()
+
+    workflow_state = WorkflowState(
+        id="agent_node",
+        task="Test task",
+        next=WorkflowNextState(state_id="next"),
+        assistant_id="assistant_1",
+    )
+
+    node = AgentNode(
+        callbacks=mock_callbacks,
+        workflow_execution_service=mock_workflow_execution_service,
+        thought_queue=mock_thought_queue,
+        workflow_state=workflow_state,
+        workflow_config=mock_workflow_config,
+        user=mock_user,
+        execution_id="exec_123",
+        assistant=None,
+    )
+
+    # Act: must not raise despite resolve_model_for_execution raising NotFoundException.
+    node.init_assistant()
+
+    # Assert: the assistant is initialized with the originally requested model unchanged.
+    workflow_assistant.model_copy.assert_called_once_with(update={"model": "gpt-4"})
+    mock_initialize_assistant.assert_called_once()

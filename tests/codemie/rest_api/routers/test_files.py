@@ -219,8 +219,11 @@ async def test_write_files_bulk_with_failures(authenticated_user, auth_headers, 
     response_json = response.json()
     assert len(response_json["files"]) == 1
     assert response_json["files"][0]["file_url"] == mock_file_url
-    assert "test2.txt" in response_json["failed_files"]
-    assert "Storage error" in response_json["failed_files"]["test2.txt"]
+    assert response_json["failed_files"] is not None
+    assert len(response_json["failed_files"]) == 1
+    failed_file = response_json["failed_files"][0]
+    assert failed_file["filename"] == "test2.txt"
+    assert "Storage error" in failed_file["error"]
 
 
 @pytest.mark.anyio
@@ -272,8 +275,11 @@ async def test_write_files_bulk_individual_size_exceeded(authenticated_user, aut
     assert response.status_code == status.HTTP_200_OK
     response_json = response.json()
     # First file should fail due to size limit
-    assert "test1.txt" in response_json["failed_files"]
-    assert response_json["failed_files"]["test1.txt"] == "File size exceeds the maximum allowed size."
+    assert response_json["failed_files"] is not None
+    assert len(response_json["failed_files"]) == 1
+    failed_file = response_json["failed_files"][0]
+    assert failed_file["filename"] == "test1.txt"
+    assert failed_file["error"] == "File size exceeds the maximum allowed size."
     # Second file should succeed
     assert len(response_json["files"]) == 1
     assert response_json["files"][0]["file_url"] == mock_file_url

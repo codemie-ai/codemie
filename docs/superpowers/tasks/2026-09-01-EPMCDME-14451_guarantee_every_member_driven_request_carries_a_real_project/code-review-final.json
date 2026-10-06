@@ -1,0 +1,200 @@
+{
+  "decision": "request-changes",
+  "rationale": "The branch delivers the stated goal (reject requests without a real project) but three defects turn 'fail closed' into 'fail fatal': the new ProjectRequiredException is raised from the authentication path with no handler on the stack (CR-001), from registration after session.commit() (CR-002), and from reconciliation after the old personal project was already soft-deleted and committed (CR-003). A second cluster (CR-004, CR-005, CR-007, CR-008) is blocked on an unresolved requirements question rather than a coding error: require_valid_project rejects DEMO_PROJECT, but 'demo' is the persisted SQLModel default for both Assistant and WorkflowConfig, the User.current_project fallback, and a real Application row created on every boot. That conflict cannot be patched without a product decision. make verify is currently red on license headers (CR-010).",
+  "confidence": "medium",
+  "confidence_rationale": "The DEMO_PROJECT facts underpinning CR-004/005/007/008/009 were independently re-verified by reading source. CR-001/002/003/006 are single-pass agent traces that were NOT independently re-verified and should be confirmed before patching. CR-008 is an unverified reachability hypothesis. Review effort was 'medium'; two findings were dropped by an 8-item cap and are recorded here as CR-010/CR-011.",
+  "risk_flags": [
+    "BLOCKED ON REQUIREMENTS: whether DEMO_PROJECT ('demo') is an acceptable project for a member-driven request is undecided. CR-004, CR-005, CR-007 and CR-008 change shape depending on the answer. Do not patch them before the decision.",
+    "make verify is red (license headers, CR-010). No pipeline config exists in this repo, so nothing re-checks the MR automatically; the MR description must ask a reviewer to post /sanity.",
+    "Blast radius of the DEMO_PROJECT rejection has never been measured. The migration report undercounts (CR-007) and omits WorkflowConfig entirely.",
+    "CR-001 renders as HTTP 400, which does not prompt clients to re-authenticate, so an affected user sees a hard failure on every endpoint rather than a re-auth prompt."
+  ],
+  "requirements_review": [
+    {
+      "kind": "open-question",
+      "item": "Is DEMO_PROJECT ('demo') a real project or a placeholder to be rejected?",
+      "status": "unresolved",
+      "notes": "Codebase treats it as real: constants.py:20 defines it; assistant.py:646 and workflow_models/workflow_config.py:87 use it as the persisted SQLField default; assistant.py:320 and :835 default to it; user.py:112-115 falls back to it; default_applications.py:35-42 creates Application(name='demo') from main.py:363 on every boot. project_validator.py:41 treats it as invalid. Both behaviours cannot ship.",
+      "owner": "product / engineering manager",
+      "blocks": ["CR-004", "CR-005", "CR-007", "CR-008"]
+    },
+    {
+      "kind": "open-question",
+      "item": "On failure to provision a personal project, should the user be locked out (fail closed) or admitted without one (fail open)?",
+      "status": "unresolved",
+      "notes": "Branch currently fails closed, but as implemented it locks the user out of the entire API rather than only project features (CR-001). Pre-branch behaviour was fail open (log and continue). Needs a deliberate decision, not an inherited one.",
+      "owner": "product / engineering manager",
+      "blocks": ["CR-001", "CR-002"]
+    }
+  ],
+  "standards_review": [
+    { "kind": "license-headers", "status": "fail", "notes": "poetry run python scripts/license_headers/check_license_headers.py --check --quiet (behind Makefile:48) exits non-zero. 5 new files lack the EPAM/Apache header: src/codemie/core/project_validator.py, scripts/report_empty_project_assistants.py, and 3 new test files. Makefile:58 is 'verify: ruff license gitleaks test', so make verify fails. Fix with make license-fix.", "verification": "command-verified" },
+    { "kind": "test-location", "status": "fail", "notes": "tests/agents/tools/platform/test_platform_tool.py and tests/workflows/assistant_generator/nodes/validation/test_utils.py were added as new top-level tests/ roots while same-named files testing the same modules already exist under tests/codemie/. .ai-run/guides/testing/testing-patterns.md:5 requires tests under tests/codemie/, tests/codemie_tools/, tests/unit/ or tests/enterprise/. Collection does not break, but there are now two competing homes and the new copies sit outside the existing conftest.py.", "verification": "command-verified" },
+    { "kind": "commit-format", "status": "pass", "notes": "5 commits on the branch all match the documented 'EPMCDME-####: Description' format, all prefixed EPMCDME-14451.", "verification": "independently-verified" },
+    { "kind": "code-quality", "status": "not-assessed", "notes": "Ruff was not run as part of this review. Run make ruff before delivery." },
+    { "kind": "security", "status": "not-assessed", "notes": "No dedicated security pass was run. Note that CR-006 removes project attribution from proxy requests, which has an authorization consequence (project budget enforcement is silently bypassed) and warrants a security look." }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "blocker",
+      "triage": "discuss-then-patch",
+      "file": "src/codemie/service/project/personal_project_service.py",
+      "line": 110,
+      "title": "ProjectRequiredException raised from the authentication path with no handler, locking the user out of every endpoint",
+      "problem": "ensure_personal_project_async now re-raises as ProjectRequiredException from a broad except Exception instead of returning False. Both call sites are unguarded: authentication_service.py:394 (_finalize_authentication) and :737. user_providers/persistent.py:177-180 re-raises, rest_api/security/authentication.py:159-161 explicitly passes ExtendedHTTPException through, and main.py:1052 renders it as HTTP 400.",
+      "impact": "A user whose email collides with an existing shared Application hits _create_personal_project -> ValueError (personal_project_service.py:223), which is now converted into a 400 during authentication. The success-only token cache (authentication_service.py:587) is never populated, so EVERY request fails, not just project operations. HTTP 400 also means clients will not attempt re-authentication.",
+      "recommendation": "Decide fail-open vs fail-closed (see requirements_review). If fail-closed is intended, the exception must not originate from the authentication path for an already-valid user; scope it to project-touching operations, or return a status that prompts re-auth. Preserve the previous return False on the auth path.",
+      "verification": "agent-traced-not-reverified"
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "blocker",
+      "triage": "discuss-then-patch",
+      "file": "src/codemie/service/user/registration_service.py",
+      "line": 214,
+      "title": "Registration raises after commit, leaving an unrecoverable half-registered account",
+      "problem": "register_user_with_flow sends the verification email at :198, commits at :208, then calls ensure_personal_project_async at :213-214 (same shape at :245 and :250-251 for the instant-login branch). The enclosing handler at :274-275 (except ExtendedHTTPException: raise) propagates the new 400.",
+      "impact": "The client receives an error with no token while the user row is already persisted and the verification email already sent. Retrying registration fails on duplicate email, so there is no self-service recovery. Previously this path logged and completed.",
+      "recommendation": "Either move the personal-project creation inside the transaction so a failure rolls back the user row, or keep it non-blocking after commit (log and continue) with a retry/reconciliation path. Do not raise after commit.",
+      "verification": "agent-traced-not-reverified"
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "blocker",
+      "triage": "patch",
+      "file": "src/codemie/service/project/personal_project_service.py",
+      "line": 148,
+      "title": "Email-change reconciliation destroys the old personal project, fails to recreate it, and returns 200",
+      "problem": "reconcile_personal_project_on_email_change sets old_app.deleted_at, removes the user_projects row, and commits at :139-142. It then calls ensure_personal_project_async at :146 inside the try opened at :128, and :148-153 catches Exception, logs 'reconciliation failed (non-blocking)', and returns False.",
+      "impact": "A profile email change returns HTTP 200 with the user's personal project soft-deleted and not recreated. Both callers discard the return value (user_profile_service.py:202, authentication_service.py:581). The False is also indistinguishable from the is_personal_project_excluded early return at :129-130, so the fail-closed intent is inert on this path.",
+      "recommendation": "Make the soft-delete and the re-create atomic, or create the new project before deleting the old one. At minimum, surface the failure to the caller rather than returning a False that is both discarded and ambiguous.",
+      "verification": "agent-traced-not-reverified"
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "blocked-on-requirements",
+      "file": "src/codemie/agents/tools/platform/platform_tool.py",
+      "line": 208,
+      "title": "One demo-project row aborts the entire get_assistants listing; the minimal_response branch bypasses the check",
+      "problem": "require_valid_project rejects DEMO_PROJECT, but 'demo' is the persisted SQLModel default (assistant.py:646) and a real provisioned Application. platform_tool.py:485 maps _transform_assistant over result['data'] with no per-item guard, so a single demo-project row raises; codemie_tool.py:60-76 converts it to a ToolException. Separately, _transform_assistant_minimal (line 226) still hardcodes project='' and performs no check.",
+      "impact": "The agent receives an error string instead of the other N-1 assistants. The same query returns data or an error depending on the agent-supplied minimal_response flag, which is an inconsistent contract.",
+      "recommendation": "Await the DEMO_PROJECT decision. Regardless of the outcome, guard per item so one bad row cannot fail the whole listing, and make the minimal and full transforms agree.",
+      "verification": "premise-independently-verified, runtime-behaviour-agent-traced",
+      "blocked_by": "requirements_review[0]"
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "blocked-on-requirements",
+      "file": "src/codemie/workflows/assistant_generator/nodes/validation/utils.py",
+      "line": 118,
+      "title": "Marketplace publish fails with an opaque HTTP 500 for users with no projects",
+      "problem": "require_valid_project is applied to 'assistant.project or user.current_project', but user.py:112-115 deliberately returns DEMO_PROJECT for users with no projects. Path: POST /assistants/{id}/marketplace/publish (MARKETPLACE_LLM_VALIDATION_ON_PUBLISH_ENABLED defaults True, config.py:765) -> routers/assistant.py:3105 (no try/except) -> validate_context_node.py:61 (no try/except) -> utils.py:118 raises. assistant_generator_service.py:478 swallows it into ExtendedHTTPException(500, 'Failed to validate assistant for publication').",
+      "impact": "Previously project_name='demo' simply matched nothing in IndexInfo.filter_for_user_repo_names and the node returned ([], set()). Now the user gets a 500 with no actionable message.",
+      "recommendation": "Await the DEMO_PROJECT decision. Note the new tests cover project='' and None but never DEMO_PROJECT, which is the actual DB default and the case that matters here.",
+      "verification": "premise-independently-verified, runtime-behaviour-agent-traced",
+      "blocked_by": "requirements_review[0]"
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/enterprise/litellm/proxy_router.py",
+      "line": 326,
+      "title": "_validate_project_header is never called, while the username fallback it was meant to replace was removed",
+      "problem": "_validate_project_header has no production call sites (only the def at :290 and a docstring at :324 asserting an invariant nothing establishes). The sole entrypoint _proxy_to_llm_proxy (:1275) runs only _check_cli_version (:1300) and _extract_request_info (:1303). Meanwhile _extract_request_info dropped its user.username fallback.",
+      "impact": "A POST /v1/chat/completions without X-CodeMie-Project now yields project = '', which silently short-circuits _probe_project_budget_scopes (:451 'if not project_name: return set()'), _resolve_project_budget_runtime (:752, logs reason=missing_project_name and returns None), and project premium-key resolution (credentials.py:164). Header-less proxy requests are therefore neither rejected nor attributed, and bypass project budget enforcement. The pre-existing test test_project_falls_back_to_user_username_when_header_missing now FAILS with assert '' == 'user@example.com'.",
+      "recommendation": "Either wire _validate_project_header into _proxy_to_llm_proxy before _extract_request_info, or restore the fallback. Update or delete the stale test deliberately, not incidentally. This is the one finding with a clear authorization consequence.",
+      "verification": "agent-traced-not-reverified"
+    },
+    {
+      "id": "CR-007",
+      "kind": "process",
+      "severity": "major",
+      "triage": "patch-first",
+      "file": "scripts/report_empty_project_assistants.py",
+      "line": 33,
+      "title": "Migration report undercounts: omits DEMO_PROJECT and omits WorkflowConfig entirely",
+      "problem": "The query is select(Assistant).where(or_(Assistant.project.is_(None), Assistant.project == '')) at :30-35. Because project is a non-nullable str defaulting to 'demo' (assistant.py:646, :320, :835), the NULL/'' set is the rare edge case while every assistant saved without an explicit project holds 'demo' - exactly what require_valid_project now rejects. The report also queries only Assistant, but core/workflow_models/workflow_config.py:87 carries the identical SQLField(default=DEMO_PROJECT) and is therefore in scope too.",
+      "impact": "Operators run the report, see a reassuring count plus the log line 'Found N assistants with empty or None project' (:39), and roll out a change whose true blast radius was never measured.",
+      "recommendation": "Fix this FIRST, independently of the DEMO_PROJECT decision - the resulting number is the input that decision needs. Include project == DEMO_PROJECT, add a WorkflowConfig query, and report the three buckets (null/empty, demo, other) separately.",
+      "verification": "independently-verified (WorkflowConfig scope gap found during re-verification; not in the original review)"
+    },
+    {
+      "id": "CR-008",
+      "kind": "code",
+      "severity": "minor",
+      "triage": "verify-then-decide",
+      "file": "src/codemie/core/project_validator.py",
+      "line": 41,
+      "title": "DEMO_PROJECT check is case-sensitive while project identity is case-insensitive elsewhere",
+      "problem": "'if project == DEMO_PROJECT' is exact and case-sensitive, and the value is returned unnormalized even though the emptiness check uses .strip(). application_service.py:79-81 resolves projects via get_by_name_case_insensitive (docstring: 'preventing case-variant duplicates').",
+      "impact": "Hypothesised: an admin/maintainer POSTing project='Demo' passes project_access_check (user.py:118 short-circuits on is_admin_or_maintainer), ensure_application_exists('Demo') matches the existing demo Application, 'Demo' persists, and require_valid_project('Demo') does not raise - the exact leak the gate exists to block. Downstream, IndexInfo.filter_for_user_repo_names matches exactly (index.py:1010) so context silently resolves to zero indexes.",
+      "recommendation": "Confirm reachability before patching: establish whether any real request path can persist a case-variant of 'demo'. If it cannot, close this as theoretical and record why. If it can, normalize (casefold + strip) in the validator and return the normalized value.",
+      "verification": "unverified-hypothesis"
+    },
+    {
+      "id": "CR-009",
+      "kind": "code",
+      "severity": "minor",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/utils/default_applications.py",
+      "line": 18,
+      "title": "'demo' is defined twice as independent literals, so the creator and the validator are unaware of each other",
+      "problem": "constants.py:20 defines DEMO_PROJECT = 'demo' and default_applications.py:18 separately defines DEMO_PROJECT_NAME = 'demo'. project_validator.py:41 rejects the former; create_default_applications (:35-42, called from main.py:363) creates an Application named after the latter. They agree only because both string values happen to match; there is no shared import and no test asserting they stay in sync.",
+      "impact": "Explains how the platform came to simultaneously provision 'demo' and reject it - the two halves were written independently. A future rename of either literal breaks the relationship silently.",
+      "recommendation": "Have default_applications.py import DEMO_PROJECT from core.constants instead of redefining it. Note for whoever implements option C (grandfather existing, forbid new): removing the startup creation is not sufficient, because application_service.ensure_application_exists is called on assistant creation and would recreate the row.",
+      "verification": "independently-verified (not in the original review)"
+    },
+    {
+      "id": "CR-010",
+      "kind": "process",
+      "severity": "major",
+      "triage": "patch",
+      "file": "Makefile",
+      "line": 48,
+      "title": "make verify is red: 5 new files lack the mandatory license header",
+      "problem": "src/codemie/core/project_validator.py, scripts/report_empty_project_assistants.py and the 3 new test files have no EPAM/Apache header. Makefile:58 is 'verify: ruff license gitleaks test'.",
+      "impact": "The quality gate fails. With no pipeline config in this repo, nothing catches this before review.",
+      "recommendation": "Run make license-fix. Cheapest item on this list; do it first.",
+      "verification": "command-verified"
+    },
+    {
+      "id": "CR-011",
+      "kind": "process",
+      "severity": "minor",
+      "triage": "patch",
+      "file": "tests/agents/tools/platform/test_platform_tool.py",
+      "line": 1,
+      "title": "New test files duplicate existing ones in a non-conforming location",
+      "problem": "Two new files were added as top-level tests/ roots while same-named files testing the same modules already exist at tests/codemie/agents/tools/platform/test_platform_tool.py and tests/codemie/workflows/assistant_generator/nodes/validation/test_utils.py. testing-patterns.md:5 requires tests under tests/codemie/, tests/codemie_tools/, tests/unit/ or tests/enterprise/.",
+      "impact": "Two competing homes for the same coverage. The new copies sit outside the existing conftest.py and hand-roll sample_user / sample_assistant fixtures that were already available.",
+      "recommendation": "Merge the new cases into the existing tests/codemie/ files and delete the new roots, reusing the conftest fixtures.",
+      "verification": "command-verified"
+    }
+  ],
+  "refuted": [
+    {
+      "candidate": "is_background_consumer performs a dual .get() header lookup, suggesting a copy-paste bug",
+      "verdict": "refuted",
+      "notes": "HEADER_CODEMIE_INTEGRATION = 'X-CodeMie-Integration' is mixed-case and Starlette lowercases header keys, so the two probes legitimately cover both real forms. No change needed."
+    }
+  ],
+  "recommended_order": [
+    "CR-010 (make license-fix) - trivial, unblocks the gate",
+    "CR-007 (fix the report, include demo + WorkflowConfig, run it) - produces the number the requirements decision needs",
+    "Hand requirements_review[0] and [1] to the manager with that number filled in",
+    "CR-006 (dead code + failing test) - independent of the DEMO_PROJECT decision",
+    "CR-001, CR-002, CR-003 - re-verify the traces, then patch once fail-open/fail-closed is settled",
+    "CR-004, CR-005, CR-008 - only after the DEMO_PROJECT decision; CR-004 and CR-005 may change shape entirely",
+    "CR-009, CR-011 - cleanup"
+  ]
+}

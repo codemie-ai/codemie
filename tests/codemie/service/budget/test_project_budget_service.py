@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from codemie.core.exceptions import ExtendedHTTPException
-from codemie.service.budget.budget_enums import SyncStatus
+from codemie.service.budget.budget_enums import BudgetCategory, SyncStatus
 from codemie.service.budget.project_budget_service import ProjectBudgetService
 from codemie.service.budget.provider import BudgetProviderMemberState, BudgetProviderState
 from codemie.service.settings.settings import SettingsService
@@ -672,3 +672,262 @@ async def test_get_project_budget_project_name_returns_404_without_active_assign
 
     assert exc_info.value.code == 404
     assert exc_info.value.message == "Project budget not found: proj-budget-1"
+
+
+# ── Allowed Models Parameter Passing ────────────────────────────────────────
+
+
+class TestEnsureProjectBudgetModelsParameter:
+    """Verify ensure_project_budget correctly passes models parameter to provider."""
+
+    @pytest.mark.asyncio
+    async def test_sync_created_project_budget_passes_models_to_provider(self):
+        """Verify _sync_created_project_budget passes models list to provider.ensure_project_budget."""
+        service = ProjectBudgetService()
+        session = AsyncMock()
+        provider = SimpleNamespace(
+            ensure_project_budget=AsyncMock(
+                return_value=BudgetProviderState(
+                    provider="litellm",
+                    provider_budget_ref="key-alias-1",
+                    budget_reset_at="2026-04-22T10:00:00Z",
+                    sync_status=SyncStatus.OK,
+                    metadata={"internal_budget": True},
+                )
+            ),
+            sync_member_allocation=AsyncMock(
+                return_value=BudgetProviderMemberState(
+                    provider="litellm",
+                    provider_member_ref="member-ref-1",
+                    provider_budget_id="member-budget-1",
+                    budget_reset_at="2026-04-22T10:00:00Z",
+                    sync_status=SyncStatus.OK,
+                    metadata={"internal_budget": True},
+                )
+            ),
+        )
+        created_budget = SimpleNamespace(budget_id="proj-budget-1")
+        allocation = SimpleNamespace(
+            id="alloc-1",
+            user_id="user-1",
+            project_name="proj-a",
+            allocated_max_budget=100.0,
+            allocated_soft_budget=80.0,
+        )
+
+        with (
+            patch(
+                "codemie.service.budget.project_budget_service.budget_repository.update",
+                new=AsyncMock(return_value=created_budget),
+            ),
+            patch(
+                "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository.update_provider_metadata",
+                new=AsyncMock(),
+            ),
+            patch(
+                "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository.get_active_by_budget_id",
+                new=AsyncMock(return_value=[allocation]),
+            ),
+            patch.object(service, "_sync_created_member_allocations", new=AsyncMock()),
+        ):
+            models = ["gpt-4", "gpt-3.5-turbo"]
+            await service._sync_created_project_budget(
+                session=session,
+                provider=provider,
+                created_budget=created_budget,
+                budget_id="proj-budget-1",
+                project_name="proj-a",
+                budget_category=BudgetCategory.PLATFORM,
+                soft_budget=80.0,
+                max_budget=100.0,
+                budget_duration="30d",
+                models=models,
+                allocations=[allocation],
+                enforce_limit=True,
+            )
+
+        provider.ensure_project_budget.assert_awaited_once()
+        call_kwargs = provider.ensure_project_budget.await_args.kwargs
+        assert call_kwargs["models"] == models
+
+    @pytest.mark.asyncio
+    async def test_sync_created_project_budget_passes_none_models_to_provider(self):
+        """Verify _sync_created_project_budget passes None when models is not provided."""
+        service = ProjectBudgetService()
+        session = AsyncMock()
+        provider = SimpleNamespace(
+            ensure_project_budget=AsyncMock(
+                return_value=BudgetProviderState(
+                    provider="litellm",
+                    provider_budget_ref="key-alias-1",
+                    budget_reset_at="2026-04-22T10:00:00Z",
+                    sync_status=SyncStatus.OK,
+                    metadata={"internal_budget": True},
+                )
+            ),
+            sync_member_allocation=AsyncMock(
+                return_value=BudgetProviderMemberState(
+                    provider="litellm",
+                    provider_member_ref="member-ref-1",
+                    provider_budget_id="member-budget-1",
+                    budget_reset_at="2026-04-22T10:00:00Z",
+                    sync_status=SyncStatus.OK,
+                    metadata={"internal_budget": True},
+                )
+            ),
+        )
+        created_budget = SimpleNamespace(budget_id="proj-budget-1")
+        allocation = SimpleNamespace(
+            id="alloc-1",
+            user_id="user-1",
+            project_name="proj-a",
+            allocated_max_budget=100.0,
+            allocated_soft_budget=80.0,
+        )
+
+        with (
+            patch(
+                "codemie.service.budget.project_budget_service.budget_repository.update",
+                new=AsyncMock(return_value=created_budget),
+            ),
+            patch(
+                "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository.update_provider_metadata",
+                new=AsyncMock(),
+            ),
+            patch(
+                "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository.get_active_by_budget_id",
+                new=AsyncMock(return_value=[allocation]),
+            ),
+            patch.object(service, "_sync_created_member_allocations", new=AsyncMock()),
+        ):
+            await service._sync_created_project_budget(
+                session=session,
+                provider=provider,
+                created_budget=created_budget,
+                budget_id="proj-budget-1",
+                project_name="proj-a",
+                budget_category=BudgetCategory.PLATFORM,
+                soft_budget=80.0,
+                max_budget=100.0,
+                budget_duration="30d",
+                models=None,
+                allocations=[allocation],
+                enforce_limit=True,
+            )
+
+        provider.ensure_project_budget.assert_awaited_once()
+        call_kwargs = provider.ensure_project_budget.await_args.kwargs
+        assert call_kwargs["models"] is None
+
+    @pytest.mark.asyncio
+    async def test_sync_updated_project_budget_passes_models_to_provider(self):
+        """Verify _sync_updated_project_budget passes models list to provider.update_project_budget."""
+        service = ProjectBudgetService()
+        session = AsyncMock()
+        provider = SimpleNamespace(
+            provider_name="litellm",
+            update_project_budget=AsyncMock(
+                return_value=BudgetProviderState(
+                    provider="litellm",
+                    provider_budget_ref="key-alias-1",
+                    budget_reset_at="2026-04-22T10:00:00Z",
+                    sync_status=SyncStatus.OK,
+                    metadata={"internal_budget": True},
+                )
+            ),
+        )
+        budget = SimpleNamespace(
+            budget_id="proj-budget-1",
+            budget_category="platform",
+            budget_duration="30d",
+            budget_reset_at="2026-04-22T10:00:00Z",
+            provider_metadata={"provider_budget_ref": "old-ref"},
+        )
+        assignment = SimpleNamespace(project_name="proj-a")
+
+        with (
+            patch(
+                "codemie.service.budget.project_budget_service.budget_repository.update",
+                new=AsyncMock(return_value=budget),
+            ),
+            patch(
+                "codemie.service.budget.project_budget_service.project_budget_assignment_repository.get_active_by_budget_id",
+                new=AsyncMock(return_value=assignment),
+            ),
+            patch("codemie.service.budget.project_budget_service.get_active_provider", return_value=provider),
+            patch(
+                "codemie.service.budget.project_budget_service.project_budget_assignment_repository.get_active_for_project",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch.object(service, "_resync_member_allocations", new=AsyncMock()),
+        ):
+            models = ["claude-3-opus", "claude-3-sonnet"]
+            await service._sync_updated_project_budget(
+                session=session,
+                budget=budget,
+                budget_id="proj-budget-1",
+                eff_soft=80.0,
+                eff_max=100.0,
+                eff_duration="30d",
+                models=models,
+            )
+
+        provider.update_project_budget.assert_awaited_once()
+        call_kwargs = provider.update_project_budget.await_args.kwargs
+        assert call_kwargs["models"] == models
+
+    @pytest.mark.asyncio
+    async def test_sync_updated_project_budget_passes_none_models_to_provider(self):
+        """Verify _sync_updated_project_budget passes None when models is not provided."""
+        service = ProjectBudgetService()
+        session = AsyncMock()
+        provider = SimpleNamespace(
+            provider_name="litellm",
+            update_project_budget=AsyncMock(
+                return_value=BudgetProviderState(
+                    provider="litellm",
+                    provider_budget_ref="key-alias-1",
+                    budget_reset_at="2026-04-22T10:00:00Z",
+                    sync_status=SyncStatus.OK,
+                    metadata={"internal_budget": True},
+                )
+            ),
+        )
+        budget = SimpleNamespace(
+            budget_id="proj-budget-1",
+            budget_category="platform",
+            budget_duration="30d",
+            budget_reset_at="2026-04-22T10:00:00Z",
+            provider_metadata={"provider_budget_ref": "old-ref"},
+        )
+        assignment = SimpleNamespace(project_name="proj-a")
+
+        with (
+            patch(
+                "codemie.service.budget.project_budget_service.budget_repository.update",
+                new=AsyncMock(return_value=budget),
+            ),
+            patch(
+                "codemie.service.budget.project_budget_service.project_budget_assignment_repository.get_active_by_budget_id",
+                new=AsyncMock(return_value=assignment),
+            ),
+            patch("codemie.service.budget.project_budget_service.get_active_provider", return_value=provider),
+            patch(
+                "codemie.service.budget.project_budget_service.project_budget_assignment_repository.get_active_for_project",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch.object(service, "_resync_member_allocations", new=AsyncMock()),
+        ):
+            await service._sync_updated_project_budget(
+                session=session,
+                budget=budget,
+                budget_id="proj-budget-1",
+                eff_soft=80.0,
+                eff_max=100.0,
+                eff_duration="30d",
+                models=None,
+            )
+
+        provider.update_project_budget.assert_awaited_once()
+        call_kwargs = provider.update_project_budget.await_args.kwargs
+        assert call_kwargs["models"] is None

@@ -197,13 +197,27 @@ def _transform_context(context) -> List[ContextOutput]:
 
 
 def _transform_assistant(assistant) -> AssistantOutput:
-    """Transform full assistant model to output model."""
+    """Transform full assistant model to output model with project validation.
+
+    Handles legacy assistants with null project by using a default value.
+    """
+    from codemie.core.project_validator import require_valid_project
+
+    project = assistant.project
+    if project:
+        try:
+            project = require_valid_project(project)
+        except Exception:
+            project = "legacy_migration"
+    else:
+        project = "legacy_migration"
+
     return AssistantOutput(
         id=assistant.id,
         name=assistant.name,
         description=assistant.description,
         system_prompt=assistant.system_prompt or "",
-        project=assistant.project or "",
+        project=project,
         created_by=_transform_created_by(assistant.created_by),
         created_date=assistant.created_date.isoformat() if assistant.created_date else "",
         updated_date=assistant.update_date.isoformat() if assistant.update_date else "",

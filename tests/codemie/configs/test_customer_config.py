@@ -795,6 +795,7 @@ PRE_EXISTING_SHIPPED_COMPONENT_IDS: tuple[str, ...] = (
     "mcpCustomServersDisabled",
     "features:sharepointCodeMieOAuth",
     "features:teamsBotIntegration",
+    "features:projectModelOverride",
     "mcpAuthTimeoutSeconds",
     "chatDisclaimer",
     "releaseNotesRecentCount",

@@ -16,7 +16,7 @@ import traceback
 import json
 from operator import itemgetter
 from pydantic import BaseModel
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TYPE_CHECKING
 
 from langchain_core.runnables import Runnable, RunnableLambda
 from langchain_core.output_parsers import StrOutputParser
@@ -36,6 +36,9 @@ from codemie.core.thread import ThreadedGenerator
 from codemie.rest_api.security.user import User
 from codemie.service.llm_service.llm_service import llm_service
 
+if TYPE_CHECKING:
+    from codemie.core.models import Application
+
 
 class PureChatChain(StreamingChain):
     def __init__(
@@ -47,6 +50,7 @@ class PureChatChain(StreamingChain):
         thread_generator: ThreadedGenerator = None,
         user: Optional[User] = None,
         agent_name: Optional[str] = None,
+        project: Optional['Application'] = None,
     ):
         self.request = request
         self.system_prompt = system_prompt
@@ -55,6 +59,7 @@ class PureChatChain(StreamingChain):
         self.thread_generator = thread_generator
         self.user = user
         self.agent_name = agent_name
+        self.project = project
 
     def _get_inputs(self) -> Dict[str, Any]:
         return {"question": self.request.text, "chat_history": self.request.history}
@@ -137,7 +142,9 @@ class PureChatChain(StreamingChain):
         return self.request.system_prompt or self.system_prompt
 
     def _build_prompt_template(self):
-        llm_model_details = llm_service.get_model_details(self.llm_model)
+        llm_model_details = llm_service.get_model_details(
+            self.llm_model, project=self.project, fallback_to_default=True
+        )
         first_message = SystemMessagePromptTemplate.from_template(self._get_system_prompt(), template_format="jinja2")
         if not llm_model_details.features.system_prompt:
             first_message = HumanMessagePromptTemplate.from_template(

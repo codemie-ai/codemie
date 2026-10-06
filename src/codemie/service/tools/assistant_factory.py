@@ -17,10 +17,14 @@ from typing import List, Optional, Any
 from langgraph.graph.state import CompiledStateGraph
 
 from codemie.agents.callbacks.agent_streaming_callback import AgentStreamingCallback
+from codemie.configs.customer_config import customer_config
 from codemie.configs.logger import logger
 from codemie.core.thread import MessageQueue
 from codemie.core.models import AssistantChatRequest
 from codemie.core.constants import UniqueThoughtParentIds
+from codemie.core.exceptions import ModelNotWhitelistedException
+from codemie.core.models import Application
+from codemie.service.llm.model_availability_service import ModelAvailabilityService
 from codemie.rest_api.models.assistant import Assistant
 from codemie.rest_api.security.user import User
 from codemie.service.mcp.models import MCPToolLoadException
@@ -61,10 +65,35 @@ class AssistantFactory:
         """
         Build an agent executor (compiled graph) for the assistant.
 
+        Enforces project-level model restrictions: if subagent requests a model
+        not in project.allowed_models, raises ModelNotWhitelistedException (400). No fallback.
+
         Returns:
             Compiled agent executor graph
+
+        Raises:
+            ModelNotWhitelistedException: If subagent model not allowed in project (400)
         """
         try:
+            # Hard block: reject subagent if requested model not in allowed_models
+            project = Application.get_by_id(self.assistant.project) if self.assistant.project else None
+            if (
+                project
+                and self.request
+                and self.request.llm_model
+                and customer_config.is_feature_enabled("projectModelOverride")
+            ):
+                config = ModelAvailabilityService.get_project_models(project.id)
+                if self.request.llm_model not in config.allowed_models:
+                    raise ModelNotWhitelistedException(
+                        model_id=self.request.llm_model,
+                        project_name=project.id,
+                        details=(
+                            f"Subagent cannot use model '{self.request.llm_model}'. "
+                            f"Allowed: {', '.join(config.allowed_models)}"
+                        ),
+                    )
+
             # Import here to avoid circular imports
             from codemie.service.assistant_service import AssistantService
 

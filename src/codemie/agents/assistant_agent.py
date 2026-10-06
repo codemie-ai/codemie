@@ -192,6 +192,7 @@ class AIToolsAgent(WorkspaceAwareAgent):
         self.output_schema = self._preprocess_output_schema(output_schema) if output_schema else None
         self.assistant = assistant
         self.trace_context = trace_context  # Store for trace unification
+        self._resolved_llm_model: Optional[str] = None
         self.tool_error_callback = (
             ToolErrorCaptureCallback(agent_name=agent_name) if self._is_conversation_replay_v2_enabled() else None
         )
@@ -278,20 +279,72 @@ class AIToolsAgent(WorkspaceAwareAgent):
             return_intermediate_steps=True,
         )
 
+    def _resolve_llm_model(self) -> str:
+        """Resolve the model name to use, applying the assistant's project-level
+        model-availability/fallback rules.
+
+        Keeps callers like get_llm_by_credentials decoupled from project
+        resolution: they just build an LLM for an already-resolved model name.
+        Memoized so every caller (LLM init, metadata tagging, run config) sees
+        the same resolved model within this agent instance.
+        """
+        if self._resolved_llm_model is not None:
+            return self._resolved_llm_model
+
+        if not self.assistant or not self.assistant.project:
+            self._resolved_llm_model = self.llm_model
+            return self._resolved_llm_model
+
+        from codemie.service.llm.model_availability_service import ModelAvailabilityService
+
+        resolved_model, _ = ModelAvailabilityService.resolve_model_for_execution(
+            requested_model=self.llm_model,
+            project_name=self.assistant.project,
+            is_global=self.assistant.is_global,
+            fallback_model=self.llm_model,
+        )
+        self._resolved_llm_model = resolved_model
+        return self._resolved_llm_model
+
+    def _load_assistant_project(self):
+        """Load the assistant's project Application record.
+
+        Returns None for global assistants or when the project lookup fails.
+        """
+        if not (self.assistant and self.assistant.project and not self.assistant.is_global):
+            return None
+
+        from codemie.core.models import Application
+
+        try:
+            return Application.find_by_id(self.assistant.project)
+        except Exception as e:
+            logger.debug(f"Failed to load project for fallback: {e}")
+            return None
+
     def _initialize_llm(self):
+        llm_model = self._resolve_llm_model()
+
         return get_llm_by_credentials(
-            llm_model=self.llm_model, temperature=self.temperature, top_p=self.top_p, request_id=self.request_uuid
+            llm_model=llm_model,
+            temperature=self.temperature,
+            top_p=self.top_p,
+            request_id=self.request_uuid,
+            fallback_to_default=True,
         )
 
     def _create_fallback_agent(self, llm):
+        project = self._load_assistant_project()
+
         agent = PureChatChain(
             request=self.request,
             system_prompt=self._get_system_prompt(from_request=True),
-            llm_model=self.llm_model,
+            llm_model=self._resolve_llm_model(),
             llm=llm,
             thread_generator=self.thread_generator,
             user=self.user,
             agent_name=self.agent_name,
+            project=project,
         )
         logger.debug(f"LLMChain initialized for {self.agent_name} as fallback")
         return agent
@@ -388,7 +441,7 @@ class AIToolsAgent(WorkspaceAwareAgent):
         if self._is_conversation_replay_v2_enabled():
             history = ConversationHistoryCompactionService.compact_messages(
                 messages=history,
-                llm_model=self.llm_model,
+                llm_model=self._resolve_llm_model(),
                 request_id=self.request_uuid,
             )
         inputs = {"input": input_task, "chat_history": history}
@@ -497,7 +550,7 @@ class AIToolsAgent(WorkspaceAwareAgent):
 
         return get_run_config(
             request=self.request,
-            llm_model=self.llm_model,
+            llm_model=self._resolve_llm_model(),
             agent_name=self.agent_name,
             conversation_id=self.conversation_id,
             username=self.user.username if self.user and self.user.username else None,
@@ -697,7 +750,9 @@ class AIToolsAgent(WorkspaceAwareAgent):
                 callback.context = context
 
     def get_prompt_template(self):
-        llm_model_details = llm_service.get_model_details(self.llm_model)
+        llm_model = self._resolve_llm_model()
+
+        llm_model_details = llm_service.get_model_details(llm_model, fallback_to_default=True)
         first_message = SystemMessagePromptTemplate.from_template(
             self._get_system_prompt(),
             template_format="jinja2",

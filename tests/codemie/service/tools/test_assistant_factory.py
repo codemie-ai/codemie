@@ -51,6 +51,7 @@ class TestAssistantFactory:
         request.text = "Test request"
         request.history = []
         request.sub_assistants_versions = None
+        request.llm_model = None
         return request
 
     @pytest.fixture

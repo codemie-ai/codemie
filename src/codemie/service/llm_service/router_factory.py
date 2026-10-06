@@ -64,7 +64,7 @@ def _resolve_litellm_router(model_name: str) -> Router | None:
     shared singleton would leak one alias's declared baseline onto every other."""
     from codemie.service.llm_service.llm_service import llm_service
 
-    details = llm_service.get_model_details(model_name)
+    details = llm_service.get_model_details(model_name, fallback_to_default=True)
     if details is None or (details.base_name != model_name and details.deployment_name != model_name):
         return None
     if not details.is_declared_litellm_router():

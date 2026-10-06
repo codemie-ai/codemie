@@ -25,12 +25,16 @@ from codemie.core.workflow_models.constants import (
     RETRY_POLICY_DEFAULT_BACKOFF_FACTOR,
 )
 from codemie.core.workflow_models.workflow_models import (
+    CustomWorkflowNode,
     InvalidCredentialsError,
     TruncatedOutputError,
     WorkflowAssistant,
     WorkflowNextState,
     WorkflowRetryPolicy,
     WorkflowState,
+    WorkflowStateCondition,
+    WorkflowStateSwitch,
+    WorkflowStateSwitchCondition,
     WorkflowTool,
 )
 from codemie.core.workflow_models.workflow_config import WorkflowConfig
@@ -402,3 +406,73 @@ class TestWorkflowStateWorkflowId:
     def test_no_discriminant_still_raises(self):
         with pytest.raises(ValidationError):
             WorkflowState(id="s1", next=WorkflowNextState(state_id="s2"))
+
+
+class TestWorkflowNextStateMutualExclusion:
+    """Regression for CR-008: a model_validator(mode='after') enforcing mutual exclusion
+    between condition/switch and state_id/state_ids was deleted from WorkflowNextState with
+    no replacement; contradictory next-state configs used to be rejected at construction
+    time and now silently pass.
+
+    The iter_key-related checks were briefly dropped to permit state_ids+iter_key, but the
+    runtime never implemented that combination: `_handle_multiple_states` in workflow.py
+    fans out over `state_ids` unconditionally and never looks at `iter_key`, so the
+    combination silently did nothing instead of iterating. All four original checks are
+    restored."""
+
+    def test_condition_and_switch_together_raises(self):
+        with pytest.raises(ValidationError, match="Only one of 'condition' or 'switch'"):
+            WorkflowNextState(
+                condition=WorkflowStateCondition(expression="x == 1", then="s1", otherwise="s2"),
+                switch=WorkflowStateSwitch(
+                    cases=[WorkflowStateSwitchCondition(condition="x == 1", state_id="s1")], default="s2"
+                ),
+            )
+
+    def test_state_id_and_state_ids_together_raises(self):
+        with pytest.raises(ValidationError, match="Only one of 'state_id' or 'state_ids'"):
+            WorkflowNextState(state_id="s1", state_ids=["s2", "s3"])
+
+    def test_condition_alone_is_valid(self):
+        next_state = WorkflowNextState(condition=WorkflowStateCondition(expression="x == 1", then="s1", otherwise="s2"))
+        assert next_state.condition is not None
+        assert next_state.switch is None
+
+    def test_state_ids_with_iter_key_raises(self):
+        with pytest.raises(ValidationError, match="Cannot iterate over sequence of states"):
+            WorkflowNextState(state_ids=["s1", "s2"], iter_key=".")
+
+    def test_state_ids_with_condition_raises(self):
+        with pytest.raises(ValidationError, match="Cannot use `condition` or `switch`"):
+            WorkflowNextState(
+                state_ids=["s1", "s2"],
+                condition=WorkflowStateCondition(expression="x == 1", then="s1", otherwise="s2"),
+            )
+
+    def test_state_ids_with_switch_raises(self):
+        with pytest.raises(ValidationError, match="Cannot use `condition` or `switch`"):
+            WorkflowNextState(
+                state_ids=["s1", "s2"],
+                switch=WorkflowStateSwitch(
+                    cases=[WorkflowStateSwitchCondition(condition="x == 1", state_id="s1")], default="s2"
+                ),
+            )
+
+
+class TestCustomWorkflowNodeIdBackfill:
+    """Regression for CR-007: a model_validator(mode='before') that back-filled
+    custom_node_id from id when absent was deleted with no replacement; legacy
+    workflow YAML custom_nodes entries with id but no custom_node_id used to fail
+    pydantic validation on load."""
+
+    def test_custom_node_id_backfilled_from_id_when_absent(self):
+        node = CustomWorkflowNode(id="legacy-node-1")
+        assert node.custom_node_id == "legacy-node-1"
+
+    def test_explicit_custom_node_id_is_preserved(self):
+        node = CustomWorkflowNode(id="node-1", custom_node_id="explicit-id")
+        assert node.custom_node_id == "explicit-id"
+
+    def test_empty_custom_node_id_is_backfilled_from_id(self):
+        node = CustomWorkflowNode(id="node-1", custom_node_id="")
+        assert node.custom_node_id == "node-1"

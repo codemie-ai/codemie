@@ -85,7 +85,11 @@ class SupervisorNode(BaseNode[SupervisorAgentMessages]):
                 SystemMessagePromptTemplate.from_template(supervisor_suffix_prompt),
             ]
         ).partial(options=str(options), members=", ".join(self.members), team=self.team_details)
-        llm = get_llm_by_credentials(llm_model=LLMService.BASE_NAME_GPT_41, request_id=self.execution_id)
+
+        # Stage 2: Resolve model availability - fallback to project default if needed
+        supervisor_model, _ = self.resolve_execution_model(LLMService.BASE_NAME_GPT_41)
+
+        llm = get_llm_by_credentials(llm_model=supervisor_model, request_id=self.execution_id)
         logger.info(f"SupervisorNode: using {llm.model_name}")
         supervisor_chain = prompt | llm.with_structured_output(NextAction)
         return supervisor_chain.invoke({MESSAGES_VARIABLE: messages})

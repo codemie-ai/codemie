@@ -23,6 +23,7 @@ from codemie.core.workflow_models import (
     WorkflowExecutionStatusEnum,
     WorkflowExecutionStateWithThougths,
 )
+from codemie.service.llm_service.llm_service import llm_service
 from codemie.service.workflow_execution import WorkflowExecutionService, WorkflowExecutionStatesIndexService
 from codemie.workflows.callbacks.base_callback import BaseCallback
 from codemie.workflows.jinja_template_renderer import TemplateRenderer
@@ -113,6 +114,29 @@ class StateProcessorNode(BaseNode[AgentMessages]):
         self.workflow_state: WorkflowState = workflow_state
         self.request_id = workflow_execution_service.workflow_execution_id
 
+    def _resolve_actual_model(self, custom_node: CustomWorkflowNode) -> str:
+        """Resolve the model to use, falling back to the project default when needed."""
+        # An unset node model selects the project default for project workflows.
+        requested_model = custom_node.model or None
+        actual_model, _ = self.resolve_execution_model(requested_model, llm_service.default_llm_model)
+        return actual_model
+
+    def _process_states_with_llm(self, state_schema: AgentMessages, states, llm) -> list:
+        """Invoke the LLM for each state with output, returning the extracted JSON payloads."""
+        processed_batches = []
+        for state in states:
+            if not state.output:
+                continue
+            response = llm.invoke(
+                [AIMessage(content=[{'type': 'text', 'text': f"TASK: {state.task}. OUTPUT: {state.output}"}])]
+                + [HumanMessage(content=self.get_task(state_schema, self.args, self.kwargs))]
+            )
+            response_extracted = extract_json_content(extract_text_from_llm_output(response.content))
+            if response_extracted:
+                processed_batches.append(response_extracted)
+                logger.debug(f"Response extracted: {response_extracted}")
+        return processed_batches
+
     def execute(self, state_schema: AgentMessages, execution_context: dict) -> Any:
         custom_node: CustomWorkflowNode = execution_context.get("custom_node")
         output_template: str = custom_node.config.get('output_template')
@@ -126,21 +150,14 @@ class StateProcessorNode(BaseNode[AgentMessages]):
             ],
         )
 
+        # Stage 2: Resolve model availability - fallback to project default if needed
+        actual_model = self._resolve_actual_model(custom_node)
+
         states = self._fetch_states(
             workflow_execution_id or self.execution_id, custom_node.config.get('state_id'), states_status_filter
         )
-        llm = get_llm_by_credentials(request_id=self.request_id, llm_model=custom_node.model)
-        processed_batches = []
-        for state in states:
-            if state.output:
-                response = llm.invoke(
-                    [AIMessage(content=[{'type': 'text', 'text': f"TASK: {state.task}. OUTPUT: {state.output}"}])]
-                    + [HumanMessage(content=self.get_task(state_schema, self.args, self.kwargs))]
-                )
-                response_extracted = extract_json_content(extract_text_from_llm_output(response.content))
-                if response_extracted:
-                    processed_batches.append(response_extracted)
-                    logger.debug(f"Response extracted: {response_extracted}")
+        llm = get_llm_by_credentials(request_id=self.request_id, llm_model=actual_model)
+        processed_batches = self._process_states_with_llm(state_schema, states, llm)
 
         return TemplateRenderer.render_template_batch(template_str=output_template, json_str_list=processed_batches)
 

@@ -16,6 +16,7 @@ import ast
 import json
 import math
 import re
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from codemie.agents.assistant_agent import AIToolsAgent
@@ -512,39 +513,49 @@ class DotDict:
         return self._data.get(key, default)
 
 
+@dataclass
+class AssistantExecutionOptions:
+    """Secondary/optional parameters for initialize_assistant, grouped to keep the parameter count bounded."""
+
+    thought_queue: Optional[ThoughtQueue] = None
+    file_names: Optional[list[str]] = None
+    resume_execution: bool = False
+    execution_id: Optional[str] = None
+    project_name: Optional[str] = None
+    mcp_server_args_preprocessor: Optional[callable] = None
+    request_headers: dict[str, str] | None = None
+    trace_context: Any = None  # For workflow trace unification
+    disable_cache: Optional[bool] = False
+    owner_user_id: str | None = None
+    is_global: bool = False
+
+
 def initialize_assistant(
     user_input: str,
     user: User,
     workflow_assistant: WorkflowAssistant,
     workflow_state: WorkflowState = None,
-    thought_queue: ThoughtQueue = None,
-    file_names: Optional[list[str]] = None,
-    resume_execution: bool = False,
-    execution_id: str = None,
-    project_name: str = None,
-    mcp_server_args_preprocessor: Optional[callable] = None,
-    request_headers: dict[str, str] | None = None,
-    trace_context=None,  # For workflow trace unification
-    disable_cache: Optional[bool] = False,
-    owner_user_id: str | None = None,
+    options: AssistantExecutionOptions = None,
 ) -> AIToolsAgent:
+    options = options or AssistantExecutionOptions()
     return AssistantService.build_agent_for_workflow(
         workflow_assistant=workflow_assistant,
         workflow_state=workflow_state,
         user_input=user_input,
         user=user,
-        thread_generator=thought_queue,
-        request_uuid=execution_id,
-        resume_execution=resume_execution,
-        execution_id=execution_id,
-        tool_callbacks=[AgentStreamingCallback(thought_queue)],
-        project_name=project_name,
-        file_names=file_names,
-        mcp_server_args_preprocessor=mcp_server_args_preprocessor,
-        request_headers=request_headers,
-        trace_context=trace_context,  # Pass through to service
-        disable_cache=disable_cache,
-        owner_user_id=owner_user_id,
+        thread_generator=options.thought_queue,
+        request_uuid=options.execution_id,
+        resume_execution=options.resume_execution,
+        execution_id=options.execution_id,
+        tool_callbacks=[AgentStreamingCallback(options.thought_queue)],
+        project_name=options.project_name,
+        file_names=options.file_names,
+        mcp_server_args_preprocessor=options.mcp_server_args_preprocessor,
+        request_headers=options.request_headers,
+        trace_context=options.trace_context,  # Pass through to service
+        disable_cache=options.disable_cache,
+        owner_user_id=options.owner_user_id,
+        is_global=options.is_global,
     )
 
 

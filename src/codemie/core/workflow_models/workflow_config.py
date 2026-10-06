@@ -244,6 +244,7 @@ class WorkflowConfigBase(CommonBaseModel, Owned):
             )
             return
         yaml_data = yaml.safe_load(self.yaml_config) or {}
+
         self.assistants = [
             WorkflowAssistant(**{**assistant_data, "skill_ids": assistant_data.get("skill_ids") or []})
             for assistant_data in yaml_data.get("assistants", [])

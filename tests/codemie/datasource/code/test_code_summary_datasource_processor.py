@@ -30,6 +30,7 @@ from codemie.datasource.code.code_summary_datasource_prompt import (
 from codemie.configs.llm_config import ModelCategory
 from codemie.datasource.code.code_datasource_processor import CodeDatasourceProcessor
 from codemie.rest_api.security.user import User
+from codemie.service.llm_service.llm_service import LLMService
 
 
 class TestCodeSummaryDatasourceProcessor(unittest.TestCase):
@@ -58,6 +59,7 @@ class TestCodeSummaryDatasourceProcessor(unittest.TestCase):
         mock_document = Document("This is a test document.")
         mock_repo.name = "TestRepo"
         indexer = CodeSummaryDatasourceProcessor(repo=mock_repo, user=User(id="id", name="name", username="username"))
+        indexer.llm_name = LLMService.BASE_NAME_GPT_41
         with patch('codemie.datasource.code.code_summary_datasource_processor.LLMChain.predict') as mock_llm_predict:
             mock_llm_predict.return_value = "summarized content"
             mock_index = MagicMock()

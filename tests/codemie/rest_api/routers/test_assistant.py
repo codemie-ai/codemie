@@ -666,14 +666,23 @@ class TestCreateAssistantSlug:
 
     def _patches(self):
         """Patch the create_assistant collaborators around the slug branch."""
-        return [
+        from codemie.core.models import Application
+
+        # Mock Application with no model whitelist configured (backward compat)
+        mock_app = MagicMock()
+        mock_app.allowed_models = None
+        mock_app.default_model = None
+
+        patches = [
             patch("codemie.rest_api.routers.assistant.project_access_check"),
             patch("codemie.rest_api.routers.assistant.ensure_application_exists"),
             patch("codemie.service.assistant.assistant_version_service.AssistantVersionService.create_initial_version"),
             patch("codemie.rest_api.routers.assistant.GuardrailService.sync_guardrail_assignments_for_entity"),
             patch("codemie.rest_api.routers.assistant._track_mcp_usage_on_create"),
             patch("codemie.rest_api.routers.assistant._track_assistant_management_metric"),
+            patch.object(Application, "get_by_id", return_value=mock_app),
         ]
+        return patches
 
     def _run_create(self, request, save_side_effect=None):
         """Invoke create_assistant with collaborators patched; capture the saved slug."""
@@ -901,6 +910,13 @@ class TestCreateAssistantCloneTracking:
         )
 
     def _patches(self):
+        from codemie.core.models import Application
+
+        # Mock Application with no model whitelist configured (backward compat)
+        mock_app = MagicMock()
+        mock_app.allowed_models = None
+        mock_app.default_model = None
+
         return [
             patch("codemie.rest_api.routers.assistant.project_access_check"),
             patch("codemie.rest_api.routers.assistant.ensure_application_exists"),
@@ -908,6 +924,7 @@ class TestCreateAssistantCloneTracking:
             patch("codemie.rest_api.routers.assistant.GuardrailService.sync_guardrail_assignments_for_entity"),
             patch("codemie.rest_api.routers.assistant._track_mcp_usage_on_create"),
             patch("codemie.rest_api.routers.assistant._track_assistant_management_metric"),
+            patch.object(Application, "get_by_id", return_value=mock_app),
         ]
 
     def _run_create(self, request):
@@ -1047,6 +1064,17 @@ class TestAssistantDetailEnrichment:
             patch(
                 "codemie.rest_api.routers.assistant.GuardrailService.get_entity_guardrail_assignments",
                 return_value=[],
+            ),
+            # Project-level model resolution hits Application.get_by_id for every assistant
+            # detail view; these tests aren't exercising model availability, so treat the
+            # project as not found (matches production's not-found/no-restriction path).
+            patch(
+                "codemie.service.llm.model_availability_service.Application.get_by_id",
+                side_effect=KeyError("not found"),
+            ),
+            patch(
+                "codemie.service.llm.model_availability_service.customer_config",
+                is_feature_enabled=MagicMock(return_value=True),
             ),
         ]
 
@@ -1216,3 +1244,106 @@ def test_resume_tool_call_never_had_and_still_has_no_billing_user_param():
 
     internal_params = inspect.signature(_ask_assistant_resume).parameters
     assert "billing_user" not in internal_params
+
+
+class TestResolveModelProjectLookup:
+    """Regression guard for CR-012: Application has no get_by_name classmethod at all
+    (only ApplicationRepository.get_by_name(session, name), a different object/signature),
+    so the old `Application.get_by_name(assistant.project)` call always raised AttributeError
+    and was silently swallowed by a bare `except Exception`, meaning project-level model
+    restrictions were never applied when resolving the effective/chosen model. Application.id
+    is set equal to Application.name on save(), so get_by_id(assistant.project) is correct."""
+
+    def _build_assistant(self, project="test-project", is_global=False, llm_model_type="gpt-4"):
+        return Assistant(
+            id="assistant-123",
+            name="Test Assistant",
+            description="Test Description",
+            project=project,
+            system_prompt="Test Prompt",
+            slug="test-assistant",
+            is_global=is_global,
+            llm_model_type=llm_model_type,
+        )
+
+    def test_resolve_effective_llm_model_applies_project_fallback(self):
+        from codemie.rest_api.routers.assistant import _resolve_effective_llm_model
+
+        assistant = self._build_assistant(llm_model_type="disallowed-model")
+
+        with (
+            patch(
+                "codemie.service.llm.model_availability_service.customer_config",
+                is_feature_enabled=MagicMock(return_value=True),
+            ),
+            patch(
+                "codemie.service.llm.model_availability_service.ModelAvailabilityService.get_project_models",
+                return_value=MagicMock(allowed_models=["gpt-4"], default_model="gpt-4"),
+            ),
+        ):
+            response_data = {}
+            model, source = _resolve_effective_llm_model(assistant, response_data)
+
+        assert model == "gpt-4"
+        assert source == "project_default"
+        assert response_data["llm_model_type"] == "gpt-4"
+
+    def test_resolve_effective_llm_model_project_not_found_skips_restriction(self):
+        from codemie.rest_api.routers.assistant import _resolve_effective_llm_model
+
+        assistant = self._build_assistant()
+
+        with (
+            patch(
+                "codemie.service.llm.model_availability_service.customer_config",
+                is_feature_enabled=MagicMock(return_value=True),
+            ),
+            patch(
+                "codemie.service.llm.model_availability_service.Application.get_by_id",
+                side_effect=KeyError("not found"),
+            ),
+        ):
+            model, source = _resolve_effective_llm_model(assistant, {})
+
+        assert model == "gpt-4"
+        assert source == "assistant"
+
+    def test_resolve_chosen_execution_model_applies_project_fallback(self):
+        from codemie.rest_api.routers.assistant import _resolve_chosen_execution_model
+
+        assistant = self._build_assistant(llm_model_type="disallowed-model")
+        request = AssistantChatRequest(text="hi")
+
+        with (
+            patch(
+                "codemie.service.llm.model_availability_service.customer_config",
+                is_feature_enabled=MagicMock(return_value=True),
+            ),
+            patch(
+                "codemie.service.llm.model_availability_service.ModelAvailabilityService.get_project_models",
+                return_value=MagicMock(allowed_models=["gpt-4"], default_model="gpt-4"),
+            ),
+        ):
+            model = _resolve_chosen_execution_model(assistant, request)
+
+        assert model == "gpt-4"
+
+    def test_resolve_chosen_execution_model_project_not_found_skips_restriction(self):
+        from codemie.rest_api.routers.assistant import _resolve_chosen_execution_model
+
+        assistant = self._build_assistant()
+        request = AssistantChatRequest(text="hi")
+
+        with (
+            patch(
+                "codemie.service.llm.model_availability_service.customer_config",
+                is_feature_enabled=MagicMock(return_value=True),
+            ),
+            patch(
+                "codemie.service.llm.model_availability_service.Application.get_by_id",
+                side_effect=KeyError("not found"),
+            ),
+        ):
+            model = _resolve_chosen_execution_model(assistant, request)
+
+        assert model == "gpt-4"

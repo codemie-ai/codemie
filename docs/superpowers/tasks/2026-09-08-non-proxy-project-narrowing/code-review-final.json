@@ -1,0 +1,121 @@
+{
+  "schema": 1,
+  "gate_id": "code-review.final",
+  "round": "final",
+  "decision": "request-changes",
+  "rationale": "Implementation correctly refuses disallowed models with proper exception infrastructure and passes 33 tests. However, three actionable findings prevent approval: (1) semantic misuse of ModelNotAllowedException conflates distinct error types ('model not found' vs 'not allowed'), making error handling ambiguous for callers; (2) five edge cases identified (empty model_name, None project.id, whitespace, distinguish allow-list empty vs. model-not-in-list) that could produce misleading error messages or fail silently; (3) Acceptance Criterion 3 (default model fallback when default is excluded by project narrowing) is not implemented. All findings are addressable in a focused fix-up round.",
+  "confidence": "medium",
+  "risk_flags": ["correctness"],
+  "business_review": [
+    {
+      "criterion": "Negative case: request naming a disallowed model is refused (not substituted)",
+      "status": "pass",
+      "notes": "get_model_details() raises ModelNotAllowedException when model is disallowed; no silent substitution."
+    },
+    {
+      "criterion": "Message names both model and project in the error",
+      "status": "pass",
+      "notes": "Exception message includes both model name and project ID when project context is present."
+    },
+    {
+      "criterion": "Default selection: when platform default is excluded, an allowed model is used instead",
+      "status": "fail",
+      "notes": "No implementation or test for fallback when configured default is excluded by project narrowing. Acceptance criterion unaddressed."
+    },
+    {
+      "criterion": "Project isolation: removing a model from one project's set must not affect others",
+      "status": "pass",
+      "notes": "Project-level filtering is independent; integration test confirms cross-project isolation."
+    },
+    {
+      "criterion": "Consistency: CLI/web/API all see same filtered models",
+      "status": "pass",
+      "notes": "All paths use same _filter_models_by_project() method; integration test confirms consistency."
+    },
+    {
+      "criterion": "Backward compatibility: call sites without project context still work",
+      "status": "pass",
+      "notes": "Optional project parameter defaults to None; all models visible when project is absent."
+    }
+  ],
+  "standards_review": [
+    {
+      "standard": "Exception design",
+      "status": "partial",
+      "notes": "ModelNotAllowedException docstring specifies 'not allowed for project' but is raised for both 'model not found' and 'not allowed'. Semantic confusion."
+    },
+    {
+      "standard": "Error handling completeness",
+      "status": "partial",
+      "notes": "Edge case handling gaps: empty model_name, None project.id when project exists, ambiguous messages for deny-all allow-list."
+    },
+    {
+      "standard": "Input validation",
+      "status": "partial",
+      "notes": "model_name with leading/trailing whitespace silently fails to match; no explicit validation or normalization."
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "severity": "major",
+      "category": "correctness",
+      "file": "src/codemie/service/llm_service/llm_service.py",
+      "line": 145,
+      "problem": "Semantic misuse of ModelNotAllowedException for two distinct error cases",
+      "impact": "Exception is raised for both 'model not found' (line 145-149) and 'model not allowed for project' (line 157-161), but docstring specifies only the latter. Callers cannot distinguish genuine access violations from missing models, reducing error clarity.",
+      "recommendation": "Create separate NotFoundException for missing models, or extend ModelNotAllowedException to list both cases and adjust error messages accordingly.",
+      "triage": "patch"
+    },
+    {
+      "id": "CR-002",
+      "severity": "major",
+      "category": "correctness",
+      "file": "src/codemie/service/llm_service/llm_service.py",
+      "line": 147,
+      "problem": "Exception omits project context when project object exists but project.id is None",
+      "impact": "When project exists but project.id is None (e.g., unsaved Application), exception message breaks acceptance criterion 2 (message names both model and project).",
+      "recommendation": "Require project.id to be non-None or handle None explicitly in exception construction.",
+      "triage": "patch"
+    },
+    {
+      "id": "CR-003",
+      "severity": "major",
+      "category": "correctness",
+      "file": "src/codemie/core/exceptions.py",
+      "line": 68,
+      "problem": "Exception details don't distinguish 'model not found' from 'explicitly denied by allow-list'",
+      "impact": "When allowed_models=[] (deny-all), user message is semantically incorrect for that case.",
+      "recommendation": "Pass explicit differentiated messages from caller instead of generic fallback.",
+      "triage": "patch"
+    },
+    {
+      "id": "CR-004",
+      "severity": "minor",
+      "category": "correctness",
+      "file": "src/codemie/service/llm_service/llm_service.py",
+      "line": 138,
+      "problem": "model_name with leading/trailing whitespace silently produces 'not found' error",
+      "impact": "model_name=' gpt-4' fails to match and raises misleading error with no signal that whitespace is the issue.",
+      "recommendation": "Normalize model_name by stripping whitespace before matching.",
+      "triage": "patch"
+    },
+    {
+      "id": "CR-005",
+      "severity": "major",
+      "category": "completeness",
+      "file": "src/codemie/service/llm_service/llm_service.py",
+      "line": 446,
+      "problem": "Acceptance Criterion 3 unimplemented: no default model fallback when platform default is excluded",
+      "impact": "When project excludes the configured default model, no fallback logic picks a substitute. Clients must guess which model to use.",
+      "recommendation": "Implement _select_default_model() to pick first allowed model when default is excluded; apply in get_allowed_chat_models().",
+      "triage": "patch"
+    }
+  ],
+  "test_coverage": "33 tests passing (23 service + 6 exception + 4 integration); no regressions. Tests do not cover identified edge cases or Criterion 3.",
+  "deferred_findings": [],
+  "dismissed_findings": [
+    "Race condition between check and exception (low-severity; non-concurrent execution model)",
+    "Fragile deployment_name reliance (by design; base_name is canonical)"
+  ]
+}

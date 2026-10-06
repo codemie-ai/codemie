@@ -106,11 +106,16 @@ def get_validated_context_info(
         Tuple of (validated_context_info, validated_names_set)
         - validated_context_info: List of dicts with repo_name, index_type, description
         - validated_names_set: Set of validated context names
+
+    Raises:
+        ProjectRequiredException: If resolved project is invalid (empty or DEMO_PROJECT)
     """
     if not configured_context:
         return [], set()
 
-    project_name = assistant.project or user.current_project
+    from codemie.core.project_validator import require_valid_project
+
+    project_name = require_valid_project(assistant.project or user.current_project)
     context_index_infos = IndexInfo.filter_for_user_repo_names(
         user=user, project_name=project_name, repo_names=configured_context
     )

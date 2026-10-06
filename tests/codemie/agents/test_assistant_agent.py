@@ -138,6 +138,7 @@ def _make_agentcore_agent(history=None):
     assistant.bedrock_agentcore_runtime = MagicMock()
     assistant.bedrock_agentcore_runtime.runtime_arn = "arn:aws:bedrock:us-east-1::agent/test"
     assistant.bedrock = None
+    assistant.project = None
 
     agent = AIToolsAgent.__new__(AIToolsAgent)
     agent.request = request
@@ -145,6 +146,7 @@ def _make_agentcore_agent(history=None):
     agent.conversation_id = request.conversation_id
     agent.agent_name = "test-agent"
     agent.llm_model = "gpt-4"
+    agent._resolved_llm_model = None
     agent.request_uuid = "test-uuid"
     agent.user = MagicMock()
     agent.trace_context = None

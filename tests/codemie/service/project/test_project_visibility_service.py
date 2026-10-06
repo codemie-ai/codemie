@@ -171,6 +171,8 @@ class TestProjectVisibilityService:
             cost_center_id=None,
             chargeback_enabled=False,
             chargeback_attribution="project",
+            allowed_models=["gpt-4"],
+            default_model="gpt-4",
         )
         current_member = SimpleNamespace(user_id="user-1", is_project_admin=True, date="2026-04-24T00:00:00Z")
         other_member = SimpleNamespace(user_id="user-2", is_project_admin=False, date="2026-04-24T00:00:00Z")

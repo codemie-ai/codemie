@@ -1,0 +1,381 @@
+Running test suite: sanity-api - API sanity suite - stable API tests without 
+external service credentials
+Running: 
+C:\Users\Egor_Popov\AppData\Local\uv\cache\archive-v0\i8E5EYS7ybmlPWqh\Scripts\
+python.exe -m pytest 
+C:\Users\Egor_Popov\AppData\Local\uv\cache\archive-v0\i8E5EYS7ybmlPWqh\Lib\site
+-packages\codemie_test_harness\tests -n 4 -m api and sanity --reruns 2 
+--timeout 300 
+tests/assistant/datasource/test_file_indexing.py::test_create_assistant_with_fi
+le_datasource tests/assistant/test_assistants.py::test_passing_history_to_chat 
+tests/assistant/test_assistants.py::test_create_assistant_and_prompt_with_file 
+tests/assistant/test_assistants.py::test_chat_with_output_schema 
+tests/assistant/datasource/test_file_indexing.py::test_create_assistant_with_fi
+le_datasource 
+tests/assistant/test_assistants.py::test_create_assistant_and_prompt_with_file 
+tests/assistant/test_assistants.py::test_create_assistant_and_prompt_with_file 
+tests/assistant/datasource/test_file_indexing.py::test_create_assistant_with_fi
+le_datasource 
+tests/assistant/test_assistants.py::test_create_assistant_and_prompt_with_file 
+tests/conversations/test_conversations_endpoints.py::test_update_conversation_f
+older 
+tests/assistant/test_sub_assistants.py::test_chat_with_sub_assistant_and_output
+_schema 
+tests/assistant/test_assistants.py::test_assistant_has_an_access_to_the_history
+tests/assistant/datasource/test_file_indexing.py::test_create_file_datasource_w
+ith_two_files 
+tests/conversations/test_conversations_endpoints.py::test_get_conversation_file
+s 
+tests/conversations/test_conversations_finishing.py::test_finished_conversation
+_rejects_clear_history_and_remove_history_index 
+tests/conversations/test_conversation_feedback.py::test_submit_and_delete_negat
+ive_feedback_on_assistant_response 
+tests/conversations/test_conversations_sharing.py::test_share_conversation_basi
+c 
+tests/conversations/test_conversations_endpoints.py::test_get_conversation_file
+s_with_uploaded_file 
+tests/conversations/test_conversations_endpoints.py::test_list_conversations 
+tests/conversations/test_conversations_sharing.py::test_share_conversation_with
+_multiple_messages 
+tests/conversations/test_conversations_endpoints.py::test_get_specific_conversa
+tion 
+tests/conversations/test_conversations_sharing.py::test_access_conversation_mul
+tiple_times 
+tests/assistant/datasource/test_zip_file_indexing.py::test_create_file_datasour
+ce_from_zip_with_mixed_file_types 
+tests/conversations/test_conversations_endpoints.py::test_get_conversation_by_a
+ssistant_id 
+tests/conversations/test_conversations_endpoints.py::test_delete_conversation_h
+istory 
+tests/conversations/test_conversations_sharing.py::test_share_conversation_with
+_file_attachment 
+tests/conversations/test_conversations_endpoints.py::test_delete_conversation 
+tests/conversations/test_conversations_endpoints.py::test_delete_history_by_ind
+ex 
+tests/conversations/test_conversations_sharing.py::test_share_conversation_upda
+ted_after_sharing 
+tests/conversations/test_conversations_endpoints.py::test_update_history_by_ind
+ex 
+tests/conversations/test_conversations_endpoints.py::test_update_conversation_n
+ame 
+tests/conversations/test_conversations_finishing.py::test_finish_conversation_t
+ransitions_finished_at_from_null_to_timestamp 
+tests/conversations/test_conversations_finishing.py::test_user_finish_endpoint_
+finishes_owned_conversation 
+tests/conversations/test_conversations_finishing.py::test_admin_bulk_finish_is_
+idempotent_for_already_finished_conversation 
+tests/workflow/nodes/test_iterator.py::test_context_merging_after_iteration 
+(cwd=C:\Users\Egor_Popov\AppData\Local\uv\cache\archive-v0\i8E5EYS7ybmlPWqh\Lib
+\site-packages\codemie_test_harness)
+API Domain: http://localhost:8080
+AWS credentials: Not configured
+
+============================================================
+[pytest_configure] CODEMIE_API_DOMAIN: http://localhost:8080
+============================================================
+
+============================= test session starts =============================
+platform win32 -- Python 3.12.10, pytest-8.4.2, pluggy-1.6.0 -- C:\Users\Egor_Popov\AppData\Local\uv\cache\archive-v0\i8E5EYS7ybmlPWqh\Scripts\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Users\Egor_Popov\AppData\Local\uv\cache\archive-v0\i8E5EYS7ybmlPWqh\Lib\site-packages\codemie_test_harness
+configfile: pytest.ini
+plugins: anyio-4.15.1, langsmith-0.14.2, base-url-2.1.0, playwright-0.8.0, repeat-0.9.4, reportportal-5.6.1, rerunfailures-15.1, timeout-2.4.0, xdist-3.8.0
+timeout: 300.0s
+timeout method: thread
+timeout func_only: True
+created: 4/4 workers
+4 workers [35 items]
+
+scheduling tests via LoadScheduling
+
+tests/assistant/test_assistants.py::test_create_assistant_and_prompt_with_file[test.docx] 
+tests/assistant/datasource/test_file_indexing.py::test_create_assistant_with_file_datasource[codemie-text-embedding-ada-002-test.docx] 
+tests/assistant/test_assistants.py::test_create_assistant_and_prompt_with_file[test.csv] 
+tests/assistant/datasource/test_file_indexing.py::test_create_assistant_with_file_datasource[codemie-text-embedding-ada-002-test.xlsx] 
+[gw2] [  2%] RERUN tests/assistant/datasource/test_file_indexing.py::test_create_assistant_with_file_datasource[codemie-text-embedding-ada-002-test.xlsx] 
+tests/assistant/datasource/test_file_indexing.py::test_create_assistant_with_file_datasource[codemie-text-embedding-ada-002-test.xlsx] 
+[gw0] [  5%] PASSED tests/assistant/datasource/test_file_indexing.py::test_create_assistant_with_file_datasource[codemie-text-embedding-ada-002-test.docx] 
+tests/assistant/test_assistants.py::test_passing_history_to_chat 
+[gw2] [  5%] PASSED tests/assistant/datasource/test_file_indexing.py::test_create_assistant_with_file_datasource[codemie-text-embedding-ada-002-test.xlsx] 
+tests/assistant/test_assistants.py::test_create_assistant_and_prompt_with_file[test.xlsx] 
+[gw3] [  8%] PASSED tests/assistant/test_assistants.py::test_create_assistant_and_prompt_with_file[test.csv] 
+tests/assistant/datasource/test_file_indexing.py::test_create_assistant_with_file_datasource[codemie-text-embedding-ada-002-test.csv] 
+[gw1] [ 11%] PASSED tests/assistant/test_assistants.py::test_create_assistant_and_prompt_with_file[test.docx] 
+tests/assistant/test_assistants.py::test_chat_with_output_schema[pydantic_non_stream] 
+[gw1] [ 14%] PASSED tests/assistant/test_assistants.py::test_chat_with_output_schema[pydantic_non_stream] 
+tests/conversations/test_conversations_endpoints.py::test_get_conversation_files 
+[gw0] [ 17%] PASSED tests/assistant/test_assistants.py::test_passing_history_to_chat 
+tests/assistant/test_assistants.py::test_create_assistant_and_prompt_with_file[test.gif] 
+[gw1] [ 20%] PASSED tests/conversations/test_conversations_endpoints.py::test_get_conversation_files 
+tests/conversations/test_conversations_finishing.py::test_finished_conversation_rejects_clear_history_and_remove_history_index 
+[gw2] [ 22%] PASSED tests/assistant/test_assistants.py::test_create_assistant_and_prompt_with_file[test.xlsx] 
+tests/assistant/test_sub_assistants.py::test_chat_with_sub_assistant_and_output_schema[pydantic_non_stream] 
+[gw3] [ 25%] PASSED tests/assistant/datasource/test_file_indexing.py::test_create_assistant_with_file_datasource[codemie-text-embedding-ada-002-test.csv] 
+tests/assistant/datasource/test_file_indexing.py::test_create_file_datasource_with_two_files 
+[gw1] [ 28%] PASSED tests/conversations/test_conversations_finishing.py::test_finished_conversation_rejects_clear_history_and_remove_history_index 
+tests/conversations/test_conversation_feedback.py::test_submit_and_delete_negative_feedback_on_assistant_response 
+[gw1] [ 31%] PASSED tests/conversations/test_conversation_feedback.py::test_submit_and_delete_negative_feedback_on_assistant_response 
+tests/conversations/test_conversations_endpoints.py::test_get_conversation_files_with_uploaded_file 
+[gw2] [ 34%] PASSED tests/assistant/test_sub_assistants.py::test_chat_with_sub_assistant_and_output_schema[pydantic_non_stream] 
+tests/assistant/test_assistants.py::test_assistant_has_an_access_to_the_history 
+[gw3] [ 37%] PASSED tests/assistant/datasource/test_file_indexing.py::test_create_file_datasource_with_two_files 
+tests/conversations/test_conversations_sharing.py::test_share_conversation_basic 
+[gw3] [ 40%] PASSED tests/conversations/test_conversations_sharing.py::test_share_conversation_basic 
+tests/conversations/test_conversations_endpoints.py::test_get_specific_conversation 
+[gw0] [ 42%] PASSED tests/assistant/test_assistants.py::test_create_assistant_and_prompt_with_file[test.gif] 
+tests/conversations/test_conversations_endpoints.py::test_update_conversation_folder 
+[gw3] [ 45%] PASSED tests/conversations/test_conversations_endpoints.py::test_get_specific_conversation 
+tests/conversations/test_conversations_sharing.py::test_access_conversation_multiple_times 
+[gw2] [ 48%] PASSED tests/assistant/test_assistants.py::test_assistant_has_an_access_to_the_history 
+tests/conversations/test_conversations_sharing.py::test_share_conversation_with_multiple_messages 
+[gw1] [ 51%] PASSED tests/conversations/test_conversations_endpoints.py::test_get_conversation_files_with_uploaded_file 
+tests/conversations/test_conversations_endpoints.py::test_list_conversations 
+[gw0] [ 54%] PASSED tests/conversations/test_conversations_endpoints.py::test_update_conversation_folder 
+tests/assistant/datasource/test_zip_file_indexing.py::test_create_file_datasource_from_zip_with_mixed_file_types 
+[gw3] [ 57%] PASSED tests/conversations/test_conversations_sharing.py::test_access_conversation_multiple_times 
+tests/conversations/test_conversations_endpoints.py::test_get_conversation_by_assistant_id 
+[gw1] [ 60%] PASSED tests/conversations/test_conversations_endpoints.py::test_list_conversations 
+tests/conversations/test_conversations_sharing.py::test_share_conversation_with_file_attachment 
+[gw3] [ 62%] PASSED tests/conversations/test_conversations_endpoints.py::test_get_conversation_by_assistant_id 
+tests/conversations/test_conversations_endpoints.py::test_delete_history_by_index 
+[gw2] [ 65%] PASSED tests/conversations/test_conversations_sharing.py::test_share_conversation_with_multiple_messages 
+tests/conversations/test_conversations_endpoints.py::test_delete_conversation_history 
+[gw1] [ 68%] PASSED tests/conversations/test_conversations_sharing.py::test_share_conversation_with_file_attachment 
+tests/conversations/test_conversations_sharing.py::test_share_conversation_updated_after_sharing 
+[gw3] [ 71%] PASSED tests/conversations/test_conversations_endpoints.py::test_delete_history_by_index 
+tests/conversations/test_conversations_endpoints.py::test_update_history_by_index 
+[gw2] [ 74%] PASSED tests/conversations/test_conversations_endpoints.py::test_delete_conversation_history 
+tests/conversations/test_conversations_endpoints.py::test_update_conversation_name 
+[gw1] [ 77%] PASSED tests/conversations/test_conversations_sharing.py::test_share_conversation_updated_after_sharing 
+tests/conversations/test_conversations_finishing.py::test_finish_conversation_transitions_finished_at_from_null_to_timestamp 
+[gw3] [ 80%] PASSED tests/conversations/test_conversations_endpoints.py::test_update_history_by_index 
+tests/conversations/test_conversations_finishing.py::test_user_finish_endpoint_finishes_owned_conversation 
+[gw0] [ 82%] PASSED tests/assistant/datasource/test_zip_file_indexing.py::test_create_file_datasource_from_zip_with_mixed_file_types 
+tests/conversations/test_conversations_endpoints.py::test_delete_conversation 
+[gw2] [ 85%] PASSED tests/conversations/test_conversations_endpoints.py::test_update_conversation_name 
+tests/conversations/test_conversations_finishing.py::test_admin_bulk_finish_is_idempotent_for_already_finished_conversation 
+[gw1] [ 88%] PASSED tests/conversations/test_conversations_finishing.py::test_finish_conversation_transitions_finished_at_from_null_to_timestamp 
+tests/workflow/nodes/test_iterator.py::test_context_merging_after_iteration 
+[gw3] [ 91%] PASSED tests/conversations/test_conversations_finishing.py::test_user_finish_endpoint_finishes_owned_conversation 
+[gw0] [ 94%] PASSED tests/conversations/test_conversations_endpoints.py::test_delete_conversation 
+[gw2] [ 97%] PASSED tests/conversations/test_conversations_finishing.py::test_admin_bulk_finish_is_idempotent_for_already_finished_conversation 
+[gw1] [100%] RERUN tests/workflow/nodes/test_iterator.py::test_context_merging_after_iteration 
+tests/workflow/nodes/test_iterator.py::test_context_merging_after_iteration 
+[gw1] [100%] RERUN tests/workflow/nodes/test_iterator.py::test_context_merging_after_iteration 
+tests/workflow/nodes/test_iterator.py::test_context_merging_after_iteration 
+[gw1] [100%] FAILED tests/workflow/nodes/test_iterator.py::test_context_merging_after_iteration 
+--------------------------- live log sessionfinish ----------------------------
+2026-10-01 15:27:22 - codemie_test_harness.tests.conftest - INFO - Starting session cleanup...
+2026-10-01 15:27:24 - codemie_test_harness.tests.utils.cleanup_utils - INFO - \U0001f50d Fetching project integrations...\n2026-10-01 15:27:26 - codemie_sdk.utils.http - INFO - Successfully processed GET request to /v1/settings/project
+2026-10-01 15:27:26 - codemie_test_harness.tests.utils.cleanup_utils - INFO - \u2713 No project integrations found\n2026-10-01 15:27:26 - codemie_test_harness.tests.utils.cleanup_utils - INFO - \U0001f50d Fetching user integrations...\n2026-10-01 15:27:28 - codemie_sdk.utils.http - INFO - Successfully processed GET request to /v1/settings/user
+2026-10-01 15:27:28 - codemie_test_harness.tests.utils.cleanup_utils - INFO - \u2713 No user integrations found\n2026-10-01 15:27:28 - codemie_test_harness.tests.utils.cleanup_utils - INFO - \U0001f50d Fetching assistants...\n2026-10-01 15:27:30 - codemie_sdk.utils.http - INFO - Successfully processed GET request to /v1/assistants
+2026-10-01 15:27:30 - codemie_test_harness.tests.utils.cleanup_utils - INFO - \u2713 No assistants found\n2026-10-01 15:27:30 - codemie_test_harness.tests.utils.cleanup_utils - INFO - \U0001f50d Fetching skills...\n2026-10-01 15:27:32 - codemie_sdk.utils.http - INFO - Successfully processed GET request to /v1/skills
+2026-10-01 15:27:32 - codemie_test_harness.tests.utils.cleanup_utils - INFO - \u2713 No skills found\n2026-10-01 15:27:32 - codemie_test_harness.tests.utils.cleanup_utils - INFO - \U0001f50d Fetching datasources...\n2026-10-01 15:27:35 - codemie_sdk.utils.http - INFO - Successfully processed GET request to /v1/index
+2026-10-01 15:27:35 - codemie_test_harness.tests.utils.cleanup_utils - INFO - \u2713 No datasources found\n2026-10-01 15:27:35 - codemie_test_harness.tests.utils.cleanup_utils - INFO - Fetching workflows...
+2026-10-01 15:27:37 - codemie_sdk.utils.http - INFO - Successfully processed GET request to /v1/workflows
+2026-10-01 15:27:37 - codemie_test_harness.tests.utils.cleanup_utils - INFO - No workflows found
+2026-10-01 15:27:39 - codemie_sdk.utils.http - INFO - Successfully processed GET request to /v1/projects
+2026-10-01 15:27:39 - codemie_test_harness.tests.utils.cleanup_utils - INFO - \U0001f50d Fetching providers...\n2026-10-01 15:27:42 - codemie_sdk.utils.http - INFO - Successfully processed GET request to /v1/providers
+2026-10-01 15:27:42 - codemie_test_harness.tests.utils.cleanup_utils - INFO - \u2713 No providers found\n2026-10-01 15:27:42 - codemie_test_harness.tests.utils.cleanup_utils - INFO - \U0001f50d Fetching cost centers...\n2026-10-01 15:27:44 - codemie_sdk.utils.http - INFO - Successfully processed GET request to /v1/admin/cost-centers
+2026-10-01 15:27:44 - codemie_test_harness.tests.utils.cleanup_utils - INFO - \u2713 No cost centers found\n2026-10-01 15:27:44 - codemie_test_harness.tests.conftest - INFO - Session cleanup completed.
+
+
+================================== FAILURES ===================================
+____________________ test_context_merging_after_iteration _____________________
+[gw1] win32 -- Python 3.12.10 C:\Users\Egor_Popov\AppData\Local\uv\cache\archive-v0\i8E5EYS7ybmlPWqh\Scripts\python.exe
+
+data_generator = <function data_generator.<locals>._model at 0x0000018CFAECEC00>
+item_processor = <function item_processor.<locals>._model at 0x0000018CFAECED40>
+result_aggregator = <function result_aggregator.<locals>._model at 0x0000018CFAECEA20>
+workflow_utils = <codemie_test_harness.tests.utils.workflow_utils.WorkflowUtils object at 0x0000018CFAF2E030>
+workflow_cleanup = [Workflow(id='c4d60224-253c-4c93-a519-aebfa22d1e2f', project='codemie', name='autotest-byh_uxrjgjopcqmynau', descripti...e87-4df4-9d86-1fc7d4b3918f', username='admin', name='System Administrator'), display_name=None, required_variables=[])]
+
+    @pytest.mark.sanity
+    @pytest.mark.smoke
+    @pytest.mark.workflow
+    @pytest.mark.api
+    @pytest.mark.iterator
+    def test_context_merging_after_iteration(
+        data_generator,
+        item_processor,
+        result_aggregator,
+        workflow_utils,
+        workflow_cleanup,
+    ):
+        """Test that context is merged after iteration with mathematical validation.
+    
+        Scenario:
+        1. First state outputs 10 items with id, value, and coefficient
+        2. Each item is processed in parallel: value * coefficient
+        3. After completion, aggregator calculates total sum
+        4. Compare actual sum with expected sum calculated in test
+    
+        Expected behavior:
+        - Contexts merge after all iterations complete
+        - All multiplication results are properly aggregated
+        - Total sum matches expected calculation
+        """
+        workflow_name = get_random_name()
+    
+        # Generate 10 items with random values and coefficients
+        items = []
+        expected_total = 0
+        for i in range(1, 11):
+            value = random.randint(10, 50)
+            coefficient = random.randint(2, 5)
+            items.append({"id": i, "value": value, "coefficient": coefficient})
+            expected_total += value * coefficient
+    
+        # Convert items to JSON string for task
+        items_json = json.dumps(items)
+    
+        workflow_yaml = WorkflowYamlModel(
+            enable_summarization_node=False,
+            # Set 10 max concurrency for test parallel processing
+            max_concurrency=10,
+            assistants=[
+                data_generator("generate_items"),
+                item_processor("process_item"),
+                result_aggregator("aggregate_results"),
+            ],
+            states=[
+                StateModel(
+                    id="generate_items",
+                    assistant_id="generate_items",
+                    task=f"Output exactly this JSON: {items_json}",
+                    output_schema='[{"id": "number", "value": "number", "coefficient": "number"}]',
+                    next={
+                        "state_id": "process_item",
+                        "iter_key": ".",
+                    },
+                ),
+                StateModel(
+                    id="process_item",
+                    assistant_id="process_item",
+                    task=(
+                        "Calculate: {{value}} * {{coefficient}}. "
+                        "Output only the result number and nothing else."
+                    ),
+                    next={"state_id": "aggregate_results"},
+                ),
+                StateModel(
+                    id="aggregate_results",
+                    assistant_id="aggregate_results",
+                    task=(
+                        "Sum all the multiplication results from the previous steps. "
+                        "Return only the total sum as a number."
+                    ),
+                    next={"state_id": "end"},
+                ),
+            ],
+        )
+    
+        yaml_content = prepare_yaml_content(workflow_yaml.model_dump(exclude_none=True))
+        created_workflow = workflow_utils.create_workflow(
+            workflow_name=workflow_name,
+            workflow_type=WorkflowMode.SEQUENTIAL,
+            workflow_yaml=yaml_content,
+        )
+        workflow_cleanup.append(created_workflow)
+    
+>       output = workflow_utils.execute_workflow(
+            created_workflow.id,
+            execution_name="aggregate_results",
+            user_input="Start processing",
+        )
+
+tests\workflow\nodes\test_iterator.py:662: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\utils\workflow_utils.py:189: in execute_workflow
+    state = wait_for_entity(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+get_entity_callable = <function WorkflowUtils.execute_workflow.<locals>.<lambda> at 0x0000018CFB022700>
+entity_name = 'aggregate_results', timeout = 30, poll_interval = 3
+
+    def wait_for_entity(get_entity_callable, entity_name, timeout=10, poll_interval=3):
+        """
+        Waits for an entity to be created or available with a timeout.
+        :param entity_name: Entity name
+        :param get_entity_callable: A callable that attempts to retrieve the entity.
+                                    Should raise NotFoundError if the entity is not found.
+        :param timeout: The maximum time to wait for the entity (in seconds).
+        :param poll_interval: The time between consecutive checks (in seconds).
+        :return: The entity object if it is successfully retrieved.
+        :raises TimeoutError: If the entity is not found within the timeout period.
+        """
+        start_time = time.time()
+    
+        while time.time() - start_time < timeout:
+            entities = [
+                raw
+                for raw in get_entity_callable()
+                if (hasattr(raw, "name") and entity_name == raw.name)
+                or (hasattr(raw, "alias") and entity_name == raw.alias)
+                or (hasattr(raw, "prompt") and entity_name == raw.prompt)
+            ]
+    
+            if len(entities) > 0:
+                return entities[0]
+            time.sleep(poll_interval)
+    
+        # If timeout is reached and entity is not found, raise an error
+>       raise TimeoutError("Entity was not found within the timeout period.")
+E       TimeoutError: Entity was not found within the timeout period.
+
+tests\utils\base_utils.py:150: TimeoutError
+------------------------------ Captured log call ------------------------------
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed POST request to /v1/workflows
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed POST request to /v1/workflows/a7b8af6d-ca4a-4488-a489-36d6e2319c8d/executions
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows/a7b8af6d-ca4a-4488-a489-36d6e2319c8d/executions
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows/a7b8af6d-ca4a-4488-a489-36d6e2319c8d/executions/a480046c-758f-46d7-8176-625526216921/states
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows/a7b8af6d-ca4a-4488-a489-36d6e2319c8d/executions/a480046c-758f-46d7-8176-625526216921/states
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows/a7b8af6d-ca4a-4488-a489-36d6e2319c8d/executions/a480046c-758f-46d7-8176-625526216921/states
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows/a7b8af6d-ca4a-4488-a489-36d6e2319c8d/executions/a480046c-758f-46d7-8176-625526216921/states
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows/a7b8af6d-ca4a-4488-a489-36d6e2319c8d/executions/a480046c-758f-46d7-8176-625526216921/states
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows/a7b8af6d-ca4a-4488-a489-36d6e2319c8d/executions/a480046c-758f-46d7-8176-625526216921/states2026-10-01 15:27:22,222 - codemie_test_harness.tests.conftest - INFO - Starting session cleanup...
+2026-10-01 15:27:44,133 - codemie_test_harness.tests.conftest - INFO - Session cleanup completed.
+
+---------------------------- Captured log teardown ----------------------------
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/conversations
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed DELETE request to /v1/workflows/a7b8af6d-ca4a-4488-a489-36d6e2319c8d
+------------------------------ Captured log call ------------------------------
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed POST request to /v1/workflows
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed POST request to /v1/workflows/ee4961bb-e184-40d2-a9f7-b7c25e350d52/executions
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows/ee4961bb-e184-40d2-a9f7-b7c25e350d52/executions
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows/ee4961bb-e184-40d2-a9f7-b7c25e350d52/executions/0fc66d50-8d27-4a9a-9917-6e1bd072656a/states
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows/ee4961bb-e184-40d2-a9f7-b7c25e350d52/executions/0fc66d50-8d27-4a9a-9917-6e1bd072656a/states
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows/ee4961bb-e184-40d2-a9f7-b7c25e350d52/executions/0fc66d50-8d27-4a9a-9917-6e1bd072656a/states
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows/ee4961bb-e184-40d2-a9f7-b7c25e350d52/executions/0fc66d50-8d27-4a9a-9917-6e1bd072656a/states
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows/ee4961bb-e184-40d2-a9f7-b7c25e350d52/executions/0fc66d50-8d27-4a9a-9917-6e1bd072656a/states
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows/ee4961bb-e184-40d2-a9f7-b7c25e350d52/executions/0fc66d50-8d27-4a9a-9917-6e1bd072656a/states
+---------------------------- Captured log teardown ----------------------------
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/conversations
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed DELETE request to /v1/workflows/ee4961bb-e184-40d2-a9f7-b7c25e350d52
+------------------------------ Captured log call ------------------------------
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed POST request to /v1/workflows
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed POST request to /v1/workflows/c4d60224-253c-4c93-a519-aebfa22d1e2f/executions
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows/c4d60224-253c-4c93-a519-aebfa22d1e2f/executions
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows/c4d60224-253c-4c93-a519-aebfa22d1e2f/executions/966d6c49-6f8e-4235-9ab8-5cb6017f547b/states
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows/c4d60224-253c-4c93-a519-aebfa22d1e2f/executions/966d6c49-6f8e-4235-9ab8-5cb6017f547b/states
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows/c4d60224-253c-4c93-a519-aebfa22d1e2f/executions/966d6c49-6f8e-4235-9ab8-5cb6017f547b/states
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows/c4d60224-253c-4c93-a519-aebfa22d1e2f/executions/966d6c49-6f8e-4235-9ab8-5cb6017f547b/states
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows/c4d60224-253c-4c93-a519-aebfa22d1e2f/executions/966d6c49-6f8e-4235-9ab8-5cb6017f547b/states
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows/c4d60224-253c-4c93-a519-aebfa22d1e2f/executions/966d6c49-6f8e-4235-9ab8-5cb6017f547b/states
+---------------------------- Captured log teardown ----------------------------
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/conversations
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed DELETE request to /v1/workflows/a7b8af6d-ca4a-4488-a489-36d6e2319c8d
+---------------------------- Captured log teardown ----------------------------
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/conversations
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed DELETE request to /v1/workflows/ee4961bb-e184-40d2-a9f7-b7c25e350d52
+---------------------------- Captured log teardown ----------------------------
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/conversations
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed DELETE request to /v1/workflows/c4d60224-253c-4c93-a519-aebfa22d1e2f
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/conversations
+[32mINFO    [0m codemie_sdk.utils.http:http.py:33 Successfully processed DELETE request to /v1/workflows/a3a29aa8-630d-4ef9-9730-06878128f0f7
+=========================== short test summary info ===========================
+FAILED tests/workflow/nodes/test_iterator.py::test_context_merging_after_iteration
+============== 1 failed, 34 passed, 3 rerun in 704.22s (0:11:44) ==============

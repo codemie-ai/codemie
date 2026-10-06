@@ -20,7 +20,7 @@ from typing import Final
 from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from codemie.clients.postgres import get_session
 from codemie.configs.customer_config import customer_config
@@ -46,6 +46,17 @@ from codemie.service.cost_center_service import cost_center_service
 from codemie.service.settings.settings import SettingsService
 from codemie.service.project.project_assignment_service import ProjectAssignmentService
 from codemie.service.user.authentication_service import invalidate_user_from_cache
+from codemie.service.llm_service.llm_service import llm_service
+
+
+def _is_valid_model_identifier(model_id: str) -> bool:
+    """Check if a model identifier has valid format.
+
+    Valid format: alphanumeric characters, hyphens, underscores, dots, and colons.
+    Examples: "gpt-4", "claude-3-opus", "model_v2", "azure:gpt-4", "local.model"
+    """
+    pattern = re.compile(r"^[a-zA-Z0-9._:-]+$")
+    return pattern.match(model_id) is not None
 
 
 class ProjectService:
@@ -111,6 +122,10 @@ class ProjectService:
         # Chargeback validation
         CHARGEBACK_ATTRIBUTION_INVALID="chargeback_attribution must be one of: 'project', 'cost_center'",
         CHARGEBACK_ATTRIBUTION_NO_COST_CENTER="Cost center attribution requires a linked, active cost center",
+        # Allowed models validation
+        ALLOWED_MODELS_EMPTY="At least one chat model is required in allowed_models",
+        ALLOWED_MODELS_INVALID_MODEL="Invalid model identifier in allowed_models: {model}",
+        ALLOWED_MODELS_UNAUTHORIZED="Only project admins and maintainers can update allowed models",
     )
 
     @classmethod
@@ -150,6 +165,16 @@ class ProjectService:
                 if cost_center:
                     create_kwargs["cost_center_id"] = cost_center.id
                 project = application_repository.create(**create_kwargs)
+
+                # Initialize project-level model availability + default model
+                # so the UI shows a checked "DEFAULT" radio on first open.
+                models = llm_service.get_allowed_chat_models(user, include_all=False)
+                deployment_names = [m.deployment_name for m in models]
+                validated_models = cls.validate_allowed_models(deployment_names)
+                cls.validate_at_least_one_chat_model_allowed(validated_models)
+                project.allowed_models = validated_models
+                project.default_model = validated_models[0]
+
                 user_project_repository.add_project(
                     session=session,
                     user_id=user.id,
@@ -555,6 +580,206 @@ class ProjectService:
             session,
         )
         logger.info(f"project_deleted: project={project_name}, by={actor_id}")
+
+    @staticmethod
+    def validate_allowed_models(allowed_models: list[str] | None) -> list[str] | None:
+        """Validate allowed_models field.
+
+        Args:
+            allowed_models: List of model identifiers or None (null = all models allowed)
+
+        Returns:
+            Validated allowed_models (None or list with at least 1 model)
+
+        Raises:
+            ExtendedHTTPException 400: If empty list or invalid model identifier
+        """
+        if allowed_models is None:
+            return None
+
+        if isinstance(allowed_models, list) and len(allowed_models) == 0:
+            raise ExtendedHTTPException(
+                code=400,
+                message=ProjectService.ERRORS.ALLOWED_MODELS_EMPTY,
+            )
+
+        if not isinstance(allowed_models, list):
+            raise ExtendedHTTPException(
+                code=400,
+                message="allowed_models must be a list of strings or null",
+            )
+
+        for model_id in allowed_models:
+            if not isinstance(model_id, str):
+                raise ExtendedHTTPException(
+                    code=400,
+                    message=ProjectService.ERRORS.ALLOWED_MODELS_INVALID_MODEL.format(model=model_id),
+                )
+            if not model_id.strip():
+                raise ExtendedHTTPException(
+                    code=400,
+                    message=ProjectService.ERRORS.ALLOWED_MODELS_INVALID_MODEL.format(model="(empty string)"),
+                )
+            if not _is_valid_model_identifier(model_id):
+                raise ExtendedHTTPException(
+                    code=400,
+                    message=ProjectService.ERRORS.ALLOWED_MODELS_INVALID_MODEL.format(model=model_id),
+                )
+
+        return allowed_models
+
+    @staticmethod
+    def validate_at_least_one_chat_model_allowed(allowed_models: list[str] | None) -> None:
+        """Validate that at least one chat model is allowed in the given list.
+
+        This ensures that when models are restricted, at least one chat model remains available.
+        If allowed_models is None, this is valid (all models allowed by default).
+        If allowed_models is a list, we need to verify it contains at least one chat model ID.
+
+        Args:
+            allowed_models: List of allowed model IDs, or None (all allowed)
+
+        Raises:
+            ExtendedHTTPException 400: If no chat models are in the allowed list
+        """
+        if allowed_models is None:
+            # None means all models are allowed - always valid
+            return
+
+        if not isinstance(allowed_models, list) or len(allowed_models) == 0:
+            # Empty list validation is handled elsewhere (validate_allowed_models)
+            return
+
+        # Import here to avoid circular imports
+        from codemie.service.llm_service.llm_service import llm_service
+
+        # Validate against the platform's declared catalog directly (get_all_llm_model_info
+        # takes no user, so there's no per-user/LiteLLM-integration narrowing to get wrong).
+        available_chat_models = [
+            model for model in llm_service.get_all_llm_model_info() if not model.is_declared_litellm_router()
+        ]
+        # allowed_models stores deployment identifiers (e.g. "gpt-4.1-2025-04-14")
+        available_chat_model_ids = {model.deployment_name for model in available_chat_models}
+
+        # Check if any of the allowed models are chat models.
+        allowed_model_ids_set = set(allowed_models)
+        has_chat_model = bool(allowed_model_ids_set & available_chat_model_ids)
+
+        if not has_chat_model:
+            raise ExtendedHTTPException(
+                code=400,
+                message=ProjectService.ERRORS.ALLOWED_MODELS_EMPTY,
+            )
+
+    @classmethod
+    def validate_default_model(cls, default_model: str | None, allowed_models: list[str] | None) -> None:
+        """Validate that default_model is in allowed_models list.
+
+        Args:
+            default_model: The model ID to set as default, or None to clear it
+            allowed_models: List of allowed model IDs, or None (all allowed)
+
+        Raises:
+            ExtendedHTTPException 400: If default_model not in allowed_models
+        """
+        if default_model is None or allowed_models is None:
+            return
+
+        if default_model not in allowed_models:
+            raise ExtendedHTTPException(
+                code=400,
+                message="default_model must be in allowed_models list",
+            )
+
+    @classmethod
+    def check_allowed_models_authorization(
+        cls,
+        session: Session,
+        user: User,
+        project_name: str,
+    ) -> None:
+        """Check if user is authorized to update allowed_models (admin or maintainer).
+
+        Args:
+            session: Database session
+            user: User making the request
+            project_name: Name of the project
+
+        Raises:
+            ExtendedHTTPException 403: If user lacks admin/maintainer role
+            ExtendedHTTPException 404: If project not found
+        """
+        project = application_repository.get_by_name_case_insensitive(session, project_name)
+        if not project:
+            raise ExtendedHTTPException(
+                code=404,
+                message=cls.ERRORS.PROJECT_NOT_FOUND,
+            )
+
+        if not project.is_managed_by(user):
+            raise ExtendedHTTPException(
+                code=403,
+                message=cls.ERRORS.ALLOWED_MODELS_UNAUTHORIZED,
+            )
+
+    @classmethod
+    def update_allowed_models(
+        cls,
+        user: User,
+        project_name: str,
+        allowed_models: list[str] | None,
+        default_model: str | None,
+    ) -> Application:
+        """Validate and persist a project's allowed_models/default_model.
+
+        `default_model=None` leaves the project's existing default_model unchanged;
+        pass an explicit value (including an empty string, which validate_default_model
+        rejects) to set it.
+
+        Raises:
+            ExtendedHTTPException 400: allowed_models/default_model fail validation
+            ExtendedHTTPException 403: user lacks admin/maintainer role
+            ExtendedHTTPException 404: project not found
+            ExtendedHTTPException 500: persistence failure
+        """
+        validated_models = cls.validate_allowed_models(allowed_models)
+        cls.validate_at_least_one_chat_model_allowed(validated_models)
+
+        with get_session() as session:
+            cls.check_allowed_models_authorization(session, user, project_name)
+
+            project = application_repository.get_by_name_case_insensitive(session, project_name)
+            if not project:
+                raise ExtendedHTTPException(code=404, message=cls.ERRORS.PROJECT_NOT_FOUND)
+
+            # Validate the default_model that will actually be persisted: an explicit
+            # default_model (even an empty string, which validate_default_model correctly
+            # rejects) takes precedence; otherwise re-validate the project's existing default
+            # against the new, possibly-narrower allowed_models list so a stale default can't
+            # survive a whitelist narrowing.
+            effective_default_model = default_model if default_model is not None else project.default_model
+            cls.validate_default_model(effective_default_model, validated_models)
+
+            project = session.execute(
+                select(Application).where(Application.id == project.id).with_for_update()
+            ).scalar_one_or_none()
+            if not project:
+                raise ExtendedHTTPException(code=404, message=cls.ERRORS.PROJECT_NOT_FOUND)
+
+            project.allowed_models = validated_models
+            if default_model is not None:
+                project.default_model = default_model
+            session.add(project)
+            try:
+                session.commit()
+                session.refresh(project)
+                session.expunge(project)
+            except Exception:
+                logger.exception("Failed to update allowed_models for project %s", project_name)
+                session.rollback()
+                raise ExtendedHTTPException(code=500, message="Failed to update project allowed models")
+
+            return project
 
 
 project_service = ProjectService()
