@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from functools import cache
 from pathlib import Path
 
@@ -69,12 +70,17 @@ def build_guarded_workspace_script(
     workspace_root: str,
     max_threads: int = 64,
     max_open_files: int = 256,
-    exchange_dir: str | None = None,
+    sdk_config: Mapping[str, object] | None = None,
 ) -> str:
+    """The guarded wrapper of a workspace script.
+
+    ``sdk_config`` is the configuration the SDK gets in the sandbox (see ``ToolCallingSettings.sdk_config``); without
+    it the SDK is present but tool calling is unavailable.
+    """
     launcher = "\n".join(
         [
             _read_bootstrap_function_source(),
-            f"codemie_bootstrap({_read_sdk_source()!r}, {exchange_dir!r})",
+            f"codemie_bootstrap({_read_sdk_source()!r}, {dict(sdk_config or {})!r})",
             "del codemie_bootstrap",
             "import runpy",
             f"runpy.run_path({script_path!r}, run_name='__main__')",

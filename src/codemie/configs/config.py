@@ -570,6 +570,10 @@ class Config(BaseSettings):
     MCP_CONNECT_BUCKETS_COUNT: int = 10
     MCP_TOOL_TOKENS_SIZE_LIMIT: int = 30000
     TOOL_TOKENS_SIZE_LIMIT: int = 30000
+    # Process-wide cap on concurrent workspace-script tool calls, shared by all runs.
+    WORKSPACE_SCRIPT_TOOL_CALLS_MAX_CONCURRENT: int = 10
+    # Gives a call's place back after this long, even if the call is still running (see ToolRunGate).
+    WORKSPACE_SCRIPT_TOOL_CALL_MAX_HOLD_SECONDS: float = 480.0
 
     # CLI metrics data quality cutoff
     CLI_METRICS_CUTOFF_DATE: str = "2026-02-07"

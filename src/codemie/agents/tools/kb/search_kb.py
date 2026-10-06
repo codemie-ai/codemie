@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from codemie_tools.base.constants import SOURCE_DOCUMENT_KEY, SOURCE_FIELD_KEY, FILE_CONTENT_FIELD_KEY
 from codemie_tools.base.codemie_tool import CodeMieTool
 from codemie_tools.base.models import ToolMetadata
+from codemie_tools.base.script_result import ScriptResult
 from codemie.agents.callbacks.agent_invoke_callback import AgentInvokeCallback
 from codemie.agents.callbacks.agent_streaming_callback import AgentStreamingCallback
 from codemie.agents.utils import adapt_tool_name
@@ -102,8 +103,13 @@ class SearchKBResponse(BaseModel):
     def __str__(self) -> str:
         return self.text
 
+    def to_script_result(self, max_bytes: int | None = None) -> ScriptResult:
+        """Script-facing result: the KB text only; image artifacts never reach scripts."""
+        return ScriptResult(result=self.text)
+
 
 class SearchKBTool(CodeMieTool, DatasourceHealthMixin):
+    script_callable = True
     truncate_message: str = (
         "The query provided to this tool is overly broad, which resulted in a truncated output. "
         "**Please ask the user to narrow down their query or provide more specific details about what they need.** "

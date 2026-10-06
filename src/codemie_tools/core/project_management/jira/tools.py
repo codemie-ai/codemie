@@ -16,15 +16,18 @@ import base64
 import json
 import logging
 import re
+import threading
 from typing import Type, Optional, Any, Dict, Union
 
 from atlassian import Jira
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 from langchain_core.language_models import BaseChatModel
 
 from codemie_tools.base.codemie_tool import CodeMieTool
 from codemie_tools.base.file_tool_mixin import FileToolMixin
+from codemie_tools.base.http_result import HttpResult
+from codemie_tools.base.script_result import ScriptResult
 from codemie_tools.core.project_management.jira.attachment_mixin import JiraAttachmentMixin
 from codemie_tools.core.project_management.jira.models import JiraConfig
 from codemie_tools.core.project_management.jira.tools_vars import (
@@ -58,9 +61,17 @@ class JiraMultimodalResponse(BaseModel):
 
     text: str
     image_attachments: list[dict]
+    # Held privately: pydantic would coerce an `HttpResult` (a str subclass) in a field into a plain str.
+    _http_result: HttpResult | None = PrivateAttr(default=None)
 
     def __str__(self) -> str:
         return self.text
+
+    def to_script_result(self, max_bytes: int | None = None) -> ScriptResult:
+        """Script-facing result: the HTTP result when it is known, else the text; never images."""
+        if self._http_result is not None:
+            return self._http_result.to_script_result(max_bytes)
+        return ScriptResult(result=self.text)
 
 
 class JiraInput(BaseModel):
@@ -110,6 +121,7 @@ class JiraInput(BaseModel):
 
 
 class GenericJiraIssueTool(CodeMieTool, FileToolMixin, JiraAttachmentMixin):
+    script_callable = True
     config: JiraConfig
     jira: Optional[Jira] = None
     chat_model: Optional[BaseChatModel] = None
@@ -118,6 +130,8 @@ class GenericJiraIssueTool(CodeMieTool, FileToolMixin, JiraAttachmentMixin):
     args_schema: Type[BaseModel] = JiraInput
     issue_search_pattern: str = r"/rest/api/\d+/search"
     response_format: str = "content_and_artifact"
+    # Two first calls at once (a script's parallel tool calls) must build the client once.
+    _client_lock: threading.Lock = PrivateAttr(default_factory=threading.Lock)
 
     def is_safe(self, args: dict) -> bool:
         return self._http_method_is_safe(args)
@@ -156,7 +170,9 @@ class GenericJiraIssueTool(CodeMieTool, FileToolMixin, JiraAttachmentMixin):
         """Build the Jira client on first use so per-user OAuth token resolution (and its connect
         gate) happens lazily at execution time, not at tool construction."""
         if self.jira is None:
-            self.jira = self._create_client()
+            with self._client_lock:
+                if self.jira is None:
+                    self.jira = self._create_client()
         return self.jira
 
     def _resolve_oauth(self) -> tuple[str, str]:
@@ -180,6 +196,14 @@ class GenericJiraIssueTool(CodeMieTool, FileToolMixin, JiraAttachmentMixin):
         return access_token, jira_api_base_url(cloud_id)
 
     def execute(self, method: str, relative_url: str, params: Optional[str] = "", *args):
+        return self._perform(method, relative_url, params, raise_for_status=True)
+
+    def _execute_for_script(self, method: str, relative_url: str, params: Optional[str] = "", *args):
+        """Script path: a non-2xx Jira response is returned as data with its ``http.status``, not raised."""
+        return self._perform(method, relative_url, params, raise_for_status=False)
+
+    def _perform(self, method: str, relative_url: str, params: Optional[str], *, raise_for_status: bool):
+        """The request itself; ``raise_for_status`` says whether a non-2xx answer is an error (the model path)."""
         self._ensure_client()
         if self._is_attachment_operation(relative_url):
             all_files = self._resolve_files()
@@ -206,13 +230,15 @@ class GenericJiraIssueTool(CodeMieTool, FileToolMixin, JiraAttachmentMixin):
         if method == "GET":
             # Convert fields from list to comma-separated string for GET query params
             payload_params = self._normalize_fields_param(payload_params)
-            response_text, response = self._handle_get_request(relative_url, payload_params)
+            response_text, response = self._handle_get_request(relative_url, payload_params, raise_for_status)
         else:
             # For POST/PUT/DELETE, keep fields as array in JSON body (Jira expects ArrayList)
-            response_text, response = self._handle_non_get_request(method, relative_url, payload_params)
+            response_text, response = self._handle_non_get_request(
+                method, relative_url, payload_params, raise_for_status
+            )
 
-        response_string = f"HTTP: {method} {relative_url} -> {response.status_code} {response.reason} {response_text}"
-        logger.debug(response_string)
+        http_result = HttpResult(method, relative_url, response.status_code, response.reason, response_text, "spaced")
+        logger.debug(str(http_result))
 
         if (
             method == "POST"
@@ -227,16 +253,20 @@ class GenericJiraIssueTool(CodeMieTool, FileToolMixin, JiraAttachmentMixin):
                 if copy_results:
                     copied = sum(1 for r in copy_results if r["status"] == "copied")
                     ocr_count = sum(1 for r in copy_results if r.get("ocr_text"))
-                    response_string += f"\nAttachment transfer: {copied}/{len(copy_results)} copied."
+                    http_result = http_result.with_suffix(
+                        f"\nAttachment transfer: {copied}/{len(copy_results)} copied."
+                    )
                     if ocr_images:
-                        response_string += f" {ocr_count} image(s) OCR'd."
+                        http_result = http_result.with_suffix(f" {ocr_count} image(s) OCR'd.")
 
         if method == "GET" and self._is_single_issue_request(relative_url):
             image_attachments = self._extract_image_attachments(response)
             if image_attachments:
-                return JiraMultimodalResponse(text=response_string, image_attachments=image_attachments)
+                multimodal = JiraMultimodalResponse(text=str(http_result), image_attachments=image_attachments)
+                multimodal._http_result = http_result
+                return multimodal
 
-        return response_string
+        return http_result
 
     def _is_issue_create_request(self, relative_url: str) -> bool:
         """Check whether the URL targets issue creation (not a sub-resource or search)."""
@@ -250,7 +280,7 @@ class GenericJiraIssueTool(CodeMieTool, FileToolMixin, JiraAttachmentMixin):
         except (json.JSONDecodeError, TypeError):
             return None
 
-    def _handle_get_request(self, relative_url, payload_params):
+    def _handle_get_request(self, relative_url, payload_params, raise_for_status: bool = True):
         response = self.jira.request(
             method="GET",
             path=relative_url,
@@ -258,16 +288,18 @@ class GenericJiraIssueTool(CodeMieTool, FileToolMixin, JiraAttachmentMixin):
             advanced_mode=True,
             headers={"content-type": "application/json"},
         )
-        self.jira.raise_for_status(response)
+        if raise_for_status:
+            self.jira.raise_for_status(response)
         if re.match(self.issue_search_pattern, relative_url):
             response_text = process_search_response(self.jira.url, response, payload_params)
         else:
             response_text = response.text
         return response_text, response
 
-    def _handle_non_get_request(self, method, relative_url, payload_params):
+    def _handle_non_get_request(self, method, relative_url, payload_params, raise_for_status: bool = True):
         response = self.jira.request(method=method, path=relative_url, data=payload_params, advanced_mode=True)
-        self.jira.raise_for_status(response)
+        if raise_for_status:
+            self.jira.raise_for_status(response)
         return response.text, response
 
     def _healthcheck(self):
@@ -472,10 +504,12 @@ class GenericJiraIssueTool(CodeMieTool, FileToolMixin, JiraAttachmentMixin):
         """Token-limit only the text portion; image metadata is lightweight."""
         if isinstance(output, JiraMultimodalResponse):
             limited_text, token_count = super()._limit_output_content(output.text)
-            return JiraMultimodalResponse(
+            limited = JiraMultimodalResponse(
                 text=limited_text if isinstance(limited_text, str) else str(limited_text),
                 image_attachments=output.image_attachments,
-            ), token_count
+            )
+            limited._http_result = output._http_result
+            return limited, token_count
         return super()._limit_output_content(output)
 
     def _post_process_output_content(self, mcp_tool_output: Any, *args, **kwargs) -> Any:

@@ -68,6 +68,7 @@ class GithubInput(BaseModel):
 
 
 class GithubTool(CodeMieTool):
+    script_callable = True
     name: str = GITHUB_TOOL.name
     description: str = GITHUB_TOOL.description
     args_schema: Type[BaseModel] = GithubInput

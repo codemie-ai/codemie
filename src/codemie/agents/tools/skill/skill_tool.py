@@ -120,6 +120,8 @@ class SkillTool(SkillBaseTool):
     that help the agent complete specialized tasks.
     """
 
+    script_callable = True
+
     name: str = "skill"
     description: str = _DESCRIPTION_TEMPLATE.format(skill_list=_NO_SKILLS_MESSAGE)
     args_schema: Type[BaseModel] = SkillInput
@@ -201,6 +203,8 @@ class SkillTool(SkillBaseTool):
 
 class SkillCompanionFileTool(SkillBaseTool):
     """Tool that loads a single bundled companion file for an attached skill."""
+
+    script_callable = True
 
     name: str = "skill_file"
     description: str = _COMPANION_FILE_TOOL_DESCRIPTION

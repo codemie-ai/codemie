@@ -95,6 +95,8 @@ class GetOpenApiSpecToolInput(BaseModel):
 class InvokeRestApiBySpec(CodeMieTool):
     """Tool for invoking REST APIs based on OpenAPI specifications."""
 
+    script_callable = True
+
     config: OpenApiConfig = Field(exclude=True, default=None)
     name: str = OPEN_API_TOOL.name
     description: str = OPEN_API_TOOL.description
@@ -247,6 +249,7 @@ class InvokeRestApiBySpec(CodeMieTool):
 
 
 class GetOpenApiSpec(CodeMieTool):
+    script_callable = True
     openapi_spec: str = Field(exclude=True, default=None)
     name: str = OPEN_API_SPEC_TOOL.name
     description: str = OPEN_API_SPEC_TOOL.description

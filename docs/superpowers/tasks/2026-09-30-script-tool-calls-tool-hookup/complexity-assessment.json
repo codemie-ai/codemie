@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "task": "Connect the script-tool-calls bridge to real platform tools (EPMCDME-15402): run-context propagation, authorizer, tool call via normal entry point, typed errors, confirmation tests, logging check, echo handler replacement, docs and rollout checks.",
+  "generated": "2026-09-30T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 24,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "New abstractions (run context, authorizer, tool-call handler) threaded through AssistantService/ToolNode, ToolkitService/ToolsService, AgentWorkspaceService, ExecuteWorkspaceScriptTool/WorkspaceScriptRunner, BatchJobRunner/JobToolCallBridge and ToolCallChannel (closed error model, handler sees payload only)." },
+    { "dimension": "technical_risk", "reason": "Closest pattern is ToolsService.find_tool_from_config / ToolExecutionService by-name resolution, but it does not cover authorization scoping, a plain handler thread outside contextvars, or the never-log-payload requirement (CodeMieTool._run logs Arguments on failure; handle_tool_error turns failures into strings). Authorizer is security-sensitive with no exact precedent; workflow recognition signals are inconsistent (bare step sets only conversation_id) and the workflow project is not carried into get_tools. Acceptance criteria enumerate error/variant cases (blocked, unavailable, failing, no-context, three policies) with no existing test template for the script tool." },
+    { "dimension": "file_change_estimate", "reason": "Roughly 8-10 modified production modules (tool_call_channel, job_bridge, batch_job_runner, execute_workspace_script_tool, agent_workspace_service, toolkit_service, toolkit_settings_service, assistant_service, tool_node/tool_service, README) plus a few new small modules and many new/updated tests across 3+ directories." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped to XL: affects authorization (authorizer by assistant/workflow/no-context scope) and security-sensitive handling of tool credentials and call content",
+    "Component Scope XL: affects multiple workflows/agents (assistant-mediated and bare workflow tool steps) and touches shared channel/toolkit contracts"
+  ],
+  "split_recommendation": null
+}

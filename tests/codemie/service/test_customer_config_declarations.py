@@ -18,6 +18,7 @@ from codemie.service.customer_config_declarations import (
     DECLARATIONS,
     MCP_CUSTOM_SERVERS_DISABLED,
     SCHEDULERS,
+    WORKSPACE_SCRIPT_BRIDGE,
     FieldDeclaration,
     FieldType,
     Markup,
@@ -180,3 +181,32 @@ def test_by_component_id_finds_mcp_custom_servers_disabled():
     decl = by_component_id("mcpCustomServersDisabled")
     assert decl is not None
     assert decl is MCP_CUSTOM_SERVERS_DISABLED
+
+
+def test_workspace_script_bridge_is_editable_at_runtime():
+    assert by_component_id("features:workspaceScriptBridge") is WORKSPACE_SCRIPT_BRIDGE
+    assert WORKSPACE_SCRIPT_BRIDGE.key == "CUSTOMER_CONFIG__FEATURES__WORKSPACE_SCRIPT_BRIDGE"
+    assert DynamicConfigService.KEY_PATTERN.match(WORKSPACE_SCRIPT_BRIDGE.key)
+
+
+def test_workspace_script_bridge_exposes_the_switch_and_the_limits():
+    fields = {field.name: field for field in WORKSPACE_SCRIPT_BRIDGE.fields}
+    assert set(fields) == {"enabled", "timeoutSeconds", "maxParallelCalls"}
+    assert fields["enabled"].type is FieldType.SWITCH
+    for name in ("timeoutSeconds", "maxParallelCalls"):
+        assert fields[name].type is FieldType.INPUT
+        assert fields[name].pattern == r"^[1-9][0-9]*$"
+        assert fields[name].max_length == 3
+
+
+def test_the_parallel_calls_field_says_it_is_a_ceiling_and_what_lowers_it():
+    description = {field.name: field for field in WORKSPACE_SCRIPT_BRIDGE.fields}["maxParallelCalls"].description
+
+    assert "ceiling" in description
+    assert "process-wide limit" in description
+
+
+def test_workspace_script_bridge_description_does_not_claim_pooled_only() -> None:
+    description = WORKSPACE_SCRIPT_BRIDGE.description
+    assert "pooled" not in description.lower()
+    assert "Applies to runs that start after the change" in description

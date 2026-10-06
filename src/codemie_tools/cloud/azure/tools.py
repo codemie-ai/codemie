@@ -28,6 +28,8 @@ from ...base.utils import parse_and_escape_args
 class GenericAzureTool(CodeMieTool):
     """Generic tool for interacting with Azure REST API."""
 
+    script_callable = True
+
     config: AzureConfig
     client: Optional[AzureClient] = None
     name: str = AZURE_TOOL.name

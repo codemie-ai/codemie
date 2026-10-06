@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "generated": "2026-09-30T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 25,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 45,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "New script_tool_calls package (authorizer, binding, context, exclusions, handler, workflow_resolution) plus the shared CodeMieTool base, script_result/http_result contracts, code-executor bridge and channel, toolkit registry, assistant and workspace services, and per-integration tools (Jira, Confluence, XWiki, GitLab, KB search)." },
+    { "dimension": "technical_risk", "reason": "Security-sensitive: per-tool authorization with assistant vs workflow scope, unknown-argument rejection, and a contextvar log filter installed on all handlers so tool arguments and results never reach logs. No exact precedent for the log-suppression filter; many error and edge cases (refusal codes, bad arguments, non-2xx replies, image responses) enumerated in tests." },
+    { "dimension": "file_change_estimate", "reason": "45 files changed (about 26 source and config, 19 test files), 3542 insertions and 55 deletions, across src/codemie, src/codemie_tools, config and .gitlab." },
+    { "dimension": "affected_layers", "reason": "Service, Infrastructure (code executor job bridge and channel, logging config, customer config), External (Jira, Confluence, XWiki, GitLab tool calls) and tool/API boundary; no schema or migration." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk at XL: security and authorization requirements (tool-call authorizer, log-leak guard, argument validation)",
+    "Component Scope at XL: touches core shared utility CodeMieTool and multiple tool integrations and workflows",
+    "Copy-paste replication not applicable: single repo (codemie)"
+  ],
+  "split_recommendation": null
+}

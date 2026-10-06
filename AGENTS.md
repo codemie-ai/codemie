@@ -45,7 +45,7 @@ Detailed project guidance lives under `.ai-run/guides/`, which is the source of 
 | Code Quality | `.ai-run/guides/standards/code-quality.md` | Python and Ruff standards |
 | Git Workflow | `.ai-run/guides/standards/git-workflow.md` | Branch, commit, and review conventions |
 | Testing | `.ai-run/guides/testing/testing-patterns.md` | pytest policy and patterns |
-| Local Verification | `.ai-run/guides/testing/local-verification.md` | Harness sanity run and live API checks before an MR |
+| Local Verification | `.ai-run/guides/testing/local-verification.md` | Harness sanity, area tests and live API checks before an MR |
 | API Testing | `.ai-run/guides/testing/testing-api-patterns.md` | API test patterns |
 | Service Testing | `.ai-run/guides/testing/testing-service-patterns.md` | Service test patterns |
 | Workflows | `.ai-run/guides/workflows/langgraph-workflows.md` | LangGraph workflow patterns |

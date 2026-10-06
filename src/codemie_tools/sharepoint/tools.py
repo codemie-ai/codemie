@@ -89,6 +89,7 @@ class SharePointInput(BaseModel):
 
 
 class SharePointTool(CodeMieTool, FileToolMixin):
+    script_callable = True
     config: SharePointConfig
     name: str = SHAREPOINT_TOOL.name
     description: str = SHAREPOINT_TOOL.description

@@ -1,0 +1,46 @@
+{
+  "decision": "approve",
+  "rationale": "All six prior blocking findings (CR-001..CR-006) are resolved: five code findings confirmed against current source and tests, and CR-005 closed by the recorded human decision (Jira non-2xx is data on the script path only) and its implementation. 0 deferred; no new findings are discovered on a check round; brief written to code-review-brief.md.",
+  "confidence": "high",
+  "risk_flags": ["security", "auth", "public-api"],
+  "business_review": [
+    {"kind": "spec", "item": "Design 1: frozen ScriptRunContext flows toolkit -> tool -> service -> runner -> bridge -> channel handlers", "status": "pass", "notes": "context.py, agent_workspace_service.py, job_bridge.py; test_job_bridge.py context tests"},
+    {"kind": "spec", "item": "Design 2: registry created with script tool, filled at end of ToolkitService.get_tools; unfilled refuses", "status": "pass", "notes": "toolkit.py, toolkit_service.py, exclusions.py; test_toolkit_service_script_registry.py"},
+    {"kind": "spec", "item": "Design 3: workflow scope server-derived only, never from request", "status": "pass", "notes": "toolkit.py _workflow_project(); assistant_service.py:853; spoof test present"},
+    {"kind": "spec", "item": "Design 4: authorizer, first match wins", "status": "pass", "notes": "authorizer.py order matches; test_authorizer.py"},
+    {"kind": "spec", "item": "Design 5: tool.call handler replaces echo, validates args_schema, uses run_for_script", "status": "pass", "notes": "handler.py; DEFAULT_HANDLERS empty; forbidden-paths test"},
+    {"kind": "spec", "item": "Design 6: HttpResult(str) with three legacy layouts applied at Jira/Confluence/GitLab/xWiki", "status": "pass", "notes": "http_result.py and four tool sites; golden tests"},
+    {"kind": "spec", "item": "Design 7: base-class execute_structured, ScriptValueSource on HttpResult and JiraMultimodalResponse", "status": "pass", "notes": "codemie_tool.py; SearchKBResponse.to_script_value added as a third source"},
+    {"kind": "spec", "item": "Design 8: run_for_script validates config, no limit/truncation, errors logged as name/code/type only", "status": "pass", "notes": "codemie_tool.py run_for_script; handler.py logger.warning"},
+    {"kind": "spec", "item": "Design 9: envelope {result, http?}; coded errors via ToolCallRefused", "status": "pass", "notes": "handler.py _envelope; tool_call_channel.py mapping; refusal test"},
+    {"kind": "spec", "item": "Design 10: 256 KiB transport bound reuses payload_too_large; ensure_ascii=False", "status": "pass", "notes": "tool_call_channel.py; test_end_to_end.py boundary and non-ASCII tests"},
+    {"kind": "spec", "item": "Design 11: log filter drops records while script_call_active is set", "status": "pass", "notes": "script_call_log_guard.py, logger.py install call; sentinel tests (install itself untested, CR-001)"},
+    {"kind": "spec", "item": "Design 12: direct REST run builds none context; script tool keeps is_safe=False", "status": "pass", "notes": "agent_workspace_service.py; test_script_tool_confirmation.py"},
+    {"kind": "spec", "item": "Design 13: README rewrite plus rollout checklist in README and customer-config comment", "status": "pass", "notes": "code_executor/README.md; customer-config.yaml"},
+    {"kind": "spec", "item": "AC: tool.call returns the tool's real result; sequential calls each get their own", "status": "pass", "notes": "test_end_to_end.py through real channel and SDK"},
+    {"kind": "spec", "item": "AC: assistant run limited to the run's tool list; script tool, MCP and stream tools refused", "status": "pass", "notes": "binding.py, exclusions.py, authorizer.py; tests"},
+    {"kind": "spec", "item": "AC: workflow run may call any user-authorized tool in the workflow's project; chat request gains nothing", "status": "pass", "notes": "workflow_resolution.py; scope from _workflow_project() or workflow_project kwarg only"},
+    {"kind": "spec", "item": "AC: script run confirmed under ask_for_approval and approve_for_me, not auto_approve; calls not confirmed individually", "status": "pass", "notes": "test_script_tool_confirmation.py with the real tool"},
+    {"kind": "spec", "item": "AC: unavailable, blocked, no-context, bad-argument and failing calls give a coded error", "status": "pass", "notes": "authorizer.py, handler.py; unknown argument names are not rejected (CR-003)"},
+    {"kind": "spec", "item": "AC: Jira/Confluence/GitLab/xWiki give parsed body and int http.status; a 404 is a normal result", "status": "partial", "notes": "Jira raises on non-2xx (jira/tools.py:275,284) so 404 gives tool_failed; README admits the exception. CR-005"},
+    {"kind": "spec", "item": "AC: pydantic model, dict, list or JSON-looking string gives JSON result with no per-tool code", "status": "pass", "notes": "codemie_tool.py _to_script_value; test_codemie_tool_script.py"},
+    {"kind": "spec", "item": "AC: execute(), _run and workflow node strings byte-identical for the four HTTP tools", "status": "pass", "notes": "test_http_result_golden.py byte-exact asserts; _run unmodified"},
+    {"kind": "spec", "item": "AC: no token limit up to transport cap; above it payload_too_large with size and limit, no content", "status": "pass", "notes": "run_for_script skips _limit_output_content; test_end_to_end.py size tests"},
+    {"kind": "spec", "item": "AC: an assistant without the script tool runs no script", "status": "pass", "notes": "bind_script_registries returns when no script tool is in the list"},
+    {"kind": "spec", "item": "AC: at DEBUG no call request or result content appears in logs, including oversize path", "status": "pass", "notes": "script_call_log_guard.py; sentinel tests for success, failure, oversize"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "all 14 commit subjects in the review range match the documented EPMCDME-####: Description format"},
+    {"kind": "code-quality", "status": "partial", "notes": "tests/codemie_tools/base/test_http_result.py has no Apache license header (license-check --check reports it as the only missing file); new src modules otherwise typed and cohesive"},
+    {"kind": "security", "status": "pass", "notes": "no lossy decoding, credential logging or unsafe path/command construction; scope fails closed; handler logs tool name and exception type only; call logging suppressed during script calls"}
+  ],
+  "findings": [],
+  "finding_status": [
+    {"id": "CR-001", "status": "resolved", "notes": "test_script_call_log_guard.py now asserts every real app-logger handler carries exactly one ScriptCallLogFilter and that a real app_logger record under suppress_call_logging() is not emitted; logger.py:235 install call present."},
+    {"id": "CR-002", "status": "resolved", "notes": "test_assistant_service_workflow_mapping.py asserts get_tools receives workflow_project == 'proj-a' for both assistant-backed and inline nodes."},
+    {"id": "CR-003", "status": "resolved", "notes": "handler.py _validated_kwargs refuses unknown names via extra=forbid strict schema (bad_arguments, names only), refuses args for schema-less tools and non-pydantic schemas; aliases and extra=allow schemas preserved; tests cover each and assert the tool does not run."},
+    {"id": "CR-004", "status": "resolved", "notes": "ScriptHttpSource protocol plus JiraMultimodalResponse.script_http(); execute_structured now emits http status/reason for image responses; golden test asserts 200/OK and the no-http-result case."},
+    {"id": "CR-005", "status": "resolved", "notes": "Decision recorded in fix_evidence (option a, script path only, with rationale). Implemented in jira/tools.py via execute_structured override and ContextVar-gated _raise_for_status at both call sites; tests cover GET 404, non-GET 400 and no leak into execute/_run; README updated."},
+    {"id": "CR-006", "status": "resolved", "notes": "test_http_result.py now begins with the full Apache header; the closing 'limitations under the License.' line is added to the src and test files named in the finding."}
+  ]
+}

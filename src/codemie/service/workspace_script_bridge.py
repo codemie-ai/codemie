@@ -12,47 +12,40 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Reads the workspace script bridge settings once per run: is tool calling on, and with which limits."""
+
 from __future__ import annotations
 
-import math
-
-from codemie.configs import logger
+from codemie.configs import config
 from codemie.configs.customer_config import customer_config
+from codemie_tools.data_management.code_executor.models import CodeExecutorConfig, SandboxMode
+from codemie_tools.data_management.code_executor.tool_calling_limits import (
+    ToolCallingSettings,
+    normalize_max_parallel_calls,
+    normalize_run_timeout,
+)
 
 WORKSPACE_SCRIPT_BRIDGE_FEATURE = "workspaceScriptBridge"
-DEFAULT_TOOL_CALLING_TIMEOUT_SECONDS = 120.0
 
 
-def parse_tool_calling_timeout(raw_value: object) -> float:
-    """Turn the customer-config `timeoutSeconds` value into a positive, finite float.
+def resolve_tool_calling_settings() -> ToolCallingSettings | None:
+    """The settings of a script run with tool calling, or ``None`` when tool calling is off.
 
-    Never raises: a missing, non-numeric, non-finite or non-positive value must not fail a run,
-    so it falls back to DEFAULT_TOOL_CALLING_TIMEOUT_SECONDS with a warning.
-    """
-    parsed: float | None = None
-    # bool is an int subclass, but `true` is never a meaningful timeout
-    if isinstance(raw_value, (int, float, str)) and not isinstance(raw_value, bool):
-        try:
-            parsed = float(raw_value)
-        except (ValueError, OverflowError):
-            # OverflowError: an int too large for float, e.g. 10**400 written in the YAML
-            parsed = None
-    if parsed is not None and math.isfinite(parsed) and parsed > 0:
-        return parsed
-    logger.warning(
-        f"Invalid {WORKSPACE_SCRIPT_BRIDGE_FEATURE} timeoutSeconds (type={type(raw_value).__name__}), "
-        f"using default {DEFAULT_TOOL_CALLING_TIMEOUT_SECONDS}s"
-    )
-    return DEFAULT_TOOL_CALLING_TIMEOUT_SECONDS
-
-
-def resolve_tool_calling_timeout() -> float | None:
-    """Timeout for script tool calls in this run, or None when the feature is off.
-
-    Customer config is read on every call.
+    It is on only when the component is enabled **and** the sandbox runs in jobs mode: the bridge exists only there
+    (a pooled sandbox has none, and advertising an SDK that cannot work would only mislead the model). Customer config
+    is read here and nowhere else. A missing or invalid value falls back to its default and an oversized one is
+    clamped (see the ``normalize_*`` functions); neither turns the feature off.
     """
     if not customer_config.is_feature_enabled(WORKSPACE_SCRIPT_BRIDGE_FEATURE):
         return None
-    return parse_tool_calling_timeout(
-        customer_config.get_feature_setting(WORKSPACE_SCRIPT_BRIDGE_FEATURE, "timeoutSeconds")
+    if CodeExecutorConfig.from_env().sandbox_mode != SandboxMode.JOBS:
+        return None
+    return ToolCallingSettings(
+        run_timeout_seconds=normalize_run_timeout(
+            customer_config.get_feature_setting(WORKSPACE_SCRIPT_BRIDGE_FEATURE, "timeoutSeconds")
+        ),
+        max_parallel_calls=normalize_max_parallel_calls(
+            customer_config.get_feature_setting(WORKSPACE_SCRIPT_BRIDGE_FEATURE, "maxParallelCalls"),
+            config.WORKSPACE_SCRIPT_TOOL_CALLS_MAX_CONCURRENT,
+        ),
     )

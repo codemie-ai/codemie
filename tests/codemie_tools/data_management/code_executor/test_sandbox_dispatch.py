@@ -4,12 +4,15 @@
 
 import inspect
 import json
+import os
 import threading
 import unittest
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 from codemie_tools.data_management.code_executor.code_executor_tool import CodeExecutorTool
+from codemie_tools.data_management.code_executor.job_bridge import JobBridgeOptions, new_job_bridge_options
+from codemie_tools.data_management.code_executor.tool_calling_limits import ToolCallingSettings
 from codemie_tools.data_management.code_executor.models import (
     ExecutionMode,
     SandboxMode,
@@ -351,35 +354,29 @@ class TestGuardDenialLogging(unittest.TestCase):
                 info.assert_not_called()
 
 
+def _make_workspace_runner(sandbox_mode: SandboxMode, bridge: JobBridgeOptions | None = None):
+    """A real runner built through its constructor, with the sandbox mode taken from the environment as in production."""
+    from codemie_tools.data_management.workspace.workspace_script_runner import WorkspaceScriptRunner
+
+    with patch.dict(os.environ, {"CODE_EXECUTOR_SANDBOX_MODE": sandbox_mode.value}):
+        return WorkspaceScriptRunner(file_repository=MagicMock(), user_id="u", conversation_id="conv", bridge=bridge)
+
+
 class TestWorkspaceScriptRunnerJobsMode(unittest.TestCase):
     """Workspace script runner routes to BatchJobRunner under sandbox-jobs mode."""
 
     def test_workspace_script_jobs_mode_calls_batch_job_runner(self):
-        from codemie_tools.data_management.code_executor.models import CodeExecutorConfig
-        from codemie_tools.data_management.workspace.execute_workspace_script_tool import (
+        from codemie_tools.data_management.workspace.workspace_script_runner import (
             WorkspaceScriptRunner,
         )
 
-        config = CodeExecutorConfig(
-            execution_mode=ExecutionMode.SANDBOX,
-            sandbox_mode=SandboxMode.JOBS,
-        )
-        runner = WorkspaceScriptRunner.__new__(WorkspaceScriptRunner)
-        object.__setattr__(runner, "__pydantic_fields_set__", set())
-        object.__setattr__(runner, "__pydantic_extra__", None)
-        object.__setattr__(runner, "__pydantic_private__", {"_custom_pod_manifest": None})
-        object.__setattr__(runner, "config", config)
-        object.__setattr__(runner, "input_files", [])
-        object.__setattr__(runner, "security_policy", MagicMock())
-        object.__setattr__(runner, "last_execution_files", [])
-        object.__setattr__(runner, "file_repository", MagicMock())
-        object.__setattr__(runner, "user_id", "u")
-        object.__setattr__(runner, "conversation_id", "conv")
+        runner = _make_workspace_runner(SandboxMode.JOBS)
+        config = runner.config
 
         fake_result = MagicMock(stdout="ok\n", stderr="", exit_code=0, exported_files={}, changed_files={})
 
         with (
-            patch("codemie_tools.data_management.workspace.execute_workspace_script_tool.BatchJobRunner") as runner_cls,
+            patch("codemie_tools.data_management.workspace.workspace_script_runner.BatchJobRunner") as runner_cls,
             patch.object(WorkspaceScriptRunner, "_get_user_workdir", return_value="/home/codemie/conv"),
             patch.object(WorkspaceScriptRunner, "_get_script_content", return_value="print('x')"),
             patch.object(WorkspaceScriptRunner, "_validate_code_security_policy", return_value=None),
@@ -409,32 +406,18 @@ class TestWorkspaceScriptRunnerJobsMode(unittest.TestCase):
         assert out == "ok"
 
     def test_workspace_script_jobs_mode_with_tool_calling_passes_bridge_options(self):
-        from codemie_tools.data_management.code_executor.models import CodeExecutorConfig
-        from codemie_tools.data_management.workspace.execute_workspace_script_tool import (
+        from codemie_tools.data_management.workspace.workspace_script_runner import (
             WorkspaceScriptRunner,
         )
 
-        config = CodeExecutorConfig(
-            execution_mode=ExecutionMode.SANDBOX,
-            sandbox_mode=SandboxMode.JOBS,
+        runner = _make_workspace_runner(
+            SandboxMode.JOBS, bridge=new_job_bridge_options(ToolCallingSettings(run_timeout_seconds=120.0))
         )
-        runner = WorkspaceScriptRunner.__new__(WorkspaceScriptRunner)
-        object.__setattr__(runner, "__pydantic_fields_set__", set())
-        object.__setattr__(runner, "__pydantic_extra__", None)
-        object.__setattr__(runner, "__pydantic_private__", {"_custom_pod_manifest": None})
-        object.__setattr__(runner, "config", config)
-        object.__setattr__(runner, "input_files", [])
-        object.__setattr__(runner, "security_policy", MagicMock())
-        object.__setattr__(runner, "last_execution_files", [])
-        object.__setattr__(runner, "file_repository", MagicMock())
-        object.__setattr__(runner, "user_id", "u")
-        object.__setattr__(runner, "conversation_id", "conv")
-        object.__setattr__(runner, "tool_calling_timeout", 120.0)
 
         fake_result = MagicMock(stdout="ok\n", stderr="", exit_code=0, exported_files={}, changed_files={})
 
         with (
-            patch("codemie_tools.data_management.workspace.execute_workspace_script_tool.BatchJobRunner") as runner_cls,
+            patch("codemie_tools.data_management.workspace.workspace_script_runner.BatchJobRunner") as runner_cls,
             patch.object(WorkspaceScriptRunner, "_get_user_workdir", return_value="/home/codemie/conv"),
             patch.object(WorkspaceScriptRunner, "_get_script_content", return_value="print('x')"),
             patch.object(WorkspaceScriptRunner, "_validate_code_security_policy", return_value=None),
@@ -450,28 +433,16 @@ class TestWorkspaceScriptRunnerJobsMode(unittest.TestCase):
 
         run_kwargs = runner_cls.return_value.run.call_args.kwargs
         assert run_kwargs["bridge"].exchange_dir.startswith(".codemie_bridge/")
-        assert run_kwargs["bridge"].tool_calling_timeout == 120.0
+        assert run_kwargs["bridge"].settings.run_timeout_seconds == 120.0
         assert {"input_files", "export_files", "workdir", "baseline_hashes"} <= set(run_kwargs)
         sb.assert_not_called()
 
     def test_workspace_script_shared_mode_still_uses_sandbox_session(self):
-        from codemie_tools.data_management.code_executor.models import CodeExecutorConfig
-        from codemie_tools.data_management.workspace.execute_workspace_script_tool import (
+        from codemie_tools.data_management.workspace.workspace_script_runner import (
             WorkspaceScriptRunner,
         )
 
-        config = CodeExecutorConfig(
-            execution_mode=ExecutionMode.SANDBOX,
-            sandbox_mode=SandboxMode.SHARED,
-        )
-        runner = WorkspaceScriptRunner.__new__(WorkspaceScriptRunner)
-        object.__setattr__(runner, "__pydantic_fields_set__", set())
-        object.__setattr__(runner, "__pydantic_extra__", None)
-        object.__setattr__(runner, "__pydantic_private__", {"_custom_pod_manifest": None})
-        object.__setattr__(runner, "config", config)
-        object.__setattr__(runner, "input_files", [])
-        object.__setattr__(runner, "security_policy", MagicMock())
-        object.__setattr__(runner, "last_execution_files", [])
+        runner = _make_workspace_runner(SandboxMode.SHARED)
 
         fake_session = MagicMock(name="session")
         fake_session.is_safe.return_value = (True, [])

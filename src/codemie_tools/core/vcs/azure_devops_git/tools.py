@@ -32,6 +32,7 @@ AZURE_DEVOPS_DEFAULT_HEADERS = {"Accept": "application/json", "Content-Type": "a
 
 
 class AzureDevOpsGitTool(CodeMieTool):
+    script_callable = True
     name: str = AZURE_DEVOPS_GIT_TOOL.name
     args_schema: Type[BaseModel] = AzureDevOpsGitInput
     config: AzureDevOpsGitConfig

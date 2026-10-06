@@ -47,6 +47,7 @@ class EmailToolInput(BaseModel):
 
 
 class EmailTool(CodeMieTool):
+    script_callable = True
     config: EmailToolConfig
     name: str = EMAIL_TOOL.name
     description: str = "Use this tool when you need to send an email notification via SMTP. Supports TO, CC, BCC, and custom FROM address."

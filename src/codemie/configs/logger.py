@@ -21,6 +21,7 @@ from logging.config import dictConfig
 from typing import Any, Dict, TypedDict
 
 from codemie.configs.config import config
+from codemie.configs.script_call_log_guard import guarded_record_factory, install_script_call_log_guard
 from pydantic import BaseModel
 
 
@@ -97,7 +98,8 @@ logging_uuid = contextvars.ContextVar("uuid")
 logging_user_id = contextvars.ContextVar("user_id")
 current_user_email = contextvars.ContextVar("user_email", default="unknown")
 logging_conversation_id = contextvars.ContextVar("conversation_id")
-old_factory = logging.getLogRecordFactory()
+# Guarded: a record created while a script tool call runs is redacted (see script_call_log_guard).
+old_factory = guarded_record_factory(logging.getLogRecordFactory())
 
 
 def json_serial(obj):
@@ -230,3 +232,5 @@ log_config = LogConfig(LOG_LEVEL=config.LOG_LEVEL)
 log_config.set_formatters()
 dictConfig(log_config.model_dump())
 logger = logging.getLogger(log_config.LOGGER_NAME)
+
+install_script_call_log_guard()

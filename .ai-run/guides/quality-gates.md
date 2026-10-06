@@ -106,7 +106,7 @@ Runs `gitleaks protect --staged` via `scripts/git-hooks/validate_secrets.sh`, wi
 
 **Skip if**: You are not opening a merge request (local iteration only).
 
-To run live checks, follow `.ai-run/guides/testing/local-verification.md`.
+To run live checks against the changed behavior, follow `.ai-run/guides/testing/local-verification.md`.
 
 > **Required for the MR compliance bot**: paste the copy-pasted terminal summary of `make test-harness` into a `## Test harness` section of the MR description as a code block, following the [MR template](../../.gitlab/merge_request_templates/Default.md) (see [git-workflow.md](standards/git-workflow.md#mr-description)). Screenshots are not accepted. Without this section the `auto_epm-cdme_vcs` bot fails checks 3.1 and 3.2. Prereqs: docker stack up (`docker compose up -d`), superadmin fixtures, `~/.codemie/test-harness.json`; see the setup guide for the ENV=local Bearer-hijack patch.
 

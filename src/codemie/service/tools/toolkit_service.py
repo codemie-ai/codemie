@@ -70,6 +70,7 @@ from codemie.service.llm_service.llm_service import llm_service
 from codemie.service.mcp.auth_warnings import get_mcp_auth_warnings
 from codemie.service.mcp.toolkit_service import MCPToolkitService
 from codemie.service.provider import ProviderToolkitsFactory
+from codemie.service.script_tool_calls.binding import bind_script_registries
 from codemie.service.tools.plugin_tools_delegate import PluginToolsDelegate
 from codemie.service.tools.plugin_utils import cleanup_plugin_tool_name
 from codemie.service.tools.toolkit_lookup_service import ToolkitLookupService
@@ -600,7 +601,10 @@ class ToolkitService:
         )
 
         tools = cls._append_workspace_image_tool_if_enabled(tools, assistant, request, user)
-        return cls._append_request_user_input_tool_if_enabled(tools, assistant, thread_generator, request, is_react)
+        tools = cls._append_request_user_input_tool_if_enabled(tools, assistant, thread_generator, request, is_react)
+        # Last step: the list is final, so a workspace script can call exactly these tools.
+        bind_script_registries(tools, assistant)
+        return tools
 
     @classmethod
     def _append_request_user_input_tool_if_enabled(

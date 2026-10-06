@@ -784,6 +784,8 @@ class BaseAzureDevOpsWikiTool(CodeMieTool, AzureDevOpsAttachmentMixin):
 class GetWikiTool(BaseAzureDevOpsWikiTool):
     """Tool to get information about a wiki in Azure DevOps."""
 
+    script_callable = True
+
     name: str = GET_WIKI_TOOL.name
     description: str = GET_WIKI_TOOL.description
     args_schema: Type[BaseModel] = GetWikiInput
@@ -803,6 +805,8 @@ class GetWikiTool(BaseAzureDevOpsWikiTool):
 
 class ListWikisTool(BaseAzureDevOpsWikiTool):
     """Tool to list all wikis in an Azure DevOps project."""
+
+    script_callable = True
 
     name: str = LIST_WIKIS_TOOL.name
     description: str = LIST_WIKIS_TOOL.description
@@ -858,6 +862,8 @@ class ListWikisTool(BaseAzureDevOpsWikiTool):
 
 class ListPagesTool(BaseAzureDevOpsWikiTool):
     """Tool to list all pages within an Azure DevOps Wiki with hierarchical structure."""
+
+    script_callable = True
 
     name: str = LIST_PAGES_TOOL.name
     description: str = LIST_PAGES_TOOL.description
@@ -1043,6 +1049,8 @@ class ListPagesTool(BaseAzureDevOpsWikiTool):
 class GetWikiPageByPathTool(BaseAzureDevOpsWikiTool):
     """Tool to get wiki page content by path in Azure DevOps, with optional attachment download."""
 
+    script_callable = True
+
     name: str = GET_WIKI_PAGE_BY_PATH_TOOL.name
     description: str = GET_WIKI_PAGE_BY_PATH_TOOL.description
     args_schema: Type[BaseModel] = GetPageByPathInput
@@ -1104,6 +1112,8 @@ class GetWikiPageByPathTool(BaseAzureDevOpsWikiTool):
 class GetWikiPageByIdTool(BaseAzureDevOpsWikiTool):
     """Tool to get wiki page content by ID in Azure DevOps, with optional attachment download."""
 
+    script_callable = True
+
     name: str = GET_WIKI_PAGE_BY_ID_TOOL.name
     description: str = GET_WIKI_PAGE_BY_ID_TOOL.description
     args_schema: Type[BaseModel] = GetPageByIdInput
@@ -1154,6 +1164,8 @@ class GetWikiPageByIdTool(BaseAzureDevOpsWikiTool):
 class DeletePageByPathTool(BaseAzureDevOpsWikiTool):
     """Tool to delete wiki page by path in Azure DevOps."""
 
+    script_callable = True
+
     name: str = DELETE_PAGE_BY_PATH_TOOL.name
     description: str = DELETE_PAGE_BY_PATH_TOOL.description
     args_schema: Type[BaseModel] = DeletePageByPathInput
@@ -1182,6 +1194,8 @@ class DeletePageByPathTool(BaseAzureDevOpsWikiTool):
 class DeletePageByIdTool(BaseAzureDevOpsWikiTool):
     """Tool to delete wiki page by ID in Azure DevOps."""
 
+    script_callable = True
+
     name: str = DELETE_PAGE_BY_ID_TOOL.name
     description: str = DELETE_PAGE_BY_ID_TOOL.description
     args_schema: Type[BaseModel] = DeletePageByIdInput
@@ -1198,6 +1212,8 @@ class DeletePageByIdTool(BaseAzureDevOpsWikiTool):
 
 class RenameWikiPageTool(BaseAzureDevOpsWikiTool):
     """Tool to rename wiki page in Azure DevOps."""
+
+    script_callable = True
 
     name: str = RENAME_WIKI_PAGE_TOOL.name
     description: str = RENAME_WIKI_PAGE_TOOL.description
@@ -1292,6 +1308,8 @@ class MoveWikiPageTool(BaseAzureDevOpsWikiTool):
     while preserving all metadata, version history, and references. This is the
     correct way to re-arrange wiki pages for better organization.
     """
+
+    script_callable = True
 
     name: str = MOVE_WIKI_PAGE_TOOL.name
     description: str = MOVE_WIKI_PAGE_TOOL.description
@@ -1401,6 +1419,8 @@ class MoveWikiPageTool(BaseAzureDevOpsWikiTool):
 
 class CreateWikiPageTool(BaseAzureDevOpsWikiTool, FileToolMixin):
     """Tool to create a new wiki page in Azure DevOps with optional file attachments."""
+
+    script_callable = True
 
     name: str = CREATE_WIKI_PAGE_TOOL.name
     description: str = CREATE_WIKI_PAGE_TOOL.description
@@ -1519,6 +1539,8 @@ class CreateWikiPageTool(BaseAzureDevOpsWikiTool, FileToolMixin):
 class ModifyWikiPageTool(BaseAzureDevOpsWikiTool):
     """Tool to update existing wiki page in Azure DevOps."""
 
+    script_callable = True
+
     name: str = MODIFY_WIKI_PAGE_TOOL.name
     description: str = MODIFY_WIKI_PAGE_TOOL.description
     args_schema: Type[BaseModel] = ModifyPageInput
@@ -1603,6 +1625,8 @@ class ModifyWikiPageTool(BaseAzureDevOpsWikiTool):
 class SearchWikiPagesTool(BaseAzureDevOpsWikiTool):
     """Tool to search for text content across wiki pages in Azure DevOps."""
 
+    script_callable = True
+
     name: str = SEARCH_WIKI_PAGES_TOOL.name
     description: str = SEARCH_WIKI_PAGES_TOOL.description
     args_schema: Type[BaseModel] = SearchWikiPagesInput
@@ -1686,6 +1710,8 @@ class SearchWikiPagesTool(BaseAzureDevOpsWikiTool):
 class GetWikiPageCommentsByIdTool(BaseAzureDevOpsWikiTool):
     """Tool to get comments for a wiki page by ID in Azure DevOps."""
 
+    script_callable = True
+
     name: str = GET_WIKI_PAGE_COMMENTS_BY_ID_TOOL.name
     description: str = GET_WIKI_PAGE_COMMENTS_BY_ID_TOOL.description
     args_schema: Type[BaseModel] = GetPageCommentsByIdInput
@@ -1732,6 +1758,8 @@ class GetWikiPageCommentsByIdTool(BaseAzureDevOpsWikiTool):
 
 class GetWikiPageCommentsByPathTool(BaseAzureDevOpsWikiTool):
     """Tool to get comments for a wiki page by path in Azure DevOps."""
+
+    script_callable = True
 
     name: str = GET_WIKI_PAGE_COMMENTS_BY_PATH_TOOL.name
     description: str = GET_WIKI_PAGE_COMMENTS_BY_PATH_TOOL.description
@@ -1804,6 +1832,8 @@ class GetWikiPageCommentsByPathTool(BaseAzureDevOpsWikiTool):
 
 class AddWikiAttachmentTool(BaseAzureDevOpsWikiTool, FileToolMixin):
     """Tool to add file attachments to existing wiki pages in Azure DevOps."""
+
+    script_callable = True
 
     name: str = ADD_ATTACHMENT_TOOL.name
     description: str = ADD_ATTACHMENT_TOOL.description
@@ -2086,6 +2116,8 @@ class AddWikiAttachmentTool(BaseAzureDevOpsWikiTool, FileToolMixin):
 class GetWikiAttachmentContentTool(BaseAzureDevOpsWikiTool, AttachmentContentMixin):
     """Tool to retrieve and parse the content of a wiki page attachment in Azure DevOps."""
 
+    script_callable = True
+
     name: str = GET_WIKI_ATTACHMENT_CONTENT_TOOL.name
     description: str = GET_WIKI_ATTACHMENT_CONTENT_TOOL.description
     args_schema: Type[BaseModel] = GetAttachmentContentInput
@@ -2235,6 +2267,8 @@ class GetWikiAttachmentContentTool(BaseAzureDevOpsWikiTool, AttachmentContentMix
 class GetPageStatsByIdTool(BaseAzureDevOpsWikiTool):
     """Tool to get view statistics for a wiki page by ID in Azure DevOps."""
 
+    script_callable = True
+
     name: str = GET_PAGE_STATS_BY_ID_TOOL.name
     description: str = GET_PAGE_STATS_BY_ID_TOOL.description
     args_schema: Type[BaseModel] = GetPageStatsByIdInput
@@ -2253,6 +2287,8 @@ class GetPageStatsByIdTool(BaseAzureDevOpsWikiTool):
 
 class GetPageStatsByPathTool(BaseAzureDevOpsWikiTool):
     """Tool to get view statistics for a wiki page by path in Azure DevOps."""
+
+    script_callable = True
 
     name: str = GET_PAGE_STATS_BY_PATH_TOOL.name
     description: str = GET_PAGE_STATS_BY_PATH_TOOL.description
@@ -2296,6 +2332,8 @@ class AddWikiCommentByIdTool(BaseAzureDevOpsWikiTool, FileToolMixin):
     - Comments with file attachments
     - Standalone file attachments (empty comment text)
     """
+
+    script_callable = True
 
     name: str = ADD_WIKI_COMMENT_BY_ID_TOOL.name
     description: str = ADD_WIKI_COMMENT_BY_ID_TOOL.description
@@ -2473,6 +2511,8 @@ class AddWikiCommentByPathTool(BaseAzureDevOpsWikiTool, FileToolMixin):
 
     Supports both ID-prefixed paths ('/10330/Page-Name') and full paths ('/Parent/Child/Page').
     """
+
+    script_callable = True
 
     name: str = ADD_WIKI_COMMENT_BY_PATH_TOOL.name
     description: str = ADD_WIKI_COMMENT_BY_PATH_TOOL.description

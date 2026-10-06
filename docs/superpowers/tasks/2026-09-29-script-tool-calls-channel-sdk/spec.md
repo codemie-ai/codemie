@@ -1,5 +1,9 @@
 # EPMCDME-15401 Bridge Channel and SDK with an Echo Handler (spec)
 
+> **Superseded:** the bridge works in the jobs sandbox mode only (see the jobs-mode bridge spec); the 2026-10-02 decisions changed the SDK surface (`call_tool`, `ERROR_CODES`, a wait that follows the run's limit, `deadline_exceeded`) and the channel's failure handling (retry until the deadline, one exec per tick). See the code executor README.
+
+> **Changed again by sub-task 5 (2026-10-05):** the structure moved: `tool_call_protocol.py` (no `kubernetes`), `exec_runner.py`, one polling thread for every exec and a thread pool for handlers (`maxParallelCalls`), `call_tools` in the SDK, named error-code constants, one `ToolCallingSettings` value, the pooled-mode leftovers (sweep, kill, `pid`/`start_time`) removed, scope as an object (`ScriptScope`), one result mechanism (`to_script_result`) and a log record factory. This document describes the first version; the code executor README describes the current one.
+
 Scope: repo `codemie` only. The bridge works in pooled sandbox mode only. Size L (23/36). Source of requirements:
 `docs/stories/2026-09-28-custom-tools/children/script-tool-calls/subtasks/1-channel-and-sdk/task.md`. Its ten
 acceptance criteria apply unchanged; this spec fixes the design decisions the task left open.

@@ -19,8 +19,7 @@ self-contained: local imports only, no module-level state, nothing written to st
 """
 
 
-def codemie_bootstrap(sdk_source: str, exchange_dir: str | None) -> None:
-    import os
+def codemie_bootstrap(sdk_source: str, sdk_config: dict) -> None:
     import pathlib
     import sys
     import types
@@ -28,20 +27,11 @@ def codemie_bootstrap(sdk_source: str, exchange_dir: str | None) -> None:
     sdk = types.ModuleType('codemie_runtime_sdk')
     exec(compile(sdk_source, 'codemie_runtime_sdk.py', 'exec'), sdk.__dict__)
     sys.modules['codemie_runtime_sdk'] = sdk
+    exchange_dir = sdk_config.get('exchange_dir')
     if exchange_dir is None:
         return
     try:
-        run_dir = pathlib.Path(exchange_dir)
-        run_dir.mkdir(parents=True, exist_ok=True)
-        (run_dir / 'pid').write_text(str(os.getpid()))
-        try:
-            # /proc is read through pathlib: the guard admits read-only absolute paths for stdlib callers only
-            stat_text = pathlib.Path('/proc/self/stat').read_text()
-            start_time = stat_text.rsplit(')', 1)[1].split()[19]
-        except (OSError, IndexError):
-            start_time = None
-        if start_time is not None:
-            (run_dir / 'start_time').write_text(start_time)
-        sdk._configure(exchange_dir)
+        pathlib.Path(exchange_dir).mkdir(parents=True, exist_ok=True)
+        sdk._configure(sdk_config)
     except OSError as exc:
         sys.stderr.write('codemie tool calling unavailable: ' + repr(exc) + '\n')

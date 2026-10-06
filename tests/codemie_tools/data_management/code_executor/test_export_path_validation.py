@@ -19,7 +19,7 @@ from langchain_core.tools import ToolException
 
 from codemie_tools.data_management.code_executor.code_executor_tool import CodeExecutorTool
 from codemie_tools.data_management.code_executor.models import SandboxMode
-from codemie_tools.data_management.workspace.execute_workspace_script_tool import WorkspaceScriptRunner
+from codemie_tools.data_management.workspace.workspace_script_runner import WorkspaceScriptRunner
 
 WORKDIR = "/home/codemie/test_user"
 

@@ -36,44 +36,50 @@ def _restore_sdk_module() -> Iterator[None]:
         sys.modules["codemie_runtime_sdk"] = previous
 
 
-def test_registers_sdk_module_and_skips_exchange_folder_when_dir_is_none(tmp_path: Path, monkeypatch) -> None:
+def test_registers_sdk_module_and_skips_exchange_folder_when_the_config_has_no_dir(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
 
-    codemie_bootstrap(_SDK_SOURCE, None)
+    codemie_bootstrap(_SDK_SOURCE, {})
 
     sdk = sys.modules["codemie_runtime_sdk"]
     assert sdk.BRIDGE_DIR_NAME == ".codemie_bridge"
+    assert sdk._exchange_dir is None
     assert list(tmp_path.iterdir()) == []
 
 
-def test_creates_exchange_folder_with_pid_and_configures_sdk(tmp_path: Path, monkeypatch) -> None:
+def test_creates_the_exchange_folder_and_configures_the_sdk(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
-    real_read_text = Path.read_text
-    fake_stat = "1 (python) S " + " ".join(str(n) for n in range(2, 40))
-
-    def read_text(self: Path, *args: object, **kwargs: object) -> str:
-        if str(self) == "/proc/self/stat":
-            return fake_stat
-        return real_read_text(self, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "read_text", read_text)
     exchange_dir = ".codemie_bridge/123-abc"
 
-    codemie_bootstrap(_SDK_SOURCE, exchange_dir)
+    codemie_bootstrap(_SDK_SOURCE, {"exchange_dir": exchange_dir, "run_seconds": 180.0, "max_payload_bytes": 1000})
 
     run_dir = tmp_path / exchange_dir
-    assert (run_dir / "pid").read_text() != ""
-    assert (run_dir / "start_time").read_text() == "20"
-    assert sys.modules["codemie_runtime_sdk"]._state == exchange_dir
+    assert run_dir.is_dir()
+    assert list(run_dir.iterdir()) == [], "the bootstrap writes nothing into the folder"
+    sdk = sys.modules["codemie_runtime_sdk"]
+    assert sdk._exchange_dir == exchange_dir
+    assert sdk._run_seconds == 180.0
+    assert sdk._max_payload_bytes == 1000
 
 
 def test_reports_unavailable_on_stderr_when_folder_cannot_be_created(tmp_path: Path, monkeypatch, capsys) -> None:
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".codemie_bridge").write_text("a file where the folder should be")
 
-    codemie_bootstrap(_SDK_SOURCE, ".codemie_bridge/123-abc")
+    codemie_bootstrap(_SDK_SOURCE, {"exchange_dir": ".codemie_bridge/123-abc"})
 
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err.startswith("codemie tool calling unavailable: ")
     assert captured.err.endswith("\n")
+    assert sys.modules["codemie_runtime_sdk"]._exchange_dir is None
+
+
+def test_a_missing_run_limit_stays_unset(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    codemie_bootstrap(_SDK_SOURCE, {"exchange_dir": ".codemie_bridge/123-abc"})
+
+    sdk = sys.modules["codemie_runtime_sdk"]
+    assert sdk._run_seconds is None
+    assert sdk._max_payload_bytes == sdk.MAX_PAYLOAD_BYTES

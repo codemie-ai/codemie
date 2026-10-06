@@ -95,6 +95,7 @@ def normalize_string(table: str) -> str:
 
 
 class ServiceNowTableTool(CodeMieTool):
+    script_callable = True
     args_schema: Type[ServiceNowInput] = ServiceNowInput
     name: str = SNOW_TABLE_TOOL.name
     description: str = SNOW_TABLE_TOOL.description

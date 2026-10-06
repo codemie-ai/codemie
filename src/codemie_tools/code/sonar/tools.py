@@ -107,6 +107,7 @@ def parse_payload_params(params: Union[str, Dict[str, Any], None]) -> Dict[str, 
 
 
 class SonarTool(CodeMieTool):
+    script_callable = True
     name: str = SONAR_TOOL.name
     config: SonarConfig
     args_schema: Type[BaseModel] = SonarToolInput

@@ -49,6 +49,7 @@ from codemie.templates.coding_prompts import REPO_TREE_FILTER_RELEVANCE_PROMPT
 
 
 class GetRepoFileTreeTool(CodeMieTool, DatasourceHealthMixin, BaseCodeToolMixin):
+    script_callable = True
     base_name: str = REPO_TREE_TOOL.name
     name: str = REPO_TREE_TOOL.name
     description: str = REPO_TREE_TOOL.description
@@ -74,6 +75,7 @@ class GetRepoFileTreeTool(CodeMieTool, DatasourceHealthMixin, BaseCodeToolMixin)
 
 
 class GetRepoFileTreeToolV2(CodeMieTool, DatasourceHealthMixin, CodeRepoBaseToolMixin):
+    script_callable = True
     code_fields: CodeFields = Field(exclude=True)
     base_name: str = REPO_TREE_TOOL_V2.name
     name: str = REPO_TREE_TOOL_V2.name
@@ -128,6 +130,7 @@ class GetRepoFileTreeToolV2(CodeMieTool, DatasourceHealthMixin, CodeRepoBaseTool
 
 
 class SearchCodeRepoTool(CodeMieTool, DatasourceHealthMixin, SearchCodeRepoBaseToolMixin):
+    script_callable = True
     base_name: str = CODE_SEARCH_TOOL.name
     name: str = CODE_SEARCH_TOOL.name
     description: str = CODE_SEARCH_TOOL.description
@@ -173,6 +176,7 @@ class SearchCodeRepoTool(CodeMieTool, DatasourceHealthMixin, SearchCodeRepoBaseT
 
 
 class SearchCodeRepoByPathsTool(CodeMieTool, DatasourceHealthMixin, SearchCodeRepoBaseToolMixin):
+    script_callable = True
     base_name: str = CODE_SEARCH_BY_PATHS_TOOL.name
     name: str = CODE_SEARCH_BY_PATHS_TOOL.name
     description: str = CODE_SEARCH_BY_PATHS_TOOL.description

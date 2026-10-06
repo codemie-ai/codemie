@@ -82,7 +82,6 @@ def test_build_guarded_workspace_script_runs_workspace_script(tmp_path: Path) ->
 
 
 _EXCHANGE_DIR = ".codemie_bridge/1700000000-abc123"
-_PROC_STAT_AVAILABLE = Path("/proc/self/stat").exists()
 
 
 def _run_wrapper(wrapper: str, workspace_root: Path) -> subprocess.CompletedProcess[str]:
@@ -95,6 +94,10 @@ def _run_wrapper(wrapper: str, workspace_root: Path) -> subprocess.CompletedProc
     )
 
 
+def _sdk_config(run_seconds: float | None = 120.0) -> dict[str, object]:
+    return {"exchange_dir": _EXCHANGE_DIR, "run_seconds": run_seconds, "max_payload_bytes": 262144}
+
+
 def _make_workspace(tmp_path: Path, script_source: str) -> Path:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
@@ -105,37 +108,51 @@ def _make_workspace(tmp_path: Path, script_source: str) -> Path:
 def test_workspace_wrapper_with_exchange_dir_exposes_configured_sdk(tmp_path: Path) -> None:
     workspace_root = _make_workspace(
         tmp_path,
-        "import os\n"
         "import codemie_runtime_sdk\n"
-        "print(os.getpid())\n"
-        "print(codemie_runtime_sdk._state)\n"
+        "print(codemie_runtime_sdk._exchange_dir)\n"
         "print(codemie_runtime_sdk.PROTOCOL_VERSION)\n",
     )
-    wrapper = build_guarded_workspace_script(
-        "script.py", workspace_root=str(workspace_root), exchange_dir=_EXCHANGE_DIR
-    )
+    wrapper = build_guarded_workspace_script("script.py", workspace_root=str(workspace_root), sdk_config=_sdk_config())
 
     result = _run_wrapper(wrapper, workspace_root)
 
     assert result.returncode == 0, result.stderr
-    child_pid, state, version = result.stdout.split()
+    state, version = result.stdout.split()
     assert state == _EXCHANGE_DIR
     assert version == "1"
-    assert (workspace_root / _EXCHANGE_DIR / "pid").read_text().strip() == child_pid
+    assert (workspace_root / _EXCHANGE_DIR).is_dir()
+    assert not (workspace_root / _EXCHANGE_DIR / "pid").exists()
+    assert not (workspace_root / _EXCHANGE_DIR / "start_time").exists()
 
 
-@pytest.mark.skipif(not _PROC_STAT_AVAILABLE, reason="requires /proc")
-def test_workspace_wrapper_writes_process_start_time(tmp_path: Path) -> None:
-    workspace_root = _make_workspace(tmp_path, "print('ok')\n")
+def test_workspace_wrapper_passes_the_run_limit_to_the_sdk(tmp_path: Path) -> None:
+    workspace_root = _make_workspace(
+        tmp_path,
+        "import codemie_runtime_sdk as sdk\nprint(sdk._run_seconds)\n",
+    )
     wrapper = build_guarded_workspace_script(
-        "script.py", workspace_root=str(workspace_root), exchange_dir=_EXCHANGE_DIR
+        "script.py", workspace_root=str(workspace_root), sdk_config=_sdk_config(run_seconds=180.0)
     )
 
     result = _run_wrapper(wrapper, workspace_root)
 
     assert result.returncode == 0, result.stderr
-    start_time = (workspace_root / _EXCHANGE_DIR / "start_time").read_text().strip()
-    assert start_time.isdigit()
+    assert result.stdout.strip() == "180.0"
+
+
+def test_workspace_wrapper_without_a_run_limit_leaves_it_unset(tmp_path: Path) -> None:
+    workspace_root = _make_workspace(
+        tmp_path,
+        "import codemie_runtime_sdk as sdk\nprint(sdk._run_seconds)\n",
+    )
+    wrapper = build_guarded_workspace_script(
+        "script.py", workspace_root=str(workspace_root), sdk_config=_sdk_config(run_seconds=None)
+    )
+
+    result = _run_wrapper(wrapper, workspace_root)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "None"
 
 
 def test_workspace_wrapper_without_exchange_dir_leaves_sdk_unconfigured(tmp_path: Path) -> None:
@@ -158,9 +175,7 @@ def test_workspace_wrapper_without_exchange_dir_leaves_sdk_unconfigured(tmp_path
 
 def test_workspace_wrapper_stdout_carries_only_script_output(tmp_path: Path) -> None:
     workspace_root = _make_workspace(tmp_path, "print('only-this')\n")
-    wrapper = build_guarded_workspace_script(
-        "script.py", workspace_root=str(workspace_root), exchange_dir=_EXCHANGE_DIR
-    )
+    wrapper = build_guarded_workspace_script("script.py", workspace_root=str(workspace_root), sdk_config=_sdk_config())
 
     result = _run_wrapper(wrapper, workspace_root)
 

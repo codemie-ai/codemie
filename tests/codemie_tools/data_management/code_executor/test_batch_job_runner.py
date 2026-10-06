@@ -24,6 +24,7 @@ from codemie_tools.data_management.code_executor.batch_job_runner import (
 )
 from codemie_tools.data_management.code_executor.job_bridge import JobBridgeOptions
 from codemie_tools.data_management.code_executor.models import CodeExecutorConfig
+from codemie_tools.data_management.code_executor.tool_calling_limits import RunBudget, ToolCallingSettings
 
 
 def _make_config(**overrides) -> CodeExecutorConfig:
@@ -47,7 +48,9 @@ def _make_config(**overrides) -> CodeExecutorConfig:
 
 
 def _bridge_at(exchange_dir: str, tool_calling_timeout: float = 120.0) -> JobBridgeOptions:
-    return JobBridgeOptions(exchange_dir=exchange_dir, tool_calling_timeout=tool_calling_timeout)
+    return JobBridgeOptions(
+        exchange_dir=exchange_dir, settings=ToolCallingSettings(run_timeout_seconds=tool_calling_timeout)
+    )
 
 
 def _bridge_options(tool_calling_timeout: float | None) -> JobBridgeOptions | None:
@@ -191,8 +194,8 @@ class TestBatchJobRunnerHappyPath(unittest.TestCase):
                 runner.run("print('hello')", bridge=_bridge_options(tool_calling_timeout))
 
         manifest = batch.create_namespaced_job.call_args.kwargs["body"]
-        deadline = runner._wait_for_pod_running.call_args.args[1]
-        return manifest["spec"]["activeDeadlineSeconds"], deadline - 1000.0
+        budget = runner._wait_for_pod_running.call_args.args[1]
+        return manifest["spec"]["activeDeadlineSeconds"], budget.deadline - 1000.0
 
     def test_tool_calling_timeout_widens_job_deadline(self):
         active_deadline, deadline_offset = self._run_capturing_budget(tool_calling_timeout=120)
@@ -216,8 +219,9 @@ class TestBatchJobRunnerHappyPath(unittest.TestCase):
 
         with (
             patch("codemie_tools.data_management.code_executor.batch_job_runner.KubernetesClientManager") as mgr_cls,
-            patch("codemie_tools.data_management.code_executor.batch_job_runner.JobToolCallBridge"),
+            patch("codemie_tools.data_management.code_executor.batch_job_runner.JobToolCallBridge") as bridge_cls,
         ):
+            bridge_cls.return_value.wait_until_done.return_value = False
             mgr_cls.return_value.get_batch_client.return_value = batch
             mgr_cls.return_value.get_client.return_value = core
             runner = BatchJobRunner(config)
@@ -229,9 +233,10 @@ class TestBatchJobRunnerHappyPath(unittest.TestCase):
             ):
                 runner.run("print('hello')", bridge=_bridge_options(120))
 
-        assert runner._wait_for_pod_running.call_args.kwargs["budget_seconds"] == 180.0
-        assert runner._wait_for_sentinel.call_args.kwargs["budget_seconds"] == 180.0
-        assert completion.call_args.kwargs["budget_seconds"] == 180.0
+        pod_budget = runner._wait_for_pod_running.call_args.args[1]
+        assert pod_budget.seconds == 180.0
+        assert runner._wait_for_sentinel.call_args.args[2] is pod_budget
+        assert completion.call_args.args[1] is pod_budget, "one budget is shared by every wait"
 
     def test_smaller_tool_calling_timeout_does_not_shrink_deadline(self):
         active_deadline, deadline_offset = self._run_capturing_budget(tool_calling_timeout=2)
@@ -534,6 +539,12 @@ class TestBatchJobRunnerExecHelpers(unittest.TestCase):
             assert runner._exec_tar_out("the-pod", "/workspace", "missing.txt") is None
 
 
+_FAR = RunBudget(seconds=65.0, deadline=1e9)
+_BUDGET = RunBudget(seconds=180.0, deadline=123.0)
+_EXPIRED = RunBudget(seconds=65.0, deadline=0.0)
+_EXPIRED_180 = RunBudget(seconds=180.0, deadline=0.0)
+
+
 class TestBatchJobRunnerWaitHelpers(unittest.TestCase):
     def setUp(self):
         BatchJobRunner._instance = None
@@ -545,18 +556,47 @@ class TestBatchJobRunnerWaitHelpers(unittest.TestCase):
     def test_wait_for_pod_running_returns_pod_name_when_running(self):
         runner = self._runner()
         with patch.object(runner, "_find_job_pod", return_value=_pod(phase="Running", name="x")):
-            assert runner._wait_for_pod_running("job-x", deadline=1e9) == "x"
+            assert runner._wait_for_pod_running("job-x", _FAR) == "x"
 
     def test_wait_for_pod_running_raises_on_terminal_phase_before_upload(self):
         runner = self._runner()
         with patch.object(runner, "_find_job_pod", return_value=_pod(phase="Failed", name="x")):
             with pytest.raises(ToolException, match="terminal phase"):
-                runner._wait_for_pod_running("job-x", deadline=1e9)
+                runner._wait_for_pod_running("job-x", _FAR)
+
+    def test_wait_for_done_without_a_bridge_checks_the_sentinel(self):
+        runner = BatchJobRunner(_make_config())
+        runner._wait_for_sentinel = MagicMock(return_value=None)
+
+        runner._wait_for_done(None, "the-pod", "/workspace", _BUDGET)
+
+        runner._wait_for_sentinel.assert_called_once_with("the-pod", "/workspace/.done", _BUDGET)
+
+    def test_wait_for_done_trusts_a_bridge_that_saw_the_marker(self):
+        runner = BatchJobRunner(_make_config())
+        runner._wait_for_sentinel = MagicMock(return_value=None)
+        bridge = MagicMock()
+        bridge.wait_until_done.return_value = True
+
+        runner._wait_for_done(bridge, "the-pod", "/workspace", _BUDGET)
+
+        bridge.wait_until_done.assert_called_once_with(_BUDGET.deadline)
+        runner._wait_for_sentinel.assert_not_called()
+
+    def test_wait_for_done_falls_back_to_the_sentinel_when_the_bridge_could_not_tell(self):
+        runner = BatchJobRunner(_make_config())
+        runner._wait_for_sentinel = MagicMock(return_value=None)
+        bridge = MagicMock()
+        bridge.wait_until_done.return_value = False
+
+        runner._wait_for_done(bridge, "the-pod", "/workspace", _BUDGET)
+
+        runner._wait_for_sentinel.assert_called_once_with("the-pod", "/workspace/.done", _BUDGET)
 
     def test_wait_for_sentinel_returns_when_exec_succeeds(self):
         runner = self._runner()
         with patch.object(runner, "_exec", return_value=b""):
-            runner._wait_for_sentinel("the-pod", "/workspace/.done", deadline=1e9)
+            runner._wait_for_sentinel("the-pod", "/workspace/.done", _FAR)
 
     def test_wait_for_sentinel_times_out_when_file_never_appears(self):
         runner = self._runner()
@@ -569,28 +609,36 @@ class TestBatchJobRunnerWaitHelpers(unittest.TestCase):
             ),
         ):
             with pytest.raises(ToolException, match="did not complete"):
-                runner._wait_for_sentinel("the-pod", "/workspace/.done", deadline=0.0)
+                runner._wait_for_sentinel("the-pod", "/workspace/.done", _EXPIRED)
 
     def test_wait_for_pod_running_timeout_reports_the_given_budget(self):
         runner = self._runner()
         with patch.object(runner, "_find_job_pod", return_value=None):
             with pytest.raises(ToolException, match=r"within 180s"):
-                runner._wait_for_pod_running("job-x", deadline=0.0, budget_seconds=180.0)
+                runner._wait_for_pod_running("job-x", _EXPIRED_180)
 
     def test_wait_for_sentinel_timeout_reports_the_given_budget(self):
         runner = self._runner()
         with pytest.raises(ToolException, match=r"within 180s"):
-            runner._wait_for_sentinel("the-pod", "/workspace/.done", deadline=0.0, budget_seconds=180.0)
+            runner._wait_for_sentinel("the-pod", "/workspace/.done", _EXPIRED_180)
 
     def test_wait_for_completion_timeout_reports_the_given_budget(self):
         runner = self._runner()
         with pytest.raises(ToolException, match=r"within 180s"):
-            runner._wait_for_completion("job-x", deadline=0.0, budget_seconds=180.0)
+            runner._wait_for_completion("job-x", _EXPIRED_180)
 
-    def test_timeouts_default_to_the_execution_timeout_budget(self):
-        runner = self._runner()
-        with pytest.raises(ToolException, match=r"within 65s"):
-            runner._wait_for_sentinel("the-pod", "/workspace/.done", deadline=0.0)
+    def test_the_job_budget_is_the_script_limit_plus_the_buffer_without_tool_calling(self):
+        assert self._runner()._budget_seconds(None) == 65.0
+
+    def test_the_job_budget_is_widened_by_a_longer_run_limit(self):
+        settings = ToolCallingSettings(run_timeout_seconds=120.0)
+
+        assert self._runner()._budget_seconds(settings) == 180.0
+
+    def test_a_shorter_run_limit_does_not_shrink_the_job_budget(self):
+        settings = ToolCallingSettings(run_timeout_seconds=2.0)
+
+        assert self._runner()._budget_seconds(settings) == 65.0
 
 
 class TestBatchJobRunnerErrors(unittest.TestCase):
@@ -743,6 +791,7 @@ class TestBatchJobRunnerToolCallChannel(unittest.TestCase):
     def _run(
         self,
         *,
+        channel_done: bool = True,
         sentinel_error: ToolException | None = None,
         snapshot: dict[str, str] | None = None,
         cleanup_error: Exception | None = None,
@@ -756,12 +805,18 @@ class TestBatchJobRunnerToolCallChannel(unittest.TestCase):
         channel.start.side_effect = lambda: events.append("start")
         channel.stop.side_effect = lambda: events.append("stop")
 
-        def _cleanup(*, kill: bool) -> None:
-            events.append(f"cleanup(kill={kill})")
+        def _wait_until_done(_deadline: float) -> bool:
+            events.append("channel_done" if channel_done else "channel_not_done")
+            return channel_done
+
+        channel.wait_until_done.side_effect = _wait_until_done
+
+        def _cleanup() -> None:
+            events.append("remove_exchange_dir")
             if cleanup_error is not None:
                 raise cleanup_error
 
-        channel.cleanup.side_effect = _cleanup
+        channel.remove_exchange_dir.side_effect = _cleanup
 
         batch = MagicMock(name="batch")
         batch.read_namespaced_job_status.return_value = _terminal_status(succeeded=1)
@@ -820,9 +875,9 @@ class TestBatchJobRunnerToolCallChannel(unittest.TestCase):
         assert events == [
             "start",
             "upload",
-            "sentinel",
+            "channel_done",
             "stop",
-            "cleanup(kill=False)",
+            "remove_exchange_dir",
             "exports",
             "snapshot",
             "exports",
@@ -835,8 +890,13 @@ class TestBatchJobRunnerToolCallChannel(unittest.TestCase):
             workdir="/workspace",
             kubeconfig_path=None,
         )
-        channel_cls.assert_called_once_with(runner_cls.return_value, ".codemie_bridge/ex1")
-        channel.sweep.assert_not_called()
+        kwargs = channel_cls.call_args.kwargs
+        assert channel_cls.call_args.args == (runner_cls.return_value, ".codemie_bridge/ex1")
+        assert kwargs["dispatcher"] is not None
+        assert kwargs["max_parallel_calls"] == ToolCallingSettings().max_parallel_calls
+        assert kwargs["done_path"] == ".done"
+        assert isinstance(kwargs["deadline"], float)
+        assert channel is channel_cls.return_value
 
     def test_no_bridge_never_builds_a_channel(self):
         events, runner_cls, channel_cls, _ = self._run()
@@ -845,20 +905,49 @@ class TestBatchJobRunnerToolCallChannel(unittest.TestCase):
         runner_cls.assert_not_called()
         channel_cls.assert_not_called()
 
+    def test_runner_checks_the_sentinel_itself_when_the_channel_could_not_tell(self):
+        events, _, _, _ = self._run(bridge=_bridge_at(".codemie_bridge/ex1"), channel_done=False)
+
+        assert events[:4] == ["start", "upload", "channel_not_done", "sentinel"]
+
+    def test_runner_does_not_exec_the_sentinel_when_the_channel_reported_done(self):
+        events, _, _, _ = self._run(bridge=_bridge_at(".codemie_bridge/ex1"))
+
+        assert "sentinel" not in events
+
+    def test_the_channel_gets_the_job_deadline_the_runner_waits_on(self):
+        _, _, channel_cls, channel = self._run(bridge=_bridge_at(".codemie_bridge/ex1"))
+
+        deadline = channel_cls.call_args.kwargs["deadline"]
+        waited_on = channel.wait_until_done.call_args.args[0]
+        assert deadline == waited_on
+
     def test_sentinel_failure_stops_channel_once_before_job_deletion(self):
         with pytest.raises(ToolException, match="sentinel timed out"):
-            self._run(bridge=_bridge_at(".codemie_bridge/ex1"), sentinel_error=ToolException("sentinel timed out"))
+            self._run(
+                bridge=_bridge_at(".codemie_bridge/ex1"),
+                channel_done=False,
+                sentinel_error=ToolException("sentinel timed out"),
+            )
 
-        assert self.events == ["start", "upload", "sentinel", "stop", "cleanup(kill=False)", "delete_job"]
+        assert self.events == [
+            "start",
+            "upload",
+            "channel_not_done",
+            "sentinel",
+            "stop",
+            "remove_exchange_dir",
+            "delete_job",
+        ]
         self.channel.stop.assert_called_once_with()
-        assert self.channel.cleanup.call_args_list == [call(kill=False)]
+        assert self.channel.remove_exchange_dir.call_args_list == [call()]
         self.channel.sweep.assert_not_called()
 
     def test_happy_path_stops_and_cleans_up_channel_exactly_once(self):
         _, _, _, channel = self._run(bridge=_bridge_at(".codemie_bridge/ex1"))
 
         channel.stop.assert_called_once_with()
-        assert channel.cleanup.call_args_list == [call(kill=False)]
+        assert channel.remove_exchange_dir.call_args_list == [call()]
         channel.sweep.assert_not_called()
 
     def test_bridge_files_never_reach_job_result(self):
@@ -883,7 +972,7 @@ class TestBatchJobRunnerToolCallChannel(unittest.TestCase):
         assert self.result.exported_files == {"out.txt": b"out.txt"}
         assert self.result.changed_files == {"a.txt": b"a.txt"}
         assert self.pulled == ["out.txt", "a.txt", ".stderr"]
-        self.channel.cleanup.assert_called_once_with(kill=False)
+        self.channel.remove_exchange_dir.assert_called_once_with()
         assert self.events[-1] == "delete_job"
 
     def test_bridge_lookalike_export_is_still_pulled(self):
@@ -895,5 +984,5 @@ class TestBatchJobRunnerToolCallChannel(unittest.TestCase):
         self._run(bridge=_bridge_at(".codemie_bridge/x"), cleanup_error=RuntimeError("cleanup failed"))
 
         assert isinstance(self.result, JobResult)
-        self.channel.cleanup.assert_called_once_with(kill=False)
+        self.channel.remove_exchange_dir.assert_called_once_with()
         assert self.events[-1] == "delete_job"

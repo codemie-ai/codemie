@@ -38,11 +38,13 @@ from codemie.rest_api.models.agent_workspace import (
     WorkspaceGrepMatchResponse,
 )
 from codemie.rest_api.security.user import User
-from codemie.service.workspace_script_bridge import resolve_tool_calling_timeout
+from codemie.service.script_tool_calls.context import ScriptRunContext
+from codemie.service.script_tool_calls.handler import build_tool_call_handlers
+from codemie.service.workspace_script_bridge import resolve_tool_calling_settings
 from codemie_tools.base.file_object import FileObject
-from codemie_tools.data_management.workspace.execute_workspace_script_tool import (
-    WorkspaceScriptRunner,
-)
+from codemie_tools.data_management.code_executor.job_bridge import new_job_bridge_options
+from codemie_tools.data_management.code_executor.tool_calling_limits import ToolCallingSettings
+from codemie_tools.data_management.workspace.workspace_script_runner import WorkspaceScriptRunner
 
 MULTIPLE_OLD_STRING_ERROR = (
     "Multiple old_string are found. Please adjust old_string to be unique or set replace_all to True "
@@ -506,15 +508,32 @@ class AgentWorkspaceService:
         script_path: str,
         user: User,
         export_files: list[str] | None = None,
+        run_context: ScriptRunContext | None = None,
+        tool_calling: ToolCallingSettings | None = None,
     ) -> ExecuteWorkspaceScriptResponse:
+        """Run a workspace script. ``run_context`` says which platform tools the script may call;
+        without one (a direct REST run) every ``tool.call`` is answered ``no_context``. ``tool_calling`` is the run's
+        tool-calling settings as the caller already read them; without them the settings are read here."""
         workspace = self.get_workspace(workspace_id, user)
         input_files = self.get_workspace_input_files(workspace_id, user)
+        settings = tool_calling if tool_calling is not None else resolve_tool_calling_settings()
+        bridge = (
+            None
+            if settings is None
+            else new_job_bridge_options(
+                settings,
+                build_tool_call_handlers(
+                    run_context or ScriptRunContext.without_context(user),
+                    max_payload_bytes=settings.max_payload_bytes,
+                ),
+            )
+        )
         executor = WorkspaceScriptRunner(
             file_repository=self.file_repository,
             user_id=user.id,
             input_files=input_files,
             conversation_id=workspace.conversation_id,
-            tool_calling_timeout=resolve_tool_calling_timeout(),
+            bridge=bridge,
         )
         output = executor.execute_script(script_path=script_path, export_files=export_files)
         synced_files = self._sync_execution_files(workspace.id, executor.last_execution_files)

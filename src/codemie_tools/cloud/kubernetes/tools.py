@@ -27,6 +27,8 @@ from .tools_vars import KUBERNETES_TOOL
 class GenericKubernetesTool(CodeMieTool):
     """Generic tool for interacting with Kubernetes API."""
 
+    script_callable = True
+
     config: KubernetesConfig
     client: Optional[KubernetesClient] = None
     name: str = KUBERNETES_TOOL.name

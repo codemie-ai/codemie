@@ -1,0 +1,128 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15402_script-tool-calls-tool-hookup",
+  "head": "ec2368a2a77a62bc91a0950c23be25e3edea2b6d",
+  "runner": "custom",
+  "started_at": "2026-09-30T15:25:19Z",
+  "completed_at": "2026-09-30T15:27:29Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "ruff",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1382,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 73098,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 613,
+      "command": "make license-check",
+      "exit_code": 0,
+      "notes": "Checked 2329 files, 0 missing license headers."
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 13916,
+      "command": "make gitleaks",
+      "exit_code": 0,
+      "notes": "Docker available; gitleaks reported 'no leaks found'."
+    },
+    {
+      "id": "test",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 114094,
+      "command": "make test",
+      "exit_code": 0,
+      "notes": "17175 passed, 176 skipped. Pre-push hook (opt-in) runs the same suite excluding tests/enterprise with coverage; make test is a superset."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make coverage",
+      "exit_code": null,
+      "notes": "Coverage not requested."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make sonar-local",
+      "exit_code": null,
+      "notes": "SONAR_TOKEN is not set; scripts/sonar/run-local-sonar.js exits 0 with 'Skipping Sonar scan because SONAR_TOKEN is not set.' (not executed to avoid a false pass). Set SONAR_TOKEN and host config to run locally; CI/server-side Sonar settles it."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make verify",
+      "exit_code": null,
+      "notes": "Aggregate of ruff, license, gitleaks, test; each run individually above."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "exit_code": null,
+      "notes": "Requires docker compose stack, superadmin fixtures and ~/.codemie/test-harness.json; needed only when opening the MR (paste summary into MR description ## Test harness)."
+    },
+    {
+      "id": "pre-commit-hook",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 1995,
+      "command": "bash scripts/git-hooks/pre_commit.sh",
+      "exit_code": 0,
+      "notes": "Steps are ruff format check on staged files, ruff check and license check; covered by the ruff and license gates above (ruff format made no changes)."
+    },
+    {
+      "id": "pre-push-hook",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "bash scripts/git-hooks/pre_push.sh",
+      "exit_code": null,
+      "notes": "Opt-in (CODEMIE_PREPUSH_ENABLED=true); pytest part covered by the test gate, sonar part skipped for missing SONAR_TOKEN."
+    },
+    {
+      "id": "commit-msg-hook",
+      "source": "hook",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "bash scripts/git-hooks/commit_msg.sh",
+      "exit_code": null,
+      "notes": "Applies to commit message at commit time; recent commits carry the EPMCDME-15402: prefix."
+    },
+    {
+      "id": "ci-pipeline",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": ".gitlab-ci.yml",
+      "exit_code": null,
+      "notes": "Pipeline only contains pre-ci-guard wait jobs (ci-pipeline, compliance-report contexts run externally); no runnable local gates. MR must include /sanity request and ## Test harness section."
+    }
+  ],
+  "failures": {}
+}

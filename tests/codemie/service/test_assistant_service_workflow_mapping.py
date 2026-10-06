@@ -29,12 +29,14 @@ from codemie.rest_api.security.user import User
 from codemie.service.assistant_service import AssistantService
 
 
-def _build_agent_for_workflow(workflow_assistant, mock_assistant):
+def _build_agent_for_workflow(workflow_assistant, mock_assistant, get_tools_spy=None):
     """Invoke build_agent_for_workflow with all heavy collaborators mocked at the seams.
 
     Returns the _apply_marketplace_tool_mappings spy so tests can assert whether the
-    per-assistant mapping merge ran for the given node.
+    per-assistant mapping merge ran for the given node. ``get_tools_spy`` (a Mock) replaces the
+    patched ``ToolkitService.get_tools`` so a test can inspect how it was called.
     """
+    get_tools_mock = get_tools_spy if get_tools_spy is not None else Mock(return_value=[])
     user = Mock(spec=User)
     user.id = "user-123"
     user.name = "Test User"
@@ -50,7 +52,7 @@ def _build_agent_for_workflow(workflow_assistant, mock_assistant):
         patch("codemie.service.assistant_service.set_llm_context"),
         patch("codemie.service.assistant_service.set_disable_prompt_cache"),
         patch("codemie.service.assistant_service.build_unique_file_objects_list", return_value={}),
-        patch("codemie.service.assistant_service.ToolkitService.get_tools", return_value=[]),
+        patch("codemie.service.assistant_service.ToolkitService.get_tools", get_tools_mock),
     ):
         AssistantService.build_agent_for_workflow(
             user_input="hello",
@@ -103,3 +105,22 @@ class TestWorkflowAppliesPerAssistantMapping:
         mock_apply = _build_agent_for_workflow(workflow_assistant, assistant)
 
         mock_apply.assert_not_called()
+
+
+class TestWorkflowScopeForScriptToolCalls:
+    """A workflow assistant node (stored or inline) runs scripts with its own assistant's tools, never workflow scope."""
+
+    def test_stored_assistant_node_gets_no_workflow_project(self):
+        get_tools_spy = Mock(return_value=[])
+
+        _build_agent_for_workflow(WorkflowAssistant(assistant_id="asst-123"), _mock_assistant(), get_tools_spy)
+
+        get_tools_spy.assert_called_once()
+        assert "workflow_project" not in get_tools_spy.call_args.kwargs
+
+    def test_inline_node_gets_no_workflow_project(self):
+        get_tools_spy = Mock(return_value=[])
+
+        _build_agent_for_workflow(WorkflowAssistant(assistant_id=None), _mock_assistant(), get_tools_spy)
+
+        assert "workflow_project" not in get_tools_spy.call_args.kwargs

@@ -25,7 +25,7 @@ import pytest
 from codemie_tools.data_management.code_executor import pod_scripts
 from codemie_tools.data_management.code_executor.pod_scripts import load_pod_script
 
-SCRIPT_NAMES: tuple[str, ...] = ("poll", "write_response", "sweep", "kill")
+SCRIPT_NAMES: tuple[str, ...] = ("poll", "write_response")
 ALLOWED_IMPORTS: frozenset[str] = frozenset({"contextlib", "json", "os", "shutil", "signal", "sys"})
 MAX_SCRIPT_BYTES: int = 2048
 

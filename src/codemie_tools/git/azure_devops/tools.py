@@ -80,6 +80,8 @@ class BranchInput(BaseModel):
 class ListBranchesTool(CodeMieTool):
     """Tool for listing branches in Azure DevOps repository"""
 
+    script_callable = True
+
     model_config = ConfigDict(arbitrary_types_allowed=True)
     client: Optional[AzureDevOpsClient] = Field(exclude=True, default=None)
     credentials: AzureDevOpsCredentials
@@ -109,6 +111,8 @@ class ListBranchesTool(CodeMieTool):
 
 class SetActiveBranchTool(CodeMieTool):
     """Tool for setting the active branch in Azure DevOps repository"""
+
+    script_callable = True
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
     client: Optional[AzureDevOpsClient] = Field(exclude=True, default=None)
@@ -149,6 +153,8 @@ class ListFilesInput(BaseModel):
 class ListFilesTool(CodeMieTool):
     """Tool for listing files in a directory in Azure DevOps repository"""
 
+    script_callable = True
+
     model_config = ConfigDict(arbitrary_types_allowed=True)
     client: Optional[AzureDevOpsClient] = Field(exclude=True, default=None)
     credentials: AzureDevOpsCredentials
@@ -187,6 +193,8 @@ class ListFilesTool(CodeMieTool):
 
 class ListOpenPullRequestsTool(CodeMieTool):
     """Tool for listing open pull requests in Azure DevOps repository"""
+
+    script_callable = True
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
     client: Optional[AzureDevOpsClient] = Field(exclude=True, default=None)
@@ -281,6 +289,8 @@ class GetPullRequestInput(BaseModel):
 class GetPullRequestTool(CodeMieTool):
     """Tool for getting a specific pull request in Azure DevOps repository"""
 
+    script_callable = True
+
     model_config = ConfigDict(arbitrary_types_allowed=True)
     client: Optional[AzureDevOpsClient] = Field(exclude=True, default=None)
     credentials: AzureDevOpsCredentials
@@ -312,6 +322,8 @@ class GetPullRequestTool(CodeMieTool):
 
 class ListPullRequestFilesTool(CodeMieTool):
     """Tool for listing files in a pull request in Azure DevOps repository"""
+
+    script_callable = True
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
     client: Optional[AzureDevOpsClient] = Field(exclude=True, default=None)
@@ -393,6 +405,8 @@ class ListPullRequestFilesTool(CodeMieTool):
 class CreateBranchTool(CodeMieTool):
     """Tool for creating a branch in Azure DevOps repository"""
 
+    script_callable = True
+
     model_config = ConfigDict(arbitrary_types_allowed=True)
     client: Optional[AzureDevOpsClient] = Field(exclude=True, default=None)
     credentials: AzureDevOpsCredentials
@@ -450,6 +464,8 @@ class ReadFileInput(BaseModel):
 class ReadFileTool(CodeMieTool):
     """Tool for reading a file from Azure DevOps repository"""
 
+    script_callable = True
+
     model_config = ConfigDict(arbitrary_types_allowed=True)
     client: Optional[AzureDevOpsClient] = Field(exclude=True, default=None)
     credentials: AzureDevOpsCredentials
@@ -487,6 +503,8 @@ class CreateFileInput(BaseModel):
 
 class CreateFileTool(CodeMieTool):
     """Tool for creating a file in Azure DevOps repository"""
+
+    script_callable = True
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
     client: Optional[AzureDevOpsClient] = Field(exclude=True, default=None)
@@ -564,6 +582,8 @@ class UpdateFileInput(BaseModel):
 
 class UpdateFileTool(CodeMieTool):
     """Tool for updating a file in Azure DevOps repository"""
+
+    script_callable = True
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
     client: Optional[AzureDevOpsClient] = Field(exclude=True, default=None)
@@ -644,6 +664,8 @@ class DeleteFileInput(BaseModel):
 class DeleteFileTool(CodeMieTool):
     """Tool for deleting a file from Azure DevOps repository"""
 
+    script_callable = True
+
     model_config = ConfigDict(arbitrary_types_allowed=True)
     client: Optional[AzureDevOpsClient] = Field(exclude=True, default=None)
     credentials: AzureDevOpsCredentials
@@ -694,6 +716,8 @@ class GetWorkItemsInput(BaseModel):
 class GetWorkItemsTool(CodeMieTool):
     """Tool for getting work items associated with a pull request"""
 
+    script_callable = True
+
     model_config = ConfigDict(arbitrary_types_allowed=True)
     client: Optional[AzureDevOpsClient] = Field(exclude=True, default=None)
     credentials: AzureDevOpsCredentials
@@ -731,6 +755,8 @@ class CommentOnPullRequestInput(BaseModel):
 
 class CommentOnPullRequestTool(CodeMieTool):
     """Tool for commenting on a pull request"""
+
+    script_callable = True
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
     client: Optional[AzureDevOpsClient] = Field(exclude=True, default=None)
@@ -798,6 +824,8 @@ class CreatePullRequestInput(BaseModel):
 
 class CreatePullRequestTool(CodeMieTool):
     """Tool for creating a pull request"""
+
+    script_callable = True
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
     client: Optional[AzureDevOpsClient] = Field(exclude=True, default=None)

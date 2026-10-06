@@ -70,6 +70,8 @@ class BaseReportPortalTool(CodeMieTool):
 class GetExtendedLaunchDataTool(BaseReportPortalTool):
     """Tool to get extended launch data from Report Portal."""
 
+    script_callable = True
+
     name: str = GET_EXTENDED_LAUNCH_DATA_TOOL.name
     description: str = GET_EXTENDED_LAUNCH_DATA_TOOL.description
     args_schema: Type[BaseModel] = GetExtendedLaunchDataInput
@@ -117,6 +119,8 @@ class GetExtendedLaunchDataTool(BaseReportPortalTool):
 class GetExtendedLaunchDataAsRawTool(BaseReportPortalTool):
     """Tool to get extended launch data as raw from Report Portal."""
 
+    script_callable = True
+
     name: str = GET_EXTENDED_LAUNCH_DATA_AS_RAW_TOOL.name
     description: str = GET_EXTENDED_LAUNCH_DATA_AS_RAW_TOOL.description
     args_schema: Type[BaseModel] = GetExtendedLaunchDataAsRawInput
@@ -155,6 +159,8 @@ class GetExtendedLaunchDataAsRawTool(BaseReportPortalTool):
 class GetLaunchDetailsTool(BaseReportPortalTool):
     """Tool to get launch details from Report Portal."""
 
+    script_callable = True
+
     name: str = GET_LAUNCH_DETAILS_TOOL.name
     description: str = GET_LAUNCH_DETAILS_TOOL.description
     args_schema: Type[BaseModel] = GetLaunchDetailsInput
@@ -184,6 +190,8 @@ class GetLaunchDetailsTool(BaseReportPortalTool):
 
 class GetAllLaunchesTool(BaseReportPortalTool):
     """Tool to get all launches from Report Portal."""
+
+    script_callable = True
 
     name: str = GET_ALL_LAUNCHES_TOOL.name
     description: str = GET_ALL_LAUNCHES_TOOL.description
@@ -222,6 +230,8 @@ class GetAllLaunchesTool(BaseReportPortalTool):
 class FindTestItemByIdTool(BaseReportPortalTool):
     """Tool to find test item by ID from Report Portal."""
 
+    script_callable = True
+
     name: str = FIND_TEST_ITEM_BY_ID_TOOL.name
     description: str = FIND_TEST_ITEM_BY_ID_TOOL.description
     args_schema: Type[BaseModel] = FindTestItemByIdInput
@@ -251,6 +261,8 @@ class FindTestItemByIdTool(BaseReportPortalTool):
 
 class GetTestItemsForLaunchTool(BaseReportPortalTool):
     """Tool to get test items for launch from Report Portal."""
+
+    script_callable = True
 
     name: str = GET_TEST_ITEMS_FOR_LAUNCH_TOOL.name
     description: str = GET_TEST_ITEMS_FOR_LAUNCH_TOOL.description
@@ -284,6 +296,8 @@ class GetTestItemsForLaunchTool(BaseReportPortalTool):
 class GetLogsForTestItemTool(BaseReportPortalTool):
     """Tool to get logs for test item from Report Portal."""
 
+    script_callable = True
+
     name: str = GET_LOGS_FOR_TEST_ITEM_TOOL.name
     description: str = GET_LOGS_FOR_TEST_ITEM_TOOL.description
     args_schema: Type[BaseModel] = GetLogsForTestItemInput
@@ -315,6 +329,8 @@ class GetLogsForTestItemTool(BaseReportPortalTool):
 class GetUserInformationTool(BaseReportPortalTool):
     """Tool to get user information from Report Portal."""
 
+    script_callable = True
+
     name: str = GET_USER_INFORMATION_TOOL.name
     description: str = GET_USER_INFORMATION_TOOL.description
     args_schema: Type[BaseModel] = GetUserInformationInput
@@ -345,6 +361,8 @@ class GetUserInformationTool(BaseReportPortalTool):
 class GetDashboardDataTool(BaseReportPortalTool):
     """Tool to get dashboard data from Report Portal."""
 
+    script_callable = True
+
     name: str = GET_DASHBOARD_DATA_TOOL.name
     description: str = GET_DASHBOARD_DATA_TOOL.description
     args_schema: Type[BaseModel] = GetDashboardDataInput
@@ -374,6 +392,8 @@ class GetDashboardDataTool(BaseReportPortalTool):
 
 class UpdateTestItemTool(BaseReportPortalTool):
     """Tool to update test item status in Report Portal."""
+
+    script_callable = True
 
     name: str = UPDATE_TEST_ITEM_TOOL.name
     description: str = UPDATE_TEST_ITEM_TOOL.description

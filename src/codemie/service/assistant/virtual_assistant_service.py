@@ -74,7 +74,7 @@ class VirtualAssistantService:
         )
 
         return VirtualAssistantService.create(
-            toolkits=[toolkit_details], project=project_name, execution_id=execution_id
+            toolkits=[toolkit_details], project=project_name, execution_id=execution_id, is_tool_step=True
         )
 
     @classmethod
@@ -103,6 +103,7 @@ class VirtualAssistantService:
         datasource_ids: Optional[List[str]] = None,
         mcp_servers: Optional[List[MCPServerDetails]] = None,
         skill_ids: Optional[List[str]] = None,
+        is_tool_step: bool = False,
     ) -> VirtualAssistant:
         """Create assistant instance and save in memory"""
         uuid = uuid4()
@@ -129,6 +130,7 @@ class VirtualAssistantService:
             context=context,
             mcp_servers=mcp_servers or [],
             skill_ids=skill_ids or [],
+            is_tool_step=is_tool_step,
         )
 
         # Set version to 1 for virtual assistants (they don't have versioning)

@@ -20,6 +20,7 @@ from opentelemetry import metrics
 
 from codemie.configs import logger, config
 from codemie.configs.logger import current_user_email, logging_user_id
+from codemie.configs.script_call_log_guard import allow_metric_record
 from codemie.service.monitoring.metrics_constants import MetricsAttributes
 
 
@@ -48,7 +49,9 @@ def send_log_metric(name: str, attributes: dict):
     if "cached_tokens_money_spent" in attributes and attributes["cached_tokens_money_spent"] is not None:
         attributes["cached_tokens_money_spent"] = float(attributes["cached_tokens_money_spent"])
 
-    logger.info(json.dumps({"metric_name": name, "attributes": attributes, "time": datetime.now().isoformat()}))
+    # A metric a tool emits while it runs for a workspace script must still reach the log (see script_call_log_guard).
+    with allow_metric_record():
+        logger.info(json.dumps({"metric_name": name, "attributes": attributes, "time": datetime.now().isoformat()}))
 
 
 def emit_llm_token_metric(name: str, request_id: Optional[str], base_attributes: dict) -> None:

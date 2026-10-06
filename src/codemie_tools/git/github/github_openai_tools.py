@@ -51,6 +51,8 @@ class BranchInput(BaseModel):
 class CreateGithubBranchTool(CodeMieTool):
     """Tool for interacting with the GitHub API."""
 
+    script_callable = True
+
     api_wrapper: Optional[CustomGitHubAPIWrapper] = Field(exclude=True)
     credentials: GitCredentials
     name: str = CREATE_GIT_BRANCH_TOOL.name
@@ -63,6 +65,7 @@ class CreateGithubBranchTool(CodeMieTool):
 
 
 class SetActiveBranchTool(CodeMieTool):
+    script_callable = True
     api_wrapper: Optional[CustomGitHubAPIWrapper] = Field(exclude=True)
     credentials: GitCredentials
     name: str = SET_ACTIVE_BRANCH_TOOL.name
@@ -77,6 +80,8 @@ class SetActiveBranchTool(CodeMieTool):
 
 class ListBranchesTool(CodeMieTool):
     """Tool for interacting with the GitHub API."""
+
+    script_callable = True
 
     api_wrapper: Optional[CustomGitHubAPIWrapper] = Field(exclude=True)
     credentials: GitCredentials
@@ -100,6 +105,8 @@ class CreatePRInput(BaseModel):
 
 class CreatePRTool(CodeMieTool):
     """Tool for interacting with the GitHub API."""
+
+    script_callable = True
 
     api_wrapper: Optional[CustomGitHubAPIWrapper] = Field(exclude=True)
     credentials: GitCredentials
@@ -136,6 +143,8 @@ class DeleteFileInput(BaseModel):
 class DeleteFileTool(CodeMieTool):
     """Tool for interacting with the GitHub API."""
 
+    script_callable = True
+
     api_wrapper: Optional[CustomGitHubAPIWrapper] = Field(exclude=True)
     credentials: GitCredentials
     name: str = DELETE_FILE_TOOL.name
@@ -170,6 +179,8 @@ class CreateFileInput(BaseModel):
 
 class CreateFileTool(CodeMieTool):
     """Tool for interacting with the GitHub API."""
+
+    script_callable = True
 
     api_wrapper: Optional[CustomGitHubAPIWrapper] = Field(exclude=True)
     credentials: GitCredentials
@@ -225,6 +236,7 @@ class UpdateFileGitHubTool(UpdateFileGitTool):
 
 
 class OpenAIUpdateFileWholeTool(UpdateFileGitHubTool):
+    script_callable = True
     name: str = UPDATE_FILE_TOOL.name
     llm_model: BaseChatModel = Field(exclude=True)
 
@@ -262,6 +274,7 @@ class OpenAIUpdateFileWholeTool(UpdateFileGitHubTool):
 
 
 class OpenAIUpdateFileDiffTool(UpdateFileGitHubTool):
+    script_callable = True
     name: str = UPDATE_FILE_DIFF_TOOL.name
     llm_model: BaseChatModel = Field(exclude=True)
 

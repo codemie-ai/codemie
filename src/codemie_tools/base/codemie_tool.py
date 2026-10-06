@@ -15,17 +15,62 @@
 import json
 import traceback
 from abc import abstractmethod
+from collections.abc import Mapping
 from time import time
 from typing import Any, ClassVar, Optional, Union
 
 from langchain_core.tools import BaseTool
 from langchain_core.tools.base import ToolException
+from pydantic import BaseModel
 
 from codemie.configs import config
 from codemie.configs.logger import logger
 from codemie_tools.base.errors import TruncatedOutputError
 from codemie_tools.base.models import ToolOutputFormat
+from codemie_tools.base.script_result import JsonValue, ScriptResult, ScriptResultSource
 from codemie_tools.base.utils import get_encoding, sanitize_string, humanize_error
+
+
+def _to_json_safe(value: object) -> JsonValue:
+    """Recursive JSON-safe copy: dict keys and values that are not JSON types go through `str`."""
+    if value is None or isinstance(value, (str, bool, int, float)):
+        return value
+    if isinstance(value, dict):
+        return {str(key): _to_json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_to_json_safe(item) for item in value]
+    return str(value)
+
+
+def _parse_json_container(text: str) -> JsonValue:
+    """Parse a string that looks like a JSON object/array; any other string is returned unchanged."""
+    stripped = text.strip()
+    if stripped.startswith(("{", "[")):
+        try:
+            parsed: JsonValue = json.loads(stripped)
+        except ValueError:
+            return text
+        return parsed
+    return text
+
+
+def to_script_result(output: object, max_bytes: int | None = None) -> ScriptResult:
+    """Convert a raw tool output to the structured result handed to a workspace script."""
+    if isinstance(output, ScriptResultSource):
+        return output.to_script_result(max_bytes)
+    return ScriptResult(result=_to_script_value(output))
+
+
+def _to_script_value(output: object) -> JsonValue:
+    if isinstance(output, BaseModel):
+        return output.model_dump(mode="json")
+    if isinstance(output, (dict, list)):
+        return _to_json_safe(output)
+    if output is None or isinstance(output, (bool, int, float)):
+        return output
+    if isinstance(output, str):
+        return _parse_json_container(output)
+    return str(output)
 
 
 class CodeMieTool(BaseTool):
@@ -38,6 +83,9 @@ class CodeMieTool(BaseTool):
     output_format: ToolOutputFormat = ToolOutputFormat.TEXT
 
     _SAFE_HTTP_METHODS: ClassVar[frozenset[str]] = frozenset({"GET", "HEAD", "OPTIONS"})
+
+    # Opt-in for workspace scripts: a tool is callable through the bridge only when its class sets this to True.
+    script_callable: ClassVar[bool] = False
 
     @staticmethod
     def _http_method_is_safe(args: dict, method_key: str = "method") -> bool:
@@ -92,6 +140,28 @@ class CodeMieTool(BaseTool):
             )
             logger.error(f"{error_message}. Error stacktrace: {stacktrace} duration={duration:.2f}s")
             raise ToolException(error_message) from ex
+
+    def _execute_for_script(self, *args: Any, **kwargs: Any) -> Any:
+        """The raw output of a run for a workspace script. By default the tool's own ``execute``; a tool whose
+        script run differs from its model run (for example an HTTP tool that returns a non-2xx status as data)
+        overrides this and shares the rest with ``execute``."""
+        return self.execute(*args, **kwargs)
+
+    def execute_structured(self, *args: Any, **kwargs: Any) -> ScriptResult:
+        """Script-path twin of `execute()`: raw output as a structured result, no token limiting or truncation.
+
+        Exceptions propagate unchanged.
+        """
+        return to_script_result(self._execute_for_script(*args, **kwargs))
+
+    def run_for_script(self, arguments: Mapping[str, object], *, max_result_bytes: int | None = None) -> ScriptResult:
+        """Run the tool for a workspace script: validate config, run with ``arguments``, convert the output.
+
+        ``max_result_bytes`` is the size cap of the answer; an output that knows its size is refused before it is
+        converted (see :class:`ScriptResultTooLarge`).
+        """
+        self._validate_config()
+        return to_script_result(self._execute_for_script(**arguments), max_result_bytes)
 
     @abstractmethod
     def execute(self, *args, **kwargs) -> Any:

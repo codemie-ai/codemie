@@ -77,6 +77,7 @@ class BaseReadFileTool(CodeMieTool, DatasourceHealthMixin):
 
 
 class ReadFileFromStorageTool(BaseReadFileTool):
+    script_callable = True
     base_name: str = READ_FILES_TOOL.name
     name: str = READ_FILES_TOOL.name
     description: str = READ_FILES_TOOL.description
@@ -88,6 +89,7 @@ class ReadFileFromStorageTool(BaseReadFileTool):
 
 
 class ReadFileFromStorageWithSummaryTool(BaseReadFileTool):
+    script_callable = True
     base_name: str = READ_FILES_WITH_SUMMARY_TOOL.name
     name: str = READ_FILES_WITH_SUMMARY_TOOL.name
     description: str = READ_FILES_WITH_SUMMARY_TOOL.description

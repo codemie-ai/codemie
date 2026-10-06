@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,6 +31,8 @@ from codemie.rest_api.models.agent_workspace import (
     ExecuteWorkspaceScriptResponse,
     WorkspaceFileItemResponse,
 )
+from codemie.rest_api.security.user import User
+from codemie.service.script_tool_calls.context import ScriptScopeKind, ScriptToolRegistry
 from codemie_tools.base.file_object import FileObject
 from codemie_tools.data_management.code_executor.models import (
     CodeExecutorConfig,
@@ -37,14 +40,16 @@ from codemie_tools.data_management.code_executor.models import (
     SandboxMode,
 )
 from codemie_tools.data_management.code_executor.runtime_sdk.codemie_runtime_sdk import BRIDGE_DIR_NAME
-from codemie_tools.data_management.code_executor.tool_calling_limits import MAX_TOOL_CALLING_SECONDS
-from codemie_tools.data_management.workspace.execute_workspace_script_tool import (
-    ExecuteWorkspaceScriptTool,
+from codemie_tools.data_management.code_executor.job_bridge import JobBridgeOptions, new_job_bridge_options
+from codemie_tools.data_management.code_executor.tool_call_protocol import ToolCallHandler
+from codemie_tools.data_management.code_executor.tool_calling_limits import ToolCallingSettings
+from codemie_tools.data_management.workspace.execute_workspace_script_tool import ExecuteWorkspaceScriptTool
+from codemie_tools.data_management.workspace.workspace_script_runner import (
     WorkspaceScriptRunner,
     _is_system_output_path,
 )
 
-_MODULE = "codemie_tools.data_management.workspace.execute_workspace_script_tool"
+_MODULE = "codemie_tools.data_management.workspace.workspace_script_runner"
 
 
 def _make_file_item() -> WorkspaceFileItemResponse:
@@ -107,7 +112,7 @@ class TestBuildScriptWrapperForwardsResourceLimits(unittest.TestCase):
     def test_forwards_max_threads(self):
         runner = self._runner_with_config(max_threads=16, max_open_files=128)
         with patch(
-            "codemie_tools.data_management.workspace.execute_workspace_script_tool.build_guarded_workspace_script"
+            "codemie_tools.data_management.workspace.workspace_script_runner.build_guarded_workspace_script"
         ) as mock_build:
             mock_build.return_value = "script"
             runner._build_script_wrapper("script.py", "/workspace")
@@ -117,17 +122,38 @@ class TestBuildScriptWrapperForwardsResourceLimits(unittest.TestCase):
     def test_forwards_max_open_files(self):
         runner = self._runner_with_config(max_threads=16, max_open_files=128)
         with patch(
-            "codemie_tools.data_management.workspace.execute_workspace_script_tool.build_guarded_workspace_script"
+            "codemie_tools.data_management.workspace.workspace_script_runner.build_guarded_workspace_script"
         ) as mock_build:
             mock_build.return_value = "script"
             runner._build_script_wrapper("script.py", "/workspace")
             _, kwargs = mock_build.call_args
             self.assertEqual(kwargs["max_open_files"], 128)
 
+    def test_forwards_the_sdk_config_when_given(self):
+        runner = self._runner_with_config(max_threads=16, max_open_files=128)
+        sdk_config = {"exchange_dir": ".codemie_bridge/1-a", "run_seconds": 180.0, "max_payload_bytes": 1000}
+        with patch(
+            "codemie_tools.data_management.workspace.workspace_script_runner.build_guarded_workspace_script"
+        ) as mock_build:
+            mock_build.return_value = "script"
+            runner._build_script_wrapper("script.py", "/workspace", sdk_config=sdk_config)
+            _, kwargs = mock_build.call_args
+            self.assertEqual(kwargs["sdk_config"], sdk_config)
+
+    def test_sdk_config_defaults_to_none(self):
+        runner = self._runner_with_config(max_threads=16, max_open_files=128)
+        with patch(
+            "codemie_tools.data_management.workspace.workspace_script_runner.build_guarded_workspace_script"
+        ) as mock_build:
+            mock_build.return_value = "script"
+            runner._build_script_wrapper("script.py", "/workspace")
+            _, kwargs = mock_build.call_args
+            self.assertIsNone(kwargs["sdk_config"])
+
     def test_non_default_config_values_are_forwarded(self):
         runner = self._runner_with_config(max_threads=8, max_open_files=256)
         with patch(
-            "codemie_tools.data_management.workspace.execute_workspace_script_tool.build_guarded_workspace_script"
+            "codemie_tools.data_management.workspace.workspace_script_runner.build_guarded_workspace_script"
         ) as mock_build:
             mock_build.return_value = "script"
             runner._build_script_wrapper("run.py", "/sandbox")
@@ -149,7 +175,7 @@ def _script_file() -> FileObject:
 def _make_runner(
     *,
     sandbox_mode: SandboxMode = SandboxMode.SHARED,
-    tool_calling_timeout: float | None = None,
+    bridge: JobBridgeOptions | None = None,
 ) -> WorkspaceScriptRunner:
     """A runner with a chat-uploaded script and a deterministic executor config."""
     runner = WorkspaceScriptRunner(
@@ -158,7 +184,7 @@ def _make_runner(
         input_files=[_script_file()],
         execution_mode=ExecutionMode.SANDBOX,
         conversation_id="conv",
-        tool_calling_timeout=tool_calling_timeout,
+        bridge=bridge,
     )
     runner.config = runner.config.model_copy(
         update={
@@ -168,26 +194,6 @@ def _make_runner(
         }
     )
     return runner
-
-
-class TestResolveToolCallingLimit(unittest.TestCase):
-    """The runner's limit follows the clamp: off by default, never raising."""
-
-    def test_none_means_tool_calling_is_off(self):
-        runner = _make_runner(tool_calling_timeout=None)
-        self.assertIsNone(runner._resolve_tool_calling_limit())
-
-    def test_jobs_mode_returns_a_set_value_unchanged(self):
-        runner = _make_runner(sandbox_mode=SandboxMode.JOBS, tool_calling_timeout=120.0)
-        self.assertEqual(runner._resolve_tool_calling_limit(), 120.0)
-
-    def test_non_positive_value_turns_tool_calling_off(self):
-        runner = _make_runner(sandbox_mode=SandboxMode.JOBS, tool_calling_timeout=0.0)
-        self.assertIsNone(runner._resolve_tool_calling_limit())
-
-    def test_value_above_the_maximum_is_clamped(self):
-        runner = _make_runner(sandbox_mode=SandboxMode.JOBS, tool_calling_timeout=1e12)
-        self.assertEqual(runner._resolve_tool_calling_limit(), MAX_TOOL_CALLING_SECONDS)
 
 
 class _PooledRun:
@@ -231,43 +237,66 @@ def _pooled_run(runner: WorkspaceScriptRunner) -> Iterator[_PooledRun]:
 
 
 class TestPooledRunWithoutToolCalling(unittest.TestCase):
-    """With tool calling off the pooled call shape is unchanged."""
+    """The pooled call shape: no bridge, no exchange folder, no SDK configuration."""
 
     def test_session_is_acquired_with_only_the_workdir(self):
-        runner = _make_runner(tool_calling_timeout=None)
+        runner = _make_runner()
         with _pooled_run(runner) as run:
             runner._execute_sandbox_script("script.py")
         run.sandbox_session.assert_called_once_with("/home/codemie/u/conv")
 
     def test_execute_code_sandbox_gets_no_kwargs(self):
-        runner = _make_runner(tool_calling_timeout=None)
+        runner = _make_runner()
         with _pooled_run(runner) as run:
             runner._execute_sandbox_script("script.py")
         run.execute_code.assert_called_once_with(run.session, "WRAPPER")
 
-    def test_wrapper_is_built_without_an_exchange_dir(self):
-        runner = _make_runner(tool_calling_timeout=None)
+    def test_wrapper_is_built_without_an_sdk_config(self):
+        runner = _make_runner()
         with _pooled_run(runner) as run:
             runner._execute_sandbox_script("script.py")
-        self.assertIsNone(run.build_guard.call_args.kwargs["exchange_dir"])
+        self.assertIsNone(run.build_guard.call_args.kwargs["sdk_config"])
 
 
-class TestSharedModeIgnoresToolCallingTimeout(unittest.TestCase):
-    """The tool-calling bridge only runs in jobs mode; a shared-mode runner keeps the plain pooled call shape."""
+class TestSharedModeHasNoBridge(unittest.TestCase):
+    """The bridge exists only in jobs mode: a pooled run has none and the runner does not know the bridge folder."""
 
-    def test_shared_mode_runner_with_a_timeout_uses_the_plain_pooled_call_shape(self):
-        runner = _make_runner(sandbox_mode=SandboxMode.SHARED, tool_calling_timeout=120.0)
+    def test_a_shared_mode_runner_uses_the_plain_pooled_call_shape(self):
+        runner = _make_runner(sandbox_mode=SandboxMode.SHARED)
         with _pooled_run(runner) as run:
             runner._execute_sandbox_script("script.py")
 
         run.sandbox_session.assert_called_once_with("/home/codemie/u/conv")
         run.execute_code.assert_called_once_with(run.session, "WRAPPER")
-        self.assertIsNone(run.build_guard.call_args.kwargs["exchange_dir"])
+        self.assertIsNone(run.build_guard.call_args.kwargs["sdk_config"])
+
+    def test_the_pooled_snapshot_code_does_not_name_the_bridge_folder(self):
+        runner = _make_runner()
+        session = MagicMock()
+        session.run.return_value = MagicMock(exit_code=0, stdout="__CODEMIE_FILE_SNAPSHOT__{}\n")
+
+        runner._get_sandbox_file_snapshot(session, "/home/codemie/u/conv")
+
+        self.assertNotIn(BRIDGE_DIR_NAME, session.run.call_args.args[0])
+
+    def test_the_runner_has_no_leftover_of_the_removed_tool_calling_fields(self):
+        runner = _make_runner()
+
+        self.assertFalse(hasattr(runner, "tool_calling_timeout"))
+        self.assertFalse(hasattr(runner, "tool_call_handlers"))
+        self.assertIsNone(runner.bridge)
 
 
 class TestJobsModeToolCalling(unittest.TestCase):
-    def _run_jobs(self, tool_calling_timeout: float | None) -> tuple[MagicMock, MagicMock]:
-        runner = _make_runner(sandbox_mode=SandboxMode.JOBS, tool_calling_timeout=tool_calling_timeout)
+    def _run_jobs(
+        self,
+        settings: ToolCallingSettings | None,
+        handlers: Mapping[str, ToolCallHandler] | None = None,
+    ) -> tuple[MagicMock, MagicMock]:
+        runner = _make_runner(
+            sandbox_mode=SandboxMode.JOBS,
+            bridge=None if settings is None else new_job_bridge_options(settings, handlers),
+        )
         fake_result = MagicMock(stdout="ok\n", stderr="", exit_code=0, exported_files={}, changed_files={})
         with (
             patch(f"{_MODULE}.BatchJobRunner") as job_runner,
@@ -282,21 +311,48 @@ class TestJobsModeToolCalling(unittest.TestCase):
         return job_runner, build_guard
 
     def test_enabled_passes_the_bridge_options_to_the_job_runner(self):
-        job_runner, build_guard = self._run_jobs(120.0)
+        settings = ToolCallingSettings(run_timeout_seconds=120.0)
 
-        exchange_dir = build_guard.call_args.kwargs["exchange_dir"]
-        self.assertTrue(exchange_dir.startswith(f"{BRIDGE_DIR_NAME}/"))
+        job_runner, build_guard = self._run_jobs(settings)
+
         bridge = job_runner.return_value.run.call_args.kwargs["bridge"]
-        self.assertEqual(bridge.exchange_dir, exchange_dir)
-        self.assertEqual(bridge.tool_calling_timeout, 120.0)
+        sdk_config = build_guard.call_args.kwargs["sdk_config"]
+        self.assertTrue(bridge.exchange_dir.startswith(f"{BRIDGE_DIR_NAME}/"))
+        self.assertEqual(sdk_config["exchange_dir"], bridge.exchange_dir)
+        self.assertIs(bridge.settings, settings)
 
-    def test_disabled_passes_no_bridge_options(self):
-        for value in (None, 0.0):
-            with self.subTest(tool_calling_timeout=value):
-                job_runner, build_guard = self._run_jobs(value)
+    def test_the_sdk_config_is_built_by_the_settings(self):
+        settings = ToolCallingSettings(run_timeout_seconds=120.0, max_payload_bytes=1000)
 
-                self.assertIsNone(build_guard.call_args.kwargs["exchange_dir"])
-                self.assertIsNone(job_runner.return_value.run.call_args.kwargs["bridge"])
+        job_runner, build_guard = self._run_jobs(settings)
+
+        bridge = job_runner.return_value.run.call_args.kwargs["bridge"]
+        self.assertEqual(build_guard.call_args.kwargs["sdk_config"], settings.sdk_config(bridge.exchange_dir, 30.0))
+
+    def test_enabled_passes_the_larger_of_the_script_timeout_and_the_limit_as_the_run_seconds(self):
+        for limit, expected in ((120.0, 120.0), (10.0, 30.0)):
+            with self.subTest(limit=limit):
+                _, build_guard = self._run_jobs(ToolCallingSettings(run_timeout_seconds=limit))
+
+                self.assertEqual(build_guard.call_args.kwargs["sdk_config"]["run_seconds"], expected)
+
+    def test_disabled_passes_no_sdk_config_and_no_bridge_options(self):
+        job_runner, build_guard = self._run_jobs(None)
+
+        self.assertIsNone(build_guard.call_args.kwargs["sdk_config"])
+        self.assertIsNone(job_runner.return_value.run.call_args.kwargs["bridge"])
+
+    def test_enabled_without_handlers_passes_no_handlers_in_the_bridge_options(self):
+        job_runner, _ = self._run_jobs(ToolCallingSettings())
+
+        self.assertIsNone(job_runner.return_value.run.call_args.kwargs["bridge"].handlers)
+
+    def test_enabled_passes_the_runner_tool_call_handlers_in_the_bridge_options(self):
+        handlers: Mapping[str, ToolCallHandler] = {"tool.call": lambda _params: {"ok": True}}
+
+        job_runner, _ = self._run_jobs(ToolCallingSettings(), handlers)
+
+        self.assertIs(job_runner.return_value.run.call_args.kwargs["bridge"].handlers, handlers)
 
 
 class _LocalSession:
@@ -307,34 +363,73 @@ class _LocalSession:
         return SimpleNamespace(exit_code=completed.returncode, stdout=completed.stdout, stderr=completed.stderr)
 
 
-class TestSnapshotPrunesBridgeFolder(unittest.TestCase):
-    def test_snapshot_skips_the_bridge_folder_but_keeps_workspace_files(self):
+class TestPooledSnapshot(unittest.TestCase):
+    def test_snapshot_lists_workspace_files_and_skips_caches(self):
         runner = _make_runner()
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "a.txt").write_text("hello", encoding="utf-8")
-            leftover = root / BRIDGE_DIR_NAME / "x"
-            leftover.mkdir(parents=True)
-            (leftover / "req.1.json").write_text("{}", encoding="utf-8")
+            (root / "__pycache__").mkdir()
+            (root / "__pycache__" / "m.pyc").write_bytes(b"x")
 
             snapshot = runner._get_sandbox_file_snapshot(_LocalSession(), str(root))
 
-        self.assertIn("a.txt", snapshot)
-        self.assertEqual([key for key in snapshot if key.startswith(BRIDGE_DIR_NAME)], [])
+        self.assertEqual(sorted(snapshot), ["a.txt"])
 
-    def test_is_system_output_path_excludes_bridge_files_as_a_backstop(self):
-        self.assertTrue(_is_system_output_path(f"{BRIDGE_DIR_NAME}/x/req.1.json"))
+    def test_system_output_paths_are_caches_and_sandbox_scripts_not_the_bridge_folder(self):
+        self.assertTrue(_is_system_output_path("m.pyc"))
         self.assertFalse(_is_system_output_path("a.txt"))
+        self.assertFalse(_is_system_output_path(f"{BRIDGE_DIR_NAME}/x/req.1.json"))
 
-    def test_leftover_bridge_file_never_reaches_the_export_service(self):
-        runner = _make_runner()
-        snapshot = {"a.txt": "h1", f"{BRIDGE_DIR_NAME}/x/req.1.json": "h2"}
-        with (
-            patch.object(WorkspaceScriptRunner, "_get_sandbox_file_snapshot", return_value=snapshot),
-            patch(f"{_MODULE}.FileExportService") as export_service,
-        ):
-            export_service.return_value.collect_files_from_execution.return_value = []
-            runner._collect_sandbox_changed_files(MagicMock(), "/home/codemie/u/conv", {})
 
-        changed_paths = export_service.return_value.collect_files_from_execution.call_args.args[1]
-        self.assertEqual(changed_paths, ["a.txt"])
+class TestExecuteToolRunContext(unittest.TestCase):
+    def _tool(self, script_registry: ScriptToolRegistry | None) -> tuple[ExecuteWorkspaceScriptTool, MagicMock]:
+        service = MagicMock()
+        service.execute_workspace_script.return_value = {"message": "ok"}
+        tool = ExecuteWorkspaceScriptTool(
+            conversation_id="conv-1",
+            user=User(id="user-1", auth_token=None),
+            workspace_service=service,
+            workspace_id="ws-1",
+            script_registry=script_registry,
+        )
+        return tool, service
+
+    def test_passes_the_registry_context_to_the_service(self):
+        registry = ScriptToolRegistry(User(id="user-1", auth_token=None))
+        fake = MagicMock()
+        fake.name = "some_tool"
+        registry.fill([fake])
+        tool, service = self._tool(registry)
+
+        tool.execute("run.py")
+
+        run_context = service.execute_workspace_script.call_args.kwargs["run_context"]
+        self.assertIs(run_context.scope_kind, ScriptScopeKind.ASSISTANT)
+        self.assertEqual({t.name for t in run_context.scope.callable_tools()}, {"some_tool"})
+
+    def test_without_a_registry_passes_a_context_that_refuses_every_call(self):
+        tool, service = self._tool(None)
+
+        tool.execute("run.py")
+
+        run_context = service.execute_workspace_script.call_args.kwargs["run_context"]
+        self.assertIs(run_context.scope_kind, ScriptScopeKind.NONE)
+        self.assertEqual(run_context.user.id, "user-1")
+        self.assertEqual(run_context.scope.callable_tools(), ())
+
+    def test_passes_the_settings_the_tool_was_built_with_to_the_service(self):
+        settings = ToolCallingSettings(run_timeout_seconds=90.0)
+        tool, service = self._tool(None)
+        tool.tool_calling = settings
+
+        tool.execute("run.py")
+
+        self.assertIs(service.execute_workspace_script.call_args.kwargs["tool_calling"], settings)
+
+    def test_a_tool_built_with_tool_calling_off_passes_none(self):
+        tool, service = self._tool(None)
+
+        tool.execute("run.py")
+
+        self.assertIsNone(service.execute_workspace_script.call_args.kwargs["tool_calling"])

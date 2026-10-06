@@ -27,6 +27,8 @@ from ...base.utils import parse_and_escape_args
 class GenericGCPTool(CodeMieTool):
     """Generic tool for interacting with Google Cloud Platform REST API."""
 
+    script_callable = True
+
     config: GCPConfig
     client: Optional[GCPClient] = None
     project_id: Optional[str] = None

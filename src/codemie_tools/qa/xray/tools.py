@@ -33,6 +33,8 @@ ERROR_CONFIG_NOT_SET = "Xray config is not provided. Please set it before using 
 class XrayGetTestsTool(CodeMieTool):
     """Tool for retrieving test cases from Xray Cloud using JQL queries."""
 
+    script_callable = True
+
     config: Optional[XrayConfig] = None
     name: str = XRAY_GET_TESTS_TOOL.name
     description: str = XRAY_GET_TESTS_TOOL.description
@@ -122,6 +124,8 @@ class XrayGetTestsTool(CodeMieTool):
 
 class XrayCreateTestTool(CodeMieTool):
     """Tool for creating new test cases in Xray Cloud using GraphQL mutations."""
+
+    script_callable = True
 
     config: Optional[XrayConfig] = None
     name: str = XRAY_CREATE_TEST_TOOL.name
@@ -215,6 +219,8 @@ class XrayCreateTestTool(CodeMieTool):
 
 class XrayExecuteGraphQLTool(CodeMieTool):
     """Tool for executing custom GraphQL queries and mutations against Xray Cloud API."""
+
+    script_callable = True
 
     config: Optional[XrayConfig] = None
     name: str = XRAY_EXECUTE_GRAPHQL_TOOL.name

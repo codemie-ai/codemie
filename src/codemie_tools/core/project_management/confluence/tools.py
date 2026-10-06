@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 
 from codemie_tools.base.codemie_tool import CodeMieTool
 from codemie_tools.base.file_tool_mixin import FileToolMixin
+from codemie_tools.base.http_result import HttpResult
 from codemie_tools.core.project_management.confluence.models import ConfluenceConfig
 from codemie_tools.core.project_management.confluence.tools_vars import GENERIC_CONFLUENCE_TOOL
 from codemie_tools.core.project_management.confluence.utils import (
@@ -82,6 +83,7 @@ class ConfluenceInput(BaseModel):
 
 
 class GenericConfluenceTool(CodeMieTool, FileToolMixin):
+    script_callable = True
     config: ConfluenceConfig
     name: str = GENERIC_CONFLUENCE_TOOL.name
     description: str = GENERIC_CONFLUENCE_TOOL.description
@@ -136,6 +138,28 @@ class GenericConfluenceTool(CodeMieTool, FileToolMixin):
         is_markdown: bool = False,
         *args,
     ):
+        return self._perform(method, relative_url, params, is_markdown, narrow_output_limit=True)
+
+    def _execute_for_script(
+        self,
+        method: str,
+        relative_url: str,
+        params: Optional[str] = "",
+        is_markdown: bool = False,
+        *args,
+    ):
+        """Script path: the same request, but it never changes the tool's state (calls may run at the same time)."""
+        return self._perform(method, relative_url, params, is_markdown, narrow_output_limit=False)
+
+    def _perform(
+        self,
+        method: str,
+        relative_url: str,
+        params: Optional[str],
+        is_markdown: bool,
+        *,
+        narrow_output_limit: bool,
+    ):
         confluence = self._create_client()
 
         if self._is_attachment_operation(relative_url):
@@ -149,7 +173,7 @@ class GenericConfluenceTool(CodeMieTool, FileToolMixin):
         payload_params = parse_payload_params(params)
         if method == "GET":
             response = confluence.request(method=method, path=relative_url, params=payload_params, advanced_mode=True)
-            response_text = self.process_search_response(relative_url, response)
+            response_text = self.process_search_response(relative_url, response, narrow_output_limit)
         else:
             if relative_url.startswith(self.page_action_prefix) and is_markdown:
                 payload_params = prepare_page_payload(payload_params)
@@ -160,13 +184,15 @@ class GenericConfluenceTool(CodeMieTool, FileToolMixin):
                 advanced_mode=True,
             )
             response_text = response.text
-        response_string = f"HTTP: {method}{relative_url} -> {response.status_code}{response.reason}{response_text}"
-        logger.debug(response_string)
-        return response_string
+        http_result = HttpResult(method, relative_url, response.status_code, response.reason, response_text, "compact")
+        logger.debug(str(http_result))
+        return http_result
 
-    def process_search_response(self, relative_url: str, response) -> str:
+    def process_search_response(self, relative_url: str, response, narrow_output_limit: bool = True) -> str:
         if re.match(self.page_search_pattern, relative_url):
-            self.tokens_size_limit = 20000
+            if narrow_output_limit:
+                # Model path only: a page read is cut at a smaller output limit than the default.
+                self.tokens_size_limit = 20000
             body = markdownify(response.text, heading_style="ATX")
             return body
         return response.text

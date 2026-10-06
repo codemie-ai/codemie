@@ -42,6 +42,7 @@ class TelegramToolInput(BaseModel):
 
 
 class TelegramTool(CodeMieTool):
+    script_callable = True
     config: TelegramConfig
     name: str = TELEGRAM_TOOL.name
     description: str = TELEGRAM_TOOL.description

@@ -1,7 +1,3 @@
-## Ticket
-
-[EPMCDME-XXXX](link)
-
 ## Overview
 
 <!-- 1–3 sentences: what problem this solves and for whom. No implementation details. -->
@@ -15,7 +11,9 @@
 
 ## Reviewer notes
 
-<!-- What deserves attention. Delete the lines that do not apply. -->
+<!-- Only what a reviewer needs to review and merge: risky or non-obvious places, deviations from the ticket or spec,
+     rollout steps. Not a list of everything that changed, not lint or cleanup fixes, not the history of this MR.
+     Delete the lines that do not apply. -->
 
 - **Not directly related to the task:** <!-- tooling, config, refactors bundled in, and why -->
 - **Risky or non-obvious places:** <!-- concurrency, security, migrations, compatibility -->
@@ -54,7 +52,9 @@ Command: `make test-harness`
 ## Verified locally
 
 <!-- Checks done by hand or against a real environment, not unit tests. One `###` subsection per scenario:
-     what was done, what was expected, what happened. Any length. -->
+     what was done, what was expected, what happened. Any length.
+     Describe only the verification itself. Do not list bugs found or environment problems fixed while preparing
+     the setup; those are not verification results and belong in the commits or the ticket if they matter. -->
 
 ### <scenario name>
 

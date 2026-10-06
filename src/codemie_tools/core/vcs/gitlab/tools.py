@@ -21,6 +21,7 @@ from langchain_core.tools import ToolException
 from pydantic import BaseModel, Field
 
 from codemie_tools.base.codemie_tool import CodeMieTool
+from codemie_tools.base.http_result import HttpResult
 from codemie_tools.core.vcs.utils import _build_headers
 from .models import GitlabConfig
 from .tools_vars import GITLAB_TOOL
@@ -74,6 +75,7 @@ class GitlabInput(BaseModel):
 
 
 class GitlabTool(CodeMieTool):
+    script_callable = True
     name: str = GITLAB_TOOL.name
     args_schema: Type[BaseModel] = GitlabInput
     config: GitlabConfig
@@ -188,9 +190,9 @@ class GitlabTool(CodeMieTool):
             headers = _build_headers(GITLAB_DEFAULT_HEADERS, access_token, custom_headers)
             response = self._make_request(method, url, headers, method_arguments)
 
-            response_string = f"HTTP: {method} {url} -> {response.status_code} {response.reason} {response.text}"
-            logger.debug(response_string)
-            return response_string
+            http_result = HttpResult(method, url, response.status_code, response.reason, response.text, "spaced")
+            logger.debug(str(http_result))
+            return http_result
 
         except (TypeError, json.JSONDecodeError) as e:
             logger.error(f"Failed to parse GitLab response: {e}")

@@ -46,6 +46,7 @@ class BranchInput(BaseModel):
 
 
 class CreateGitLabBranchTool(CodeMieTool):
+    script_callable = True
     api_wrapper: Optional[CustomGitLabAPIWrapper] = Field(exclude=True, default=None)
     credentials: GitCredentials
     name: str = "create_branch"
@@ -63,6 +64,7 @@ class CreatePRInput(BaseModel):
 
 
 class CreatePRTool(CodeMieTool):
+    script_callable = True
     api_wrapper: Optional[CustomGitLabAPIWrapper] = Field(exclude=True, default=None)
     credentials: GitCredentials
     name: str = "create_pull_request"
@@ -89,6 +91,7 @@ class DeleteFileInput(BaseModel):
 
 
 class DeleteFileTool(CodeMieTool):
+    script_callable = True
     api_wrapper: Optional[CustomGitLabAPIWrapper] = Field(exclude=True, default=None)
     credentials: GitCredentials
     name: str = "delete_file"
@@ -121,6 +124,7 @@ class CreateFileInput(BaseModel):
 
 
 class CreateFileTool(CodeMieTool):
+    script_callable = True
     api_wrapper: Optional[CustomGitLabAPIWrapper] = Field(exclude=True, default=None)
     credentials: GitCredentials
     name: str = "create_file"
@@ -134,6 +138,7 @@ class CreateFileTool(CodeMieTool):
 
 
 class SetActiveBranchTool(CodeMieTool):
+    script_callable = True
     api_wrapper: Optional[CustomGitLabAPIWrapper] = Field(exclude=True, default=None)
     credentials: GitCredentials
     name: str = "set_active_branch"
@@ -148,6 +153,8 @@ class SetActiveBranchTool(CodeMieTool):
 
 class ListBranchesTool(CodeMieTool):
     """Tool for interacting with the GitHub API."""
+
+    script_callable = True
 
     api_wrapper: Optional[CustomGitLabAPIWrapper] = Field(exclude=True, default=None)
     credentials: GitCredentials
@@ -198,6 +205,8 @@ class UpdateFileGitLabTool(UpdateFileGitTool):
 class OpenAIUpdateFileWholeTool(UpdateFileGitLabTool):
     """Tool for interacting with the GitHub API."""
 
+    script_callable = True
+
     name: str = UPDATE_FILE_TOOL.name
     description: str = UPDATE_FILE_TOOL.description
     llm_model: Optional[str] = Field(default=None, exclude=True)
@@ -246,6 +255,8 @@ class OpenAIUpdateFileWholeTool(UpdateFileGitLabTool):
 
 class OpenAIUpdateFileDiffTool(UpdateFileGitLabTool):
     """Tool for interacting with the GitHub API."""
+
+    script_callable = True
 
     name: str = UPDATE_FILE_DIFF_TOOL.name
     description: str = UPDATE_FILE_DIFF_TOOL.description
@@ -331,6 +342,7 @@ class GetPullRequesChangesInput(BaseModel):
 
 
 class GetPullRequesChanges(CodeMieTool):
+    script_callable = True
     api_wrapper: Optional[CustomGitLabAPIWrapper] = Field(exclude=True, default=None)
     credentials: GitCredentials
     name: str = "get_pr_changes"
@@ -372,6 +384,7 @@ class CreatePullRequestChangeCommentInput(BaseModel):
 
 
 class CreatePullRequestChangeComment(CodeMieTool):
+    script_callable = True
     api_wrapper: Optional[CustomGitLabAPIWrapper] = Field(exclude=True, default=None)
     credentials: GitCredentials
     name: str = "create_pr_change_comment"

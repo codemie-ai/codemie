@@ -87,6 +87,8 @@ class MCPTool(CodeMieTool):
         tokens_size_limit: Maximum token size limit for the tool output
     """
 
+    # A workspace script cannot call MCP tools (see script_tool_calls/exclusions.py).
+
     # Additional attributes for MCP tools
     mcp_server_config: MCPServerConfig
     mcp_client: MCPConnectClient

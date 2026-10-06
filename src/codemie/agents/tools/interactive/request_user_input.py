@@ -87,6 +87,7 @@ class RequestUserInputArgs(BaseModel):
 
 
 class RequestUserInputTool(CodeMieTool):
+    # It ends the turn and waits for the user: a workspace script cannot call it.
     name: str = REQUEST_USER_INPUT_TOOL_NAME
     description: str = (
         "Show interactive UI (forms, buttons, choices) to the user and wait for "

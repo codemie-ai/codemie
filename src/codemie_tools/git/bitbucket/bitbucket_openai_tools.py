@@ -55,6 +55,8 @@ class BranchInput(BaseModel):
 class CreateBitbucketBranchTool(CodeMieTool):
     """Tool for creating branch in Bitbucket."""
 
+    script_callable = True
+
     repo_wrapper: Optional[Repository] = Field(exclude=True)
     credentials: GitCredentials
     name: str = CREATE_GIT_BRANCH_TOOL.name
@@ -70,6 +72,8 @@ class CreateBitbucketBranchTool(CodeMieTool):
 
 class SetActiveBranchTool(CodeMieTool):
     """Tool for setting active branch in Bitbucket."""
+
+    script_callable = True
 
     repo_wrapper: Optional[Repository] = Field(exclude=True)
     credentials: GitCredentials
@@ -93,6 +97,8 @@ class SetActiveBranchTool(CodeMieTool):
 
 class ListBranchesTool(CodeMieTool):
     """Tool for listing branches in Bitbucket."""
+
+    script_callable = True
 
     repo_wrapper: Optional[Repository] = Field(exclude=True)
     credentials: GitCredentials
@@ -122,6 +128,8 @@ class CreatePRInput(BaseModel):
 
 class CreatePRTool(CodeMieTool):
     """Tool for creating pull request in Bitbucket."""
+
+    script_callable = True
 
     repo_wrapper: Optional[Repository] = Field(exclude=True)
     credentials: GitCredentials
@@ -154,6 +162,8 @@ class DeleteFileInput(BaseModel):
 
 class DeleteFileTool(CodeMieTool):
     """Tool for deleting a file in Bitbucket."""
+
+    script_callable = True
 
     repo_wrapper: Optional[Repository] = Field(exclude=True)
     credentials: GitCredentials
@@ -190,6 +200,8 @@ class CreateFileInput(BaseModel):
 
 class CreateFileTool(CodeMieTool):
     """Tool for creating a file in Bitbucket."""
+
+    script_callable = True
 
     repo_wrapper: Optional[Repository] = Field(exclude=True)
     credentials: GitCredentials
@@ -252,6 +264,7 @@ class UpdateFileBitbucketTool(UpdateFileGitTool):
 
 
 class OpenAIUpdateFileWholeTool(UpdateFileBitbucketTool):
+    script_callable = True
     name: str = UPDATE_FILE_TOOL.name
     llm_model: BaseChatModel = Field(exclude=True)
 
@@ -289,6 +302,7 @@ class OpenAIUpdateFileWholeTool(UpdateFileBitbucketTool):
 
 
 class OpenAIUpdateFileDiffTool(UpdateFileBitbucketTool):
+    script_callable = True
     name: str = UPDATE_FILE_DIFF_TOOL.name
     llm_model: BaseChatModel = Field(exclude=True)
 
@@ -302,6 +316,8 @@ class GetPullRequestChangesInput(BaseModel):
 
 class GetPullRequestChanges(CodeMieTool):
     """Tool for getting pull request changes."""
+
+    script_callable = True
 
     repo_wrapper: Optional[Repository] = Field(exclude=True)
     credentials: GitCredentials
@@ -332,6 +348,8 @@ class CreatePullRequestChangeCommentInput(BaseModel):
 
 class CreatePullRequestChangeComment(CodeMieTool):
     """Tool for creating a pull request comment."""
+
+    script_callable = True
 
     repo_wrapper: Optional[Repository] = Field(exclude=True)
     credentials: GitCredentials

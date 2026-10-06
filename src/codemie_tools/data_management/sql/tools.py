@@ -34,6 +34,7 @@ _HANDLERS: Dict[SQLDialect, DialectHandler] = {
 
 
 class SQLTool(CodeMieTool):
+    script_callable = True
     name: str = SQL_TOOL.name
     description: str = SQL_TOOL.description
     args_schema: Type[BaseModel] = SQLToolInput

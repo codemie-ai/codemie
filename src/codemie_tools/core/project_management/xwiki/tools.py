@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 from codemie_tools.base.codemie_tool import CodeMieTool
 from codemie_tools.base.file_object import MimeType
 from codemie_tools.base.file_tool_mixin import FileToolMixin
+from codemie_tools.base.http_result import HttpResult
 from codemie_tools.file_analysis.docx.models import QueryType as DocxQueryType
 from codemie_tools.file_analysis.docx.processor import DocxProcessor
 from codemie_tools.file_analysis.pdf.processor import PdfProcessor
@@ -136,10 +137,10 @@ class _XWikiBaseTool(CodeMieTool):
         text: str,
         *,
         is_markdown: bool = False,
-    ) -> str:
+    ) -> HttpResult:
         if is_markdown and response.status_code < 300:
             text = markdownify(text, heading_style="ATX")
-        return f"HTTP: {method} {url} -> {response.status_code} {response.reason_phrase}\n{text}"
+        return HttpResult(method, url, response.status_code, response.reason_phrase, text, "body_on_new_line")
 
     def _healthcheck(self) -> None:
         validate_creds(self.config)
@@ -156,6 +157,7 @@ class _XWikiBaseTool(CodeMieTool):
 
 
 class ListWikisTool(_XWikiBaseTool):
+    script_callable = True
     name: str = LIST_WIKIS_TOOL.name
     description: str = LIST_WIKIS_TOOL.description
     args_schema: Type[BaseModel] = ListWikisInput
@@ -171,6 +173,7 @@ class ListWikisTool(_XWikiBaseTool):
 
 
 class GetWikiTool(_XWikiBaseTool):
+    script_callable = True
     name: str = GET_WIKI_TOOL.name
     description: str = GET_WIKI_TOOL.description
     args_schema: Type[BaseModel] = GetWikiInput
@@ -191,6 +194,7 @@ class GetWikiTool(_XWikiBaseTool):
 
 
 class ListSpacesTool(_XWikiBaseTool):
+    script_callable = True
     name: str = LIST_SPACES_TOOL.name
     description: str = LIST_SPACES_TOOL.description
     args_schema: Type[BaseModel] = ListSpacesInput
@@ -206,6 +210,7 @@ class ListSpacesTool(_XWikiBaseTool):
 
 
 class GetSpaceTool(_XWikiBaseTool):
+    script_callable = True
     name: str = GET_SPACE_TOOL.name
     description: str = GET_SPACE_TOOL.description
     args_schema: Type[BaseModel] = GetSpaceInput
@@ -227,6 +232,7 @@ class GetSpaceTool(_XWikiBaseTool):
 
 
 class ListPagesTool(_XWikiBaseTool):
+    script_callable = True
     name: str = LIST_PAGES_TOOL.name
     description: str = LIST_PAGES_TOOL.description
     args_schema: Type[BaseModel] = ListPagesInput
@@ -243,6 +249,7 @@ class ListPagesTool(_XWikiBaseTool):
 
 
 class ListWikiPagesTool(_XWikiBaseTool):
+    script_callable = True
     name: str = LIST_WIKI_PAGES_TOOL.name
     description: str = LIST_WIKI_PAGES_TOOL.description
     args_schema: Type[BaseModel] = ListWikiPagesInput
@@ -258,6 +265,7 @@ class ListWikiPagesTool(_XWikiBaseTool):
 
 
 class ListPageChildrenTool(_XWikiBaseTool):
+    script_callable = True
     name: str = LIST_PAGE_CHILDREN_TOOL.name
     description: str = LIST_PAGE_CHILDREN_TOOL.description
     args_schema: Type[BaseModel] = ListPageChildrenInput
@@ -274,6 +282,7 @@ class ListPageChildrenTool(_XWikiBaseTool):
 
 
 class GetPageTool(_XWikiBaseTool):
+    script_callable = True
     name: str = GET_PAGE_TOOL.name
     description: str = GET_PAGE_TOOL.description
     args_schema: Type[BaseModel] = GetPageInput
@@ -290,6 +299,7 @@ class GetPageTool(_XWikiBaseTool):
 
 
 class CreatePageTool(_XWikiBaseTool):
+    script_callable = True
     name: str = CREATE_PAGE_TOOL.name
     description: str = CREATE_PAGE_TOOL.description
     args_schema: Type[BaseModel] = CreatePageInput
@@ -312,6 +322,7 @@ class CreatePageTool(_XWikiBaseTool):
 
 
 class ModifyPageTool(_XWikiBaseTool):
+    script_callable = True
     name: str = MODIFY_PAGE_TOOL.name
     description: str = MODIFY_PAGE_TOOL.description
     args_schema: Type[BaseModel] = ModifyPageInput
@@ -336,6 +347,7 @@ class ModifyPageTool(_XWikiBaseTool):
 
 
 class DeletePageTool(_XWikiBaseTool):
+    script_callable = True
     name: str = DELETE_PAGE_TOOL.name
     description: str = DELETE_PAGE_TOOL.description
     args_schema: Type[BaseModel] = DeletePageInput
@@ -354,6 +366,7 @@ class DeletePageTool(_XWikiBaseTool):
 
 
 class ListWikiTagsTool(_XWikiBaseTool):
+    script_callable = True
     name: str = LIST_WIKI_TAGS_TOOL.name
     description: str = LIST_WIKI_TAGS_TOOL.description
     args_schema: Type[BaseModel] = ListWikiTagsInput
@@ -369,6 +382,7 @@ class ListWikiTagsTool(_XWikiBaseTool):
 
 
 class ListPageTagsTool(_XWikiBaseTool):
+    script_callable = True
     name: str = LIST_PAGE_TAGS_TOOL.name
     description: str = LIST_PAGE_TAGS_TOOL.description
     args_schema: Type[BaseModel] = ListPageTagsInput
@@ -385,6 +399,7 @@ class ListPageTagsTool(_XWikiBaseTool):
 
 
 class SetPageTagsTool(_XWikiBaseTool):
+    script_callable = True
     name: str = SET_PAGE_TAGS_TOOL.name
     description: str = SET_PAGE_TAGS_TOOL.description
     args_schema: Type[BaseModel] = SetPageTagsInput
@@ -404,6 +419,7 @@ class SetPageTagsTool(_XWikiBaseTool):
 
 
 class ListPageCommentsTool(_XWikiBaseTool):
+    script_callable = True
     name: str = LIST_PAGE_COMMENTS_TOOL.name
     description: str = LIST_PAGE_COMMENTS_TOOL.description
     args_schema: Type[BaseModel] = ListPageCommentsInput
@@ -420,6 +436,7 @@ class ListPageCommentsTool(_XWikiBaseTool):
 
 
 class GetPageCommentTool(_XWikiBaseTool):
+    script_callable = True
     name: str = GET_PAGE_COMMENT_TOOL.name
     description: str = GET_PAGE_COMMENT_TOOL.description
     args_schema: Type[BaseModel] = GetPageCommentInput
@@ -436,6 +453,7 @@ class GetPageCommentTool(_XWikiBaseTool):
 
 
 class CreatePageCommentTool(_XWikiBaseTool):
+    script_callable = True
     name: str = CREATE_PAGE_COMMENT_TOOL.name
     description: str = CREATE_PAGE_COMMENT_TOOL.description
     args_schema: Type[BaseModel] = CreatePageCommentInput
@@ -455,6 +473,7 @@ class CreatePageCommentTool(_XWikiBaseTool):
 
 
 class ListPageAttachmentsTool(_XWikiBaseTool):
+    script_callable = True
     name: str = LIST_PAGE_ATTACHMENTS_TOOL.name
     description: str = LIST_PAGE_ATTACHMENTS_TOOL.description
     args_schema: Type[BaseModel] = ListPageAttachmentsInput
@@ -471,6 +490,7 @@ class ListPageAttachmentsTool(_XWikiBaseTool):
 
 
 class GetPageAttachmentTool(_XWikiBaseTool):
+    script_callable = True
     name: str = GET_PAGE_ATTACHMENT_TOOL.name
     description: str = GET_PAGE_ATTACHMENT_TOOL.description
     args_schema: Type[BaseModel] = GetPageAttachmentInput
@@ -487,6 +507,7 @@ class GetPageAttachmentTool(_XWikiBaseTool):
 
 
 class CreatePageAttachmentTool(_XWikiBaseTool, FileToolMixin):
+    script_callable = True
     name: str = CREATE_PAGE_ATTACHMENT_TOOL.name
     description: str = CREATE_PAGE_ATTACHMENT_TOOL.description
     args_schema: Type[BaseModel] = CreatePageAttachmentInput
@@ -520,6 +541,7 @@ class CreatePageAttachmentTool(_XWikiBaseTool, FileToolMixin):
 
 
 class DeletePageAttachmentTool(_XWikiBaseTool):
+    script_callable = True
     name: str = DELETE_PAGE_ATTACHMENT_TOOL.name
     description: str = DELETE_PAGE_ATTACHMENT_TOOL.description
     args_schema: Type[BaseModel] = DeletePageAttachmentInput
@@ -533,6 +555,7 @@ class DeletePageAttachmentTool(_XWikiBaseTool):
 
 
 class ReadPageAttachmentContentTool(_XWikiBaseTool):
+    script_callable = True
     name: str = READ_PAGE_ATTACHMENT_CONTENT_TOOL.name
     description: str = READ_PAGE_ATTACHMENT_CONTENT_TOOL.description
     args_schema: Type[BaseModel] = ReadPageAttachmentContentInput
@@ -751,6 +774,7 @@ class ReadPageAttachmentContentTool(_XWikiBaseTool):
 
 
 class SearchWikiTool(_XWikiBaseTool):
+    script_callable = True
     name: str = SEARCH_WIKI_TOOL.name
     description: str = SEARCH_WIKI_TOOL.description
     args_schema: Type[BaseModel] = SearchWikiInput
@@ -778,6 +802,7 @@ class SearchWikiTool(_XWikiBaseTool):
 
 
 class SearchSpaceTool(_XWikiBaseTool):
+    script_callable = True
     name: str = SEARCH_SPACE_TOOL.name
     description: str = SEARCH_SPACE_TOOL.description
     args_schema: Type[BaseModel] = SearchSpaceInput

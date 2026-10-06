@@ -289,6 +289,8 @@ class BaseAzureDevOpsFileWorkItemTool(BaseAzureDevOpsWorkItemTool, FileToolMixin
 class SearchWorkItemsTool(BaseAzureDevOpsWorkItemTool):
     """Tool to search work items in Azure DevOps using WIQL queries."""
 
+    script_callable = True
+
     name: str = SEARCH_WORK_ITEMS_TOOL.name
     description: str = SEARCH_WORK_ITEMS_TOOL.description
     args_schema: Type[BaseModel] = SearchWorkItemsInput
@@ -331,6 +333,8 @@ class SearchWorkItemsTool(BaseAzureDevOpsWorkItemTool):
 class CreateWorkItemTool(BaseAzureDevOpsFileWorkItemTool):
     """Tool to create a work item in Azure DevOps with optional file attachments."""
 
+    script_callable = True
+
     name: str = CREATE_WORK_ITEM_TOOL.name
     description: str = CREATE_WORK_ITEM_TOOL.description
     args_schema: Type[BaseModel] = CreateWorkItemInput
@@ -362,6 +366,8 @@ class CreateWorkItemTool(BaseAzureDevOpsFileWorkItemTool):
 class UpdateWorkItemTool(BaseAzureDevOpsFileWorkItemTool):
     """Tool to update an existing work item in Azure DevOps with optional file attachments."""
 
+    script_callable = True
+
     name: str = UPDATE_WORK_ITEM_TOOL.name
     description: str = UPDATE_WORK_ITEM_TOOL.description
     args_schema: Type[BaseModel] = UpdateWorkItemInput
@@ -387,6 +393,8 @@ class UpdateWorkItemTool(BaseAzureDevOpsFileWorkItemTool):
 
 class GetWorkItemTool(BaseAzureDevOpsWorkItemTool):
     """Tool to get a single work item by ID from Azure DevOps with optional attachment download."""
+
+    script_callable = True
 
     name: str = GET_WORK_ITEM_TOOL.name
     description: str = GET_WORK_ITEM_TOOL.description
@@ -534,6 +542,8 @@ class GetWorkItemTool(BaseAzureDevOpsWorkItemTool):
 class LinkWorkItemsTool(BaseAzureDevOpsWorkItemTool):
     """Tool to link two work items in Azure DevOps with a specified relationship type."""
 
+    script_callable = True
+
     name: str = LINK_WORK_ITEMS_TOOL.name
     description: str = LINK_WORK_ITEMS_TOOL.description
     args_schema: Type[BaseModel] = LinkWorkItemsInput
@@ -573,6 +583,8 @@ class LinkWorkItemsTool(BaseAzureDevOpsWorkItemTool):
 class GetRelationTypesTool(BaseAzureDevOpsWorkItemTool):
     """Tool to get all available relation types for work items in Azure DevOps."""
 
+    script_callable = True
+
     name: str = GET_RELATION_TYPES_TOOL.name
     description: str = GET_RELATION_TYPES_TOOL.description
     args_schema: Type[BaseModel] = GetRelationTypesInput
@@ -597,6 +609,8 @@ class GetRelationTypesTool(BaseAzureDevOpsWorkItemTool):
 class RemoveWorkItemRelationTool(BaseAzureDevOpsWorkItemTool):
     """Tool to remove a specific relation from an Azure DevOps work item by its index."""
 
+    script_callable = True
+
     name: str = REMOVE_WORK_ITEM_RELATION_TOOL.name
     description: str = REMOVE_WORK_ITEM_RELATION_TOOL.description
     args_schema: Type[BaseModel] = RemoveWorkItemRelationInput
@@ -616,6 +630,8 @@ class RemoveWorkItemRelationTool(BaseAzureDevOpsWorkItemTool):
 
 class MoveWorkItemTool(BaseAzureDevOpsWorkItemTool):
     """Tool to move an Azure DevOps work item to a new parent by updating the hierarchy relation."""
+
+    script_callable = True
 
     name: str = MOVE_WORK_ITEM_TOOL.name
     description: str = MOVE_WORK_ITEM_TOOL.description
@@ -661,6 +677,8 @@ class MoveWorkItemTool(BaseAzureDevOpsWorkItemTool):
 
 class GetCommentsTool(BaseAzureDevOpsWorkItemTool):
     """Tool to get comments for a work item by ID from Azure DevOps."""
+
+    script_callable = True
 
     name: str = GET_COMMENTS_TOOL.name
     description: str = GET_COMMENTS_TOOL.description
@@ -717,6 +735,8 @@ class GetCommentsTool(BaseAzureDevOpsWorkItemTool):
 class CreateCommentTool(BaseAzureDevOpsWorkItemTool):
     """Tool to add a new comment to a work item in Azure DevOps."""
 
+    script_callable = True
+
     name: str = CREATE_COMMENT_TOOL.name
     description: str = CREATE_COMMENT_TOOL.description
     args_schema: Type[BaseModel] = CreateCommentInput
@@ -738,6 +758,8 @@ class CreateCommentTool(BaseAzureDevOpsWorkItemTool):
 
 class GetWorkItemAttachmentContentTool(BaseAzureDevOpsWorkItemTool, AttachmentContentMixin):
     """Tool to retrieve and parse the content of an attachment on an Azure DevOps work item."""
+
+    script_callable = True
 
     name: str = GET_WORK_ITEM_ATTACHMENT_CONTENT_TOOL.name
     description: str = GET_WORK_ITEM_ATTACHMENT_CONTENT_TOOL.description

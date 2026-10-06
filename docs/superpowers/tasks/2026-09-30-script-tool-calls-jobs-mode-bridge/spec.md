@@ -1,5 +1,9 @@
 # Spec: Jobs-Mode Script Tool-Call Bridge (EPMCDME-15401 follow-up)
 
+> **Updated by the 2026-10-02 decisions:** the channel keeps polling with a capped backoff until the run's deadline, `.done` and the request poll are one exec per tick, and the backend answers `deadline_exceeded` when under 2 s of the budget remain; the time limit has a ceiling of 600 s. See the code executor README.
+
+> **Changed again by sub-task 5 (2026-10-05):** the structure moved: `tool_call_protocol.py` (no `kubernetes`), `exec_runner.py`, one polling thread for every exec and a thread pool for handlers (`maxParallelCalls`), `call_tools` in the SDK, named error-code constants, one `ToolCallingSettings` value, the pooled-mode leftovers (sweep, kill, `pid`/`start_time`) removed, scope as an object (`ScriptScope`), one result mechanism (`to_script_result`) and a log record factory. This document describes the first version; the code executor README describes the current one.
+
 ## Context
 
 Sub-task 1 built the script tool-call bridge (`codemie_runtime_sdk`, `tool_call_channel.py`,

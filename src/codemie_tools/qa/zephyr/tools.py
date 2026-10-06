@@ -28,6 +28,7 @@ ZEPHYR_HEALTHCHECK_METHOD = "get_health"
 
 
 class ZephyrGenericTool(CodeMieTool):
+    script_callable = True
     config: Optional[ZephyrConfig] = Field(exclude=True, default=None)
     name: str = ZEPHYR_TOOL.name
     description: str = ZEPHYR_TOOL.description

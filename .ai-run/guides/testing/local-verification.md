@@ -1,7 +1,7 @@
 # Local Verification
 
-How to verify a change beyond unit tests before opening an MR: the harness sanity run and live API
-calls. Gate commands and the MR compliance rules stay in `.ai-run/guides/quality-gates.md`; this guide is the procedure for choosing and running the extra checks.
+How to verify a change beyond unit tests before opening an MR: the harness sanity run and live API calls. Gate commands and the MR compliance rules stay in
+`.ai-run/guides/quality-gates.md`; this guide is the procedure for choosing and running the extra checks.
 
 ## Order
 
@@ -28,7 +28,7 @@ in the Test Harness gate of `.ai-run/guides/quality-gates.md`.
 
 ## Live API Calls
 
-Unit tests and the sanity run prove what they assert. A live call proves that the running backend does what the
+Unit tests and harness tests prove what they assert. A live call proves that the running backend does what the
 change claims.
 
 1. Start the backend from the branch checkout with the configuration the feature needs, and confirm it serves the
@@ -66,4 +66,5 @@ A red result is not automatically caused by the change, and not automatically un
 ## Reporting
 
 Put the results into the MR description: the `## Test harness` section required by the compliance bot (see
-`.ai-run/guides/quality-gates.md`), then each live scenario (what was done, what was expected, what happened).
+`.ai-run/guides/quality-gates.md`), then the extra harness run (exact expression, worker and rerun counts, every
+failure grouped by cause) and each live scenario (what was done, what was expected, what happened).

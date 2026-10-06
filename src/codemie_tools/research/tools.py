@@ -46,6 +46,7 @@ class WebScrapperToolInput(BaseModel):
 
 
 class WebScrapperTool(CodeMieTool):
+    script_callable = True
     tokens_size_limit: int = 10000
     name: str = WEB_SCRAPPER_TOOL.name
     description: str = WEB_SCRAPPER_TOOL.description
@@ -224,6 +225,7 @@ class GooglePlacesFindNearSchema(BaseModel):
 
 
 class GoogleSearchResults(CodeMieTool):
+    script_callable = True
     name: str = GOOGLE_SEARCH_RESULTS_TOOL.name
     description: str = GOOGLE_SEARCH_RESULTS_TOOL.description
     num_results: int = 10
@@ -248,6 +250,7 @@ class GoogleSearchResults(CodeMieTool):
 
 
 class GooglePlacesTool(CodeMieTool):
+    script_callable = True
     name: str = GOOGLE_PLACES_TOOL.name
     description: str = GOOGLE_PLACES_TOOL.description
     api_wrapper: GooglePlacesAPIWrapper
@@ -261,6 +264,7 @@ class GooglePlacesTool(CodeMieTool):
 
 
 class GooglePlacesFindNearTool(CodeMieTool):
+    script_callable = True
     name: str = GOOGLE_PLACES_FIND_NEAR_TOOL.name
     description: str = GOOGLE_PLACES_FIND_NEAR_TOOL.description
     api_wrapper: GooglePlacesAPIWrapper
@@ -279,6 +283,7 @@ class WikipediaQueryInput(BaseModel):
 
 
 class WikipediaQueryRun(CodeMieTool):
+    script_callable = True
     name: str = WIKIPEDIA_TOOL.name
     description: str = WIKIPEDIA_TOOL.description
     api_wrapper: WikipediaAPIWrapper

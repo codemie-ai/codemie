@@ -28,6 +28,8 @@ from ...base.utils import parse_and_escape_args
 class GenericAWSTool(CodeMieTool):
     """Generic tool for interacting with AWS services using boto3."""
 
+    script_callable = True
+
     config: AWSConfig
     client: Optional[AWSClient] = None
     name: str = AWS_TOOL.name

@@ -24,6 +24,7 @@ from codemie_tools.data_management.elastic.tools_vars import SEARCH_ES_INDEX_TOO
 
 
 class SearchElasticIndex(CodeMieTool):
+    script_callable = True
     config: Optional[ElasticConfig] = Field(exclude=True, default=None)
     name: str = SEARCH_ES_INDEX_TOOL.name
     description: str = SEARCH_ES_INDEX_TOOL.description

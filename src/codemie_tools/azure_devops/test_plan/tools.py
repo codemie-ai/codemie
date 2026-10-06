@@ -87,6 +87,8 @@ class BaseAzureDevOpsTestPlanTool(CodeMieTool):
 class CreateTestPlanTool(BaseAzureDevOpsTestPlanTool):
     """Tool to create a test plan in Azure DevOps."""
 
+    script_callable = True
+
     name: str = CREATE_TEST_PLAN_TOOL.name
     description: str = CREATE_TEST_PLAN_TOOL.description
     args_schema: Type[BaseModel] = CreateTestPlanInput
@@ -109,6 +111,8 @@ class CreateTestPlanTool(BaseAzureDevOpsTestPlanTool):
 class DeleteTestPlanTool(BaseAzureDevOpsTestPlanTool):
     """Tool to delete a test plan in Azure DevOps."""
 
+    script_callable = True
+
     name: str = DELETE_TEST_PLAN_TOOL.name
     description: str = DELETE_TEST_PLAN_TOOL.description
     args_schema: Type[BaseModel] = DeleteTestPlanInput
@@ -128,6 +132,8 @@ class DeleteTestPlanTool(BaseAzureDevOpsTestPlanTool):
 
 class GetTestPlanTool(BaseAzureDevOpsTestPlanTool):
     """Tool to get a test plan or list test plans in Azure DevOps."""
+
+    script_callable = True
 
     name: str = GET_TEST_PLAN_TOOL.name
     description: str = GET_TEST_PLAN_TOOL.description
@@ -153,6 +159,8 @@ class GetTestPlanTool(BaseAzureDevOpsTestPlanTool):
 class CreateTestSuiteTool(BaseAzureDevOpsTestPlanTool):
     """Tool to create a test suite in Azure DevOps."""
 
+    script_callable = True
+
     name: str = CREATE_TEST_SUITE_TOOL.name
     description: str = CREATE_TEST_SUITE_TOOL.description
     args_schema: Type[BaseModel] = CreateTestSuiteInput
@@ -175,6 +183,8 @@ class CreateTestSuiteTool(BaseAzureDevOpsTestPlanTool):
 class DeleteTestSuiteTool(BaseAzureDevOpsTestPlanTool):
     """Tool to delete a test suite in Azure DevOps."""
 
+    script_callable = True
+
     name: str = DELETE_TEST_SUITE_TOOL.name
     description: str = DELETE_TEST_SUITE_TOOL.description
     args_schema: Type[BaseModel] = DeleteTestSuiteInput
@@ -194,6 +204,8 @@ class DeleteTestSuiteTool(BaseAzureDevOpsTestPlanTool):
 
 class GetTestSuiteTool(BaseAzureDevOpsTestPlanTool):
     """Tool to get a test suite or list test suites in Azure DevOps."""
+
+    script_callable = True
 
     name: str = GET_TEST_SUITE_TOOL.name
     description: str = GET_TEST_SUITE_TOOL.description
@@ -218,6 +230,8 @@ class GetTestSuiteTool(BaseAzureDevOpsTestPlanTool):
 
 class AddTestCaseTool(BaseAzureDevOpsTestPlanTool):
     """Tool to add a test case to a suite in Azure DevOps."""
+
+    script_callable = True
 
     name: str = ADD_TEST_CASE_TOOL.name
     description: str = ADD_TEST_CASE_TOOL.description
@@ -257,6 +271,8 @@ class AddTestCaseTool(BaseAzureDevOpsTestPlanTool):
 class GetTestCaseTool(BaseAzureDevOpsTestPlanTool):
     """Tool to get a test case from a suite in Azure DevOps."""
 
+    script_callable = True
+
     name: str = GET_TEST_CASE_TOOL.name
     description: str = GET_TEST_CASE_TOOL.description
     args_schema: Type[BaseModel] = GetTestCaseInput
@@ -280,6 +296,8 @@ class GetTestCaseTool(BaseAzureDevOpsTestPlanTool):
 
 class GetTestCasesTool(BaseAzureDevOpsTestPlanTool):
     """Tool to get test cases from a suite in Azure DevOps."""
+
+    script_callable = True
 
     name: str = GET_TEST_CASES_TOOL.name
     description: str = GET_TEST_CASES_TOOL.description

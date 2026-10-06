@@ -293,3 +293,43 @@ def test_delete_by_execution_id(mock_toolkit):
         assert VirtualAssistantService.assistants["second"]
 
     assert VirtualAssistantService.assistants["third"]
+
+
+def test_create_defaults_to_not_a_tool_step(mock_toolkit):
+    assistant = VirtualAssistantService.create(toolkits=[mock_toolkit], project="Test", execution_id="exec-1")
+
+    assert assistant.is_tool_step is False
+
+
+def test_create_from_tool_config_marks_a_bare_tool_step(mock_toolkit):
+    with patch(
+        "codemie.service.assistant.virtual_assistant_service.ToolsService.get_toolkit_from_workflow_tool_config",
+        return_value=mock_toolkit,
+    ):
+        assistant = VirtualAssistantService.create_from_tool_config(
+            tool_config=MagicMock(), project_name="Test", user=User(id="test_user"), execution_id="exec-1"
+        )
+
+    assert assistant.is_tool_step is True
+    assert assistant.execution_id == "exec-1"
+
+
+def test_create_from_virtual_asst_config_is_not_a_tool_step(mock_toolkit, workflow_assistant_config):
+    with patch(
+        "codemie.service.assistant.virtual_assistant_service.ToolsService.get_toolkits_from_assistant_tool_config",
+        return_value=[mock_toolkit],
+    ):
+        assistant = VirtualAssistantService.create_from_virtual_asst_config(
+            config=workflow_assistant_config, project_name="Test", user=User(id="test_user"), execution_id="exec-1"
+        )
+
+    assert assistant.is_tool_step is False
+
+
+def test_create_from_tool_invocation_is_not_a_tool_step(mock_toolkit):
+    with patch(
+        "codemie.service.assistant.virtual_assistant_service.ToolsService.get_toolkit", return_value=mock_toolkit
+    ):
+        assistant = VirtualAssistantService.create_from_tool_invocation("some_tool", User(id="test_user"), "Test")
+
+    assert assistant.is_tool_step is False

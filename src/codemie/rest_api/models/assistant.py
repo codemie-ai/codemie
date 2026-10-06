@@ -1400,6 +1400,9 @@ class AssistantRollbackRequest(BaseModel):
 
 class VirtualAssistant(AssistantBase):
     execution_id: Optional[str] = None
+    # True only for the temporary single-tool assistant of a bare workflow tool step; set by trusted workflow code,
+    # never from a request. Gives a workspace script the workflow scope; an inline assistant node does not have it.
+    is_tool_step: bool = False
 
 
 class VirtualIdeAssistant(AssistantBase):

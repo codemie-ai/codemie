@@ -30,6 +30,8 @@ logger = logging.getLogger(__name__)
 class KeycloakTool(CodeMieTool):
     """Generic tool for interacting with Keycloak Admin API."""
 
+    script_callable = True
+
     config: KeycloakConfig
     client: Optional[KeycloakClient] = None
     name: str = KEYCLOAK_TOOL.name

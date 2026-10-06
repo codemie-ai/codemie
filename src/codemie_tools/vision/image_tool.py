@@ -42,6 +42,8 @@ class Input(BaseModel):
 class ImageTool(CodeMieTool):
     """Calls gpt-vision to interpret and transcribe image contents"""
 
+    script_callable = True
+
     args_schema: Type[BaseModel] = Input
 
     name: str = IMAGE_TOOL.name

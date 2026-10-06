@@ -31,6 +31,10 @@ KEY_PREFIX = "CUSTOMER_CONFIG__"
 _CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 _NON_ALPHANUMERIC = re.compile(r"[^A-Za-z0-9]+")
 
+#: Shared by every field whose declared value must be a positive integer.
+_POSITIVE_INTEGER_PATTERN = r"^[1-9][0-9]*$"
+_POSITIVE_INTEGER_MESSAGE = "Must be a positive integer"
+
 
 class FieldType(str, Enum):
     """Form control a declared field is rendered with."""
@@ -170,8 +174,8 @@ RELEASE_NOTES_RECENT_COUNT = SettingDeclaration(
             type=FieldType.INPUT,
             label="Recent release count",
             max_length=4,
-            pattern=r"^[1-9][0-9]*$",
-            pattern_message="Must be a positive integer",
+            pattern=_POSITIVE_INTEGER_PATTERN,
+            pattern_message=_POSITIVE_INTEGER_MESSAGE,
         ),
     ],
 )
@@ -218,6 +222,48 @@ MCP_CUSTOM_SERVERS_DISABLED = SettingDeclaration(
     ],
 )
 
+WORKSPACE_SCRIPT_BRIDGE = SettingDeclaration(
+    component_id="features:workspaceScriptBridge",
+    label="Workspace script bridge",
+    description=(
+        "Allows scripts run in the workspace sandbox to call tools during their run. "
+        "Applies to runs that start after the change."
+    ),
+    fields=[
+        FieldDeclaration(
+            name="enabled",
+            type=FieldType.SWITCH,
+            label="Enable workspace script bridge",
+        ),
+        FieldDeclaration(
+            name="timeoutSeconds",
+            type=FieldType.INPUT,
+            label="Script run limit (seconds)",
+            description=(
+                "Time limit in seconds (at most 480) for a script run with the bridge, counted from the start of the "
+                "script. Runs without the bridge keep the ordinary limit. Gateways and streams between the browser "
+                "and the backend must stay open longer than this limit."
+            ),
+            max_length=3,
+            pattern=_POSITIVE_INTEGER_PATTERN,
+            pattern_message=_POSITIVE_INTEGER_MESSAGE,
+        ),
+        FieldDeclaration(
+            name="maxParallelCalls",
+            type=FieldType.INPUT,
+            label="Parallel tool calls per run",
+            description=(
+                "Most tool calls of one script run that are served at the same time (1 serves them one after "
+                "another). A ceiling, not a guarantee: all runs of one backend process also share a process-wide "
+                "limit. A value above that limit is lowered to it."
+            ),
+            max_length=3,
+            pattern=_POSITIVE_INTEGER_PATTERN,
+            pattern_message=_POSITIVE_INTEGER_MESSAGE,
+        ),
+    ],
+)
+
 DECLARATIONS: tuple[SettingDeclaration, ...] = (
     CHAT_DISCLAIMER,
     RELEASE_NOTES_RECENT_COUNT,
@@ -225,6 +271,7 @@ DECLARATIONS: tuple[SettingDeclaration, ...] = (
     WEB_SEARCH,
     SCHEDULERS,
     MCP_CUSTOM_SERVERS_DISABLED,
+    WORKSPACE_SCRIPT_BRIDGE,
 )
 
 _BY_COMPONENT_ID = {declaration.component_id: declaration for declaration in DECLARATIONS}

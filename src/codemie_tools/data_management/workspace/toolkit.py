@@ -17,12 +17,16 @@ from __future__ import annotations
 from typing import Any, List
 
 from codemie.core.models import AssistantChatRequest
-from codemie.rest_api.models.assistant import Assistant
+from codemie.rest_api.models.assistant import Assistant, VirtualAssistant
 from codemie.rest_api.models.agent_workspace import CreateAgentWorkspaceRequest
 from codemie.rest_api.security.user import User
 from codemie.service.agent_workspace_service import AgentWorkspaceService
+from codemie.service.script_tool_calls.context import ScriptToolRegistry
+from codemie.service.workspace_script_bridge import resolve_tool_calling_settings
 from codemie_tools.base.base_toolkit import BaseToolkit
 from codemie_tools.base.models import Tool, ToolKit
+from codemie_tools.data_management.code_executor.sdk_reference import compose_description, read_sdk_reference
+from codemie_tools.data_management.code_executor.tool_calling_limits import ToolCallingSettings
 from codemie_tools.data_management.workspace.generate_image_tool_v2 import GenerateWorkspaceImageToolV2
 from codemie_tools.data_management.workspace.inspect_workspace_image_tool import InspectWorkspaceImageTool
 from codemie_tools.data_management.workspace.tools import (
@@ -67,7 +71,9 @@ class AgentWorkspaceToolkitUI(ToolKit):
 class AgentWorkspaceToolkit(BaseToolkit):
     conversation_id: str
     user: User
-    assistant: Assistant | None = None
+    # VirtualAssistant must stay a member: with only Assistant, pydantic converts it and drops execution_id and
+    # is_tool_step.
+    assistant: Assistant | VirtualAssistant | None = None
     request: AssistantChatRequest | None = None
     request_uuid: str | None = None
     llm_model: Any | None = None
@@ -77,6 +83,28 @@ class AgentWorkspaceToolkit(BaseToolkit):
     def get_tools_ui_info(cls):
         return AgentWorkspaceToolkitUI().model_dump()
 
+    def _workflow_project(self) -> str | None:
+        """The workflow's project, only for a bare workflow tool step.
+
+        An inline workflow assistant node is a virtual assistant with an execution id too, so the execution id says
+        nothing; the explicit ``is_tool_step`` marker, set only where the tool step's assistant is created, does.
+        """
+        if isinstance(self.assistant, VirtualAssistant) and self.assistant.is_tool_step:
+            return self.assistant.project
+        return None
+
+    @staticmethod
+    def _script_tool_description(tool_calling: ToolCallingSettings | None) -> str:
+        """The script tool's description: the base text, plus the SDK reference only while tool calling is on.
+
+        Built from parts so that further sections (for example the result shapes of tools) can be appended.
+        """
+        sections: list[str] = []
+        if tool_calling is not None:
+            sections.append(read_sdk_reference(tool_calling))
+        base = EXECUTE_WORKSPACE_SCRIPT_TOOL.description or ""
+        return compose_description(base, sections) if sections else base
+
     def get_tools(self) -> list:
         shared_service = AgentWorkspaceService()
         workspace = shared_service.create_workspace(
@@ -84,6 +112,7 @@ class AgentWorkspaceToolkit(BaseToolkit):
             self.user,
         )
         resolved_workspace_id = workspace.id
+        tool_calling = resolve_tool_calling_settings()
 
         return [
             ListWorkspaceFilesTool(
@@ -127,6 +156,9 @@ class AgentWorkspaceToolkit(BaseToolkit):
                 user=self.user,
                 workspace_service=shared_service,
                 workspace_id=resolved_workspace_id,
+                script_registry=ScriptToolRegistry(self.user, workflow_project=self._workflow_project()),
+                description=self._script_tool_description(tool_calling),
+                tool_calling=tool_calling,
             ),
             GenerateWorkspaceImageToolV2(
                 conversation_id=self.conversation_id,
