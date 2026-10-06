@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, Sequence
 
 from codemie_tools.base.models import Tool
 from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
@@ -39,9 +39,13 @@ from codemie.rest_api.models.base import (
     ConversationStatus,
 )
 from codemie.rest_api.models.feedback import MarkEnum
+from codemie.rest_api.models.standard import PostResponse
 from codemie.rest_api.security.user import User
 from sqlmodel import Field as SQLField, Session, delete, select, Column, text
-from sqlalchemy import Boolean, func, String
+from sqlalchemy import Boolean, func, inspect, String, update as sa_update
+from sqlalchemy.orm import InstanceState
+from sqlalchemy.orm.attributes import set_committed_value
+from sqlalchemy.orm.exc import StaleDataError
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.mutable import MutableList
 from enum import StrEnum
@@ -542,6 +546,73 @@ class Conversation(BaseModelWithSQLSupport, Owned, table=True):
             result = materialize_workflow_conversation(conversation.history, conversation.initial_assistant_id)
             conversation.history = result.history
         return conversation
+
+    # Intentionally differs from BaseModelWithSQLSupport.update(): `columns` is a required keyword-only argument,
+    # so every call site states what it writes and no full-row SELECT is needed before the UPDATE.
+    def update(  # type: ignore[override]
+        self,
+        *,
+        columns: Sequence[str],  # NOSONAR: required on purpose, see comment above
+        refresh: bool = False,
+        validate: bool = True,
+        touch_timestamp: bool = True,
+    ) -> PostResponse:
+        """Write the listed columns with one targeted ``UPDATE conversations ... WHERE id`` and no pre-read.
+
+        ``update_date`` is added when ``touch_timestamp`` is true. ``refresh`` is accepted and ignored,
+        as in the base method. The only SELECT issued is ``Conversation.exists`` (id-only), and only when
+        nothing is to be written.
+        """
+        written = list(dict.fromkeys(columns))
+        if touch_timestamp:
+            self.update_date = datetime.now()
+            if "update_date" not in written:
+                written.append("update_date")
+
+        state = inspect(self)
+        # A re-assigned history (e.g. materialized workflow history from get_by_id) is still written back
+        # even when "history" is not listed in `columns`.
+        if "history" not in written and state.attrs["history"].history.has_changes():
+            written.append("history")
+
+        if validate:
+            validation_message = self.validate_fields()
+            if validation_message:
+                raise ValueError(validation_message)
+
+        if not state.has_identity:
+            raise ValueError(f"Conversation {self.id} has no database identity; use save() to insert new rows")
+
+        self._check_unlisted_changes(state, written)
+
+        if not written:
+            if not Conversation.exists(self.id):
+                raise StaleDataError(f"Record {self.id} has been deleted")
+            return PostResponse(id=self.id)
+
+        with self.get_engine().begin() as conn:
+            rowcount = conn.execute(
+                sa_update(Conversation)
+                .where(Conversation.id == self.id)
+                .values({column: getattr(self, column) for column in written})
+            ).rowcount
+        if rowcount == 0:
+            raise StaleDataError(f"Record {self.id} has been deleted")
+
+        for column in written:
+            set_committed_value(self, column, getattr(self, column))
+        return PostResponse(id=self.id)
+
+    def _check_unlisted_changes(self, state: InstanceState[Conversation], written: list[str]) -> None:
+        """Warn about changed columns that are not written."""
+        unlisted = [
+            column.key
+            for column in Conversation.__table__.columns
+            if column.key not in written and state.attrs[column.key].history.has_changes()
+        ]
+        if not unlisted:
+            return
+        logger.warning(f"Conversation.update() for {self.id}: changed columns not listed in columns=: {unlisted}")
 
     @classmethod
     def exists(cls, id_: str) -> bool:

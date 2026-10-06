@@ -1,0 +1,243 @@
+{
+  "decision": "request-changes",
+  "rationale": "Two blocking major findings: Conversation._check_unlisted_changes leaves its SQLAlchemy state parameter unannotated (code-quality.md, partial), and no real-update test covers site 2's conditional conversation_name/initial_assistant_id writes. 3 deferred to code-review-deferred.md (pre-existing: admin final-feedback 500 on missing chat; full-array history overwrite by concurrent appenders; workflow materialized-history write-back on rename, kept by spec non-goal); 15 dismissed as noise or unreachable after reading the call sites. All four lenses and the standards audit ran; 'make ruff and the test suite pass' is pending-stage-7.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "Goal: every Conversation.update() sends exactly one targeted UPDATE ... WHERE id with no pre-read SELECT; empty written set sends 0 UPDATE + 1 id-only SELECT; s",
+      "status": "pass",
+      "notes": "override in rest_api/models/conversation.py (diff +546-114) uses Core sa_update on engine.begin(); empty path uses Conversation.exists; save() untouched"
+    },
+    {
+      "kind": "spec",
+      "item": "Design 1: Conversation.update() override next to get_by_id with required keyword-only columns, refresh (ignored), validate, touch_timestamp; returns PostRespons",
+      "status": "pass",
+      "notes": "signature at conversation.py hunk @@ -543 with `# type: ignore[override]` and explanatory comment; base.py not in diff"
+    },
+    {
+      "kind": "spec",
+      "item": "Design 2: written set = columns + update_date when touch_timestamp + history when attribute history shows re-assignment; comment references ticket 04",
+      "status": "pass",
+      "notes": "dict.fromkeys(columns), update_date append, state.attrs['history'].history.has_changes() with 'Ticket 04 removes this write-back' comment"
+    },
+    {
+      "kind": "spec",
+      "item": "Design 3: one Core update(Conversation) writing current in-memory value of every written column, on engine connection or synchronize_session=False, through type",
+      "status": "pass",
+      "notes": "get_engine().begin() + sa_update(Conversation).values({c: getattr(self, c)}); validate_fields before write"
+    },
+    {
+      "kind": "spec",
+      "item": "Design 4: no DB identity raises clear error; rowcount==0 raises StaleDataError('Record {id} has been deleted'); empty written set skips UPDATE and uses Conversa",
+      "status": "pass",
+      "notes": "ValueError on not state.has_identity; StaleDataError on rowcount 0 and on not exists(); tests in test_conversation_update.py"
+    },
+    {
+      "kind": "spec",
+      "item": "Design 5: set_committed_value on each written column after successful write using existing object",
+      "status": "pass",
+      "notes": "loop over written with set_committed_value(self, column, getattr(self, column)); covered by change-save-revert and second-update tests"
+    },
+    {
+      "kind": "spec",
+      "item": "Design 6: mismatch detector warns on changed-but-unwritten column",
+      "status": "pass",
+      "notes": "_check_unlisted_changes; warning test present"
+    },
+    {
+      "kind": "spec",
+      "item": "Design 7: all 21 sites from design doc section 3 pass their column lists, keep touch_timestamp; site 9 appends per branch; in-place mutation sites unchanged",
+      "status": "pass",
+      "notes": "all 21 sites migrated with lists matching design table (routers abort/feedback/admin, 11 conversation_service sites, chat naming, 4 checkpoint, 2 workflow); site 9 appends inside each if; no bare Conv"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC1a: PUT rename/pin/folder move (site 9) and folder rename (site 8) persist values and leave update_date unchanged",
+      "status": "pass",
+      "notes": "touch_timestamp=False kept at both sites; test_site8_* and parametrized test_site9_* assert update_date not in statement and unchanged"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC1b: delete folder without chats (site 7) clears folder and still bumps update_date",
+      "status": "pass",
+      "notes": "conversation_service.py site 7 columns=['folder'] default touch; test_site7_* asserts folder=='' and update_date bumped"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC1c: every other touch_timestamp=True site still bumps update_date",
+      "status": "pass",
+      "notes": "no other site changes touch_timestamp; override appends update_date when touch_timestamp; site13 test asserts bump"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC2: after a chat turn stored history identical to old path",
+      "status": "pass",
+      "notes": "site 2 lists history plus the four other merge-written columns; test_site2_* verifies persisted history"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC3a: add then remove thumbs feedback (sites 5/6) persists in history",
+      "status": "pass",
+      "notes": "columns=['history'] at add_feedback/remove_feedback; test_add_then_remove_feedback_round_trips_user_mark_in_history"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC3b: conversation-level final user feedback (site 20) persists final_user_mark",
+      "status": "pass",
+      "notes": "routers/feedback.py columns=['final_user_mark']; test_site20_*"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC3c: admin operator feedback (site 21) persists final_operator_mark",
+      "status": "pass",
+      "notes": "routers/admin.py columns=['final_operator_mark']; test_site21_*"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC4: aborting a generation persists INTERRUPTED status of last message",
+      "status": "pass",
+      "notes": "routers/conversation.py abort columns=['history'], in-place edit unchanged; test_site1_abort_marks_last_message_interrupted"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC5: pending_checkpoint and pending_tool_call (incl. history_index) persist and can be cleared",
+      "status": "pass",
+      "notes": "checkpoint service sites 14-17 migrated; test_site14/15/16/17 including history_index and JSON null clear"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC6: name-only update of workflow conversation writes materialized history; ordinary chat history not written",
+      "status": "pass",
+      "notes": "history-compat rule; test_workflow_name_only_update_writes_materialized_history, test_ordinary_chat_name_only_update_does_not_write_history, test_site9_workflow_rename_*"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC7: update() on deleted row raises StaleDataError with same message, including empty written set",
+      "status": "pass",
+      "notes": "test_update_on_deleted_row_raises_stale_data_error, test_empty_written_set_on_deleted_row_*, test_site9_empty_request_on_deleted_row_*"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC8: per site, update() sends exactly 1 UPDATE and 0 SELECT (empty set: 0 UPDATE + 1 id-only SELECT), checked per site on real SQLite conversations table with J",
+      "status": "pass",
+      "notes": "tests/codemie/conftest.py JSONB hook + conversation_update_sql capture; per-site tests for all 21 sites across test_conversation_update_sites.py and test_conversation_update_router_sites.py"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Behaviour tests (a)-(g) and the detector test from design doc section 4 exist; old-signature/merge assertions updated",
+      "status": "pass",
+      "notes": "(a)(b) history-compat, (c) site4 second update, (d) revert, (e) site1, (f) site16, (g) sites 3/12, detector warning test; old assertions updated in test_conversation_service/checkpoint/chat_nami"
+    },
+    {
+      "kind": "story-ac",
+      "item": "make ruff and the test suite pass",
+      "status": "pending-stage-7",
+      "notes": "implementation and tests present; lint and full-suite execution evidence owned by Stage 7"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: no schema changes or Alembic migrations",
+      "status": "pass",
+      "notes": "no migration or model column changes in diff"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: workflow materialized-history write-back kept as is",
+      "status": "pass",
+      "notes": "history-compat rule preserves write-back"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: conversation_name not narrowed at upsert_chat_history",
+      "status": "pass",
+      "notes": "site 2 always lists conversation_name"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: no where_extra / conditional-update hook",
+      "status": "pass",
+      "notes": "override signature has no where_extra"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: BaseModelWithSQLSupport.update(), save() and other models unchanged",
+      "status": "pass",
+      "notes": "base.py absent from diff"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: bulk move-to-folder endpoint unchanged",
+      "status": "pass",
+      "notes": "move_conversations_to_folder not touched in diff"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: no change to which sites bump update_date",
+      "status": "pass",
+      "notes": "every site keeps its prior touch_timestamp value"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: no UI/API contract changes and no refactor of in-place mutation code (e.g. site 10 `is not` check)",
+      "status": "pass",
+      "notes": "only update() call arguments changed at sites; site 10 mutation code untouched"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: no sql_tags wrapper",
+      "status": "pass",
+      "notes": "no sql_tags in override"
+    },
+    {
+      "kind": "spec",
+      "item": "Deliberate difference: unlisted columns no longer overwritten with stale values; call out in PR",
+      "status": "pass",
+      "notes": "behaviour implemented and tested by test_update_writes_only_listed_columns_and_update_date; PR description is outside the diff"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "all 8 subjects in 18e29d9a..HEAD follow git-workflow.md EPMCDME-####: Description format (EPMCDME-15381: ...)"
+    },
+    {
+      "kind": "code-quality",
+      "status": "partial",
+      "notes": "license headers present on all 4 new files (conftest.py and 3 test modules); public Conversation.update is fully typed; but new helper Conversation._check_unlisted_changes(self, state, written) in src"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "no auth dependency, secret, or untrusted-input parsing changes; UPDATE column names come from hardcoded lists in code (update_conversation maps request fields to fixed column names), values bound via "
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/models/conversation.py",
+      "line": 605,
+      "title": "Unannotated state parameter in _check_unlisted_changes",
+      "problem": "New helper Conversation._check_unlisted_changes(self, state, written) leaves the duck-typed `state` parameter (SQLAlchemy InstanceState from inspect(self)) unannotated; code-quality.md Types And Imports lists 'Leaving a duck-typed parameter unannotated' under Avoid. Ruff's selected rules do not enforce annotations, so no gate catches it.",
+      "impact": "code-quality.md is a blocking standard for this workflow; the new code does not meet its typing rule, leaving the standards_review code-quality row partial.",
+      "recommendation": "Annotate the parameter, e.g. `state: InstanceState[Conversation]` with `from sqlalchemy.orm import InstanceState`."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/service/test_conversation_update_sites.py",
+      "line": 105,
+      "title": "Site 2 conditional columns lack regression test",
+      "problem": "regression-gap: test_site2_upsert_chat_history_updates_existing_conversation seeds conversation_name='original' and initial_assistant_id='asst-1', so neither the _find_or_create_conversation rename branch nor the update_conversation_assistants initial_assistant_id fill runs, and the test asserts only history/project/assistant_ids in the UPDATE. Other upsert_chat_history tests patch Conversation.update or take the save() path. Removing conversation_name or initial_assistant_id from the site-2 columns list (conversation_service.py:470-472) would fail no test.",
+      "impact": "Consumer: ConversationService.upsert_chat_history on every chat turn for a pre-created conversation. A dropped column only logs a warning and is not written, so a pre-created conversation would silently keep an empty/optimistic name or no initial_assistant_id; no test reaches those branches with the real update.",
+      "recommendation": "Add a site-2 case that seeds an existing first-turn conversation with conversation_name=None (or equal to _truncate_name(request.text)) and initial_assistant_id=None, runs upsert_chat_history, and asserts Conversation.find_by_id('conv-1').conversation_name == _truncate_name(request.text), .initial_assistant_id == 'asst-1', and that both columns appear in conversation_update_sql[0][0]."
+    }
+  ]
+}

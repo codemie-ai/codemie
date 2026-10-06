@@ -138,7 +138,7 @@ async def final_feedback(
     mark.date = datetime.now()
 
     chat.final_user_mark = mark
-    chat.update()
+    chat.update(columns=["final_user_mark"])
 
     # Send metric for final feedback
     ConversationMonitoringService.send_final_feedback_metric(conversation_id, request, user)

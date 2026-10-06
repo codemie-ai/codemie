@@ -39,7 +39,7 @@ def test_save_checkpoint_writes_to_db(svc, mock_conversation):
     ):
         svc.save_checkpoint("conv_1", checkpoint_data)
     assert mock_conversation.pending_checkpoint == checkpoint_data
-    mock_conversation.update.assert_called_once()
+    mock_conversation.update.assert_called_once_with(columns=["pending_checkpoint"])
 
 
 def test_save_pending_tool_call_writes_to_db(svc, mock_conversation):
@@ -54,7 +54,7 @@ def test_save_pending_tool_call_writes_to_db(svc, mock_conversation):
     ):
         svc.save_pending_tool_call("conv_1", tool_call)
     assert mock_conversation.pending_tool_call == tool_call.model_dump()
-    mock_conversation.update.assert_called_once()
+    mock_conversation.update.assert_called_once_with(columns=["pending_tool_call"])
 
 
 def test_get_checkpoint_returns_stored_value(svc, mock_conversation):
@@ -121,4 +121,4 @@ def test_clear_nulls_both_columns(svc, mock_conversation):
         svc.clear("conv_1")
     assert mock_conversation.pending_checkpoint is None
     assert mock_conversation.pending_tool_call is None
-    mock_conversation.update.assert_called_once()
+    mock_conversation.update.assert_called_once_with(columns=["pending_checkpoint", "pending_tool_call"])

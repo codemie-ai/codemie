@@ -143,7 +143,18 @@ def test_conversation_service_update(
     # Rename/pin/folder-move are menu actions, not usage (EPMCDME-15009 reopened AC): they must
     # not bump the conversation's update_date, and a move must not touch the target folder's
     # update_date either.
-    mock_update.assert_called_once_with(touch_timestamp=False)
+    mock_update.assert_called_once_with(
+        columns=[
+            "conversation_name",
+            "llm_model",
+            "enable_image_generation",
+            "image_generation_model",
+            "pinned",
+            "folder",
+            "assistant_ids",
+        ],
+        touch_timestamp=False,
+    )
     mock_touch_folder.assert_not_called()
     assert conversation.conversation_name == "New Name"
     assert conversation.llm_model == LLMService.BASE_NAME_GPT_41
@@ -190,7 +201,7 @@ def test_update_conversation_folder_renames_in_place_without_touching_timestamps
     assert existing_folder.folder_name == "New"
     existing_folder.update.assert_called_once_with(touch_timestamp=False)
     assert member_conversation.folder == "New"
-    member_conversation.update.assert_called_once_with(refresh=True, touch_timestamp=False)
+    member_conversation.update.assert_called_once_with(refresh=True, touch_timestamp=False, columns=["folder"])
 
 
 @patch("codemie.service.conversation_service.Conversation.get_all_by_fields")

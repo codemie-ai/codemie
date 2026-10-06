@@ -114,7 +114,7 @@ async def update_conversation_final_feedback(
 
     mark.operator = Operator(user_id=admin.id, name=admin.name)
     chat.final_operator_mark = mark
-    chat.update()
+    chat.update(columns=["final_operator_mark"])
     return chat
 
 

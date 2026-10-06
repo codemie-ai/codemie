@@ -309,7 +309,7 @@ class WorkflowService:
                 )
 
                 conversation.history = [*(conversation.history or []), user_message, assistant_message_ref]
-                conversation.update()
+                conversation.update(columns=["history"])
                 AgentWorkspaceService().sync_uploaded_files(
                     conversation_id=conversation_id,
                     file_urls=file_names or [],
@@ -569,7 +569,7 @@ class WorkflowService:
             conversation = Conversation.get_by_id(execution.conversation_id)
             _guard_finished(conversation)
             conversation.history = [*(conversation.history or []), user_message, assistant_message_ref]
-            conversation.update()
+            conversation.update(columns=["history"])
             logger.info(
                 f"Appended user+assistant messages to conversation history on resume. "
                 f"ConversationId={execution.conversation_id}"

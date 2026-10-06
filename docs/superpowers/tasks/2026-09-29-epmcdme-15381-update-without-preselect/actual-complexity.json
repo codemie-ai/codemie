@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "generated": "2026-09-29T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 22,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 18,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Conversation.update() persistence contract was overridden (required keyword-only columns=, targeted UPDATE with no pre-read, stale-row detection, unlisted-change guard). Call sites then moved over in 3 routers (admin, conversation, feedback) and 4 services (chat naming, checkpoint, conversation, workflow). Base L for several components across layers plus shared utilities, bumped to XL because the change touches a core shared persistence method used by several workflows." },
+    { "dimension": "technical_risk", "reason": "The write path changed for every conversation mutation. If a call site leaves a column out, the change is silently lost. The unlisted-column warning, StaleDataError on rowcount 0 and a history-compat write-back reduce this risk. The pattern is a standard SQLAlchemy core UPDATE with no direct precedent in BaseModelWithSQLSupport. Base M, bumped to L because removing the pre-select is a performance change on a critical path. No security surface is involved." },
+    { "dimension": "file_change_estimate", "reason": "Diffstat reports 18 files (1368 insertions). That is 9 source files modified across configs/, rest_api/models, rest_api/routers and service/, plus 9 test files. About 3 test files are new (test_conversation_update.py, test_conversation_update_router_sites.py, test_conversation_update_sites.py) and the rest were extended. 16 or more files maps to XXL." },
+    { "dimension": "calibration", "reason": "The nearest bundled L example (epmcdme-10401, total 22) matches the band. That example spreads its weight across layers and clarity. This change is concentrated in file count and component fan-out, and it has no schema migration or UI." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L to XL: touches core shared persistence utility (Conversation.update) used across multiple workflows",
+    "Technical Risk bumped from M to L: performance (removing full-row pre-select) is the primary concern"
+  ],
+  "split_recommendation": null
+}

@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "task": "Replace the full-row SELECT + merge in Conversation saves with a single targeted UPDATE of explicitly listed columns across ~21 call sites, preserving StaleDataError on missing rows and workflow materialized-history write-back (EPMCDME-15381).",
+  "generated": "2026-09-29T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 21,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "New Conversation.update() override on the model/persistence layer plus column-list edits in ConversationService, ConversationCheckpointService, ChatNamingService, WorkflowService and the conversation/feedback/admin routers (~21 sites); base L, bumped because the change touches every conversation save flow (chat, feedback, abort, tool-call confirmation, workflow resume, rename)." },
+    { "dimension": "technical_risk", "reason": "Closest pattern is WorkflowConfigRepository (Core UPDATE + rowcount check) and the existing real-SQLite update test, so the mechanism is not novel; but dropping merge removes implicit diffing — non-mutable PydanticListType history with in-place edits, and get_by_id/find_by_id re-assigning materialized workflow history — so a wrong column list silently loses writes. Deleted-row error path is covered by the existing test_base_model_update_sqlite template, so no extra AC-template bump." },
+    { "dimension": "file_change_estimate", "reason": "~9-10 source files modified (conversation.py, conversation_service.py, conversation_checkpoint_service.py, chat_naming_service.py, workflow_service.py, routers conversation/feedback/admin, config.py, tests/.env.test), ~5-6 existing test files updated for old signature/merge assertions, and 2-4 new test files (shared SQLite JSONB conftest, per-site UPDATE-count tests, behaviour tests)." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L to XL: affects multiple workflows (every conversation save path — chat, feedback, abort, tool-call checkpoint, workflow resume, rename)"
+  ],
+  "split_recommendation": null
+}
