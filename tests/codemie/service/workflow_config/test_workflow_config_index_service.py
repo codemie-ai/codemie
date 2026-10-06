@@ -293,3 +293,22 @@ def test_run_without_extra_modifiers_unchanged(mock_session_class, mock_admin_us
     actual_query = str(mock_session.exec.call_args[0][0])
     expected_conditions = "WHERE workflows.is_global = false AND workflows.mode = :mode_1 ORDER BY workflows.update_date DESC NULLS LAST\n LIMIT :param_1 OFFSET :param_2"
     assert actual_query.endswith(expected_conditions)
+
+
+@patch('codemie.service.workflow_config.workflow_config_index_service.Session')
+def test_workflow_config_index_service_filter_by_categories(mock_session_class, mock_admin_user):
+    mock_session = MagicMock()
+    mock_session_class.return_value.__enter__.return_value = mock_session
+    mock_session.exec.return_value.all.return_value = []
+    mock_session.exec.return_value.one.return_value = 0
+
+    WorkflowConfigIndexService.run(
+        user=mock_admin_user,
+        filter_by_user=False,
+        page=0,
+        per_page=20,
+        filters={"categories": ["cat-1"]},
+    )
+
+    actual_query = str(mock_session.exec.call_args[0][0])
+    assert "@>" in actual_query

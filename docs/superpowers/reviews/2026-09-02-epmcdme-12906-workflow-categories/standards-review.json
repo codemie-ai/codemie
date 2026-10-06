@@ -1,0 +1,22 @@
+{
+  "standards_review": [
+    {"kind": "commit-format", "status": "partial", "notes": "6 of 7 EPMCDME-12906 commits match the required EPMCDME-####: Description format. One does not: 'epmcdme-12906-workflow-categories: add planning artifacts' uses lowercase 'epmcdme' and appends the branch name as the prefix rather than the bare ticket ID EPMCDME-12906."},
+    {"kind": "code-quality", "status": "fail", "notes": "category_service.py is a new module that uses deprecated typing-module forms (List[str], Optional[str], Dict[str, int]) throughout all public method signatures and is missing 'from __future__ import annotations'. The code-quality guide (Types And Imports section) requires X | None unions, parameterised generics (list[str], dict[str, int]), and the future-annotations import in new modules."},
+    {"kind": "security", "status": "pass", "notes": "All three checklist areas clear. Routes use the central authenticate dependency. Category IDs are validated via parameterised SQLAlchemy IN queries (no injection surface). No credentials, tokens, or auth headers are written to logs. Input is rejected on failure rather than silently coerced."}
+  ],
+  "blocking_findings": [
+    {
+      "location": "commit subject: epmcdme-12906-workflow-categories: add planning artifacts",
+      "violation": "git-workflow.md requires the format EPMCDME-####: Description for all repository commits. This subject uses 'epmcdme-12906-workflow-categories:' — lowercase ticket prefix with branch name appended — instead of the bare uppercase ticket ID 'EPMCDME-12906:'.",
+      "why_blocking": "A non-conforming subject cannot be cleanly squash-merged under the documented ticket-prefixed format and breaks the commit-format gate.",
+      "remedy": "Reword the commit subject via interactive rebase to 'EPMCDME-12906: Add planning artifacts'."
+    },
+    {
+      "location": "src/codemie/service/assistant/category_service.py",
+      "violation": "code-quality.md (Types And Imports section) forbids typing.Optional[X] and capital-L List/Dict annotations in new code and requires 'from __future__ import annotations' in new modules. category_service.py is a new file with no future-annotations import and uses List[str], Optional[str], and Dict[str, int] in all public method signatures: _get_categories_by_ids, get_categories, validate_category_ids, filter_valid_category_ids, enrich_categories, create_category, update_category, get_category_stats.",
+      "why_blocking": "A new module that does not conform to the documented type-hint style fails the code-quality gate.",
+      "remedy": "Add 'from __future__ import annotations' after the module docstring. Replace List[X] with list[X], Optional[X] with X | None, and Dict[K, V] with dict[K, V] in every public method signature. Remove the now-unused 'List', 'Optional', 'Dict' imports from 'typing'."
+    }
+  ],
+  "coverage_gap": false
+}

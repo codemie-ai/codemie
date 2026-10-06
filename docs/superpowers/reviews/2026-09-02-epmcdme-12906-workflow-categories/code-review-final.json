@@ -1,0 +1,201 @@
+{
+  "decision": "approve",
+  "rationale": "Oversized diff caps confidence at low and limits coverage to visible hunks. Acceptance skipped — no spec available. 15 blocking findings span the categories feature (null deserialization, missing constraints, unbounded item length), MCP auth startup race, billing-user identity in agent execution, Confluence loader memory and reliability gaps from removed paginate_request, sub-workflow execution failures, and two blocking standards violations (non-conforming commit subject, deprecated typing in new module). 8 candidates dismissed after reachability verification; 0 deferred.",
+  "confidence": "low",
+  "risk_flags": ["security", "breaking-change"],
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "partial",
+      "notes": "6 of 7 commits match required format; 'epmcdme-12906-workflow-categories: add planning artifacts' uses lowercase ticket prefix with branch name appended instead of bare EPMCDME-12906: prefix."
+    },
+    {
+      "kind": "code-quality",
+      "status": "fail",
+      "notes": "category_service.py uses deprecated typing forms (List, Optional, Dict) and lacks future-annotations import in all public method signatures; code-quality guide requires list[x], x | None, dict[k,v]."
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "All three checklist areas clear: routes use central authenticate dependency, category IDs validated via parameterised IN queries, no credentials in logs, input rejected on failure."
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/core/models.py",
+      "line": 405,
+      "title": "chargeback_attribution lacks API-layer validation",
+      "problem": "ProjectUpdateRequest.chargeback_attribution is typed Optional[str] with no Literal or field_validator constraint. The repository guard at application_repository.py:714 only checks 'is not None', so any non-null string passes through to the DB CheckConstraint('chargeback_attribution IN (project, cost_center)').",
+      "impact": "An API caller sending an invalid value (e.g. 'department') bypasses application validation, triggers a DB CheckConstraint violation, and receives an unhandled 500 instead of a 400.",
+      "recommendation": "Change the field to chargeback_attribution: Literal['project', 'cost_center'] | None = None in ProjectUpdateRequest, or add a @field_validator that rejects values outside the two permitted strings."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/core/workflow_models/workflow_config.py",
+      "line": 113,
+      "title": "WorkflowConfigBase.categories deserialises null DB rows to None",
+      "problem": "The field is typed Optional[list[str]] = SQLField(default_factory=list, sa_column=Column(JSONB)). default_factory applies only at Python object construction; rows already in the DB with a null JSON value deserialise to None rather than []. The column carries no SQL DEFAULT, so all rows created before a backfill migration will read as None.",
+      "impact": "Pre-existing workflow rows return categories=null in API responses and raise TypeError in any code path that iterates the field without a null guard (e.g. len(config.categories), for c in config.categories).",
+      "recommendation": "Change to list[str] = SQLField(default=[], sa_column=Column(JSONB)) and add a data migration backfilling null to '[]'. Alternatively add a @model_validator(mode='after') that coerces None to []."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/core/workflow_models/workflow_config.py",
+      "title": "No DB constraint enforcing max 3 workflow categories",
+      "problem": "The JSONB column carries no CheckConstraint bounding array length. The 3-item ceiling exists only in the API-layer Field(max_length=3). Direct DB writes, admin tooling, data migrations, and YAML-loaded configs can store more than 3 items with no server error.",
+      "impact": "Workflows with more than 3 categories can enter the DB and be served by the API, silently violating the documented feature contract.",
+      "recommendation": "Add to __table_args__: CheckConstraint('jsonb_array_length(categories) <= 3 OR categories IS NULL', name='ck_workflows_categories_max_3')."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/core/workflow_models/workflow_models.py",
+      "line": 438,
+      "title": "Category string items have no per-item length bound",
+      "problem": "CreateWorkflowRequest.categories is list[str] = Field(default_factory=list, max_length=3) and UpdateWorkflowRequest.categories is Optional[list[str]] = Field(default=None, max_length=3). The max_length parameter restricts list length only; individual string items are unbounded.",
+      "impact": "Arbitrarily long strings are accepted and stored in the JSONB column, potentially exceeding DB or serialisation limits and polluting downstream index queries.",
+      "recommendation": "Apply a per-item bound: list[Annotated[str, Field(max_length=256)]] = Field(default_factory=list, max_length=3) on both request models."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/datasource/loader/confluence_loader.py",
+      "line": 78,
+      "title": "lazy_load has no upper bound on pages fetched",
+      "problem": "The while-True loop in lazy_load iterates until next_url is empty or pages is empty. The removed paginate_request override previously capped iteration with a max_pages guard. The current loop body has no equivalent check on the loaded counter.",
+      "impact": "Any Confluence space with more pages than the old max_pages limit now fetches all pages into memory before yielding, causing memory exhaustion for large spaces.",
+      "recommendation": "Add a ceiling check in the loop: if self.max_pages and loaded >= self.max_pages: break (after the yield from block)."
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/datasource/loader/confluence_loader.py",
+      "line": 79,
+      "title": "lazy_load has no retry on transient Confluence API errors",
+      "problem": "The removed paginate_request override wrapped the Confluence API call with a tenacity retry policy. The current lazy_load calls _search_content_by_cql with no retry wrapper; a single transient HTTP 5xx or network error raises immediately.",
+      "impact": "One transient error aborts the entire load with no retry. Indexing completes silently with partial content and no error is surfaced to the caller.",
+      "recommendation": "Wrap the _search_content_by_cql call inside lazy_load with a tenacity @retry decorator matching the retry policy previously defined in the removed paginate_request override."
+    },
+    {
+      "id": "CR-007",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/datasource/loader/confluence_loader.py",
+      "title": "paginate_request override removed before upstream fix confirmed",
+      "problem": "The removed override carried the comment 'Remove once underlying langchain_community is updated'. The diff provides no evidence that the upstream version in pyproject.toml includes the next_url fix. If the parent's paginate_request still mishandles next_url, any code path that calls paginate_request on this loader re-introduces the original pagination bug.",
+      "impact": "Reachability is uncertain — lazy_load calls _search_content_by_cql directly and is unaffected. However, any caller that invokes the parent-class pagination machinery will silently produce incomplete results.",
+      "recommendation": "Verify that the pinned langchain_community version includes the next_url fix. Add an inline comment citing the upstream version and PR that resolved it before removing the override."
+    },
+    {
+      "id": "CR-008",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/enterprise/mcp_auth/dependencies.py",
+      "line": 459,
+      "title": "MCP auth init leaves stale TMS reachable during startup overlap",
+      "problem": "_close_standalone_redis_client() (line 459) closes the Redis client and sets _self._redis_client = None but does not clear _self._tms. In initialize_mcp_auth, between the _close_standalone_redis_client() call (line 709) and _self._tms = token_management_system (line 717), concurrent get_token_management_system() calls return the standalone TMS still backed by the now-closed Redis connection.",
+      "impact": "Concurrent requests during the MCP auth startup overlap receive a TMS with a closed Redis client, causing silent token vault failures or authentication errors for those requests.",
+      "recommendation": "Add _self._tms = None at the top of _close_standalone_redis_client() before closing the client, so the standalone TMS is invalidated atomically with its backing connection."
+    },
+    {
+      "id": "CR-009",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/handlers/assistant_handlers.py",
+      "line": 544,
+      "title": "billing_user used as operative user in build_agent",
+      "problem": "AssistantService.build_agent is called with user=self.billing_user at lines 544, 841, and 899. The constructor comment (line 97) documents that billing_user 'drives budget-key selection / cost attribution only' and that access control must evaluate self.user. Despite this, build_agent receives billing_user as the operative user, so any tool access checks, quota enforcement, or credential lookups inside the agent run under the billing user's identity.",
+      "impact": "If billing_user is a service account with broader tool or LLM access than the original caller, operations the caller could not perform may succeed undetected. Reachability requires a billing_user that is distinct from user with broader permissions (Teams flow).",
+      "recommendation": "Pass user=self.user to build_agent for all identity-dependent operations; pass billing_user only to the cost-attribution call (set_llm_context). Audit build_agent to confirm every identity-sensitive path uses its user parameter for identity, not billing."
+    },
+    {
+      "id": "CR-010",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/agent_workspace.py",
+      "title": "Binary image base64 encoding branch has no test coverage",
+      "problem": "The new branch in get_workspace_file_content that base64-encodes binary image content and sets content_encoding='base64' is untested. No existing test covers the base64 path, the content_encoding field, or the non-image binary content=None path. The WorkspaceFileContentResponse.content_encoding field added in models/agent_workspace.py is also uncovered.",
+      "impact": "A silent regression in the encoding branch (wrong encoding, content_encoding left None, raw bytes mis-serialised) would not be caught by tests. Front-end image preview and InspectWorkspaceImageTool callers would receive unusable data with no CI failure.",
+      "recommendation": "Add a router-level test asserting content_encoding=='base64' and base64.b64decode(response['content']) == raw_image_bytes for an image file, plus a separate assertion for a non-image binary returning content=None and content_encoding=None."
+    },
+    {
+      "id": "CR-011",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/assistant/category_service.py",
+      "title": "New module uses deprecated typing-module forms",
+      "problem": "category_service.py uses typing.List[str], typing.Optional[str], and typing.Dict[str, int] in all public method signatures (_get_categories_by_ids, get_categories, validate_category_ids, filter_valid_category_ids, enrich_categories, create_category, update_category, get_category_stats) and omits 'from __future__ import annotations'.",
+      "impact": "Violates the code-quality guide's Types And Imports section for new modules, failing the code-quality gate.",
+      "recommendation": "Add 'from __future__ import annotations' after the module docstring. Replace List[X] with list[X], Optional[X] with X | None, Dict[K,V] with dict[K,V], and remove the now-unused typing imports."
+    },
+    {
+      "id": "CR-012",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/workflow_pool.py",
+      "line": 100,
+      "title": "WorkflowPool shell executor may lack required attributes",
+      "problem": "_compile_for creates a bare WorkflowExecutor via object.__new__(WorkflowExecutor) and manually sets only shell.workflow_config before calling shell._compile_graph(workflow_config). If _compile_graph accesses any attribute normally set in __init__ (e.g. self.user, self.callbacks, self.execution_id), it will raise AttributeError.",
+      "impact": "AttributeError in the warmup thread is caught and logged, silently leaving the pool unfilled. AttributeError at acquire() time propagates to the caller and fails the workflow execution. Reachability depends on what _compile_graph accesses beyond workflow_config.",
+      "recommendation": "Either call WorkflowExecutor.__init__(shell, workflow_config, ...) with a safe minimal argument set, or extract graph compilation into a @staticmethod that takes only workflow_config and has no instance attribute dependencies."
+    },
+    {
+      "id": "CR-013",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/workflows/nodes/sub_workflow_node.py",
+      "line": 73,
+      "title": "parent_exec None skips active_sub_execution_id tracking",
+      "problem": "When find_workflow_execution_by_id(self.execution_id) returns None, parent_exec is None and _create_child(None, state_schema, user) is called. Inside _create_child, lines 132–134 set active_sub_execution_id only when parent_exec is truthy. The child execution runs, but the parent row is never updated with its sub-execution id.",
+      "impact": "If the child is interrupted, the parent cannot locate it on resume and will create a duplicate execution on retry, with the original child abandoned and its state lost.",
+      "recommendation": "Guard at the top of execute(): if parent_exec is None: raise SubWorkflowExecutionError(f'Parent execution {self.execution_id} not found'). Do not start a sub-workflow when the parent record is missing."
+    },
+    {
+      "id": "CR-014",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/workflows/nodes/sub_workflow_node.py",
+      "line": 148,
+      "title": "_handle_child_outcome treats IN_PROGRESS as successful completion",
+      "problem": "_handle_child_outcome checks for INTERRUPTED (raises), ABORTED (raises), and FAILED (raises), then falls through unconditionally for any other status including IN_PROGRESS. If stream() exits without advancing overall_status to a terminal state, the method returns the last execution state output as success.",
+      "impact": "The parent state machine advances with partial or empty child output treated as a successful result. No exception is raised, so the error is undetectable to the caller.",
+      "recommendation": "Add an explicit terminal-status assertion before the return: if finished_child.overall_status != WorkflowExecutionStatusEnum.SUCCEEDED: raise SubWorkflowExecutionError(child_execution.execution_id)."
+    },
+    {
+      "id": "CR-015",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "unknown",
+      "title": "Non-conforming commit subject in EPMCDME-12906 series",
+      "problem": "The commit subject 'epmcdme-12906-workflow-categories: add planning artifacts' uses a lowercase ticket prefix with the branch name appended rather than the required 'EPMCDME-12906: Description' format specified in git-workflow.md.",
+      "impact": "The non-conforming subject cannot be cleanly squash-merged under the documented ticket-prefixed format and breaks the commit-format gate.",
+      "recommendation": "Reword via interactive rebase: change the subject to 'EPMCDME-12906: Add planning artifacts'."
+    }
+  ]
+}

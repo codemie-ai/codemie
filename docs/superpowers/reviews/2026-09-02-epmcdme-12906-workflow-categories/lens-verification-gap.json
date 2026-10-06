@@ -1,0 +1,11 @@
+[
+  {
+    "location": "src/codemie/rest_api/routers/agent_workspace.py:get_workspace_file_content — new binary-image base64 encoding branch",
+    "trigger_condition": "Binary image files now base64-encode content and set content_encoding='base64'; non-image binary files return content=None; no test covers either branch",
+    "guard_snippet": "assert response_json['content_encoding'] == 'base64' and base64.b64decode(response_json['content']) == raw_image_bytes  # and for non-image binary: assert response_json['content'] is None and response_json['content_encoding'] is None",
+    "potential_consequence": "If the encoding branch is silently broken — wrong encoding applied, content_encoding left None, or raw bytes serialised incorrectly — REST clients receive unusable image data with no test failing; the WorkspaceFileContentResponse.content_encoding field added in models/agent_workspace.py would also ship always-None with no test flagging it",
+    "gap_shape": "regression-gap",
+    "consumer": "GET /v1/workspaces/{workspace_id}/files/{file_path} used by front-end image preview and InspectWorkspaceImageTool callers at src/codemie/rest_api/routers/agent_workspace.py:146-211",
+    "evidence": "Searched tests for 'content_encoding', 'WorkspaceFileContentResponse', 'get_file_content' under tests/codemie_tools/data_management/workspace/ and tests/codemie/rest_api/; found no router-level test file for agent_workspace.py and no test asserting content_encoding or the base64 encoding path. tests/codemie_tools/data_management/workspace/test_inspect_workspace_image_tool.py uses service.download_file, not get_file_content, and never calls the router. test_workspace_glob_tools.py covers list_files/grep_files at the service layer only."
+  }
+]

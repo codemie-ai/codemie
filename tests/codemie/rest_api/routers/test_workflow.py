@@ -2204,3 +2204,121 @@ async def test_create_workflow_open_mode_allows_handwritten_mcp_server(mock_guar
         async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
             response = await ac.post("/v1/workflows", json=request.model_dump(), headers=request_header)
     assert response.status_code == status.HTTP_200_OK
+
+
+@pytest.mark.asyncio
+async def test_create_workflow_rejects_invalid_category_ids(request_header):
+    """category_service.validate_category_ids raises ValueError -> router returns 400."""
+    with patch(
+        "codemie.rest_api.routers.workflow.category_service.validate_category_ids",
+        side_effect=ValueError("Invalid category IDs: ['bad-id']"),
+    ):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.post(
+                "/v1/workflows",
+                json={"name": "w", "description": "d", "project": "demo", "categories": ["bad-id"]},
+                headers=request_header,
+            )
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+@patch("codemie.core.ability.Ability.can")
+@patch("codemie.service.workflow_service.WorkflowService.get_workflow")
+async def test_update_workflow_rejects_invalid_category_ids(
+    mock_get_wf, mock_ability, workflow_config, update_workflow_request, request_header
+):
+    mock_get_wf.return_value = workflow_config
+    mock_ability.return_value = True
+    with (
+        patch(
+            "codemie.rest_api.routers.workflow.category_service.validate_category_ids",
+            side_effect=ValueError("Invalid category IDs: ['bad-id']"),
+        ) as mock_validate,
+        patch("codemie.rest_api.routers.workflow._run_pre_persist_update_validation"),
+    ):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.put(
+                f"/v1/workflows/{workflow_config.id}",
+                json={**update_workflow_request.model_dump(mode="json"), "categories": ["bad-id"]},
+                headers=request_header,
+            )
+    mock_validate.assert_called_once_with(["bad-id"])
+    assert response.status_code == 400
+    assert "Invalid category IDs" in response.text
+
+
+@pytest.mark.asyncio
+async def test_create_workflow_dedupes_categories(request_header):
+    """Router saves the de-duplicated list returned by validate_category_ids."""
+    with (
+        patch(
+            "codemie.rest_api.routers.workflow.category_service.validate_category_ids", return_value=["a", "b"]
+        ) as mock_validate,
+        patch("codemie.rest_api.routers.workflow.WorkflowExecutor.validate_workflow"),
+        patch("codemie.rest_api.routers.workflow.workflow_service.create_workflow") as mock_create,
+    ):
+        mock_create.side_effect = RuntimeError("stop")
+        transport = ASGITransport(app=app, raise_app_exceptions=False)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            await ac.post(
+                "/v1/workflows",
+                json={"name": "w", "description": "d", "project": "demo", "categories": ["a", "a", "b"]},
+                headers=request_header,
+            )
+    mock_validate.assert_called_once_with(["a", "a", "b"])
+    assert mock_create.call_args.args[0].categories == ["a", "b"]
+
+
+@pytest.mark.asyncio
+@patch("codemie.core.ability.Ability.can")
+@patch("codemie.service.workflow_service.WorkflowService.get_workflow")
+async def test_update_workflow_dedupes_categories(
+    mock_get_wf, mock_ability, workflow_config, update_workflow_request, request_header
+):
+    mock_get_wf.return_value = workflow_config
+    mock_ability.return_value = True
+    with (
+        patch(
+            "codemie.rest_api.routers.workflow.category_service.validate_category_ids", return_value=["a", "b"]
+        ) as mock_validate,
+        patch("codemie.rest_api.routers.workflow._run_pre_persist_update_validation"),
+        patch("codemie.service.workflow_service.WorkflowService.update_workflow") as mock_update,
+    ):
+        mock_update.side_effect = RuntimeError("stop")
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            await ac.put(
+                f"/v1/workflows/{workflow_config.id}",
+                json={**update_workflow_request.model_dump(mode="json"), "categories": ["a", "a", "b"]},
+                headers=request_header,
+            )
+    mock_validate.assert_called_once_with(["a", "a", "b"])
+    assert mock_update.call_args.args[1].categories == ["a", "b"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("categories, expected", [(None, None), ([], [])])
+@patch("codemie.core.ability.Ability.can")
+@patch("codemie.service.workflow_service.WorkflowService.get_workflow")
+async def test_update_workflow_categories_omitted_vs_empty(
+    mock_get_wf, mock_ability, categories, expected, workflow_config, update_workflow_request, request_header
+):
+    """Omitted categories stay None (stored value preserved); an explicit [] stays [] (clears)."""
+    mock_get_wf.return_value = workflow_config
+    mock_ability.return_value = True
+    payload = update_workflow_request.model_dump(mode="json")
+    payload.pop("categories")
+    if categories is not None:
+        payload["categories"] = categories
+    with (
+        patch("codemie.rest_api.routers.workflow._run_pre_persist_update_validation"),
+        patch("codemie.service.workflow_service.WorkflowService.update_workflow") as mock_update,
+    ):
+        mock_update.side_effect = RuntimeError("stop")
+        transport = ASGITransport(app=app, raise_app_exceptions=False)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            await ac.put(f"/v1/workflows/{workflow_config.id}", json=payload, headers=request_header)
+    assert mock_update.call_args.args[1].categories == expected

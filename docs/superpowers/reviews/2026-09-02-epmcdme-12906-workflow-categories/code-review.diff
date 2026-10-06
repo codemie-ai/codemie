@@ -1,0 +1,370 @@
+diff --git a/src/codemie/core/workflow_models/workflow_config.py b/src/codemie/core/workflow_models/workflow_config.py
+index d19e81903..a00204050 100644
+--- a/src/codemie/core/workflow_models/workflow_config.py
++++ b/src/codemie/core/workflow_models/workflow_config.py
+@@ -16,12 +16,12 @@ from __future__ import annotations
+ 
+ import yaml
+ from datetime import datetime
+-from typing import List, Optional, cast
++from typing import Any, List, Optional, cast
+ 
+-from sqlalchemy import ColumnElement
++from sqlalchemy import CheckConstraint, ColumnElement
+ 
+ from langgraph.pregel._retry import RetryPolicy
+-from pydantic import BaseModel, Field, ValidationError, computed_field
++from pydantic import BaseModel, Field, ValidationError, computed_field, model_validator
+ 
+ from codemie.configs import config, logger
+ from codemie.core.ability import Owned, Action
+@@ -148,8 +148,19 @@ class WorkflowConfigBase(CommonBaseModel, Owned):
+         ),
+         Index("ix_workflows_is_global", "is_global"),
+         Index("ix_workflows_categories", "categories", postgresql_using="gin"),
++        CheckConstraint(
++            "jsonb_array_length(categories) <= 3 OR categories IS NULL",
++            name="ck_workflows_categories_max_3",
++        ),
+     )
+ 
++    @model_validator(mode="before")
++    @classmethod
++    def _coerce_categories_null(cls, data: Any) -> Any:
++        if isinstance(data, dict) and data.get("categories") is None:
++            data["categories"] = []
++        return data
++
+     def __init__(self, **data):
+         # Handle retry_policy before SQLModel initialization
+         if (
+diff --git a/src/codemie/core/workflow_models/workflow_models.py b/src/codemie/core/workflow_models/workflow_models.py
+index 2cf060174..76123856b 100644
+--- a/src/codemie/core/workflow_models/workflow_models.py
++++ b/src/codemie/core/workflow_models/workflow_models.py
+@@ -18,7 +18,7 @@ import ast
+ import httpx
+ import requests
+ from enum import Enum
+-from typing import List, Optional, Literal
++from typing import Annotated, List, Optional, Literal
+ 
+ from langgraph.types import default_retry_on
+ from litellm.exceptions import BadRequestError as LiteLLMBadRequestError
+@@ -435,6 +435,7 @@ class CreateWorkflowRequest(BaseModel):
+     supervisor_prompt: Optional[str] = ""
+     meta_config: Optional[str] = None
+     guardrail_assignments: Optional[List[GuardrailAssignmentItem]] = None
++    categories: list[Annotated[str, Field(max_length=256)]] = Field(default_factory=list, max_length=3)
+ 
+ 
+ class UpdateWorkflowRequest(BaseModel):
+@@ -450,6 +451,7 @@ class UpdateWorkflowRequest(BaseModel):
+     supervisor_prompt: Optional[str] = None
+     meta_config: Optional[str] = None
+     guardrail_assignments: Optional[List[GuardrailAssignmentItem]] = None
++    categories: Optional[list[Annotated[str, Field(max_length=256)]]] = Field(default=None, max_length=3)
+ 
+ 
+ class WorkflowEvaluationRequest(BaseModel):
+diff --git a/src/codemie/rest_api/routers/workflow.py b/src/codemie/rest_api/routers/workflow.py
+index 6ada6a4f5..792706175 100644
+--- a/src/codemie/rest_api/routers/workflow.py
++++ b/src/codemie/rest_api/routers/workflow.py
+@@ -17,6 +17,8 @@ import base64
+ import json
+ from typing import Any, Dict, List, Optional
+ 
++from sqlalchemy.exc import SQLAlchemyError
++
+ from fastapi import APIRouter, status, Depends, Query, BackgroundTasks, Request
+ from codemie.rest_api.models.workflow_generator import WorkflowGeneratorRequest, WorkflowGeneratorResponse
+ from codemie.service.llm_service.utils import set_llm_context
+@@ -58,6 +60,7 @@ from codemie.service.monitoring.workflow_monitoring_service import WorkflowMonit
+ from codemie.service.guardrail.guardrail_service import GuardrailService
+ from codemie.service.workflow_config import WorkflowConfigIndexService
+ from codemie.service.workflow_config.workflow_config_index_service import ExcludeSelfModifier, WorkflowScope
++from codemie.service.assistant.category_service import category_service
+ from codemie.service.workflow_service import WorkflowService
+ from codemie.service.workflow_evaluation_service import WorkflowEvaluationService
+ from codemie.workflows.custom_node_info import CustomNodeInfoService
+@@ -336,6 +339,7 @@ def create_workflow(
+         )
+     project_access_check(user, request.project)
+     try:
++        category_service.validate_category_ids(request.categories)
+         MCPAccessControlService.validate_on_save(_collect_workflow_mcp_servers(workflow_config))
+         _strip_workflow_mcp_servers(workflow_config)
+         WorkflowExecutor.validate_workflow(workflow_config=workflow_config, user=user, error_format=error_format)
+@@ -362,6 +366,13 @@ def create_workflow(
+             "data": workflow_config,
+             "warnings": _consumer_slot_warnings_sync(workflow_config, user),
+         }
++    except SQLAlchemyError as e:
++        raise ExtendedHTTPException(
++            code=status.HTTP_503_SERVICE_UNAVAILABLE,
++            message="Database error during workflow creation",
++            details=str(e).strip(),
++            help="",
++        ) from e
+     except Exception as e:
+         formatted_exception = e.message if isinstance(e, ExtendedHTTPException) else str(e).strip()
+         details = (
+@@ -414,6 +425,7 @@ async def update_workflow(
+         ) from e
+ 
+     try:
++        category_service.validate_category_ids(request.categories)
+         MCPAccessControlService.validate_on_save(_collect_workflow_mcp_servers(updated_config))
+         _strip_workflow_mcp_servers(updated_config)
+         logger.debug(f"Update workflow. Request: {request}")
+@@ -452,6 +464,13 @@ async def update_workflow(
+         raise
+     except NotFoundException:
+         raise
++    except SQLAlchemyError as e:
++        raise ExtendedHTTPException(
++            code=status.HTTP_503_SERVICE_UNAVAILABLE,
++            message="Database error during workflow update",
++            details=str(e).strip(),
++            help="",
++        ) from e
+     except Exception as e:
+         formatted_exception = str(e).strip()
+         details = (
+diff --git a/src/codemie/service/assistant/category_service.py b/src/codemie/service/assistant/category_service.py
+index 95dcaa438..56bda433c 100644
+--- a/src/codemie/service/assistant/category_service.py
++++ b/src/codemie/service/assistant/category_service.py
+@@ -16,7 +16,7 @@
+ Service for managing assistant categories with database backend.
+ """
+ 
+-from typing import Dict, List, Optional
++from __future__ import annotations
+ 
+ from fastapi import status
+ from psycopg2.errors import UniqueViolation
+@@ -43,7 +43,7 @@ _UNIQUE_CONSTRAINT = UniqueViolation
+ class DatabaseCategoryService:
+     """Service for managing assistant categories using PostgreSQL database."""
+ 
+-    def _get_categories_by_ids(self, category_ids: List[str]) -> List[Category]:
++    def _get_categories_by_ids(self, category_ids: list[str]) -> list[Category]:
+         """
+         Internal helper to query categories by specific IDs using optimized IN clause.
+ 
+@@ -60,7 +60,7 @@ class DatabaseCategoryService:
+             query = select(Category).where(Category.id.in_(category_ids))
+             return list(session.exec(query).all())
+ 
+-    def get_categories(self) -> List[Category]:
++    def get_categories(self) -> list[Category]:
+         """
+         Load all categories from database.
+ 
+@@ -71,7 +71,7 @@ class DatabaseCategoryService:
+             categories = session.exec(select(Category).order_by(Category.name)).all()
+             return list(categories)
+ 
+-    def validate_category_ids(self, category_ids: List[str], required: bool = False) -> List[str]:
++    def validate_category_ids(self, category_ids: list[str], required: bool = False) -> list[str]:
+         """
+         Validate that all provided category IDs exist using optimized IN query.
+ 
+@@ -102,9 +102,9 @@ class DatabaseCategoryService:
+             else:
+                 raise ValueError(f"Invalid category IDs: {invalid_ids}")
+ 
+-        return category_ids
++        return list(dict.fromkeys(category_ids))
+ 
+-    def filter_valid_category_ids(self, category_ids: List[str]) -> List[str]:
++    def filter_valid_category_ids(self, category_ids: list[str]) -> list[str]:
+         """
+         Filter out invalid category IDs using optimized IN query, fail-safe to [] on error.
+ 
+@@ -128,7 +128,7 @@ class DatabaseCategoryService:
+             logger.warning(f"Error filtering category IDs: {e}")
+             return []
+ 
+-    def enrich_categories(self, category_ids: List[str]) -> List[Category]:
++    def enrich_categories(self, category_ids: list[str]) -> list[Category]:
+         """
+         Enrich category IDs with full category information using optimized IN query.
+ 
+@@ -153,7 +153,7 @@ class DatabaseCategoryService:
+             logger.warning(f"Error enriching categories: {e}")
+             return []
+ 
+-    def create_category(self, name: str, description: Optional[str] = None) -> Category:
++    def create_category(self, name: str, description: str | None = None) -> Category:
+         """
+         Create new category with UUID.
+ 
+@@ -188,7 +188,7 @@ class DatabaseCategoryService:
+             logger.error(f"Database integrity error creating category '{name}': {error_message}")
+             raise
+ 
+-    def update_category(self, category_id: str, name: str, description: Optional[str] = None) -> Category:
++    def update_category(self, category_id: str, name: str, description: str | None = None) -> Category:
+         """
+         Update existing category.
+ 
+@@ -279,7 +279,7 @@ class DatabaseCategoryService:
+             session.commit()
+             logger.info(f"Deleted category: {category_id}")
+ 
+-    def get_category_stats(self, category_id: str) -> Dict[str, int]:
++    def get_category_stats(self, category_id: str) -> dict[str, int]:
+         """
+         Get assistant counts by type for a category using a single optimized query.
+ 
+diff --git a/src/codemie/service/workflow_service.py b/src/codemie/service/workflow_service.py
+index 3b8fd71d1..2cc021189 100644
+--- a/src/codemie/service/workflow_service.py
++++ b/src/codemie/service/workflow_service.py
+@@ -65,6 +65,7 @@ class WorkflowService:
+         "supervisor_prompt",
+         "meta_config",
+         "start_hint",
++        "categories",
+     }
+ 
+     @staticmethod
+diff --git a/tests/codemie/rest_api/routers/test_workflow.py b/tests/codemie/rest_api/routers/test_workflow.py
+index 8d65be932..360e0ff99 100644
+--- a/tests/codemie/rest_api/routers/test_workflow.py
++++ b/tests/codemie/rest_api/routers/test_workflow.py
+@@ -1048,3 +1048,42 @@ async def test_refine_workflow_not_found(request_header):
+                 headers=request_header,
+             )
+         assert response.status_code == 404
++
++
++@pytest.mark.asyncio
++async def test_create_workflow_rejects_invalid_category_ids(request_header):
++    """category_service.validate_category_ids raises ValueError -> router returns 400."""
++    with patch(
++        "codemie.rest_api.routers.workflow.category_service.validate_category_ids",
++        side_effect=ValueError("Invalid category IDs: ['bad-id']"),
++    ):
++        transport = ASGITransport(app=app)
++        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
++            response = await ac.post(
++                "/v1/workflows",
++                json={"name": "w", "description": "d", "project": "demo", "categories": ["bad-id"]},
++                headers=request_header,
++            )
++    assert response.status_code == 400
++
++
++@pytest.mark.asyncio
++@patch("codemie.core.ability.Ability.can")
++@patch("codemie.service.workflow_service.WorkflowService.get_workflow")
++async def test_update_workflow_rejects_invalid_category_ids(
++    mock_get_wf, mock_ability, workflow_config, update_workflow_request, request_header
++):
++    mock_get_wf.return_value = workflow_config
++    mock_ability.return_value = True
++    with patch(
++        "codemie.rest_api.routers.workflow.category_service.validate_category_ids",
++        side_effect=ValueError("Invalid category IDs: ['bad-id']"),
++    ):
++        transport = ASGITransport(app=app)
++        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
++            response = await ac.put(
++                f"/v1/workflows/{workflow_config.id}",
++                json={"name": "w", "description": "d", "project": "demo", "categories": ["bad-id"]},
++                headers=request_header,
++            )
++    assert response.status_code == 400
+diff --git a/tests/codemie/service/test_workflow_service.py b/tests/codemie/service/test_workflow_service.py
+index c10a8d2ef..500fbef60 100644
+--- a/tests/codemie/service/test_workflow_service.py
++++ b/tests/codemie/service/test_workflow_service.py
+@@ -103,6 +103,7 @@ def update_workflow_request(request):
+         yaml_config="{'assistants': []}",
+         shared=shared,
+         supervisor_prompt="example",
++        categories=["cat-1"],
+     )
+ 
+ 
+@@ -1399,3 +1400,49 @@ def test_update_then_save_schema_prepends_history_then_persists_schema(
+     assert mock_update.call_args_list[1].args == ()
+     assert mock_update.call_args_list[1].kwargs == {}
+     mock_metric.assert_called_once()
++
++
++def test_create_workflow_request_rejects_more_than_3_categories():
++    from pydantic import ValidationError
++
++    with pytest.raises(ValidationError):
++        CreateWorkflowRequest(
++            name="w",
++            description="d",
++            project="p",
++            categories=["a", "b", "c", "d"],
++        )
++
++
++def test_update_workflow_request_rejects_more_than_3_categories():
++    from pydantic import ValidationError
++
++    with pytest.raises(ValidationError):
++        UpdateWorkflowRequest(
++            name="w",
++            description="d",
++            project="p",
++            categories=["a", "b", "c", "d"],
++        )
++
++
++@patch('codemie.core.workflow_models.WorkflowConfig.update')
++@patch('codemie.core.workflow_models.WorkflowConfig.refresh')
++def test_update_workflow_values_propagates_categories(
++    mock_refresh: MagicMock,
++    mock_update: MagicMock,
++    workflow_service: WorkflowService,
++    workflow_config: WorkflowConfig,
++    user: User,
++) -> None:
++    workflow_config.categories = []
++    updated_config = WorkflowConfig(
++        name=workflow_config.name,
++        description=workflow_config.description,
++        project=workflow_config.project,
++    )
++    updated_config.categories = ["cat-1", "cat-2"]
++
++    workflow_service._update_workflow_values(workflow_config, updated_config, user)
++
++    assert workflow_config.categories == ["cat-1", "cat-2"]
+diff --git a/tests/codemie/service/workflow_config/test_workflow_config_index_service.py b/tests/codemie/service/workflow_config/test_workflow_config_index_service.py
+index 6776f4aa1..2285a9932 100644
+--- a/tests/codemie/service/workflow_config/test_workflow_config_index_service.py
++++ b/tests/codemie/service/workflow_config/test_workflow_config_index_service.py
+@@ -293,3 +293,22 @@ def test_run_without_extra_modifiers_unchanged(mock_session_class, mock_admin_us
+     actual_query = str(mock_session.exec.call_args[0][0])
+     expected_conditions = "WHERE workflows.is_global = false AND workflows.mode = :mode_1 ORDER BY workflows.update_date DESC NULLS LAST\n LIMIT :param_1 OFFSET :param_2"
+     assert actual_query.endswith(expected_conditions)
++
++
++@patch('codemie.service.workflow_config.workflow_config_index_service.Session')
++def test_workflow_config_index_service_filter_by_categories(mock_session_class, mock_admin_user):
++    mock_session = MagicMock()
++    mock_session_class.return_value.__enter__.return_value = mock_session
++    mock_session.exec.return_value.all.return_value = []
++    mock_session.exec.return_value.one.return_value = 0
++
++    WorkflowConfigIndexService.run(
++        user=mock_admin_user,
++        filter_by_user=False,
++        page=0,
++        per_page=20,
++        filters={"categories": ["cat-1"]},
++    )
++
++    actual_query = str(mock_session.exec.call_args[0][0])
++    assert "@>" in actual_query

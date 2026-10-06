@@ -16,12 +16,12 @@ from __future__ import annotations
 
 import yaml
 from datetime import datetime
-from typing import List, Optional, cast
+from typing import Any, List, Optional, cast
 
 from sqlalchemy import ColumnElement
 
 from langgraph.pregel._retry import RetryPolicy
-from pydantic import BaseModel, Field, ValidationError, computed_field
+from pydantic import BaseModel, Field, ValidationError, computed_field, model_validator
 
 from codemie.configs import config, logger
 from codemie.core.ability import Owned, Action
@@ -154,6 +154,13 @@ class WorkflowConfigBase(CommonBaseModel, Owned):
         Index("ix_workflows_is_global", "is_global"),
         Index("ix_workflows_categories", "categories", postgresql_using="gin"),
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_categories_null(cls, data: Any) -> Any:
+        if isinstance(data, dict) and data.get("categories") is None:
+            data["categories"] = []
+        return data
 
     def __init__(self, **data):
         # Handle retry_policy before SQLModel initialization

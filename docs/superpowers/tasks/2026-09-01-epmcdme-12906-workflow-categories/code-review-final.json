@@ -1,0 +1,46 @@
+{
+  "decision": "approve",
+  "rationale": "3 patch findings (all major): categories silently wiped on PUT due to empty-list default vs is-not-None guard mismatch in _update_workflow_values; DB errors inside validate_category_ids masked as HTTP 400 by a broad except Exception block on both create and update paths; and duplicate category IDs stored because validate_category_ids returns the unsanitised input list. 1 finding dismissed: the marketplace max-item guard is already enforced by PublishWorkflowToMarketplaceRequest Field(max_length=3) and a no_duplicate_categories validator. Acceptance not applicable (no spec); standards not expected for compact profile.",
+  "confidence": "medium",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/core/workflow_models/workflow_models.py",
+      "line": 441,
+      "title": "Omitted categories in PUT silently wipes field",
+      "problem": "UpdateWorkflowRequest.categories is declared as `list[str] = Field(default_factory=list, max_length=3)`, so an omitted field defaults to [] not None. The _update_workflow_values loop guards with `if new_value is not None:`, which passes for [], causing any PUT body that omits categories to overwrite stored categories with an empty list.",
+      "impact": "A client partially updating a workflow without specifying categories will unknowingly erase them, causing silent data loss and breaking category-filtered list views for that workflow.",
+      "recommendation": "Change UpdateWorkflowRequest.categories to `Optional[list[str]] = None` (no default_factory) so the guard in _update_workflow_values correctly skips the field when the client does not include it."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/workflow.py",
+      "line": 302,
+      "title": "DB error in category validation masked as HTTP 400",
+      "problem": "validate_category_ids calls _get_categories_by_ids which executes a database query. On the update path a broad `except Exception` block (line ~418) catches any unhandled exception including sqlalchemy.exc.SQLAlchemyError and re-raises it as ExtendedHTTPException with code=HTTP_400_BAD_REQUEST. The same pattern applies to the create path.",
+      "impact": "A database outage during workflow create or update is reported to callers as a client input error rather than an infrastructure failure, obscuring the real cause and misleading retry strategies and alerting.",
+      "recommendation": "Add an explicit `except sqlalchemy.exc.SQLAlchemyError as e:` clause before the broad `except Exception` block on both paths, raising HTTP 503 (or 500) to correctly surface infra failures."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/assistant/category_service.py",
+      "line": 97,
+      "title": "Duplicate category IDs stored on create and update",
+      "problem": "validate_category_ids computes the invalid-id check via `set(category_ids) - valid_ids` (which deduplicates implicitly) but returns the original category_ids list unchanged on line 105, preserving any duplicate entries. CreateWorkflowRequest and UpdateWorkflowRequest have no uniqueness validator, unlike PublishWorkflowToMarketplaceRequest.",
+      "impact": "Passing [\"a\",\"a\"] stores duplicate IDs in the workflow JSONB column; while containment queries still function, the data is inconsistent with the API contract and complicates future migrations and audits.",
+      "recommendation": "Replace `return category_ids` on line 105 with `return list(dict.fromkeys(category_ids))` to deduplicate while preserving order, or add a @field_validator('categories') to CreateWorkflowRequest and UpdateWorkflowRequest mirroring the one already in PublishWorkflowToMarketplaceRequest."
+    }
+  ]
+}

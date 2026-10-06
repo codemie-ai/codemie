@@ -1,0 +1,22 @@
+{
+  "findings": [
+    {
+      "id": "CR-001",
+      "outcome": "fixed",
+      "file": "src/codemie/core/workflow_models/workflow_models.py",
+      "change": "UpdateWorkflowRequest.categories changed from `list[str] = Field(default_factory=list, max_length=3)` to `Optional[list[str]] = None`. Also changed WorkflowConfigBase.categories to `Optional[list[str]]` in workflow_config.py so None propagates through WorkflowConfig(**request.model_dump()) to the _update_workflow_values guard."
+    },
+    {
+      "id": "CR-002",
+      "outcome": "fixed",
+      "file": "src/codemie/rest_api/routers/workflow.py",
+      "change": "Added `from sqlalchemy.exc import SQLAlchemyError` import. Added explicit `except SQLAlchemyError` clause before the broad `except Exception` block on both the create and update paths, raising HTTP 503 to distinguish infrastructure failures from client input errors."
+    },
+    {
+      "id": "CR-003",
+      "outcome": "fixed",
+      "file": "src/codemie/service/assistant/category_service.py",
+      "change": "Changed `return category_ids` on line 105 to `return list(dict.fromkeys(category_ids))` to deduplicate while preserving insertion order."
+    }
+  ]
+}

@@ -17,6 +17,8 @@ import base64
 import json
 from typing import Any, Dict, List, Optional
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from fastapi import APIRouter, status, Depends, Query, BackgroundTasks, Request
 from pydantic import BaseModel
 from codemie.rest_api.models.workflow_generator import WorkflowGeneratorRequest, WorkflowGeneratorResponse
@@ -60,6 +62,7 @@ from codemie.service.monitoring.workflow_monitoring_service import WorkflowMonit
 from codemie.service.guardrail.guardrail_service import GuardrailService
 from codemie.service.workflow_config import WorkflowConfigIndexService
 from codemie.service.workflow_config.workflow_config_index_service import ExcludeSelfModifier, WorkflowScope
+from codemie.service.assistant.category_service import category_service
 from codemie.service.workflow_service import WorkflowService
 from codemie.service.workflow_evaluation_service import WorkflowEvaluationService
 from codemie.workflows.custom_node_info import CustomNodeInfoService
@@ -463,6 +466,9 @@ def create_workflow(
         MCPAccessControlService.validate_on_save(_collect_workflow_mcp_servers(candidate))
     _strip_workflow_mcp_servers(workflow_config)
     try:
+        if request.categories is not None:
+            # config was built from the request before validation, so dedupe it too
+            workflow_config.categories = request.categories = category_service.validate_category_ids(request.categories)
         WorkflowExecutor.validate_workflow(workflow_config=workflow_config, user=user, error_format=error_format)
         workflow_config = workflow_service.create_workflow(workflow_config, user)
 
@@ -487,6 +493,13 @@ def create_workflow(
             "data": workflow_config,
             "warnings": _consumer_slot_warnings_sync(workflow_config, user),
         }
+    except SQLAlchemyError as e:
+        raise ExtendedHTTPException(
+            code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            message="Database error during workflow creation",
+            details=str(e).strip(),
+            help="",
+        ) from e
     except Exception as e:
         formatted_exception = e.message if isinstance(e, ExtendedHTTPException) else str(e).strip()
         details = (
@@ -530,6 +543,9 @@ async def update_workflow(
     try:
         updated_config = WorkflowConfig(**request.model_dump())
         updated_config.parse_execution_config()
+        if request.categories is None:
+            # WorkflowConfig coerces None to []; keep None so an omitted field preserves stored categories
+            updated_config.categories = None
     except Exception as e:
         raise ExtendedHTTPException(
             code=status.HTTP_400_BAD_REQUEST,
@@ -544,6 +560,8 @@ async def update_workflow(
         workflow, updated_config, user, error_format, request.guardrail_assignments
     )
     try:
+        if request.categories is not None:
+            updated_config.categories = request.categories = category_service.validate_category_ids(request.categories)
         updated_workflow = workflow_service.update_workflow(workflow, updated_config, user)
 
         GuardrailService.sync_guardrail_assignments_for_entity(
@@ -568,6 +586,13 @@ async def update_workflow(
         }
     except (ValidationException, NotFoundException):
         raise
+    except SQLAlchemyError as e:
+        raise ExtendedHTTPException(
+            code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            message="Database error during workflow update",
+            details=str(e).strip(),
+            help="",
+        ) from e
     except Exception as e:
         formatted_exception = e.message if isinstance(e, ExtendedHTTPException) else str(e).strip()
         details = (

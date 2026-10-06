@@ -67,6 +67,7 @@ class WorkflowService:
         "supervisor_prompt",
         "meta_config",
         "start_hint",
+        "categories",
     }
 
     @staticmethod

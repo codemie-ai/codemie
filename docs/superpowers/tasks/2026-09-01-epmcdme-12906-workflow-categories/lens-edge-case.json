@@ -1,0 +1,28 @@
+[
+  {
+    "location": "src/codemie/core/workflow_models/workflow_models.py:441",
+    "trigger_condition": "PUT /workflows/:id body omits `categories` field",
+    "guard_snippet": "categories: Optional[list[str]] = Field(None, max_length=3)",
+    "potential_consequence": "Existing categories silently wiped; `_update_workflow_values` guard is `is not None`, not falsy"
+  },
+  {
+    "location": "src/codemie/service/assistant/category_service.py:97-105",
+    "trigger_condition": "categories list contains duplicate valid IDs, e.g. [\"a\",\"a\"]",
+    "guard_snippet": "category_ids = list(dict.fromkeys(category_ids)) before set-difference check",
+    "potential_consequence": "Duplicate IDs stored in JSONB column; containment queries still work but data is inconsistent"
+  },
+  {
+    "location": "src/codemie/rest_api/routers/workflow.py:302 and :381",
+    "trigger_condition": "DB connection failure inside `validate_category_ids` during category lookup",
+    "guard_snippet": "catch `sqlalchemy.exc.SQLAlchemyError` before `except Exception` and raise 503/500",
+    "potential_consequence": "DB outage surfaces to caller as 400 Bad Request, masking infra failure"
+  },
+  {
+    "location": "src/codemie/service/workflow_config/workflow_marketplace_service.py:45-47 (removed path)",
+    "trigger_condition": "`_validate_categories` in marketplace service has no max-item guard",
+    "guard_snippet": "add `if len(category_ids) > 3: raise ValidationException(...)` to mirror request-layer limit",
+    "potential_consequence": "Marketplace publish bypasses 3-category cap, storing >3 categories in DB despite API contract",
+    "kind": "deletion",
+    "confidence": "medium"
+  }
+]

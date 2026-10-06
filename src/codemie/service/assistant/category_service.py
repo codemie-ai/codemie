@@ -16,7 +16,7 @@
 Service for managing assistant categories with database backend.
 """
 
-from typing import Dict, List, Optional
+from __future__ import annotations
 
 from fastapi import status
 from psycopg2.errors import UniqueViolation
@@ -34,6 +34,7 @@ from codemie.rest_api.models.category import Category
 # ============================================================================
 
 _UNIQUE_CONSTRAINT = UniqueViolation
+_MAX_NAMES = 10  # names listed per entity type in the blocked-delete error
 
 # ============================================================================
 # Database-Based Implementation
@@ -43,7 +44,7 @@ _UNIQUE_CONSTRAINT = UniqueViolation
 class DatabaseCategoryService:
     """Service for managing assistant categories using PostgreSQL database."""
 
-    def _get_categories_by_ids(self, category_ids: List[str]) -> List[Category]:
+    def _get_categories_by_ids(self, category_ids: list[str]) -> list[Category]:
         """
         Internal helper to query categories by specific IDs using optimized IN clause.
 
@@ -60,7 +61,7 @@ class DatabaseCategoryService:
             query = select(Category).where(Category.id.in_(category_ids))
             return list(session.exec(query).all())
 
-    def get_categories(self) -> List[Category]:
+    def get_categories(self) -> list[Category]:
         """
         Load all categories from database.
 
@@ -71,7 +72,7 @@ class DatabaseCategoryService:
             categories = session.exec(select(Category).order_by(Category.name)).all()
             return list(categories)
 
-    def validate_category_ids(self, category_ids: List[str], required: bool = False) -> List[str]:
+    def validate_category_ids(self, category_ids: list[str], required: bool = False) -> list[str]:
         """
         Validate that all provided category IDs exist using optimized IN query.
 
@@ -102,9 +103,9 @@ class DatabaseCategoryService:
             else:
                 raise ValueError(f"Invalid category IDs: {invalid_ids}")
 
-        return category_ids
+        return list(dict.fromkeys(category_ids))
 
-    def filter_valid_category_ids(self, category_ids: List[str]) -> List[str]:
+    def filter_valid_category_ids(self, category_ids: list[str]) -> list[str]:
         """
         Filter out invalid category IDs using optimized IN query, fail-safe to [] on error.
 
@@ -128,7 +129,7 @@ class DatabaseCategoryService:
             logger.warning(f"Error filtering category IDs: {e}")
             return []
 
-    def enrich_categories(self, category_ids: List[str]) -> List[Category]:
+    def enrich_categories(self, category_ids: list[str]) -> list[Category]:
         """
         Enrich category IDs with full category information using optimized IN query.
 
@@ -153,7 +154,7 @@ class DatabaseCategoryService:
             logger.warning(f"Error enriching categories: {e}")
             return []
 
-    def create_category(self, name: str, description: Optional[str] = None) -> Category:
+    def create_category(self, name: str, description: str | None = None) -> Category:
         """
         Create new category with UUID.
 
@@ -188,7 +189,7 @@ class DatabaseCategoryService:
             logger.error(f"Database integrity error creating category '{name}': {error_message}")
             raise
 
-    def update_category(self, category_id: str, name: str, description: Optional[str] = None) -> Category:
+    def update_category(self, category_id: str, name: str, description: str | None = None) -> Category:
         """
         Update existing category.
 
@@ -236,7 +237,7 @@ class DatabaseCategoryService:
 
     def delete_category(self, category_id: str) -> None:
         """
-        Delete category if no assistants are assigned.
+        Delete category if no assistants or workflows are assigned.
 
         Uses a single atomic transaction with row-level locking on both the category
         and all assistants using it to prevent race conditions where:
@@ -250,6 +251,7 @@ class DatabaseCategoryService:
             ExtendedHTTPException: 409 if category has assigned assistants, 404 if category doesn't exist
         """
         # Import here to avoid circular dependency
+        from codemie.core.workflow_models import WorkflowConfig
         from codemie.rest_api.models.assistant import Assistant
 
         # Start transaction - all operations must complete atomically
@@ -264,14 +266,19 @@ class DatabaseCategoryService:
                     details=f"Category with ID '{category_id}' not found",
                 )
 
-            count_query = select(func.count()).where(cast(Assistant.categories, JSONB).contains([category_id]))
-            count = session.exec(count_query).one()
+            usages = []
+            for label, model in (("assistants", Assistant), ("workflows", WorkflowConfig)):
+                used = cast(model.categories, JSONB).contains([category_id])
+                count = session.exec(select(func.count()).where(used)).one()
+                if count > 0:
+                    names = session.exec(select(model.name).where(used).order_by(model.name).limit(_MAX_NAMES)).all()
+                    usages.append(f"{count} assigned {label} ({', '.join(names)})")
 
-            if count > 0:
+            if usages:
                 raise ExtendedHTTPException(
                     code=status.HTTP_409_CONFLICT,
                     message="Cannot delete category",
-                    details=f"Cannot delete category with {count} assigned assistants",
+                    details=f"Cannot delete category with {' and '.join(usages)}",
                 )
 
             # 3. Delete the category (within same transaction, with all relevant rows locked)
@@ -279,7 +286,7 @@ class DatabaseCategoryService:
             session.commit()
             logger.info(f"Deleted category: {category_id}")
 
-    def get_category_stats(self, category_id: str) -> Dict[str, int]:
+    def get_category_stats(self, category_id: str) -> dict[str, int]:
         """
         Get assistant counts by type for a category using a single optimized query.
 
@@ -287,9 +294,10 @@ class DatabaseCategoryService:
             category_id: ID of category to get stats for
 
         Returns:
-            Dictionary with marketplace_assistants_count and project_assistants_count
+            Dictionary with marketplace_assistants_count, project_assistants_count and workflows_count
         """
         # Import here to avoid circular dependency
+        from codemie.core.workflow_models import WorkflowConfig
         from codemie.rest_api.models.assistant import Assistant
 
         with Session(Assistant.get_engine()) as session:
@@ -301,7 +309,15 @@ class DatabaseCategoryService:
 
             result = session.exec(query).one()
 
-            return {"marketplace_assistants_count": result[0], "project_assistants_count": result[1]}
+            workflows_count = session.exec(
+                select(func.count()).where(cast(WorkflowConfig.categories, JSONB).contains([category_id]))
+            ).one()
+
+            return {
+                "marketplace_assistants_count": result[0],
+                "project_assistants_count": result[1],
+                "workflows_count": workflows_count,
+            }
 
 
 # ============================================================================

@@ -106,6 +106,7 @@ def update_workflow_request(request):
         yaml_config="{'assistants': []}",
         shared=shared,
         supervisor_prompt="example",
+        categories=["cat-1"],
     )
 
 
@@ -1514,3 +1515,58 @@ def test_update_then_save_schema_prepends_history_then_persists_schema(
     assert mock_update.call_args_list[1].args == ()
     assert mock_update.call_args_list[1].kwargs == {}
     mock_metric.assert_called_once()
+
+
+def test_create_workflow_request_rejects_more_than_3_categories():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        CreateWorkflowRequest(
+            name="w",
+            description="d",
+            project="p",
+            categories=["a", "b", "c", "d"],
+        )
+
+
+def test_update_workflow_request_rejects_more_than_3_categories():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        UpdateWorkflowRequest(
+            name="w",
+            description="d",
+            project="p",
+            categories=["a", "b", "c", "d"],
+        )
+
+
+def test_publish_workflow_request_rejects_more_than_3_categories():
+    from pydantic import ValidationError
+
+    from codemie.rest_api.models.workflow_marketplace import PublishWorkflowToMarketplaceRequest
+
+    with pytest.raises(ValidationError):
+        PublishWorkflowToMarketplaceRequest(categories=["a", "b", "c", "d"])
+
+
+@patch('codemie.core.workflow_models.WorkflowConfig.update')
+@patch('codemie.core.workflow_models.WorkflowConfig.refresh')
+def test_update_workflow_values_propagates_categories(
+    mock_refresh: MagicMock,
+    mock_update: MagicMock,
+    workflow_service: WorkflowService,
+    workflow_config: WorkflowConfig,
+    user: User,
+) -> None:
+    workflow_config.categories = []
+    updated_config = WorkflowConfig(
+        name=workflow_config.name,
+        description=workflow_config.description,
+        project=workflow_config.project,
+    )
+    updated_config.categories = ["cat-1", "cat-2"]
+
+    workflow_service._update_workflow_values(workflow_config, updated_config, user)
+
+    assert workflow_config.categories == ["cat-1", "cat-2"]

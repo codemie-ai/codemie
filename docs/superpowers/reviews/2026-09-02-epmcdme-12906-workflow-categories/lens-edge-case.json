@@ -1,0 +1,66 @@
+[
+  {
+    "location": "src/codemie/core/workflow_models/workflow_models.py:6665-6671",
+    "trigger_condition": "WorkflowPoolConfig created with min_size > max_size (e.g. 10 and 5)",
+    "guard_snippet": "@model_validator(mode='after') def check_sizes(self): assert self.min_size <= self.max_size",
+    "potential_consequence": "Warmup loop compiles excess graphs then discards all beyond ceiling; wasted CPU per refill cycle"
+  },
+  {
+    "location": "src/codemie/rest_api/routers/assistant.py:1025 (ask_virtual_assistant hunk)",
+    "trigger_condition": "Teams feature enabled, X-Teams-Sender-Email present; billing_user passed as positional user",
+    "guard_snippet": "_ask_assistant(assistant, raw_request, chat_request, user, background_tasks, ..., billing_user=billing_user)",
+    "potential_consequence": "Access control runs against end-user not the service account; 403 when end-user lacks assistant access"
+  },
+  {
+    "location": "src/codemie/core/workflow_models/workflow_models.py:6709 (CreateWorkflowRequest.categories)",
+    "trigger_condition": "Category string longer than any reasonable bound submitted (no per-item max_length)",
+    "guard_snippet": "categories: list[Annotated[str, Field(max_length=64)]] = Field(default_factory=list, max_length=3)",
+    "potential_consequence": "Unbounded strings stored in JSONB column; may exceed DB or serialisation limits silently"
+  },
+  {
+    "location": "src/codemie/core/models.py:6558 and src/codemie/repository/application_repository.py:7160",
+    "trigger_condition": "chargeback_attribution set to any string outside 'project'/'cost_center' via API",
+    "guard_snippet": "if chargeback_attribution not in ('project', 'cost_center'): raise ValidationException(...)",
+    "potential_consequence": "DB CheckConstraint violation surfaces as unhandled 500 instead of 400 to caller"
+  },
+  {
+    "location": "src/codemie/workflows/nodes/sub_workflow_node.py:17230-17233 (_create_child)",
+    "trigger_condition": "find_workflow_execution_by_id returns None for self.execution_id",
+    "guard_snippet": "if parent_exec is None: raise SubWorkflowExecutionError(self.execution_id)",
+    "potential_consequence": "active_sub_execution_id never set; interrupted child cannot be resumed; duplicate execution created on retry"
+  },
+  {
+    "location": "src/codemie/service/workflow_pool.py:16406-16411 (WorkflowPool._compile_for)",
+    "trigger_condition": "_compile_graph accesses any WorkflowExecutor attribute not manually set on shell",
+    "guard_snippet": "shell = WorkflowExecutor.__new__(WorkflowExecutor); WorkflowExecutor.__init__(shell, workflow_config)",
+    "potential_consequence": "AttributeError in warmup thread or at acquire() time; execution silently falls back or crashes refill loop"
+  },
+  {
+    "location": "src/codemie/workflows/nodes/sub_workflow_node.py:17259-17265 (_handle_child_outcome)",
+    "trigger_condition": "child stream() returns without setting terminal status (overall_status remains IN_PROGRESS)",
+    "guard_snippet": "if finished_child.overall_status not in (SUCCEEDED,): raise SubWorkflowExecutionError(...)",
+    "potential_consequence": "Parent state machine advances with partial or empty output treated as successful completion"
+  },
+  {
+    "location": "src/codemie/core/workflow_models/workflow_config.py:6625",
+    "trigger_condition": "categories explicitly set to None via API update or YAML null; downstream iterates without null-check",
+    "guard_snippet": "categories: list[str] = SQLField(default_factory=list, sa_column=Column(JSONB))",
+    "potential_consequence": "TypeError: 'NoneType' is not iterable in any consumer that does 'for c in config.categories'"
+  },
+  {
+    "location": "src/codemie/datasource/loader/confluence_loader.py:6802-6856 (lazy_load, removed paginate_request)",
+    "trigger_condition": "Confluence space with more pages than the old max_pages limit",
+    "guard_snippet": "loaded_count = 0; if self.max_pages and loaded_count >= self.max_pages: break",
+    "potential_consequence": "All pages fetched with no upper bound; memory exhaustion for large spaces",
+    "kind": "deletion",
+    "confidence": "high"
+  },
+  {
+    "location": "src/codemie/datasource/loader/confluence_loader.py:6766-6800 (removed paginate_request with tenacity)",
+    "trigger_condition": "Transient Confluence API error during _search_content_by_cql call in lazy_load",
+    "guard_snippet": "wrap _search_content_by_cql call with tenacity retry or restore paginate_request override",
+    "potential_consequence": "Single transient error aborts the entire load; no retry attempted; indexing silently incomplete",
+    "kind": "deletion",
+    "confidence": "high"
+  }
+]

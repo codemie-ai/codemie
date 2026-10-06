@@ -319,7 +319,7 @@ class TestDeleteCategory:
         mock_count_result.one.return_value = 0  # No assistants
 
         # Configure session.exec to return different results for different calls
-        mock_session.exec.side_effect = [mock_category_result, mock_count_result]
+        mock_session.exec.side_effect = [mock_category_result, mock_count_result, mock_count_result]
 
         category_service.delete_category("engineering")
 
@@ -360,13 +360,41 @@ class TestDeleteCategory:
         mock_count_result.one.return_value = 5
 
         # Configure session.exec to return different results for different calls
-        mock_session.exec.side_effect = [mock_category_result, mock_count_result]
+        mock_names_result = MagicMock()
+        mock_names_result.all.return_value = ["A1", "A2"]
+        mock_no_workflows = MagicMock()
+        mock_no_workflows.one.return_value = 0
+        mock_session.exec.side_effect = [mock_category_result, mock_count_result, mock_names_result, mock_no_workflows]
 
         with pytest.raises(ExtendedHTTPException) as exc:
             category_service.delete_category("engineering")
 
         assert exc.value.code == status.HTTP_409_CONFLICT
-        assert "5 assigned assistants" in exc.value.details
+        assert "5 assigned assistants (A1, A2)" in exc.value.details
+        assert "workflows" not in exc.value.details
+
+    @patch('codemie.service.assistant.category_service.Session')
+    def test_delete_category_used_only_by_workflow(self, mock_session_cls, category_service):
+        """A category used only by workflows is rejected, with count and names."""
+        mock_session = MagicMock()
+        mock_session_cls.return_value.__enter__.return_value = mock_session
+        results = [MagicMock() for _ in range(4)]
+        results[0].first.return_value = Category(id="engineering", name="Engineering", description="Test")
+        results[1].one.return_value = 0  # assistants
+        results[2].one.return_value = 12  # workflows
+        results[3].all.return_value = [f"WF{i}" for i in range(10)]
+        mock_session.exec.side_effect = results
+
+        with pytest.raises(ExtendedHTTPException) as exc:
+            category_service.delete_category("engineering")
+
+        assert exc.value.code == status.HTTP_409_CONFLICT
+        assert "12 assigned workflows (WF0, WF1" in exc.value.details
+        assert "WF9)" in exc.value.details
+        assert "assistants" not in exc.value.details
+        # the names query is capped at 10 per type
+        assert "LIMIT" in str(mock_session.exec.call_args_list[3].args[0]).upper()
+        mock_session.delete.assert_not_called()
 
 
 class TestGetCategoryStats:
@@ -377,19 +405,20 @@ class TestGetCategoryStats:
         """Test getting category statistics."""
         mock_session = MagicMock()
         mock_session_cls.return_value.__enter__.return_value = mock_session
-        mock_session.exec.return_value.one.return_value = (10, 5)  # (marketplace_count, project_count)
+        mock_session.exec.return_value.one.side_effect = [(10, 5), 3]  # (marketplace, project), workflows
 
         result = category_service.get_category_stats("engineering")
 
         assert result["marketplace_assistants_count"] == 10
         assert result["project_assistants_count"] == 5
+        assert result["workflows_count"] == 3
 
     @patch('codemie.service.assistant.category_service.Session')
     def test_get_category_stats_no_assistants(self, mock_session_cls, category_service):
         """Test statistics for category with no assistants."""
         mock_session = MagicMock()
         mock_session_cls.return_value.__enter__.return_value = mock_session
-        mock_session.exec.return_value.one.return_value = (0, 0)
+        mock_session.exec.return_value.one.side_effect = [(0, 0), 0]
 
         result = category_service.get_category_stats("engineering")
 

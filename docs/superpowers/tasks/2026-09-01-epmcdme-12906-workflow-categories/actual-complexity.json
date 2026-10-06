@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "generated": "2026-09-01T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 13,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 6,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Three distinct components touched: CreateWorkflowRequest/UpdateWorkflowRequest in workflow_models.py (core models), two handlers in the workflow router (create + update), and WorkflowService._editable_non_boolean_fields. Pattern is clear and additive."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "6 files total (3 production: workflow_models.py, workflow.py, workflow_service.py; 3 test: test_workflow.py, test_workflow_service.py, test_workflow_config_index_service.py). 130 insertions / 5 deletions confirms mostly new test coverage. Maps to M (4-6 files)."
+    },
+    {
+      "dimension": "affected_layers",
+      "reason": "API layer (router validation calls, prebuilt filter logic) and Service layer (categories added to editable fields set). No DB schema migration, no persistence layer change, no external integration."
+    }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

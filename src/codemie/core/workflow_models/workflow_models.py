@@ -18,7 +18,7 @@ import ast
 import httpx
 import requests
 from enum import Enum
-from typing import List, Optional, Literal
+from typing import Annotated, List, Optional, Literal
 
 from langgraph.types import default_retry_on
 from litellm.exceptions import BadRequestError as LiteLLMBadRequestError
@@ -435,6 +435,7 @@ class CreateWorkflowRequest(BaseModel):
     supervisor_prompt: Optional[str] = ""
     meta_config: Optional[str] = None
     guardrail_assignments: Optional[List[GuardrailAssignmentItem]] = None
+    categories: list[Annotated[str, Field(max_length=256)]] = Field(default_factory=list, max_length=3)
 
 
 class UpdateWorkflowRequest(BaseModel):
@@ -450,6 +451,7 @@ class UpdateWorkflowRequest(BaseModel):
     supervisor_prompt: Optional[str] = None
     meta_config: Optional[str] = None
     guardrail_assignments: Optional[List[GuardrailAssignmentItem]] = None
+    categories: Optional[list[Annotated[str, Field(max_length=256)]]] = Field(default=None, max_length=3)
 
 
 class WorkflowEvaluationRequest(BaseModel):
