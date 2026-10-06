@@ -389,7 +389,9 @@ class LocalAnalyticsHandler:
                 }
             )
 
-        durations = [_i(r.get("duration_ms")) for r in duration_rows]
+        # D1 rule: average duration over priced sessions only (same universe as the overview)
+        priced_sessions = {_s(s) for row in user_rows for s in (row.get("session_ids") or [])}
+        durations = [_i(r.get("duration_ms")) for r in duration_rows if _s(r.get("session_id")) in priced_sessions]
         avg_duration = int(sum(durations) / len(durations)) if durations else None
 
         total_count = len(rows)

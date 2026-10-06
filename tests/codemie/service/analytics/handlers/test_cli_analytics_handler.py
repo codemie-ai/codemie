@@ -306,6 +306,42 @@ def test_agent_dispatch_uses_tool_execution_duration_ms():
     assert agent["duration_ms"] == 53235
 
 
+def _users_repo(user_rows):
+    repo = MagicMock()
+    for name in (
+        "get_users_daily_activity",
+        "get_users_last_active",
+        "get_lines_by_user",
+        "get_turns_by_session",
+        "get_file_facts_by_session",
+        "get_tool_success_by_session",
+    ):
+        setattr(repo, name, AsyncMock(return_value=[]))
+    repo.get_users = AsyncMock(return_value=user_rows)
+    repo.get_session_durations = AsyncMock(
+        return_value=[
+            {"session_id": "s1", "duration_ms": 1000},
+            {"session_id": "s2", "duration_ms": 3000},
+            {"session_id": "s3", "duration_ms": 50000},
+        ]
+    )
+    return repo
+
+
+@pytest.mark.asyncio
+async def test_get_users_avg_duration_only_priced_sessions():
+    repo = _users_repo([{"developer_name": "dev", "session_ids": ["s1", "s2"]}])
+    result = await LocalAnalyticsHandler(repo).get_users(make_filter(), page=None, per_page=None)
+    assert result["avg_session_duration_ms"] == 2000
+
+
+@pytest.mark.asyncio
+async def test_get_users_avg_duration_none_when_no_priced_sessions():
+    repo = _users_repo([])
+    result = await LocalAnalyticsHandler(repo).get_users(make_filter(), page=None, per_page=None)
+    assert result["avg_session_duration_ms"] is None
+
+
 def test_iso_attaches_utc_to_naive_datetime():
     """A naive datetime must serialize with an explicit UTC offset, same wall-clock value."""
     result = _iso(datetime(2026, 9, 30, 12, 28, 8, 937211))
