@@ -60,6 +60,8 @@ codemie-enterprise = {version = "2.3.44", source = "codemie-artifact-registry-gc
 soupsieve = ">=2.8.4"
 # Security (EPMCDME-13445): pin >=3.3.0 to fix CVE-2026-49851, CVE-2026-59922, CVE-2026-59925, CVE-2026-59928 (HIGH, transitive via nbconvert)
 mistune = ">=3.3.0"
+# Security (EPMCDME-15158): pin ^4.14.2 to fix CVE-2026-63374 (CRITICAL, transitive dependency; bounded to next-minor)
+anyio = "^4.14.2"
 sqlmodel = "^0.0.38"
 psycopg2-binary = "^2.9.10"
 psutil = "^7.1.3"
