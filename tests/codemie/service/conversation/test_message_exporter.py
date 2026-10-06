@@ -16,7 +16,7 @@
 
 import tempfile
 from typing import Iterator
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from docx import Document
@@ -407,6 +407,146 @@ class TestDocumentBuilder:
         assert ai_msg.message in serialized
         assert ai_msg.thoughts[0].message in serialized
 
+    def test_add_message_pair_concise_mode_drops_thoughts(self, mock_conversation_multi_messages, mock_assistant):
+        """Concise mode (include_tool_outputs=False) must not add any thought-derived nodes."""
+        builder = DocumentBuilder(export_format=ExportFormat.DOCX)
+        user_msg = mock_conversation_multi_messages.history[0]
+        ai_msg = mock_conversation_multi_messages.history[1]  # has thoughts=[Thought(author_name="Agent 1", ...)]
+
+        doc = builder.build_conversation_document(
+            conversation=mock_conversation_multi_messages,
+            assistant=mock_assistant,
+            message_pairs=[(user_msg, ai_msg)],
+            include_tool_outputs=False,
+        )
+
+        headings = [child.text for child in doc.children if isinstance(child, Heading)]
+        assert "Agent 1" not in headings
+        assert "Input" not in headings
+        assert "Output" not in headings
+        assert "User" in headings
+        assert "CodeMie Assistant" in headings
+
+    def test_add_message_pair_full_mode_keeps_thoughts(self, mock_conversation_multi_messages, mock_assistant):
+        """include_tool_outputs=True (and the default) must render thoughts exactly as today."""
+        builder = DocumentBuilder(export_format=ExportFormat.DOCX)
+        user_msg = mock_conversation_multi_messages.history[0]
+        ai_msg = mock_conversation_multi_messages.history[1]
+
+        doc = builder.build_conversation_document(
+            conversation=mock_conversation_multi_messages,
+            assistant=mock_assistant,
+            message_pairs=[(user_msg, ai_msg)],
+            include_tool_outputs=True,
+        )
+
+        headings = [child.text for child in doc.children if isinstance(child, Heading)]
+        assert "Agent 1" in headings
+
+    def test_add_message_pair_concise_mode_skips_empty_pair(self, mock_assistant):
+        """A pair whose final message is empty and only had thought content is skipped entirely."""
+        conversation = MagicMock(spec=Conversation)
+        conversation.id = "conv-empty"
+        conversation.conversation_name = "Empty AI Message"
+        user_msg = GeneratedMessage(role=ChatRole.USER, message="Do the thing", history_index=0)
+        ai_msg = GeneratedMessage(
+            role=ChatRole.ASSISTANT,
+            message="",
+            history_index=0,
+            thoughts=[Thought(id="t1", message="ran a tool", author_name="Tool", author_type=ThoughtAuthorType.Tool)],
+        )
+        builder = DocumentBuilder(export_format=ExportFormat.DOCX)
+
+        doc = builder.build_conversation_document(
+            conversation=conversation,
+            assistant=mock_assistant,
+            message_pairs=[(user_msg, ai_msg)],
+            include_tool_outputs=False,
+        )
+
+        headings = [child.text for child in doc.children if isinstance(child, Heading)]
+        # Only the conversation title heading should remain; no User/CodeMie Assistant heading for the skipped pair.
+        assert "User" not in headings
+        assert "CodeMie Assistant" not in headings
+
+    @pytest.mark.parametrize("thoughts", [None, []])
+    def test_add_message_pair_concise_mode_keeps_empty_pair_without_thoughts(self, mock_assistant, thoughts):
+        """CR-001: the concise-mode skip only applies when the pair actually had thought content
+        that concise mode stripped away. A pair whose ai_message.message is empty AND which never
+        had any thoughts at all (thoughts is None or []) must render exactly as full mode would -
+        the user's own question must not be silently dropped for an unrelated reason."""
+        conversation = MagicMock(spec=Conversation)
+        conversation.id = "conv-empty-no-thoughts"
+        conversation.conversation_name = "Empty AI Message No Thoughts"
+        user_msg = GeneratedMessage(role=ChatRole.USER, message="What happened?", history_index=0)
+        ai_msg = GeneratedMessage(role=ChatRole.ASSISTANT, message="", history_index=0, thoughts=thoughts)
+        builder = DocumentBuilder(export_format=ExportFormat.DOCX)
+
+        doc = builder.build_conversation_document(
+            conversation=conversation,
+            assistant=mock_assistant,
+            message_pairs=[(user_msg, ai_msg)],
+            include_tool_outputs=False,
+        )
+
+        headings = [child.text for child in doc.children if isinstance(child, Heading)]
+        assert "User" in headings
+        assert "CodeMie Assistant" in headings
+        paragraphs = [child.content for child in doc.children if isinstance(child, Paragraph)]
+        assert "What happened?" in paragraphs
+
+    def test_build_conversation_document_all_filtered_adds_explanatory_paragraph(self, mock_assistant):
+        """CR-002: when every message pair is skipped in concise mode, the document must not come
+        back blank (title only) - it must carry a single explanatory paragraph."""
+        conversation = MagicMock(spec=Conversation)
+        conversation.id = "conv-all-filtered"
+        conversation.conversation_name = "All Filtered"
+        user_msg = GeneratedMessage(role=ChatRole.USER, message="Run a tool silently", history_index=0)
+        ai_msg = GeneratedMessage(
+            role=ChatRole.ASSISTANT,
+            message="",
+            history_index=0,
+            thoughts=[Thought(id="t1", message="ran a tool", author_name="Tool", author_type=ThoughtAuthorType.Tool)],
+        )
+        builder = DocumentBuilder(export_format=ExportFormat.DOCX)
+
+        doc = builder.build_conversation_document(
+            conversation=conversation,
+            assistant=mock_assistant,
+            message_pairs=[(user_msg, ai_msg)],
+            include_tool_outputs=False,
+        )
+
+        paragraphs = [child.content for child in doc.children if isinstance(child, Paragraph)]
+        assert paragraphs == ["No content to export in concise mode."]
+
+    def test_add_message_pair_full_mode_does_not_skip_empty_pair(self, mock_assistant):
+        """Regression: an empty-message pair must NOT be skipped when include_tool_outputs=True —
+        the skip rule is gated on concise mode only, so today's full-export behavior (always render
+        the pair) must be unchanged."""
+        conversation = MagicMock(spec=Conversation)
+        conversation.id = "conv-empty-full"
+        conversation.conversation_name = "Empty AI Message Full Mode"
+        user_msg = GeneratedMessage(role=ChatRole.USER, message="Do the thing", history_index=0)
+        ai_msg = GeneratedMessage(
+            role=ChatRole.ASSISTANT,
+            message="",
+            history_index=0,
+            thoughts=[Thought(id="t1", message="ran a tool", author_name="Tool", author_type=ThoughtAuthorType.Tool)],
+        )
+        builder = DocumentBuilder(export_format=ExportFormat.DOCX)
+
+        doc = builder.build_conversation_document(
+            conversation=conversation,
+            assistant=mock_assistant,
+            message_pairs=[(user_msg, ai_msg)],
+            include_tool_outputs=True,
+        )
+
+        headings = [child.text for child in doc.children if isinstance(child, Heading)]
+        assert "User" in headings
+        assert "CodeMie Assistant" in headings
+
 
 # ============================================================================
 # Tests for MessageExporter - Single Message Export
@@ -586,6 +726,40 @@ class TestMessageExporterFullConversation:
         result = exporter.run()
 
         assert isinstance(result, Iterator)
+
+    def test_export_full_conversation_forwards_include_tool_outputs(
+        self, mock_conversation_multi_messages, mock_assistant
+    ):
+        """_export_full_conversation must forward self.include_tool_outputs into
+        DocumentBuilder.build_conversation_document. Patches DocumentBuilder itself and calls
+        _export_full_conversation() directly (not a manually-built DocumentBuilder), so deleting the
+        forwarding line in _export_full_conversation makes this test fail."""
+        exporter = MessageExporter(
+            conversation=mock_conversation_multi_messages,
+            export_format=ExportFormat.DOCX,
+            assistant=mock_assistant,
+            include_tool_outputs=False,
+        )
+
+        with patch("codemie.service.conversation.message_exporter.DocumentBuilder") as mock_builder_cls:
+            mock_builder = MagicMock()
+            mock_builder.build_conversation_document.return_value = MagicMock()
+            mock_builder_cls.return_value = mock_builder
+            with patch.object(exporter, "_export_document", return_value=iter([b"stub"])):
+                list(exporter._export_full_conversation())
+
+        assert mock_builder.build_conversation_document.call_args.kwargs["include_tool_outputs"] is False
+
+    def test_message_exporter_default_include_tool_outputs_is_true(self):
+        """Regression guard: omitting include_tool_outputs must preserve today's full-export default,
+        since the per-message export path and other callers rely on this default."""
+        exporter = MessageExporter(
+            conversation=MagicMock(spec=Conversation),
+            export_format=ExportFormat.DOCX,
+            history_index=0,
+            message_index=0,
+        )
+        assert exporter.include_tool_outputs is True
 
 
 # ============================================================================

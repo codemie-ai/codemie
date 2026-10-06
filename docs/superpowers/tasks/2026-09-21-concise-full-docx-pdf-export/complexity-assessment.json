@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "task": "Add an include_tool_outputs query param to the conversation export endpoint so DOCX/PDF export can toggle between a concise variant (no tool outputs) and today's full variant.",
+  "generated": "2026-09-21T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 15,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "MessageExporter.__init__ and DocumentBuilder are shared by the full-conversation export path (in scope) and the per-message export path (explicitly out of scope); the new flag must thread through this shared constructor without changing per-message behavior — that shared-utility coupling, not just router+service call count, drives the scope." },
+    { "dimension": "technical_risk", "reason": "The filtering primitive (ExportUtils.should_include_thought) already exists and is unit-tested, but the pdf/docx branch of the router has zero existing test coverage today, and no existing test template asserts structural formatting preservation (headings/lists/tables/links/code blocks) across the concise/full x pdf/docx variant matrix the acceptance criteria imply." },
+    { "dimension": "requirements_clarity", "reason": "Whether the existing author-name-substring heuristic behind export_full_thought=False actually matches the ticket's 'prompts + assistant responses only, no tool outputs' definition is flagged in the technical analysis as an open design decision, not a settled research finding." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from M to L: change touches MessageExporter/DocumentBuilder, a constructor shared by the full-conversation export path (in scope) and the per-message export path (explicitly out of scope per the frontend spec), requiring careful scoping to avoid regressing the untouched path.",
+    "Technical Risk bumped from S to M: acceptance criteria require formatting preservation across concise/full and PDF/DOCX variants, and no existing structural-assertion test template covers that variant matrix."
+  ],
+  "split_recommendation": null
+}

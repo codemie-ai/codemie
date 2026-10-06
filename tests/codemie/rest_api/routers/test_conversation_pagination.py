@@ -16,13 +16,19 @@
 Tests for conversation pagination endpoints.
 """
 
+import io
+import shutil
 from datetime import datetime, timezone
 from unittest.mock import patch, MagicMock, AsyncMock
 
+import pypandoc
 import pytest
+from docx import Document as DocxDocument
 from fastapi.testclient import TestClient
+from pypdf import PdfReader
 
 import codemie.rest_api.routers.conversation as conversation_router
+from codemie.chains.base import Thought
 from codemie.rest_api.main import app
 from codemie.rest_api.models.conversation import (
     Conversation,
@@ -235,6 +241,434 @@ def test_export_json_not_found(mock_slice, client):
     response = client.get("/v1/conversations/non-existent/export?export_format=json&page=0&per_page=10")
 
     assert response.status_code == 404
+
+
+def _conversation_with_thought_and_empty_pair():
+    return Conversation(
+        id="conv-123",
+        conversation_id="conv-123",
+        user_id="user-123",
+        history=[
+            GeneratedMessage(role="User", message="Explain X", history_index=0),
+            GeneratedMessage(
+                role="Assistant",
+                message="Here is the explanation.",
+                history_index=0,
+                thoughts=[Thought(id="t1", message="ran search tool", author_name="Search Tool", author_type="Tool")],
+            ),
+            GeneratedMessage(role="User", message="Run a tool silently", history_index=1),
+            GeneratedMessage(
+                role="Assistant",
+                message="",
+                history_index=1,
+                thoughts=[Thought(id="t2", message="tool output only", author_name="Tool", author_type="Tool")],
+            ),
+        ],
+    )
+
+
+def _conversation_with_empty_pair_and_unexportable_thought():
+    """Second pair: the assistant produced no text, and its only thought node is one
+    ExportUtils.should_include_thought filters out anyway (blank message). Concise mode strips
+    nothing from this pair - full mode would not render that thought either - so the pair must
+    survive in both modes rather than taking the empty-pair skip."""
+    return Conversation(
+        id="conv-123",
+        conversation_id="conv-123",
+        user_id="user-123",
+        history=[
+            GeneratedMessage(role="User", message="Explain X", history_index=0),
+            GeneratedMessage(role="Assistant", message="Here is the explanation.", history_index=0),
+            GeneratedMessage(role="User", message="Did the tool run?", history_index=1),
+            GeneratedMessage(
+                role="Assistant",
+                message="",
+                history_index=1,
+                thoughts=[Thought(id="t3", message="   ", author_name="Tool", author_type="Tool")],
+            ),
+        ],
+    )
+
+
+def _conversation_with_code_block():
+    return Conversation(
+        id="conv-123",
+        conversation_id="conv-123",
+        user_id="user-123",
+        history=[
+            GeneratedMessage(role="User", message="Show me code", history_index=0),
+            GeneratedMessage(
+                role="Assistant",
+                message="Here is code:\n\n```python\nprint('hello world')\n```\n",
+                history_index=0,
+            ),
+        ],
+    )
+
+
+def _conversation_with_list_table_link():
+    return Conversation(
+        id="conv-123",
+        conversation_id="conv-123",
+        user_id="user-123",
+        history=[
+            GeneratedMessage(role="User", message="Summarize with formatting", history_index=0),
+            GeneratedMessage(
+                role="Assistant",
+                message=(
+                    "Summary:\n\n"
+                    "- Item one\n"
+                    "- Item two\n\n"
+                    "| Col A | Col B |\n"
+                    "| --- | --- |\n"
+                    "| a1 | b1 |\n\n"
+                    "See [our site](https://example.com) for more.\n"
+                ),
+                history_index=0,
+            ),
+        ],
+    )
+
+
+def _write_source_as_output(*, source, to, outputfile, **_kwargs):
+    """Stand-in for pypandoc.convert_text: writes the serialized markdown Pandoc would have
+    received directly to the output file, so tests can assert on the real DocumentBuilder/
+    MessageExporter pipeline output without depending on the pandoc/pdflatex binaries."""
+    with open(outputfile, "w", encoding="utf-8") as f:
+        f.write(source)
+
+
+# --- Wiring checks (parameter reaches MessageExporter with the right value) ---
+
+
+@pytest.mark.parametrize("export_format", ["pdf", "docx"])
+@pytest.mark.parametrize("query_suffix", ["", "&include_tool_outputs=false"])
+@patch("codemie.rest_api.routers.conversation.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
+@patch("codemie.rest_api.routers.conversation.Ability.can", new_callable=MagicMock, return_value=True)
+@patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", new_callable=MagicMock)
+@patch("codemie.rest_api.routers.conversation.MessageExporter")
+def test_export_concise_mode_omits_thoughts(
+    mock_exporter_cls, mock_find, _mock_can, _mock_assistants, client, export_format, query_suffix
+):
+    """Omitted or explicit include_tool_outputs=false must construct MessageExporter with
+    include_tool_outputs=False for both pdf and docx."""
+    mock_find.return_value = _conversation_with_thought_and_empty_pair()
+    mock_instance = MagicMock()
+    mock_instance.run.return_value = iter([b"bytes"])
+    mock_instance.content_type = "application/octet-stream"
+    mock_exporter_cls.return_value = mock_instance
+
+    response = client.get(f"/v1/conversations/conv-123/export?export_format={export_format}{query_suffix}")
+
+    assert response.status_code == 200
+    mock_exporter_cls.assert_called_once()
+    assert mock_exporter_cls.call_args.kwargs["include_tool_outputs"] is False
+
+
+@pytest.mark.parametrize("export_format", ["pdf", "docx"])
+@patch("codemie.rest_api.routers.conversation.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
+@patch("codemie.rest_api.routers.conversation.Ability.can", new_callable=MagicMock, return_value=True)
+@patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", new_callable=MagicMock)
+@patch("codemie.rest_api.routers.conversation.MessageExporter")
+def test_export_full_mode_keeps_thoughts(
+    mock_exporter_cls, mock_find, _mock_can, _mock_assistants, client, export_format
+):
+    """include_tool_outputs=true must construct MessageExporter with include_tool_outputs=True."""
+    mock_find.return_value = _conversation_with_thought_and_empty_pair()
+    mock_instance = MagicMock()
+    mock_instance.run.return_value = iter([b"bytes"])
+    mock_instance.content_type = "application/octet-stream"
+    mock_exporter_cls.return_value = mock_instance
+
+    response = client.get(f"/v1/conversations/conv-123/export?export_format={export_format}&include_tool_outputs=true")
+
+    assert response.status_code == 200
+    assert mock_exporter_cls.call_args.kwargs["include_tool_outputs"] is True
+
+
+@patch("codemie.rest_api.routers.conversation.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
+@patch("codemie.rest_api.routers.conversation.Ability.can", new_callable=MagicMock, return_value=True)
+@patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", new_callable=MagicMock)
+def test_export_json_unaffected_by_include_tool_outputs_param(mock_find, _mock_can, _mock_assistants, client):
+    """json export must not error and must ignore include_tool_outputs when the frontend sends it anyway."""
+    mock_find.return_value = _conversation_with_thought_and_empty_pair()
+
+    response = client.get("/v1/conversations/conv-123/export?export_format=json&include_tool_outputs=true")
+
+    assert response.status_code == 200
+
+
+# --- Non-mocked, real-pipeline checks (closes the zero-coverage gap the AC calls out) ---
+# MessageExporter/DocumentBuilder run for real; only pypandoc.convert_text's external binary
+# call is stubbed, so assertions are against the actual serialized document content.
+
+
+@pytest.mark.parametrize("export_format", ["pdf", "docx"])
+@patch("codemie.service.conversation.message_exporter.pypandoc.convert_text", side_effect=_write_source_as_output)
+@patch("codemie.rest_api.routers.conversation.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
+@patch("codemie.rest_api.routers.conversation.Ability.can", new_callable=MagicMock, return_value=True)
+@patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", new_callable=MagicMock)
+def test_export_concise_mode_omits_thought_content_end_to_end(
+    mock_find, _mock_can, _mock_assistants, _mock_convert, client, export_format
+):
+    """Real pipeline, thought content absent and the thought-only empty pair skipped entirely
+    in concise mode (parameter omitted)."""
+    mock_find.return_value = _conversation_with_thought_and_empty_pair()
+
+    response = client.get(f"/v1/conversations/conv-123/export?export_format={export_format}")
+
+    assert response.status_code == 200
+    text = response.content.decode("utf-8")
+    assert "Search Tool" not in text
+    assert "ran search tool" not in text
+    assert "Run a tool silently" not in text  # empty pair's user message must not appear: pair fully skipped
+    assert "Here is the explanation." in text  # surviving pair's assistant message still present
+
+
+@pytest.mark.parametrize("export_format", ["pdf", "docx"])
+@patch("codemie.service.conversation.message_exporter.pypandoc.convert_text", side_effect=_write_source_as_output)
+@patch("codemie.rest_api.routers.conversation.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
+@patch("codemie.rest_api.routers.conversation.Ability.can", new_callable=MagicMock, return_value=True)
+@patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", new_callable=MagicMock)
+def test_export_concise_mode_explicit_false_omits_thought_content_end_to_end(
+    mock_find, _mock_can, _mock_assistants, _mock_convert, client, export_format
+):
+    """CR-004: real pipeline with include_tool_outputs=false passed explicitly on the query
+    string must produce output identical (thought-absent, empty pair skipped) to the
+    omitted-default case covered by test_export_concise_mode_omits_thought_content_end_to_end -
+    guards against a default-handling divergence between 'omitted' and 'explicit false'."""
+    mock_find.return_value = _conversation_with_thought_and_empty_pair()
+
+    response = client.get(f"/v1/conversations/conv-123/export?export_format={export_format}&include_tool_outputs=false")
+
+    assert response.status_code == 200
+    text = response.content.decode("utf-8")
+    assert "Search Tool" not in text
+    assert "ran search tool" not in text
+    assert "Run a tool silently" not in text  # empty pair's user message must not appear: pair fully skipped
+    assert "Here is the explanation." in text  # surviving pair's assistant message still present
+
+
+@pytest.mark.parametrize("export_format", ["pdf", "docx"])
+@patch("codemie.service.conversation.message_exporter.pypandoc.convert_text", side_effect=_write_source_as_output)
+@patch("codemie.rest_api.routers.conversation.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
+@patch("codemie.rest_api.routers.conversation.Ability.can", new_callable=MagicMock, return_value=True)
+@patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", new_callable=MagicMock)
+def test_export_full_mode_keeps_thought_content_end_to_end(
+    mock_find, _mock_can, _mock_assistants, _mock_convert, client, export_format
+):
+    """Real pipeline, include_tool_outputs=true reproduces today's full export: thought content
+    present and the empty-message/thought-only pair NOT skipped (regression: full variant
+    unaffected)."""
+    mock_find.return_value = _conversation_with_thought_and_empty_pair()
+
+    response = client.get(f"/v1/conversations/conv-123/export?export_format={export_format}&include_tool_outputs=true")
+
+    assert response.status_code == 200
+    text = response.content.decode("utf-8")
+    assert "Search Tool" in text
+    assert "Run a tool silently" in text  # empty pair's user heading/message still emitted, not skipped
+
+
+@pytest.mark.parametrize("export_format", ["pdf", "docx"])
+@pytest.mark.parametrize("query_suffix", ["", "&include_tool_outputs=true"])
+@patch("codemie.service.conversation.message_exporter.pypandoc.convert_text", side_effect=_write_source_as_output)
+@patch("codemie.rest_api.routers.conversation.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
+@patch("codemie.rest_api.routers.conversation.Ability.can", new_callable=MagicMock, return_value=True)
+@patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", new_callable=MagicMock)
+def test_export_keeps_empty_pair_whose_thoughts_were_never_exportable(
+    mock_find, _mock_can, _mock_assistants, _mock_convert, client, export_format, query_suffix
+):
+    """The empty-pair skip must key on concise mode having actually removed something. A pair
+    whose thoughts are all filtered out by should_include_thought renders identically in both
+    modes, so concise mode must not drop the user's question - that content is not tool output."""
+    mock_find.return_value = _conversation_with_empty_pair_and_unexportable_thought()
+
+    response = client.get(f"/v1/conversations/conv-123/export?export_format={export_format}{query_suffix}")
+
+    assert response.status_code == 200
+    text = response.content.decode("utf-8")
+    assert "Did the tool run?" in text
+    assert "No content to export in concise mode." not in text
+
+
+# --- Real rendering checks (no pypandoc mock - genuine external binary conversion) ---
+# These need binaries the pipeline shells out to, so each one is guarded. A missing binary must
+# skip rather than fail: the behaviour under test is the document content, not the environment.
+
+
+def _pandoc_available() -> bool:
+    """pyproject depends on pypandoc-binary, which ships the pandoc executable inside the venv -
+    so this is normally true even where `which pandoc` finds nothing on PATH. It goes false only
+    on a platform with no pypandoc-binary wheel, where the install falls back to the sdist."""
+    try:
+        pypandoc.get_pandoc_path()
+    except OSError:
+        return False
+    return True
+
+
+requires_pandoc = pytest.mark.skipif(
+    not _pandoc_available(),
+    reason="pandoc binary unavailable (no pypandoc-binary wheel for this platform)",
+)
+
+# Only the PDF branch needs a LaTeX engine: PDFProcessor.get_pandoc_args passes
+# --pdf-engine=pdflatex, and pandoc alone cannot produce a PDF without it.
+requires_pdflatex = pytest.mark.skipif(
+    shutil.which("pdflatex") is None,
+    reason="pdflatex unavailable; pandoc cannot render PDF without a LaTeX engine",
+)
+
+
+def _is_code_style(paragraph) -> bool:
+    """True for a paragraph carrying pandoc's DOCX code-block style. Pandoc's reference doc calls
+    it 'Source Code', but the exact spelling python-docx reports has varied across pandoc versions
+    ('SourceCode'), so compare case- and space-insensitively rather than pinning one spelling."""
+    style = paragraph.style
+    name = getattr(style, "name", None) if style is not None else None
+    return bool(name) and name.replace(" ", "").lower() == "sourcecode"
+
+
+@requires_pandoc
+@pytest.mark.parametrize("query_suffix", ["", "&include_tool_outputs=true"])
+@patch("codemie.rest_api.routers.conversation.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
+@patch("codemie.rest_api.routers.conversation.Ability.can", new_callable=MagicMock, return_value=True)
+@patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", new_callable=MagicMock)
+def test_export_docx_renders_fenced_code_block_as_code_run(
+    mock_find, _mock_can, _mock_assistants, client, query_suffix, tmp_path
+):
+    """CR-003: full real pandoc pipeline (pypandoc.convert_text not mocked) for DOCX - a fenced
+    code block in the surviving message renders as a genuine DOCX code-block run, in both
+    concise mode (parameter omitted) and full mode (include_tool_outputs=true)."""
+    mock_find.return_value = _conversation_with_code_block()
+
+    response = client.get(f"/v1/conversations/conv-123/export?export_format=docx{query_suffix}")
+
+    assert response.status_code == 200
+    docx_path = tmp_path / "export.docx"
+    docx_path.write_bytes(response.content)
+    doc = DocxDocument(str(docx_path))
+
+    code_paragraphs = [p for p in doc.paragraphs if _is_code_style(p)]
+    assert any("print" in p.text for p in code_paragraphs)
+
+
+@requires_pandoc
+@pytest.mark.parametrize("query_suffix", ["", "&include_tool_outputs=true"])
+@patch("codemie.rest_api.routers.conversation.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
+@patch("codemie.rest_api.routers.conversation.Ability.can", new_callable=MagicMock, return_value=True)
+@patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", new_callable=MagicMock)
+def test_export_docx_renders_list_table_link_correctly(
+    mock_find, _mock_can, _mock_assistants, client, query_suffix, tmp_path
+):
+    """CR-005: full real pandoc pipeline for DOCX - a list, a table, and a link in the surviving
+    message continue to render correctly in both concise mode (parameter omitted) and full mode
+    (include_tool_outputs=true); formatting fidelity must not depend on which branch produced it."""
+    mock_find.return_value = _conversation_with_list_table_link()
+
+    response = client.get(f"/v1/conversations/conv-123/export?export_format=docx{query_suffix}")
+
+    assert response.status_code == 200
+    docx_path = tmp_path / "export.docx"
+    docx_path.write_bytes(response.content)
+    doc = DocxDocument(str(docx_path))
+
+    paragraph_texts = [p.text for p in doc.paragraphs]
+    assert "Item one" in paragraph_texts
+    assert "Item two" in paragraph_texts
+
+    assert len(doc.tables) == 1
+    table_cells = [cell.text for row in doc.tables[0].rows for cell in row.cells]
+    assert "Col A" in table_cells
+    assert "a1" in table_cells
+
+    hyperlink_targets = [rel.target_ref for rel in doc.part.rels.values() if "hyperlink" in rel.reltype]
+    assert "https://example.com" in hyperlink_targets
+
+
+@requires_pandoc
+@requires_pdflatex
+@pytest.mark.parametrize("query_suffix", ["", "&include_tool_outputs=true"])
+@patch("codemie.rest_api.routers.conversation.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
+@patch("codemie.rest_api.routers.conversation.Ability.can", new_callable=MagicMock, return_value=True)
+@patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", new_callable=MagicMock)
+def test_export_pdf_renders_real_pdf_document(mock_find, _mock_can, _mock_assistants, client, query_suffix):
+    """CR-005: the DOCX branch had real-render coverage and the PDF branch had none - every other
+    PDF assertion stops at the markdown handed to pandoc. This is the only test that proves the
+    PDF branch's own pandoc args (--pdf-engine=pdflatex, --listings, the fvextra header-includes)
+    actually produce a readable PDF rather than a LaTeX error, in both modes."""
+    mock_find.return_value = _conversation_with_list_table_link()
+
+    response = client.get(f"/v1/conversations/conv-123/export?export_format=pdf{query_suffix}")
+
+    assert response.status_code == 200
+    assert response.content.startswith(b"%PDF-")
+
+    text = "\n".join(page.extract_text() for page in PdfReader(io.BytesIO(response.content)).pages)
+    assert "Item one" in text
+    assert "Item two" in text
+    assert "Col A" in text
+
+
+@pytest.mark.parametrize(
+    "export_format,expected_args,absent_args",
+    [
+        ("pdf", ["--pdf-engine=pdflatex", "--listings"], []),
+        # DOCXProcessor.get_pandoc_args returns [], so the DOCX call must carry none of the
+        # LaTeX-only flags - a processor mix-up would make DOCX export fail at the binary.
+        ("docx", [], ["--pdf-engine=pdflatex", "--listings"]),
+    ],
+)
+@patch("codemie.service.conversation.message_exporter.pypandoc.convert_text", side_effect=_write_source_as_output)
+@patch("codemie.rest_api.routers.conversation.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
+@patch("codemie.rest_api.routers.conversation.Ability.can", new_callable=MagicMock, return_value=True)
+@patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", new_callable=MagicMock)
+def test_export_passes_format_specific_pandoc_args(
+    mock_find, _mock_can, _mock_assistants, mock_convert, client, export_format, expected_args, absent_args
+):
+    """CR-005: runnable everywhere (the binary call is stubbed) counterpart to the pdflatex-guarded
+    render test above - asserts the export target and the format-specific pandoc arguments the
+    real render depends on, so the PDF branch's wiring stays covered on a host without LaTeX."""
+    mock_find.return_value = _conversation_with_code_block()
+
+    response = client.get(f"/v1/conversations/conv-123/export?export_format={export_format}")
+
+    assert response.status_code == 200
+    kwargs = mock_convert.call_args.kwargs
+    assert kwargs["to"] == export_format
+    extra_args = kwargs["extra_args"]
+    for arg in expected_args:
+        assert arg in extra_args
+    for arg in absent_args:
+        assert arg not in extra_args
+    if export_format == "pdf":
+        # fvextra is what keeps long code lines from overflowing the page; it arrives as a
+        # '-V header-includes=...' value rather than a flag of its own.
+        assert any("fvextra" in arg for arg in extra_args)
+
+
+@pytest.mark.parametrize("export_format", ["pdf", "docx"])
+@patch("codemie.service.conversation.message_exporter.pypandoc.convert_text", side_effect=_write_source_as_output)
+@patch("codemie.rest_api.routers.conversation.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
+@patch("codemie.rest_api.routers.conversation.Ability.can", new_callable=MagicMock, return_value=True)
+@patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", new_callable=MagicMock)
+def test_export_list_table_link_content_survives_concise_filtering_end_to_end(
+    mock_find, _mock_can, _mock_assistants, _mock_convert, client, export_format
+):
+    """CR-005: real DocumentBuilder/MessageExporter pipeline for both pdf and docx - list, table,
+    and link markdown reach the pandoc input intact after passing through the concise-mode
+    gating logic (only pypandoc.convert_text's external binary call is stubbed)."""
+    mock_find.return_value = _conversation_with_list_table_link()
+
+    response = client.get(f"/v1/conversations/conv-123/export?export_format={export_format}")
+
+    assert response.status_code == 200
+    text = response.content.decode("utf-8")
+    assert "- Item one" in text
+    assert "- Item two" in text
+    assert "| Col A | Col B |" in text
+    assert "[our site](https://example.com)" in text
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,93 @@
+{
+  "decision": "request-changes",
+  "rationale": "3 required story-ac items remain partial - test-coverage gaps for list/table/link formatting (CR-005), code-block rendering (CR-003), and the explicit include_tool_outputs=false real-pipeline case (CR-004) - which forces request-changes. One decision_needed item (CR-001) flags that dropping an empty AI turn in concise mode also silently drops the user's own question when the pair had no thoughts at all, needing a product call; a related all-filtered-conversation blank-document gap is CR-002. One edge-case finding (JSON export ignoring include_tool_outputs) was dismissed as it matches the documented non-goal that JSON is untouched; the standards audit (commit-format/code-quality/security) passed clean with no coverage gap.",
+  "confidence": "low",
+  "risk_flags": ["breaking-change"],
+  "business_review": [
+    {"kind": "story-ac", "item": "GET export?export_format=docx|pdf, include_tool_outputs omitted/false returns doc with no thought-derived content for any pair", "status": "pass", "notes": "conversation.py:830 param forwarded to MessageExporter; message_exporter.py:412 gates thoughts on include_tool_outputs; covered end-to-end"},
+    {"kind": "story-ac", "item": "Concise mode skips entirely a pair whose ai_message.message is empty (no heading, no empty body, no placeholder)", "status": "pass", "notes": "message_exporter.py:399-402 early-returns before any doc.add() for the pair; unit + e2e tests cover it"},
+    {"kind": "story-ac", "item": "include_tool_outputs=true returns a document identical to today's full-export behavior", "status": "pass", "notes": "both gates default to true-path pre-diff behavior; regression tests cover full mode"},
+    {"kind": "story-ac", "item": "export_format=json behavior is unaffected by include_tool_outputs presence and must not error", "status": "pass", "notes": "json branch (conversation.py:897-912) never reads include_tool_outputs; test asserts 200"},
+    {"kind": "story-ac", "item": "Per-message export endpoint and direct MessageExporter/DocumentBuilder construction retain unconditional full behavior", "status": "pass", "notes": "defaults are include_tool_outputs=True at both call sites; default-true test present"},
+    {"kind": "story-ac", "item": "Headings, lists, tables, links in surviving content continue to render correctly in DOCX/PDF for both variants", "status": "partial", "notes": "mechanism unchanged but no diff test exercises lists/tables/links content; see CR-005"},
+    {"kind": "story-ac", "item": "Code-block rendering verified correct in DOCX for both variants", "status": "partial", "notes": "no test in the diff exercises code-block rendering through this export path; see CR-003"},
+    {"kind": "story-ac", "item": "Router-level tests cover pdf/docx x {omitted,false,true} with real content assertions of thought absence/presence", "status": "partial", "notes": "explicit false case only covered at mocked-wiring level, not real-pipeline; see CR-004"},
+    {"kind": "spec", "item": "Router adds include_tool_outputs: bool = False as a plain param, no Query wrapper, matching existing convention", "status": "pass", "notes": "conversation.py:830 bare bool=False, matches remove_conversations convention"},
+    {"kind": "spec", "item": "include_tool_outputs read only by pdf/docx branch of _get_streaming_response; json branch never consumes it", "status": "pass", "notes": "json branch conversation.py:897-912 never references the param"},
+    {"kind": "spec", "item": "MessageExporter.__init__ adds include_tool_outputs defaulting to True to preserve today's per-message behavior", "status": "pass", "notes": "new param + self.include_tool_outputs default True"},
+    {"kind": "spec", "item": "DocumentBuilder threads the flag down to _add_message_pair_to_document, gating thoughts entirely when False", "status": "pass", "notes": "message_exporter.py:378 forwards; :412 gates on include_tool_outputs and thoughts"},
+    {"kind": "spec", "item": "False branch additionally skips emitting a pair's headings/body when ai_message.message is empty", "status": "pass", "notes": "message_exporter.py:399-402 early-return; see CR-001 for an edge-case caveat"},
+    {"kind": "spec", "item": "No change to ExportUtils.should_include_thought, build_single_message_document, or the json export path", "status": "pass", "notes": "diff contains no hunks touching those"},
+    {"kind": "spec", "item": "Non-Goal: per-message export endpoint not changed", "status": "pass", "notes": "no hunk in that method/endpoint"},
+    {"kind": "spec", "item": "Non-Goal: json export format/serialization path not changed", "status": "pass", "notes": "confirmed unchanged in diff"},
+    {"kind": "spec", "item": "Non-Goal: should_include_thought's export_full_thought heuristic not modified", "status": "pass", "notes": "no hunk touches this function"},
+    {"kind": "spec", "item": "Non-Goal: no new Pandoc node types introduced", "status": "pass", "notes": "only boolean-gated control-flow change"},
+    {"kind": "spec", "item": "Non-Goal: no new query-param validation beyond a plain boolean; name unchanged", "status": "pass", "notes": "bare bool=False, no enum/alias, name unchanged"},
+    {"kind": "spec", "item": "Non-Goal: fixing the pre-existing PDF code-block (--listings/fvextra) defect is out of scope", "status": "na", "notes": "diff does not touch code-block serialization or pandoc args"},
+    {"kind": "spec", "item": "Non-Goal: query-layer/DB-read-layer filtering for large-payload export failures is out of scope", "status": "na", "notes": "diff makes no DB-read or query-layer changes"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "All 3 commit subjects in range follow the documented EPMCDME-####: Description format from git-workflow.md."},
+    {"kind": "code-quality", "status": "pass", "notes": "Changed files use modern type hints per code-quality.md (bool | None unions, parameterized generics); new public methods are explicitly typed with docstrings; Apache 2.0 headers present."},
+    {"kind": "security", "status": "pass", "notes": "include_tool_outputs is a plain bool toggle controlling rendered content only; does not affect auth (still gated by Ability(user).can(READ)) or untrusted-input parsing/logging."}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "decision",
+      "severity": "major",
+      "triage": "decision_needed",
+      "file": "src/codemie/service/conversation/message_exporter.py",
+      "line": 399,
+      "title": "Empty AI turn drops user's question too",
+      "problem": "In concise mode (include_tool_outputs=false), _add_message_pair_to_document skips the pair whenever ai_message.message is empty, even when the pair carried no thoughts at all - i.e. the assistant produced no text for reasons unrelated to concise-mode thought stripping.",
+      "impact": "The user's own question for that turn is also silently dropped from the export with no indication anything was omitted. Whether the spec's 'skip pairs whose message is empty once thoughts are dropped' should apply only when thoughts existed (content moved there) versus any empty final message is a product-intent question, not a code question.",
+      "recommendation": "Confirm with the story owner whether the skip at message_exporter.py:399 should be scoped to ai_message.thoughts being non-empty, or intentionally applies to any empty final message regardless of thoughts; adjust the guard accordingly."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/conversation/message_exporter.py",
+      "line": 369,
+      "title": "All-filtered concise export returns blank document",
+      "problem": "When every message pair in a conversation is skipped in concise mode (all ai_message.message values empty), build_conversation_document (message_exporter.py:369-380) still returns a Document containing only the title heading, and _export_full_conversation (message_exporter.py:668-683) exports it as-is.",
+      "impact": "The caller receives a successful 200 OK DOCX/PDF response that is functionally blank, with no signal distinguishing 'content was filtered out' from 'the conversation is actually empty'.",
+      "recommendation": "After the message-pair loop, check whether any pair content was added; if not, add a single explanatory paragraph (e.g. 'No content to export in concise mode.') before returning the document."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/rest_api/routers/test_conversation_pagination.py",
+      "title": "Code-block rendering untested for concise/full DOCX export",
+      "problem": "Neither test_export_concise_mode_omits_thought_content_end_to_end nor test_export_full_mode_keeps_thought_content_end_to_end exercises a message containing a fenced code block through the new concise/full DOCX export path; the only existing code-block tests (test_message_exporter.py:195-219) cover thought-content markdown parsing, not this path.",
+      "impact": "A regression in code-block rendering introduced anywhere along the new gating logic would ship undetected, and the story's explicit code-block-rendering AC for DOCX stays unverified.",
+      "recommendation": "Add an end-to-end assertion (concise and full) with a message containing a fenced code block and assert the produced DOCX renders it as a code-block run."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/rest_api/routers/test_conversation_pagination.py",
+      "title": "Explicit include_tool_outputs=false lacks real-pipeline content test",
+      "problem": "The explicit include_tool_outputs=false case is exercised only via the mocked-wiring test (test_export_concise_mode_omits_thoughts); unlike the omitted-default and true cases, there is no real-pipeline end-to-end test asserting thought-content absence when false is passed explicitly on the query string.",
+      "impact": "A behavioral divergence between 'omitted' and 'explicit false' (e.g. a default-handling bug in the router) would not be caught by the current suite.",
+      "recommendation": "Add an end-to-end test mirroring test_export_concise_mode_omits_thought_content_end_to_end that passes include_tool_outputs=false explicitly and asserts identical thought-absent output."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/rest_api/routers/test_conversation_pagination.py",
+      "title": "Lists/tables/links formatting untested post-filter",
+      "problem": "The diff's end-to-end tests use plain-text messages only ('Explain X' / 'Here is the explanation.'); no test exercises a surviving message containing lists, tables, or links in either concise or full mode.",
+      "impact": "The AC that 'headings, lists, tables, links already present in surviving content continue to render correctly' rests on 'formatting is unaffected by this change' reasoning rather than direct test evidence.",
+      "recommendation": "Add a fixture message with a list, a table, and a link, and assert correct DOCX/PDF rendering survives the concise-mode filtering path."
+    }
+  ]
+}

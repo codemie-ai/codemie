@@ -999,6 +999,7 @@ def export_conversation(
     export_format: ConversationExportFormat = ConversationExportFormat.JSON,
     page: Optional[int] = Query(None, ge=DEFAULT_PAGE),
     per_page: Optional[int] = Query(None, ge=1, le=MAX_HISTORY_ITEMS_PER_PAGE),
+    include_tool_outputs: bool = False,
 ):
     # Pagination: if params provided, use DB-level slicing
     if page is not None or per_page is not None:
@@ -1030,6 +1031,7 @@ def export_conversation(
         assistant,
         very_first_msg_at=very_first_msg_at,
         very_last_msg_at=very_last_msg_at,
+        include_tool_outputs=include_tool_outputs,
     )
 
 
@@ -1041,6 +1043,7 @@ def _get_streaming_response(
     assistant: Optional[Assistant],
     very_first_msg_at: Optional[datetime] = None,
     very_last_msg_at: Optional[datetime] = None,
+    include_tool_outputs: bool = False,
 ) -> StreamingResponse:
     """
     Generate a streaming response for conversation export.
@@ -1053,6 +1056,8 @@ def _get_streaming_response(
         assistant: The primary assistant (optional, used for PDF/DOCX export).
         very_first_msg_at: First message timestamp (JSON export only; aligns with GET conversation).
         very_last_msg_at: Last message timestamp (JSON export only; aligns with GET conversation).
+        include_tool_outputs: Whether the PDF/DOCX export should include thought/tool-output
+            content. Ignored by the JSON branch. Defaults to False (concise export).
 
     Returns:
         StreamingResponse: A streaming response containing the exported file.
@@ -1083,6 +1088,7 @@ def _get_streaming_response(
             conversation=conversation,
             export_format=ExportFormat(export_format),
             assistant=assistant,
+            include_tool_outputs=include_tool_outputs,
         )
         return StreamingResponse(
             content=service.run(),

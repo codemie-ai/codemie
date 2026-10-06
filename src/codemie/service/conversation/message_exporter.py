@@ -352,6 +352,7 @@ class DocumentBuilder:
         conversation: Conversation,
         assistant: Assistant | None,
         message_pairs: list[tuple[GeneratedMessage, GeneratedMessage]],
+        include_tool_outputs: bool = True,
     ) -> Document:
         """Build document for full conversation.
 
@@ -359,6 +360,8 @@ class DocumentBuilder:
             conversation: The conversation to export
             assistant: The assistant whose messages to export
             message_pairs: List of (user_message, ai_message) tuples
+            include_tool_outputs: Whether to render thought/tool-output content and keep
+                otherwise-empty message pairs. Defaults to True (today's full behavior).
 
         Returns:
             Complete document with all message exchanges
@@ -370,15 +373,26 @@ class DocumentBuilder:
         title = f"{conversation.conversation_name or 'Conversation'} - {assistant_name}"
         doc.add(Heading(text=title, level=HeadingLevel.H1))
 
-        # Add each message pair
+        # Add each message pair, tracking whether any pair actually contributed content
+        content_added = False
         for user_msg, ai_msg in message_pairs:
-            self._add_message_pair_to_document(doc, user_msg, ai_msg)
+            if self._add_message_pair_to_document(doc, user_msg, ai_msg, include_tool_outputs):
+                content_added = True
+
+        if message_pairs and not content_added:
+            # Concise mode filtered out every pair - avoid returning a document that looks blank
+            # with no signal that content was omitted versus the conversation being empty.
+            doc.add(Paragraph(content="No content to export in concise mode."))
 
         return doc
 
     def _add_message_pair_to_document(
-        self, doc: Document, user_message: GeneratedMessage, ai_message: GeneratedMessage
-    ) -> None:
+        self,
+        doc: Document,
+        user_message: GeneratedMessage,
+        ai_message: GeneratedMessage,
+        include_tool_outputs: bool = True,
+    ) -> bool:
         """Add a single message exchange to document.
 
         Args:
@@ -386,7 +400,22 @@ class DocumentBuilder:
             message_num: Message number (1-indexed)
             user_message: The user's message
             ai_message: The AI's response
+            include_tool_outputs: Whether to render thought/tool-output content and keep
+                otherwise-empty message pairs. Defaults to True (today's full behavior).
+
+        Returns:
+            True if the pair contributed any content to the document, False if it was skipped.
         """
+        # Concise mode: skip the pair entirely, but only when concise mode is what emptied it -
+        # i.e. at least one thought would have rendered in full mode. A pair with no exportable
+        # thoughts at all is empty in full mode too, so it still renders (never drop the user's message).
+        if (
+            not include_tool_outputs
+            and not (ai_message.message and ai_message.message.strip())
+            and any(ExportUtils.should_include_thought(t) for t in ai_message.thoughts or [])
+        ):
+            return False
+
         # Add message separator
         doc.add(HorizontalRule())
 
@@ -395,13 +424,15 @@ class DocumentBuilder:
         doc.add(Paragraph(content=user_message.message))
 
         # Add thoughts if available
-        if ai_message.thoughts:
+        if include_tool_outputs and ai_message.thoughts:
             # Add page break before thoughts section
             self._add_thoughts_to_document(doc, ai_message)
 
         # Add AI message
         doc.add(Heading(text="CodeMie Assistant", level=HeadingLevel.H3))
         doc.add(Paragraph(content=ai_message.message))
+
+        return True
 
     def _add_thoughts_to_document(self, doc: Document, ai_message: GeneratedMessage) -> None:
         """Add thoughts section to document.
@@ -496,6 +527,7 @@ class MessageExporter:
         message_index: int | None = None,
         # For full conversation export
         assistant: Assistant | None = None,
+        include_tool_outputs: bool = True,
     ):
         """Initialize the exporter.
 
@@ -505,12 +537,15 @@ class MessageExporter:
             history_index: History index for single message export (optional)
             message_index: Message index for single message export (optional)
             assistant: Assistant for full conversation export (optional)
+            include_tool_outputs: Whether the full-conversation export should include
+                thought/tool-output content. Defaults to True (today's full behavior).
         """
         self.conversation = conversation
         self.export_format = ExportFormat(export_format)
         self.history_index = history_index
         self.message_index = message_index
         self.assistant = assistant
+        self.include_tool_outputs = include_tool_outputs
 
         # Determine export mode
         self.is_single_message = history_index is not None and message_index is not None
@@ -658,7 +693,10 @@ class MessageExporter:
         )
 
         document = builder.build_conversation_document(
-            conversation=self.conversation, assistant=self.assistant, message_pairs=message_pairs
+            conversation=self.conversation,
+            assistant=self.assistant,
+            message_pairs=message_pairs,
+            include_tool_outputs=self.include_tool_outputs,
         )
 
         # Export to format

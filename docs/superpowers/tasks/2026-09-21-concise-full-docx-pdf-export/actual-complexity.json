@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "generated": "2026-09-22T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 12,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 4,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "file_change_estimate", "reason": "4 files changed per diffstat (508 insertions, 7 deletions), all modified (router, service, and two existing test modules) — maps to the 4-6 file M band." },
+    { "dimension": "component_scope", "reason": "Two components touched, both already established: the existing export_conversation router endpoint (conversation.py) gained one query param (include_tool_outputs), and the existing MessageExporter/DocumentBuilder service class threaded that flag through _add_message_pair_to_document to conditionally skip thought/tool-output content. No new module, class, or abstraction was introduced." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}
