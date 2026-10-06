@@ -1,0 +1,54 @@
+{
+  "decision": "request-changes",
+  "rationale": "All three lenses ran against the spec and the Jira AC. Two blocking test gaps against the spec's testing matrix are emitted as CR-001 and CR-002. Deferred (2): Health check still uses a name-only existence check that can disagree with build (pre-existing, out of scope per spec). A delete that lands between drop_missing_context and get_tools can still raise (a narrow TOCTOU race that also existed before). Dismissed (11), each checked against the code: build_agent does not persist or cache the assistant (update/save only in create/update/publish endpoints). The lookup is equivalent to the removed get_deleted_context (same project filter and type mapping). Ruff F401/F821 are clean on the router. PROVIDER rows live in index_info. Workflow and tool-invoke virtual assistants never reach build_agent's filter (build_agent_for_workflow). The user-notice and all-deleted behaviour were chosen in the spec. The 12384 suites ran green in the 1610-test run.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "story-ac", "item": "If a datasource attached to an assistant is deleted, the assistant does not fail with a backend 500 error.", "status": "pass", "notes": "check_context/MissingContextException and both 500-producing except blocks removed; regression test builds with one and with all datasources deleted."},
+    {"kind": "story-ac", "item": "The system handles missing datasource references gracefully during assistant initialization.", "status": "pass", "notes": "drop_missing_context runs before ToolkitService.get_tools on every build_agent entry point."},
+    {"kind": "story-ac", "item": "The platform either automatically removes invalid datasource references from the assistant or shows a clear and actionable validation message.", "status": "pass", "notes": "Removed in memory at init (spec option A); edit+save persists; health check keeps context_error. Product reply on Jira comment 15948973 pending."},
+    {"kind": "story-ac", "item": "Assistant chat remains operational, or the user receives a controlled non-500 error with guidance.", "status": "pass", "notes": "get_tools receives remaining context; all-deleted builds with empty context."},
+    {"kind": "story-ac", "item": "Regression coverage confirms the issue does not reappear after changes related to EPMCDME-12384.", "status": "pass", "notes": "Lens marked partial for missing run evidence; orchestrator verified: test_search_kb, test_code_tools_health, test_index_health_fields, test_tool_execution_search ran inside the LC_ALL=en_US.UTF-8 run of 1610 passed (only failure test_oauth_redis_lazy_init, fails identically without the change). Regression test added."},
+    {"kind": "spec", "item": "Design 1: single helper drop_missing_context; targeted query; (name, type) match; new list; returns dropped", "status": "pass", "notes": "_existing_context_keys + drop_missing_context."},
+    {"kind": "spec", "item": "Design 1: router _filter_invalid_datasources delegates (create/update unchanged)", "status": "pass", "notes": "Delegates; call sites L757/L891 untouched."},
+    {"kind": "spec", "item": "Design 2: build_agent uses drop_missing_context, warning with id, project, names", "status": "pass", "notes": "logger.warning before get_tools."},
+    {"kind": "spec", "item": "Design 3: remove check_context, get_deleted_context, MissingContextException, both except blocks", "status": "pass", "notes": "git grep finds no references."},
+    {"kind": "spec", "item": "Design 4: Bedrock early return kept", "status": "pass", "notes": "Early return precedes the filter."},
+    {"kind": "spec", "item": "Stored assistant not modified", "status": "pass", "notes": "Tests assert no update/save and original list untouched."},
+    {"kind": "spec", "item": "Error handling: query failure propagates; all deleted not an error", "status": "pass", "notes": "No try/except; all-deleted case tested."},
+    {"kind": "spec", "item": "Out of scope respected", "status": "pass", "notes": "Only model, router, service and tests touched; tool-invoke follow-up to be noted in MR."},
+    {"kind": "spec", "item": "Testing: regression test first", "status": "pass", "notes": "RED observed in check_context (assistant_service.py:955) before the fix."},
+    {"kind": "spec", "item": "Testing: drop_missing_context unit matrix (none/empty; all present; KB/CODE/PROVIDER missing; same name other type; returns dropped; no update)", "status": "partial", "notes": "KB-missing case absent; index_type→ContextType mapping in the real query untested (all tests patch _existing_context_keys)."},
+    {"kind": "spec", "item": "Testing: router _filter_invalid_datasources still filters (first tests for it)", "status": "pass", "notes": "Direct tests added; create/update call sites unchanged by the diff."},
+    {"kind": "spec", "item": "Testing: replace three check_context test files; update headers patches", "status": "pass", "notes": "Done."},
+    {"kind": "spec", "item": "Testing: 12384 suites stay green with LC_ALL=en_US.UTF-8", "status": "pass", "notes": "Verified in the 1610-passed run."}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "na", "notes": "No commits yet; changes uncommitted by owner's instruction."},
+    {"kind": "code-quality", "status": "pass", "notes": "Ruff check + format clean; new public methods typed; Apache headers on new test files."},
+    {"kind": "security", "status": "pass", "notes": "Parameterized SQLModel query; no secrets logged; project scoping preserved."}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/assistant_service.py",
+      "line": 950,
+      "title": "Real lookup and index_type→ContextType mapping have no test",
+      "problem": "Every new test patches _existing_context_keys, so the select on project_name/repo_name and Context.index_info_type_from_index_type are never exercised.",
+      "impact": "A wrong mapping (e.g. provider or code index_type prefix) would silently drop live datasources at every chat without any test failing.",
+      "recommendation": "Add a test that patches Session so session.exec(...).all() returns rows like ('kb', 'knowledge_base...'), ('repo', '<code type>'), ('prov', '<provider type>') and asserts the returned keys carry KNOWLEDGE_BASE/CODE/PROVIDER."
+    },
+    {
+      "id": "CR-002",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/service/test_assistant_service_drop_missing_context.py",
+      "title": "KB-missing case from the spec matrix is not covered",
+      "problem": "The spec lists KB / CODE / PROVIDER missing; only CODE and PROVIDER deletions are tested.",
+      "impact": "The most common datasource type is not pinned by a test.",
+      "recommendation": "Add a case where a KNOWLEDGE_BASE context is missing while a CODE context exists, asserting the KB entry is dropped and CODE kept."
+    }
+  ]
+}

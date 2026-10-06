@@ -19,7 +19,6 @@ from typing import Annotated, Any, Literal, Optional, List
 
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import Session, select, and_
 
 from codemie_tools.base.models import ToolKit
 from fastapi import APIRouter, status, Request, Depends, BackgroundTasks, Query
@@ -52,7 +51,6 @@ from codemie.rest_api.models.assistant import (
     AssistantUpdateResponse,
     Context,
     CreatedByUser,
-    MissingContextException,
     MCPServerCheckRequest,
     MCPServerDetails,
     PublishValidationResponse,
@@ -2341,18 +2339,6 @@ def _ask_virtual_assistant(
             error_detail_level=error_detail_level,
         )
 
-    except MissingContextException as mce:
-        error = _create_assistant_error(
-            'Assistant Error',
-            f'An error occurred during assistant initialization: {str(mce)}\n',
-            'We apologize for the inconvenience. Here are some steps you can try:\n'
-            '1. Check if the given datasource context is not deleted.\n'
-            '2. Check if the correct datasource context is specified for the assistant.\n'
-            'If you continue to experience issues, please contact our support team '
-            'with the timestamp of your request and any error messages you received.',
-        )
-        _save_error(request_uuid, request, error, user, assistant)
-        raise error from mce
     except MCPAuthenticationRequiredException:
         raise
     except BrokerAuthRequiredException:
@@ -2447,18 +2433,6 @@ def _ask_assistant(
             error_detail_level=error_detail_level,
         )
 
-    except MissingContextException as mce:
-        error = _create_assistant_error(
-            "Assistant Error",
-            f"An error occurred during assistant initialization: {str(mce)}\n",
-            "We apologize for the inconvenience. Here are some steps you can try:\n"
-            "1. Check if the given datasource context is not deleted.\n"
-            "2. Check if the correct datasource context is specified for the assistant.\n"
-            "If you continue to experience issues, please contact our support team "
-            "with the timestamp of your request and any error messages you received.",
-        )
-        _save_error(request_uuid, request, error, user, assistant)
-        raise error from mce
     except MCPAuthenticationRequiredException as exc:
         _try_save_error(
             request_uuid, request, _create_mcp_auth_error(exc.payload), user, assistant, 'MCP authentication'
@@ -2856,38 +2830,11 @@ def _filter_invalid_datasources(assistant: Assistant):
     """
     Filter out datasources that don't exist in the assistant's target project.
     This prevents errors when cloning or editing assistants across projects.
-    Uses targeted database query for optimal performance.
     Modifies the assistant object in place.
-
-    Args:
-        assistant: The assistant object to filter
     """
-    if not assistant.context:
-        return
-
-    # Extract datasource names that the assistant references
-    datasource_names = {ctx.name for ctx in assistant.context}
-
-    # Query only for the specific datasources we're checking (performance optimization)
-    with Session(IndexInfo.get_engine()) as session:
-        statement = select(IndexInfo.repo_name, IndexInfo.index_type).where(
-            and_(IndexInfo.project_name == assistant.project, IndexInfo.repo_name.in_(datasource_names))
-        )
-        existing = session.exec(statement).all()
-
-        # Build valid set from query results
-        valid_datasources = {
-            (repo_name, Context.index_info_type_from_index_type(index_type)) for repo_name, index_type in existing
-        }
-
-    # Filter context to only include valid datasources
-    original_count = len(assistant.context)
-    assistant.context = [ctx for ctx in assistant.context if (ctx.name, ctx.context_type) in valid_datasources]
-
-    # Log if any datasources were filtered out
-    if filtered_count := original_count - len(assistant.context):
+    if dropped := AssistantService.drop_missing_context(assistant):
         logger.info(
-            f"Filtered out {filtered_count} invalid datasource(s) for assistant "
+            f"Filtered out {len(dropped)} invalid datasource(s) for assistant "
             f"'{assistant.name}' in project '{assistant.project}'"
         )
 

@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "task": "EPMCDME-12505: stop assistants from failing with HTTP 500 at init after an attached datasource is deleted, via graceful drop, delete-time cleanup, or a controlled non-500 error (scope open).",
+  "generated": "2026-09-28",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 19,
+  "size": "M",
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "The fix runs through the shared build_agent path (AssistantService.check_context), the assistant router error mapping (_create_assistant_error hard-codes 500), and ToolkitService / ToolkitSettingsService CODE-context paths that still 500 or throw AttributeError when the context check is relaxed. It may also reach ToolExecutionService, AssistantFactory for sub-assistants, and AssistantVersionService, and for option B the index delete router and ProviderDatasourceDeletionService. That is 3-4 components across router, service and model before red flags." },
+    { "dimension": "requirements_clarity", "reason": "The AC is concrete about the outcome (no 500, regression coverage), but it offers three different solutions (auto-drop at init, cleanup on delete, controlled 4xx). The choice is still open and changes the surface a lot. Two more questions are open: whether a dropped reference should be persisted or only filtered for the request, and how the user is told about it (a notice, a response field, or a log only)." },
+    { "dimension": "file_change_estimate", "reason": "The analysis estimates about 4-7 source files plus 4-6 test files. At least one test file (test_assistant_service_check_context.py) must be rewritten because it asserts the current fail-fast behaviour. Changes span rest_api/routers, rest_api/models, service, service/tools and tests." },
+    { "dimension": "technical_risk", "reason": "Strong precedent exists: _filter_invalid_datasources already drops invalid contexts on create and update, the KB and provider tool builders already skip missing indexes, and guardrail cleanup on delete is precedent for option B. The risk sits in edge paths: CODE contexts fail through a second path, stored versions can bring deleted references back, one sub-assistant can break its parent, and four existence checks disagree. There is no schema change, auth change or performance concern." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from M to L: affects multiple agents/entry points. Every build_agent caller (streaming, sync, background, resume, hedged, A2A, health check, and sub-assistants through AssistantFactory) shares the failing check, and a sub-assistant failure cascades to its parent.",
+    "Requirements Clarity bumped from M to L: the scope decision is explicitly still open (the TBD equivalent). The AC allows auto-remove, validation message, or controlled non-500 error, and these are materially different implementations."
+  ],
+  "split_recommendation": null
+}

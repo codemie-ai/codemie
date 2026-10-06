@@ -67,12 +67,6 @@ PROMPT_DATE_FORMAT = '%a, %d %b %Y %H:%M:%S'
 LANGCHAIN_VARS_REGEXP = r'{.*?}'
 
 
-class MissingContextException(Exception):
-    """Exception raised when expected context is missing."""
-
-    pass
-
-
 class AgentMode(str, Enum):
     GENERAL = "general"
     PLAN_EXECUTE = "plan_execute"
@@ -870,11 +864,6 @@ class AssistantBase(CommonBaseModel, Owned):
             # Internal users can access all marketplace assistants
             return True
         return self.project in user.project_names and self.shared
-
-    def get_deleted_context(self) -> list[str]:
-        index_entities = IndexInfo.filter_by_projects(projects_names=[self.project])
-        index_parts = {(index.repo_name, Context.index_info_type(index)) for index in index_entities}
-        return list({ctx.name for ctx in self.context if (ctx.name, ctx.context_type) not in index_parts})
 
     @staticmethod
     def _should_update_field(field: str, fields_set: set | None) -> bool:

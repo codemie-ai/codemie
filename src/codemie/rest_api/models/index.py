@@ -1327,6 +1327,16 @@ class IndexInfo(BaseModelWithSQLSupport, Owned, table=True):
 
         super().delete()
 
+        # After the row is gone, so the same-key check sees the final state
+        try:
+            from codemie.service.assistant.datasource_cleanup import detach_datasource_from_assistants
+
+            detached = detach_datasource_from_assistants(self)
+            if detached:
+                logger.info(f"Detached datasource {self.id} from {detached} assistant(s)")
+        except Exception as e:
+            logger.warning(f"Failed to detach datasource {self.id} from assistants: {e}")
+
     def is_owned_by(self, user: User) -> bool:
         return self.created_by.id == user.id
 

@@ -1,0 +1,37 @@
+{
+  "decision": "request-changes",
+  "rationale": "All three lenses ran; acceptance passes every story AC and spec item S1-S7 (all 7 delete paths confirmed to go through IndexInfo.delete()). One major patch: the JSONB contains payload that drives the whole cleanup is never exercised in any test, so an under-match (e.g. enum not serialised to its value) would silently make B a no-op. Deferred (3): no row lock between select and write (same as the skill-cleanup precedent), guard-to-update TOCTOU window, index delete and assistant update not atomic; all three are covered at runtime by option A. Dismissed (10): guard ordering (base delete commits in its own session first), Context equality/raw dicts (Context.__eq__ + PydanticListType returns models), cross-project refs (verified impossible), legacy context items dropped on write (same as any assistant save; those items are already ignored on load), broad except (mirrors the scheduler cleanup in the same method), naive datetime (matches base.py), exact-name match, old versions (out of scope, option A), missing log assertion and __future__ import (minor).",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "story-ac", "item": "AC1: deleted datasource detached from every assistant that uses it, persistently", "status": "pass", "notes": "hook in IndexInfo.delete() -> detach_datasource_from_assistants rewrites Assistant.context + commit"},
+    {"kind": "story-ac", "item": "AC2: option A stays as safety net, not regressed", "status": "pass", "notes": "no assistant-init code touched"},
+    {"kind": "story-ac", "item": "AC3: no user-facing notice in this change", "status": "pass", "notes": "only logger output"},
+    {"kind": "spec", "item": "S1: match name + context_type, same project only", "status": "pass", "notes": "SQL project filter + JSONB contains; Python ctx != target via Context.__eq__"},
+    {"kind": "spec", "item": "S2: master row only, no new version", "status": "pass", "notes": "no AssistantConfiguration write"},
+    {"kind": "spec", "item": "S3: cleanup never fails the delete", "status": "pass", "notes": "try/except + warning; test_delete_survives_cleanup_failure"},
+    {"kind": "spec", "item": "S4: same-key guard", "status": "pass", "notes": "_same_key_still_exists after super().delete() committed"},
+    {"kind": "spec", "item": "S5: no top-level import from models/index.py or Bedrock", "status": "pass", "notes": "local import inside delete()"},
+    {"kind": "spec", "item": "S6: hook covers all 7 delete paths", "status": "pass", "notes": "all 7 callers use instance .delete(); no raw/bulk deletes of IndexInfo"},
+    {"kind": "spec", "item": "S7: listed tests present", "status": "pass", "notes": "9 tests; sessions mocked, JSONB predicate not executed against Postgres"},
+    {"kind": "spec", "item": "Out of scope respected", "status": "pass", "notes": "no workflow/version changes"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "both commits use `EPMCDME-12505: Description` per git-workflow.md"},
+    {"kind": "code-quality", "status": "partial", "notes": "new module lacks `from __future__ import annotations` (code-quality.md 'Prefer', not marked blocking); license headers present; ruff check/format clean"},
+    {"kind": "security", "status": "pass", "notes": "no auth/input/secret surface; query parameters bound by SQLAlchemy"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/assistant/datasource_cleanup.py",
+      "line": 51,
+      "title": "JSONB contains payload never verified",
+      "problem": "Tests mock Session and only check column names in the compiled WHERE clause; the bound payload [{name, context_type}] (with a ContextType enum inside) is never asserted, and no test runs the predicate against Postgres.",
+      "impact": "If the payload under-matches (enum serialised as name, wrong key), the SELECT returns nothing and B silently becomes a no-op while every test stays green.",
+      "recommendation": "Add a unit test that compiles the statement with the postgresql dialect and asserts the bound JSON payload equals [{\"name\": \"kb-x\", \"context_type\": \"knowledge_base\"}]; confirm end-to-end in `make test-harness` before undrafting."
+    }
+  ]
+}

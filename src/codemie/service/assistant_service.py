@@ -20,6 +20,7 @@ from elasticsearch import NotFoundError
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.tools import BaseTool, ToolException
 from langgraph.graph.state import CompiledStateGraph
+from sqlmodel import Session, and_, select
 
 from codemie.agents.assistant_agent import AIToolsAgent
 from codemie.agents.langgraph_agent import LangGraphAgent
@@ -35,13 +36,15 @@ from codemie.core.utils import build_unique_file_objects, build_unique_file_obje
 from codemie.core.workflow_models import WorkflowAssistant, WorkflowState
 from codemie.rest_api.models.assistant import (
     Assistant,
-    MissingContextException,
+    Context,
+    ContextType,
     AssistantBase,
     PromptVariable,
     ToolKitDetails,
     get_current_time,
 )
 from codemie.rest_api.models.conversation import Conversation
+from codemie.rest_api.models.index import IndexInfo
 from codemie.rest_api.security.user import User
 from codemie.rest_api.security.workflow_context import get_current_workflow_id
 from codemie.service.assistant import VirtualAssistantService
@@ -538,7 +541,11 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
         if BedrockOrchestratorService.is_bedrock_assistant(assistant):
             return cls._build_bedrock_agent(assistant, request, user, request_uuid, thread_generator, tool_callbacks)
 
-        cls.check_context(assistant)
+        if dropped := cls.drop_missing_context(assistant):
+            logger.warning(
+                f"Skipping deleted datasource(s) for assistant. AssistantId={assistant.id}, "
+                f"Project={assistant.project}, Datasources={[ctx.name for ctx in dropped]}"
+            )
 
         # Determine LLM model and agent type
         llm_model = request.llm_model or assistant.llm_model_type
@@ -939,14 +946,23 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
                     # Keep encrypted value to avoid breaking the prompt entirely
                     # The user will see an error in logs but the assistant will still function
 
-    @classmethod
-    def check_context(cls, assistant: Assistant):
-        if not assistant.context:
-            return
-        missed_context = assistant.get_deleted_context()
-        if missed_context:
-            logger.error(f"Not all context are present in system, missed: {missed_context}")
-            raise MissingContextException(
-                f"Cannot initialize assistant, missed datasource context in "
-                f"system: \n{'\n'.join(f' - Datasource name: **{ctx}**' for ctx in missed_context)}"
+    @staticmethod
+    def _existing_context_keys(project: str, names: set[str]) -> set[tuple[str, ContextType]]:
+        with Session(IndexInfo.get_engine()) as session:
+            statement = select(IndexInfo.repo_name, IndexInfo.index_type).where(
+                and_(IndexInfo.project_name == project, IndexInfo.repo_name.in_(names))
             )
+            existing = session.exec(statement).all()
+        return {(repo_name, Context.index_info_type_from_index_type(index_type)) for repo_name, index_type in existing}
+
+    @classmethod
+    def drop_missing_context(cls, assistant: Assistant) -> list[Context]:
+        """Drop datasources that no longer exist in the assistant's project. In memory only."""
+        if not assistant.context:
+            return []
+        existing = cls._existing_context_keys(assistant.project, {ctx.name for ctx in assistant.context})
+        kept, dropped = [], []
+        for ctx in assistant.context:
+            (kept if (ctx.name, ctx.context_type) in existing else dropped).append(ctx)
+        assistant.context = kept
+        return dropped

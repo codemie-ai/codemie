@@ -1,0 +1,146 @@
+{
+  "decision": "approve",
+  "rationale": "Fix-up diff is tests-only (code-review-check.diff, +27 lines in test_assistant_service_drop_missing_context.py; src untouched since review), so no new high-risk issue is possible and no confirmation pass was needed. Both findings resolved: 8 passed, and mutating the mapping to CODE-only fails the new mapping test.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {
+      "kind": "story-ac",
+      "item": "If a datasource attached to an assistant is deleted, the assistant does not fail with a backend 500 error.",
+      "status": "pass",
+      "notes": "check_context/MissingContextException and both 500-producing except blocks removed; regression test builds with one and with all datasources deleted."
+    },
+    {
+      "kind": "story-ac",
+      "item": "The system handles missing datasource references gracefully during assistant initialization.",
+      "status": "pass",
+      "notes": "drop_missing_context runs before ToolkitService.get_tools on every build_agent entry point."
+    },
+    {
+      "kind": "story-ac",
+      "item": "The platform either automatically removes invalid datasource references from the assistant or shows a clear and actionable validation message.",
+      "status": "pass",
+      "notes": "Removed in memory at init (spec option A); edit+save persists; health check keeps context_error. Product reply on Jira comment 15948973 pending."
+    },
+    {
+      "kind": "story-ac",
+      "item": "Assistant chat remains operational, or the user receives a controlled non-500 error with guidance.",
+      "status": "pass",
+      "notes": "get_tools receives remaining context; all-deleted builds with empty context."
+    },
+    {
+      "kind": "story-ac",
+      "item": "Regression coverage confirms the issue does not reappear after changes related to EPMCDME-12384.",
+      "status": "pass",
+      "notes": "Lens marked partial for missing run evidence; orchestrator verified: test_search_kb, test_code_tools_health, test_index_health_fields, test_tool_execution_search ran inside the LC_ALL=en_US.UTF-8 run of 1610 passed (only failure test_oauth_redis_lazy_init, fails identically without the change). Regression test added."
+    },
+    {
+      "kind": "spec",
+      "item": "Design 1: single helper drop_missing_context; targeted query; (name, type) match; new list; returns dropped",
+      "status": "pass",
+      "notes": "_existing_context_keys + drop_missing_context."
+    },
+    {
+      "kind": "spec",
+      "item": "Design 1: router _filter_invalid_datasources delegates (create/update unchanged)",
+      "status": "pass",
+      "notes": "Delegates; call sites L757/L891 untouched."
+    },
+    {
+      "kind": "spec",
+      "item": "Design 2: build_agent uses drop_missing_context, warning with id, project, names",
+      "status": "pass",
+      "notes": "logger.warning before get_tools."
+    },
+    {
+      "kind": "spec",
+      "item": "Design 3: remove check_context, get_deleted_context, MissingContextException, both except blocks",
+      "status": "pass",
+      "notes": "git grep finds no references."
+    },
+    {
+      "kind": "spec",
+      "item": "Design 4: Bedrock early return kept",
+      "status": "pass",
+      "notes": "Early return precedes the filter."
+    },
+    {
+      "kind": "spec",
+      "item": "Stored assistant not modified",
+      "status": "pass",
+      "notes": "Tests assert no update/save and original list untouched."
+    },
+    {
+      "kind": "spec",
+      "item": "Error handling: query failure propagates; all deleted not an error",
+      "status": "pass",
+      "notes": "No try/except; all-deleted case tested."
+    },
+    {
+      "kind": "spec",
+      "item": "Out of scope respected",
+      "status": "pass",
+      "notes": "Only model, router, service and tests touched; tool-invoke follow-up to be noted in MR."
+    },
+    {
+      "kind": "spec",
+      "item": "Testing: regression test first",
+      "status": "pass",
+      "notes": "RED observed in check_context (assistant_service.py:955) before the fix."
+    },
+    {
+      "kind": "spec",
+      "item": "Testing: drop_missing_context unit matrix (none/empty; all present; KB/CODE/PROVIDER missing; same name other type; returns dropped; no update)",
+      "status": "partial",
+      "notes": "KB-missing case absent; index_type\u2192ContextType mapping in the real query untested (all tests patch _existing_context_keys)."
+    },
+    {
+      "kind": "spec",
+      "item": "Testing: router _filter_invalid_datasources still filters (first tests for it)",
+      "status": "pass",
+      "notes": "Direct tests added; create/update call sites unchanged by the diff."
+    },
+    {
+      "kind": "spec",
+      "item": "Testing: replace three check_context test files; update headers patches",
+      "status": "pass",
+      "notes": "Done."
+    },
+    {
+      "kind": "spec",
+      "item": "Testing: 12384 suites stay green with LC_ALL=en_US.UTF-8",
+      "status": "pass",
+      "notes": "Verified in the 1610-passed run."
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "na",
+      "notes": "No commits yet; changes uncommitted by owner's instruction."
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "Ruff check + format clean; new public methods typed; Apache headers on new test files."
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "Parameterized SQLModel query; no secrets logged; project scoping preserved."
+    }
+  ],
+  "findings": [],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "resolved",
+      "notes": "test_existing_context_keys_maps_index_types_to_context_types patches Session and asserts knowledge_base_confluence->KB, code/svn->CODE, provider->PROVIDER; mutation (all rows -> CODE) turns it red."
+    },
+    {
+      "id": "CR-002",
+      "status": "resolved",
+      "notes": "test_drop_missing_context_drops_deleted_kb_keeps_code: KB dropped, CODE kept."
+    }
+  ]
+}

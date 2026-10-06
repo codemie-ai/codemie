@@ -39,12 +39,12 @@ class TestAssistantServiceBuildAgentWithHeaders:
     @patch('codemie.service.assistant_service.llm_service')
     @patch('codemie.service.assistant_service.set_llm_context')
     @patch('codemie.service.assistant_service.build_unique_file_objects')
-    @patch('codemie.service.assistant_service.AssistantService.check_context')
+    @patch('codemie.service.assistant_service.AssistantService.drop_missing_context', return_value=[])
     @patch('codemie.service.assistant_service.BedrockOrchestratorService.is_bedrock_assistant')
     def test_build_agent_with_request_headers(
         self,
         mock_is_bedrock_assistant,
-        mock_check_context,
+        mock_drop_missing_context,
         mock_build_file_objects,
         mock_set_llm_context,
         mock_llm_service,
@@ -123,12 +123,12 @@ class TestAssistantServiceBuildAgentWithHeaders:
     @patch('codemie.service.assistant_service.llm_service')
     @patch('codemie.service.assistant_service.set_llm_context')
     @patch('codemie.service.assistant_service.build_unique_file_objects')
-    @patch('codemie.service.assistant_service.AssistantService.check_context')
+    @patch('codemie.service.assistant_service.AssistantService.drop_missing_context', return_value=[])
     @patch('codemie.service.assistant_service.BedrockOrchestratorService.is_bedrock_assistant')
     def test_build_agent_without_request_headers(
         self,
         mock_is_bedrock_assistant,
-        mock_check_context,
+        mock_drop_missing_context,
         mock_build_file_objects,
         mock_set_llm_context,
         mock_llm_service,

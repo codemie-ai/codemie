@@ -566,3 +566,41 @@ class TestFaqIndexInfoFixes:
         )
 
         assert info.get_index_identifier() == "proj-ds"
+
+
+CLEANUP = "codemie.service.assistant.datasource_cleanup.detach_datasource_from_assistants"
+
+
+def _kb_index():
+    return IndexInfo(
+        project_name="proj", repo_name="kb-x", index_type="knowledge_base_file", description="d", id="ds-1"
+    )
+
+
+def _delete_with_mocks(index, cleanup_side_effect=None):
+    calls = []
+    with (
+        patch("codemie.rest_api.models.index.ElasticSearchClient") as es,
+        patch("codemie.rest_api.models.index.SchedulerSettingsService"),
+        patch(
+            "codemie.rest_api.models.base.BaseModelWithSQLSupport.delete", side_effect=lambda *args: calls.append("row")
+        ),
+        patch(CLEANUP, side_effect=cleanup_side_effect or (lambda ds: calls.append("cleanup") or 1)) as cleanup,
+    ):
+        es.get_client.return_value.indices.exists.return_value = False
+        index.delete()
+    return calls, cleanup
+
+
+def test_delete_detaches_datasource_from_assistants():
+    index = _kb_index()
+    calls, cleanup = _delete_with_mocks(index)
+    cleanup.assert_called_once_with(index)
+    assert calls == ["row", "cleanup"]
+
+
+def test_delete_survives_cleanup_failure():
+    index = _kb_index()
+    calls, cleanup = _delete_with_mocks(index, cleanup_side_effect=RuntimeError("db down"))
+    cleanup.assert_called_once_with(index)
+    assert calls == ["row"]
