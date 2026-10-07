@@ -124,24 +124,48 @@ async def test_repositories_with_equal_sessions_and_cost_are_ordered_by_name_the
     assert orders == {(("repo-a", "dev"), ("repo-a", "main"), ("repo-b", "main"))}
 
 
-@pytest.mark.parametrize(
-    ("projects", "label"),
-    [
-        (["p2", "p1", "p2"], "p2"),  # most sessions wins
-        (["p2", "p1"], "p1"),  # a tie goes to the alphabetically first
-        (["", "p3", ""], "p3"),  # sessions without a project do not count
-        (["", ""], None),
-    ],
-)
 @pytest.mark.asyncio
-async def test_repository_project_label_is_the_most_frequent_project(projects, label):
-    rows = [_cost_row(f"s{i}", repository="repo", project_name=p) for i, p in enumerate(projects)]
-    labels = set()
+async def test_repository_only_mode_keeps_one_row_labelled_with_most_frequent_project():
+    rows = [
+        _cost_row("s1", repository="repo", project_name="pA"),
+        _cost_row("s2", repository="repo", project_name="pA"),
+        _cost_row("s3", repository="repo", project_name="pB"),
+        _cost_row("s4", repository="repo", project_name=""),
+    ]
+    results = set()
     for perm in permutations(rows):
         data = await _handler(cost_facts=perm).get_repositories(_flt(), 0, 20, False)
-        labels.add(data["rows"][0]["project_name"])
+        results.add(tuple((r["repository"], r["project_name"], r["session_count"]) for r in data["rows"]))
 
-    assert labels == {label}
+    assert results == {(("repo", "pA", 4),)}
+
+
+@pytest.mark.asyncio
+async def test_repository_only_mode_project_tie_goes_to_alphabetically_first():
+    rows = [
+        _cost_row("s1", repository="repo", project_name="pB"),
+        _cost_row("s2", repository="repo", project_name="pA"),
+    ]
+    data = await _handler(cost_facts=rows).get_repositories(_flt(), 0, 20, False)
+
+    assert [(r["project_name"], r["session_count"]) for r in data["rows"]] == [("pA", 2)]
+
+
+@pytest.mark.asyncio
+async def test_branch_mode_buckets_by_project_repository_and_branch():
+    rows = [
+        _cost_row("s1", repository="repo", branch="main", project_name="pA"),
+        _cost_row("s2", repository="repo", branch="main", project_name="pB"),
+        _cost_row("s3", repository="repo", branch="main", project_name=""),
+    ]
+    data = await _handler(cost_facts=rows).get_repositories(_flt(), 0, 20, True)
+
+    assert sorted((r["project_name"] or "", r["session_count"]) for r in data["rows"]) == [
+        ("", 1),
+        ("pA", 1),
+        ("pB", 1),
+    ]
+    assert {r["project_name"] for r in data["rows"]} == {None, "pA", "pB"}
 
 
 @pytest.mark.asyncio

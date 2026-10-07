@@ -113,6 +113,73 @@ def _most_frequent(counts: dict[str, int]) -> str | None:
     return min(counts, key=lambda value: (-counts[value], value)) if counts else None
 
 
+def _new_repository_bucket(repository: str | None, branch: str | None, project: str | None) -> dict:
+    return {
+        "repository": repository,
+        "branch": branch,
+        "project_name": project,
+        "session_count": 0,
+        "turns": 0,
+        "cost_usd": 0.0,
+        "files_changed": 0,
+        "lines_added": 0,
+        "lines_removed": 0,
+        "_tool_calls": 0,
+        "_tool_ok": 0,
+        "_projects": {},
+    }
+
+
+def _finalize_repository_bucket(bucket: dict, include_branches: bool) -> dict:
+    tool_calls = bucket.pop("_tool_calls")
+    tool_ok = bucket.pop("_tool_ok")
+    projects = bucket.pop("_projects")
+    if not include_branches:
+        # A repository can be worked on from several projects: label it with the one
+        # most of its sessions belong to, not whichever session came first.
+        bucket["project_name"] = _most_frequent(projects)
+    bucket["tool_success_rate"] = _pct(tool_ok, tool_calls)
+    bucket["net_lines"] = bucket["lines_added"] - bucket["lines_removed"]
+    return bucket
+
+
+def _build_repository_rows(
+    cost_facts: list[dict],
+    turns_by_session: dict[str, int],
+    files_by_session: dict[str, dict],
+    success_by_session: dict[str, dict],
+    lines_by_session: dict[str, dict],
+    include_branches: bool,
+) -> list[dict]:
+    """Bucket sessions by (project, repository, branch) with branches, else by repository only."""
+    buckets: dict[tuple, dict] = {}
+    for row in cost_facts:
+        sid = _s(row.get("session_id"))
+        repository = _s(row.get("repository")) or None
+        branch = _s(row.get("branch")) or None
+        project = _s(row.get("project_name")) or None
+        if include_branches:
+            key, bucket_branch, bucket_project = (project, repository, branch), branch, project
+        else:
+            key, bucket_branch, bucket_project = (repository,), None, None
+        bucket = buckets.setdefault(key, _new_repository_bucket(repository, bucket_branch, bucket_project))
+        bucket["session_count"] += 1
+        bucket["turns"] += turns_by_session.get(sid, 0)
+        bucket["cost_usd"] += _f(row.get("cost_usd"))
+        bucket["files_changed"] += _i(files_by_session.get(sid, {}).get("files_changed"))
+        bucket["lines_added"] += _i(lines_by_session.get(sid, {}).get("lines_added"))
+        bucket["lines_removed"] += _i(lines_by_session.get(sid, {}).get("lines_removed"))
+        bucket["_tool_calls"] += _i(success_by_session.get(sid, {}).get("tool_calls"))
+        bucket["_tool_ok"] += _i(success_by_session.get(sid, {}).get("tool_calls_success"))
+        if not include_branches and project:
+            bucket["_projects"][project] = bucket["_projects"].get(project, 0) + 1
+
+    rows = [_finalize_repository_bucket(bucket, include_branches) for bucket in buckets.values()]
+    rows.sort(key=lambda r: (r["repository"] or "", r["branch"] or "", r["project_name"] or ""))
+    rows.sort(key=lambda r: (r["session_count"], _float_sort_key(r["cost_usd"])), reverse=True)
+    return rows
+
+
 def _count_dispatch_subtypes(rows: list[dict]) -> dict[str, int]:
     totals: dict[str, int] = {}
     for row in rows:
@@ -438,55 +505,14 @@ class LocalAnalyticsHandler:
         success_by_session = {_s(r.get("session_id")): r for r in success_rows}
         lines_by_session = {_s(r.get("session_id")): r for r in lines_rows}
 
-        buckets: dict[tuple, dict] = {}
-        for row in cost_facts:
-            sid = _s(row.get("session_id"))
-            repository = _s(row.get("repository")) or None
-            branch = _s(row.get("branch")) or None
-            key = (repository, branch) if include_branches else (repository,)
-            bucket = buckets.setdefault(
-                key,
-                {
-                    "repository": repository,
-                    "branch": branch if include_branches else None,
-                    "project_name": None,
-                    "session_count": 0,
-                    "turns": 0,
-                    "cost_usd": 0.0,
-                    "files_changed": 0,
-                    "lines_added": 0,
-                    "lines_removed": 0,
-                    "_tool_calls": 0,
-                    "_tool_ok": 0,
-                    "_projects": {},
-                },
-            )
-            bucket["session_count"] += 1
-            bucket["turns"] += turns_by_session.get(sid, 0)
-            bucket["cost_usd"] += _f(row.get("cost_usd"))
-            bucket["files_changed"] += _i(files_by_session.get(sid, {}).get("files_changed"))
-            bucket["lines_added"] += _i(lines_by_session.get(sid, {}).get("lines_added"))
-            bucket["lines_removed"] += _i(lines_by_session.get(sid, {}).get("lines_removed"))
-            bucket["_tool_calls"] += _i(success_by_session.get(sid, {}).get("tool_calls"))
-            bucket["_tool_ok"] += _i(success_by_session.get(sid, {}).get("tool_calls_success"))
-            project = _s(row.get("project_name"))
-            if project:
-                bucket["_projects"][project] = bucket["_projects"].get(project, 0) + 1
-
-        rows = []
-        for bucket in buckets.values():
-            tool_calls = bucket.pop("_tool_calls")
-            tool_ok = bucket.pop("_tool_ok")
-            # A repository can be worked on from several projects: label it with the one
-            # most of its sessions belong to (defect D3 of the storage design), not whichever
-            # session came first.
-            bucket["project_name"] = _most_frequent(bucket.pop("_projects"))
-            bucket["tool_success_rate"] = _pct(tool_ok, tool_calls)
-            bucket["net_lines"] = bucket["lines_added"] - bucket["lines_removed"]
-            rows.append(bucket)
-
-        rows.sort(key=lambda r: (r["repository"] or "", r["branch"] or ""))
-        rows.sort(key=lambda r: (r["session_count"], _float_sort_key(r["cost_usd"])), reverse=True)
+        rows = _build_repository_rows(
+            cost_facts,
+            turns_by_session,
+            files_by_session,
+            success_by_session,
+            lines_by_session,
+            include_branches,
+        )
         total_count = len(rows)
 
         if include_branches:

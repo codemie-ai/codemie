@@ -1,0 +1,59 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15446_cli-analytics-repositories-by-project",
+  "head": "1e4827067c70910f094c59b70518d45c0ed3f286",
+  "runner": "custom",
+  "started_at": "2026-10-05T00:00:00Z",
+  "completed_at": "2026-10-05T00:00:30Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 150,
+      "command": "make ruff",
+      "exit_code": 127,
+      "notes": "make binary not found on PATH (bash: make: command not found; also no docker for gitleaks). Gate unverified; enable by installing GNU make (and Docker/Podman for gitleaks) or running the Makefile recipes via poetry."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 150,
+      "command": "make build",
+      "exit_code": 127,
+      "notes": "make binary not found on PATH (bash: make: command not found; also no docker for gitleaks). Gate unverified; enable by installing GNU make (and Docker/Podman for gitleaks) or running the Makefile recipes via poetry."
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 150,
+      "command": "make license-check",
+      "exit_code": 127,
+      "notes": "make binary not found on PATH (bash: make: command not found; also no docker for gitleaks). Gate unverified; enable by installing GNU make (and Docker/Podman for gitleaks) or running the Makefile recipes via poetry."
+    },
+    {
+      "id": "secrets",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 150,
+      "command": "make gitleaks",
+      "exit_code": 127,
+      "notes": "make binary not found on PATH (bash: make: command not found; also no docker for gitleaks). Gate unverified; enable by installing GNU make (and Docker/Podman for gitleaks) or running the Makefile recipes via poetry."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 150,
+      "command": "make test",
+      "exit_code": 127,
+      "notes": "make binary not found on PATH (bash: make: command not found; also no docker for gitleaks). Gate unverified; enable by installing GNU make (and Docker/Podman for gitleaks) or running the Makefile recipes via poetry."
+    }
+  ],
+  "failures": {},
+  "notes": "No gate executed. .gitlab-ci.yml only has pre-ci-guard stages (no lint/test). Hooks (.pre-commit-config.yaml) run ruff/license/gitleaks/pre-push pytest+sonar, covered by guide gates. Outcome BLOCKED because nothing could be verified."
+}

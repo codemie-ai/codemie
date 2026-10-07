@@ -36,6 +36,7 @@ class LocalAnalyticsFilter:
         repositories: list[str] | None = None,
         branch: str | None = None,
         deny_all: bool = False,
+        project_unattributed: bool = False,
     ) -> None:
         self.start_dt = start_dt
         self.end_dt = end_dt
@@ -44,16 +45,17 @@ class LocalAnalyticsFilter:
         self.repositories = repositories or None
         self.branch = branch or None
         self.deny_all = deny_all
+        self.project_unattributed = project_unattributed
 
     @property
     def has_session_filter(self) -> bool:
-        return bool(self.deny_all or self.users or self.projects or self.repositories)
+        return bool(self.deny_all or self.users or self.projects or self.repositories or self.project_unattributed)
 
     def params(self) -> dict:
         p: dict = {"start_dt": self.start_dt, "end_dt": self.end_dt}
         if self.users:
             p["users"] = [u.lower() for u in self.users]
-        if self.projects:
+        if self.projects and not self.project_unattributed:
             p["projects"] = self.projects
         if self.repositories:
             p["repositories"] = self.repositories

@@ -70,3 +70,17 @@ def test_empty_values_are_normalised_to_none():
 
 def test_params_leave_out_a_branch_that_is_not_set():
     assert "branch" not in _flt().params()
+
+
+def test_project_unattributed_alone_is_a_session_filter():
+    assert _flt(project_unattributed=True).has_session_filter is True
+
+
+def test_project_unattributed_defaults_to_false():
+    assert _flt().project_unattributed is False
+
+
+def test_params_drop_projects_when_project_unattributed():
+    params = _flt(projects=["p1"], project_unattributed=True).params()
+
+    assert "projects" not in params

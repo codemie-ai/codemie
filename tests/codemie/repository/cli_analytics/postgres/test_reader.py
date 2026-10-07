@@ -124,6 +124,20 @@ def test_filters_become_array_parameters():
     assert "branch = $branch::text" in cte
 
 
+def test_project_unattributed_selects_sessions_without_a_project():
+    cte = PostgresCliAnalyticsReader._sessions_cte(_flt(project_unattributed=True))
+
+    assert "project_name = ''" in cte
+    assert "ANY($projects" not in cte
+
+
+def test_project_unattributed_wins_over_the_projects_filter():
+    cte = PostgresCliAnalyticsReader._sessions_cte(_flt(projects=["p"], project_unattributed=True))
+
+    assert "project_name = ''" in cte
+    assert "ANY($projects" not in cte
+
+
 # ── session scope of every windowed query ──
 
 _FACT_TABLES = (
@@ -593,3 +607,13 @@ async def test_an_empty_summary_command_counts_nothing_and_names_are_taken_as_st
     assert "AND jsonb_typeof(e.cmd) = 'string' AND e.cmd #>> '{}' <> '' " in summary
     assert summary.startswith("SELECT 4, e.cmd #>> '{}', 1 FROM session_dims, ")
     assert "ltrim" not in summary
+
+
+def test_window_params_omit_projects_when_project_unattributed():
+    params = window_params(_flt(projects=["p"], project_unattributed=True))
+
+    assert "projects" not in params
+
+
+def test_window_params_keep_projects_by_default():
+    assert window_params(_flt(projects=["p"]))["projects"] == ["p"]

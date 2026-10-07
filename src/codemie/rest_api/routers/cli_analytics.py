@@ -266,7 +266,7 @@ class FilterParams:
         items = [v.strip() for v in value.split(",") if v.strip()]
         return items or None
 
-    async def resolve(self, user: User) -> LocalAnalyticsFilter:
+    async def resolve(self, user: User, project_unattributed: bool = False) -> LocalAnalyticsFilter:
         start_dt, end_dt = TimeParser.parse(self.time_period, self.start_date, self.end_date)
 
         # Raw rows are kept for less time than the rollups. A longer window would mix a year of
@@ -300,6 +300,10 @@ class FilterParams:
             projects = list(set(projects) & visible) if projects else list(visible)
             # No visible admin project: select nothing rather than all data.
             deny_all = not projects
+        if project_unattributed:
+            # Sessions without a project are visible to super admins only.
+            projects = None
+            deny_all = deny_all or not ctx.is_admin
 
         return LocalAnalyticsFilter(
             start_dt=start_dt,
@@ -308,6 +312,7 @@ class FilterParams:
             projects=projects,
             repositories=self._split(self.repositories),
             deny_all=deny_all,
+            project_unattributed=project_unattributed,
         )
 
 
@@ -596,10 +601,11 @@ async def get_sessions(
     framework: str | None = Query(None, description="Filter by delivery framework"),
     is_unattributed: bool = Query(False, description="Return only sessions with no attributed repository"),
     branch: str | None = Query(None, description="Filter sessions by branch name"),
+    is_project_unattributed: bool = Query(False, description="Return only sessions with no project"),
 ) -> JSONResponse:
     _ensure_enabled()
     start_ns = time.monotonic_ns()
-    f = await filters.resolve(user)
+    f = await filters.resolve(user, project_unattributed=is_project_unattributed)
     resolved_page = page if page is not None else DEFAULT_PAGE
     resolved_per_page = per_page if per_page is not None else DEFAULT_PER_PAGE
     data, unpriced, data_as_of = await _handler().get_sessions(

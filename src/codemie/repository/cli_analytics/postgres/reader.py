@@ -118,7 +118,7 @@ def window_params(f: LocalAnalyticsFilter) -> dict[str, Any]:
         return params
     if f.users:
         params["users"] = [u.lower() for u in f.users]
-    if f.projects:
+    if f.projects and not f.project_unattributed:
         params["projects"] = list(f.projects)
     if f.repositories:
         params["repositories"] = list(f.repositories)
@@ -163,7 +163,9 @@ class PostgresCliAnalyticsReader:
             conditions = []
             if f.users:
                 conditions.append("lower(user_email) = ANY($users::text[])")
-            if f.projects:
+            if f.project_unattributed:
+                conditions.append("project_name = ''")
+            elif f.projects:
                 conditions.append("project_name = ANY($projects::text[])")
             if f.repositories:
                 conditions.append("repository = ANY($repositories::text[])")

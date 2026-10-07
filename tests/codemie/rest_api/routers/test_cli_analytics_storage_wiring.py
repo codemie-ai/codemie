@@ -295,6 +295,29 @@ async def test_project_admin_filter_is_limited_to_administered_projects():
 
 
 @pytest.mark.asyncio
+async def test_project_unattributed_for_super_admin_sets_flag_and_clears_projects():
+    params = _filter_params(projects="p1")
+    with patch.object(router_module, "AccessFilter") as access:
+        access.return_value.get_project_access_context.return_value = _context(is_admin=True, admin_projects=[])
+        f = await params.resolve(User(id="u1"), project_unattributed=True)
+
+    assert f.project_unattributed is True
+    assert f.projects is None
+    assert f.deny_all is False
+
+
+@pytest.mark.asyncio
+async def test_project_unattributed_for_project_admin_selects_nothing():
+    params = _filter_params(projects="p1")
+    with patch.object(router_module, "AccessFilter") as access:
+        access.return_value.get_project_access_context.return_value = _context(is_admin=False, admin_projects=["p1"])
+        f = await params.resolve(User(id="u1"), project_unattributed=True)
+
+    assert f.deny_all is True
+    assert f.projects is None
+
+
+@pytest.mark.asyncio
 async def test_session_detail_project_scoping_reads_through_the_storage_reader(storage):
     handler = MagicMock()
     handler.get_session_detail = AsyncMock(return_value=({"trace_id": "s1", "start_time": ""}, []))
@@ -341,3 +364,41 @@ async def test_windows_are_clamped_to_how_far_back_the_storage_keeps_raw_rows(st
         f = await _resolve_as_admin(params)
 
     assert f.start_dt == end - timedelta(days=kept_days)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("flag", "expected"), [(True, True), (False, False)])
+async def test_get_sessions_forwards_is_project_unattributed_to_the_resolved_filter(flag, expected):
+    handler = MagicMock()
+    handler.get_sessions = AsyncMock(return_value=([], [], None))
+    captured: dict = {}
+
+    async def fake_resolve(self, user, project_unattributed=False):
+        captured["project_unattributed"] = project_unattributed
+        end = datetime(2026, 9, 23, tzinfo=timezone.utc)
+        return router_module.LocalAnalyticsFilter(
+            start_dt=end - timedelta(days=1), end_dt=end, project_unattributed=project_unattributed
+        )
+
+    with (
+        patch.object(router_module, "_ensure_enabled", return_value=None),
+        patch.object(router_module, "_handler", return_value=handler),
+        patch.object(router_module, "_respond", return_value=JSONResponse({})),
+        patch.object(router_module.FilterParams, "resolve", fake_resolve),
+    ):
+        await router_module.get_sessions(
+            user=User(id="u1"),
+            filters=_filter_params(),
+            page=None,
+            per_page=None,
+            sort_by="start_time",
+            search=None,
+            framework=None,
+            is_unattributed=False,
+            branch=None,
+            is_project_unattributed=flag,
+        )
+
+    assert captured["project_unattributed"] is expected
+    resolved = handler.get_sessions.await_args.args[0]
+    assert resolved.project_unattributed is expected
