@@ -873,7 +873,9 @@ class TestGetUserProjects:
         mock_config.ENABLE_USER_MANAGEMENT = True
 
         mock_service.get_user_projects_list.return_value = {
-            "projects": [{"project_name": "demo-project", "is_project_admin": False, "date": datetime.now()}]
+            "projects": [
+                {"project_name": "demo-project", "is_project_admin": False, "is_default": False, "date": datetime.now()}
+            ]
         }
 
         # Act

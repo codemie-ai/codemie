@@ -1,0 +1,29 @@
+{
+  "decision": "approve",
+  "rationale": "Both original blocking findings are resolved with clear, test-backed fix-up evidence. CR-001: set_default_project/clear_default_project now wrap the repository call and commit in try/except, translating IntegrityError to 409 and StaleDataError/ObjectDeletedError to 404, matching the codebase's existing get_or_create precedent. CR-002: both audit log lines now include project_name. No new high-risk issue suspected in this narrow, additive fix-up (no new public surface, no new data model change), so no confirmation pass was needed.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "story-ac", "item": "AC1: Setting a different project as default swaps the default; previous default becomes ordinary membership; exactly one default at a time", "status": "pass", "notes": "set_default() unsets previous_default before setting target; backstopped by partial unique index uix_user_projects_one_default. Empirically verified against real Postgres: no IntegrityError on a normal switch."},
+    {"kind": "story-ac", "item": "AC2: Setting default rejected if user is not a member of the project (UI or API)", "status": "pass", "notes": "set_default() returns None for a missing membership row; service raises 404. Enforced server-side, applies to any caller."},
+    {"kind": "story-ac", "item": "AC3: Removing a user's default membership (single or bulk) leaves them with no default, not a dangling pointer", "status": "pass", "notes": "is_default lives on the row itself; both single (remove_project) and bulk (remove_projects_for_users) removal paths delete the whole row. Verified by dedicated regression tests, no new code needed."},
+    {"kind": "story-ac", "item": "AC4: Non-admin/maintainer (auditor, plain user) rejected when calling set/clear default API for another user", "status": "pass", "notes": "Both endpoints gate on admin_or_maintainer_access_only (is_admin_or_maintainer check), same as sibling project-assignment endpoints."},
+    {"kind": "spec", "item": "Data model: is_default bool on user_projects (not users table); additive migration; partial unique index", "status": "pass", "notes": "Confirmed in model and migration bf3cb9db22b7; no backfill logic, matching the explicit out-of-scope item."},
+    {"kind": "spec", "item": "API surface: PUT/DELETE .../default targeting UserAccessService and user_management_router.py; 404 on missing membership; idempotent set and clear", "status": "pass", "notes": "Confirmed correct target service (corrected from the spec's original ProjectAssignmentService reference). Idempotency confirmed for both directions."},
+    {"kind": "spec", "item": "New endpoints require the same admin-or-maintainer dependency as existing project-assignment endpoints, explicitly not is_project_admin", "status": "pass", "notes": "admin_or_maintainer_access_only used; no is_project_admin check anywhere in new code."},
+    {"kind": "spec", "item": "ProjectAccessRequest and ProjectAccessUpdateRequest are NOT extended with is_default", "status": "pass", "notes": "Confirmed untouched in the diff."},
+    {"kind": "spec", "item": "Read side: no new read endpoint; is_default added to ProjectInfo and AdminUserProject and populated at every real construction site", "status": "pass", "notes": "All 4 ProjectInfo sites and the sole AdminUserProject construction path (via dict unpacking from get_user_projects_list) confirmed updated."},
+    {"kind": "spec", "item": "Membership-removal interaction: no new code required for AC3", "status": "pass", "notes": "Confirmed no changes needed to revoke_project_access or bulk removal paths."},
+    {"kind": "spec", "item": "Uniqueness enforcement: app-layer (unset old, set new) AND DB-layer partial unique index backstop", "status": "partial", "notes": "DB-layer backstop solid. App-layer sequencing empirically verified safe for the normal case; genuine-concurrency exception handling added in this fix-up round (CR-001)."}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "All 6 commits follow 'EPMCDME-15110: <description>' per git-workflow.md."},
+    {"kind": "code-quality", "status": "pass", "notes": "New code follows existing patterns closely (mirrors sibling repository/service methods); no style violations flagged by any lens beyond one dismissed stylistic nit."},
+    {"kind": "security", "status": "pass", "notes": "No auth bypass, injection, or secret-handling issues raised by any lens. Permission gating verified to reuse the correct existing platform-role check, not the per-project flag on the same row."}
+  ],
+  "findings": [],
+  "finding_status": [
+    {"id": "CR-001", "status": "resolved", "notes": "Concurrent-write conflicts now caught and translated to 409 (IntegrityError) or 404 (StaleDataError/ObjectDeletedError) in both set_default_project and clear_default_project, matching application_repository.get_or_create's existing pattern. 3 new tests cover all three exception paths."},
+    {"id": "CR-002", "status": "resolved", "notes": "Both default_project_set/default_project_cleared log lines now include project_name={project_name!r}. 2 new tests assert the log message content."}
+  ]
+}

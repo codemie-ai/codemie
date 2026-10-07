@@ -506,6 +506,10 @@ class LLMProxyMonitoringService(BaseMonitoringService):
             # explicit llm_model argument (e.g. a LiteLLM-router-routed model) with
             # request_info's pre-request snapshot. The explicit argument must win.
             attributes[MetricsAttributes.LLM_MODEL] = llm_model
+            if request_info.get(MetricsAttributes.BUDGET_FALLBACK_FROM):
+                # The project had no budget for this user: personal/default paid, so analytics
+                # must show the personal identity; the original project stays in budget_fallback_from.
+                attributes[MetricsAttributes.PROJECT] = user.username
 
             cls.send_count_metric(
                 name=LLM_PROXY_USAGE,

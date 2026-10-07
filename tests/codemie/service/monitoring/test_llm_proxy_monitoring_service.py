@@ -263,3 +263,41 @@ class TestTrackUsage:
             cached_tokens_money_spent=0.0,
             status_code=200,
         )
+
+
+class TestTrackUsageBudgetFallback:
+    """EPMCDME-15111 AC6/AC10: unfunded project → analytics show personal, flagged as fallback."""
+
+    def _track(self, mock_user, request_info):
+        LLMProxyMonitoringService.track_usage(
+            user=mock_user,
+            endpoint="/v1/chat/completions",
+            request_info=request_info,
+            llm_model="gpt-4",
+            input_tokens=10,
+            output_tokens=5,
+            cached_tokens=0,
+            money_spent=0.01,
+            cached_tokens_money_spent=0.0,
+            status_code=200,
+        )
+
+    @patch.object(LLMProxyMonitoringService, "send_count_metric")
+    def test_fallback_reports_personal_project_with_marker(self, mock_send, mock_user, cli_request_info):
+        cli_request_info.update({"project": "philips-hr", "budget_fallback_from": "philips-hr"})
+
+        self._track(mock_user, cli_request_info)
+
+        attributes = mock_send.call_args.kwargs["attributes"]
+        assert attributes["project"] == "test_user"
+        assert attributes["budget_fallback_from"] == "philips-hr"
+
+    @patch.object(LLMProxyMonitoringService, "send_count_metric")
+    def test_funded_project_is_reported_unchanged(self, mock_send, mock_user, cli_request_info):
+        cli_request_info["project"] = "philips-hr"
+
+        self._track(mock_user, cli_request_info)
+
+        attributes = mock_send.call_args.kwargs["attributes"]
+        assert attributes["project"] == "philips-hr"
+        assert "budget_fallback_from" not in attributes

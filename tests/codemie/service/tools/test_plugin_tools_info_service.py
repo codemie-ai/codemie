@@ -36,6 +36,7 @@ class TestPluginToolsInfoService:
         user = Mock(spec=User)
         user.id = "test-user-id"
         user.project_names = ["test-project"]
+        user.current_project = "test-project"
         return user
 
     @pytest.fixture
@@ -95,7 +96,7 @@ class TestPluginToolsInfoService:
 
     @patch("codemie.service.tools.plugin_tools_info_service.get_plugin_tools_for_assistant")
     def test_get_plugin_toolkit_info_uses_default_project(self, mock_get_tools, mock_user, mock_langchain_tools):
-        """Test get_plugin_toolkit_info uses first application as default project."""
+        """Test get_plugin_toolkit_info falls back to the user's current (default) project."""
         mock_get_tools.return_value = mock_langchain_tools
 
         result = PluginToolsInfoService.get_plugin_toolkit_info(

@@ -905,6 +905,7 @@ class ProjectInfoResponse(BaseModel):
     name: str
     display_name: Optional[str] = None
     is_project_admin: bool
+    is_default: bool
 
 
 class UserResponse(BaseModel):

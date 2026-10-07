@@ -20,7 +20,7 @@ from typing import Optional
 from uuid import uuid4
 
 from pydantic import BaseModel, EmailStr, Field, model_validator
-from sqlalchemy import UniqueConstraint
+from sqlalchemy import Index, UniqueConstraint, text
 from sqlmodel import Field as SQLField, SQLModel
 
 from codemie.configs import config
@@ -68,9 +68,18 @@ class UserProject(BaseModelWithSQLSupport, table=True):
     user_id: str = SQLField(foreign_key=_USERS_ID_FK, index=True, nullable=False)
     project_name: str = SQLField(index=True, nullable=False)
     is_project_admin: bool = SQLField(default=False)
+    is_default: bool = SQLField(default=False)
     # Using date inherited from CommonBaseModel (no created_at)
 
-    __table_args__ = (UniqueConstraint('user_id', 'project_name', name='uix_user_project'),)
+    __table_args__ = (
+        UniqueConstraint('user_id', 'project_name', name='uix_user_project'),
+        Index(
+            "uix_user_projects_one_default",
+            "user_id",
+            unique=True,
+            postgresql_where=text("is_default = true"),
+        ),
+    )
 
 
 class UserKnowledgeBase(BaseModelWithSQLSupport, table=True):
@@ -247,6 +256,7 @@ class ProjectInfo(BaseModel):
     name: str
     display_name: Optional[str] = None
     is_project_admin: bool
+    is_default: bool
 
 
 class CodeMieUserDetail(BaseModel):
@@ -309,6 +319,7 @@ class AdminUserProject(BaseModel):
 
     project_name: str
     is_project_admin: bool
+    is_default: bool
     date: Optional[datetime]  # Creation timestamp (from CommonBaseModel)
 
 

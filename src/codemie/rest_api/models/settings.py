@@ -194,6 +194,10 @@ class LiteLLMCredentials(BaseModel):
 class LiteLLMContext(BaseModel):
     credentials: Optional[LiteLLMCredentials]
     current_project: str | None
+    # The personal project name is independent of the provider's username/customer ID.
+    personal_project: str | None = None
+    # Project the request was attributed to before its budget fell back to personal/default.
+    budget_fallback_from: str | None = None
 
 
 class AzureDevOpsCredentials(BaseModel):

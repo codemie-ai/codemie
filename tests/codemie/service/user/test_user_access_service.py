@@ -732,3 +732,20 @@ class TestHelperMethods:
         assert "domain=user_management" in log_message
         assert "method=grant_project_access" in log_message
         assert "timestamp=" in log_message
+
+
+class TestGetUserProjectsListDefaultField:
+    @patch("codemie.clients.postgres.get_session")
+    @patch("codemie.service.user.user_access_service.user_project_repository")
+    @patch("codemie.service.user.user_access_service.user_repository")
+    def test_includes_is_default_in_projects_list(self, mock_user_repo, mock_upr, mock_get_session):
+        mock_session = MagicMock()
+        mock_get_session.return_value.__enter__.return_value = mock_session
+        mock_user_repo.get_by_id.return_value = MagicMock(id="user-1")
+        mock_upr.get_by_user_id.return_value = [
+            MagicMock(project_name="proj-a", is_project_admin=False, is_default=True, date=None),
+        ]
+
+        result = UserAccessService.get_user_projects_list("user-1")
+
+        assert result["projects"][0]["is_default"] is True

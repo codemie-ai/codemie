@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "task": "Add a per-membership is_default flag to user_projects with a role-gated set/clear API, a DB partial-unique-index invariant, and updates to the two existing project-list read models.",
+  "generated": "2026-09-23",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 18,
+  "size": "M",
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "4 distinct components across 3 layers: the UserProject DB model (new is_default column), ProjectAssignmentService (new set/clear-default transactional logic plus reuse of the existing _reject_if_personal_project guard), 2 new API endpoints (PUT/DELETE .../default), and two separate read models (ProjectInfo and AdminUserProject) that both need the field — flagged in technical-analysis.md as easy to update one and miss the other." },
+    { "dimension": "technical_risk", "reason": "Base M for the transactional swap-and-idempotency logic (unset old default, set new, with 404/no-op semantics) which has no single exact precedent, even though the partial-unique-index pattern (Budget model) and the is_project_admin column pattern both exist to clone. Bumped to L by the authorization red flag: the new endpoints must gate on platform-level admin/maintainer role, and technical-analysis.md explicitly calls out the is_project_admin / is_default same-row collision risk as 'the case most likely to be implemented wrong.'" },
+    { "dimension": "affected_layers", "reason": "3 layers touched — API (2 new endpoints), Service (ProjectAssignmentService), and DB/Persistence (additive column plus a new partial-unique-index migration). A schema migration is required, which per calibration guidance puts Affected Layers at L even though the migration itself is additive-only with no backfill." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from M to L: affects authentication/authorization — set/clear-default endpoints require a platform-level admin/maintainer permission check, with an explicit risk of confusing it with the is_project_admin flag living on the same row."
+  ],
+  "split_recommendation": null
+}

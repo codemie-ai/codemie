@@ -42,6 +42,7 @@ from codemie.rest_api.models.user_management import (
 from codemie.rest_api.security.authentication import (
     authenticate,
     admin_access_only,
+    admin_or_maintainer_access_only,
     admin_or_maintainer_or_auditor_access,
     maintainer_access_only,
     project_admin_or_admin_user_detail_access,
@@ -349,6 +350,40 @@ def remove_project_access(
         raise ExtendedHTTPException(code=400, message=_USER_MGMT_NOT_ENABLED)
 
     return user_access_service.revoke_project_access(user_id=user_id, project_name=project_name, actor=user)
+
+
+@router.put("/{user_id}/projects/{project_name}/default")
+def set_default_project(
+    user_id: str,
+    project_name: str,
+    user: User = Depends(authenticate),
+    _: None = Depends(admin_or_maintainer_access_only),
+):
+    """Mark project_name as the user's default project.
+
+    Admin or maintainer only. Rejects if the user is not a member of project_name.
+    """
+    if not config.ENABLE_USER_MANAGEMENT:
+        raise ExtendedHTTPException(code=400, message=_USER_MGMT_NOT_ENABLED)
+
+    return user_access_service.set_default_project(user_id=user_id, project_name=project_name, actor=user)
+
+
+@router.delete("/{user_id}/projects/{project_name}/default")
+def clear_default_project(
+    user_id: str,
+    project_name: str,
+    user: User = Depends(authenticate),
+    _: None = Depends(admin_or_maintainer_access_only),
+):
+    """Unset project_name as the user's default project, if currently set.
+
+    Admin or maintainer only.
+    """
+    if not config.ENABLE_USER_MANAGEMENT:
+        raise ExtendedHTTPException(code=400, message=_USER_MGMT_NOT_ENABLED)
+
+    return user_access_service.clear_default_project(user_id=user_id, project_name=project_name, actor=user)
 
 
 # ===========================================

@@ -118,6 +118,55 @@ async def test_authenticate_db_success_with_user_management_enabled(mocker):
 
 
 @pytest.mark.asyncio
+async def test_authenticate_db_success_populates_default_project(mocker):
+    """default_project is derived from the UserProject row with is_default=True."""
+    mocker.patch("codemie.rest_api.security.user.config.ENABLE_USER_MANAGEMENT", True)
+    mocker.patch("codemie.rest_api.security.idp.local.config.ENV", "not-local")
+
+    idp = LocalIdp()
+    test_user_id = "db_user"
+
+    mock_project = MagicMock(project_name="proj-1", is_project_admin=True, is_default=True)
+    mock_kb = MagicMock(kb_name="kb-1")
+    mock_db_user = MagicMock()
+    mock_db_user.id = test_user_id
+    mock_db_user.username = "db_username"
+    mock_db_user.name = "DB Name"
+    mock_db_user.email = "db@example.com"
+    mock_db_user.picture = "http://pic"
+    mock_db_user.user_type = None
+    mock_db_user.is_admin = True
+    mock_db_user.is_maintainer = False
+    mock_db_user.is_auditor = False
+    mock_db_user.project_limit = 10
+
+    class _AsyncSessionCtx:
+        async def __aenter__(self):
+            return MagicMock()
+
+        async def __aexit__(self, *_):
+            pass
+
+    mocker.patch("codemie.clients.postgres.get_async_session", return_value=_AsyncSessionCtx())
+    mocker.patch(
+        "codemie.repository.user_repository.user_repository.aget_active_by_id",
+        new=AsyncMock(return_value=mock_db_user),
+    )
+    mocker.patch(
+        "codemie.repository.user_project_repository.user_project_repository.aget_by_user_id",
+        new=AsyncMock(return_value=[mock_project]),
+    )
+    mocker.patch(
+        "codemie.repository.user_kb_repository.user_kb_repository.aget_by_user_id",
+        new=AsyncMock(return_value=[mock_kb]),
+    )
+
+    user = await idp.authenticate(_make_request(test_user_id))
+
+    assert user.default_project == "proj-1"
+
+
+@pytest.mark.asyncio
 async def test_authenticate_db_success_with_user_management_disabled(mocker):
     """Test authentication with ENABLE_USER_MANAGEMENT=False uses role-based is_admin."""
     mocker.patch("codemie.rest_api.security.user.config.ENABLE_USER_MANAGEMENT", False)

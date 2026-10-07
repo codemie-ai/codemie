@@ -190,7 +190,10 @@ class UserManagementService:
             # Regular users should not reach here (caught at API layer)
             visible_projects = []
 
-        projects = [ProjectInfo(name=up.project_name, is_project_admin=up.is_project_admin) for up in visible_projects]
+        projects = [
+            ProjectInfo(name=up.project_name, is_project_admin=up.is_project_admin, is_default=up.is_default)
+            for up in visible_projects
+        ]
 
         # Fetch user's knowledge bases (no filtering - shown in full)
         knowledge_bases = user_repository.get_user_knowledge_bases(session, user_id)
@@ -374,7 +377,7 @@ class UserManagementService:
                 auth_source=u.auth_source,
                 last_login_at=u.last_login_at,
                 projects=[
-                    ProjectInfo(name=up.project_name, is_project_admin=up.is_project_admin)
+                    ProjectInfo(name=up.project_name, is_project_admin=up.is_project_admin, is_default=up.is_default)
                     for up in filtered_projects_map.get(u.id, [])
                 ],
                 budget_assignments=[

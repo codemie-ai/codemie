@@ -20,6 +20,7 @@ from unittest.mock import patch, MagicMock
 
 from codemie.service.llm_service.utils import _resolve_effective_project, set_llm_context
 from codemie.rest_api.models.settings import LiteLLMCredentials, LiteLLMContext
+from codemie.rest_api.security.user import User
 
 
 def _make_user(email: str = "user@test.com") -> MagicMock:
@@ -27,6 +28,7 @@ def _make_user(email: str = "user@test.com") -> MagicMock:
     user.email = email
     user.project_names = []
     user.admin_project_names = []
+    user.default_project = None
     user.id = "user-123"
     user.username = email
     return user
@@ -48,6 +50,7 @@ class TestSetLLMContext:
         user_id = "test-user-123"
         mock_user = MagicMock()
         mock_user.id = user_id
+        mock_user.email = 'user@example.com'
 
         # Mock LiteLLM credentials
         litellm_creds = LiteLLMCredentials(api_key="litellm-key", url="https://litellm.test.com")
@@ -93,6 +96,7 @@ class TestSetLLMContext:
         user_id = "test-user-123"
         mock_user = MagicMock()
         mock_user.id = user_id
+        mock_user.email = 'user@example.com'
 
         # Mock None LiteLLM credentials
         mock_settings_service.get_litellm_creds.return_value = None
@@ -135,6 +139,7 @@ class TestSetLLMContext:
         user_id = "test-user-123"
         mock_user = MagicMock()
         mock_user.id = user_id
+        mock_user.email = 'user@example.com'
 
         # Mock LiteLLM credentials
         litellm_creds = LiteLLMCredentials(api_key="litellm-key", url="https://litellm.test.com")
@@ -177,6 +182,7 @@ class TestSetLLMContext:
         user_id = "test-user-123"
         mock_user = MagicMock()
         mock_user.id = user_id
+        mock_user.email = 'user@example.com'
 
         # Mock exception in get_litellm_creds
         mock_settings_service.get_litellm_creds.side_effect = Exception("LiteLLM service error")
@@ -213,6 +219,7 @@ class TestSetLLMContext:
         user_id = "test-user-123"
         mock_user = MagicMock()
         mock_user.id = user_id
+        mock_user.email = 'user@example.com'
 
         # Mock successful LiteLLM credentials
         litellm_creds = LiteLLMCredentials(api_key="litellm-key", url="https://litellm.test.com")
@@ -259,6 +266,7 @@ class TestSetLLMContext:
         user_id = "test-user-123"
         mock_user = MagicMock()
         mock_user.id = user_id
+        mock_user.email = 'user@example.com'
 
         # Mock successful credential retrieval
         litellm_creds = LiteLLMCredentials(api_key="litellm-key", url="https://litellm.test.com")
@@ -295,6 +303,43 @@ class TestSetLLMContext:
 
 
 class TestResolveEffectiveProjectSharing:
+    def test_global_asset_not_a_member_uses_default_project(self):
+        """AC2: not a member, has default project -> charged to default project."""
+        asset = MagicMock(spec=['project', 'is_global'])
+        asset.project = "assistant-project"
+        asset.is_global = True
+        user = _make_user()
+        user.default_project = "my-default-project"
+
+        result = _resolve_effective_project(asset, None, user)
+
+        assert result == "my-default-project"
+
+    def test_global_asset_not_a_member_no_default_falls_back_to_email(self):
+        """AC3: not a member, no default -> personal fallback unchanged."""
+        asset = MagicMock(spec=['project', 'is_global'])
+        asset.project = "assistant-project"
+        asset.is_global = True
+        user = _make_user()
+        user.default_project = None
+
+        result = _resolve_effective_project(asset, None, user)
+
+        assert result == user.email
+
+    def test_global_asset_membership_wins_over_different_default(self):
+        """AC7: member of asset's project AND has a different default -> asset's project wins."""
+        asset = MagicMock(spec=['project', 'is_global'])
+        asset.project = "assistant-project"
+        asset.is_global = True
+        user = _make_user()
+        user.project_names = ["assistant-project"]
+        user.default_project = "some-other-project"
+
+        result = _resolve_effective_project(asset, None, user)
+
+        assert result == "assistant-project"
+
     def test_shared_assistant_returns_project(self):
         asset = MagicMock()
         asset.project = "proj-a"
@@ -558,3 +603,107 @@ class TestResolveEffectiveProjectSharing:
 
         ctx = mock_set_litellm.call_args[0][0]
         assert ctx.credentials is None
+
+
+class TestUnfundedProjectAtContextCreation:
+    """EPMCDME-15111 AC6/AC10: the fallback is decided with the context, so agent threads that
+    re-create the context agree with the analytics emitted in the request thread."""
+
+    def _user(self):
+        return User(id="u-1", username="carol", email="carol@example.com", project_names=["proj-c"])
+
+    def _run(self, scopes, creds=None, project="proj-c", enabled=True, mode="lite_llm"):
+        from codemie.service.llm_service.utils import _unfunded_project
+
+        with (
+            patch("codemie.enterprise.litellm.dependencies.is_litellm_enabled", return_value=enabled),
+            patch(
+                "codemie.enterprise.litellm.llm_factory._probe_direct_project_budget_scopes", return_value=scopes
+            ) as probe,
+            patch("codemie.service.llm_service.utils.config.LLM_PROXY_MODE", mode),
+        ):
+            return _unfunded_project(project, creds, self._user()), probe
+
+    def test_project_without_budget_is_unfunded(self):
+        result, _ = self._run(scopes=set())
+        assert result == "proj-c"
+
+    def test_project_with_budget_is_funded(self):
+        result, _ = self._run(scopes={"platform"})
+        assert result is None
+
+    def test_own_credentials_are_never_a_fallback(self):
+        result, probe = self._run(scopes=set(), creds=MagicMock())
+        assert result is None
+        probe.assert_not_called()
+
+    def test_personal_project_is_never_a_fallback(self):
+        result, probe = self._run(scopes=set(), project="carol@example.com")
+        assert result is None
+        probe.assert_not_called()
+
+    def test_internal_proxy_mode_skips_probe(self):
+        result, probe = self._run(scopes=set(), mode="internal")
+        assert result is None
+        probe.assert_not_called()
+
+    def test_probe_failure_keeps_original_attribution(self):
+        from codemie.service.llm_service.utils import _unfunded_project
+
+        with (
+            patch("codemie.enterprise.litellm.dependencies.is_litellm_enabled", return_value=True),
+            patch(
+                "codemie.enterprise.litellm.llm_factory._probe_direct_project_budget_scopes",
+                side_effect=RuntimeError("db down"),
+            ),
+            patch("codemie.service.llm_service.utils.config.LLM_PROXY_MODE", "lite_llm"),
+        ):
+            assert _unfunded_project("proj-c", None, self._user()) is None
+
+    @patch("codemie.service.llm_service.utils.set_dial_credentials")
+    @patch("codemie.service.llm_service.utils.set_litellm_context")
+    @patch("codemie.service.llm_service.utils.SettingsService")
+    @patch("codemie.service.llm_service.utils._unfunded_project", return_value="proj-c")
+    def test_context_is_created_already_reattributed(self, _unfunded, mock_settings, mock_set_ctx, _dial):
+        mock_settings.get_litellm_creds.return_value = None
+
+        set_llm_context(None, "proj-c", self._user())
+
+        ctx = mock_set_ctx.call_args[0][0]
+        assert ctx.current_project == "carol@example.com"
+        assert ctx.budget_fallback_from == "proj-c"
+
+
+class TestUnfundedProjectIsCategoryAware:
+    """R01: an allocation in some other category must not hide a fallback for the category this
+    request will actually use (e.g. CLI-only project budget, web request charged to platform)."""
+
+    def _run(self, scopes, llm_model="gpt-4.1"):
+        from codemie.service.llm_service.utils import _unfunded_project
+
+        user = User(id="u-1", username="carol", email="carol@example.com", project_names=["proj-c"])
+        details = MagicMock()
+        details.base_name = llm_model
+        with (
+            patch("codemie.enterprise.litellm.dependencies.is_litellm_enabled", return_value=True),
+            patch("codemie.enterprise.litellm.llm_factory._probe_direct_project_budget_scopes", return_value=scopes),
+            patch("codemie.enterprise.litellm.dependencies.get_premium_username", return_value=None),
+            patch("codemie.service.llm_service.llm_service.llm_service.get_model_details", return_value=details),
+            patch("codemie.service.llm_service.utils.config.LLM_PROXY_MODE", "lite_llm"),
+        ):
+            return _unfunded_project("proj-c", None, user, llm_model)
+
+    def test_cli_only_project_falls_back_for_a_platform_request(self):
+        from codemie.service.budget.budget_enums import BudgetCategory
+
+        assert self._run({BudgetCategory.CLI}) == "proj-c"
+
+    def test_platform_funded_project_is_not_a_fallback(self):
+        from codemie.service.budget.budget_enums import BudgetCategory
+
+        assert self._run({BudgetCategory.PLATFORM}) is None
+
+    def test_unknown_model_with_some_funding_defers_to_runtime(self):
+        from codemie.service.budget.budget_enums import BudgetCategory
+
+        assert self._run({BudgetCategory.CLI}, llm_model=None) is None

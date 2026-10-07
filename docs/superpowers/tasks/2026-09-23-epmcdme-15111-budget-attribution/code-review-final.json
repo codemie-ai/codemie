@@ -1,0 +1,50 @@
+{
+  "decision": "request-changes",
+  "rationale": "All 3 lenses ran to completion (blind, edge-case, acceptance) against a real spec. Two independently-corroborated major findings survive triage: a third existing User(...) construction site (EnterpriseIdpWrapper.authenticate) was never updated to populate default_project, silently breaking AC2/4/8 for that auth path; and switching current_project's no-default fallback from list/DB order to sorted() causes a one-time silent billing-attribution shift for pre-existing multi-project users at deploy (migration is additive-only, no backfill). Several other blind-lens concerns (stale is_default rows, probe-function divergence, current_project sort as a deploy change in principle) were investigated and refuted or found to be already-accepted, documented tradeoffs by the edge-case lens with concrete evidence (DB partial unique index, default_project always a subset of project_names, no divergence in the two budget-scope probes) - 5 findings dismissed, 0 deferred.",
+  "confidence": "high",
+  "risk_flags": ["breaking-change"],
+  "business_review": [
+    {"kind": "story-ac", "item": "AC1: Member of marketplace assistant's project -> charge assistant's project, current behavior preserved", "status": "pass", "notes": "is_global branch membership check unchanged, verified by test_global_asset_membership_wins_over_different_default and pre-existing tests"},
+    {"kind": "story-ac", "item": "AC2: Not a member, has default project -> charge default project's budget", "status": "partial", "notes": "Works for load_user_for_auth/LocalIdp-authenticated users; default_project never populated for EnterpriseIdpWrapper.authenticate() users (src/codemie/enterprise/idp/dependencies.py), so this AC silently fails for that auth path"},
+    {"kind": "story-ac", "item": "AC3: Not a member, no default project -> charge personal budget, current behavior preserved", "status": "pass", "notes": "test_global_asset_not_a_member_no_default_falls_back_to_email confirms unchanged"},
+    {"kind": "story-ac", "item": "AC4: Unbound flow, default assigned -> charged to default project not arbitrary", "status": "partial", "notes": "current_project correctly checks default_project first, but same EnterpriseIdpWrapper gap as AC2 means it never fires for that auth path's users"},
+    {"kind": "story-ac", "item": "AC5: Unbound flow, no default -> deterministic charged project, not data-order dependent", "status": "pass", "notes": "sorted(project_names) is deterministic; test_current_project_is_deterministic_regardless_of_project_names_order confirms. Deploy-time side effect on existing users tracked as CR-002, not an AC5 failure"},
+    {"kind": "spec", "item": "AC6 (verify-only): default project has no budget -> fallback visible in logs/analytics", "status": "pass", "notes": "Confirmed by reading BudgetResolutionService's existing INFO log at budget_resolution_service.py:104-108/209-213, includes project_name"},
+    {"kind": "story-ac", "item": "AC7: Member of assistant's project AND has different default -> assistant's project wins", "status": "pass", "notes": "test_global_asset_membership_wins_over_different_default confirms membership check ordered before default tier"},
+    {"kind": "story-ac", "item": "AC8: CLI/IDE request without explicit project, user has default -> charged to default, same fallback rules as web", "status": "partial", "notes": "_extract_request_info tier works for the two updated auth paths but same EnterpriseIdpWrapper gap as AC2/4 applies for that path's CLI users"},
+    {"kind": "story-ac", "item": "AC9: CLI/IDE request with explicit project -> explicit wins regardless of default", "status": "pass", "notes": "test_project_header_wins_over_default_project confirms header checked first, unchanged"},
+    {"kind": "spec", "item": "AC10 (verify-only): analytics show same project whose budget was charged", "status": "pass", "notes": "get_current_project/monitoring services read the same LiteLLM context set_llm_context populates; consistent by construction"},
+    {"kind": "spec", "item": "AC11 (verify-only): admin changes default -> new spend within ~1min cache delay, historical spend not moved", "status": "pass", "notes": "_resolution_cache key includes project_name (budget_resolution_service.py:80,157); changing default is naturally a new cache key"},
+    {"kind": "spec", "item": "AC12 (verify-only): user removed from project set as default -> no longer charged", "status": "pass", "notes": "UserProjectRepository.remove_project/aremove_project hard-delete the row, is_default goes with it; re-derived fresh from DB on next login"},
+    {"kind": "spec", "item": "Design premise: default_project populated at 'the same two sites that already populate project_names'", "status": "fail", "notes": "A third such site exists and was missed: EnterpriseIdpWrapper.authenticate() in src/codemie/enterprise/idp/dependencies.py:100-116, which copies project_names/admin_project_names from idp_user but has no default_project= argument"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "All 5 commits use 'EPMCDME-15111: Description' per .ai-run/guides/standards/git-workflow.md"},
+    {"kind": "code-quality", "status": "pass", "notes": "ruff check clean on all 5 touched production files; modern str | None union syntax used, matches .ai-run/guides/standards/code-quality.md"},
+    {"kind": "security", "status": "pass", "notes": "No secrets, no auth-bypass reimplementation, no untrusted-input parsing changes per .ai-run/guides/development/security-patterns.md; CLI header trust model is pre-existing/unchanged"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/enterprise/idp/dependencies.py",
+      "line": 100,
+      "title": "EnterpriseIdpWrapper.authenticate() never populates default_project",
+      "problem": "EnterpriseIdpWrapper.authenticate() (Keycloak/OIDC enterprise auth) builds a security.User by copying every field 1:1 from idp_user (project_names, admin_project_names, roles, etc.) but has no default_project= argument, so it always defaults to None regardless of DB state.",
+      "impact": "AC2, AC4, and AC8 silently fail for any user authenticated through the enterprise IDP wrapper: their default project is never consulted by _resolve_effective_project's is_global branch, User.current_project, or the CLI proxy's _extract_request_info - they keep being charged personal budget / an arbitrary project exactly as before this ticket, with no error or indication.",
+      "recommendation": "Add default_project=getattr(idp_user, 'default_project', None) (matching the existing defensive getattr pattern already used for client_access_token two lines below, for forward-compat with the external codemie_enterprise package) if idp_user can carry it; otherwise derive it the same way as the other two sites, from whatever project-membership data this wrapper already has access to. Extend tests/enterprise/idp/test_enterprise_idp_wrapper.py with a default_project case."
+    },
+    {
+      "id": "CR-002",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/security/user.py",
+      "line": 116,
+      "title": "Switching current_project's fallback to sorted() silently reassigns billing for existing multi-project users at deploy",
+      "problem": "EPMCDME-15110's migration is additive-only with no backfill (every existing UserProject row starts is_default=false). This diff changes current_project's no-default fallback from self.project_names (original DB/list order) to sorted(self.project_names). For any existing user with 2+ projects and no explicit default (i.e. everyone, until they set one), current_project immediately picks whichever project sorts alphabetically first instead of whatever it resolved to before this deploy.",
+      "impact": "current_project feeds set_llm_context(None, user.current_project, user) at 9 call sites (assistant.py, workflow.py, workflow_executions.py, skill.py), so this can silently misattribute LLM usage/billing to a different project than before the deploy, for the entire pre-existing multi-project user population, with zero logging or opt-in. This is a real production side effect of fixing AC5's determinism requirement, not a bug in the determinism logic itself.",
+      "recommendation": "Either (a) ship a data migration/backfill that sets is_default=true on each existing multi-project user's current first-by-original-order project before this code deploys, so the visible project doesn't change for anyone at rollout, or (b) explicitly document and accept this one-time reassignment in the MR description / release notes as a known, intentional side effect of making project selection deterministic, so reviewers and on-call are not surprised by it. Either way this needs an explicit decision, not a silent code change."
+    }
+  ]
+}

@@ -1,0 +1,48 @@
+{
+  "decision": "request-changes",
+  "rationale": "All 4 story ACs and 9/10 spec requirements pass per the acceptance lens; the remaining partial (app-layer default-swap sequencing) was empirically verified safe for the normal single-request case against a real Postgres DB, but two independent lenses plus the acceptance lens all converged on a real gap: set_default/clear_default have no exception handling for genuine concurrent-write conflicts, unlike the codebase's own existing precedent (application_repository.get_or_create). A second gap: the new audit log lines omit which project was set/cleared. 8 other raised concerns were checked against the spec and the actual call sites and confirmed either spec-intentional (no project-scoped auth, no backfill, no self-set) or already correctly handled by unchanged code (row deletion, AdminUserProject propagation) — dismissed as false positives, not real defects. One portability observation (Postgres-only partial index) was deferred: it merely follows an existing codebase-wide pattern (Budget model's own partial index), not a new inconsistency this diff introduces.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "story-ac", "item": "AC1: Setting a different project as default swaps the default; previous default becomes ordinary membership; exactly one default at a time", "status": "pass", "notes": "set_default() unsets previous_default before setting target; backstopped by partial unique index uix_user_projects_one_default. Empirically verified against real Postgres: no IntegrityError on a normal switch."},
+    {"kind": "story-ac", "item": "AC2: Setting default rejected if user is not a member of the project (UI or API)", "status": "pass", "notes": "set_default() returns None for a missing membership row; service raises 404. Enforced server-side, applies to any caller."},
+    {"kind": "story-ac", "item": "AC3: Removing a user's default membership (single or bulk) leaves them with no default, not a dangling pointer", "status": "pass", "notes": "is_default lives on the row itself; both single (remove_project) and bulk (remove_projects_for_users) removal paths delete the whole row. Verified by dedicated regression tests, no new code needed."},
+    {"kind": "story-ac", "item": "AC4: Non-admin/maintainer (auditor, plain user) rejected when calling set/clear default API for another user", "status": "pass", "notes": "Both endpoints gate on admin_or_maintainer_access_only (is_admin_or_maintainer check), same as sibling project-assignment endpoints."},
+    {"kind": "spec", "item": "Data model: is_default bool on user_projects (not users table); additive migration; partial unique index", "status": "pass", "notes": "Confirmed in model and migration bf3cb9db22b7; no backfill logic, matching the explicit out-of-scope item."},
+    {"kind": "spec", "item": "API surface: PUT/DELETE .../default targeting UserAccessService and user_management_router.py; 404 on missing membership; idempotent set and clear", "status": "pass", "notes": "Confirmed correct target service (corrected from the spec's original ProjectAssignmentService reference). Idempotency confirmed for both directions."},
+    {"kind": "spec", "item": "New endpoints require the same admin-or-maintainer dependency as existing project-assignment endpoints, explicitly not is_project_admin", "status": "pass", "notes": "admin_or_maintainer_access_only used; no is_project_admin check anywhere in new code."},
+    {"kind": "spec", "item": "ProjectAccessRequest and ProjectAccessUpdateRequest are NOT extended with is_default", "status": "pass", "notes": "Confirmed untouched in the diff."},
+    {"kind": "spec", "item": "Read side: no new read endpoint; is_default added to ProjectInfo and AdminUserProject and populated at every real construction site", "status": "pass", "notes": "All 4 ProjectInfo sites and the sole AdminUserProject construction path (via dict unpacking from get_user_projects_list) confirmed updated."},
+    {"kind": "spec", "item": "Membership-removal interaction: no new code required for AC3", "status": "pass", "notes": "Confirmed no changes needed to revoke_project_access or bulk removal paths."},
+    {"kind": "spec", "item": "Uniqueness enforcement: app-layer (unset old, set new) AND DB-layer partial unique index backstop", "status": "partial", "notes": "DB-layer backstop solid. App-layer sequencing empirically verified safe for the normal case, but relies on SQLAlchemy flush ordering rather than an explicit guarantee — real gap only under genuine concurrent requests (see CR-001)."}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "All 5 commits follow 'EPMCDME-15110: <description>' per git-workflow.md."},
+    {"kind": "code-quality", "status": "pass", "notes": "New code follows existing patterns closely (mirrors sibling repository/service methods); no style violations flagged by any lens beyond one dismissed stylistic nit."},
+    {"kind": "security", "status": "pass", "notes": "No auth bypass, injection, or secret-handling issues raised by any lens. Permission gating verified to reuse the correct existing platform-role check, not the per-project flag on the same row."}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/user/user_access_service.py",
+      "line": 149,
+      "title": "No error handling for concurrent set/clear-default conflicts",
+      "problem": "set_default_project/clear_default_project call the repository and only special-case a None return (404). Two genuinely concurrent requests changing the same user's default can collide on the partial unique index (IntegrityError), and a row deleted mid-flight by a concurrent revoke can raise StaleDataError/ObjectDeletedError on flush/refresh in user_project_repository.py's set_default/clear_default. Empirically verified the normal single-request case does NOT hit this (tested against real Postgres, no IntegrityError on an ordinary default switch) — the gap is real only under actual concurrent access, not a general breakage.",
+      "impact": "A rare-but-real concurrent admin action surfaces as an unhandled 500 instead of a clean 409/404, and the codebase already has an established pattern for this exact class of race (application_repository.get_or_create) that this new code doesn't follow.",
+      "recommendation": "Wrap the session.commit() in set_default_project/clear_default_project (and/or the flush/refresh in the repository methods) in a try/except for IntegrityError, StaleDataError, and ObjectDeletedError; translate to a 409 (conflict) or 404 (membership vanished) response, following the get_or_create precedent."
+    },
+    {
+      "id": "CR-002",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/user/user_access_service.py",
+      "line": 158,
+      "title": "Audit log omits which project was set/cleared as default",
+      "problem": "set_default_project/clear_default_project build log_details via _build_project_access_log_details(actor.id, user_id) only — project_name is never passed, so the default_project_set/default_project_cleared log lines don't record which project changed.",
+      "impact": "Weakens the audit trail for an administrative action that changes billing/attribution behavior for a user — an auditor reading these logs can see who changed whose default, but not to which project.",
+      "recommendation": "Include project_name in the log line, e.g. f\"default_project_set: {log_details}, project_name={project_name!r}, domain=user_management\"."
+    }
+  ]
+}

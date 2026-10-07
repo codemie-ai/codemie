@@ -219,7 +219,7 @@ class TestProjectInfoModel:
     def test_project_info_structure(self):
         """Test ProjectInfo model has correct fields with snake_case"""
         # Arrange & Act
-        project = ProjectInfo(name="test-project", is_project_admin=True)
+        project = ProjectInfo(name="test-project", is_project_admin=True, is_default=False)
 
         # Assert
         assert project.name == "test-project"
@@ -230,13 +230,18 @@ class TestProjectInfoModel:
     def test_project_info_serialization(self):
         """Test ProjectInfo serializes correctly to JSON"""
         # Arrange
-        project = ProjectInfo(name="my-project", is_project_admin=False)
+        project = ProjectInfo(name="my-project", is_project_admin=False, is_default=False)
 
         # Act
         json_data = project.model_dump()
 
         # Assert
-        assert json_data == {"name": "my-project", "display_name": None, "is_project_admin": False}
+        assert json_data == {
+            "name": "my-project",
+            "display_name": None,
+            "is_project_admin": False,
+            "is_default": False,
+        }
         assert "name" in json_data  # snake_case field name
         assert "is_project_admin" in json_data  # snake_case field name
 
@@ -260,7 +265,7 @@ class TestResponseModelTerminology:
             auth_source="local",
             email_verified=True,
             last_login_at=None,
-            projects=[ProjectInfo(name="proj1", is_project_admin=True)],
+            projects=[ProjectInfo(name="proj1", is_project_admin=True, is_default=False)],
             project_limit=3,
             knowledge_bases=["kb1"],
             date=datetime.now(UTC),
@@ -288,7 +293,7 @@ class TestResponseModelTerminology:
             is_maintainer=False,
             auth_source="local",
             last_login_at=None,
-            projects=[ProjectInfo(name="proj1", is_project_admin=False)],
+            projects=[ProjectInfo(name="proj1", is_project_admin=False, is_default=False)],
             date=datetime.now(UTC),
         )
 
@@ -304,7 +309,7 @@ class TestSnakeCaseNaming:
 
     def test_project_info_uses_snake_case(self):
         """Test ProjectInfo uses snake_case field names"""
-        project = ProjectInfo(name="test", is_project_admin=True)
+        project = ProjectInfo(name="test", is_project_admin=True, is_default=False)
         json_data = project.model_dump()
 
         # Assert all keys are snake_case
@@ -367,7 +372,7 @@ class TestUserResponseSnakeCase:
             email="test@example.com",
             is_admin=True,
             is_maintainer=False,
-            projects=[ProjectInfoResponse(name="proj1", is_project_admin=True)],
+            projects=[ProjectInfoResponse(name="proj1", is_project_admin=True, is_default=False)],
             picture="http://example.com/pic.jpg",
             knowledge_bases=["kb1", "kb2"],
             user_type="regular",

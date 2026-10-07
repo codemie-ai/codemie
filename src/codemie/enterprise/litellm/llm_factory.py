@@ -498,6 +498,25 @@ def _apply_platform_budget(
     _mirror_budget_assignment(user_id=user_id, customer=customer, category=CoreBudgetCategory.PLATFORM)
 
 
+def _record_direct_budget_attribution(
+    context: Optional["LiteLLMContext"], project: str | None, *, project_budget_used: bool
+) -> None:
+    """Update analytics from the runtime outcome without losing the original routing project."""
+    if not context or not project:
+        return
+    personal_project = context.personal_project
+    if project_budget_used or not personal_project or project == personal_project:
+        context.current_project = project
+        context.budget_fallback_from = None
+        return
+    context.current_project = personal_project
+    context.budget_fallback_from = project
+    logger.info(
+        f"budget_event=budget_attribution_fallback component=litellm_llm_factory "
+        f"fallback_from_project={project!r} charged_scope='personal'"
+    )
+
+
 def _configure_direct_runtime_overrides(
     *,
     llm_model_details: "LLMModel",
@@ -520,6 +539,13 @@ def _configure_direct_runtime_overrides(
         # personal keys behave identically here (EPMCDME-13264).
         return
 
+    # Context creation can already flag a fallback for analytics. Resolve the original
+    # project for this model so that annotation never changes category precedence, and a
+    # routed/premium model can still use its funded project category.
+    project = (litellm_context.budget_fallback_from or litellm_context.current_project) if litellm_context else None
+    runtime_context = litellm_context
+    if litellm_context and litellm_context.budget_fallback_from:
+        runtime_context = litellm_context.model_copy(update={"current_project": project})
     (
         project_runtime_user,
         project_runtime_headers,
@@ -528,7 +554,7 @@ def _configure_direct_runtime_overrides(
         has_project_budget_scopes,
     ) = _resolve_direct_project_budget_runtime(
         llm_model_details=llm_model_details,
-        litellm_context=litellm_context,
+        litellm_context=runtime_context,
         user_id=user_id,
         user_email=user_email,
     )
@@ -539,6 +565,7 @@ def _configure_direct_runtime_overrides(
         project_runtime_api_key,
         project_runtime_base_url,
     ):
+        _record_direct_budget_attribution(litellm_context, project, project_budget_used=True)
         _apply_project_runtime_overrides(
             merged_headers=merged_headers,
             request_params=request_params,
@@ -566,9 +593,9 @@ def _configure_direct_runtime_overrides(
     # A project with no budget scopes (has_project_budget_scopes=False) also falls through
     # to personal/default budget — same behaviour as an own (no-project) assistant.
     has_real_project_context = bool(
-        litellm_context
-        and litellm_context.current_project
-        and litellm_context.current_project != user_email
+        runtime_context
+        and runtime_context.current_project
+        and runtime_context.current_project != user_email
         and has_project_budget_scopes
     )
     if _try_apply_premium_budget(
@@ -578,6 +605,7 @@ def _configure_direct_runtime_overrides(
         request_params=request_params,
         has_project_context=has_real_project_context,
     ):
+        _record_direct_budget_attribution(litellm_context, project, project_budget_used=False)
         return
 
     _apply_platform_budget(
@@ -586,6 +614,7 @@ def _configure_direct_runtime_overrides(
         user_id=user_id,
         request_params=request_params,
     )
+    _record_direct_budget_attribution(litellm_context, project, project_budget_used=False)
 
 
 def _get_direct_request_category_budget_id(user_id: str, category: str) -> str | None:
@@ -667,6 +696,7 @@ def _probe_direct_project_budget_scopes(project_name: str, user_id: str) -> set[
                 WHERE  pba.project_name = :project_name
                   AND  pba.budget_category = ANY(:categories)
                   AND  pba.deleted_at IS NULL
+                  AND  b.is_active = TRUE
                 """
             ),
             {"project_name": project_name, "user_id": user_id, "categories": categories},

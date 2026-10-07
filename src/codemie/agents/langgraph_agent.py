@@ -644,7 +644,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
         if history is None:
             history = []
         try:
-            set_llm_context(self.assistant, None, self.user)
+            set_llm_context(self.assistant, None, self.user, self.llm_model)
             inputs = self._get_inputs(input, history)
             inputs.update(args)
             output = self._invoke_agent(inputs).generated
@@ -671,7 +671,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
             args = {}
         if history is None:
             history = []
-        set_llm_context(self.assistant, None, self.user)
+        set_llm_context(self.assistant, None, self.user, self.llm_model)
         logger.debug(
             f"Invoking workflow task. Agent={self.agent_name}, "
             f"Input={self._truncate_log_content(workflow_input)}, "
@@ -710,7 +710,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
             # Clear previous errors before new execution
             self.tool_error_callback.clear()
 
-            set_llm_context(self.assistant, None, self.user)
+            set_llm_context(self.assistant, None, self.user, self.llm_model)
             response = self._invoke_agent(self._get_inputs())
             output = response.generated
             self._persist_generated_workspace_files(
@@ -772,7 +772,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
                 conversation_id=self.conversation_id,
                 user_email=self.user.username,
             )
-            set_llm_context(self.assistant, None, self.user)
+            set_llm_context(self.assistant, None, self.user, self.llm_model)
 
             execution_start = time()
             chunks_collector = []
@@ -1057,7 +1057,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
 
     def _invoke_agent(self, inputs) -> GenerationResult:
         logger.debug(f"Invoking task. Agent={self.agent_name}. Inputs={self._serialize_inputs_for_log(inputs)}")
-        set_llm_context(self.assistant, None, self.user)
+        set_llm_context(self.assistant, None, self.user, self.llm_model)
         try:
             import contextlib
 

@@ -51,6 +51,8 @@ def _resolve_effective_project(
         user_projects = set(user.project_names or []) | set(user.admin_project_names or [])
         if project in user_projects or not user.email:
             return project
+        if user.default_project:
+            return user.default_project
         return user.email
 
     return project
@@ -66,10 +68,58 @@ def _is_shared_asset_creds_override(setting: object, asset: object) -> bool:
     return bool(is_shared and not getattr(setting, 'is_global', False))
 
 
+def _unfunded_project(
+    project: str | None, litellm_creds: object, user: User, llm_model: str | None = None
+) -> str | None:
+    """Return project when its budget cannot pay for this user, so spend falls back to personal.
+
+    Decided here, where attribution is decided, because agents re-create the context in other
+    threads: marking it only where the model is built left analytics on copies that never saw
+    the fallback (EPMCDME-15111 AC6/AC10). Own-key requests are paid by that key, not a budget.
+    """
+    if litellm_creds or not project or not user.email or project == user.email or not user.id:
+        return None
+    try:
+        from codemie.enterprise.litellm.dependencies import is_litellm_enabled
+        from codemie.enterprise.litellm.llm_factory import (
+            DirectBudgetAvailability,
+            _probe_direct_project_budget_scopes,
+            _resolve_direct_budget_category,
+        )
+    except ImportError:
+        return None
+    if not is_litellm_enabled() or config.LLM_PROXY_MODE != "lite_llm":
+        return None
+    try:
+        scopes = _probe_direct_project_budget_scopes(project, user.id)
+        if scopes:
+            if not llm_model:
+                # Model construction records the actual result when the model is not known yet.
+                return None
+            from codemie.service.llm_service.llm_service import llm_service
+
+            category = _resolve_direct_budget_category(
+                user_email=user.username,
+                llm_model=llm_service.get_model_details(llm_model).base_name,
+                availability=DirectBudgetAvailability(project_scopes=scopes),
+            )
+            if category in scopes:
+                return None
+    except Exception as e:
+        logger.warning(f"budget scope probe failed for project={project!r} user_id={user.id!r}: {e}")
+        return None
+    logger.info(
+        f"budget_event=budget_attribution_fallback component=llm_context user_id={user.id!r} "
+        f"fallback_from_project={project!r} charged_scope='personal'"
+    )
+    return project
+
+
 def set_llm_context(
     asset: AssistantBase | WorkflowConfigBase | IndexInfo | None,
     fallback_project_name: str | None,
     user: User,
+    llm_model: str | None = None,
 ):
     from codemie.rest_api.models.settings import SettingType
     from codemie.service.settings.base_settings import SearchFields
@@ -93,9 +143,13 @@ def set_llm_context(
                 litellm_creds = None
             elif _is_shared_asset_creds_override(setting, asset):
                 litellm_creds = None  # shared asset → force project budget when user has non-global personal key
+        model = llm_model or getattr(asset, 'llm_model_type', None)
+        fallback_from = _unfunded_project(effective_project, litellm_creds, user, model)
         litellm_context = LiteLLMContext(
             credentials=litellm_creds,
-            current_project=effective_project,
+            current_project=user.email if fallback_from else effective_project,
+            personal_project=user.email,
+            budget_fallback_from=fallback_from,
         )
         set_litellm_context(litellm_context)
         dial_creds = SettingsService.get_dial_creds(effective_project)

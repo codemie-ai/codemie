@@ -204,6 +204,7 @@ class TestValidateProjectHeader:
         headers = Headers({})
         user = MagicMock()
         user.username = "user@example.com"
+        user.default_project = None
 
         with patch("codemie.core.models.Application.find_by_id", return_value=MagicMock()) as mock_find:
             _validate_project_header(headers, user)  # should not raise
@@ -216,10 +217,22 @@ class TestValidateProjectHeader:
         headers = Headers({})
         user = MagicMock()
         user.username = "not-a-real-project"
+        user.default_project = None
 
         with patch("codemie.core.models.Application.find_by_id", return_value=None):
             with pytest.raises(ProjectRequiredException):
                 _validate_project_header(headers, user)
+
+    def test_default_project_fallback_accepted_without_header(self):
+        headers = Headers({})
+        user = MagicMock()
+        user.username = "not-a-real-project"
+        user.default_project = "team-project"
+
+        with patch("codemie.core.models.Application.find_by_id", return_value=None) as mock_find:
+            _validate_project_header(headers, user)  # should not raise
+
+        mock_find.assert_not_called()
 
     def test_no_header_and_no_user_raises(self):
         from codemie.core.project_validator import ProjectRequiredException
@@ -426,6 +439,7 @@ class TestExtractRequestInfo:
         headers = Headers({HEADER_CODEMIE_CLI_PROJECT: "my-project"})
         user = MagicMock()
         user.username = "user@example.com"
+        user.default_project = None
 
         result = _extract_request_info(headers, user)
 
@@ -436,10 +450,33 @@ class TestExtractRequestInfo:
         headers = Headers({})
         user = MagicMock()
         user.username = "user@example.com"
+        user.default_project = None
 
         result = _extract_request_info(headers, user)
 
         assert result[PROJECT] == "user@example.com"
+
+    def test_project_falls_back_to_default_project_when_header_missing(self):
+        """AC8: header missing, user has a default project -> charged to default project."""
+        headers = Headers({})
+        user = MagicMock()
+        user.username = "user@example.com"
+        user.default_project = "my-default-project"
+
+        result = _extract_request_info(headers, user)
+
+        assert result[PROJECT] == "my-default-project"
+
+    def test_project_header_wins_over_default_project(self):
+        """AC9: explicit header wins regardless of default, unchanged."""
+        headers = Headers({HEADER_CODEMIE_CLI_PROJECT: "explicit-project"})
+        user = MagicMock()
+        user.username = "user@example.com"
+        user.default_project = "my-default-project"
+
+        result = _extract_request_info(headers, user)
+
+        assert result[PROJECT] == "explicit-project"
 
     def test_project_empty_when_header_missing_and_no_user(self):
         """Missing header and no user produces empty string."""
@@ -1972,6 +2009,7 @@ class TestProxyToLLMProxy:
         mock_user = MagicMock()
         mock_user.id = "user-123"
         mock_user.username = "user@example.com"
+        mock_user.default_project = None
         background_tasks = MagicMock()
         user_credentials = ResolvedLiteLLMUserCredentials(
             credentials=LiteLLMCredentials(api_key="sk-user", url=""),
@@ -3055,3 +3093,40 @@ class TestModelsListEndpoint:
 
     def test_invalid_body_returned_unchanged(self) -> None:
         assert _augment_models_list_response(b"not json") == b"not json"
+
+
+class TestFlagPersonalBudgetFallback:
+    """EPMCDME-15111 AC6/AC8: default/explicit project without budget is flagged, never silently personal."""
+
+    def _user(self):
+        return SimpleNamespace(id="u-1", username="alice", email="alice@example.com")
+
+    def test_flags_named_project_without_scopes(self):
+        from codemie.enterprise.litellm.proxy_router import BudgetAvailability, _flag_personal_budget_fallback
+
+        request_info = {"project": "philips-hr"}
+
+        _flag_personal_budget_fallback(self._user(), request_info, BudgetAvailability(user_budget_ids={}))
+
+        assert request_info["budget_fallback_from"] == "philips-hr"
+        assert request_info["project"] == "philips-hr"
+
+    @pytest.mark.parametrize("project", ["alice", "alice@example.com", ""])
+    def test_personal_identity_is_not_a_fallback(self, project):
+        from codemie.enterprise.litellm.proxy_router import BudgetAvailability, _flag_personal_budget_fallback
+
+        request_info = {"project": project}
+
+        _flag_personal_budget_fallback(self._user(), request_info, BudgetAvailability(user_budget_ids={}))
+
+        assert "budget_fallback_from" not in request_info
+
+    def test_funded_project_is_not_flagged(self):
+        from codemie.enterprise.litellm.proxy_router import BudgetAvailability, _flag_personal_budget_fallback
+
+        request_info = {"project": "philips-hr"}
+        availability = BudgetAvailability(user_budget_ids={}, project_scopes={BudgetCategory.PLATFORM})
+
+        _flag_personal_budget_fallback(self._user(), request_info, availability)
+
+        assert "budget_fallback_from" not in request_info

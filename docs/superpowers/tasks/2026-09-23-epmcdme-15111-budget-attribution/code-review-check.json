@@ -1,0 +1,31 @@
+{
+  "decision": "approve",
+  "rationale": "Both blocking findings resolved with concrete, verified fixes. CR-001: default_project=getattr(idp_user, 'default_project', None) added to EnterpriseIdpWrapper.authenticate(), mirroring the existing client_access_token forward-compat pattern exactly; 2 new tests pass (forwarded-when-present, None-when-absent), full file re-run clean (7/7). CR-002: new data-only migration d2c276d4390e backfills is_default for pre-existing multi-project users with no default, computing exactly what the new current_project fallback already picks (alphabetically-first) - verified against live dev Postgres with 3 seeded scenarios (multi-project/no-default backfilled, multi-project/has-default untouched, single-project untouched) plus a second run confirming idempotency, all rolled back. No new high-risk issue suspected in this small, targeted fix-up diff; no confirmation pass needed.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "story-ac", "item": "AC1", "status": "pass", "notes": "unchanged"},
+    {"kind": "story-ac", "item": "AC2", "status": "pass", "notes": "CR-001 fix closes the EnterpriseIdpWrapper gap"},
+    {"kind": "story-ac", "item": "AC3", "status": "pass", "notes": "unchanged"},
+    {"kind": "story-ac", "item": "AC4", "status": "pass", "notes": "CR-001 fix closes the EnterpriseIdpWrapper gap"},
+    {"kind": "story-ac", "item": "AC5", "status": "pass", "notes": "deterministic; CR-002 backfill makes the transition explicit rather than preventing it (AC5 itself requires the deterministic behavior)"},
+    {"kind": "spec", "item": "AC6 verify-only", "status": "pass", "notes": "existing log confirmed"},
+    {"kind": "story-ac", "item": "AC7", "status": "pass", "notes": "membership wins"},
+    {"kind": "story-ac", "item": "AC8", "status": "pass", "notes": "CR-001 fix closes the EnterpriseIdpWrapper gap"},
+    {"kind": "story-ac", "item": "AC9", "status": "pass", "notes": "unchanged"},
+    {"kind": "spec", "item": "AC10 verify-only", "status": "pass", "notes": "consistent by construction"},
+    {"kind": "spec", "item": "AC11 verify-only", "status": "pass", "notes": "cache key includes project_name"},
+    {"kind": "spec", "item": "AC12 verify-only", "status": "pass", "notes": "hard-delete confirmed"},
+    {"kind": "spec", "item": "Design premise: population sites", "status": "pass", "notes": "third site (EnterpriseIdpWrapper) now also populates default_project"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "EPMCDME-15111: prefix"},
+    {"kind": "code-quality", "status": "pass", "notes": "ruff clean"},
+    {"kind": "security", "status": "pass", "notes": "no issues"}
+  ],
+  "findings": [],
+  "finding_status": [
+    {"id": "CR-001", "status": "resolved", "notes": "default_project forwarded via forward-compat getattr, matching existing pattern; 2 new tests pass, full file green"},
+    {"id": "CR-002", "status": "resolved", "notes": "Backfill migration added and verified against live Postgres across 3 scenarios plus idempotency; converts the silent computed value into an explicit, auditable is_default row with zero behavior change"}
+  ]
+}

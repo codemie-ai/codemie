@@ -429,12 +429,12 @@ class AssistantRequestHandler(ABC):
         # execution context as upsert_chat_history → send_conversation_metric.
         from codemie.service.llm_service.utils import set_llm_context
 
-        set_llm_context(self.assistant, None, self.user)
-
         summary = request_summary_manager.get_summary(self.request_uuid)
         tokens_usage = (summary.tokens_usage if summary else None) or TokensUsage(
             input_tokens=0, output_tokens=0, money_spent=0
         )
+        served_model = (tokens_usage.routing.routed_model if tokens_usage.routing else None) or data.request.llm_model
+        set_llm_context(self.assistant, None, self.user, served_model)
         ConversationService.upsert_chat_history(
             UpsertChatHistoryParams(
                 request=data.request,

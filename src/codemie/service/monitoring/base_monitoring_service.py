@@ -43,7 +43,17 @@ def limit_string(input_string, max_length: int = 500):
     return input_string
 
 
+def _add_budget_fallback_attribute(attributes: dict) -> None:
+    """Flag metrics of requests whose project budget fell back to personal/default (EPMCDME-15111 AC6)."""
+    from codemie.core.dependecies import get_budget_fallback_from
+
+    fallback_from = get_budget_fallback_from()
+    if fallback_from:
+        attributes.setdefault(MetricsAttributes.BUDGET_FALLBACK_FROM, fallback_from)
+
+
 def send_log_metric(name: str, attributes: dict):
+    _add_budget_fallback_attribute(attributes)
     # Ensure cached_tokens_money_spent is serialized as float, not integer
     # This prevents Elasticsearch from incorrectly mapping it as 'long' instead of 'double'
     if "cached_tokens_money_spent" in attributes and attributes["cached_tokens_money_spent"] is not None:
@@ -125,6 +135,7 @@ class BaseMonitoringService:
     ):
         try:
             attributes = attributes or {}
+            _add_budget_fallback_attribute(attributes)
             if not attributes.get(MetricsAttributes.USER_ID):
                 attributes.update({MetricsAttributes.USER_ID: logging_user_id.get("-")})
             send_log_metric(name, {"count": count, **attributes})
@@ -170,6 +181,7 @@ class BaseMonitoringService:
         try:
             histogram = cls._get_or_create_histogram(name, description)
             attributes = attributes or {}
+            _add_budget_fallback_attribute(attributes)
             if not attributes.get(MetricsAttributes.USER_ID):
                 attributes.update({MetricsAttributes.USER_ID: logging_user_id.get("-")})
             attributes.update({"env": config.ENV})

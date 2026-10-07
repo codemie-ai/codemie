@@ -17,6 +17,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm.exc import ObjectDeletedError, StaleDataError
 from sqlmodel import Session
 
 from codemie.configs.logger import logger
@@ -33,7 +35,10 @@ _ERRORS = SimpleNamespace(
     USER_NOT_FOUND="User not found",
     PROJECT_NOT_FOUND="Project not found",
     PERSONAL_PROJECT_MEMBERSHIP="Cannot modify membership of a personal project",
+    NO_PROJECT_ACCESS="User does not have access to this project",
 )
+
+_ONE_DEFAULT_INDEX = "uix_user_projects_one_default"
 
 
 class UserAccessService:
@@ -69,7 +74,12 @@ class UserAccessService:
 
             return {
                 "projects": [
-                    {"project_name": p.project_name, "is_project_admin": p.is_project_admin, "date": p.date}
+                    {
+                        "project_name": p.project_name,
+                        "is_project_admin": p.is_project_admin,
+                        "is_default": p.is_default,
+                        "date": p.date,
+                    }
                     for p in projects
                 ]
             }
@@ -93,6 +103,7 @@ class UserAccessService:
             application_repository.get_or_create(session, project_name)
             user_project_repository.add_project(session, user_id, project_name, is_project_admin)
             session.commit()
+            UserAccessService._invalidate_auth_cache(user_id)
 
             log_details = UserAccessService._build_project_access_log_details(actor.id, user_id)
             logger.info(f"project_access_granted: {log_details}, domain=user_management")
@@ -121,11 +132,66 @@ class UserAccessService:
 
             user_project_repository.update_admin_status(session, user_id, project_name, is_project_admin)
             session.commit()
+            UserAccessService._invalidate_auth_cache(user_id)
 
             log_details = UserAccessService._build_project_access_log_details(actor.id, user_id)
             logger.info(f"project_access_updated: {log_details}, domain=user_management")
 
             return {"message": "Project access updated successfully"}
+
+    @staticmethod
+    def set_default_project(user_id: str, project_name: str, actor: User) -> dict[str, str]:
+        """Mark project_name as user_id's default project, unsetting any prior default.
+
+        Any membership qualifies, including the user's personal project (selecting it keeps
+        unbound spend on the personal budget); no personal-project guard applies here because
+        the default flag changes no membership.
+        """
+        UserAccessService._change_default_project(
+            user_id, project_name, actor, user_project_repository.set_default, "default_project_set"
+        )
+        return {"message": "Default project set successfully"}
+
+    @staticmethod
+    def clear_default_project(user_id: str, project_name: str, actor: User) -> dict[str, str]:
+        """Unset project_name as user_id's default project, if currently set."""
+        UserAccessService._change_default_project(
+            user_id, project_name, actor, user_project_repository.clear_default, "default_project_cleared"
+        )
+        return {"message": "Default project cleared successfully"}
+
+    @staticmethod
+    def _change_default_project(user_id: str, project_name: str, actor: User, mutate, event: str) -> None:
+        from codemie.clients.postgres import get_session
+
+        with get_session() as session:
+            target_user = user_repository.get_by_id(session, user_id)
+            if not target_user:
+                raise ExtendedHTTPException(code=404, message=_ERRORS.USER_NOT_FOUND)
+
+            try:
+                if not mutate(session, user_id, project_name):
+                    raise ExtendedHTTPException(code=404, message=_ERRORS.NO_PROJECT_ACCESS)
+                session.commit()
+            except IntegrityError as e:
+                session.rollback()
+                if _ONE_DEFAULT_INDEX not in str(e.orig):
+                    raise
+                raise ExtendedHTTPException(code=409, message="Default project changed concurrently — please retry")
+            except (StaleDataError, ObjectDeletedError):
+                session.rollback()
+                raise ExtendedHTTPException(code=404, message=_ERRORS.NO_PROJECT_ACCESS)
+
+        UserAccessService._invalidate_auth_cache(user_id)
+        log_details = UserAccessService._build_project_access_log_details(actor.id, user_id)
+        logger.info(f"{event}: {log_details}, project_name={project_name!r}, domain=user_management")
+
+    @staticmethod
+    def _invalidate_auth_cache(user_id: str) -> None:
+        """Drop cached auth users so membership/default changes apply on the next request."""
+        from codemie.service.user.authentication_service import invalidate_user_from_cache
+
+        invalidate_user_from_cache(user_id)
 
     @staticmethod
     def revoke_project_access(user_id: str, project_name: str, actor: User) -> dict[str, str]:
@@ -143,9 +209,10 @@ class UserAccessService:
 
             removed = user_project_repository.remove_project(session, user_id, project_name)
             if not removed:
-                raise ExtendedHTTPException(code=404, message="User does not have access to this project")
+                raise ExtendedHTTPException(code=404, message=_ERRORS.NO_PROJECT_ACCESS)
 
             session.commit()
+            UserAccessService._invalidate_auth_cache(user_id)
 
             log_details = UserAccessService._build_project_access_log_details(actor.id, user_id)
             logger.info(f"project_access_removed: {log_details}, domain=user_management")

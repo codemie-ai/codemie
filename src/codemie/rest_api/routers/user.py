@@ -70,9 +70,11 @@ def _get_user_response(user: User) -> UserResponse:
 
             user_projects = user_project_repository.get_by_user_id(session, user.id)
             project_admin_map = {p.project_name: p.is_project_admin for p in user_projects}
+            default_projects = {p.project_name for p in user_projects if p.is_default}
         else:
-            # Legacy path: derive from security context (IDP mode)
+            # Legacy path: derive from security context (IDP mode); no default-project concept
             project_admin_map = {name: name in user.admin_project_names for name in user.project_names}
+            default_projects = set()
 
         display_name_map = dict(
             session.exec(
@@ -85,6 +87,7 @@ def _get_user_response(user: User) -> UserResponse:
             name=name,
             display_name=display_name_map.get(name),
             is_project_admin=is_admin,
+            is_default=name in default_projects,
         )
         for name, is_admin in project_admin_map.items()
     ]

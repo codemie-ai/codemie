@@ -21,7 +21,7 @@ from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import Session, func, select
 
-from codemie.rest_api.models.user_management import UserProject
+from codemie.rest_api.models.user_management import UserDB, UserProject
 
 
 class UserProjectRepository:
@@ -37,7 +37,7 @@ class UserProjectRepository:
         Returns:
             List of UserProject records
         """
-        statement = select(UserProject).where(UserProject.user_id == user_id)
+        statement = select(UserProject).where(UserProject.user_id == user_id).order_by(UserProject.project_name)
         return list(session.exec(statement).all())
 
     def get_by_id(self, session: Session, project_id: str) -> Optional[UserProject]:
@@ -124,6 +124,92 @@ class UserProjectRepository:
         session.delete(user_project)
         session.flush()
         return True
+
+    def get_default_for_user(self, session: Session, user_id: str) -> Optional[UserProject]:
+        """Get the user's current default-project membership row, if any.
+
+        Args:
+            session: Database session
+            user_id: User UUID
+
+        Returns:
+            UserProject with is_default=True, or None if the user has no default.
+        """
+        statement = select(UserProject).where(UserProject.user_id == user_id, UserProject.is_default)
+        return session.exec(statement).first()
+
+    def set_default(self, session: Session, user_id: str, project_name: str) -> Optional[UserProject]:
+        """Mark (user_id, project_name) as the user's default, unsetting any prior default.
+
+        No-op (idempotent) if the target row is already the default. Does not write anything
+        if the target membership does not exist.
+
+        Args:
+            session: Database session
+            user_id: User UUID
+            project_name: Project name
+
+        Returns:
+            The updated UserProject row, or None if the user has no membership in project_name.
+        """
+        self._lock_default_changes(session, user_id)
+        target = self.get_by_user_and_project(session, user_id, project_name)
+        if not target:
+            return None
+
+        previous_default = self.get_default_for_user(session, user_id)
+        if previous_default is not None and previous_default.id != target.id:
+            previous_default.is_default = False
+            previous_default.update_date = datetime.now(UTC)
+            session.add(previous_default)
+            # The one-default partial unique index is checked per statement: the old row's
+            # UPDATE must reach the DB before the new row's, or the flush order (by primary
+            # key, not by the order of changes) can raise IntegrityError on a plain swap.
+            session.flush()
+
+        if not target.is_default:
+            target.is_default = True
+            target.update_date = datetime.now(UTC)
+            session.add(target)
+
+        session.flush()
+        session.refresh(target)
+        return target
+
+    def clear_default(self, session: Session, user_id: str, project_name: str) -> Optional[UserProject]:
+        """Unset the default flag on (user_id, project_name) if currently set.
+
+        No-op if the row exists but isn't currently the default. Returns None if the
+        membership does not exist at all.
+
+        Args:
+            session: Database session
+            user_id: User UUID
+            project_name: Project name
+
+        Returns:
+            The (possibly unchanged) UserProject row, or None if the membership doesn't exist.
+        """
+        self._lock_default_changes(session, user_id)
+        target = self.get_by_user_and_project(session, user_id, project_name)
+        if not target:
+            return None
+
+        if target.is_default:
+            target.is_default = False
+            target.update_date = datetime.now(UTC)
+            session.add(target)
+            session.flush()
+            session.refresh(target)
+
+        return target
+
+    @staticmethod
+    def _lock_default_changes(session: Session, user_id: str) -> None:
+        # Lock a stable row before reading memberships, including when there is no default.
+        # Set and clear must take the same lock so an idempotent set cannot clear a newer
+        # default based on an earlier snapshot of its target membership.
+        session.execute(select(UserDB.id).where(UserDB.id == user_id).with_for_update()).one_or_none()
 
     def update_admin_status(
         self, session: Session, user_id: str, project_name: str, is_project_admin: bool
@@ -521,7 +607,7 @@ class UserProjectRepository:
 
     async def aget_by_user_id(self, session: AsyncSession, user_id: str) -> list[UserProject]:
         """Get all projects for a user (async)"""
-        statement = select(UserProject).where(UserProject.user_id == user_id)
+        statement = select(UserProject).where(UserProject.user_id == user_id).order_by(UserProject.project_name)
         result = await session.execute(statement)
         return list(result.scalars().all())
 

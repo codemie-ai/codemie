@@ -42,6 +42,7 @@ class User(BaseModel):
     roles: list = Field(default_factory=list)
     project_names: list[str] = Field(default_factory=lambda: ['demo'])
     admin_project_names: list[str] = Field(default_factory=list)
+    default_project: str | None = Field(default=None)
     picture: str = ""
     knowledge_bases: list = Field(default_factory=list)
     user_type: str | None = 'regular'
@@ -111,8 +112,15 @@ class User(BaseModel):
 
     @property
     def current_project(self) -> str:
-        apps = self.project_names if self.project_names else [DEMO_PROJECT]
-        return apps[0]
+        if self.default_project:
+            return self.default_project
+        if not self.project_names:
+            return DEMO_PROJECT
+        # No default: the personal project (named after the email) keeps unbound spend on the
+        # personal budget, matching the marketplace no-default rule; sort is the last resort.
+        if self.email and self.email in self.project_names:
+            return self.email
+        return sorted(self.project_names)[0]
 
     def has_access_to_application(self, app_name: str) -> bool:
         return self.is_admin_or_maintainer or (app_name in self.project_names) or self.is_application_admin(app_name)

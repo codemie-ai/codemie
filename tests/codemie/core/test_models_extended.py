@@ -225,8 +225,8 @@ class TestUserResponseModel:
         """Test UserResponse model includes projects array."""
         # Arrange
         projects = [
-            ProjectInfoResponse(name="project1", is_project_admin=True),
-            ProjectInfoResponse(name="project2", is_project_admin=False),
+            ProjectInfoResponse(name="project1", is_project_admin=True, is_default=False),
+            ProjectInfoResponse(name="project2", is_project_admin=False, is_default=False),
         ]
 
         # Act

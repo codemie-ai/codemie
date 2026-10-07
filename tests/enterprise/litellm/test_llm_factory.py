@@ -1285,3 +1285,38 @@ class TestConfigureDirectRuntimeOverridesPremiumWithProjectContext:
             user_id="uid-1",
             budget_id="default_platform",
         )
+
+
+class TestProjectScopeProbeIgnoresInactiveBudgets:
+    """The synchronous probe feeds fallback attribution and must match the async batch probe:
+    an inactive budget is not a funded scope."""
+
+    def test_probe_sql_filters_inactive_budgets(self):
+        from codemie.service.budget.budget_resolution_service import clear_budget_resolution_cache
+        from codemie.enterprise.litellm.llm_factory import _probe_direct_project_budget_scopes
+
+        clear_budget_resolution_cache()
+        executed: list[str] = []
+        session = MagicMock()
+        session.__enter__.return_value = session
+        session.__exit__.return_value = False
+
+        def execute(stmt, params=None):
+            executed.append(str(stmt))
+            result = MagicMock()
+            result.mappings.return_value.all.return_value = []
+            result.fetchall.return_value = []
+            result.__iter__ = lambda self: iter([])
+            return result
+
+        session.execute.side_effect = execute
+
+        with (
+            patch("codemie.clients.postgres.PostgresClient.get_engine"),
+            patch("sqlmodel.Session", return_value=session),
+        ):
+            scopes = _probe_direct_project_budget_scopes("project-1", "user-1")
+
+        assert scopes == set()
+        assert executed, "probe did not query the database"
+        assert "b.is_active = TRUE" in executed[0]

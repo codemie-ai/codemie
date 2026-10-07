@@ -59,7 +59,7 @@ class PluginToolsInfoService:
             if plugin_setting_id:
                 tool_config = ToolConfig(name=ToolSet.PLUGIN.value, integration_id=plugin_setting_id)
 
-            resolved_project = project_name or (user.project_names[0] if user.project_names else None)
+            resolved_project = project_name or (user.current_project if user.project_names else None)
 
             tools = get_plugin_tools_for_assistant(
                 user_id=user.id, project_name=resolved_project, tool_config=tool_config

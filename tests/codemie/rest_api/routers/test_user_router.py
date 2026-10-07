@@ -181,6 +181,46 @@ async def test_get_user_with_management_flag(mock_user, mock_user_project):
         assert len(data["projects"]) >= 0
 
 
+def test_get_user_response_exposes_is_default_with_user_management(mock_user):
+    """EPMCDME-15110: /v1/user marks the user's default project so clients can show it."""
+    from codemie.rest_api.routers.user import _get_user_response
+
+    rows = [
+        MagicMock(project_name="test-project", is_project_admin=True, is_default=False),
+        MagicMock(project_name="dept-a", is_project_admin=False, is_default=True),
+    ]
+    session = MagicMock()
+    session.exec.return_value.all.return_value = []
+    with (
+        patch("codemie.rest_api.routers.user.config.ENABLE_USER_MANAGEMENT", True),
+        patch("codemie.clients.postgres.get_session") as mock_get_session,
+        patch("codemie.repository.user_project_repository.user_project_repository.get_by_user_id", return_value=rows),
+    ):
+        mock_get_session.return_value.__enter__.return_value = session
+        response = _get_user_response(mock_user)
+
+    by_name = {p.name: p for p in response.projects}
+    assert by_name["dept-a"].is_default is True
+    assert by_name["test-project"].is_default is False
+
+
+def test_get_user_response_legacy_path_has_no_default(mock_user):
+    """Legacy (IDP) mode has no default-project concept: every project is_default=False."""
+    from codemie.rest_api.routers.user import _get_user_response
+
+    session = MagicMock()
+    session.exec.return_value.all.return_value = []
+    with (
+        patch("codemie.rest_api.routers.user.config.ENABLE_USER_MANAGEMENT", False),
+        patch("codemie.clients.postgres.get_session") as mock_get_session,
+    ):
+        mock_get_session.return_value.__enter__.return_value = session
+        response = _get_user_response(mock_user)
+
+    assert response.projects
+    assert all(p.is_default is False for p in response.projects)
+
+
 # =============================================================================
 # Test GET /v1/profile endpoint
 # =============================================================================

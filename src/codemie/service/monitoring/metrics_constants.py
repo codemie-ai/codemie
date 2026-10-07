@@ -69,6 +69,7 @@ class MetricsAttributes:
     USER_EMAIL = "user_email"
     EMBEDDINGS_MODEL = "embeddings_model"
     PROJECT = "project"
+    BUDGET_FALLBACK_FROM = "budget_fallback_from"
     REPO_NAME = "repo_name"
     DATASOURCE_TYPE = "datasource_type"
     STATUS = "status"

@@ -413,7 +413,7 @@ def _validate_project_header(headers: Headers | httpx.Headers | dict, user: User
     """Validate project header is present and non-empty.
 
     Background consumers (identified by HEADER_CODEMIE_INTEGRATION) are exempt.
-    Requests with a valid username fallback are also allowed (for backward compatibility).
+    Requests with a default-project fallback or a valid username fallback are also allowed.
 
     Args:
         headers: Request headers
@@ -430,6 +430,10 @@ def _validate_project_header(headers: Headers | httpx.Headers | dict, user: User
         return
 
     project = headers.get(HEADER_CODEMIE_CLI_PROJECT)
+
+    # If no header, the user's default project is used by _extract_request_info
+    if not project and user and user.default_project:
+        return
 
     # If no header, fall back to the user's username only if it actually names a project
     if not project and user and user.username and Application.find_by_id(user.username):
@@ -451,7 +455,11 @@ def _extract_request_info(headers: Headers | httpx.Headers | dict, user: User | 
 
     Note: Project header is validated by _validate_project_header before this function.
     """
-    project = headers.get(HEADER_CODEMIE_CLI_PROJECT) or (user.username if user else "")
+    project = (
+        headers.get(HEADER_CODEMIE_CLI_PROJECT)
+        or (user.default_project if user else None)
+        or (user.username if user else "")
+    )
     return {
         CLIENT_TYPE: headers.get(HEADER_CODEMIE_CLIENT, UNKNOWN),
         SESSION_ID: headers.get(HEADER_CODEMIE_SESSION_ID, str(uuid.uuid4())),
@@ -634,6 +642,30 @@ async def _resolve_budget_availability(user: User, request_info: dict) -> Budget
     return BudgetAvailability(
         user_budget_ids=await budget_service.get_all_category_budget_ids_for_request(user.id),
         project_scopes=await _probe_project_budget_scopes(request_info.get(PROJECT) or None, user.id),
+    )
+
+
+def _flag_personal_budget_fallback(
+    user: User,
+    request_info: dict,
+    availability: BudgetAvailability,
+    *,
+    project_budget_used: bool | None = None,
+) -> None:
+    """Record that a named project had no budget for this user, so spend goes to personal/default.
+
+    Monitoring reads the flag to attribute the usage to the personal identity with the original
+    project kept as budget_fallback_from (EPMCDME-15111 AC6/AC10). request_info[PROJECT] is left
+    untouched because credential and runtime lookups still key on it.
+    """
+    project = request_info.get(PROJECT)
+    funded = bool(availability.project_scopes) if project_budget_used is None else project_budget_used
+    if funded or not project or project in {user.username, user.email}:
+        return
+    request_info[MetricsAttributes.BUDGET_FALLBACK_FROM] = project
+    logger.info(
+        f"budget_event=budget_attribution_fallback component=proxy_router user_id={user.id!r} "
+        f"username={user.username!r} fallback_from_project={project!r} charged_scope='personal'"
     )
 
 
@@ -822,6 +854,9 @@ async def _create_body_stream_with_optional_injection(
             project_runtime=project_runtime,
         )
 
+    # No project runtime was selected for the actual category. An allocation in some
+    # other category does not make this request project-funded.
+    _flag_personal_budget_fallback(user, request_info, availability, project_budget_used=False)
     return await _create_global_budget_body_stream(
         body_bytes=body_bytes,
         user=user,

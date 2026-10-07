@@ -262,7 +262,8 @@ class RegistrationService:
                 async with get_async_session() as async_session:
                     user_projects = await user_project_repository.aget_by_user_id(async_session, user_id)
                     user_detail.projects = [
-                        ProjectInfo(name=p.project_name, is_project_admin=p.is_project_admin) for p in user_projects
+                        ProjectInfo(name=p.project_name, is_project_admin=p.is_project_admin, is_default=p.is_default)
+                        for p in user_projects
                     ]
 
                 return {

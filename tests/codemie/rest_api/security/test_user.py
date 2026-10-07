@@ -156,6 +156,38 @@ class TestUserProperties:
         # Should return first from default applications
         assert user.current_project in ["demo", "codemie"]
 
+    def test_current_project_returns_default_project_when_set(self):
+        """default_project wins over project_names order when set."""
+        user = User(id="test", username="test", project_names=["zebra", "app1"], default_project="app1")
+        assert user.current_project == "app1"
+
+    def test_current_project_is_deterministic_regardless_of_project_names_order(self):
+        """Without a default, current_project picks deterministically (sorted), not insertion order."""
+        user_a = User(id="test", username="test", project_names=["zebra", "app1"])
+        user_b = User(id="test", username="test", project_names=["app1", "zebra"])
+        assert user_a.current_project == user_b.current_project == "app1"
+
+    def test_current_project_ignores_falsy_default_project(self):
+        """An explicit None/empty default_project falls through to the deterministic pick."""
+        user = User(id="test", username="test", project_names=["zebra", "app1"], default_project=None)
+        assert user.current_project == "app1"
+
+    def test_current_project_prefers_personal_project_without_default(self):
+        """No default: the personal (email-named) membership wins over any alphabetical pick."""
+        for names in (["alpha", "u@example.com", "zeta"], ["zeta", "alpha", "u@example.com"]):
+            user = User(id="test", username="test", email="u@example.com", project_names=names)
+            assert user.current_project == "u@example.com"
+
+    def test_current_project_default_beats_personal_project(self):
+        user = User(
+            id="test",
+            username="test",
+            email="u@example.com",
+            project_names=["u@example.com", "philips-hr"],
+            default_project="philips-hr",
+        )
+        assert user.current_project == "philips-hr"
+
     @patch('codemie.rest_api.security.user.config.ENV', 'production')
     @patch('codemie.rest_api.security.user.config.ADMIN_USER_ID', None)
     @patch('codemie.rest_api.security.user.config.ADMIN_ROLE_NAME', 'admin')

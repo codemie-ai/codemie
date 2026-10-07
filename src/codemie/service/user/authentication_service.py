@@ -156,6 +156,7 @@ class AuthenticationService:
         kbs = await user_kb_repository.aget_by_user_id(session, db_user.id)
 
         # Map to security.User
+        default_project = next((p.project_name for p in projects if p.is_default), None)
         return security_user.User(
             id=db_user.id,
             username=db_user.username,
@@ -166,6 +167,7 @@ class AuthenticationService:
             roles=[],  # IDP roles ignored when flag ON
             project_names=[p.project_name for p in projects],
             admin_project_names=[p.project_name for p in projects if p.is_project_admin],
+            default_project=default_project,
             knowledge_bases=[kb.kb_name for kb in kbs],
             is_admin=db_user.is_admin,
             is_maintainer=db_user.is_maintainer,
@@ -400,6 +402,7 @@ class AuthenticationService:
 
             security_user_ins.project_names = [p.project_name for p in projects]
             security_user_ins.admin_project_names = [p.project_name for p in projects if p.is_project_admin]
+            security_user_ins.default_project = next((p.project_name for p in projects if p.is_default), None)
             security_user_ins.knowledge_bases = [kb.kb_name for kb in kbs]
 
         logger.debug(f"User authenticated ({auth_source}): user_id={security_user_ins.id}")
@@ -729,7 +732,8 @@ class AuthenticationService:
             # Load user projects for login response (F-09: include project_limit + projects)
             user_projects = await user_project_repository.aget_by_user_id(session, user.id)
             projects_info = [
-                ProjectInfo(name=p.project_name, is_project_admin=p.is_project_admin) for p in user_projects
+                ProjectInfo(name=p.project_name, is_project_admin=p.is_project_admin, is_default=p.is_default)
+                for p in user_projects
             ]
 
             # Build response object before commit to avoid expired attribute access

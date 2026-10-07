@@ -1,0 +1,116 @@
+{
+  "task": "Attribute LLM proxy budget/spend to a user's default project via a persisted is_default flag, a deterministic User.current_project fallback, wiring through IDP/auth/service layers, and a one-time backfill migration for existing multi-project users (EPMCDME-15111).",
+  "generated": "2026-09-24T00:00:00Z",
+  "dimensions": {
+    "component_scope": {
+      "score": 6,
+      "label": "XXL",
+      "affected": "User (rest_api/security/user.py), LocalIdp (rest_api/security/idp/local.py), EnterpriseIdpWrapper (enterprise/idp/dependencies.py), AuthenticationService (service/user/authentication_service.py), llm_service.utils._resolve_effective_project, LLM proxy_router (_extract_request_info budget/project resolution)",
+      "layers": "Security/API, Enterprise IDP Integration, Service, LLM Proxy Integration (External), DB-Persistence"
+    },
+    "requirements_clarity": {
+      "score": 2,
+      "label": "S",
+      "status": "Clear",
+      "gaps": "None significant observed in the implementation evidence — the migration docstring explicitly documents rationale, idempotency, and the no-op downgrade tradeoff, and tests are organized around explicit numbered acceptance criteria (AC2, AC3, AC7, AC8, AC9)."
+    },
+    "technical_risk": {
+      "score": 5,
+      "label": "XL",
+      "risk_factors": "Changes core authentication/user-identity resolution (User.current_project fallback) exercised on every authenticated request; alters project/budget attribution for existing multi-project users who previously had no explicit default; ships a one-time data backfill migration whose downgrade is a documented no-op (effectively irreversible); interacts with money-sensitive LLM budget/billing attribution (project vs. personal vs. premium-model budget routing) in proxy_router.py",
+      "mitigation": "Deterministic alphabetically-sorted fallback intentionally matches the prior unordered-first-row pick for the common case; migration is additive and idempotent (re-run is a no-op); backfilled defaults are visible and correctable post-deploy via the existing EPMCDME-15110 admin API (set_default_project); extensive unit test coverage added across 6 test files including edge-case parametrization for shared/global-asset budget routing"
+    },
+    "file_change_estimate": {
+      "score": 6,
+      "label": "XXL",
+      "modified_files": 12,
+      "modified_file_list": [
+        "src/codemie/enterprise/idp/dependencies.py",
+        "src/codemie/enterprise/litellm/proxy_router.py",
+        "src/codemie/rest_api/security/idp/local.py",
+        "src/codemie/rest_api/security/user.py",
+        "src/codemie/service/llm_service/utils.py",
+        "src/codemie/service/user/authentication_service.py",
+        "tests/codemie/rest_api/security/idp/test_local_idp.py",
+        "tests/codemie/rest_api/security/test_user.py",
+        "tests/codemie/service/llm_service/test_utils_litellm_context.py",
+        "tests/codemie/service/user/test_authentication_service.py",
+        "tests/enterprise/idp/test_enterprise_idp_wrapper.py",
+        "tests/enterprise/litellm/test_proxy_router.py"
+      ],
+      "new_files": 6,
+      "new_file_list": [
+        "src/external/alembic/versions/d2c276d4390e_backfill_default_project_for_existing_.py",
+        "docs/superpowers/tasks/2026-09-23-epmcdme-15111-budget-attribution/plan.md",
+        "docs/superpowers/tasks/2026-09-23-epmcdme-15111-budget-attribution/decisions.jsonl",
+        "docs/superpowers/tasks/2026-09-23-epmcdme-15111-budget-attribution/events.jsonl",
+        "docs/superpowers/tasks/2026-09-23-epmcdme-15111-budget-attribution/code-review-check.json",
+        "docs/superpowers/tasks/2026-09-23-epmcdme-15111-budget-attribution/code-review-final.json"
+      ],
+      "affected_dirs": [
+        "src/codemie/enterprise/idp/",
+        "src/codemie/enterprise/litellm/",
+        "src/codemie/rest_api/security/",
+        "src/codemie/rest_api/security/idp/",
+        "src/codemie/service/llm_service/",
+        "src/codemie/service/user/",
+        "src/external/alembic/versions/",
+        "tests/codemie/rest_api/security/",
+        "tests/codemie/rest_api/security/idp/",
+        "tests/codemie/service/llm_service/",
+        "tests/codemie/service/user/",
+        "tests/enterprise/idp/",
+        "tests/enterprise/litellm/",
+        "docs/superpowers/tasks/2026-09-23-epmcdme-15111-budget-attribution/"
+      ]
+    },
+    "dependencies": {
+      "score": 1,
+      "label": "XS",
+      "new_packages": [],
+      "version_changes": []
+    },
+    "affected_layers": {
+      "score": 4,
+      "label": "L",
+      "layers_changed": [
+        "Security/API",
+        "Service",
+        "External Integration (Enterprise IDP + LiteLLM Proxy)",
+        "DB-Persistence"
+      ],
+      "schema_migration": true,
+      "cross_system": true
+    }
+  },
+  "total": 24,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 18,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Touches 6 components spanning auth/security (User model, LocalIdp), enterprise IDP integration (EnterpriseIdpWrapper), service layer (AuthenticationService, llm_service.utils), and LLM proxy integration (proxy_router) — multiple subsystems. User (rest_api/security/user.py) is a core shared utility exercised on every authenticated request, which is the basis for the shared-utilities red flag."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "Modifies authentication/authorization identity resolution (User.current_project fallback) affecting every existing multi-project user, ties into money-sensitive LLM budget/billing attribution (project vs. personal vs. premium routing in proxy_router.py), and ships a one-time data backfill migration whose downgrade is a documented no-op."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "Diffstat reports 18 files changed (977 insertions, 2 deletions), which maps to the XXL band under the actual-mode file-count rule (16+ files). Of the 18, 12 are modified production/test files and 6 are new: 1 Alembic migration plus 5 SDLC Factory run-tracking artifacts (plan.md, decisions.jsonl, events.jsonl, code-review-check.json, code-review-final.json) that inflate the raw count relative to true code churn."
+    },
+    {
+      "dimension": "affected_layers",
+      "reason": "Change spans Security/API (User, LocalIdp), Service (AuthenticationService, llm_service.utils), External/Integration (EnterpriseIdpWrapper bridging to the codemie_enterprise package; proxy_router's LiteLLM budget/project resolution), and DB-Persistence (backfill migration) — 4 distinct layers with a migration involved."
+    }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from XL to XXL: touches a core shared utility (User model in rest_api/security/user.py, used on every authenticated request)",
+    "Technical Risk bumped from M to L: change affects authentication/authorization (User.current_project fallback logic, IDP default_project resolution)",
+    "Technical Risk bumped from L to XL: requires a one-time data migration (backfill is_default for existing multi-project users) with an effectively irreversible no-op downgrade",
+    "File Change Estimate: 'requires data migration' red flag applies but has no further numeric effect — already at ceiling (XXL/6) from the diffstat's raw 18-file count"
+  ],
+  "split_recommendation": null
+}

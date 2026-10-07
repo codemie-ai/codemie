@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "task": "Insert the user's default project as a fallback billing-attribution tier (between membership and personal) across the shared LLM billing resolver, nine unbound-flow REST endpoints, and the CLI/IDE proxy, keeping the two duplicated budget-scope-probe functions in lockstep.",
+  "generated": "2026-09-23",
+  "dimensions": {
+    "component_scope":      { "score": 6, "label": "XXL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 22,
+  "size": "L",
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Touches the security/auth User model, the shared LLM billing-attribution resolver (_resolve_effective_project/set_llm_context — 'the single shared entry point'), 9 call sites across 4 REST router files (assistant.py, workflow.py, workflow_executions.py, skill.py), and 2 files in the enterprise/LiteLLM proxy layer (proxy_router.py, llm_factory.py) — 8+ distinct components across 4 subsystems, plus a genuinely new abstraction (default-project awareness has no existing surface on the runtime User object)." },
+    { "dimension": "technical_risk", "reason": "Fallback-chain insertion into well-understood, already-correct functions (low-to-moderate novelty per research) is bumped to L because the change modifies src/codemie/rest_api/security/user.py, the core authentication User model — an auth-surface change red flag — and because the two independently-implemented budget-scope-probe functions must be kept manually synchronized (a real desync risk with no shared implementation to unify, per explicit prior instruction)." },
+    { "dimension": "file_change_estimate", "reason": "Estimated ~9-10 modified files (user.py, 2 User-construction sites if the field approach is chosen, utils.py, 4 router files, proxy_router.py, llm_factory.py) plus 2-4 new/extended test files, spanning at least 3 directories (rest_api/security, service/llm_service, rest_api/routers, enterprise/litellm) — test coverage for the exact regression surfaces (ordering determinism, is_global+default interplay, CLI header-absent+default) is currently zero, so every AC needs new tests, not just extensions." },
+    { "dimension": "affected_layers", "reason": "4 distinct layers touched: Security/Auth (User model), Service (LLM billing-attribution resolver), API (4 router files), and the Enterprise/LiteLLM proxy layer — no DB schema migration is required (EPMCDME-15110 already added is_default) and no new external service is introduced, so this stops short of a full-stack + new-integration profile." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from XL to XXL (capped): touches core shared utility — _resolve_effective_project/set_llm_context is explicitly the single shared entry point feeding every AI-generation and chat-execution flow.",
+    "Component Scope: also affects multiple workflows/agents (assistant, workflow, skill generation endpoints) — same dimension, already capped at XXL by the shared-utility flag above.",
+    "Technical Risk bumped from M to L: change affects the authentication/authorization User model (src/codemie/rest_api/security/user.py) — auth-surface red flag."
+  ],
+  "split_recommendation": null
+}

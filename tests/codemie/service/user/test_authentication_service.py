@@ -330,6 +330,71 @@ class TestLoadUserForAuth:
             assert result.is_admin is False
 
     @pytest.mark.asyncio
+    async def test_load_user_for_auth_populates_default_project(self):
+        """default_project is derived from the UserProject row with is_default=True."""
+        session = AsyncMock()
+        user_id = str(uuid4())
+
+        mock_user = UserDB(
+            id=user_id,
+            username="testuser",
+            name="Test User",
+            email="test@example.com",
+            picture="",
+            user_type="human",
+            is_admin=False,
+        )
+        mock_projects = [
+            UserProject(user_id=user_id, project_name="project1", is_project_admin=True, is_default=False),
+            UserProject(user_id=user_id, project_name="project2", is_project_admin=False, is_default=True),
+        ]
+
+        with (
+            patch("codemie.service.user.authentication_service.user_repository") as mock_user_repo,
+            patch("codemie.service.user.authentication_service.user_project_repository") as mock_proj_repo,
+            patch("codemie.service.user.authentication_service.user_kb_repository") as mock_kb_repo,
+        ):
+            mock_user_repo.aget_active_by_id = AsyncMock(return_value=mock_user)
+            mock_proj_repo.aget_by_user_id = AsyncMock(return_value=mock_projects)
+            mock_kb_repo.aget_by_user_id = AsyncMock(return_value=[])
+
+            result = await AuthenticationService.load_user_for_auth(session, user_id)
+
+            assert result.default_project == "project2"
+
+    @pytest.mark.asyncio
+    async def test_load_user_for_auth_no_default_project_set(self):
+        """default_project is None when no UserProject row has is_default=True."""
+        session = AsyncMock()
+        user_id = str(uuid4())
+
+        mock_user = UserDB(
+            id=user_id,
+            username="testuser",
+            name="Test User",
+            email="test@example.com",
+            picture="",
+            user_type="human",
+            is_admin=False,
+        )
+        mock_projects = [
+            UserProject(user_id=user_id, project_name="project1", is_project_admin=True, is_default=False),
+        ]
+
+        with (
+            patch("codemie.service.user.authentication_service.user_repository") as mock_user_repo,
+            patch("codemie.service.user.authentication_service.user_project_repository") as mock_proj_repo,
+            patch("codemie.service.user.authentication_service.user_kb_repository") as mock_kb_repo,
+        ):
+            mock_user_repo.aget_active_by_id = AsyncMock(return_value=mock_user)
+            mock_proj_repo.aget_by_user_id = AsyncMock(return_value=mock_projects)
+            mock_kb_repo.aget_by_user_id = AsyncMock(return_value=[])
+
+            result = await AuthenticationService.load_user_for_auth(session, user_id)
+
+            assert result.default_project is None
+
+    @pytest.mark.asyncio
     async def test_load_user_for_auth_not_found(self):
         """Returns None when user does not exist"""
         # Arrange
@@ -1498,6 +1563,42 @@ class TestFinalizeAuthenticationPersonalProjectGuard:
             await AuthenticationService._finalize_authentication(security_user_ins, "persistent")
 
             mock_personal.ensure_personal_project_async.assert_called_once_with(user_id, "test@example.com")
+
+
+class TestFinalizeAuthenticationDefaultProject:
+    """The persistent/IdP login path must carry the default project (EPMCDME-15111 attribution)."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "rows,expected",
+        [
+            ([("proj-a", False), ("proj-b", True)], "proj-b"),
+            ([("proj-a", False), ("proj-b", False)], None),
+        ],
+    )
+    async def test_populates_default_project_from_memberships(self, rows, expected):
+        user_id = str(uuid4())
+        security_user_ins = security_user.User(
+            id=user_id, username="u", email="u@example.com", user_type="service_account", project_names=[]
+        )
+        projects = [
+            UserProject(user_id=user_id, project_name=name, is_project_admin=False, is_default=is_default)
+            for name, is_default in rows
+        ]
+
+        with (
+            patch("codemie.clients.postgres.get_async_session") as mock_get_session,
+            patch("codemie.service.user.authentication_service.user_project_repository") as mock_proj_repo,
+            patch("codemie.service.user.authentication_service.user_kb_repository") as mock_kb_repo,
+        ):
+            mock_get_session.return_value = _make_async_session_cm(AsyncMock())
+            mock_proj_repo.aget_by_user_id = AsyncMock(return_value=projects)
+            mock_kb_repo.aget_by_user_id = AsyncMock(return_value=[])
+
+            result = await AuthenticationService._finalize_authentication(security_user_ins, "persistent")
+
+        assert result.default_project == expected
+        assert result.project_names == ["proj-a", "proj-b"]
 
 
 class TestAuthenticatePersistentUserRaceCondition:

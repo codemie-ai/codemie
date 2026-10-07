@@ -98,6 +98,7 @@ class LocalIdp(BaseIdp):
                 projects = await user_project_repository.aget_by_user_id(session, db_user.id)
                 kbs = await user_kb_repository.aget_by_user_id(session, db_user.id)
 
+            default_project = next((p.project_name for p in projects if p.is_default), None)
             return User(
                 id=db_user.id,
                 username=db_user.username,
@@ -108,6 +109,7 @@ class LocalIdp(BaseIdp):
                 roles=[],
                 project_names=[p.project_name for p in projects],
                 admin_project_names=[p.project_name for p in projects if p.is_project_admin],
+                default_project=default_project,
                 knowledge_bases=[kb.kb_name for kb in kbs],
                 is_admin=db_user.is_admin,
                 is_maintainer=db_user.is_maintainer,

@@ -90,6 +90,7 @@ async def update_profile(data: UserProfileUpdateRequest, user: User = Depends(au
                 name=p.project_name,
                 display_name=display_name_map.get(p.project_name),
                 is_project_admin=p.is_project_admin,
+                is_default=p.is_default,
             )
             for p in user_projects
         ]

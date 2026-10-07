@@ -69,8 +69,8 @@ def mock_updated_user():
 def mock_user_projects():
     """Mock user projects returned from user_project_repository."""
     return [
-        SimpleNamespace(project_name="demo", is_project_admin=False),
-        SimpleNamespace(project_name="analytics", is_project_admin=True),
+        SimpleNamespace(project_name="demo", is_project_admin=False, is_default=False),
+        SimpleNamespace(project_name="analytics", is_project_admin=True, is_default=True),
     ]
 
 
@@ -662,9 +662,9 @@ class TestUpdateProfileResponseStructure:
         mock_get_session.return_value.__enter__.return_value = mock_session
 
         user_projects = [
-            SimpleNamespace(project_name="project-a", is_project_admin=True),
-            SimpleNamespace(project_name="project-b", is_project_admin=False),
-            SimpleNamespace(project_name="project-c", is_project_admin=False),
+            SimpleNamespace(project_name="project-a", is_project_admin=True, is_default=True),
+            SimpleNamespace(project_name="project-b", is_project_admin=False, is_default=False),
+            SimpleNamespace(project_name="project-c", is_project_admin=False, is_default=False),
         ]
         mock_user_project_repo.get_by_user_id.return_value = user_projects
 
@@ -677,8 +677,10 @@ class TestUpdateProfileResponseStructure:
         assert len(result.projects) == 3
         assert result.projects[0].name == "project-a"
         assert result.projects[0].is_project_admin is True
+        assert result.projects[0].is_default is True
         assert result.projects[1].name == "project-b"
         assert result.projects[1].is_project_admin is False
+        assert result.projects[1].is_default is False
         assert result.projects[2].name == "project-c"
         assert result.projects[2].is_project_admin is False
 

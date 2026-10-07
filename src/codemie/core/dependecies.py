@@ -150,6 +150,12 @@ def get_current_project(fallback: str | None = None) -> str:
     return fallback or ""
 
 
+def get_budget_fallback_from() -> str | None:
+    """Project whose budget was expected but that fell back to personal/default for this request."""
+    ctx = litellm_context.get(None)
+    return ctx.budget_fallback_from if ctx else None
+
+
 def get_project_for_metric() -> str:
     """Return project for metric attribution. Falls back to user email when project is unknown."""
     project = get_current_project()
