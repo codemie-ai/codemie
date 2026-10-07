@@ -21,6 +21,8 @@ This module provides utilities for:
 - Centralizing logic shared between validation and initialization
 """
 
+from collections import defaultdict
+from functools import lru_cache
 from typing import Optional, Type
 
 from pydantic import BaseModel
@@ -34,6 +36,33 @@ from codemie.service.settings.settings import SettingsService
 
 
 INTERNAL_TOOLKITS = (ToolSet.PLUGIN.value, ToolSet.GIT.value)
+
+WORKFLOW_UNSUPPORTED_INTEGRATION_TYPES: frozenset[str] = frozenset({ToolSet.PLUGIN.value})
+"""
+Integration types that can never be matched when filtering workflows.
+
+Workflow tool records (WorkflowTool.tool / WorkflowAssistantTool.name) store only a flat
+tool-name string — unlike Assistant's ToolKitDetails, there is no toolkit field to match
+"Plugin" by name. Plugin tool names are also dynamic/per-instance (fetched live from the
+enterprise plugin service), so unlike Git's fixed GIT_TOOL_NAMES, no static tool-name set
+can ever be built for it either. Callers filtering workflows by integration_type must
+reject these values explicitly instead of silently matching nothing.
+"""
+
+GIT_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        "create_branch",
+        "create_pull_request",
+        "create_file",
+        "delete_file",
+        "list_branches_in_repo",
+        "update_file",
+        "update_file_diff",
+        "set_active_branch",
+        "get_pr_changes",
+        "create_pr_change_comment",
+    }
+)
 
 
 def get_enum_value(enum_or_value) -> Optional[str]:
@@ -192,6 +221,63 @@ class ToolMetadataService:
         Check if toolkit is internal (Plugin, Git).
         """
         return get_enum_value(toolkit_name) in INTERNAL_TOOLKITS
+
+    @staticmethod
+    @lru_cache(maxsize=1)
+    def _credential_type_to_tool_names() -> dict[str, frozenset[str]]:
+        """
+        Reverse registry: credential_type -> tool names that carry it.
+
+        Built from toolkit_provider's discoverable toolkits (excludes Plugin/Git — see
+        is_internal_toolkit — since those never expose credential_type through config_class;
+        callers must match them by toolkit name instead). Cached because toolkit_provider's
+        registry is static for the process lifetime.
+        """
+        mapping: dict[str, set[str]] = defaultdict(set)
+        for toolkit_class in toolkit_provider.get_available_toolkits():
+            try:
+                definition = toolkit_class.get_definition()
+            except Exception as e:
+                logger.warning(
+                    f"Could not get definition for toolkit {toolkit_class.__name__}: {e}. "
+                    f"Its tools will be excluded from integration_type/credential_type filtering "
+                    f"until process restart (result is cached)."
+                )
+                continue
+
+            if definition is None or ToolMetadataService.is_internal_toolkit(definition.toolkit):
+                continue
+
+            for tool in definition.tools:
+                config_class = getattr(tool, "config_class", None) or getattr(definition, "config_class", None)
+                credential_type = ToolMetadataService.get_credential_type(config_class)
+                if credential_type:
+                    mapping[credential_type].add(tool.name)
+
+        return {credential_type: frozenset(names) for credential_type, names in mapping.items()}
+
+    @staticmethod
+    def get_supported_credential_types() -> frozenset[str]:
+        """
+        Credential types that can be used as an integration_type filter value: those that resolve
+        to at least one tool, plus the internal toolkits (Git, Plugin) which are matched separately.
+        """
+        return frozenset(ToolMetadataService._credential_type_to_tool_names()) | frozenset(INTERNAL_TOOLKITS)
+
+    @staticmethod
+    def get_tool_names_for_credential_types(credential_types: list[str]) -> set[str]:
+        """
+        Resolve credential_type values to the set of tool names that carry them.
+        Internal toolkits (Plugin, Git) are not in the discoverable registry; Git tool
+        names are added explicitly via GIT_TOOL_NAMES when "Git" is requested.
+        """
+        mapping = ToolMetadataService._credential_type_to_tool_names()
+        names: set[str] = set()
+        for credential_type in credential_types:
+            names |= mapping.get(credential_type, frozenset())
+        if ToolSet.GIT.value in credential_types:
+            names |= GIT_TOOL_NAMES
+        return names
 
     @staticmethod
     def resolve_config(

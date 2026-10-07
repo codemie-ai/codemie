@@ -84,6 +84,10 @@ class WorkflowFilter(BaseFilterData):
             "filter_compose_func": fltr_func.compose_term_filter,
             "is_bool": True,
         },
+        "integration_type": {
+            "field_name": ["tools", "assistants"],
+            "filter_compose_func": fltr_func.compose_workflow_integration_type_filter,
+        },
     }
 
 
@@ -149,6 +153,10 @@ class AssistantFilter(BaseFilterData):
         "created_date": {
             "field_name": "created_date",
             "filter_compose_func": fltr_func.compose_comparison_filter,
+        },
+        "integration_type": {
+            "field_name": "toolkits",
+            "filter_compose_func": fltr_func.compose_credential_type_filter,
         },
     }
 

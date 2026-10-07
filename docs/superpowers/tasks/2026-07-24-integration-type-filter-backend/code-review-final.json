@@ -1,0 +1,34 @@
+{
+  "decision": "request-changes",
+  "rationale": "All 19 acceptance criteria satisfied; one major functional gap found: 'Plugin' appears in the shared useAllIntegrationTypeOptions hook options (plugin key is in CREDENTIAL_UI_MAPPING) and is shown in the Workflow integration_type filter, but compose_workflow_integration_type_filter has no path to match Plugin-using workflows — Plugin is an INTERNAL_TOOLKIT excluded from the discoverable registry and has no PLUGIN_TOOL_NAMES constant (unlike Git). Selecting 'Plugin' in the Workflow filter triggers query.where(false()), silently returning 0 results for all workflows even when Plugin tools are present. All other blind-lens flags were dismissed: the delete newQuery.integration_type pattern is the standard URL-rebuild pattern (false positive), lru_cache and GIT_TOOL_NAMES are by-design and spec-documented, field_name indexing is an internal-contract convention, and jsonb_array_elements(null) is safe on PostgreSQL 15.",
+  "confidence": "medium",
+  "risk_flags": [],
+  "business_review": [
+    {"criterion": "integration_type filter on GET /v1/workflows (multi-value, OR-combined)", "status": "satisfied"},
+    {"criterion": "BE scans workflows.tools[i].tool (standalone path)", "status": "satisfied"},
+    {"criterion": "BE scans workflows.assistants[i].tools[j].name (embedded path)", "status": "satisfied"},
+    {"criterion": "Tool names resolved via get_tool_names_for_credential_types with GIT_TOOL_NAMES", "status": "satisfied"},
+    {"criterion": "Unknown filter values degrade to empty results, not errors", "status": "satisfied"},
+    {"criterion": "No denormalized-column approach", "status": "satisfied"},
+    {"criterion": "WorkflowFilter.FILTER_CONFIG wired correctly", "status": "satisfied"},
+    {"criterion": "FE Multiselect in WorkflowsFilters reuses useAllIntegrationTypeOptions", "status": "satisfied"},
+    {"criterion": "integration_type excluded from TEMPLATES and marketplace scopes", "status": "satisfied"},
+    {"criterion": "INITIAL_WORKFLOWS_FILTERS, areFiltersEmpty, handleApply URL cleanup updated", "status": "satisfied"},
+    {"criterion": "Story 1 compose_credential_type_filter, AssistantFilters, FILTER_INITIAL_STATE", "status": "satisfied"}
+  ],
+  "standards_review": [
+    {"standard": "commit-format", "status": "pass", "notes": "EPMCDME-7212 ticket-id prefix on all commits, follows project convention"},
+    {"standard": "code-quality", "status": "pass", "notes": "No blocking style issues; imports are co-located (deferred imports for circular-import avoidance)"},
+    {"standard": "security", "status": "pass", "notes": "No user input reaches SQL directly; all filtering is via parameterized SQLAlchemy IN-list (POSTCOMPILE); no injection vector"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "severity": "major",
+      "triage": "patch",
+      "problem": "Plugin integration type silently returns 0 Workflow results",
+      "impact": "Users who select 'Plugin' in the Workflow integration_type Multiselect always see an empty workflow list. compose_workflow_integration_type_filter calls get_tool_names_for_credential_types(['Plugin']), which returns an empty set (Plugin is in INTERNAL_TOOLKITS so it is excluded from _credential_type_to_tool_names, and there is no PLUGIN_TOOL_NAMES constant analog to GIT_TOOL_NAMES). An empty tool_names triggers query.where(false()), filtering out every workflow. The FE shows this option because useAllIntegrationTypeOptions maps all CREDENTIAL_UI_MAPPING keys, which includes 'plugin'.",
+      "recommendation": "Exclude Plugin from Workflow filter options on the FE by filtering the result of useAllIntegrationTypeOptions in WorkflowsFilters (or creating a useWorkflowIntegrationTypeOptions variant that drops Plugin). Unlike Git, Plugin tool names are user-defined and cannot be enumerated in a static frozenset, so the fix is FE-only: do not offer an option the BE cannot honor."
+    }
+  ]
+}

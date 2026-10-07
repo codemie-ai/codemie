@@ -742,3 +742,112 @@ class TestToolMetadataService:
         assert result.integration_id is None
         assert result.tool_creds == {"api_key": "inline-key", "api_secret": "inline-secret"}
         assert result.name == "inline_tool"
+
+
+class TestCredentialTypeToToolNames:
+    """Tests for the credential_type -> tool name reverse registry, exercised against the
+    real toolkit_provider registry (not mocked) so a broken mapping is actually caught."""
+
+    def test_jira_resolves_to_its_tool_name(self):
+        names = ToolMetadataService.get_tool_names_for_credential_types(["Jira"])
+        assert "generic_jira_tool" in names
+
+    def test_confluence_and_jira_do_not_share_tool_names(self):
+        """Jira and Confluence both live under the shared 'Project Management' toolkit —
+        the reverse map must still tell their tools apart."""
+        jira_names = ToolMetadataService.get_tool_names_for_credential_types(["Jira"])
+        confluence_names = ToolMetadataService.get_tool_names_for_credential_types(["Confluence"])
+
+        assert jira_names.isdisjoint(confluence_names)
+        assert jira_names
+        assert confluence_names
+
+    def test_git_resolves_to_the_separate_vcs_toolkit_tools(self):
+        """ "Git" is not purely handled via the internal Git toolkit's own name: the
+        separate discoverable "VCS" toolkit exposes github/gitlab tools whose config_class
+        also declares credential_type=Git, so they must appear in the reverse map too."""
+        names = ToolMetadataService.get_tool_names_for_credential_types(["Git"])
+        assert "github" in names
+        assert "gitlab" in names
+
+    def test_plugin_resolves_to_empty_set(self):
+        """Plugin has no discoverable toolkit exposing credential_type=Plugin through
+        config_class — callers must match it by toolkit name instead (see
+        is_internal_toolkit)."""
+        assert ToolMetadataService.get_tool_names_for_credential_types(["Plugin"]) == set()
+
+    def test_supported_credential_types_include_registry_and_internal_toolkits(self):
+        supported = ToolMetadataService.get_supported_credential_types()
+        assert {"Jira", "Git", "Plugin"} <= supported
+        assert "NotARealIntegration" not in supported
+        for unsupported in ("A2A", "LiteLLM", "SVN", "FileSystem", "MCP", "Scheduler", "DIAL", "Webhook"):
+            assert unsupported not in supported
+
+    def test_unknown_credential_type_resolves_to_empty_set(self):
+        assert ToolMetadataService.get_tool_names_for_credential_types(["NotARealIntegration"]) == set()
+
+    def test_multiple_credential_types_union_their_tool_names(self):
+        jira_only = ToolMetadataService.get_tool_names_for_credential_types(["Jira"])
+        confluence_only = ToolMetadataService.get_tool_names_for_credential_types(["Confluence"])
+        combined = ToolMetadataService.get_tool_names_for_credential_types(["Jira", "Confluence"])
+
+        assert combined == jira_only | confluence_only
+
+    def test_empty_input_resolves_to_empty_set(self):
+        assert ToolMetadataService.get_tool_names_for_credential_types([]) == set()
+
+    def test_git_tool_names_constant_exists_and_contains_expected_tools(self):
+        from codemie.service.tools.tool_metadata_service import GIT_TOOL_NAMES
+
+        assert isinstance(GIT_TOOL_NAMES, frozenset)
+        assert "create_branch" in GIT_TOOL_NAMES
+        assert "create_pull_request" in GIT_TOOL_NAMES
+        assert "list_branches_in_repo" in GIT_TOOL_NAMES
+        assert "set_active_branch" in GIT_TOOL_NAMES
+
+    def test_git_includes_internal_git_toolkit_tool_names(self):
+        """GIT_TOOL_NAMES (create_branch etc.) are folded in alongside the VCS toolkit tools."""
+        from codemie.service.tools.tool_metadata_service import GIT_TOOL_NAMES
+
+        names = ToolMetadataService.get_tool_names_for_credential_types(["Git"])
+        assert GIT_TOOL_NAMES.issubset(names)
+
+    def test_git_combined_with_other_includes_both(self):
+        from codemie.service.tools.tool_metadata_service import GIT_TOOL_NAMES
+
+        result = ToolMetadataService.get_tool_names_for_credential_types(["Git", "Jira"])
+        assert GIT_TOOL_NAMES.issubset(result)
+        assert "generic_jira_tool" in result
+
+    def test_non_git_credential_types_unaffected_by_git_tool_names(self):
+        """Requesting Jira must not include Git tool names."""
+        result = ToolMetadataService.get_tool_names_for_credential_types(["Jira"])
+        assert "create_branch" not in result
+
+    def test_toolkit_definition_error_is_logged_at_warning_and_skipped(self):
+        """A toolkit whose get_definition() raises must not break the whole registry
+        build, but the failure must be visible at WARNING (not swallowed at DEBUG) —
+        the registry is @lru_cache'd, so a startup failure would otherwise silently
+        persist for the process lifetime with no observable signal."""
+
+        class BrokenToolkit:
+            @classmethod
+            def get_definition(cls):
+                raise ValueError("boom")
+
+        ToolMetadataService._credential_type_to_tool_names.cache_clear()
+        try:
+            with (
+                patch(
+                    "codemie.service.tools.tool_metadata_service.toolkit_provider.get_available_toolkits",
+                    return_value=[BrokenToolkit],
+                ),
+                patch("codemie.service.tools.tool_metadata_service.logger.warning") as mock_warning,
+            ):
+                result = ToolMetadataService._credential_type_to_tool_names()
+
+            assert result == {}
+            assert mock_warning.called
+            assert "BrokenToolkit" in mock_warning.call_args[0][0]
+        finally:
+            ToolMetadataService._credential_type_to_tool_names.cache_clear()

@@ -820,3 +820,78 @@ class TestUpdatePrunesMsTeamsOnProjectMove:
         AssistantRepository.update(assistant, MagicMock(), MagicMock())
 
         mock_prune.assert_not_called()
+
+
+def test_assistant_filter_config_has_integration_type():
+    from codemie.service.filter.filter_services import AssistantFilter
+    from codemie.service.filter.compose_filter_functions import compose_credential_type_filter
+
+    config = AssistantFilter.FILTER_CONFIG["integration_type"]
+    assert config["field_name"] == "toolkits"
+    assert config["filter_compose_func"] is compose_credential_type_filter
+
+
+@patch("codemie.service.assistant.assistant_repository.Session")
+def test_query_applies_integration_type_filter(mock_session_class, mock_user):
+    """AssistantRepository.query() applies the integration_type filter via AssistantFilter."""
+    mock_session = MagicMock()
+    mock_session_class.return_value.__enter__.return_value = mock_session
+    mock_session.exec.return_value.all.return_value = []
+    mock_session.exec.return_value.one.return_value = 0
+
+    AssistantRepository().query(
+        user=mock_user,
+        scope=AssistantScope.VISIBLE_TO_USER,
+        filters={"integration_type": "AzureDevOps"},
+    )
+
+    executed_queries = [str(c.args[0]) for c in mock_session.exec.call_args_list]
+    assert any("EXISTS" in q and "jsonb_array_elements" in q for q in executed_queries)
+
+
+@patch("codemie.service.assistant.assistant_repository.Session")
+def test_query_integration_type_git_matches_by_toolkit_name_not_settings(mock_session_class, mock_user):
+    """Regression test: an assistant with a Git toolkit using auto_credentials_lookup
+    (toolkits[].settings == null, the common case — see the reported bug) must still be
+    reachable via integration_type=Git. The generated SQL must match toolkits[].toolkit
+    directly rather than the nested settings.credential_type path, which stays null for
+    auto-lookup toolkits."""
+    mock_session = MagicMock()
+    mock_session_class.return_value.__enter__.return_value = mock_session
+    mock_session.exec.return_value.all.return_value = []
+    mock_session.exec.return_value.one.return_value = 0
+
+    AssistantRepository().query(
+        user=mock_user,
+        scope=AssistantScope.VISIBLE_TO_USER,
+        filters={"integration_type": "Git"},
+    )
+
+    from sqlalchemy.dialects import postgresql
+
+    executed_queries = [
+        str(c.args[0].compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+        for c in mock_session.exec.call_args_list
+    ]
+    query_str = next(q for q in executed_queries if "toolkits" in q and "EXISTS" in q)
+    assert "'toolkit'" in query_str
+    assert "'Git'" in query_str
+
+
+@patch("codemie.service.assistant.assistant_repository.Session")
+def test_marketplace_scope_applies_integration_type_filter(mock_session_class, mock_user):
+    """PROJECT_WITH_MARKETPLACE scope must still honor integration_type, unlike the
+    other AssistantFilter keys it silently drops today."""
+    mock_session = MagicMock()
+    mock_session_class.return_value.__enter__.return_value = mock_session
+    mock_session.exec.return_value.all.return_value = []
+    mock_session.exec.return_value.one.return_value = 0
+
+    AssistantRepository().query(
+        user=mock_user,
+        scope=AssistantScope.PROJECT_WITH_MARKETPLACE,
+        filters={"project": "proj-1", "integration_type": "AzureDevOps"},
+    )
+
+    executed_queries = [str(c.args[0]) for c in mock_session.exec.call_args_list]
+    assert any("EXISTS" in q and "jsonb_array_elements" in q for q in executed_queries)

@@ -1,0 +1,32 @@
+{
+  "decision": "approve",
+  "rationale": "CR-001 resolved: integrationTypeOptions.filter((opt) => opt.value !== 'Plugin') correctly excludes the Plugin option at the WorkflowsFilters filterDefinitions useMemo. getOriginalCredentialType('plugin') returns 'Plugin' (no serverEnum, falls back to capitalize), so the filter string matches the option value exactly. A new test confirms Plugin is absent from the rendered integration_type definition options for the 'all' scope. No new issues introduced — the fix-up diff is 1 source line and 9 test lines, no public-API change, no new logic paths.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"criterion": "integration_type filter on GET /v1/workflows (multi-value, OR-combined)", "status": "satisfied"},
+    {"criterion": "BE scans workflows.tools[i].tool (standalone path)", "status": "satisfied"},
+    {"criterion": "BE scans workflows.assistants[i].tools[j].name (embedded path)", "status": "satisfied"},
+    {"criterion": "Tool names resolved via get_tool_names_for_credential_types with GIT_TOOL_NAMES", "status": "satisfied"},
+    {"criterion": "Unknown filter values degrade to empty results, not errors", "status": "satisfied"},
+    {"criterion": "No denormalized-column approach", "status": "satisfied"},
+    {"criterion": "WorkflowFilter.FILTER_CONFIG wired correctly", "status": "satisfied"},
+    {"criterion": "FE Multiselect in WorkflowsFilters reuses useAllIntegrationTypeOptions", "status": "satisfied"},
+    {"criterion": "integration_type excluded from TEMPLATES and marketplace scopes", "status": "satisfied"},
+    {"criterion": "INITIAL_WORKFLOWS_FILTERS, areFiltersEmpty, handleApply URL cleanup updated", "status": "satisfied"},
+    {"criterion": "Story 1 compose_credential_type_filter, AssistantFilters, FILTER_INITIAL_STATE", "status": "satisfied"}
+  ],
+  "standards_review": [
+    {"standard": "commit-format", "status": "pass", "notes": "EPMCDME-7212 prefix, follows project convention"},
+    {"standard": "code-quality", "status": "pass", "notes": "No blocking style issues"},
+    {"standard": "security", "status": "pass", "notes": "No injection vectors; filter is client-side only"}
+  ],
+  "findings": [],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "resolved",
+      "notes": "Plugin option removed from WorkflowsFilters integration_type Multiselect via opt.value !== 'Plugin' filter. Test added to assert absence."
+    }
+  ]
+}
