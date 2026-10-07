@@ -31,6 +31,7 @@ from codemie.rest_api.security.user import User
 from codemie.service.provider import ProviderToolkitsFactory
 
 
+# NOTE: static tool facts (name -> classes) live in codemie_tools/base/tool_registry.py; extend it, do not add a scan.
 class ToolsInfoService:
     @staticmethod
     def get_tools_info(

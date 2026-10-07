@@ -1,0 +1,3 @@
+{"ts":"2026-10-07T13:33:45Z","gate_id":"spec.approved","mode":"hitl","verdict":{"decision":"approve","rationale":"User approved spec incl. registry scope","follow_ups":[],"confidence":"high","source":"hitl"},"escalated":false}
+{"ts":"2026-10-07T13:34:53Z","gate_id":"plan.approved","mode":"hitl","verdict":{"decision":"approve","rationale":"User approved plan","follow_ups":[],"confidence":"high","source":"hitl"},"escalated":false}
+{"ts":"2026-10-07T13:55:32Z","gate_id":"code-review.final","mode":"hitl","verdict":{"decision":"approve","rationale":"Approved; one non-blocking weak test noted","follow_ups":[],"confidence":"high","source":"hitl"},"escalated":false}

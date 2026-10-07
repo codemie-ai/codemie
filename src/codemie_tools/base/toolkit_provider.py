@@ -31,6 +31,7 @@ __CODEMIE_TOOLS_ALLOWED_PACKAGES = [
 ]
 
 
+# NOTE: static tool facts (name -> classes) live in codemie_tools/base/tool_registry.py; extend it, do not add a scan.
 def is_toolkit_class(obj) -> bool:
     """Check if an object is a subclass of BaseToolkit (excluding BaseToolkit itself)
     and its get_definition method returns a non-None value."""

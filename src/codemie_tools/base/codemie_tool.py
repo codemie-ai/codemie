@@ -25,6 +25,7 @@ from pydantic import BaseModel
 
 from codemie.configs import config
 from codemie.configs.logger import logger
+from codemie_tools.base import tool_registry
 from codemie_tools.base.errors import TruncatedOutputError
 from codemie_tools.base.models import ToolOutputFormat
 from codemie_tools.base.script_result import JsonValue, ScriptResult, ScriptResultSource
@@ -86,6 +87,11 @@ class CodeMieTool(BaseTool):
 
     # Opt-in for workspace scripts: a tool is callable through the bridge only when its class sets this to True.
     script_callable: ClassVar[bool] = False
+
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
+        super().__pydantic_init_subclass__(**kwargs)
+        tool_registry.register(cls)
 
     @staticmethod
     def _http_method_is_safe(args: dict, method_key: str = "method") -> bool:

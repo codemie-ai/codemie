@@ -32,6 +32,7 @@ from codemie.service.script_tool_calls.authorizer import authorize_tool_call
 from codemie.service.script_tool_calls.binding import bind_script_registries
 from codemie.service.script_tool_calls.context import (
     ProjectScope,
+    ScriptRunContext,
     ScriptScopeKind,
     ScriptToolRegistry,
     ToolListScope,
@@ -142,6 +143,43 @@ def test_tool_that_did_not_opt_in_is_unavailable_even_though_the_catalog_resolve
         authorize_tool_call(context, "excluded_tool")
 
     assert excinfo.value.code == CODE_TOOL_UNAVAILABLE
+
+
+def test_known_excluded_tool_builds_no_virtual_assistant(catalog: dict[str, MagicMock]) -> None:
+    context = ScriptToolRegistry(RUNNING_USER, workflow_project=PROJECT).context()
+
+    with pytest.raises(ToolCallRefused) as excinfo:
+        authorize_tool_call(context, "code_executor")
+
+    assert excinfo.value.code == CODE_TOOL_UNAVAILABLE
+    catalog["assistants"].create_from_tool_invocation.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "code_executor",
+        "generate_image_tool",
+        "file_analysis",
+        "pptx_tool",
+        "pdf_tool",
+        "csv_tool",
+        "excel_tool",
+        "docx_tool",
+        "email_analysis_tool",
+    ],
+)
+def test_excluded_tools_are_unavailable_and_never_built(name: str) -> None:
+    resolver = MagicMock(side_effect=RuntimeError("the resolver must not be reached"))
+    context = ScriptRunContext(
+        user=RUNNING_USER, scope=ProjectScope(RUNNING_USER, PROJECT, resolver), scope_kind=ScriptScopeKind.WORKFLOW
+    )
+
+    with pytest.raises(ToolCallRefused) as excinfo:
+        authorize_tool_call(context, name)
+
+    assert excinfo.value.code == CODE_TOOL_UNAVAILABLE
+    resolver.assert_not_called()
 
 
 def _assistant_step_registry() -> ScriptToolRegistry:

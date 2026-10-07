@@ -159,6 +159,9 @@ class ToolkitService:
         )
         return context.build()
 
+    # NOTE: tool_registry (codemie_tools/base/tool_registry.py) is the future source of static tool facts.
+    # FILE_ANALYSIS has no factory entry here because it is built separately (see add_file_tools in get_tools);
+    # a registry-toolkits-vs-factories sync test belongs here.
     @classmethod
     def get_toolkit_methods(
         cls,

@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 import dataclasses
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from langchain_core.tools import BaseTool
@@ -111,6 +111,46 @@ class TestScopes:
         scope = ProjectScope(user, "wf-project", MagicMock(side_effect=ValueError("no such tool")))
 
         assert scope.resolve("nope") is None
+
+    @pytest.mark.parametrize("error", [KeyError("boom"), RuntimeError("boom")])
+    def test_project_scope_answers_none_and_warns_when_the_resolver_fails_unexpectedly(
+        self, user: User, error: Exception
+    ) -> None:
+        scope = ProjectScope(user, "wf-project", MagicMock(side_effect=error))
+
+        with patch("codemie.service.script_tool_calls.context.logger") as logger:
+            assert scope.resolve("broken_tool") is None
+
+        logger.warning.assert_called_once()
+        assert "broken_tool" in str(logger.warning.call_args)
+
+    def test_project_scope_does_not_build_a_known_excluded_tool(self, user: User) -> None:
+        resolver = MagicMock()
+        scope = ProjectScope(user, "wf-project", resolver)
+
+        assert scope.resolve("code_executor") is None
+
+        resolver.assert_not_called()
+
+    def test_project_scope_still_resolves_an_unknown_name(self, user: User) -> None:
+        resolver = MagicMock(return_value=_PlainTool())
+
+        assert ProjectScope(user, "wf-project", resolver).resolve("not_in_the_registry") is resolver.return_value
+
+    def test_project_scope_still_resolves_a_name_with_a_script_callable_class(self, user: User) -> None:
+        resolver = MagicMock(return_value=_PlainTool())
+        with patch(
+            "codemie.service.script_tool_calls.registry_prefilter.is_known_excluded_from_script_calls",
+            return_value=False,
+        ):
+            assert ProjectScope(user, "wf-project", resolver).resolve("mixed") is resolver.return_value
+
+    def test_project_scope_fails_closed_when_the_registry_check_breaks(self, user: User) -> None:
+        resolver = MagicMock()
+        with patch("codemie.service.script_tool_calls.registry_prefilter.ensure_loaded", side_effect=RuntimeError("x")):
+            assert ProjectScope(user, "wf-project", resolver).resolve("anything") is None
+
+        resolver.assert_not_called()
 
     def test_project_scope_cannot_list_the_catalog(self, user: User) -> None:
         assert ProjectScope(user, "wf-project", MagicMock()).callable_tools() is None

@@ -23,7 +23,9 @@ from typing import TYPE_CHECKING, Protocol
 
 from langchain_core.tools import BaseTool
 
+from codemie.configs.logger import logger
 from codemie.rest_api.security.user import User
+from codemie.service.script_tool_calls.registry_prefilter import is_known_excluded
 from codemie.service.script_tool_calls.workflow_resolution import resolve_workflow_tool
 from codemie_tools.data_management.code_executor.runtime_sdk.codemie_runtime_sdk import CODE_NO_CONTEXT
 from codemie_tools.data_management.code_executor.tool_call_protocol import ToolCallRefused
@@ -91,8 +93,13 @@ class ProjectScope:
 
     def resolve(self, name: str) -> BaseTool | None:
         try:
+            if is_known_excluded(name):
+                return None
             return self._resolver(self._user, self.project, name)
         except ValueError:
+            return None
+        except Exception as exc:  # noqa: BLE001 - backstop: any resolver failure means the tool is unavailable
+            logger.warning(f"Script tool call: could not resolve tool '{name}', treating it as unavailable: {exc!r}")
             return None
 
     def callable_tools(self) -> Sequence[BaseTool] | None:

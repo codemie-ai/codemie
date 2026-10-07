@@ -1,0 +1,64 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15559_script-excluded-tools-resolve",
+  "head": "ae1575d555ce4f93455188806224d9c797a06974",
+  "runner": "poetry",
+  "started_at": "2026-10-07T14:43:15Z",
+  "completed_at": "2026-10-07T14:48:18Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2000,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 3000,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 0,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "secrets",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 6000,
+      "command": "make gitleaks",
+      "exit_code": 0,
+      "notes": "make gitleaks run via Docker; 'no leaks found'"
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 74000,
+      "command": "make test",
+      "exit_code": 0,
+      "notes": "19438 passed, 174 skipped"
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 203000,
+      "command": "env -u SONAR_SKIP_TESTS make sonar-local",
+      "exit_code": 0,
+      "notes": "run with SONAR_SKIP_TESTS unset so coverage is generated; quality gate PASSED"
+    }
+  ],
+  "failures": {}
+}

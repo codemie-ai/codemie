@@ -21,3 +21,14 @@ Keep external service clients behind toolkit or service boundaries.
 | Exposing low-level provider objects to agents | Return normalized tool outputs |
 
 Evidence: Git provider toolkits are grouped under `src/codemie_tools/git/`.
+
+## Static Tool Facts
+
+`src/codemie_tools/base/tool_registry.py` is the single source of static tool facts (which tool classes exist under which name, and their `script_callable` flag). Every concrete `CodeMieTool` subclass registers itself on definition.
+
+| Avoid | Prefer |
+|---|---|
+| A new scan, catalog or name list of tool classes | Read `tool_registry.lookup(name)` |
+| Hard-coding a new per-class fact elsewhere | Extend `ToolRecord` in `tool_registry.py` |
+
+Evidence: `CodeMieTool.__pydantic_init_subclass__` calls `tool_registry.register`; `ProjectScope.resolve` uses it to skip building excluded tools.

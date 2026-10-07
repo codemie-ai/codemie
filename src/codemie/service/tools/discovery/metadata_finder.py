@@ -29,6 +29,7 @@ from codemie_tools.base.base_toolkit import BaseToolkit
 from codemie_tools.base.models import ToolMetadata
 
 
+# NOTE: static tool facts (name -> classes) live in codemie_tools/base/tool_registry.py; extend it, do not add a scan.
 class ToolMetadataFinder:
     """Discovers tool metadata and toolkit classes across packages."""
 

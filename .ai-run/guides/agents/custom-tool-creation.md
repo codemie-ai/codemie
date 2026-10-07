@@ -21,3 +21,7 @@ Add or update focused tests when tool schema, serialization, or provider behavio
 | Broad integration tests for simple transformations | Narrow tests near the tool package |
 
 Evidence: existing toolkit tests live under `tests/codemie_tools/` and agent tool tests under `tests/codemie/agents/tools/`.
+
+## Registry
+
+A new `CodeMieTool` subclass registers itself in `codemie_tools/base/tool_registry.py` automatically; new static facts about tool classes extend `ToolRecord` there, not a new scan.

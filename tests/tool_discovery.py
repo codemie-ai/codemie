@@ -29,6 +29,7 @@ from functools import cache
 
 from codemie_tools.base.codemie_tool import CodeMieTool
 
+# NOTE: codemie_tools/base/tool_registry.py is the future single source of tool classes; this scan should move there.
 #: Packages whose modules define tool classes. Every module in them is imported.
 TOOL_PACKAGES: tuple[str, ...] = (
     "codemie_tools",
