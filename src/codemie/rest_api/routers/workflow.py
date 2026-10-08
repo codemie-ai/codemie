@@ -125,26 +125,37 @@ def _normalize_workflow_model_ids(workflow_config: WorkflowConfig, user: User) -
             cn.model = by_base[cn.model]
 
 
+def _patch_model_ids_in_yaml(config: dict[str, Any], section: str, items: list | None) -> bool:
+    """Copy normalized item.model values into the parsed YAML entry with the same id."""
+    entries = {e["id"]: e for e in config.get(section) or [] if isinstance(e, dict) and "id" in e}
+    changed = False
+    for item in items or []:
+        entry = entries.get(item.id)
+        if entry is not None and "model" in entry and item.model and entry["model"] != item.model:
+            entry["model"] = item.model
+            changed = True
+    return changed
+
+
 def _rewrite_yaml_config_from_objects(workflow_config: WorkflowConfig) -> None:
     """
     The UI YAML panel is driven by workflow_config.yaml_config (raw YAML string).
-    We normalize models in assistants/custom_nodes, so we must also rewrite yaml_config
-    to persist deployment_name identifiers (e.g. o1-2024-12-17).
+    We normalize models in assistants/custom_nodes, so yaml_config must carry the resulting
+    deployment_name identifiers (e.g. o1-2024-12-17).
+
+    Only those `model` values are rewritten; everything else (orphaned_states, meta_states,
+    comments, key order, absent defaults) is stored exactly as sent. When no model id changed,
+    yaml_config is left untouched.
     """
-    execution_config: dict[str, Any] = {
-        "messages_limit_before_summarization": workflow_config.messages_limit_before_summarization,
-        "tokens_limit_before_summarization": workflow_config.tokens_limit_before_summarization,
-        "enable_summarization_node": workflow_config.enable_summarization_node,
-        "assistants": [a.model_dump(exclude_none=True) for a in (workflow_config.assistants or [])],
-        "custom_nodes": [cn.model_dump(exclude_none=True) for cn in (workflow_config.custom_nodes or [])],
-        "tools": [t.model_dump(exclude_none=True) for t in (workflow_config.tools or [])],
-        "states": [s.model_dump(exclude_none=True) for s in (workflow_config.states or [])],
-    }
+    original = yaml.safe_load(workflow_config.yaml_config or "")
+    if not isinstance(original, dict):
+        return
 
-    # Drop None values to avoid empty keys in YAML
-    execution_config = {k: v for k, v in execution_config.items() if v is not None}
+    assistants_changed = _patch_model_ids_in_yaml(original, "assistants", workflow_config.assistants)
+    custom_nodes_changed = _patch_model_ids_in_yaml(original, "custom_nodes", workflow_config.custom_nodes)
 
-    workflow_config.yaml_config = yaml.safe_dump(execution_config, sort_keys=False)
+    if assistants_changed or custom_nodes_changed:
+        workflow_config.yaml_config = yaml.safe_dump(original, sort_keys=False)
 
 
 def _collect_workflow_mcp_servers(workflow_config: WorkflowConfig) -> list[MCPServerDetails]:

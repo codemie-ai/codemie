@@ -1,0 +1,97 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15754_router-max-input-tokens",
+  "head": "b6998e6dfac497b73dbdbd3bec765099a51228ea",
+  "runner": "poetry",
+  "started_at": "2026-10-08T14:08:47Z",
+  "completed_at": "2026-10-08T14:12:58Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1492,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 6560,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-headers",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1288,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "secrets",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 94274,
+      "command": "make gitleaks",
+      "exit_code": 0,
+      "notes": "Also covers hook codemie-gitleaks (hook scans staged diff only; full tree scan is a superset)"
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 107180,
+      "command": "make test",
+      "exit_code": 0,
+      "notes": "19448 passed, 176 skipped"
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "command": "make sonar-local",
+      "notes": "SONAR_TOKEN is unset; run-local-sonar.js logs 'Skipping Sonar scan because SONAR_TOKEN is not set.' and exits 0. Set SONAR_TOKEN to run locally. Also enforced by pre-push hook only when CODEMIE_PREPUSH_ENABLED=true."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "N/A",
+      "command": "make coverage",
+      "notes": "Coverage not requested"
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "command": "make test-harness",
+      "notes": "Not opening an MR in this run; requires docker stack and fixtures"
+    },
+    {
+      "id": "pre-commit-hook",
+      "source": "hook",
+      "status": "N/A",
+      "command": "scripts/git-hooks/pre_commit.sh",
+      "notes": "Commands (ruff check, license check) already covered by lint and license-headers gates"
+    },
+    {
+      "id": "commit-msg-hook",
+      "source": "hook",
+      "status": "N/A",
+      "command": "scripts/git-hooks/commit_msg.sh",
+      "notes": "Commit message format check, not applicable to a gate run"
+    },
+    {
+      "id": "ci",
+      "source": "ci",
+      "status": "N/A",
+      "command": ".gitlab-ci.yml",
+      "notes": "Only pre-ci-guard wait on external contexts (ci-pipeline, compliance-report) for MRs to main; no locally runnable commands"
+    }
+  ],
+  "failures": {}
+}

@@ -34,6 +34,7 @@ from codemie.core.workflow_models import (
 )
 
 from codemie.configs import config
+from codemie.configs.llm_config import LLMModel
 from codemie.rest_api.main import app
 from codemie.rest_api.models.workflow_generator import WorkflowRefineResponse
 from codemie.rest_api.security.user import User
@@ -344,6 +345,132 @@ async def test_create_workflow(mock_get_guardrail_assignments, create_workflow_r
         workflow_router._normalize_workflow_model_ids(expected_config, user)
         workflow_router._rewrite_yaml_config_from_objects(expected_config)
         workflow_executor.assert_called_once_with(workflow_config=expected_config, user=user, error_format='string')
+        assert workflow_executor.call_args.kwargs["workflow_config"].yaml_config == create_workflow_request.yaml_config
+
+
+yaml_config_with_foreign_keys = """
+type: generic
+recursion_limit: 77
+max_concurrency: 3
+verbose: false
+max_iteration_key_output_limit: 123
+max_nesting_level: 2
+pool_config:
+  enabled: true
+  min_size: 3
+  max_size: 9
+  refill_interval_seconds: 45
+retry_policy:
+  max_attempts: 4
+  initial_interval: 1.5
+enable_summarization_node: false
+assistants:
+  - id: dev
+    assistant_id: d98bd4b7-e8b9-4bb9-92d8-9fbc19b250b0
+    model: 'gpt-4o'
+tools:
+  - id: tool_1
+    tool: some_tool
+states:
+  - id: dev
+    assistant_id: dev
+    task: do it
+    next:
+      state_id: end
+orphaned_states:
+  - tool_1
+meta_states:
+  dev:
+    x: 10
+    y: 20
+"""
+
+
+orphaned_meta_yaml_config = """
+assistants:
+  - id: business_analyst
+    assistant_id: 196ede41-e7f0-4658-ae99-1dc0d83c8347
+    model: 'gpt-4o-2024-11-20'
+tools:
+  - id: tool_1
+    tool: some_tool
+states:
+  - id: business_analyst
+    assistant_id: business_analyst
+    task: do it
+    next:
+      state_id: end
+orphaned_states:
+  - tool_1
+meta_states:
+  business_analyst:
+    x: 100
+    y: 200
+"""
+
+
+def _rewrite_from_yaml(yaml_text):
+    config = WorkflowConfig(id="wf", name="wf", description="d", project="demo", yaml_config=yaml_text)
+    config.parse_execution_config()
+    return config
+
+
+minimal_yaml_config = """# harness payload
+assistants:
+  - id: dev
+    model: gpt-4o
+    system_prompt: |
+      You are a developer.
+      Keep this multiline text.
+tools: []
+custom_nodes: []
+states:
+  - id: dev
+    assistant_id: dev
+    next:
+      state_id: end
+    resolve_dynamic_values_in_prompt: false
+"""
+
+
+def test_rewrite_yaml_config_stores_foreign_keys_byte_for_byte():
+    config = _rewrite_from_yaml(yaml_config_with_foreign_keys)
+
+    workflow_router._rewrite_yaml_config_from_objects(config)
+
+    assert config.yaml_config == yaml_config_with_foreign_keys
+
+
+def test_rewrite_yaml_config_stores_minimal_yaml_byte_for_byte_without_defaults():
+    config = _rewrite_from_yaml(minimal_yaml_config)
+
+    workflow_router._rewrite_yaml_config_from_objects(config)
+
+    assert config.yaml_config == minimal_yaml_config
+    loaded = yaml.safe_load(config.yaml_config)
+    assert "enable_summarization_node" not in loaded
+    assert "limit_tool_output_tokens" not in loaded
+    assert "retry_policy" not in loaded
+
+
+def test_rewrite_yaml_config_changes_only_normalized_model_ids():
+    config = _rewrite_from_yaml(yaml_config_with_foreign_keys)
+    config.assistants[0].model = "gpt-4o-2024-11-20"
+
+    workflow_router._rewrite_yaml_config_from_objects(config)
+
+    expected = yaml.safe_load(yaml_config_with_foreign_keys)
+    expected["assistants"][0]["model"] = "gpt-4o-2024-11-20"
+    assert yaml.safe_load(config.yaml_config) == expected
+
+
+@pytest.mark.parametrize("raw_yaml", [None, "", "- a"])
+def test_rewrite_yaml_config_tolerates_missing_or_non_mapping_yaml(raw_yaml):
+    config = WorkflowConfig(id="wf", name="wf", description="d", project="demo", yaml_config=raw_yaml)
+
+    workflow_router._rewrite_yaml_config_from_objects(config)
+
+    assert config.yaml_config == raw_yaml
 
 
 @pytest.mark.asyncio
@@ -380,6 +507,108 @@ async def test_create_workflow_accepts_placeholder_like_text(
     assert response.status_code == status.HTTP_200_OK
     assert create_workflow.call_args.args[0].description == "Keep literal ${input:assistant_id} text."
     assert "${input:assistant_id}" in create_workflow.call_args.args[0].yaml_config
+
+
+@pytest.mark.asyncio
+@patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_entity_guardrail_assignments")
+async def test_create_workflow_persists_orphaned_and_meta_states(
+    mock_get_guardrail_assignments, create_workflow_request, request_header
+):
+    request = create_workflow_request.model_copy(update={"yaml_config": orphaned_meta_yaml_config})
+    with (
+        patch(
+            "codemie.service.workflow_service.WorkflowService.create_workflow",
+            return_value=workflow_config_data,
+        ) as create_workflow,
+        patch("codemie.service.workflow_service.WorkflowService.save_workflow_schema"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
+        patch("codemie.workflows.workflow.validate_workflow_config_resources_availability"),
+        patch(
+            "codemie.workflows.workflow.WorkflowExecutor.create_executor",
+            return_value=MagicMock(_init_workflow=MagicMock(return_value=None)),
+        ),
+        patch("codemie.rest_api.routers.workflow.project_access_check"),
+    ):
+        mock_get_guardrail_assignments.return_value = None
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.post("/v1/workflows", json=request.model_dump(), headers=request_header)
+
+    assert response.status_code == status.HTTP_200_OK
+    assert create_workflow.call_args.args[0].yaml_config == orphaned_meta_yaml_config
+    saved = yaml.safe_load(create_workflow.call_args.args[0].yaml_config)
+    assert saved["orphaned_states"] == ["tool_1"]
+    assert saved["meta_states"] == {"business_analyst": {"x": 100, "y": 200}}
+    assert [t["id"] for t in saved["tools"]] == ["tool_1"]
+
+
+@pytest.mark.asyncio
+@patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_entity_guardrail_assignments")
+async def test_create_workflow_persists_minimal_yaml_as_sent(
+    mock_get_guardrail_assignments, create_workflow_request, request_header
+):
+    request = create_workflow_request.model_copy(update={"yaml_config": minimal_yaml_config})
+    with (
+        patch(
+            "codemie.service.workflow_service.WorkflowService.create_workflow",
+            return_value=workflow_config_data,
+        ) as create_workflow,
+        patch("codemie.service.workflow_service.WorkflowService.save_workflow_schema"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
+        patch("codemie.workflows.workflow.validate_workflow_config_resources_availability"),
+        patch(
+            "codemie.workflows.workflow.WorkflowExecutor.create_executor",
+            return_value=MagicMock(_init_workflow=MagicMock(return_value=None)),
+        ),
+        patch("codemie.rest_api.routers.workflow.llm_service.get_allowed_chat_models", return_value=[]),
+        patch("codemie.rest_api.routers.workflow.project_access_check"),
+    ):
+        mock_get_guardrail_assignments.return_value = None
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.post("/v1/workflows", json=request.model_dump(), headers=request_header)
+
+    assert response.status_code == status.HTTP_200_OK
+    persisted = create_workflow.call_args.args[0].yaml_config
+    assert persisted == minimal_yaml_config
+    assert "enable_summarization_node" not in yaml.safe_load(persisted)
+
+
+@pytest.mark.asyncio
+@patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_entity_guardrail_assignments")
+async def test_create_workflow_changes_only_normalized_model_in_persisted_yaml(
+    mock_get_guardrail_assignments, create_workflow_request, request_header
+):
+    request = create_workflow_request.model_copy(update={"yaml_config": orphaned_meta_yaml_config})
+    catalog = [LLMModel(base_name="gpt-4o-2024-11-20", deployment_name="gpt-4o-deployment-x", enabled=True)]
+    with (
+        patch(
+            "codemie.service.workflow_service.WorkflowService.create_workflow",
+            return_value=workflow_config_data,
+        ) as create_workflow,
+        patch("codemie.service.workflow_service.WorkflowService.save_workflow_schema"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
+        patch("codemie.workflows.workflow.validate_workflow_config_resources_availability"),
+        patch(
+            "codemie.workflows.workflow.WorkflowExecutor.create_executor",
+            return_value=MagicMock(_init_workflow=MagicMock(return_value=None)),
+        ),
+        patch("codemie.rest_api.routers.workflow.llm_service.get_allowed_chat_models", return_value=catalog),
+        patch("codemie.rest_api.routers.workflow._get_project_for_workflow", return_value=None),
+        patch("codemie.rest_api.routers.workflow.project_access_check"),
+    ):
+        mock_get_guardrail_assignments.return_value = None
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.post("/v1/workflows", json=request.model_dump(), headers=request_header)
+
+    assert response.status_code == status.HTTP_200_OK
+    expected = yaml.safe_load(orphaned_meta_yaml_config)
+    expected["assistants"][0]["model"] = "gpt-4o-deployment-x"
+    assert yaml.safe_load(create_workflow.call_args.args[0].yaml_config) == expected
 
 
 @pytest.mark.asyncio
@@ -513,6 +742,126 @@ async def test_update_workflow_accepts_placeholder_like_text(
     assert response.status_code == status.HTTP_200_OK
     assert update_workflow.call_args.args[1].description == "Keep literal ${input:assistant_id} text."
     assert "${input:assistant_id}" in update_workflow.call_args.args[1].yaml_config
+
+
+@pytest.mark.asyncio
+@patch("codemie.core.ability.Ability.can", return_value=True)
+@patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_entity_guardrail_assignments")
+async def test_update_workflow_persists_orphaned_and_meta_states(
+    mock_get_guardrail_assignments, _mock_ability, workflow_config, update_workflow_request, request_header
+):
+    request = update_workflow_request.model_copy(update={"yaml_config": orphaned_meta_yaml_config})
+    with (
+        patch("codemie.service.workflow_service.WorkflowService.get_workflow", return_value=workflow_config),
+        patch(
+            "codemie.service.workflow_service.WorkflowService.update_workflow",
+            return_value=workflow_config_data,
+        ) as update_workflow,
+        patch("codemie.service.workflow_service.WorkflowService.save_workflow_schema"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
+        patch("codemie.workflows.workflow.validate_workflow_config_resources_availability"),
+        patch(
+            "codemie.workflows.workflow.WorkflowExecutor.create_executor",
+            return_value=MagicMock(_init_workflow=MagicMock(return_value=None)),
+        ),
+        patch("codemie.rest_api.routers.workflow.project_access_check"),
+    ):
+        mock_get_guardrail_assignments.return_value = None
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.put(
+                f"/v1/workflows/{workflow_config.id}",
+                json=request.model_dump(),
+                headers=request_header,
+            )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert update_workflow.call_args.args[1].yaml_config == orphaned_meta_yaml_config
+    saved = yaml.safe_load(update_workflow.call_args.args[1].yaml_config)
+    assert saved["orphaned_states"] == ["tool_1"]
+    assert saved["meta_states"] == {"business_analyst": {"x": 100, "y": 200}}
+    assert [t["id"] for t in saved["tools"]] == ["tool_1"]
+
+
+@pytest.mark.asyncio
+@patch("codemie.core.ability.Ability.can", return_value=True)
+@patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_entity_guardrail_assignments")
+async def test_update_workflow_persists_minimal_yaml_as_sent(
+    mock_get_guardrail_assignments, _mock_ability, workflow_config, update_workflow_request, request_header
+):
+    request = update_workflow_request.model_copy(update={"yaml_config": minimal_yaml_config})
+    with (
+        patch("codemie.service.workflow_service.WorkflowService.get_workflow", return_value=workflow_config),
+        patch(
+            "codemie.service.workflow_service.WorkflowService.update_workflow",
+            return_value=workflow_config_data,
+        ) as update_workflow,
+        patch("codemie.service.workflow_service.WorkflowService.save_workflow_schema"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
+        patch("codemie.workflows.workflow.validate_workflow_config_resources_availability"),
+        patch(
+            "codemie.workflows.workflow.WorkflowExecutor.create_executor",
+            return_value=MagicMock(_init_workflow=MagicMock(return_value=None)),
+        ),
+        patch("codemie.rest_api.routers.workflow.llm_service.get_allowed_chat_models", return_value=[]),
+        patch("codemie.rest_api.routers.workflow.project_access_check"),
+    ):
+        mock_get_guardrail_assignments.return_value = None
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.put(
+                f"/v1/workflows/{workflow_config.id}",
+                json=request.model_dump(),
+                headers=request_header,
+            )
+
+    assert response.status_code == status.HTTP_200_OK
+    persisted = update_workflow.call_args.args[1].yaml_config
+    assert persisted == minimal_yaml_config
+    assert "enable_summarization_node" not in yaml.safe_load(persisted)
+
+
+@pytest.mark.asyncio
+@patch("codemie.core.ability.Ability.can", return_value=True)
+@patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_entity_guardrail_assignments")
+async def test_update_workflow_changes_only_normalized_model_in_persisted_yaml(
+    mock_get_guardrail_assignments, _mock_ability, workflow_config, update_workflow_request, request_header
+):
+    request = update_workflow_request.model_copy(update={"yaml_config": orphaned_meta_yaml_config})
+    catalog = [LLMModel(base_name="gpt-4o-2024-11-20", deployment_name="gpt-4o-deployment-x", enabled=True)]
+    with (
+        patch("codemie.service.workflow_service.WorkflowService.get_workflow", return_value=workflow_config),
+        patch(
+            "codemie.service.workflow_service.WorkflowService.update_workflow",
+            return_value=workflow_config_data,
+        ) as update_workflow,
+        patch("codemie.service.workflow_service.WorkflowService.save_workflow_schema"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
+        patch("codemie.workflows.workflow.validate_workflow_config_resources_availability"),
+        patch(
+            "codemie.workflows.workflow.WorkflowExecutor.create_executor",
+            return_value=MagicMock(_init_workflow=MagicMock(return_value=None)),
+        ),
+        patch("codemie.rest_api.routers.workflow.llm_service.get_allowed_chat_models", return_value=catalog),
+        patch("codemie.rest_api.routers.workflow._get_project_for_workflow", return_value=None),
+        patch("codemie.rest_api.routers.workflow.project_access_check"),
+    ):
+        mock_get_guardrail_assignments.return_value = None
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.put(
+                f"/v1/workflows/{workflow_config.id}",
+                json=request.model_dump(),
+                headers=request_header,
+            )
+
+    assert response.status_code == status.HTTP_200_OK
+    expected = yaml.safe_load(orphaned_meta_yaml_config)
+    expected["assistants"][0]["model"] = "gpt-4o-deployment-x"
+    assert yaml.safe_load(update_workflow.call_args.args[1].yaml_config) == expected
 
 
 @pytest.mark.asyncio
