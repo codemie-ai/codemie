@@ -24,7 +24,7 @@ from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import BaseResponse, CreatedByUser
 from codemie.rest_api.models.settings import Settings, SettingRequest, SettingType
 from codemie_tools.base.models import CredentialTypes
-from codemie.rest_api.routers.utils import raise_access_denied
+from codemie.rest_api.routers.utils import raise_access_denied, raise_forbidden
 from codemie.rest_api.security.authentication import authenticate, User
 from codemie.service.aws_bedrock.bedrock_orchestration_service import BedrockOrchestratorService
 from codemie.service.settings.settings import SettingsService
@@ -150,6 +150,8 @@ def update_project_setting(request: SettingRequest, setting_id: str, user: User 
 
         if not Ability(user).can(Action.WRITE, setting_ability):
             raise_access_denied("write")
+        if SettingsService.is_budget_integration_hidden_from(Settings.get_by_id(setting_id), user):
+            raise_forbidden("update")
 
         if request.credential_type == CredentialTypes.SCHEDULER:
             validate_scheduler_request(request)
@@ -208,6 +210,8 @@ def delete_project_setting(setting_id: str, user: User = Depends(authenticate)):
     """
     setting = Settings.get_by_id(setting_id)
     _check_permission(user, setting.project_name)
+    if SettingsService.is_budget_integration_hidden_from(setting, user):
+        raise_forbidden("delete")
 
     try:
         BedrockOrchestratorService.delete_all_entities(setting_id)

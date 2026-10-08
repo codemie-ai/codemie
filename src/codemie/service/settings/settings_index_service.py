@@ -66,6 +66,13 @@ class SettingsIndexService(BaseSettingsService):
             if settings_type == SettingType.PROJECT:
                 if not user.is_admin:
                     query = query.where(Settings.project_name.in_(user.admin_project_names))
+                if not user.is_admin_or_maintainer:
+                    query = query.where(
+                        not_(
+                            (Settings.credential_type == CredentialTypes.LITE_LLM)
+                            & Settings.alias.like(f"{SettingsService.PROJECT_BUDGET_ALIAS_PREFIX}%")
+                        )
+                    )
             else:
                 query = query.where(Settings.user_id == user.id)
                 query = query.where(not_(Settings.alias.like(f"{SettingsService.INTERNAL_PREFIX}%")))

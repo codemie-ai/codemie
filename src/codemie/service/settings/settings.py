@@ -126,6 +126,7 @@ class SettingsService(BaseSettingsService):
     IS_CLOUD = "is_cloud"
     ENABLED = "enabled"
     ENFORCE_MEMBER_SPEND_LIMITS_ALIAS = "project_member_budget_tracking_enabled"
+    PROJECT_BUDGET_ALIAS_PREFIX = "codemie:project:"
 
     LIST_OF_SENSITIVE_FIELDS: List[str] = [
         TOKEN,
@@ -297,6 +298,16 @@ class SettingsService(BaseSettingsService):
         )
 
         return ProjectSetting(setting) if settings_type == SettingType.PROJECT else UserSetting(setting)
+
+    @classmethod
+    def is_budget_integration_hidden_from(cls, setting: Settings, user: User) -> bool:
+        """Project budget LiteLLM keys are visible and manageable only by platform admins and maintainers."""
+        return (
+            not user.is_admin_or_maintainer
+            and setting.setting_type == SettingType.PROJECT
+            and setting.credential_type == CredentialTypes.LITE_LLM
+            and (setting.alias or "").startswith(cls.PROJECT_BUDGET_ALIAS_PREFIX)
+        )
 
     @classmethod
     def create_project_credentials_if_missing(

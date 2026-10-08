@@ -146,6 +146,7 @@ def index_settings(request: Request, user: User = Depends(authenticate)):
         project_settings = SettingsService.get_settings(
             project_names=user.project_names, settings_type=SettingType.PROJECT
         )
+    project_settings = [s for s in project_settings if not SettingsService.is_budget_integration_hidden_from(s, user)]
     return SettingsService.get_settings(user_id=user.id) + project_settings
 
 
