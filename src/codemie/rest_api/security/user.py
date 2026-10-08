@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections.abc import Iterable
 from typing import Any
 
 from pydantic import BaseModel, Field, computed_field, model_validator
@@ -25,6 +26,31 @@ DEMO_USER_ROLE = "demo_user"
 
 USER_ID_HEADER = "user-id"
 AUTHORIZATION_HEADER = "Authorization"
+
+
+def resolve_default_project(project_names: Iterable[str], stored_default: str | None, email: str | None) -> str | None:
+    """Return the user's effective default project, or None when the user has no projects.
+
+    The stored default wins; without one, the personal project (named after the email) keeps
+    unbound spend on the personal budget, and the first project by name is the last resort.
+    The fallback is never persisted, so every reader must derive it here: the UI then always
+    shows exactly one default and runtime routing follows what it shows (EPMCDME-15738).
+    """
+    if stored_default:
+        return stored_default
+    names = set(project_names)
+    if not names:
+        return None
+    if email and email in names:
+        return email
+    return min(names)
+
+
+def resolve_membership_default(memberships: Iterable[Any], email: str | None) -> str | None:
+    """resolve_default_project over UserProject-like rows (``project_name``, ``is_default``)."""
+    rows = list(memberships)
+    stored_default = next((row.project_name for row in rows if row.is_default), None)
+    return resolve_default_project((row.project_name for row in rows), stored_default, email)
 
 
 class User(BaseModel):
@@ -112,15 +138,7 @@ class User(BaseModel):
 
     @property
     def current_project(self) -> str:
-        if self.default_project:
-            return self.default_project
-        if not self.project_names:
-            return DEMO_PROJECT
-        # No default: the personal project (named after the email) keeps unbound spend on the
-        # personal budget, matching the marketplace no-default rule; sort is the last resort.
-        if self.email and self.email in self.project_names:
-            return self.email
-        return sorted(self.project_names)[0]
+        return resolve_default_project(self.project_names, self.default_project, self.email) or DEMO_PROJECT
 
     def has_access_to_application(self, app_name: str) -> bool:
         return self.is_admin_or_maintainer or (app_name in self.project_names) or self.is_application_admin(app_name)

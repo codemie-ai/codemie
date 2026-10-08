@@ -37,7 +37,7 @@ from codemie.rest_api.models.user_reactions import (
 )
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.idp import get_idp_provider
-from codemie.rest_api.security.user import User
+from codemie.rest_api.security.user import User, resolve_membership_default
 from codemie.rest_api.security.user_providers import get_user_provider
 from codemie.service.monitoring.conversation_monitoring_service import ConversationMonitoringService
 from codemie.service.assistant.assistant_user_interaction_service import assistant_user_interaction_service
@@ -70,7 +70,8 @@ def _get_user_response(user: User) -> UserResponse:
 
             user_projects = user_project_repository.get_by_user_id(session, user.id)
             project_admin_map = {p.project_name: p.is_project_admin for p in user_projects}
-            default_projects = {p.project_name for p in user_projects if p.is_default}
+            default_project = resolve_membership_default(user_projects, user.email)
+            default_projects = {default_project} if default_project else set()
         else:
             # Legacy path: derive from security context (IDP mode); no default-project concept
             project_admin_map = {name: name in user.admin_project_names for name in user.project_names}

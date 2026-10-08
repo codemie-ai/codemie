@@ -19,7 +19,7 @@ from fastapi import Request, status
 from codemie.configs import config, logger
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.security.idp.base import BaseIdp
-from codemie.rest_api.security.user import User, USER_ID_HEADER, AUTHORIZATION_HEADER
+from codemie.rest_api.security.user import User, USER_ID_HEADER, AUTHORIZATION_HEADER, resolve_membership_default
 
 _LOCAL_MOCK_JWT_SECRET = "codemie-local-dev-only-not-for-production"
 
@@ -98,7 +98,7 @@ class LocalIdp(BaseIdp):
                 projects = await user_project_repository.aget_by_user_id(session, db_user.id)
                 kbs = await user_kb_repository.aget_by_user_id(session, db_user.id)
 
-            default_project = next((p.project_name for p in projects if p.is_default), None)
+            default_project = resolve_membership_default(projects, db_user.email)
             return User(
                 id=db_user.id,
                 username=db_user.username,

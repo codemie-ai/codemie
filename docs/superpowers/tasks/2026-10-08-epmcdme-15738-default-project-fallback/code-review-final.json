@@ -1,0 +1,25 @@
+{
+  "decision": "approve",
+  "rationale": "All three lenses (blind, edge-case, acceptance) ran with parseable output against the ticket and the agreed scope; every criterion passes. The one partial (no default shown to a project admin when the effective default is a project hidden from them) was put to the product owner during the review and accepted as the intended behaviour, now recorded in requirements.md. 4 findings deferred as pre-existing and not introduced here: case-sensitive email-to-personal-project match (same rule current_project already used), admin email change in user_management_service not reconciling the personal project, auth-cache TTL staleness after membership or email changes, and clear-default being a no-op when the shown default is derived; 22 dismissed as agreed scope (first-by-name routing, is_default now meaning effective default, legacy mode unchanged), guarded elsewhere (unique partial index allows one stored default per user, profile email change reconciles before the response is built, projects_map is unfiltered), or below the emission floor.",
+  "confidence": "high",
+  "risk_flags": ["public-api", "breaking-change"],
+  "business_review": [
+    {"kind": "story-ac", "item": "AC1: For the reported scenario the user's personal project is selected and shown as the sole default", "status": "pass", "notes": "resolve_membership_default (stored -> personal -> first by name) drives admin detail, list and projects endpoints; covered by test_user_management_service_effective_default.py and test_user_access_service.py; verified live on a branch-built container"},
+    {"kind": "story-ac", "item": "AC2: Other assigned projects remain unselected", "status": "pass", "notes": "is_default = project_name == default_project with a single str|None default; test_exactly_one_project_is_default"},
+    {"kind": "story-ac", "item": "AC3 (relaxed by agreement): shown default agrees with the stored assignment, or is derived when none is stored", "status": "pass", "notes": "stored default wins first; derived otherwise; no persistence"},
+    {"kind": "spec", "item": "Exactly one project is shown as default for a user who has projects (stored -> personal -> first by name)", "status": "pass", "notes": "order unit-tested; exception for defaults hidden from the viewer accepted by the product owner during review and recorded in requirements.md"},
+    {"kind": "spec", "item": "Fallback is derived, not stored: no migration, no DB writes", "status": "pass", "notes": "no alembic or repository write changes; pure resolver functions"},
+    {"kind": "spec", "item": "Derived default used in every API response that reports is_default", "status": "pass", "notes": "/v1/user, profile update, login response, registration, admin projects endpoint, admin detail and list"},
+    {"kind": "spec", "item": "Authenticated user's default_project is the derived default (header-less CLI/proxy uses the shown project)", "status": "pass", "notes": "load_user_for_auth, _finalize_authentication, LocalIdp; proxy_router reads user.default_project; live header-less /v1/chat/completions returned 200"},
+    {"kind": "spec", "item": "UI-shown default consistent with runtime default", "status": "pass", "notes": "User.current_project delegates to the same resolver over the same memberships"},
+    {"kind": "spec", "item": "Approved behaviour change for users without a personal project", "status": "pass", "notes": "global-asset branch and proxy use default_project, now first by name; covered by alphabetical tests"},
+    {"kind": "spec", "item": "Admin-selected default is stored and wins over the derived fallback", "status": "pass", "notes": "set/clear paths unchanged; resolver returns the stored default first"},
+    {"kind": "spec", "item": "Legacy mode (ENABLE_USER_MANAGEMENT=false) unchanged", "status": "pass", "notes": "legacy branch of _get_user_response untouched and still tested"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "single commit 'EPMCDME-15738: Report personal or first project as default when none is stored' matches EPMCDME-####: Description"},
+    {"kind": "code-quality", "status": "pass", "notes": "ruff format/check clean; license header on the new test file; no new dependencies"},
+    {"kind": "security", "status": "pass", "notes": "no new input surface; the default is derived only from the user's own memberships; admin views decide before visibility filtering and never reveal hidden project names"}
+  ],
+  "findings": []
+}

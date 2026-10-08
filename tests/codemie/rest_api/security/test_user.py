@@ -16,9 +16,12 @@
 Unit tests for User model
 """
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
-from codemie.rest_api.security.user import User
+import pytest
+
+from codemie.rest_api.security.user import User, resolve_default_project, resolve_membership_default
 
 
 class TestUserModel:
@@ -249,3 +252,40 @@ class TestUserAsUserModel:
         assert user_entity.user_id == "123"
         assert user_entity.username == "testuser"
         assert user_entity.name == "Test Name"
+
+
+class TestResolveDefaultProject:
+    """Effective default when none is stored: personal, then first by name (EPMCDME-15738)."""
+
+    @pytest.mark.parametrize(
+        "names,stored,email,expected",
+        [
+            (["zeta", "alpha", "u@example.com"], "zeta", "u@example.com", "zeta"),
+            (["zeta", "alpha", "u@example.com"], None, "u@example.com", "u@example.com"),
+            (["zeta", "alpha"], None, "u@example.com", "alpha"),
+            (["zeta", "alpha"], None, None, "alpha"),
+            (["zeta", "alpha"], "", "u@example.com", "alpha"),
+            ([], None, "u@example.com", None),
+        ],
+        ids=["stored", "personal", "alphabetical", "no-email", "empty-stored", "no-projects"],
+    )
+    def test_resolution_order(self, names, stored, email, expected):
+        assert resolve_default_project(names, stored, email) == expected
+
+    def test_alphabetical_pick_ignores_input_order(self):
+        assert resolve_default_project(["b", "a", "c"], None, None) == resolve_default_project(["c", "a"], None, None)
+
+    def test_membership_rows_use_stored_flag(self):
+        rows = [
+            SimpleNamespace(project_name="u@example.com", is_default=False),
+            SimpleNamespace(project_name="zeta", is_default=True),
+        ]
+        assert resolve_membership_default(rows, "u@example.com") == "zeta"
+
+    def test_membership_rows_fall_back_without_stored_flag(self):
+        rows = [
+            SimpleNamespace(project_name="zeta", is_default=False),
+            SimpleNamespace(project_name="alpha", is_default=False),
+        ]
+        assert resolve_membership_default(rows, "u@example.com") == "alpha"
+        assert resolve_membership_default(iter(rows), None) == "alpha"

@@ -22,7 +22,7 @@ from sqlalchemy.orm.exc import ObjectDeletedError, StaleDataError
 from sqlmodel import Session
 
 from codemie.configs.logger import logger
-from codemie.rest_api.security.user import User
+from codemie.rest_api.security.user import User, resolve_membership_default
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import Application
 from codemie.repository.user_repository import user_repository
@@ -71,13 +71,14 @@ class UserAccessService:
                 raise ExtendedHTTPException(code=404, message=_ERRORS.USER_NOT_FOUND)
 
             projects = user_project_repository.get_by_user_id(session, user_id)
+            default_project = resolve_membership_default(projects, target_user.email)
 
             return {
                 "projects": [
                     {
                         "project_name": p.project_name,
                         "is_project_admin": p.is_project_admin,
-                        "is_default": p.is_default,
+                        "is_default": p.project_name == default_project,
                         "date": p.date,
                     }
                     for p in projects

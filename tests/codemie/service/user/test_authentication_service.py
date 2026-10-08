@@ -364,7 +364,7 @@ class TestLoadUserForAuth:
 
     @pytest.mark.asyncio
     async def test_load_user_for_auth_no_default_project_set(self):
-        """default_project is None when no UserProject row has is_default=True."""
+        """No stored default: default_project falls back to the only membership (EPMCDME-15738)."""
         session = AsyncMock()
         user_id = str(uuid4())
 
@@ -392,7 +392,7 @@ class TestLoadUserForAuth:
 
             result = await AuthenticationService.load_user_for_auth(session, user_id)
 
-            assert result.default_project is None
+            assert result.default_project == "project1"
 
     @pytest.mark.asyncio
     async def test_load_user_for_auth_not_found(self):
@@ -1573,8 +1573,11 @@ class TestFinalizeAuthenticationDefaultProject:
         "rows,expected",
         [
             ([("proj-a", False), ("proj-b", True)], "proj-b"),
-            ([("proj-a", False), ("proj-b", False)], None),
+            ([("proj-b", False), ("u@example.com", False)], "u@example.com"),
+            ([("proj-b", False), ("proj-a", False)], "proj-a"),
+            ([], None),
         ],
+        ids=["stored", "personal-fallback", "alphabetical-fallback", "no-projects"],
     )
     async def test_populates_default_project_from_memberships(self, rows, expected):
         user_id = str(uuid4())
@@ -1598,7 +1601,7 @@ class TestFinalizeAuthenticationDefaultProject:
             result = await AuthenticationService._finalize_authentication(security_user_ins, "persistent")
 
         assert result.default_project == expected
-        assert result.project_names == ["proj-a", "proj-b"]
+        assert result.project_names == [name for name, _ in rows]
 
 
 class TestAuthenticatePersistentUserRaceCondition:

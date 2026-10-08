@@ -33,6 +33,7 @@ from codemie.core.exceptions import ExtendedHTTPException
 from codemie.repository.user_repository import user_repository
 from codemie.repository.email_token_repository import email_token_repository
 from codemie.rest_api.models.user_management import UserDB, CodeMieUserDetail, ProjectInfo
+from codemie.rest_api.security.user import resolve_membership_default
 from codemie.rest_api.security.user_type_validator import is_personal_project_excluded
 from codemie.service.activity.activity_models import (
     ActivityDomain,
@@ -261,8 +262,13 @@ class RegistrationService:
 
                 async with get_async_session() as async_session:
                     user_projects = await user_project_repository.aget_by_user_id(async_session, user_id)
+                    default_project = resolve_membership_default(user_projects, user_email)
                     user_detail.projects = [
-                        ProjectInfo(name=p.project_name, is_project_admin=p.is_project_admin, is_default=p.is_default)
+                        ProjectInfo(
+                            name=p.project_name,
+                            is_project_admin=p.is_project_admin,
+                            is_default=p.project_name == default_project,
+                        )
                         for p in user_projects
                     ]
 

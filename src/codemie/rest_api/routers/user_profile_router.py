@@ -23,7 +23,7 @@ from codemie.configs import config
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import UserResponse, ProjectInfoResponse
 from codemie.rest_api.security.authentication import authenticate
-from codemie.rest_api.security.user import User
+from codemie.rest_api.security.user import User, resolve_membership_default
 from codemie.service.user.user_profile_service import user_profile_service
 
 
@@ -80,6 +80,7 @@ async def update_profile(data: UserProfileUpdateRequest, user: User = Depends(au
     with get_session() as session:
         user_projects = user_project_repository.get_by_user_id(session, user.id)
         project_names = [p.project_name for p in user_projects]
+        default_project = resolve_membership_default(user_projects, updated_user.email)
         display_name_map = dict(
             session.exec(
                 select(Application.name, Application.display_name).where(Application.name.in_(project_names))
@@ -90,7 +91,7 @@ async def update_profile(data: UserProfileUpdateRequest, user: User = Depends(au
                 name=p.project_name,
                 display_name=display_name_map.get(p.project_name),
                 is_project_admin=p.is_project_admin,
-                is_default=p.is_default,
+                is_default=p.project_name == default_project,
             )
             for p in user_projects
         ]

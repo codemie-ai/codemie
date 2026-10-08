@@ -749,3 +749,22 @@ class TestGetUserProjectsListDefaultField:
         result = UserAccessService.get_user_projects_list("user-1")
 
         assert result["projects"][0]["is_default"] is True
+
+    @patch("codemie.clients.postgres.get_session")
+    @patch("codemie.service.user.user_access_service.user_project_repository")
+    @patch("codemie.service.user.user_access_service.user_repository")
+    def test_derives_personal_default_when_none_stored(self, mock_user_repo, mock_upr, mock_get_session):
+        """EPMCDME-15738: with nothing stored, the personal project is reported as the default."""
+        mock_get_session.return_value.__enter__.return_value = MagicMock()
+        mock_user_repo.get_by_id.return_value = MagicMock(id="user-1", email="u@example.com")
+        mock_upr.get_by_user_id.return_value = [
+            MagicMock(project_name="alpha", is_project_admin=False, is_default=False, date=None),
+            MagicMock(project_name="u@example.com", is_project_admin=False, is_default=False, date=None),
+        ]
+
+        result = UserAccessService.get_user_projects_list("user-1")
+
+        assert {p["project_name"]: p["is_default"] for p in result["projects"]} == {
+            "alpha": False,
+            "u@example.com": True,
+        }

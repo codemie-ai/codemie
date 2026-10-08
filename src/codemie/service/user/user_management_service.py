@@ -35,6 +35,7 @@ from codemie.core.exceptions import ExtendedHTTPException
 from codemie.enterprise.mcp_auth.dependencies import enqueue_mcp_auth_cleanup
 from codemie.repository.user_repository import user_repository
 from codemie.rest_api.security.permissions import is_admin_or_maintainer
+from codemie.rest_api.security.user import resolve_membership_default
 from codemie.rest_api.security.user_type_validator import VALID_USER_TYPES
 from codemie.service.user.authentication_service import invalidate_user_from_cache
 from codemie.rest_api.models.user_management import (
@@ -190,8 +191,16 @@ class UserManagementService:
             # Regular users should not reach here (caught at API layer)
             visible_projects = []
 
+        # The default comes from all memberships: a hidden personal project still outranks visible ones.
+        default_project = resolve_membership_default(
+            user_project_repository.get_by_user_id(session, user_id), user.email
+        )
         projects = [
-            ProjectInfo(name=up.project_name, is_project_admin=up.is_project_admin, is_default=up.is_default)
+            ProjectInfo(
+                name=up.project_name,
+                is_project_admin=up.is_project_admin,
+                is_default=up.project_name == default_project,
+            )
             for up in visible_projects
         ]
 
@@ -363,6 +372,9 @@ class UserManagementService:
             session, projects_map, requesting_user_id, is_project_admin
         )
 
+        # Defaults come from the unfiltered memberships, so hidden projects still decide them.
+        default_projects = {u.id: resolve_membership_default(projects_map.get(u.id, []), u.email) for u in users}
+
         items = [
             AdminUserListItem(
                 id=u.id,
@@ -377,7 +389,11 @@ class UserManagementService:
                 auth_source=u.auth_source,
                 last_login_at=u.last_login_at,
                 projects=[
-                    ProjectInfo(name=up.project_name, is_project_admin=up.is_project_admin, is_default=up.is_default)
+                    ProjectInfo(
+                        name=up.project_name,
+                        is_project_admin=up.is_project_admin,
+                        is_default=up.project_name == default_projects[u.id],
+                    )
                     for up in filtered_projects_map.get(u.id, [])
                 ],
                 budget_assignments=[

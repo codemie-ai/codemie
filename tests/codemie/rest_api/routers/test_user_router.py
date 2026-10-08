@@ -204,6 +204,27 @@ def test_get_user_response_exposes_is_default_with_user_management(mock_user):
     assert by_name["test-project"].is_default is False
 
 
+def test_get_user_response_derives_personal_default_when_none_stored(mock_user):
+    """EPMCDME-15738: with nothing stored, /v1/user still marks one default, the personal project."""
+    from codemie.rest_api.routers.user import _get_user_response
+
+    rows = [
+        MagicMock(project_name="test-project", is_project_admin=True, is_default=False),
+        MagicMock(project_name="test@example.com", is_project_admin=False, is_default=False),
+    ]
+    session = MagicMock()
+    session.exec.return_value.all.return_value = []
+    with (
+        patch("codemie.rest_api.routers.user.config.ENABLE_USER_MANAGEMENT", True),
+        patch("codemie.clients.postgres.get_session") as mock_get_session,
+        patch("codemie.repository.user_project_repository.user_project_repository.get_by_user_id", return_value=rows),
+    ):
+        mock_get_session.return_value.__enter__.return_value = session
+        response = _get_user_response(mock_user)
+
+    assert {p.name: p.is_default for p in response.projects} == {"test-project": False, "test@example.com": True}
+
+
 def test_get_user_response_legacy_path_has_no_default(mock_user):
     """Legacy (IDP) mode has no default-project concept: every project is_default=False."""
     from codemie.rest_api.routers.user import _get_user_response

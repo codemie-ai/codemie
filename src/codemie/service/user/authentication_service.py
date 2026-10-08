@@ -156,7 +156,7 @@ class AuthenticationService:
         kbs = await user_kb_repository.aget_by_user_id(session, db_user.id)
 
         # Map to security.User
-        default_project = next((p.project_name for p in projects if p.is_default), None)
+        default_project = security_user.resolve_membership_default(projects, db_user.email)
         return security_user.User(
             id=db_user.id,
             username=db_user.username,
@@ -402,7 +402,9 @@ class AuthenticationService:
 
             security_user_ins.project_names = [p.project_name for p in projects]
             security_user_ins.admin_project_names = [p.project_name for p in projects if p.is_project_admin]
-            security_user_ins.default_project = next((p.project_name for p in projects if p.is_default), None)
+            security_user_ins.default_project = security_user.resolve_membership_default(
+                projects, security_user_ins.email
+            )
             security_user_ins.knowledge_bases = [kb.kb_name for kb in kbs]
 
         logger.debug(f"User authenticated ({auth_source}): user_id={security_user_ins.id}")
@@ -731,8 +733,13 @@ class AuthenticationService:
 
             # Load user projects for login response (F-09: include project_limit + projects)
             user_projects = await user_project_repository.aget_by_user_id(session, user.id)
+            default_project = security_user.resolve_membership_default(user_projects, user.email)
             projects_info = [
-                ProjectInfo(name=p.project_name, is_project_admin=p.is_project_admin, is_default=p.is_default)
+                ProjectInfo(
+                    name=p.project_name,
+                    is_project_admin=p.is_project_admin,
+                    is_default=p.project_name == default_project,
+                )
                 for p in user_projects
             ]
 
