@@ -99,7 +99,7 @@ A Helm chart for AI/Run API
 | livenessProbe.initialDelaySeconds | int | `20` | Number of seconds after the container has started before probe is initiated |
 | livenessProbe.periodSeconds | int | `30` | How often (in seconds) to perform the probe |
 | livenessProbe.successThreshold | int | `1` | Minimum consecutive successes for the probe to be considered successful after having failed |
-| livenessProbe.timeoutSeconds | int | `1` | Number of seconds after which the probe times out |
+| livenessProbe.timeoutSeconds | int | `10` | Number of seconds after which the probe times out |
 | metrics | object | `{"enabled":false,"port":9091}` | Prometheus metrics server configuration |
 | metrics.enabled | bool | `false` | Enable Prometheus metrics scraping endpoint |
 | metrics.port | int | `9091` | The port the metrics server listens on |
@@ -144,9 +144,9 @@ A Helm chart for AI/Run API
 | readinessProbe.initialDelaySeconds | int | `20` | Number of seconds after the container has started before probe is initiated |
 | readinessProbe.periodSeconds | int | `30` | How often (in seconds) to perform the probe |
 | readinessProbe.successThreshold | int | `1` | Minimum consecutive successes for the probe to be considered successful after having failed |
-| readinessProbe.timeoutSeconds | int | `1` | Number of seconds after which the probe times out |
+| readinessProbe.timeoutSeconds | int | `10` | Number of seconds after which the probe times out |
 | replicaCount | int | `1` | The number of AI/Run API pods to run |
-| resources | object | `{"limits":{"cpu":2,"memory":"2048Mi"},"requests":{"cpu":"100m","memory":"1024Mi"}}` | Resource limits and requests for the AI/Run API pods |
+| resources | object | `{"limits":{"cpu":2,"memory":"8Gi"},"requests":{"cpu":1,"memory":"8Gi"}}` | Resource limits and requests for the AI/Run API pods |
 | securityContext | object | `{}` | AI/Run API container-level security context |
 | service.annotations | object | `{}` | AI/Run API service annotations |
 | service.port | int | `8080` | AI/Run API service port |
@@ -155,7 +155,7 @@ A Helm chart for AI/Run API
 | serviceAccount.automountServiceAccountToken | bool | `true` | Toggle automatic mounting of the service account token. |
 | serviceAccount.create | bool | `true` | Specifies whether a service account should be created |
 | serviceAccount.name | string | `""` | Service account name for AI/Run API pod If not set and create is true, a name is generated using the fullname template |
-| startupProbe.failureThreshold | int | `60` | Minimum consecutive failures for the probe to be considered failed after having succeeded |
+| startupProbe.failureThreshold | int | `240` | Minimum consecutive failures for the probe to be considered failed after having succeeded |
 | startupProbe.httpGet.path | string | `"/v1/healthcheck"` |  |
 | startupProbe.httpGet.port | int | `8080` |  |
 | startupProbe.initialDelaySeconds | int | `20` | Number of seconds after the container has started before probe is initiated |

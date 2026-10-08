@@ -525,8 +525,8 @@ proxyPool:
 # Ref: https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/
 #
 # Is used to avoid pod restarts when the pod is starting when we are executing the migration script.
-# Pod has 600 seconds to start and execute the migration script.
-# failureThreshold * periodSeconds = 60 * 10 = 600 seconds = 10 minutes
+# Pod has 2400 seconds to start and execute the migration script.
+# failureThreshold * periodSeconds = 240 * 10 = 2400 seconds = 40 minutes
 startupProbe:
   httpGet:
     path: /v1/healthcheck
@@ -534,7 +534,7 @@ startupProbe:
   # -- Number of seconds after the container has started before probe is initiated
   initialDelaySeconds: 20
   # -- Minimum consecutive failures for the probe to be considered failed after having succeeded
-  failureThreshold: 60
+  failureThreshold: 240
   # -- How often (in seconds) to perform the probe
   periodSeconds: 10
 
@@ -551,7 +551,7 @@ livenessProbe:
   # -- Minimum consecutive successes for the probe to be considered successful after having failed
   successThreshold: 1
   # -- Number of seconds after which the probe times out
-  timeoutSeconds: 1
+  timeoutSeconds: 10
 
 readinessProbe:
   httpGet:
@@ -566,7 +566,7 @@ readinessProbe:
   # -- Minimum consecutive successes for the probe to be considered successful after having failed
   successThreshold: 1
   # -- Number of seconds after which the probe times out
-  timeoutSeconds: 1
+  timeoutSeconds: 10
 
 ## HPA for the main codemie-api workload
 hpa:
@@ -606,10 +606,10 @@ pdb:
 resources:
   limits:
     cpu: 2
-    memory: 2048Mi
+    memory: 8Gi
   requests:
-    cpu: 100m
-    memory: 1024Mi
+    cpu: 1
+    memory: 8Gi
 
 # -- Mapping between IP and hostnames that will be injected as entries in the pod's hosts files
 hostAliases: []
