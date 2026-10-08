@@ -761,7 +761,7 @@ class Config(BaseSettings):
     # Only active when a budget with budget_category="premium_models" is in budgets config.
     LITELLM_PREMIUM_MODELS_ALIASES: list[str] = []
     # Minimum supported CodeMie CLI version for proxy requests.
-    CODEMIE_MIN_CLI_VERSION: str = "0.0.47"
+    CODEMIE_MIN_CLI_VERSION: str = "0.15.6"
 
     # LiteLLM Cache and Optimization Configuration
     LITELLM_CUSTOMER_CACHE_TTL: int = 300  # 5 minutes - cache customer info TTL
