@@ -97,6 +97,7 @@ def test_resolve_import_source_mapping(client_type, cli_header, expected):
         ({}, None),
     ],
 )
+@patch("codemie.rest_api.routers.conversation.config.CONVERSATION_HISTORY_UPSERT_NOOP_ENABLED", False)
 @patch("codemie.rest_api.routers.conversation.ConversationService.upsert_conversation_with_history")
 @patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", return_value=None)
 def test_upsert_history_resolves_headers_before_calling_service(mock_find, mock_upsert, headers, expected, mock_user):

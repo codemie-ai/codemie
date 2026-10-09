@@ -23,7 +23,7 @@ from fastapi import APIRouter, Depends, status, UploadFile, Response, Query, Req
 from fastapi.encoders import jsonable_encoder
 from starlette.responses import StreamingResponse
 
-from codemie.configs import logger
+from codemie.configs import config, logger
 from codemie.core.ability import Ability, Action
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import (
@@ -688,6 +688,9 @@ def upsert_conversation_history(
 
     This enables incremental updates for bulk history imports from any client.
 
+    While CONVERSATION_HISTORY_UPSERT_NOOP_ENABLED is on (off by default), the request is
+    acknowledged with 200 and nothing is read or written.
+
     Returns:
         UpsertHistoryResponse with metadata:
         - conversation_id: str
@@ -702,6 +705,15 @@ def upsert_conversation_history(
             message="History cannot be empty",
             details="The request must contain at least one message in the history.",
             help="Please provide a valid history array with at least one message.",
+        )
+
+    if config.CONVERSATION_HISTORY_UPSERT_NOOP_ENABLED:
+        response.status_code = status.HTTP_200_OK
+        return UpsertHistoryResponse(
+            conversation_id=conversation_id,
+            new_messages=0,
+            total_messages=len(request.history),
+            created=False,
         )
 
     # Authorization check for existing conversations

@@ -169,6 +169,7 @@ class Config(BaseSettings):
     USER_CONVERSATION_FOLDER_INDEX: str = "codemie_conversation_folder"
     CONVERSATIONS_METRICS_INDEX: str = "codemie_conversation_metrics"
     SHARED_CONVERSATION_INDEX: str = "codemie_shared_conversations"
+    CONVERSATION_HISTORY_UPSERT_NOOP_ENABLED: bool = False
     KZ_USERS_INDEX: str = "codemie_kz_users_data"
     ASSISTANTS_INDEX: str = "codemie_assistants"
     WORKFLOWS_INDEX: str = "workflows"
