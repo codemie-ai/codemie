@@ -57,7 +57,7 @@ class ChatNamingService:
                 return
 
             conversation.conversation_name = name
-            conversation.update(columns=["conversation_name"])
+            conversation.update()
         except Exception as error:
             logger.error(
                 f"Chat contextual naming failed to persist. RequestId={request_id}, Error={error}", exc_info=True

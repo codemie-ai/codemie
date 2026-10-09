@@ -467,9 +467,7 @@ class ConversationService:
         if should_create_conversation:
             conversation.save()
         else:
-            conversation.update(
-                columns=["conversation_name", "history", "project", "assistant_ids", "initial_assistant_id"]
-            )
+            conversation.update()
 
         AgentWorkspaceService().sync_uploaded_files(
             conversation_id=request.conversation_id,
@@ -530,7 +528,7 @@ class ConversationService:
             _guard_finished(conversation)
             # UPDATE EXISTING - append only new messages
             new_messages = cls._append_new_messages(conversation, request.history, request.assistant_id)
-            conversation.update(columns=["history", "assistant_ids"])
+            conversation.update()
             created = False
             logger.info(
                 f"Updated existing conversation {conversation_id}: added {len(new_messages)} new messages, "
@@ -556,7 +554,7 @@ class ConversationService:
         # Write-once import_source: set only when the conversation has no existing value
         if import_source and conversation.import_source is None:
             conversation.import_source = import_source
-            conversation.update(columns=["import_source"])
+            conversation.update()
 
         return {
             "conversation_id": conversation_id,
@@ -869,7 +867,7 @@ class ConversationService:
         )
 
         # Update with refresh to ensure changes are committed
-        conversation.update(columns=["history"])
+        conversation.update()
         conversation_metrics.update()
 
     @classmethod
@@ -900,7 +898,7 @@ class ConversationService:
             user=user,
         )
 
-        conversation.update(columns=["history"])
+        conversation.update()
         conversation_metrics.update()
 
     @classmethod
@@ -1158,7 +1156,7 @@ class ConversationService:
         else:
             for conversation in folder_conversations:
                 conversation.folder = ""
-                conversation.update(refresh=True, columns=["folder"])
+                conversation.update(refresh=True)
 
         ConversationFolder.delete_by_folder(folder, user.id)
 
@@ -1189,7 +1187,7 @@ class ConversationService:
         for conversation in folder_conversations:
             conversation.folder = new_folder
             # A folder rename is not usage for its member conversations either.
-            conversation.update(refresh=True, touch_timestamp=False, columns=["folder"])
+            conversation.update(refresh=True, touch_timestamp=False)
 
     @classmethod
     def move_conversations_to_folder(cls, user: User, conversation_ids: List[str], target_folder: str) -> int:
@@ -1245,41 +1243,32 @@ class ConversationService:
     @classmethod
     def update_conversation(cls, conversation: Conversation, request: UpdateConversationRequest):
         fields_set = request.model_fields_set
-        columns: list[str] = []
 
         if request.name:
             conversation.conversation_name = request.name
-            columns.append('conversation_name')
         if 'llm_model' in fields_set:
             conversation.llm_model = request.llm_model
-            columns.append('llm_model')
         if 'enable_image_generation' in fields_set:
             conversation.enable_image_generation = request.enable_image_generation
-            columns.append('enable_image_generation')
         if 'image_generation_model' in fields_set:
             conversation.image_generation_model = request.image_generation_model
-            columns.append('image_generation_model')
         if request.pinned is not None:
             conversation.pinned = request.pinned
-            columns.append('pinned')
         if request.folder is not None:
             conversation.folder = request.folder
-            columns.append('folder')
         if 'tool_call_policy' in fields_set:
             conversation.tool_call_policy = request.tool_call_policy
-            columns.append('tool_call_policy')
         if request.active_assistant_id and request.active_assistant_id in conversation.assistant_ids:
             # Make active_assistant_id to be the first in assistant_ids array
             assistant_ids = list(conversation.assistant_ids)
             assistant_ids.insert(0, assistant_ids.pop(assistant_ids.index(request.active_assistant_id)))
             conversation.assistant_ids = assistant_ids
-            columns.append('assistant_ids')
 
         # None of the fields this method sets are "usage" (rename, pin/unpin, folder move,
         # model/tool-call-policy config) — real usage is recorded separately when a message is
         # sent/received. Do not bump update_date here, and do not touch the target folder's own
         # update_date on move: neither should reorder the sidebar's recency-based sort.
-        conversation.update(columns=columns, touch_timestamp=False)
+        conversation.update(touch_timestamp=False)
 
         return conversation
 
@@ -1296,7 +1285,7 @@ class ConversationService:
             history_message.history_index = current_index if current_index < history_index else current_index - 1
 
         conversation.update_conversation_assistants()
-        conversation.update(columns=["history", "assistant_ids", "initial_assistant_id"])
+        conversation.update()
         return conversation
 
     @classmethod
@@ -1311,7 +1300,7 @@ class ConversationService:
         # WorkflowExecution.delete_by_conversation_ids needs another. A crash
         # between the two leaves executions behind an empty conversation —
         # recoverable (executions can be reaped; history is already gone).
-        conversation.update(columns=["history", "assistant_ids", "initial_assistant_id"])
+        conversation.update()
         with Session(WorkflowExecution.get_engine()) as session:
             WorkflowExecution.delete_by_conversation_ids(session, [conversation.id])
             session.commit()
@@ -1337,7 +1326,7 @@ class ConversationService:
             conversation.history.append(new_user_message)
             conversation.history.append(new_ai_message)
 
-        conversation.update(columns=["history"])
+        conversation.update()
         return conversation
 
     @classmethod

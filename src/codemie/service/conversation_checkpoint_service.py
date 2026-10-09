@@ -34,12 +34,12 @@ class ConversationCheckpointService:
     def save_checkpoint(self, conversation_id: str, checkpoint: dict) -> None:
         conv = self._get_conversation(conversation_id)
         conv.pending_checkpoint = checkpoint
-        conv.update(columns=["pending_checkpoint"])
+        conv.update()
 
     def save_pending_tool_call(self, conversation_id: str, tool_call: ToolCallPendingEvent) -> None:
         conv = self._get_conversation(conversation_id)
         conv.pending_tool_call = tool_call.model_dump()
-        conv.update(columns=["pending_tool_call"])
+        conv.update()
 
     def get_checkpoint(self, conversation_id: str) -> Optional[dict]:
         conv = self._get_conversation(conversation_id)
@@ -71,10 +71,10 @@ class ConversationCheckpointService:
         pending_data["history_index"] = history_index
         pending_data["original_user_message"] = original_user_message
         conv.pending_tool_call = pending_data
-        conv.update(columns=["pending_tool_call"])
+        conv.update()
 
     def clear(self, conversation_id: str) -> None:
         conv = self._get_conversation(conversation_id)
         conv.pending_checkpoint = None
         conv.pending_tool_call = None
-        conv.update(columns=["pending_checkpoint", "pending_tool_call"])
+        conv.update()

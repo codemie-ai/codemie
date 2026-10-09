@@ -388,7 +388,7 @@ def abort_conversation_generation(conversation_id: str, user: User = Depends(aut
             if last_msg.in_progress:
                 last_msg.in_progress = False
                 last_msg.status = ConversationStatus.INTERRUPTED.value
-                conversation.update(columns=["history"])
+                conversation.update()
                 logger.info(f"Marked conversation {conversation_id} last message as INTERRUPTED in DB.")
     except Exception as update_exc:
         logger.error(f"Error marking conversation as aborted in DB: {str(update_exc)}")

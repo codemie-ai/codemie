@@ -1018,7 +1018,7 @@ def test_append_user_message_on_resume_also_updates_conversation():
     assert assistant_ref.execution_id == "exec-3"
     assert assistant_ref.assistant_id == "wf-1"
     assert assistant_ref.history_index == user_msg.history_index
-    mock_conversation.update.assert_called_once_with(columns=["history"])
+    mock_conversation.update.assert_called_once()
 
 
 def test_append_user_message_on_resume_raises_409_when_conversation_finished(user):

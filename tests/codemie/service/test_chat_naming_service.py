@@ -150,7 +150,7 @@ def test_rename_conversation_updates_conversation_on_success(monkeypatch):
     )
 
     assert fake_conversation.conversation_name == "OAuth setup"
-    fake_conversation.update.assert_called_once_with(columns=["conversation_name"])
+    fake_conversation.update.assert_called_once()
 
 
 def test_rename_conversation_leaves_conversation_untouched_on_generation_failure(monkeypatch):
