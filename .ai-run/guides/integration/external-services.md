@@ -22,6 +22,15 @@ Read external-service credentials through config/provider mechanisms.
 
 Evidence: README documents local environment variables and provider configuration at `README.md:47`.
 
+### Provider error containment
+
+| Avoid | Prefer |
+|---|---|
+| Surfacing provider exception text or pydantic validation output to users, logs or LLM-visible tool results | Map provider exceptions to typed errors with fixed messages, re-raised `from None` |
+| Retrying every failure | Retry only classified transient errors, with bounded attempts and a total time budget |
+
+Evidence: `src/codemie_tools/ms_exchange/client_factory.py`, `src/codemie_tools/ms_exchange/retry.py`, `src/codemie/service/settings/settings_tester.py`.
+
 ## Inbound webhook providers
 
 Providers we host inbound webhooks for (GitHub, GitLab, …) have provider-specific delivery semantics that must be respected even when it looks like a plain HTTP endpoint.

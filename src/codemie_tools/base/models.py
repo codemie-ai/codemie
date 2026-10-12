@@ -111,6 +111,7 @@ class CredentialTypes(str, Enum):
     # Project settings
     DIAL = "DIAL"
     MS_TEAMS = "MSTeams"
+    MS_EXCHANGE = "MSExchange"
 
 
 class ToolSet(str, Enum):
@@ -146,6 +147,7 @@ class ToolSet(str, Enum):
     PLATFORM_TOOLS = "Platform Tools"
     HEDGING = "Request Hedging"
     SHAREPOINT = "SharePoint"
+    MS_EXCHANGE = "Microsoft Exchange"
 
 
 class Tool(BaseModel):

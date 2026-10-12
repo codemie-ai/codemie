@@ -19,6 +19,7 @@ from codemie_tools.core.project_management.confluence.tools import GenericConflu
 from codemie_tools.core.project_management.jira.tools import GenericJiraIssueTool
 from codemie_tools.notification.email.tools import EmailTool
 from codemie_tools.git.toolkit import GitToolkit
+from codemie_tools.ms_exchange import errors as exchange_errors
 from codemie.service.settings.settings_tester import SettingsTester, SettingsTesterHandlerNotFound
 from codemie.rest_api.models.settings import TestSettingRequest, CredentialTypes, CredentialValues
 
@@ -611,3 +612,123 @@ def test_test_sql_influxdb_fail(mock_tool_class):
 
     assert result == (False, 'Cannot connect to InfluxDB at localhost:8086: Connection refused')
     mock_tool.healthcheck.assert_called_once()
+
+
+# --- MS Exchange -------------------------------------------------------------
+
+_EXCHANGE_SECRET = 'exchange-secret-value'
+_EXCHANGE_TENANT = 'tenant-guid-1234'
+_EXCHANGE_MAILBOX = 'user@contoso.example'
+
+
+def _exchange_request(**overrides):
+    values = {
+        'auth_type': 'oauth_azure',
+        'mailbox': _EXCHANGE_MAILBOX,
+        'oauth_tenant_id': _EXCHANGE_TENANT,
+        'oauth_client_id': 'client-guid-5678',
+        'oauth_client_secret': _EXCHANGE_SECRET,
+    }
+    values.update(overrides)
+    return TestSettingRequest(
+        credential_type=CredentialTypes.MS_EXCHANGE,
+        credential_values=[CredentialValues(key=k, value=v) for k, v in values.items() if v is not None],
+    )
+
+
+def test_ms_exchange_handler_is_registered():
+    instance = SettingsTester(_exchange_request())
+
+    assert instance.handlers[CredentialTypes.MS_EXCHANGE] == SettingsTester._test_ms_exchange
+
+
+@patch('codemie.service.settings.settings_tester.get_client')
+def test_ms_exchange_success(mock_get_client):
+    result = SettingsTester(_exchange_request()).test()
+
+    assert result == (True, 'Connection and Inbox access verified.')
+    mock_get_client.return_value.check_inbox.assert_called_once_with()
+
+
+@patch('codemie.service.settings.settings_tester.get_client')
+def test_ms_exchange_empty_inbox_succeeds(mock_get_client):
+    mock_get_client.return_value.check_inbox.return_value = None
+
+    assert SettingsTester(_exchange_request())._test_ms_exchange()[0] is True
+
+
+def test_ms_exchange_invalid_config_is_sanitised():
+    instance = SettingsTester(_exchange_request(oauth_client_secret=None))
+
+    ok, message = instance._test_ms_exchange()
+
+    assert ok is False
+    assert (
+        message
+        == 'The Exchange connection settings are invalid. Check the required fields for the selected authentication type.'
+    )
+    assert _EXCHANGE_TENANT not in message
+    assert 'ValidationError' not in message
+
+
+@pytest.mark.parametrize(
+    'error_cls',
+    [
+        exchange_errors.CredentialExpiredError,
+        exchange_errors.TenantError,
+        exchange_errors.ConsentError,
+        exchange_errors.AccessDeniedError,
+        exchange_errors.UnreachableError,
+        exchange_errors.RateLimitedError,
+        exchange_errors.ServiceTimeoutError,
+        exchange_errors.TransientServerError,
+        exchange_errors.TlsConfigError,
+        exchange_errors.EwsCredentialsRejectedError,
+        exchange_errors.InternalError,
+    ],
+)
+@patch('codemie.service.settings.settings_tester.get_client')
+def test_ms_exchange_transport_failure_returns_fixed_sentence(mock_get_client, error_cls):
+    mock_get_client.return_value.check_inbox.side_effect = error_cls()
+
+    assert SettingsTester(_exchange_request())._test_ms_exchange() == (False, error_cls.MESSAGE)
+
+
+@patch('codemie.service.settings.settings_tester.get_client')
+def test_ms_exchange_unmapped_error_returns_internal_sentence(mock_get_client, caplog):
+    mock_get_client.return_value.check_inbox.side_effect = RuntimeError(f'boom {_EXCHANGE_SECRET} {_EXCHANGE_TENANT}')
+
+    with caplog.at_level('DEBUG'):
+        result = SettingsTester(_exchange_request())._test_ms_exchange()
+
+    assert result == (False, exchange_errors.InternalError.MESSAGE)
+    assert _EXCHANGE_SECRET not in caplog.text
+    assert _EXCHANGE_TENANT not in caplog.text
+
+
+@patch('codemie.service.settings.settings_tester.get_client')
+def test_ms_exchange_no_secrets_or_ids_in_output_or_logs(mock_get_client, caplog):
+    mock_get_client.return_value.check_inbox.side_effect = exchange_errors.TenantError()
+
+    with caplog.at_level('DEBUG'):
+        _, message = SettingsTester(_exchange_request())._test_ms_exchange()
+
+    for sensitive in (_EXCHANGE_SECRET, _EXCHANGE_TENANT, _EXCHANGE_MAILBOX):
+        assert sensitive not in message
+        assert sensitive not in caplog.text
+
+
+@patch('codemie.service.settings.settings_tester.get_client')
+@patch('codemie.service.settings.settings_tester.Settings')
+def test_ms_exchange_masked_saved_secret_resolves(mock_settings, mock_get_client):
+    stored = _exchange_request().credential_values
+    mock_settings.get_by_id.return_value = MagicMock(credential_values=stored)
+    request = _exchange_request(oauth_client_secret=SettingsTester.MASKED_VALUE)
+    request.setting_id = 'saved-id'
+
+    with patch.object(SettingsTester, '_decrypt_fields', side_effect=lambda v: v):
+        result = SettingsTester(request)._test_ms_exchange()
+
+    assert result[0] is True
+    config = mock_get_client.call_args.args[0]
+    assert config.oauth_client_secret == _EXCHANGE_SECRET

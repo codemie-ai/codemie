@@ -642,3 +642,74 @@ def test_get_formatted_tool_schema_plugin_disabled():
 
         # Verify the result is None when plugin is disabled
         assert result is None
+
+
+def test_get_config_schema_treats_pep604_optional_as_not_required():
+    """`X | None` is a types.UnionType, which has no __origin__ and used to read as required."""
+
+    class Config:
+        __annotations__ = {'required_field': str, 'optional_field': str | None}
+
+    schema = ToolConfigExtractor.get_config_schema(Config)
+
+    assert schema['required_field']['required'] is True
+    assert schema['optional_field']['required'] is False
+    assert schema['optional_field']['type'] is str
+
+
+def test_get_config_schema_resolves_stringified_annotations():
+    """Modules using `from __future__ import annotations` store annotations as strings."""
+    from codemie_tools.ms_exchange.models import ExchangeToolConfig
+
+    schema = ToolConfigExtractor.get_config_schema(ExchangeToolConfig)
+
+    assert schema['mailbox']['required'] is True
+    for name in (
+        'auth_type',
+        'oauth_tenant_id',
+        'oauth_client_id',
+        'oauth_client_secret',
+        'ews_url',
+        'service_account_username',
+        'service_account_password',
+    ):
+        assert schema[name]['required'] is False, name
+
+
+def test_get_config_schema_keeps_unresolvable_annotation_as_required():
+    class Config:
+        __annotations__ = {'ghost': 'NoSuchType | None', 'plain': str}
+
+    schema = ToolConfigExtractor.get_config_schema(Config)
+
+    assert schema['ghost']['required'] is True
+    assert schema['plain']['required'] is True
+
+
+def test_get_config_schema_defaulted_field_is_not_required():
+    """A field the model fills in itself (e.g. the frozen credential_type) must not be demanded from callers."""
+    from pydantic import BaseModel, Field
+
+    class Config(BaseModel):
+        fixed: str = Field(default="constant", exclude=True, frozen=True)
+        needed: str
+        marked: str = Field(default="", json_schema_extra={'required_at_runtime': True})
+        empty_default: str = Field(default="")
+
+    schema = ToolConfigExtractor.get_config_schema(Config)
+
+    assert schema['fixed']['required'] is False
+    assert schema['needed']['required'] is True
+    # Lazy-validated fields default to "" yet must still be supplied at runtime.
+    assert schema['marked']['required'] is True
+    # A plain "" default (e.g. TelegramConfig.bot_token) still has to be supplied.
+    assert schema['empty_default']['required'] is True
+
+
+def test_get_config_schema_exchange_credential_type_not_required():
+    from codemie_tools.ms_exchange.models import ExchangeToolConfig
+
+    schema = ToolConfigExtractor.get_config_schema(ExchangeToolConfig)
+
+    assert schema['credential_type']['required'] is False
+    assert schema['mailbox']['required'] is True

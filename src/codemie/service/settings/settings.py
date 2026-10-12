@@ -41,6 +41,7 @@ from codemie_tools.open_api.models import OpenApiConfig
 from codemie_tools.qa.zephyr.models import ZephyrConfig
 from codemie_tools.qa.xray.models import XrayConfig
 from codemie_tools.report_portal.models import ReportPortalConfig
+from codemie_tools.ms_exchange.models import ExchangeToolConfig
 from sqlalchemy.orm import attributes
 
 from codemie.configs import logger
@@ -153,6 +154,7 @@ class SettingsService(BaseSettingsService):
         "refresh_token",  # SharePoint OAuth refresh token
         "ssh_key",  # SVN SSH private key
         "ssh_passphrase",  # SVN SSH key passphrase
+        "service_account_password",  # MS Exchange NTLM service account password
     ]
 
     # Define field mappings for each credential type
@@ -244,6 +246,7 @@ class SettingsService(BaseSettingsService):
         SQLConfig: CredentialTypes.SQL,
         SonarConfig: CredentialTypes.SONAR,
         SharePointConfig: CredentialTypes.SHAREPOINT,
+        ExchangeToolConfig: CredentialTypes.MS_EXCHANGE,
     }
 
     @classmethod

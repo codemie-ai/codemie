@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "task": "Register the MS_EXCHANGE credential type and toolkit with a dual-path ExchangeToolConfig (no auth_type default), a reversible Alembic enum migration, credential masking, a default-off features:exchangePolling flag, and connector-pattern docs, with no Exchange protocol code (EPMCDME-15199).",
+  "generated": "2026-09-25T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 23,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Base L: 4+ components across codemie_tools (CredentialTypes/ToolSet enums, new ExchangeToolConfig, ExchangeToolkit via DiscoverableToolkit), SettingsService (LIST_OF_SENSITIVE_FIELDS, __CREDENTIAL_CONFIG_TO_TYPE, possibly SettingsTester.handlers), the Alembic migration, the customer-config DECLARATIONS registry and docs. Bumped to XL because the closed enums in base/models.py (74 CredentialTypes callers, 56 ToolSet callers) and the global key-based sensitive-field list are core shared utilities. The codemie-ui CREDENTIAL_UI_MAPPING conditional-field work is in a separate repo and is not counted in this backend scope." },
+    { "dimension": "technical_risk", "reason": "Base M: close precedents exist for every piece (ITSM toolkit shape, EmailToolConfig dual auth, MS_TEAMS migration 8b2c1a4d5e6f with delete-before-shrink downgrade, WEB_SEARCH/SCHEDULERS SettingDeclaration). Bumped +1 for a security divergence: the Email precedent's secret handling does not cover service_account_password, which is missing from the global LIST_OF_SENSITIVE_FIELDS, so encrypt-at-rest and masking depend on a global key-list change. Bumped +1 because the AC enumerates forward-migration and rollback cases and no Alembic up/down test harness exists. Other risks: the Alembic head is unverified (possible EPMCDME-7171 down_revision collision), the persisted 'Microsoft Exchange' label is effectively irreversible, and the email get_tool_default fallback must not be copied." },
+    { "dimension": "file_change_estimate", "reason": "About 5-7 modified files (base/models.py, settings.py, settings_tester.py, customer_config_declarations.py, the toolkit or feature-flag service, the customer-config YAML) plus 4-6 new ones (exchange models, toolkit, package init, migration, connector doc, several test modules) across 3+ directories (src/codemie_tools, src/codemie/service, src/external/alembic, docs, tests)." },
+    { "dimension": "affected_layers", "reason": "Tools/Service, DB-Persistence (a codemie.credentialtypes enum migration), and Infrastructure/config (a runtime-overridable feature flag). The UI layer is touched in the sibling codemie-ui repo. Scored L because a schema migration is involved." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L to XL: touches core shared utilities (closed CredentialTypes/ToolSet enums and the global LIST_OF_SENSITIVE_FIELDS)",
+    "Technical Risk bumped from M to L: auto-bump for a security divergence, because the closest precedent (EmailToolConfig) does not cover encryption and masking of service_account_password",
+    "Technical Risk bumped from L to XL: auto-bump because the AC enumerates migration forward and rollback cases and no Alembic up/down test template exists"
+  ],
+  "split_recommendation": null
+}

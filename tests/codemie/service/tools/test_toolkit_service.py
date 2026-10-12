@@ -22,6 +22,7 @@ from codemie_tools.base.models import Tool, ToolKit, ToolSet
 from langchain_core.tools import BaseTool, ToolException
 
 from codemie.core.constants import CodeIndexType, ToolType
+from codemie.core.exceptions import ModelNotWhitelistedException
 from codemie.core.models import AssistantChatRequest, CodeFields, IdeChatRequest, ToolConfig
 from codemie.rest_api.models.assistant import Assistant, Context, ContextType, ToolKitDetails
 from codemie.rest_api.models.conversation import Conversation
@@ -2080,3 +2081,239 @@ class TestMergeSkillMcpServers:
 
         assert len(result) == 1
         assert result[0].name == "shared-server"
+
+
+class TestInitializeToolOcrModelFactory:
+    """Host boundary: EnrichBodyTool must receive chat_model and an ocr_model_factory."""
+
+    @patch("codemie.service.tools.toolkit_service.llm_service")
+    @patch("codemie.service.tools.toolkit_service.get_llm_by_credentials")
+    @patch("codemie.service.settings.settings.SettingsService.get_config")
+    @patch("codemie.service.tools.tool_metadata_service.ToolMetadataService._get_tool_and_toolkit_definitions")
+    def test_enrich_body_tool_gets_chat_model_and_ocr_factory(self, mock_defs, mock_get_config, mock_get_llm, mock_llm):
+        from codemie_tools.ms_exchange.tools import EnrichBodyTool
+
+        tool_def = Mock(tool_class=EnrichBodyTool, settings_config=True, config_class=Mock())
+        tool_def.name = "exchange_enrich_body"
+        mock_defs.return_value = (tool_def, Mock(settings_config=True))
+        from codemie_tools.ms_exchange.models import ExchangeToolConfig
+
+        mock_get_config.return_value = ExchangeToolConfig(
+            auth_type="ntlm",
+            mailbox="a@b.c",
+            ews_url="https://ews.example/EWS/Exchange.asmx",
+            service_account_username="svc",
+            service_account_password="pw",
+        )
+        mock_llm.get_multimodal_llms.return_value = ["vision-default", "vision-x"]
+        mock_llm.get_multimodal_llm_names.return_value = {"vision-default", "vision-x"}
+        default_model, named_model = Mock(name="default"), Mock(name="named")
+        mock_get_llm.side_effect = lambda llm_model, **_: named_model if llm_model == "vision-x" else default_model
+        assistant_tool = Mock()
+        assistant_tool.name = "exchange_enrich_body"
+
+        with patch.object(ToolkitService, "_tool_reporting_the_missing_integration", return_value=None):
+            tool = ToolkitService._initialize_tool(
+                "ms_exchange", assistant_tool, "u", "p", "a", None, llm_model="gpt-4", request_uuid="r"
+            )
+
+        assert tool.chat_model is default_model
+        assert tool.ocr_model_factory is not None
+        assert tool.ocr_model_factory("vision-x") is named_model
+
+
+class TestInitializeToolOcrFactoryIndependentOfChatModel:
+    """The factory is wired even when chat_model injection is unavailable (workflow path, LLM failure)."""
+
+    @staticmethod
+    def _build(mock_defs, mock_get_config, **kwargs):
+        from codemie_tools.ms_exchange.models import ExchangeToolConfig
+        from codemie_tools.ms_exchange.tools import EnrichBodyTool
+
+        tool_def = Mock(tool_class=EnrichBodyTool, settings_config=True, config_class=Mock())
+        tool_def.name = "exchange_enrich_body"
+        mock_defs.return_value = (tool_def, Mock(settings_config=True))
+        mock_get_config.return_value = ExchangeToolConfig(
+            auth_type="ntlm",
+            mailbox="a@b.c",
+            ews_url="https://ews.example/EWS/Exchange.asmx",
+            service_account_username="svc",
+            service_account_password="pw",
+        )
+        assistant_tool = Mock()
+        assistant_tool.name = "exchange_enrich_body"
+        with patch.object(ToolkitService, "_tool_reporting_the_missing_integration", return_value=None):
+            return ToolkitService._initialize_tool("ms_exchange", assistant_tool, "u", "p", "a", None, **kwargs)
+
+    @patch("codemie.service.tools.toolkit_service.llm_service")
+    @patch("codemie.service.tools.toolkit_service.get_llm_by_credentials")
+    @patch("codemie.service.settings.settings.SettingsService.get_config")
+    @patch("codemie.service.tools.tool_metadata_service.ToolMetadataService._get_tool_and_toolkit_definitions")
+    def test_factory_injected_without_llm_model(self, mock_defs, mock_get_config, mock_get_llm, mock_llm):
+        mock_llm.get_multimodal_llms.return_value = ["vision-x"]
+        mock_llm.get_multimodal_llm_names.return_value = {"vision-x"}
+        named = Mock(name="named")
+        mock_get_llm.return_value = named
+
+        tool = self._build(mock_defs, mock_get_config, request_uuid="r")
+
+        assert tool.chat_model is None
+        assert tool.ocr_model_factory is not None
+        assert tool.ocr_model_factory("vision-x") is named
+
+    @patch("codemie.service.tools.toolkit_service.llm_service")
+    @patch("codemie.service.tools.toolkit_service.get_llm_by_credentials")
+    @patch("codemie.service.settings.settings.SettingsService.get_config")
+    @patch("codemie.service.tools.tool_metadata_service.ToolMetadataService._get_tool_and_toolkit_definitions")
+    def test_factory_injected_when_chat_model_injection_fails(self, mock_defs, mock_get_config, mock_get_llm, mock_llm):
+        mock_llm.get_multimodal_llms.return_value = ["vision-default", "vision-x"]
+        mock_llm.get_multimodal_llm_names.return_value = {"vision-default", "vision-x"}
+        named = Mock(name="named")
+
+        def fake(llm_model, **_):
+            if llm_model == "vision-default":
+                raise RuntimeError("boom")
+            return named
+
+        mock_get_llm.side_effect = fake
+
+        tool = self._build(mock_defs, mock_get_config, llm_model="gpt-4", request_uuid="r")
+
+        assert tool.chat_model is None
+        assert tool.ocr_model_factory("vision-x") is named
+
+
+class TestBuildOcrModel:
+    def test_rejects_model_outside_multimodal_allowlist(self):
+        with (
+            patch('codemie.service.tools.toolkit_service.llm_service') as svc,
+            patch('codemie.service.tools.toolkit_service.get_llm_by_credentials') as build,
+        ):
+            svc.get_multimodal_llm_names.return_value = {'vision-ok', 'vision'}
+            with pytest.raises(ValueError):
+                ToolkitService._build_ocr_model('text-only', 'req')
+            build.assert_not_called()
+
+    def test_builds_allowed_multimodal_model(self):
+        with (
+            patch('codemie.service.tools.toolkit_service.llm_service') as svc,
+            patch('codemie.service.tools.toolkit_service.get_llm_by_credentials') as build,
+        ):
+            svc.get_multimodal_llm_names.return_value = {'vision-ok', 'vision'}
+            assert ToolkitService._build_ocr_model('vision-ok', 'req') is build.return_value
+            build.assert_called_once_with(llm_model='vision-ok', streaming=False, request_id='req')
+
+    def test_builds_model_referenced_by_base_name(self):
+        with (
+            patch('codemie.service.tools.toolkit_service.llm_service') as svc,
+            patch('codemie.service.tools.toolkit_service.get_llm_by_credentials') as build,
+        ):
+            svc.get_multimodal_llm_names.return_value = {'vision-ok', 'vision'}
+            assert ToolkitService._build_ocr_model('vision', 'req') is build.return_value
+            build.assert_called_once_with(llm_model='vision', streaming=False, request_id='req')
+
+
+class TestBuildOcrModelProjectWhitelist:
+    """With projectModelOverride on, the project's whitelist narrows the multimodal allowlist."""
+
+    @staticmethod
+    def _patches(*, override_on=True, allowed_models=None, project_exists=True):
+        project = Mock(allowed_models=allowed_models)
+        get_by_id = Mock(return_value=project) if project_exists else Mock(side_effect=KeyError("p"))
+        return (
+            patch('codemie.service.tools.toolkit_service.llm_service'),
+            patch('codemie.service.tools.toolkit_service.get_llm_by_credentials'),
+            patch(
+                'codemie.service.tools.toolkit_service.customer_config',
+                Mock(is_feature_enabled=Mock(return_value=override_on)),
+            ),
+            patch('codemie.service.tools.toolkit_service.Application.get_by_id', get_by_id),
+        )
+
+    def _build(self, name='vision-ok', project_name='proj', **kwargs):
+        svc_p, build_p, flag_p, project_p = self._patches(**kwargs)
+        with svc_p as svc, build_p as build, flag_p as flag, project_p as get_by_id:
+            svc.get_multimodal_llm_names.return_value = {'vision-ok', 'vision-other'}
+            try:
+                result = ToolkitService._build_ocr_model(name, 'req', project_name)
+            finally:
+                self.build, self.flag, self.get_by_id = build, flag.is_feature_enabled, get_by_id
+        return result
+
+    def test_builds_model_the_project_allows(self):
+        self._build(allowed_models=['vision-ok', 'gpt-4'])
+
+        self.build.assert_called_once_with(llm_model='vision-ok', streaming=False, request_id='req')
+        self.flag.assert_called_once_with('projectModelOverride')
+        self.get_by_id.assert_called_once_with('proj')
+
+    def test_rejects_multimodal_model_the_project_excludes(self):
+        with pytest.raises(ModelNotWhitelistedException) as info:
+            self._build(name='vision-other', allowed_models=['vision-ok'])
+
+        assert info.value.code == 400
+        self.build.assert_not_called()
+
+    def test_empty_whitelist_denies_every_model(self):
+        with pytest.raises(ModelNotWhitelistedException):
+            self._build(allowed_models=[])
+
+        self.build.assert_not_called()
+
+    def test_project_without_whitelist_is_unrestricted(self):
+        self._build(allowed_models=None)
+
+        self.build.assert_called_once()
+
+    def test_override_off_ignores_whitelist_and_skips_project_lookup(self):
+        self._build(name='vision-other', override_on=False, allowed_models=['vision-ok'])
+
+        self.build.assert_called_once()
+        self.get_by_id.assert_not_called()
+
+    def test_no_project_skips_lookup(self):
+        self._build(project_name=None, allowed_models=['vision-ok'])
+
+        self.build.assert_called_once()
+        self.get_by_id.assert_not_called()
+
+    def test_missing_project_fails_closed(self):
+        with pytest.raises(KeyError):
+            self._build(project_exists=False)
+
+        self.build.assert_not_called()
+
+    def test_multimodal_check_runs_before_project_lookup(self):
+        with pytest.raises(ValueError):
+            self._build(name='text-only', allowed_models=['text-only'])
+
+        self.get_by_id.assert_not_called()
+        self.build.assert_not_called()
+
+    @patch("codemie.service.tools.toolkit_service.ToolkitService._build_ocr_model")
+    @patch("codemie.service.settings.settings.SettingsService.get_config")
+    @patch("codemie.service.tools.tool_metadata_service.ToolMetadataService._get_tool_and_toolkit_definitions")
+    def test_initialize_tool_passes_its_project_to_the_factory(self, mock_defs, mock_get_config, mock_build):
+        from codemie_tools.ms_exchange.models import ExchangeToolConfig
+        from codemie_tools.ms_exchange.tools import EnrichBodyTool
+
+        tool_def = Mock(tool_class=EnrichBodyTool, settings_config=True, config_class=Mock())
+        tool_def.name = "exchange_enrich_body"
+        mock_defs.return_value = (tool_def, Mock(settings_config=True))
+        mock_get_config.return_value = ExchangeToolConfig(
+            auth_type="ntlm",
+            mailbox="a@b.c",
+            ews_url="https://ews.example/EWS/Exchange.asmx",
+            service_account_username="svc",
+            service_account_password="pw",
+        )
+        assistant_tool = Mock()
+        assistant_tool.name = "exchange_enrich_body"
+
+        with patch.object(ToolkitService, "_tool_reporting_the_missing_integration", return_value=None):
+            tool = ToolkitService._initialize_tool(
+                "ms_exchange", assistant_tool, "u", "project-x", "a", None, request_uuid="r"
+            )
+        tool.ocr_model_factory("vision-x")
+
+        mock_build.assert_called_once_with("vision-x", "r", "project-x")

@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "generated": "2026-09-30T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 3, "label": "M" },
+    "affected_layers":      { "score": 5, "label": "XL" }
+  },
+  "total": 26,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 34,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "New ms_exchange toolkit package (clients, factory, enrichment, retry, tools) plus settings, settings tester, tool/toolkit services and base models." },
+    { "dimension": "technical_risk", "reason": "Credential handling, EWS/Graph external clients, internal-host blocking, attachment size caps and OCR injection; no exact precedent." },
+    { "dimension": "file_change_estimate", "reason": "34 files changed (3631 insertions), mostly new package and tests." },
+    { "dimension": "affected_layers", "reason": "Service, DB migration (alembic credential type), configuration/settings and external Exchange integration." }
+  ],
+  "red_flags_applied": [
+    "Integration with new external service: Component Scope and Affected Layers bumped",
+    "Security-sensitive: Technical Risk bumped"
+  ],
+  "split_recommendation": null
+}

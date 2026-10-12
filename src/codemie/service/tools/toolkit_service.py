@@ -45,9 +45,11 @@ from codemie.configs.customer_config import customer_config
 from codemie.configs.logger import logger
 from codemie.core.constants import CodeIndexType, ToolType
 from codemie.core.dependecies import get_llm_by_credentials
-from codemie.core.models import AssistantChatRequest, CodeFields, IdeChatRequest, ToolConfig
+from codemie.core.exceptions import ModelNotWhitelistedException
+from codemie.core.models import Application, AssistantChatRequest, CodeFields, IdeChatRequest, ToolConfig
 from codemie.core.thread import MessageQueue
 from codemie.service.file_service.markdown_cache_service import MarkdownCacheService
+from codemie.service.llm.model_availability_service import ModelAvailabilityService
 from codemie.service.provider.provider_header_context import ProviderHeaderContext
 from codemie.core.utils import build_unique_file_objects_list
 from codemie.rest_api.models.assistant import (
@@ -811,9 +813,17 @@ class ToolkitService:
 
         cls._inject_runtime_dependencies(stored_config, file_objects)
 
+        tool_fields = getattr(tool_definition.tool_class, 'model_fields', None)
+        if not isinstance(tool_fields, dict):
+            tool_fields = {}
+        # The OCR factory is independent of chat_model: workflow-built tools carry no llm_model, and a
+        # failed chat_model injection must not drop it. Models are built lazily, only when a name is given.
+        extra: dict[str, Any] = {}
+        if 'ocr_model_factory' in tool_fields:
+            extra['ocr_model_factory'] = lambda name: cls._build_ocr_model(name, request_uuid, project_name)
+
         # Pass chat_model at construction time for tools that declare it.
         # Use a multimodal LLM (needed for image/OCR), falling back to the main model.
-        tool_fields = getattr(tool_definition.tool_class, 'model_fields', {})
         if llm_model and 'chat_model' in tool_fields:
             try:
                 effective_llm = llm_model
@@ -824,11 +834,37 @@ class ToolkitService:
                     llm_model=effective_llm, streaming=False, request_id=request_uuid
                 )
                 logger.debug(f"Injecting chat_model (model={effective_llm}) into '{assistant_tool.name}'")
-                return tool_definition.tool_class(config=stored_config, chat_model=chat_model_instance)
+                return tool_definition.tool_class(config=stored_config, chat_model=chat_model_instance, **extra)
             except Exception as e:
                 logger.debug(f"Failed to inject chat_model into '{assistant_tool.name}': {e}")
 
-        return tool_definition.tool_class(config=stored_config)
+        return tool_definition.tool_class(config=stored_config, **extra)
+
+    @staticmethod
+    def _build_ocr_model(name: str, request_uuid: Any, project_name: Optional[str] = None) -> Any:
+        """Build an OCR chat model; the name is LLM-supplied, so it must be an allowed multimodal model.
+
+        Under project model override the project's whitelist applies too. It rejects rather than falls back
+        (unlike get_llm_by_credentials): a silent swap could land on a model that cannot read images.
+        """
+        if name not in llm_service.get_multimodal_llm_names():
+            raise ValueError("OCR model is not an allowed multimodal model")
+        ToolkitService._ensure_project_allows_model(name, project_name)
+        return get_llm_by_credentials(llm_model=name, streaming=False, request_id=request_uuid)
+
+    @staticmethod
+    def _ensure_project_allows_model(name: str, project_name: Optional[str]) -> None:
+        """Raise ModelNotWhitelistedException when the project's whitelist excludes the model.
+
+        No-op without a project, with the override off, or when the project sets no whitelist. An empty
+        whitelist denies every model. The raw field is read because get_project_models() turns "no whitelist"
+        into an empty list, which is indistinguishable from deny-all.
+        """
+        if not project_name or not customer_config.is_feature_enabled("projectModelOverride"):
+            return
+        allowed_models = Application.get_by_id(project_name).allowed_models
+        if allowed_models is not None and not ModelAvailabilityService.is_model_allowed([name], allowed_models):
+            raise ModelNotWhitelistedException(name, project_name)
 
     @staticmethod
     def _inject_runtime_dependencies(stored_config: Any, file_objects: Optional[List[FileObject]]) -> None:

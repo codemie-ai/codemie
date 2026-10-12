@@ -19,8 +19,9 @@ This module handles extracting configuration schemas from toolkit classes.
 
 import inspect
 import re
+import types
 import typing
-from typing import Dict, Optional, Tuple, Type
+from typing import Any, Dict, Optional, Tuple, Type
 
 from codemie_tools.base.base_toolkit import BaseToolkit
 
@@ -70,13 +71,16 @@ class ToolConfigExtractor:
         if not hasattr(config_class, '__annotations__'):
             return schema
 
-        for field_name, field_type in config_class.__annotations__.items():
+        resolved = cls._resolved_type_hints(config_class)
+        model_fields = getattr(config_class, 'model_fields', None) or {}
+        for field_name, raw_type in config_class.__annotations__.items():
+            field_type = resolved.get(field_name, raw_type)
             is_optional = cls._is_optional_type(field_type)
             actual_type = cls._get_actual_type(field_type) if is_optional else field_type
 
             schema[field_name] = {
                 'type': actual_type,
-                'required': not is_optional,
+                'required': not is_optional and not cls._has_usable_default(model_fields.get(field_name)),
             }
 
         return schema
@@ -226,8 +230,31 @@ class ToolConfigExtractor:
         return field_type.__args__[0] if hasattr(field_type, '__args__') else field_type
 
     @classmethod
+    def _has_usable_default(cls, field_info: Any) -> bool:
+        """True when the model fixes the field itself (e.g. the frozen credential_type), so callers need not supply it.
+
+        Only frozen fields count: many configs default credentials to "" while still needing them,
+        so a plain default does not mean the field is optional.
+        """
+        return field_info is not None and field_info.frozen and not field_info.is_required()
+
+    @classmethod
+    def _resolved_type_hints(cls, config_class: Type) -> Dict:
+        """Evaluate annotations that are strings (modules using `from __future__ import annotations`).
+
+        Falls back to the raw annotations when they cannot be resolved, so a field with an
+        unresolvable annotation keeps reading as required.
+        """
+        try:
+            return typing.get_type_hints(config_class)
+        except Exception:
+            return {}
+
+    @classmethod
     def _is_optional_type(cls, field_type: Type) -> bool:
-        """Check if a type is Optional (Union with None)."""
+        """Check if a type is Optional (`Optional[X]`, `Union[X, None]` or `X | None`)."""
+        if isinstance(field_type, types.UnionType):
+            return type(None) in field_type.__args__
         return (
             hasattr(field_type, '__origin__')
             and field_type.__origin__ is typing.Union

@@ -438,6 +438,11 @@ class LLMService:
         active_models = self.get_all_llm_model_info()
         return [model.deployment_name for model in active_models if model.multimodal]
 
+    def get_multimodal_llm_names(self) -> set[str]:
+        """Every name a multimodal model can be referred to by: its base_name and its deployment_name."""
+        multimodal_models = [model for model in self.get_all_llm_model_info() if model.multimodal]
+        return {name for model in multimodal_models for name in (model.base_name, model.deployment_name)}
+
     def get_react_llms(self) -> List[str]:
         # Get the active model source (LiteLLM or YAML)
         active_models = self.get_all_llm_model_info()

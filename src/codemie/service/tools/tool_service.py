@@ -103,6 +103,7 @@ class ToolsService:
             project_name=assistant.project,
             assistant_id=assistant.id,
             tools_config=toolkit.get_tool_configs(),
+            request_uuid=execution_id,
         )
         if not tools:
             toolkit_name = toolkit.toolkit

@@ -14,6 +14,8 @@
 
 from typing import Tuple
 
+from pydantic import ValidationError
+
 from codemie_tools.cloud.aws.models import AWSConfig
 from codemie_tools.cloud.aws.tools import GenericAWSTool
 from codemie_tools.cloud.azure.models import AzureConfig
@@ -30,6 +32,9 @@ from codemie_tools.core.project_management.jira.models import JiraConfig
 from codemie_tools.core.project_management.jira.tools import GenericJiraIssueTool
 from codemie_tools.core.project_management.xwiki.models import XWikiConfig
 from codemie_tools.core.project_management.xwiki.tools import ListWikisTool
+from codemie_tools.ms_exchange.client_factory import get_client
+from codemie_tools.ms_exchange.errors import ExchangeError, InternalError
+from codemie_tools.ms_exchange.models import ExchangeToolConfig
 from codemie_tools.sharepoint.models import SharePointConfig
 from codemie_tools.sharepoint.tools import SharePointTool
 from codemie_tools.git.toolkit import GitToolkit
@@ -100,7 +105,25 @@ class SettingsTester(SettingsService):
             CredentialTypes.SHAREPOINT: SettingsTester._test_sharepoint,
             CredentialTypes.XWIKI: SettingsTester._test_xwiki,
             CredentialTypes.SQL: SettingsTester._test_sql,
+            CredentialTypes.MS_EXCHANGE: SettingsTester._test_ms_exchange,
         }
+
+    def _test_ms_exchange(self) -> Tuple[bool, str]:
+        # Fixed sentences only: provider text can carry tenant/client ids, URLs and accounts.
+        try:
+            config = ExchangeToolConfig(**self.credential_values)
+        except ValidationError:
+            return False, (
+                "The Exchange connection settings are invalid. "
+                "Check the required fields for the selected authentication type."
+            )
+        try:
+            get_client(config).check_inbox()
+        except ExchangeError as exc:
+            return False, exc.MESSAGE
+        except Exception:
+            return False, InternalError.MESSAGE
+        return True, "Connection and Inbox access verified."
 
     def _test_xwiki(self) -> Tuple[bool, str]:
         ok, message = ListWikisTool(config=XWikiConfig(**self.credential_values)).healthcheck()

@@ -1151,6 +1151,18 @@ numpy = "*"
 doc = ["gitpython", "numpydoc", "sphinx"]
 
 [[package]]
+name = "cached-property"
+version = "2.0.1"
+description = "A decorator for caching properties in classes."
+optional = false
+python-versions = ">=3.8"
+groups = ["main"]
+files = [
+    {file = "cached_property-2.0.1-py3-none-any.whl", hash = "sha256:f617d70ab1100b7bcf6e42228f9ddcb78c676ffa167278d9f730d1c2fba69ccb"},
+    {file = "cached_property-2.0.1.tar.gz", hash = "sha256:484d617105e3ee0e4f1f58725e72a8ef9e93deee462222dbd51cd91230897641"},
+]
+
+[[package]]
 name = "cachetools"
 version = "6.2.4"
 description = "Extensible memoizing collections and decorators"
@@ -2583,6 +2595,38 @@ files = [
 ]
 
 [[package]]
+name = "exchangelib"
+version = "5.6.0"
+description = "Client for Microsoft Exchange Web Services (EWS)"
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = [
+    {file = "exchangelib-5.6.0-py3-none-any.whl", hash = "sha256:7d843ff56f41f3a1eaff73e4bbb4ecce21957aa52b65bef01440414ffbba377e"},
+    {file = "exchangelib-5.6.0.tar.gz", hash = "sha256:a65cffba3b4d1166347059e88b1f11eae9a9d70119c3ad9b33389d7258f6181c"},
+]
+
+[package.dependencies]
+cached_property = "*"
+defusedxml = ">=0.6.0"
+dnspython = ">=2.2.0"
+isodate = "*"
+lxml = ">3.0"
+oauthlib = "*"
+pygments = "*"
+requests = ">=2.31.0"
+requests_ntlm = ">=0.2.0"
+requests_oauthlib = "*"
+tzdata = "*"
+tzlocal = "*"
+
+[package.extras]
+complete = ["msal", "requests_gssapi", "requests_negotiate_sspi"]
+kerberos = ["requests_gssapi"]
+msal = ["msal"]
+sspi = ["requests_negotiate_sspi"]
+
+[[package]]
 name = "execnet"
 version = "2.1.2"
 description = "execnet: rapid multi-Python deployment"
@@ -3846,6 +3890,34 @@ files = [
 ]
 
 [[package]]
+name = "h2"
+version = "4.4.1"
+description = "Pure-Python HTTP/2 protocol implementation"
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = [
+    {file = "h2-4.4.1-py3-none-any.whl", hash = "sha256:0e25f1462b23c9cb82d9eb02e28bc706dac2a68cb457c6a0d74d63c8a2a5d0e6"},
+    {file = "h2-4.4.1.tar.gz", hash = "sha256:4e866ffb1a869ae14dd9b5e6beb5c24a13da0495ad72b65925ded182521c1516"},
+]
+
+[package.dependencies]
+hpack = ">=4.2,<5"
+hyperframe = ">=6.1,<7"
+
+[[package]]
+name = "hpack"
+version = "4.2.0"
+description = "Pure-Python HPACK header encoding"
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = [
+    {file = "hpack-4.2.0-py3-none-any.whl", hash = "sha256:858ac0b02280fa582b5080d68db0899c62a80375e0e5413a74970c5e518b6986"},
+    {file = "hpack-4.2.0.tar.gz", hash = "sha256:0895cfa3b5531fc65fe439c05eb65144f123bf7a394fcaa56aa423548d8e45c0"},
+]
+
+[[package]]
 name = "html5lib"
 version = "1.1"
 description = "HTML parser based on the WHATWG HTML specification"
@@ -3919,6 +3991,7 @@ files = [
 [package.dependencies]
 anyio = "*"
 certifi = "*"
+h2 = {version = ">=3,<5", optional = true, markers = "extra == \"http2\""}
 httpcore = "==1.*"
 idna = "*"
 
@@ -4008,6 +4081,18 @@ requests = ">=2.27.1,<3.0.0"
 
 [package.extras]
 parser = ["pyhcl (>=0.4.4,<0.5.0)"]
+
+[[package]]
+name = "hyperframe"
+version = "6.1.0"
+description = "Pure-Python HTTP/2 framing"
+optional = false
+python-versions = ">=3.9"
+groups = ["main"]
+files = [
+    {file = "hyperframe-6.1.0-py3-none-any.whl", hash = "sha256:b03380493a519fce58ea5af42e4a42317bf9bd425596f7a0835ffce80f1a42e5"},
+    {file = "hyperframe-6.1.0.tar.gz", hash = "sha256:f630908a00854a7adeabd6382b43923a4c4cd4b821fcb527e6ab9e15382a3b08"},
+]
 
 [[package]]
 name = "identify"
@@ -6077,6 +6162,120 @@ files = [
 ]
 
 [[package]]
+name = "microsoft-kiota-abstractions"
+version = "1.14.2"
+description = "Core abstractions for kiota generated libraries in Python"
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = [
+    {file = "microsoft_kiota_abstractions-1.14.2-py3-none-any.whl", hash = "sha256:349ca8a3b65fc3d5583992f1fea8b2362d97761904e699b0636556bdae5a6d1e"},
+    {file = "microsoft_kiota_abstractions-1.14.2.tar.gz", hash = "sha256:fd948ad977e50961330c04ed3909cc0de68fcce57b88256577195f28ffeb0f70"},
+]
+
+[package.dependencies]
+opentelemetry-api = ">=1.27.0"
+opentelemetry-sdk = ">=1.27.0"
+std-uritemplate = ">=2.0.0"
+
+[[package]]
+name = "microsoft-kiota-authentication-azure"
+version = "1.14.2"
+description = "Core abstractions for kiota generated libraries in Python"
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = [
+    {file = "microsoft_kiota_authentication_azure-1.14.2-py3-none-any.whl", hash = "sha256:fe89202a68f63504540e1af4293ca7044c643cd719207ea74af86a4bb31ec0ef"},
+    {file = "microsoft_kiota_authentication_azure-1.14.2.tar.gz", hash = "sha256:1a2d84109a70f2880d6eb220487d215fb0ce75c0d725ac43db764c3545eaca65"},
+]
+
+[package.dependencies]
+aiohttp = ">=3.8.0"
+azure-core = ">=1.21.1"
+microsoft-kiota-abstractions = ">=1.11.1,<2.0.0"
+opentelemetry-api = ">=1.27.0"
+opentelemetry-sdk = ">=1.27.0"
+
+[[package]]
+name = "microsoft-kiota-http"
+version = "1.14.2"
+description = "Core abstractions for kiota generated libraries in Python"
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = [
+    {file = "microsoft_kiota_http-1.14.2-py3-none-any.whl", hash = "sha256:97742f6180a3986df3568bf15d298a0ae971189dfd62e0c90c213c6083b6fb55"},
+    {file = "microsoft_kiota_http-1.14.2.tar.gz", hash = "sha256:999ad1338cf13877981592b1854974307a4c3aa1dddeb02a0039cadf11d0aef4"},
+]
+
+[package.dependencies]
+httpx = {version = ">=0.25,<1.0.0", extras = ["http2"]}
+microsoft-kiota-abstractions = ">=1.11.1,<2.0.0"
+opentelemetry-api = ">=1.27.0"
+opentelemetry-sdk = ">=1.27.0"
+
+[[package]]
+name = "microsoft-kiota-serialization-form"
+version = "1.14.2"
+description = "Core abstractions for kiota generated libraries in Python"
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = [
+    {file = "microsoft_kiota_serialization_form-1.14.2-py3-none-any.whl", hash = "sha256:378101b39d61d30f8ada51c0a4967281bc592a735c97b2efd9698d8a0e0f6c06"},
+    {file = "microsoft_kiota_serialization_form-1.14.2.tar.gz", hash = "sha256:40455c1defefe7a87f2cc8833037d5bc98f14621cfa782fbd20b059860dcce7a"},
+]
+
+[package.dependencies]
+microsoft-kiota-abstractions = ">=1.11.1,<2.0.0"
+
+[[package]]
+name = "microsoft-kiota-serialization-json"
+version = "1.14.2"
+description = "Core abstractions for kiota generated libraries in Python"
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = [
+    {file = "microsoft_kiota_serialization_json-1.14.2-py3-none-any.whl", hash = "sha256:028d44cb5c5962add0e5e75daf96cb97038444bb9a4c4842211575421339f0e6"},
+    {file = "microsoft_kiota_serialization_json-1.14.2.tar.gz", hash = "sha256:b48f944ac4c671b651ebb5638df3f21f8e1972d82490f5e3c380a63a54d6bd50"},
+]
+
+[package.dependencies]
+microsoft-kiota-abstractions = ">=1.11.1,<2.0.0"
+
+[[package]]
+name = "microsoft-kiota-serialization-multipart"
+version = "1.14.2"
+description = "Core abstractions for kiota generated libraries in Python"
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = [
+    {file = "microsoft_kiota_serialization_multipart-1.14.2-py3-none-any.whl", hash = "sha256:878de1be9b0755b6d315135bae9ab6e1055553fe5d471b6b7048d0c608bb64e3"},
+    {file = "microsoft_kiota_serialization_multipart-1.14.2.tar.gz", hash = "sha256:3f8652682674e3075bcb20d83d72e681e03dfa7526a3c58e828f8516dcad0ac5"},
+]
+
+[package.dependencies]
+microsoft-kiota-abstractions = ">=1.11.1,<2.0.0"
+
+[[package]]
+name = "microsoft-kiota-serialization-text"
+version = "1.14.2"
+description = "Core abstractions for kiota generated libraries in Python"
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = [
+    {file = "microsoft_kiota_serialization_text-1.14.2-py3-none-any.whl", hash = "sha256:184dfcc1822e0468cb6e82b89def35ea3ef4d81d6b1133e1f12304cf4eff4605"},
+    {file = "microsoft_kiota_serialization_text-1.14.2.tar.gz", hash = "sha256:be2a6bb5878a50bae9cff5abd7ede6fb99689b31c3f9ab7ccc3e3e6cc971f94f"},
+]
+
+[package.dependencies]
+microsoft-kiota-abstractions = ">=1.11.1,<2.0.0"
+
+[[package]]
 name = "mistune"
 version = "3.3.4"
 description = "A sane and fast Markdown parser with useful plugins and renderers"
@@ -6143,6 +6342,50 @@ msal = ">=1.29,<2"
 
 [package.extras]
 portalocker = ["portalocker (>=1.4,<4)"]
+
+[[package]]
+name = "msgraph-core"
+version = "1.5.2"
+description = "Core component of the Microsoft Graph Python SDK"
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = [
+    {file = "msgraph_core-1.5.2-py3-none-any.whl", hash = "sha256:3293ad24edefd6439f4b1f1e3325f44af5a4a696f2176cf097cacb2a29d60acd"},
+    {file = "msgraph_core-1.5.2.tar.gz", hash = "sha256:8ce6a4ffa76d0b4801c2b20df872dd85d4d925b8eceb9809e08d21daba3762cf"},
+]
+
+[package.dependencies]
+httpx = {version = ">=0.23.0", extras = ["http2"]}
+microsoft-kiota-abstractions = ">=1.13.0,<2.0.0"
+microsoft-kiota-authentication-azure = ">=1.13.0,<2.0.0"
+microsoft-kiota-http = ">=1.13.0,<2.0.0"
+
+[package.extras]
+dev = ["bumpver", "isort", "mypy", "pylint", "pytest", "yapf"]
+
+[[package]]
+name = "msgraph-sdk"
+version = "1.64.0"
+description = "The Microsoft Graph Python SDK"
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = [
+    {file = "msgraph_sdk-1.64.0-py3-none-any.whl", hash = "sha256:70180dafbb0788310883e89110cb661bb06c577a0ff1b913a2c61ffd58db564e"},
+    {file = "msgraph_sdk-1.64.0.tar.gz", hash = "sha256:b84f4ef519285b98353b16fa8c914db38796cc7022b383d7c4899393449c69a6"},
+]
+
+[package.dependencies]
+azure-identity = ">=1.12.0"
+microsoft-kiota-serialization-form = ">=1.8.0,<2.0.0"
+microsoft-kiota-serialization-json = ">=1.8.0,<2.0.0"
+microsoft-kiota-serialization-multipart = ">=1.8.0,<2.0.0"
+microsoft-kiota-serialization-text = ">=1.8.0,<2.0.0"
+msgraph_core = ">=1.5.1"
+
+[package.extras]
+dev = ["bumpver", "isort", "mypy", "pylint", "pytest", "yapf"]
 
 [[package]]
 name = "msrest"
@@ -8906,6 +9149,26 @@ files = [
 cffi = ">=2.0.0,<3.0.0"
 
 [[package]]
+name = "pyspnego"
+version = "0.12.4"
+description = "Windows Negotiate Authentication Client and Server"
+optional = false
+python-versions = ">=3.9"
+groups = ["main"]
+files = [
+    {file = "pyspnego-0.12.4-py3-none-any.whl", hash = "sha256:a29a34de1abe9e9b30d9aa1d363f8e49fc159eb7355b1f2ee86ccb3a2ce3bba9"},
+    {file = "pyspnego-0.12.4.tar.gz", hash = "sha256:acb314d6ca5c9ce87994b1eebbe2d8b687e0d564f9d650b306afb4c8f9c2ffd5"},
+]
+
+[package.dependencies]
+cryptography = "*"
+sspilib = {version = ">=0.5.0", markers = "sys_platform == \"win32\""}
+
+[package.extras]
+kerberos = ["gssapi (>=1.6.0) ; sys_platform != \"win32\"", "krb5 (>=0.3.0) ; sys_platform != \"win32\""]
+yaml = ["ruamel.yaml"]
+
+[[package]]
 name = "pytesseract"
 version = "0.3.13"
 description = "Python-tesseract is a python wrapper for Google's Tesseract-OCR"
@@ -9985,6 +10248,23 @@ socks = ["PySocks (>=1.5.6,!=1.5.7)"]
 use-chardet-on-py3 = ["chardet (>=3.0.2,<6)"]
 
 [[package]]
+name = "requests-ntlm"
+version = "1.3.0"
+description = "This package allows for HTTP NTLM authentication using the requests library."
+optional = false
+python-versions = ">=3.8"
+groups = ["main"]
+files = [
+    {file = "requests_ntlm-1.3.0-py3-none-any.whl", hash = "sha256:4c7534a7d0e482bb0928531d621be4b2c74ace437e88c5a357ceb7452d25a510"},
+    {file = "requests_ntlm-1.3.0.tar.gz", hash = "sha256:b29cc2462623dffdf9b88c43e180ccb735b4007228a542220e882c58ae56c668"},
+]
+
+[package.dependencies]
+cryptography = ">=1.3"
+pyspnego = ">=0.4.0"
+requests = ">=2.0.0"
+
+[[package]]
 name = "requests-oauthlib"
 version = "2.0.0"
 description = "OAuthlib authentication support for Requests."
@@ -10896,6 +11176,46 @@ files = [
 catalogue = ">=2.0.3,<2.1.0"
 
 [[package]]
+name = "sspilib"
+version = "0.6.0"
+description = "SSPI API bindings for Python"
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+markers = "sys_platform == \"win32\""
+files = [
+    {file = "sspilib-0.6.0-cp310-cp310-macosx_10_12_x86_64.whl", hash = "sha256:2758aac58b6ca0aa5b726bdc76cea7d020820ac9831f4082b5b6fceda2cb48d0"},
+    {file = "sspilib-0.6.0-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:aa97562ca3d27a0ba5c830c56bff0fb6d3c8257bd16589b63869a212de6c92bd"},
+    {file = "sspilib-0.6.0-cp310-cp310-manylinux_2_28_aarch64.whl", hash = "sha256:cbc8cf653e71b32ab7cf11d1630866cf12133fb235422f3f9bccb60ba62290e4"},
+    {file = "sspilib-0.6.0-cp310-cp310-manylinux_2_28_x86_64.whl", hash = "sha256:68a34e702fd81de3d74ea8caf6bc6a1218af551b75d0573a3b0607124a54e5f2"},
+    {file = "sspilib-0.6.0-cp310-cp310-win32.whl", hash = "sha256:3b24b6c19657f7b8b74a92e6cadb3ae5e25602ee348a7142cebb5194a0eed01b"},
+    {file = "sspilib-0.6.0-cp310-cp310-win_amd64.whl", hash = "sha256:8957c47c6d4e145a9e111a4c2a2b357ea15cb69719ff99fc0088fbd612618226"},
+    {file = "sspilib-0.6.0-cp310-cp310-win_arm64.whl", hash = "sha256:bf125782912e4a9012822619eb41e2c9c0e32cb9148efb649e608804b4b4e313"},
+    {file = "sspilib-0.6.0-cp311-abi3-macosx_10_12_x86_64.whl", hash = "sha256:d239d78f9619d4fc76a9d57eb929258de50024c56097e73737d46ad58be0acaa"},
+    {file = "sspilib-0.6.0-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:b79f8088f8e2826586e5eb14b68f03f443637df178e95c190765c8065fc57a37"},
+    {file = "sspilib-0.6.0-cp311-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:b65fa6f90e523daa6eb95c0aa707cd6c04705bdfab3e42c00723d23141bc74ad"},
+    {file = "sspilib-0.6.0-cp311-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:737adc3b14c2079480bcd10139fbab0b2ad683a24a6046ef69d9c769f4672c0a"},
+    {file = "sspilib-0.6.0-cp311-abi3-win32.whl", hash = "sha256:70223bdfefde9656c48dd17bb58fd0fb7e879e5b08ab028267d585206f393886"},
+    {file = "sspilib-0.6.0-cp311-abi3-win_amd64.whl", hash = "sha256:b841fabe630101d9e2be6ba56407a2a539087ee85d6ca1477748c21135c9f636"},
+    {file = "sspilib-0.6.0-cp311-abi3-win_arm64.whl", hash = "sha256:9073afb8f30dc0e7f3a40b39fef0fc29e4bda6a3d4e77936f3c496cedc4beade"},
+    {file = "sspilib-0.6.0-cp314-cp314t-macosx_10_15_x86_64.whl", hash = "sha256:05883cd90cb2c67f18fd2418ab0f959549fbe6a9a4fc8013679411af23226d6e"},
+    {file = "sspilib-0.6.0-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:83f99ed351d3091434f182579d20a419fa7baf03ec154632b5f7f3fbc6aa0788"},
+    {file = "sspilib-0.6.0-cp314-cp314t-manylinux_2_28_aarch64.whl", hash = "sha256:8b4b911f59f03601c23357146814e784c9a7612f34f5b933bdb1c50591b173d0"},
+    {file = "sspilib-0.6.0-cp314-cp314t-manylinux_2_28_x86_64.whl", hash = "sha256:fe8c7c9f749ffd302336a7820889ad9189c237d1f6d24e1232d7e2c653433d5b"},
+    {file = "sspilib-0.6.0-cp314-cp314t-win32.whl", hash = "sha256:0482631c67a57d8710ecbba3bbe49a9fb60e153dfcfee6d1f9b8a8ff6e419548"},
+    {file = "sspilib-0.6.0-cp314-cp314t-win_amd64.whl", hash = "sha256:5937dbe41c34cbbfabbafb84238a06aa8912210cae8a4b909fa20f965868cc89"},
+    {file = "sspilib-0.6.0-cp314-cp314t-win_arm64.whl", hash = "sha256:7ea194eeb68d8848fde7125a7ac67fbd4a9052442b7ce69ce6c0c8115227ec67"},
+    {file = "sspilib-0.6.0-cp315-cp315t-macosx_10_15_x86_64.whl", hash = "sha256:76a289f415f9beb6a2f3f0cb37b655863616c303b2a06754e1bb84ad86348aab"},
+    {file = "sspilib-0.6.0-cp315-cp315t-macosx_11_0_arm64.whl", hash = "sha256:6ad61668c4eea0fdeefd1f596c4fb7b3f45237b1a5989c12d4412729bded7231"},
+    {file = "sspilib-0.6.0-cp315-cp315t-manylinux_2_28_aarch64.whl", hash = "sha256:be2b500e7b745569794e8cfa557510f6c18e5402ad8f1fa1abe7adf53b3f3964"},
+    {file = "sspilib-0.6.0-cp315-cp315t-manylinux_2_28_x86_64.whl", hash = "sha256:73343ba40b04de0486ab92f60b729eb0768657f71e4c279555d3273f323c0ce4"},
+    {file = "sspilib-0.6.0-cp315-cp315t-win32.whl", hash = "sha256:03335e14f8563e350506b47a15887a99f08102a80cfb6bd715ad83ab1c2c89ae"},
+    {file = "sspilib-0.6.0-cp315-cp315t-win_amd64.whl", hash = "sha256:071e4e2a617a39a33e31de2c1f313427533879acabe475fedea31f129f7970bb"},
+    {file = "sspilib-0.6.0-cp315-cp315t-win_arm64.whl", hash = "sha256:97bb2e9d4d916d4d6f566888a81997bb3ab0e05ac41549fa0fbebabac66de0e8"},
+    {file = "sspilib-0.6.0.tar.gz", hash = "sha256:b4d4e3402230f14cd93999f3953619163075bcaca3e13dcf2ab5942c269627f4"},
+]
+
+[[package]]
 name = "stack-data"
 version = "0.6.3"
 description = "Extract data from python stack frames and tracebacks for informative displays"
@@ -10963,6 +11283,18 @@ typing-extensions = {version = ">=4.10.0", markers = "python_version < \"3.13\""
 
 [package.extras]
 full = ["httpx (>=0.27.0,<0.29.0)", "httpx2 (>=2.0.0)", "itsdangerous", "jinja2", "python-multipart (>=0.0.18)", "pyyaml"]
+
+[[package]]
+name = "std-uritemplate"
+version = "2.0.12"
+description = "std-uritemplate implementation for Python"
+optional = false
+python-versions = "<4.0,>=3.8"
+groups = ["main"]
+files = [
+    {file = "std_uritemplate-2.0.12-py3-none-any.whl", hash = "sha256:42b702d8d7eb8c13b586c527b8f2edaff456b69fee88e817d2f5dc5f088b8765"},
+    {file = "std_uritemplate-2.0.12.tar.gz", hash = "sha256:c245e6d9c6804e435c45fa94ee4a3c8a57e08aeeb45af261101cb0d513964534"},
+]
 
 [[package]]
 name = "sympy"
@@ -12691,4 +13023,4 @@ pdf-svg = ["cairosvg"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12,<3.14"
-content-hash = "a55c848aa275a5249dd3b0934a641ecc88aafda8771fe8cc3b61c2c476da9392"
+content-hash = "96f451edc53aae3991cc3546b773b90edaef3167130a94ef3fffa5d7bf43c279"

@@ -1,0 +1,166 @@
+{
+  "schema": 1,
+  "branch": "epmcdme-15199",
+  "head": "6f8831cc07520d1aff38c02b89f1d2c37f1fa467",
+  "runner": "custom",
+  "started_at": "2026-09-28T11:31:04Z",
+  "completed_at": "2026-09-28T11:38:54Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 955,
+      "command": "make ruff",
+      "exit_code": 0,
+      "notes": "Also covers hook codemie-pre-commit ruff steps. 2584 files unchanged, no auto-fix edits."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2554,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 761,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 19548,
+      "command": "make gitleaks",
+      "exit_code": 2,
+      "notes": "Docker up, scan ran. 1 leak: RuleID private-key in .codemie-storage/kubeconfig-sandbox.yaml:19 - untracked and gitignored (.gitignore:33 .codemie-storage/), not part of the branch diff or any commit. Gate scans the full working tree so it FAILs literally; removing/relocating that local file or allowlisting it in .gitleaks.toml would clear it. Secret value redacted from failure tail."
+    },
+    {
+      "id": "codemie-gitleaks",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 310,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": 0,
+      "notes": "Docker detected; 'no leaks found'. Scans staged diff only and nothing is staged (all branch changes committed), so 0 bytes scanned - hook-equivalent PASS but provides no coverage of committed content; full-tree coverage is the gitleaks gate."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 96049,
+      "command": "make test",
+      "exit_code": 2,
+      "notes": "82 failed, 23 errors, 16605 passed, 190 skipped (identical counts to previous run). Pre-existing per caller: clusters tests/enterprise/mcp_auth, tests/codemie_tools/git, tests/codemie_tools/data_management/test_file_system_toolkit, test_permission_models reproduce on base b972f0954 with the same .venv (caller-verified, not rerun here). Also failing, not named in caller's baseline claim and not verified on base here: configs/test_config.py (1), rest_api/models/test_index_models.py (2), rest_api/routers/test_common.py (1), rest_api/routers/test_oauth_redis_lazy_init.py (1), service/mcp/test_toolkit_service_auth_resolver.py (2), service/oauth/adapters/test_provider_adapters.py (2). 0 failures in test files touched by this branch. Status stays FAIL per exit code; caller rules on regression."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make coverage",
+      "exit_code": null,
+      "notes": "Skip if: user did not request coverage."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 52,
+      "command": "make sonar-local",
+      "exit_code": 0,
+      "notes": "Self-skip, exit 0. Quote: '[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.' Enable by exporting SONAR_TOKEN (and Sonar host access). Still owed."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make verify",
+      "exit_code": null,
+      "notes": "Composite of ruff, license, gitleaks, test; each component run individually above."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "exit_code": null,
+      "notes": "Skip if: not opening an MR in this stage. Needs docker compose stack, superadmin fixtures, ~/.codemie/test-harness.json. Output required in MR description ## Test harness section before MR creation."
+    },
+    {
+      "id": "hook-ruff-staged",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 30,
+      "command": "bash scripts/git-hooks/_ruff_staged.sh",
+      "exit_code": 0,
+      "notes": "Self-skip. Quote: '[pre-commit] No staged Python files - skipping Ruff format/fix check.' Staged-only; full-tree equivalent covered by lint (PASS)."
+    },
+    {
+      "id": "hook-ruff-check",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 333,
+      "command": "poetry run ruff check",
+      "exit_code": 0
+    },
+    {
+      "id": "hook-license",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 622,
+      "command": "poetry run python scripts/license_headers/check_license_headers.py --check --quiet",
+      "exit_code": 0
+    },
+    {
+      "id": "hook-commit-msg",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 0,
+      "command": "bash scripts/git-hooks/commit_msg.sh <msg-file> (per commit in origin/main..HEAD)",
+      "exit_code": 0,
+      "notes": "All 8 branch commits (origin/main..HEAD) pass scripts/git-hooks/commit_msg.sh."
+    },
+    {
+      "id": "hook-pre-push-pytest",
+      "source": "hook",
+      "status": "FAIL",
+      "duration_ms": 236649,
+      "command": "poetry run pytest tests/ --ignore=tests/enterprise/ -W ignore::DeprecationWarning --cov --cov-report=xml:coverage.xml",
+      "exit_code": 1,
+      "notes": "Pre-push hook is opt-in (CODEMIE_PREPUSH_ENABLED=true), disabled by default. 31 failed, 23 errors, 15753 passed (excludes tests/enterprise). Same failing files as unit minus enterprise. Pre-existing per caller: clusters tests/enterprise/mcp_auth, tests/codemie_tools/git, tests/codemie_tools/data_management/test_file_system_toolkit, test_permission_models reproduce on base b972f0954 with the same .venv (caller-verified, not rerun here). Also failing, not named in caller's baseline claim and not verified on base here: configs/test_config.py (1), rest_api/models/test_index_models.py (2), rest_api/routers/test_common.py (1), rest_api/routers/test_oauth_redis_lazy_init.py (1), service/mcp/test_toolkit_service_auth_resolver.py (2), service/oauth/adapters/test_provider_adapters.py (2). 0 failures in test files touched by this branch. Status stays FAIL per exit code; caller rules on regression. Wrote coverage.xml at repo root."
+    },
+    {
+      "id": "hook-pre-push-sonar",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 63,
+      "command": "SONAR_SKIP_TESTS=1 make sonar-local",
+      "exit_code": 0,
+      "notes": "Run standalone (the hook chain would abort after pytest failure). Self-skip, exit 0. Quote: '[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.' Still owed: needs SONAR_TOKEN."
+    },
+    {
+      "id": "ci-wait-ci-init",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": ".wait-ci-init-template (epm-cdme/codemie-gitlab-templates@0.1.1)",
+      "exit_code": null,
+      "notes": "Waits for external status contexts 'ci-pipeline' and 'compliance-report' on MR to main; remote infra, not runnable locally. Mismatch: quality-gates.md 'After merge' says no pipeline exists, but .gitlab-ci.yml is present (EPMCDME-13653)."
+    }
+  ],
+  "failures": {
+    "gitleaks": "Finding: [REDACTED - private key material removed]\nSecret: [REDACTED]\ndocker run --rm -v \"$(pwd):/workspace\" ghcr.io/gitleaks/gitleaks:v8.30.1 \\\n\t    dir --no-banner --verbose --config=/workspace/.gitleaks.toml /workspace\nRuleID:      private-key\nEntropy:     5.586879\nTags:        [decoded:base64 decode-depth:1]\nFile:        /workspace/.codemie-storage/kubeconfig-sandbox.yaml\nLine:        19\nFingerprint: /workspace/.codemie-storage/kubeconfig-sandbox.yaml:private-key:19\n\u001b[90m11:32AM\u001b[0m \u001b[32mINF\u001b[0m \u001b[1mscanned ~133509190 bytes (133.51 MB) in 19.3s\u001b[0m\n\u001b[90m11:32AM\u001b[0m \u001b[33mWRN\u001b[0m \u001b[1mleaks found: 1\u001b[0m\nmake: *** [gitleaks] Error 1\n",
+    "unit": "FAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-token_refresh_error]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-reauth_required1]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-tms_persistence_error1]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-warning-token_not_found]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-warning-reauth_required0]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-error-tms_unavailable]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-error-tms_persistence_error0]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-error-token_refresh_error]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-warning-reauth_required1]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-error-tms_persistence_error1]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_without_calling_tms_for_no_refresh_decisions[None-missing_www_authenticate]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_without_calling_tms_for_no_refresh_decisions[Bearer error=\"invalid_request\"-unsupported_bearer_error]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_detects_configured_discovered_identity_conflict\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_non_oauth_config_without_oauth_payload\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_normalizes_or_rejects_refreshed_token_type[bearer-Bearer fresh-access-None]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_normalizes_or_rejects_refreshed_token_type[Basic-None-refresh_result_invalid]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_when_oauth2_identity_is_incomplete[execution_context0-missing_user_id]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_when_oauth2_identity_is_incomplete[execution_context1-missing_auth_config_id]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_uses_discovered_oauth2_identity_when_no_configured_id\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_rejects_env_delivered_oauth2_refresh\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_omits_initiate_url_for_workflow_payload\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_uses_live_discovered_snapshot_for_reauth_initiate_url\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_rebuilds_discovered_snapshot_from_exact_flow_config\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_discovered_snapshot_missing_without_exact_config_is_non_resumable\nFAILED tests/enterprise/mcp_auth/test_private_network_allowlist_bridge.py::test_private_network_allowlist_reader_output_passes_to_enterprise_as_discovery\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_branch_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_branch_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_set_active_branch_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_set_active_branch_failur\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_list_branches_in_repo_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_list_branches_in_repo_exception\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_replace_file_content_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_replace_file_content_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_file_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_delete_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_delete_file_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_issue_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_update_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_update_issue_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_find_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_comment_on_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_comment_on_issue_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_file_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_delete_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_delete_file_failure\n= 82 failed, 16605 passed, 190 skipped, 229 warnings, 23 errors in 93.86s (0:01:33) =\nmake: *** [test] Error 1\n",
+    "hook-pre-push-pytest": "FAILED tests/codemie/rest_api/models/test_permission_models.py::TestResourceType::test_for_instance_not_found\nFAILED tests/codemie/rest_api/routers/test_common.py::test_app_info_advertises_default_file_datasource_max_upload_count\nFAILED tests/codemie/service/mcp/test_toolkit_service_auth_resolver.py::test_nfr23_discovered_pipeline_preserves_current_scope_and_invokes_tool_with_token\nFAILED tests/codemie/service/mcp/test_toolkit_service_auth_resolver.py::test_prepare_server_config_falls_back_to_legacy_when_discovered_token_missing\nFAILED tests/codemie/service/oauth/adapters/test_provider_adapters.py::test_gitlab_exchange_maps_enterprise_token_data\nFAILED tests/codemie/service/oauth/adapters/test_provider_adapters.py::test_atlassian_exchange_maps_enterprise_token_data\nFAILED tests/codemie/rest_api/routers/test_oauth_redis_lazy_init.py::test_app_starts_without_redis_package_when_pkce_disabled\nFAILED tests/codemie_tools/data_management/test_file_system_toolkit.py::TestFileSystemToolkit::test_get_tools_ui_info_admin_without_env_var\nFAILED tests/codemie_tools/data_management/test_file_system_toolkit.py::TestFileSystemToolkit::test_get_tools_ui_info_admin_with_env_var\nFAILED tests/codemie_tools/data_management/test_file_system_toolkit.py::TestFileSystemToolkit::test_get_tools_ui_info_non_admin\nFAILED tests/codemie_tools/data_management/test_file_system_toolkit.py::TestFileSystemToolkit::test_get_tools_ui_info_non_admin_with_env_var\nFAILED tests/codemie_tools/data_management/test_file_system_toolkit.py::TestFileSystemToolkit::test_get_tools_non_admin\nFAILED tests/codemie_tools/data_management/test_file_system_toolkit.py::TestFileSystemToolkit::test_get_tools_without_env_var\nFAILED tests/codemie_tools/data_management/test_file_system_toolkit.py::TestFileSystemToolkit::test_get_tools_with_env_var\nFAILED tests/codemie_tools/data_management/test_file_system_toolkit.py::TestFileSystemToolkit::test_get_tools_ui_info_code_executor_disabled_by_default\nFAILED tests/codemie_tools/data_management/test_file_system_toolkit.py::TestFileSystemToolkit::test_get_tools_ui_info_code_executor_disabled_admin_with_fs\nFAILED tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_validate_environment_success\nFAILED tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_validate_environment_success\nFAILED tests/codemie_tools/git/test_github_app_auth.py::test_custom_github_api_wrapper_pat_auth\nFAILED tests/codemie_tools/git/test_github_app_auth.py::test_custom_github_api_wrapper_github_app_auth\nFAILED tests/codemie_tools/git/test_github_app_auth.py::test_custom_github_api_wrapper_pat_auth_with_ghe_base_url\nFAILED tests/codemie_tools/git/test_github_app_auth.py::test_custom_github_api_wrapper_pat_auth_github_com_no_base_url\nFAILED tests/codemie_tools/git/test_github_app_auth.py::test_custom_github_api_wrapper_github_app_auth_with_ghe_base_url\nFAILED tests/codemie_tools/git/test_github_app_auth.py::test_custom_github_api_wrapper_github_app_auth_github_com_no_base_url\nFAILED tests/codemie_tools/git/test_github_app_auth.py::test_custom_github_api_wrapper_github_app_auto_detect_installation\nFAILED tests/codemie_tools/git/test_github_app_auth.py::test_custom_github_api_wrapper_github_app_no_installations\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_branch_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_branch_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_set_active_branch_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_set_active_branch_failur\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_list_branches_in_repo_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_list_branches_in_repo_exception\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_replace_file_content_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_replace_file_content_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_file_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_delete_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_delete_file_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_issue_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_update_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_update_issue_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_find_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_comment_on_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_comment_on_issue_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_file_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_delete_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_delete_file_failure\n= 31 failed, 15753 passed, 178 skipped, 228 warnings, 23 errors in 233.88s (0:03:53) =\n"
+  }
+}

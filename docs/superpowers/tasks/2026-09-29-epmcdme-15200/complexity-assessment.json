@@ -1,0 +1,58 @@
+{
+  "schema": 1,
+  "task": "Add Exchange read transports (Microsoft Graph primary, EWS/NTLM fallback) with four read operations, a MS_EXCHANGE SettingsTester healthcheck, and four new dependencies.",
+  "generated": "2026-09-29T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 6, "label": "XXL" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 27,
+  "size": "XL",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "split-required",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Two new transport clients (graph_client, ews_client), a tools module with four read operations and metadata, a SettingsTester handler, and toolkit wiring; new abstractions over two SDKs with different auth models." },
+    { "dimension": "technical_risk", "reason": "Closest pattern is ServiceNow/SharePoint healthcheck tools, which do not cover a two-identity auth model, bounded read-only retries, or error-message sanitisation for secrets and message IDs. No live Exchange environments; NTLM and consent behaviour cannot be proven in CI." },
+    { "dimension": "file_change_estimate", "reason": "About 3 new source files plus tool metadata and 4+ new test files; modified settings_tester, toolkit, pyproject and lockfile across tools, service and manifest directories." },
+    { "dimension": "dependencies", "reason": "Four new packages (azure-identity, msgraph-sdk, exchangelib, requests-ntlm) with lockfile regeneration, unverified compatibility with existing pins, and an unresolved msgraph major version." },
+    { "dimension": "affected_layers", "reason": "Tools/service, settings service, dependency infrastructure and two external systems (Graph, EWS); the UI testable flag is a separate repo." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped: security-sensitive credential handling and secret-leak avoidance in error text",
+    "Component Scope and Affected Layers reflect integration with new external services"
+  ],
+  "split_recommendation": {
+    "strategy": "by-dependency",
+    "secondary_strategy": null,
+    "ordering_note": "Graph primary path with shared tools and tester handler first; EWS/NTLM fallback builds on it.",
+    "slices": [
+      {
+        "title": "Graph transport, read tools and MS_EXCHANGE healthcheck",
+        "slice_slug": "graph-primary",
+        "component": "codemie",
+        "feature": "exchange-read-transports",
+        "scope": "Add the Graph client with azure-identity and msgraph, the four read operations and their metadata, and the SettingsTester MS_EXCHANGE handler for the oauth_azure path, with the related dependencies and tests.",
+        "depends_on": null
+      },
+      {
+        "title": "EWS/NTLM fallback transport",
+        "slice_slug": "ews-fallback",
+        "component": "codemie",
+        "feature": "exchange-read-transports",
+        "scope": "Add the exchangelib and requests-ntlm client for the ntlm auth path, wire it into the read operations and the healthcheck, and cover it with mocked tests.",
+        "depends_on": "Graph transport, read tools and MS_EXCHANGE healthcheck"
+      }
+    ]
+  }
+}

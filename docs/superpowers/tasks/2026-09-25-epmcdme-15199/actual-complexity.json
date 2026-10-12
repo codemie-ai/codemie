@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "generated": "2026-09-28T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 20,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 13,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Touches 5 components across 3 layers: the shared codemie_tools base models (CredentialTypes/ToolSet enums), a new ms_exchange package (ExchangeToolConfig with a dual-path auth validator, plus an autodiscovered no-tool ExchangeToolkit), the settings service (secret encryption and masking), the customer-config declarations service (default-off features:exchangePolling), and an alembic migration. Editing the shared base enums is already reflected in the L score, so no separate bump was applied." },
+    { "dimension": "file_change_estimate", "reason": "The diffstat shows 13 files (774 insertions, 1 deletion), which maps to XL (11-15). About 4 files were modified: the guide, customer_config_declarations.py, settings.py and base/models.py. About 9 are new: 3 ms_exchange source files, 1 migration and 5 test files, spread over src/codemie, src/codemie_tools, src/external, tests and .ai-run. More than half the new files are tests, so the XL file count overstates the implementation effort." },
+    { "dimension": "affected_layers", "reason": "Touches the Service layer (settings and customer-config), the DB-Persistence layer (a reversible credentialtypes enum migration using sync_enum_values, whose downgrade deletes MS_EXCHANGE settings rows) and the tool/integration config layer. No API, UI or live External protocol code is included. Because persistence includes a schema (enum) change, this scores L." },
+    { "dimension": "technical_risk", "reason": "The closest pattern is the existing credential-type additions (the MS_TEAMS enum migration and the sensitive-field config models). It covers the security-sensitive parts: secrets are marked json_schema_extra sensitive and go through the existing settings encryption and masking. So there is no divergence bump. The validator is a small, deterministic required-fields check for each auth path. The migration is reversible." },
+    { "dimension": "calibration", "reason": "The total of 20 sits at the M/L boundary. The bundled L example epmcdme-10401 (22, also with a schema migration and credential storage) is close. This change scores lower on clarity and risk because the requirements were fully specified and the precedent pattern covers the work. Tie-break rule: Technical Risk is M and existing patterns cover more than half the implementation, so the score leans lower and stays M." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

@@ -1,0 +1,123 @@
+{
+  "decision": "request-changes",
+  "rationale": "All four lenses and standards ran; 11 blocking findings, including unmet AC4, AC7, AC9/AC11 and AC15 (lockfile not regenerated, ocr_model factory never wired). Graph event-loop reuse could not be confirmed live, so it is capped at major and confidence is low. No deferred items; 10 lens claims dismissed as doc, test-style or non-blocking noise.",
+  "confidence": "low",
+  "risk_flags": ["security", "migration", "breaking-change"],
+  "business_review": [
+    {"kind": "spec", "item": "AC1: four tools work on both transports selected by auth_type", "status": "pass", "notes": "tools.py, client_factory.py dispatch; tests parametrised"},
+    {"kind": "spec", "item": "AC2: read honours folder/start/count, bounded, deterministic, no state change", "status": "pass", "notes": "MAX_PAGE cap, ordering asserted"},
+    {"kind": "spec", "item": "AC3: retrieve_by_id and distinct not-found errors", "status": "pass", "notes": "distinct typed errors tested"},
+    {"kind": "spec", "item": "AC4: Graph read, retrieve_by_id, enrich_body send text-body Prefer header", "status": "partial", "notes": "_folder_messages (read) sends no Prefer header; untested"},
+    {"kind": "spec", "item": "AC5: EWS explicit endpoint, NTLM, no autodiscover, DELEGATE", "status": "pass", "notes": "build_ews_client tested"},
+    {"kind": "spec", "item": "AC6: enrich_body same shape on both transports", "status": "pass", "notes": "enrichment tests"},
+    {"kind": "spec", "item": "AC7: OCR model resolution for all three cases", "status": "fail", "notes": "ocr_model_factory never injected in src; ocr_model silently ignored"},
+    {"kind": "spec", "item": "AC8: caps 10 / 10MB / 25MB, no ingestion, Jira untouched", "status": "pass", "notes": "MAX_* constants and cap tests"},
+    {"kind": "spec", "item": "AC9: every taxonomy class typed sanitised error via direct execute", "status": "partial", "notes": "client construction outside _call escapes untyped"},
+    {"kind": "spec", "item": "AC10: bounded retry, capped Retry-After, no retry on credentials/TLS/config", "status": "pass", "notes": "retry tests"},
+    {"kind": "spec", "item": "AC11: sync execute bridges async Graph SDK; generic sanitised fallback", "status": "partial", "notes": "InternalError fallback missing for get_client construction"},
+    {"kind": "spec", "item": "AC12: MS_EXCHANGE settings tester handler", "status": "pass", "notes": "handler and tests present"},
+    {"kind": "spec", "item": "AC13: no writes/bodies; no secrets or IDs in output/logs", "status": "pass", "notes": "tests cover"},
+    {"kind": "spec", "item": "AC14: mocked tests for both transports and handler", "status": "pass", "notes": "test modules added"},
+    {"kind": "spec", "item": "AC15: three deps added, lockfile regenerated, gates pass", "status": "fail", "notes": "poetry.lock contains none of msgraph-sdk, exchangelib, requests-ntlm"},
+    {"kind": "spec", "item": "Design: no default transport; explicit auth_type", "status": "pass", "notes": "validator rejects None"},
+    {"kind": "spec", "item": "Design: Graph uses ClientSecretCredential and /users/{mailbox}", "status": "pass", "notes": "asserted in tests"},
+    {"kind": "spec", "item": "Design: finite timeouts as named constants", "status": "pass", "notes": "REQUEST_TIMEOUT_SECONDS"},
+    {"kind": "spec", "item": "Healthcheck failure/success transfer via user_settings; UI handoff", "status": "na", "notes": "UI handoff out of backend scope"},
+    {"kind": "spec", "item": "Delivery gate: live NTLM/Graph environments", "status": "pending-stage-7", "notes": "live proof is Stage 7"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "fail", "notes": "documented format is EPMCDME-####: Description; commit 'epmcdme-15199: add planning artifacts' in the review range uses a lowercase ticket and lowercase description. The other 17 subjects conform."},
+    {"kind": "code-quality", "status": "fail", "notes": "guide prefers 'X | None' over typing.Optional in new code; Optional is used in enrichment.py, errors.py, retry.py and tools.py of the new codemie_tools/ms_exchange package. Also typing.Tuple/Union imported in enrichment.py. License headers present in all ms_exchange .py files."},
+    {"kind": "security", "status": "pass", "notes": "grep of ms_exchange sources and settings_tester.py found no credential logging, lossy decode before parsing, or disabled TLS verification. Deep review of auth flows not performed."}
+  ],
+  "findings": [
+    {
+      "id": "CR-001", "kind": "code", "severity": "critical", "triage": "patch",
+      "file": "pyproject.toml",
+      "title": "Lockfile not regenerated for new dependencies",
+      "problem": "pyproject.toml adds msgraph-sdk, exchangelib and requests-ntlm, but poetry.lock contains none of them. kiota_abstractions is imported directly by graph_client.py but not declared. requests-ntlm is not imported anywhere in the diff.",
+      "impact": "AC15 unmet: reproducible installs and container builds do not include the packages, so the toolkit fails at import.",
+      "recommendation": "Run poetry lock, commit poetry.lock, declare kiota_abstractions if imported directly, and drop requests-ntlm if unused."
+    },
+    {
+      "id": "CR-002", "kind": "code", "severity": "critical", "triage": "patch",
+      "file": "src/codemie_tools/ms_exchange/client_factory.py", "line": 38,
+      "title": "Client construction escapes typed error mapping",
+      "problem": "get_client instantiates GraphExchangeClient and EwsExchangeClient, whose constructors call build_graph_client and build_ews_client outside _call. Config or credential constructor exceptions therefore escape tool execute as raw provider exceptions, not a sanitised ExchangeError or InternalError.",
+      "impact": "AC9 and AC11 require typed sanitised errors on direct execute; provider text (URLs, accounts) can leak to the tool caller.",
+      "recommendation": "Wrap construction in try/except Exception and raise map_*_exception(exc) or InternalError with 'from None'."
+    },
+    {
+      "id": "CR-003", "kind": "code", "severity": "major", "triage": "patch",
+      "file": "src/codemie_tools/ms_exchange/enrichment.py", "line": 24,
+      "title": "Legacy typing.Optional/Tuple/Union in new modules",
+      "problem": "code-quality.md prefers 'X | None' and modern generics and requires 'from __future__ import annotations'. New modules use Optional (enrichment.py, errors.py, retry.py, tools.py) and enrichment.py imports Tuple and Union. Standards locations: enrichment.py:24,48,64,72; errors.py:25,142,151,155; retry.py:19,32,45; tools.py:20,93,110,111,113,124.",
+      "impact": "Documented blocking code-quality standard is broken in new code.",
+      "recommendation": "Replace Optional[X] with 'X | None', use builtin generics, and drop unused typing imports."
+    },
+    {
+      "id": "CR-004", "kind": "code", "severity": "major", "triage": "patch",
+      "file": "src/codemie_tools/ms_exchange/ews_client.py",
+      "title": "EWS attachment content fetched outside retry wrapper",
+      "problem": "FileAttachment.content is lazy and triggers a network fetch. It is accessed outside self._call, so the fetch is neither retried nor error-mapped.",
+      "impact": "Attachment fetch errors surface unmapped, and provider text can leak. Reachability was not confirmed against a live exchangelib.",
+      "recommendation": "return bytes(self._call(lambda: a.content) or b\"\")"
+    },
+    {
+      "id": "CR-005", "kind": "code", "severity": "major", "triage": "patch",
+      "file": "src/codemie_tools/ms_exchange/ews_client.py",
+      "title": "EWS timeout set on process-global class attribute",
+      "problem": "build_ews_client assigns BaseProtocol.TIMEOUT, a process-wide exchangelib class attribute. ews_url is only checked as non-blank, with no scheme or host validation.",
+      "impact": "Every exchangelib user in the process is affected and tenants race on the value. An http:// URL sends NTLM credentials in cleartext, and internal or metadata hosts are reachable (SSRF) through the settings tester.",
+      "recommendation": "Set the timeout per connection via a custom HTTP adapter, and require an https scheme and a valid host in ews_url."
+    },
+    {
+      "id": "CR-006", "kind": "code", "severity": "major", "triage": "patch",
+      "file": "src/codemie_tools/ms_exchange/graph_client.py", "line": 128,
+      "title": "Graph list_folders and list_attachments truncate at first page",
+      "problem": "mail_folders.get() is called with no top and no odata_next_link paging, and child folders are not walked. list_attachments also does not page. resp.value is dereferenced outside _call, so a None response raises an unmapped AttributeError.",
+      "impact": "Graph returns about 10 folders per page, so folders are silently dropped. EWS walks the full tree, so the transports diverge.",
+      "recommendation": "Use top=250, follow odata_next_link until exhausted, guard resp is None, and walk child folders to match EWS."
+    },
+    {
+      "id": "CR-007", "kind": "code", "severity": "critical", "triage": "patch",
+      "file": "src/codemie_tools/ms_exchange/graph_client.py", "line": 139,
+      "title": "Graph read omits text-body Prefer header",
+      "problem": "_folder_messages, used by read and list_messages, sends no Prefer: outlook.body-content-type=\"text\" header. Only retrieve_by_id and enrich_body send it (the header is added at line 106), and no test asserts it for read.",
+      "impact": "AC4 is a required criterion and is only partially met, so Graph read returns HTML bodies where text was specified.",
+      "recommendation": "Add the Prefer header to the _folder_messages request configuration and add a test asserting it."
+    },
+    {
+      "id": "CR-008", "kind": "code", "severity": "major", "triage": "patch",
+      "file": "src/codemie_tools/ms_exchange/graph_client.py", "line": 144,
+      "title": "Graph folder argument accepts only ids and well-known names",
+      "problem": "The folder string is passed straight to by_mail_folder_id(folder). The tool documents 'folder name or well-known name', and EWS resolves display names. An empty folder builds a malformed path.",
+      "impact": "A display name such as 'Sent Items' returns FolderNotFound on Graph but works on EWS, so behaviour diverges between transports.",
+      "recommendation": "Resolve display names through list_folders to an id when the value is not a well-known alias, and reject empty or whitespace folder values."
+    },
+    {
+      "id": "CR-009", "kind": "code", "severity": "major", "triage": "patch",
+      "file": "src/codemie_tools/ms_exchange/graph_client.py",
+      "title": "Graph async client reused across fresh event loops",
+      "problem": "One GraphServiceClient is built per client instance, but each _call runs asyncio.run on a new loop, including on retries. Only a mocked client is tested. Reachability was not confirmed (uncertain, capped at major).",
+      "impact": "Loop-bound httpx and credential resources may fail with 'Event loop is closed' on a second call or retry.",
+      "recommendation": "Build the GraphServiceClient inside the coroutine for each call, or keep a persistent loop thread; add a test using a real client across two calls."
+    },
+    {
+      "id": "CR-010", "kind": "code", "severity": "critical", "triage": "patch",
+      "file": "src/codemie_tools/ms_exchange/tools.py", "line": 111,
+      "title": "ocr_model_factory never injected, ocr_model ignored",
+      "problem": "EnrichBodyTool._resolve_ocr needs an ocr_model_factory that no code in src supplies; toolkit_service.py only injects chat_model. Without the factory, ocr_model is silently ignored and assistants get chat_model OCR instead. Workflow nodes without chat_model skip every image. Tests pass a MagicMock factory directly.",
+      "impact": "AC7 (OCR model resolution, three cases) is unmet: the advertised ocr_model argument does nothing in production.",
+      "recommendation": "Wire a factory using get_llm_by_credentials at tool construction, or build the model inside the tool. Add a host-boundary test in toolkit_service."
+    },
+    {
+      "id": "CR-011", "kind": "code", "severity": "major", "triage": "patch",
+      "file": "unknown",
+      "title": "Commit subject violates EPMCDME-#### format",
+      "problem": "Commit 'epmcdme-15199: add planning artifacts' in the review range uses a lowercase ticket and lowercase description. git-workflow.md requires 'EPMCDME-####: Description'.",
+      "impact": "commit-format is a documented blocking standard.",
+      "recommendation": "Reword the commit to 'EPMCDME-15199: Add planning artifacts'."
+    }
+  ]
+}
