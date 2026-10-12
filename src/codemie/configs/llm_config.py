@@ -204,6 +204,8 @@ class LlmRouterOption(BaseModel):
     strategy: RoutingMode | None = None
     tiers: RouterTiers | None = None
     classifier_model: str | None = None
+    # Minimum context window across the router's distinct tier models; None when any tier is unknown.
+    max_input_tokens: int | None = None
 
 
 class LLMModel(BaseModel):

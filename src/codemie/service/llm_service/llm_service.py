@@ -118,6 +118,21 @@ class LLMService:
         capable_tier = RouterTier(model=capable.base_name, label=capable.label or capable.base_name)
         return RouterTiers(simple=efficient_tier, medium=efficient_tier, complex=capable_tier, reasoning=capable_tier)
 
+    @staticmethod
+    def _router_max_input_tokens(tiers: RouterTiers | None, by_name: dict[str, LLMModel]) -> int | None:
+        """Minimum max_input_tokens across a router's distinct tier models. None when tiers are absent
+        or any tier model is unresolved/windowless: an unknown tier must never allow a 1M opt-in."""
+        if tiers is None:
+            return None
+        names = {tiers.simple.model, tiers.medium.model, tiers.complex.model, tiers.reasoning.model}
+        windows: list[int] = []
+        for name in names:
+            tier_model = by_name.get(name)
+            if tier_model is None or tier_model.max_input_tokens is None:
+                return None
+            windows.append(tier_model.max_input_tokens)
+        return min(windows)
+
     def _build_switchyard_router_option(
         self,
         router: LLMRouter,
@@ -155,11 +170,12 @@ class LLMService:
             strategy=router.switchyard.mode,
             tiers=tiers,
             classifier_model=router.switchyard.classifier_model,
+            max_input_tokens=self._router_max_input_tokens(tiers, by_name),
         )
 
     @staticmethod
     def _build_litellm_auto_router_option(
-        model: LLMModel, include_all: bool, premium_enabled: bool
+        model: LLMModel, by_name: dict[str, LLMModel], include_all: bool, premium_enabled: bool
     ) -> LlmRouterOption | None:
         """Project one live-catalog model declared as a LiteLLM auto-router into its REST-facing
         LlmRouterOption, or None when it's not a router at all or not selectable right now."""
@@ -188,6 +204,7 @@ class LLMService:
             strategy=litellm_router.strategy,
             tiers=litellm_router.tiers,
             classifier_model=litellm_router.classifier_model,
+            max_input_tokens=LLMService._router_max_input_tokens(litellm_router.tiers, by_name),
         )
 
     def get_allowed_router_options(self, include_all: bool = False) -> list[LlmRouterOption]:
@@ -202,7 +219,7 @@ class LLMService:
             for router in self.get_llm_routers()
         )
         litellm_auto_options = (
-            self._build_litellm_auto_router_option(model, include_all, premium_enabled) for model in all_models
+            self._build_litellm_auto_router_option(model, by_name, include_all, premium_enabled) for model in all_models
         )
         return [option for option in (*switchyard_options, *litellm_auto_options) if option is not None]
 
