@@ -51,8 +51,14 @@ class TestSecurityThresholdConfig(unittest.TestCase):
             config = CodeExecutorConfig.from_env()
             assert config.security_threshold == SecurityIssueSeverity.HIGH
 
-    def test_security_threshold_from_env_safe(self):
-        """Test loading SAFE threshold from environment."""
+    def test_security_threshold_from_env_none(self):
+        """Test loading NONE threshold from environment (primary name)."""
+        with patch.dict(os.environ, {"CODE_EXECUTOR_SECURITY_THRESHOLD": "NONE"}):
+            config = CodeExecutorConfig.from_env()
+            assert config.security_threshold == SecurityIssueSeverity.SAFE
+
+    def test_security_threshold_from_env_safe_alias(self):
+        """SAFE is accepted as a deprecated alias for NONE via env var."""
         with patch.dict(os.environ, {"CODE_EXECUTOR_SECURITY_THRESHOLD": "SAFE"}):
             config = CodeExecutorConfig.from_env()
             assert config.security_threshold == SecurityIssueSeverity.SAFE
@@ -71,7 +77,7 @@ class TestSecurityThresholdConfig(unittest.TestCase):
             CodeExecutorConfig(security_threshold="INVALID")
 
         assert "Invalid security_threshold" in str(exc_info.value)
-        assert "SAFE, LOW, MEDIUM, HIGH" in str(exc_info.value)
+        assert "NONE, LOW, MEDIUM, HIGH" in str(exc_info.value)
 
     def test_security_threshold_validator_accepts_empty(self):
         """Test that empty threshold value is rejected."""
@@ -308,7 +314,7 @@ class TestOsModulePolicy(unittest.TestCase):
         """SAFE disables enforcement entirely — os.system is allowed."""
         code = "import os\nos.system('id')"
         is_safe, violations = self._check(code, SecurityIssueSeverity.SAFE)
-        assert is_safe, f"os.system unexpectedly blocked at SAFE: {[v.description for v in violations]}"
+        assert is_safe, f"os.system unexpectedly blocked at NONE: {[v.description for v in violations]}"
 
     def test_os_system_blocked_at_low_threshold(self):
         """LOW (permissive) still blocks HIGH-severity patterns like os.system."""
@@ -361,7 +367,7 @@ class TestPipModulePolicy(unittest.TestCase):
         """SAFE disables enforcement entirely — pip import is allowed."""
         code = "import pip\npip.main(['install', 'requests'])"
         is_safe, violations = self._check(code, SecurityIssueSeverity.SAFE)
-        assert is_safe, f"pip import unexpectedly blocked at SAFE: {[v.description for v in violations]}"
+        assert is_safe, f"pip import unexpectedly blocked at NONE: {[v.description for v in violations]}"
 
     def test_pip_import_blocked_at_low_threshold(self):
         """LOW (permissive) still blocks HIGH-severity restricted modules like pip."""
@@ -413,6 +419,39 @@ class TestGetRestrictedModuleNames(unittest.TestCase):
         assert "requests" in high_names
         assert "glob" in high_names
         assert high_names == sorted(high_names)
+
+
+class TestSecurityPolicyLoaderSeverityMap(unittest.TestCase):
+    """SEVERITY_MAP in _SecurityPolicyLoader must accept NONE as a valid severity name."""
+
+    def test_parse_severity_none_maps_to_safe(self):
+        """NONE is the primary user-facing name for the most permissive level."""
+        from codemie_tools.data_management.code_executor.security_policies import _SecurityPolicyLoader
+
+        result = _SecurityPolicyLoader._parse_severity("NONE")
+        assert result == SecurityIssueSeverity.SAFE
+
+    def test_parse_severity_none_case_insensitive(self):
+        """NONE parsing is case-insensitive like the rest of the map."""
+        from codemie_tools.data_management.code_executor.security_policies import _SecurityPolicyLoader
+
+        result = _SecurityPolicyLoader._parse_severity("none")
+        assert result == SecurityIssueSeverity.SAFE
+
+    def test_parse_severity_safe_alias_still_works(self):
+        """SAFE is a deprecated alias and must still parse correctly."""
+        from codemie_tools.data_management.code_executor.security_policies import _SecurityPolicyLoader
+
+        result = _SecurityPolicyLoader._parse_severity("SAFE")
+        assert result == SecurityIssueSeverity.SAFE
+
+    def test_parse_severity_invalid_int_error_says_none(self):
+        """Invalid int severity error message must say 0 (NONE), not 0 (SAFE)."""
+        from codemie_tools.data_management.code_executor.security_policies import _SecurityPolicyLoader
+
+        with pytest.raises(ValueError) as exc_info:
+            _SecurityPolicyLoader._parse_severity(99)
+        assert "0 (NONE)" in str(exc_info.value)
 
 
 if __name__ == '__main__':

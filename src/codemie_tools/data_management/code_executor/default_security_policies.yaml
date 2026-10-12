@@ -9,12 +9,12 @@
 # It is compared against the configured CODE_EXECUTOR_SECURITY_THRESHOLD, which
 # expresses how strict enforcement should be:
 #
-#   SAFE:   enforcement disabled - blocks nothing
+#   NONE:   enforcement disabled - blocks nothing (SAFE accepted as deprecated alias)
 #   LOW:    permissive           - blocks HIGH severity entries only
 #   MEDIUM: moderate             - blocks MEDIUM and HIGH severity entries
 #   HIGH:   strict               - blocks LOW, MEDIUM and HIGH severity entries
 #
-# So a higher threshold blocks more. Separately from this threshold (including at SAFE), the
+# So a higher threshold blocks more. Separately from this threshold (including at NONE), the
 # AST layer's hardcoded sandbox-escape detections (exec, eval, __import__, __builtins__) are
 # always on — but only on the check_security_policy path (SandboxMode.JOBS). The default
 # SandboxMode.SHARED path validates via the sandbox session's own is_safe() check and does not

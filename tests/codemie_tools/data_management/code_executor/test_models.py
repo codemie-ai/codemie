@@ -180,8 +180,13 @@ class TestCodeExecutorConfigExecutionModeValidator(unittest.TestCase):
 class TestCodeExecutorConfigSecurityThresholdValidator(unittest.TestCase):
     """Test suite for security_threshold field validator."""
 
-    def test_security_threshold_from_string_safe(self):
-        """Test security_threshold validation with 'SAFE' string."""
+    def test_security_threshold_from_string_none(self):
+        """Test security_threshold validation with 'NONE' string (primary name)."""
+        config = CodeExecutorConfig(security_threshold="NONE")
+        assert config.security_threshold == SecurityIssueSeverity.SAFE
+
+    def test_security_threshold_safe_alias_accepted(self):
+        """SAFE is a deprecated alias for NONE and must still be accepted."""
         config = CodeExecutorConfig(security_threshold="SAFE")
         assert config.security_threshold == SecurityIssueSeverity.SAFE
 
@@ -230,7 +235,7 @@ class TestCodeExecutorConfigSecurityThresholdValidator(unittest.TestCase):
             CodeExecutorConfig(security_threshold="INVALID")
 
         assert "Invalid security_threshold" in str(exc_info.value)
-        assert "SAFE, LOW, MEDIUM, HIGH" in str(exc_info.value)
+        assert "NONE, LOW, MEDIUM, HIGH" in str(exc_info.value)
 
     def test_security_threshold_invalid_integer(self):
         """Test that invalid security_threshold integer raises ValueError."""
@@ -252,6 +257,7 @@ class TestCodeExecutorConfigSecurityThresholdValidator(unittest.TestCase):
             CodeExecutorConfig(security_threshold="")
 
         assert "security_threshold" in str(exc_info.value)
+        assert "NONE, LOW, MEDIUM, HIGH" in str(exc_info.value)
 
 
 class TestCodeExecutorConfigFromEnv(unittest.TestCase):

@@ -37,7 +37,8 @@ class _SecurityPolicyLoader:
     """Internal YAML-based security policy loader."""
 
     SEVERITY_MAP = {
-        "SAFE": SecurityIssueSeverity.SAFE,
+        "NONE": SecurityIssueSeverity.SAFE,  # primary name
+        "SAFE": SecurityIssueSeverity.SAFE,  # deprecated alias
         "LOW": SecurityIssueSeverity.LOW,
         "MEDIUM": SecurityIssueSeverity.MEDIUM,
         "HIGH": SecurityIssueSeverity.HIGH,
@@ -103,7 +104,7 @@ class _SecurityPolicyLoader:
         return RestrictedModule(
             name=name,
             description=module_config.get("description", ""),
-            severity=cls._parse_severity(module_config.get("severity", "SAFE")),
+            severity=cls._parse_severity(module_config.get("severity", "NONE")),
         )
 
     @classmethod
@@ -119,7 +120,7 @@ class _SecurityPolicyLoader:
         return SecurityPattern(
             pattern=pattern,
             description=pattern_config.get("description", ""),
-            severity=cls._parse_severity(pattern_config.get("severity", "SAFE")),
+            severity=cls._parse_severity(pattern_config.get("severity", "NONE")),
         )
 
     @classmethod
@@ -131,9 +132,8 @@ class _SecurityPolicyLoader:
         if isinstance(severity, str):
             severity_upper = severity.upper()
             if severity_upper not in cls.SEVERITY_MAP:
-                raise ValueError(
-                    f"Invalid severity level: {severity}. Must be one of: {', '.join(cls.SEVERITY_MAP.keys())}"
-                )
+                valid = [k for k in cls.SEVERITY_MAP if k != "SAFE"]  # exclude deprecated alias from error
+                raise ValueError(f"Invalid severity level: {severity}. Must be one of: {', '.join(valid)}")
             return cls.SEVERITY_MAP[severity_upper]
 
         if isinstance(severity, int):
@@ -141,7 +141,7 @@ class _SecurityPolicyLoader:
                 return SecurityIssueSeverity(severity)
             except ValueError:
                 raise ValueError(
-                    f"Invalid severity level: {severity}. Must be 0 (SAFE), 1 (LOW), 2 (MEDIUM), or 3 (HIGH)"
+                    f"Invalid severity level: {severity}. Must be 0 (NONE), 1 (LOW), 2 (MEDIUM), or 3 (HIGH)"
                 )
 
         raise ValueError(f"Invalid severity type: {type(severity)}")
@@ -186,7 +186,7 @@ def get_codemie_security_policy(
     Args:
         severity_threshold: How strict enforcement should be. A higher threshold blocks more.
                           If None, no restrictions are applied (empty policy).
-                          SAFE: enforcement disabled, blocks nothing.
+                          NONE: enforcement disabled, blocks nothing.
                           LOW: permissive, blocks HIGH severity entries only.
                           MEDIUM: moderate, blocks MEDIUM and HIGH severity entries.
                           HIGH: strict, blocks LOW, MEDIUM and HIGH severity entries.
@@ -262,7 +262,7 @@ def get_restricted_module_names(
         severity_threshold: How strict enforcement should be. A higher threshold
                           blocks — and therefore returns — more modules.
                           If None, returns empty list (no restrictions).
-                          SAFE: returns nothing (enforcement disabled)
+                          NONE: returns nothing (enforcement disabled)
                           LOW: returns only HIGH severity modules
                           MEDIUM: returns modules with MEDIUM and HIGH severity
                           HIGH: returns modules with LOW, MEDIUM, and HIGH severity

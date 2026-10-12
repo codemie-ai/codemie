@@ -183,13 +183,13 @@ class CodeExecutorConfig(CodeMieToolConfig):
     security_threshold: SecurityIssueSeverity = Field(
         default=SecurityIssueSeverity.HIGH,
         description="How strict security policy enforcement should be. "
-        "Required; must be one of SAFE, LOW, MEDIUM, HIGH. "
+        "Required; must be one of NONE, LOW, MEDIUM, HIGH. "
         "A higher threshold blocks more. Defaults to HIGH (strict). "
-        "SAFE: disables this severity-based policy threshold; the regex/module layer blocks nothing. "
+        "NONE: disables this severity-based policy threshold; the regex/module layer blocks nothing. "
         "LOW: permissive, blocks HIGH severity patterns only. "
         "MEDIUM: moderate, blocks MEDIUM and HIGH severity patterns. "
         "HIGH: strict, blocks LOW, MEDIUM and HIGH severity patterns. "
-        "Separately from this threshold (including at SAFE), the AST layer's hardcoded "
+        "Separately from this threshold (including at NONE), the AST layer's hardcoded "
         "sandbox-escape detections (exec, eval, __import__, __builtins__) are always on — "
         "but only on the check_security_policy path (SandboxMode.JOBS); the default "
         "SandboxMode.SHARED path validates via the sandbox session's own is_safe() check "
@@ -309,7 +309,7 @@ class CodeExecutorConfig(CodeMieToolConfig):
     def validate_security_threshold(cls, v) -> Optional[SecurityIssueSeverity]:
         """Validate and convert security threshold value."""
         if v is None or (isinstance(v, str) and v == ""):
-            raise ValueError("Invalid security_threshold: value must be one of SAFE, LOW, MEDIUM, HIGH")
+            raise ValueError("Invalid security_threshold: value must be one of NONE, LOW, MEDIUM, HIGH")
 
         # If already an enum, return it
         if isinstance(v, SecurityIssueSeverity):
@@ -318,16 +318,15 @@ class CodeExecutorConfig(CodeMieToolConfig):
         # If string, convert to enum
         if isinstance(v, str):
             threshold_map = {
-                "SAFE": SecurityIssueSeverity.SAFE,
+                "NONE": SecurityIssueSeverity.SAFE,  # primary name
+                "SAFE": SecurityIssueSeverity.SAFE,  # deprecated alias for backwards compatibility
                 "LOW": SecurityIssueSeverity.LOW,
                 "MEDIUM": SecurityIssueSeverity.MEDIUM,
                 "HIGH": SecurityIssueSeverity.HIGH,
             }
             v_upper = v.upper()
             if v_upper not in threshold_map:
-                raise ValueError(
-                    f"Invalid security_threshold: {v}. Must be one of: SAFE, LOW, MEDIUM, HIGH or empty for no restrictions"
-                )
+                raise ValueError(f"Invalid security_threshold: {v}. Must be one of: NONE, LOW, MEDIUM, HIGH")
             return threshold_map[v_upper]
 
         # If integer, convert to enum
@@ -335,7 +334,7 @@ class CodeExecutorConfig(CodeMieToolConfig):
             try:
                 return SecurityIssueSeverity(v)
             except ValueError:
-                raise ValueError(f"Invalid security_threshold: {v}. Must be 0 (SAFE), 1 (LOW), 2 (MEDIUM), or 3 (HIGH)")
+                raise ValueError(f"Invalid security_threshold: {v}. Must be 0 (NONE), 1 (LOW), 2 (MEDIUM), or 3 (HIGH)")
 
         raise ValueError(f"Invalid security_threshold type: {type(v)}")
 
@@ -367,7 +366,7 @@ class CodeExecutorConfig(CodeMieToolConfig):
             CODE_EXECUTOR_RUN_AS_USER: User ID
             CODE_EXECUTOR_RUN_AS_GROUP: Group ID
             CODE_EXECUTOR_FS_GROUP: Filesystem group ID
-            CODE_EXECUTOR_SECURITY_THRESHOLD: Security policy threshold (SAFE/LOW/MEDIUM/HIGH or 0/1/2/3)
+            CODE_EXECUTOR_SECURITY_THRESHOLD: Security policy threshold (NONE/LOW/MEDIUM/HIGH or 0/1/2/3; SAFE accepted as deprecated alias for NONE)
             CODE_EXECUTOR_YAML_POLICY_PATH: Path to custom YAML security policy file (optional)
             CODE_EXECUTOR_VERBOSE: Enable verbose logging (true/false)
             CODE_EXECUTOR_SKIP_ENVIRONMENT_SETUP: Skip environment setup (true/false)

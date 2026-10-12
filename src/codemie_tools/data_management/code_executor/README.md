@@ -30,7 +30,7 @@ reads as strictness directly:
 
 | Threshold | Meaning | Blocks |
 |---|---|---|
-| `SAFE` | enforcement disabled | nothing |
+| `NONE` | enforcement disabled | nothing |
 | `LOW` | permissive | `HIGH` severity only |
 | `MEDIUM` | moderate | `MEDIUM` + `HIGH` |
 | `HIGH` | strict | `LOW` + `MEDIUM` + `HIGH` |
@@ -44,7 +44,7 @@ order to get strict enforcement, change it to `HIGH`. Left at `LOW` it now selec
 non-disabled setting and will stop blocking `LOW` and `MEDIUM` severity patterns.
 
 Sandbox-escape techniques detected by the AST layer (`exec`, `eval`, `__import__`, `__builtins__`
-access) are blocked at every threshold, including `SAFE` and `LOW`, and are unaffected by this change —
+access) are blocked at every threshold, including `NONE` and `LOW`, and are unaffected by this change —
 **but only on the `check_security_policy` path** (used by `SandboxMode.JOBS`, and any other caller of
 `check_code_with_ast`). The default `SandboxMode.SHARED` execution path
 (`_validate_code_security` in `code_executor_tool.py`) validates code via the sandbox session's own
@@ -72,7 +72,7 @@ All configuration is managed through environment variables. The tool automatical
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `CODE_EXECUTOR_EXECUTION_MODE` | Execution mode. Code runs in an isolated Kubernetes sandbox pod. | `sandbox` |
-| `CODE_EXECUTOR_SECURITY_THRESHOLD` | Enforcement strictness; a higher threshold blocks more. `SAFE` = disabled, `LOW` = blocks `HIGH` severity only, `MEDIUM` = blocks `MEDIUM`+`HIGH`, `HIGH` = blocks `LOW`+`MEDIUM`+`HIGH`. See [Migration](#migration-code_executor_security_threshold-semantics-changed-epmcdme-13877). | `HIGH` |
+| `CODE_EXECUTOR_SECURITY_THRESHOLD` | Enforcement strictness; a higher threshold blocks more. `NONE` = disabled (`SAFE` accepted as deprecated alias), `LOW` = blocks `HIGH` severity only, `MEDIUM` = blocks `MEDIUM`+`HIGH`, `HIGH` = blocks `LOW`+`MEDIUM`+`HIGH`. See [Migration](#migration-code_executor_security_threshold-semantics-changed-epmcdme-13877). | `HIGH` |
 
 #### Kubernetes Configuration
 
