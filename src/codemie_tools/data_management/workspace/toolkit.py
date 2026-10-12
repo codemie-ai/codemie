@@ -71,8 +71,7 @@ class AgentWorkspaceToolkitUI(ToolKit):
 class AgentWorkspaceToolkit(BaseToolkit):
     conversation_id: str
     user: User
-    # VirtualAssistant must stay a member: with only Assistant, pydantic converts it and drops execution_id and
-    # is_tool_step.
+    # VirtualAssistant must stay a member: with only Assistant, pydantic converts it and drops execution_id.
     assistant: Assistant | VirtualAssistant | None = None
     request: AssistantChatRequest | None = None
     request_uuid: str | None = None
@@ -82,16 +81,6 @@ class AgentWorkspaceToolkit(BaseToolkit):
     @classmethod
     def get_tools_ui_info(cls):
         return AgentWorkspaceToolkitUI().model_dump()
-
-    def _workflow_project(self) -> str | None:
-        """The workflow's project, only for a bare workflow tool step.
-
-        An inline workflow assistant node is a virtual assistant with an execution id too, so the execution id says
-        nothing; the explicit ``is_tool_step`` marker, set only where the tool step's assistant is created, does.
-        """
-        if isinstance(self.assistant, VirtualAssistant) and self.assistant.is_tool_step:
-            return self.assistant.project
-        return None
 
     @staticmethod
     def _script_tool_description(tool_calling: ToolCallingSettings | None) -> str:
@@ -156,7 +145,7 @@ class AgentWorkspaceToolkit(BaseToolkit):
                 user=self.user,
                 workspace_service=shared_service,
                 workspace_id=resolved_workspace_id,
-                script_registry=ScriptToolRegistry(self.user, workflow_project=self._workflow_project()),
+                script_registry=ScriptToolRegistry(self.user),
                 description=self._script_tool_description(tool_calling),
                 tool_calling=tool_calling,
             ),

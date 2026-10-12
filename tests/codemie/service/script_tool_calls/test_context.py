@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 import dataclasses
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from langchain_core.tools import BaseTool
@@ -24,7 +24,6 @@ from pydantic import BaseModel
 from codemie.rest_api.security.user import User
 from codemie.service.script_tool_calls.context import (
     NoScope,
-    ProjectScope,
     ScriptRunContext,
     ScriptScopeKind,
     ScriptToolRegistry,
@@ -98,63 +97,6 @@ class TestScopes:
         assert scope.resolve("other_tool") is None
         assert len(scope.callable_tools() or []) == 1
 
-    def test_project_scope_resolves_by_name_for_the_user_in_the_project(self, user: User) -> None:
-        resolver = MagicMock(return_value=_PlainTool())
-        scope = ProjectScope(user, "wf-project", resolver)
-
-        tool = scope.resolve("plain_tool")
-
-        assert tool is resolver.return_value
-        resolver.assert_called_once_with(user, "wf-project", "plain_tool")
-
-    def test_project_scope_answers_none_when_the_resolver_finds_no_such_tool(self, user: User) -> None:
-        scope = ProjectScope(user, "wf-project", MagicMock(side_effect=ValueError("no such tool")))
-
-        assert scope.resolve("nope") is None
-
-    @pytest.mark.parametrize("error", [KeyError("boom"), RuntimeError("boom")])
-    def test_project_scope_answers_none_and_warns_when_the_resolver_fails_unexpectedly(
-        self, user: User, error: Exception
-    ) -> None:
-        scope = ProjectScope(user, "wf-project", MagicMock(side_effect=error))
-
-        with patch("codemie.service.script_tool_calls.context.logger") as logger:
-            assert scope.resolve("broken_tool") is None
-
-        logger.warning.assert_called_once()
-        assert "broken_tool" in str(logger.warning.call_args)
-
-    def test_project_scope_does_not_build_a_known_excluded_tool(self, user: User) -> None:
-        resolver = MagicMock()
-        scope = ProjectScope(user, "wf-project", resolver)
-
-        assert scope.resolve("code_executor") is None
-
-        resolver.assert_not_called()
-
-    def test_project_scope_still_resolves_an_unknown_name(self, user: User) -> None:
-        resolver = MagicMock(return_value=_PlainTool())
-
-        assert ProjectScope(user, "wf-project", resolver).resolve("not_in_the_registry") is resolver.return_value
-
-    def test_project_scope_still_resolves_a_name_with_a_script_callable_class(self, user: User) -> None:
-        resolver = MagicMock(return_value=_PlainTool())
-        with patch(
-            "codemie.service.script_tool_calls.registry_prefilter.is_known_excluded_from_script_calls",
-            return_value=False,
-        ):
-            assert ProjectScope(user, "wf-project", resolver).resolve("mixed") is resolver.return_value
-
-    def test_project_scope_fails_closed_when_the_registry_check_breaks(self, user: User) -> None:
-        resolver = MagicMock()
-        with patch("codemie.service.script_tool_calls.registry_prefilter.ensure_loaded", side_effect=RuntimeError("x")):
-            assert ProjectScope(user, "wf-project", resolver).resolve("anything") is None
-
-        resolver.assert_not_called()
-
-    def test_project_scope_cannot_list_the_catalog(self, user: User) -> None:
-        assert ProjectScope(user, "wf-project", MagicMock()).callable_tools() is None
-
 
 class TestScriptToolRegistry:
     def test_unfilled_registry_has_no_scope(self, user: User) -> None:
@@ -163,13 +105,6 @@ class TestScriptToolRegistry:
         assert context.scope_kind is ScriptScopeKind.NONE
         assert context.user is user
         assert isinstance(context.scope, NoScope)
-
-    def test_unfilled_registry_with_workflow_project_has_the_project_scope(self, user: User) -> None:
-        context = ScriptToolRegistry(user, workflow_project="wf-project").context()
-
-        assert context.scope_kind is ScriptScopeKind.WORKFLOW
-        assert isinstance(context.scope, ProjectScope)
-        assert context.scope.project == "wf-project"
 
     def test_filled_registry_has_the_tool_list_scope_of_its_assistant(self, user: User) -> None:
         plain, other = _PlainTool(), _NamedTool()
@@ -198,15 +133,6 @@ class TestScriptToolRegistry:
         registry.fill([])
 
         assert registry.context().scope_kind is ScriptScopeKind.ASSISTANT
-
-    def test_workflow_project_from_constructor_wins(self, user: User) -> None:
-        registry = ScriptToolRegistry(user, workflow_project="wf-project")
-
-        registry.fill([_PlainTool()])
-        context = registry.context()
-
-        assert context.scope_kind is ScriptScopeKind.WORKFLOW
-        assert isinstance(context.scope, ProjectScope)
 
     def test_fill_takes_no_workflow_project(self, user: User) -> None:
         registry = ScriptToolRegistry(user)
@@ -240,7 +166,7 @@ class TestScriptRunContext:
             context.scope_kind = ScriptScopeKind.ASSISTANT  # type: ignore[misc]
 
     def test_scope_kind_values(self) -> None:
-        assert [kind.value for kind in ScriptScopeKind] == ["none", "assistant", "workflow"]
+        assert [kind.value for kind in ScriptScopeKind] == ["none", "assistant"]
 
 
 class TestExclusions:

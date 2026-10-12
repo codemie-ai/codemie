@@ -298,3 +298,28 @@ def test_collect_for_workflow_aggregates_virtual_steps_and_tool_nodes(
     assert len(result) == 2
     names = {c.mcp_server for c in result}
     assert names == {"step-mcp", "tool-mcp"}
+
+
+def test_collect_for_workflow_collects_tool_access_aliases(
+    collector: InlineCredentialsCollector,
+) -> None:
+    from codemie.core.workflow_models.workflow_models import WorkflowAssistantTool, WorkflowTool
+
+    workflow = MagicMock()
+    workflow.assistants = []
+    workflow.tools = [
+        WorkflowTool(
+            id="s",
+            tool="execute_workspace_script",
+            tool_access=[
+                WorkflowAssistantTool(name="generic_jira_tool", integration_alias="jira-a"),
+                WorkflowAssistantTool(name="get_repo_tree"),
+            ],
+        )
+    ]
+
+    result = collector.collect_for_workflow(workflow)
+
+    assert [(c.tool, c.integration_alias, c.credential_type) for c in result] == [
+        ("generic_jira_tool", "jira-a", "tool_integration_alias"),
+    ]

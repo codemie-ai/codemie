@@ -39,6 +39,9 @@ TOOL_PACKAGES: tuple[str, ...] = (
 #: Tool classes are only taken from modules under these roots (this leaves out classes defined by tests).
 _TOOL_MODULE_ROOTS: tuple[str, ...] = ("codemie_tools.", "codemie.")
 
+#: Boolean class flags a host tool may use as its ``tool_access_filter``.
+_TOOL_FLAGS: tuple[str, ...] = ("script_callable",)
+
 _CLASSES_BY_NAME: dict[str, list[type]] = {}
 _LOADED: bool = False
 
@@ -51,6 +54,9 @@ class ToolRecord:
     classes: tuple[type, ...]
     modules: tuple[str, ...]
     script_callable: tuple[bool, ...]  # one flag per class
+    step_config_fields: tuple[tuple[str, ...], ...]  # one tuple per class
+    tool_access_filter: tuple[str | None, ...]  # one flag name (or None) per class
+    flags: tuple[frozenset[str], ...]  # one set per class: the boolean class flags set to True
 
 
 def _default_name(cls: type) -> str | None:
@@ -81,6 +87,9 @@ def lookup(name: str) -> ToolRecord | None:
         classes=tuple(classes),
         modules=tuple(c.__module__ for c in classes),
         script_callable=tuple(bool(getattr(c, "script_callable", False)) for c in classes),
+        step_config_fields=tuple(tuple(getattr(c, "step_config_fields", ())) for c in classes),
+        tool_access_filter=tuple(getattr(c, "tool_access_filter", None) for c in classes),
+        flags=tuple(frozenset(f for f in _TOOL_FLAGS if getattr(c, f, False) is True) for c in classes),
     )
 
 
@@ -106,7 +115,48 @@ def ensure_loaded() -> None:
             logger.warning("Tool registry: could not load package %s: %r", package_name, exc)
 
 
+def is_script_callable(name: str) -> bool:
+    """True when the name is known and at least one class carrying it is script-callable (unknown names are not)."""
+    ensure_loaded()
+    record = lookup(name)
+    return record is not None and any(record.script_callable)
+
+
 def is_known_excluded_from_script_calls(name: str) -> bool:
     """True only when the name is known and every class carrying it is not script-callable."""
     record = lookup(name)
     return record is not None and not any(record.script_callable)
+
+
+def tool_access_filter(host_name: str) -> str | None:
+    """The class flag a tool must carry to be listed in the ``tool_access`` of a step with ``host_name``, or ``None``
+    when that tool takes no ``tool_access``."""
+    ensure_loaded()
+    record = lookup(host_name)
+    if record is None:
+        return None
+    return next((flag for flag in record.tool_access_filter if flag), None)
+
+
+def takes_tool_access(tool_name: str) -> bool:
+    """True when a workflow step with this tool takes the ``tool_access`` field."""
+    return "tool_access" in step_config_fields(tool_name)
+
+
+def can_be_listed_for(host_name: str, tool_name: str) -> bool:
+    """True when ``tool_name`` may be listed in the ``tool_access`` of a step with the tool ``host_name``: the host
+    names a filter flag and the candidate is known and carries it (unknown names are never listed)."""
+    flag = tool_access_filter(host_name)
+    if flag is None:
+        return False
+    record = lookup(tool_name)
+    return record is not None and any(flag in flags for flags in record.flags)
+
+
+def step_config_fields(name: str) -> tuple[str, ...]:
+    """The extra workflow step fields a step with this tool takes (union over the classes carrying the name)."""
+    ensure_loaded()
+    record = lookup(name)
+    if record is None:
+        return ()
+    return tuple(dict.fromkeys(field for fields in record.step_config_fields for field in fields))

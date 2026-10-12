@@ -21,7 +21,7 @@ from typing import Any, List, Optional, cast
 from sqlalchemy import ColumnElement
 
 from langgraph.pregel._retry import RetryPolicy
-from pydantic import BaseModel, Field, ValidationError, computed_field, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, ValidationError, computed_field, model_validator
 
 from codemie.configs import config, logger
 from codemie.core.ability import Owned, Action
@@ -319,6 +319,10 @@ class WorkflowConfigBase(CommonBaseModel, Owned):
 
 class WorkflowConfig(BaseModelWithSQLSupport, WorkflowConfigBase, table=True):
     __tablename__ = "workflows"
+
+    # The YAML text exactly as a client sent it, kept only so validation errors can point at the lines the client
+    # sees: yaml_config itself is rewritten from the parsed objects before validation. Never persisted.
+    _source_yaml_config: Optional[str] = PrivateAttr(default=None)
 
     def update(
         self,

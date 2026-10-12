@@ -248,6 +248,28 @@ def test_get_tool_schema_success(mock_auth_header, mock_authenticate):
         assert response_data["creds_schema"]["base_url"]["required"] is False
         assert response_data["args_schema"]["method"]["type"] == "str"
         assert response_data["args_schema"]["method"]["required"] is True
+        assert response_data["step_config"] == []
+
+
+def test_get_tool_schema_returns_step_config_for_the_script_tool(mock_auth_header, mock_authenticate):
+    from codemie.service.tools.discovery import FormattedToolSchema
+
+    formatted_schema = FormattedToolSchema(
+        tool_name="execute_workspace_script",
+        creds_schema={},
+        args_schema={"script_path": {"type": "str", "required": True}},
+    )
+
+    with patch("codemie.rest_api.routers.tool.ToolDiscoveryService") as mock_finder:
+        mock_finder.get_formatted_tool_schema.return_value = formatted_schema
+
+        response = client.get("/v1/tools/execute_workspace_script/schema", headers=mock_auth_header)
+
+    assert response.status_code == 200
+    [entry] = response.json()["step_config"]
+    assert entry["field"] == "tool_access"
+    assert entry["component"] == "tool_integration_picker"
+    assert entry["props"]["tool_filter"] == {"script_callable": True}
 
 
 def test_get_tool_schema_tool_not_found(mock_auth_header, mock_authenticate):
@@ -273,7 +295,7 @@ def test_get_tool_schema_no_schema_available(mock_auth_header, mock_authenticate
 
         assert response.status_code == 200
         response_data = response.json()
-        assert response_data == {"tool_name": "test_tool", "creds_schema": {}, "args_schema": {}}
+        assert response_data == {"tool_name": "test_tool", "creds_schema": {}, "args_schema": {}, "step_config": []}
 
 
 def test_get_tool_schema_with_complex_type(mock_auth_header, mock_authenticate):

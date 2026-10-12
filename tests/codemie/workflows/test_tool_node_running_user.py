@@ -28,9 +28,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from codemie.core.workflow_models import WorkflowConfig, WorkflowNextState, WorkflowState, WorkflowTool
+from codemie.core.workflow_models.workflow_models import WorkflowAssistantTool
 from codemie.rest_api.models.settings import SettingsBase, SettingType
 from codemie.rest_api.security.user import User
-from codemie.service.script_tool_calls.context import ProjectScope, ScriptRunContext, ScriptScopeKind
+from codemie.service.script_tool_calls.context import ScriptRunContext, ScriptScopeKind
 from codemie.service.settings.base_settings import SearchFields
 from codemie.workflows.constants import CONTEXT_STORE_VARIABLE, MESSAGES_VARIABLE
 from codemie.workflows.nodes.tool_node import ToolNode
@@ -57,6 +58,7 @@ def _node(user: User, *, is_global: bool, integration_alias: str | None = None) 
         tool="execute_workspace_script",
         tool_args={"script_path": "scripts/run.py"},
         integration_alias=integration_alias,
+        tool_access=[WorkflowAssistantTool(name="catalog_tool")],
     )
     config = MagicMock(spec=WorkflowConfig)
     config.project = PROJECT
@@ -120,7 +122,7 @@ def test_global_workflow_created_by_a_and_run_by_b_gives_the_registry_user_b(
 
     assert node._owner_user_id is None
     assert context.user.id == RUNNING_USER.id != CREATOR.user_id
-    assert context.scope_kind is ScriptScopeKind.WORKFLOW
+    assert context.scope_kind is ScriptScopeKind.ASSISTANT
 
 
 def test_pinned_integration_alias_resolves_the_setting_for_the_creator_but_the_registry_holds_the_running_user(
@@ -137,34 +139,7 @@ def test_pinned_integration_alias_resolves_the_setting_for_the_creator_but_the_r
     assert search_fields[SearchFields.ALIAS] == ALIAS
     # ... the script tool, and what its scripts may call, run as the running user.
     assert context.user.id == RUNNING_USER.id
-    assert context.scope_kind is ScriptScopeKind.WORKFLOW
-
-
-def test_inner_tool_calls_of_a_pinned_step_resolve_as_the_running_user_in_the_workflow_project(
-    workspace_service: _FakeWorkspaceService, pinned_setting_lookup: MagicMock
-) -> None:
-    """Reference for the follow-up: the documented reach of a script's tool calls from a tool step.
-
-    ``ProjectScope`` resolves a catalog tool by name with no integration alias, so the pinned (creator-owned) PROJECT
-    setting of the step itself is not threaded into it: the lookup is the automatic one for the running user and the
-    workflow project, which is what can reach a PROJECT-type setting of that project.
-    """
-    context = _registry_context(workspace_service, _node(RUNNING_USER, is_global=True, integration_alias=ALIAS))
-    assert isinstance(context.scope, ProjectScope)
-    assistants = MagicMock(name="VirtualAssistantService")
-    assistants.create_from_tool_invocation.return_value = MagicMock(id="virtual-1")
-    tools = MagicMock(name="ToolsService")
-    with (
-        patch("codemie.service.assistant.VirtualAssistantService", assistants),
-        patch("codemie.service.tools.ToolsService", tools),
-        patch("codemie.service.tools.ToolkitService", MagicMock(name="ToolkitService")),
-    ):
-        assert context.scope.resolve("catalog_tool") is tools.find_tool_by_invoke_request.return_value
-
-    # No alias, no owner id: the lookup user is the running user, the project the workflow's.
-    assistants.create_from_tool_invocation.assert_called_once_with("catalog_tool", RUNNING_USER, PROJECT)
-    _, _, _, user, project = tools.find_tool_by_invoke_request.call_args.args
-    assert (user.id, project) == (RUNNING_USER.id, PROJECT)
+    assert context.scope_kind is ScriptScopeKind.ASSISTANT
 
 
 def test_a_webhook_or_cron_run_gives_the_registry_the_trigger_user(workspace_service: _FakeWorkspaceService) -> None:

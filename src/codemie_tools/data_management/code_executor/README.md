@@ -391,8 +391,15 @@ Rules and limits:
   `payload_too_large` is returned without parsing it, so a huge response is not held, parsed and encoded just to be
   refused.
 - **Which tools.** In a chat, and in a workflow assistant step (stored or inline), the tools in the assistant's
-  final tool list, with the assistant's settings and credentials. In a bare workflow tool step, any tool of the
-  catalog resolved by name for the running user in the workflow's project, with that user's integrations. The
+  final tool list, with the assistant's settings and credentials. In a workflow script step, only the tools listed on
+  the step (`tool_access`, per tool an optional integration alias, as for the tools of a workflow assistant): an
+  unlisted tool is `tool_unavailable`, a listed alias runs under the creator's account in a global workflow and among the
+  running user's integrations in the workflow's project otherwise, and a listed tool without an alias uses the running
+  user's automatic lookup. The step's tools are assembled the way an assistant's are, so the script sees exactly that
+  list; the script tool names the filter a listed tool must pass (`CodeMieTool.tool_access_filter = "script_callable"`).
+  A script cannot pass an alias. A pinned integration of a shared assistant stays usable in bulk
+  by a script, an accepted risk
+  (architecture specification, section 7.5). The
   scope comes from the node kind set by trusted code, never from a request field. A tool class decides for itself
   whether it may be called this way: `CodeMieTool.script_callable` is **opt-in**, `False` on the base class, so a
   new tool is not callable from scripts until its class sets `script_callable = True`

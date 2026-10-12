@@ -21,11 +21,9 @@ from langchain_core.tools import BaseTool
 from pydantic import BaseModel
 
 from codemie.rest_api.security.user import User
-from codemie.service.script_tool_calls import workflow_resolution
 from codemie.service.script_tool_calls.authorizer import authorize_tool_call
 from codemie.service.script_tool_calls.context import (
     NoScope,
-    ProjectScope,
     ScriptRunContext,
     ScriptScopeKind,
     ToolListScope,
@@ -69,19 +67,10 @@ def _assistant_context(tools: Sequence[BaseTool] = ()) -> ScriptRunContext:
     return ScriptRunContext(user=_user(), scope=ToolListScope(tools), scope_kind=ScriptScopeKind.ASSISTANT)
 
 
-def _workflow_context(resolver: object) -> ScriptRunContext:
-    scope = ProjectScope(_user(), "proj", resolver)  # type: ignore[arg-type]
-    return ScriptRunContext(user=_user(), scope=scope, scope_kind=ScriptScopeKind.WORKFLOW)
-
-
 def _refusal(context: ScriptRunContext, name: str) -> ToolCallRefused:
     with pytest.raises(ToolCallRefused) as info:
         authorize_tool_call(context, name)
     return info.value
-
-
-def _never_resolver(user: User, project: str, name: str) -> BaseTool:
-    raise AssertionError("resolver must not be called")
 
 
 class TestAuthorizeToolCall:
@@ -90,7 +79,6 @@ class TestAuthorizeToolCall:
         [
             _none_context(),
             _assistant_context([_NamedTool(name=_SCRIPT_TOOL_NAME)]),
-            _workflow_context(_never_resolver),
         ],
     )
     def test_script_tool_is_blocked_in_every_scope_before_the_scope_is_asked(self, context: ScriptRunContext) -> None:
@@ -110,31 +98,6 @@ class TestAuthorizeToolCall:
     def test_an_excluded_tool_in_the_list_is_unavailable_whichever_scope_produced_it(self) -> None:
         assert _refusal(_assistant_context([_StreamTool()]), "stream_tool").code == "tool_unavailable"
 
-    def test_workflow_returns_resolver_result(self) -> None:
-        tool = _NamedTool()
-        seen: list[tuple[str, str, str]] = []
-
-        def resolver(user: User, project: str, name: str) -> BaseTool:
-            seen.append((user.id, project, name))
-            return tool
-
-        assert authorize_tool_call(_workflow_context(resolver), "named_tool") is tool
-        assert seen == [("user-1", "proj", "named_tool")]
-
-    def test_workflow_resolver_value_error_is_unavailable(self) -> None:
-        def resolver(user: User, project: str, name: str) -> BaseTool:
-            raise ValueError("Tool not found: secret details")
-
-        refused = _refusal(_workflow_context(resolver), "missing")
-
-        assert refused.code == "tool_unavailable"
-        assert "secret details" not in refused.message
-
-    def test_workflow_excluded_tool_is_unavailable(self) -> None:
-        refused = _refusal(_workflow_context(lambda user, project, name: _StreamTool()), "stream_tool")
-
-        assert refused.code == "tool_unavailable"
-
     def test_message_names_only_the_supplied_tool_name(self) -> None:
         assert "some_tool" in _refusal(_assistant_context(), "some_tool").message
 
@@ -150,54 +113,3 @@ class TestAuthorizeToolCall:
         result = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=True)
 
         assert result.stdout.strip().splitlines()[-1] == "False", "an exception type must not need the sandbox stack"
-
-
-class TestResolveWorkflowTool:
-    def test_resolves_and_always_deletes_virtual_assistant(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import codemie.service.assistant as assistant_pkg
-        import codemie.service.tools as tools_pkg
-
-        tool = _NamedTool()
-        calls: list[tuple[str, object]] = []
-        virtual = type("Virtual", (), {"id": "va-1"})()
-
-        def create(name: str, user: User, project: str) -> object:
-            calls.append(("create", (name, user.id, project)))
-            return virtual
-
-        def find(name: str, toolkits: object, assistant: object, user: User, project: str) -> BaseTool:
-            calls.append(("find", (name, assistant is virtual, user.id, project)))
-            return tool
-
-        monkeypatch.setattr(assistant_pkg.VirtualAssistantService, "create_from_tool_invocation", create)
-        monkeypatch.setattr(assistant_pkg.VirtualAssistantService, "delete", lambda aid: calls.append(("delete", aid)))
-        monkeypatch.setattr(tools_pkg.ToolsService, "find_tool_by_invoke_request", find)
-        monkeypatch.setattr(tools_pkg.ToolkitService, "get_toolkit_methods", lambda: {})
-
-        assert workflow_resolution.resolve_workflow_tool(_user(), "proj", "named_tool") is tool
-        assert calls == [
-            ("create", ("named_tool", "user-1", "proj")),
-            ("find", ("named_tool", True, "user-1", "proj")),
-            ("delete", "va-1"),
-        ]
-
-    def test_deletes_virtual_assistant_when_lookup_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import codemie.service.assistant as assistant_pkg
-        import codemie.service.tools as tools_pkg
-
-        deleted: list[str] = []
-        virtual = type("Virtual", (), {"id": "va-2"})()
-
-        def find(name: str, toolkits: object, assistant: object, user: User, project: str) -> BaseTool:
-            raise ValueError("not found")
-
-        monkeypatch.setattr(
-            assistant_pkg.VirtualAssistantService, "create_from_tool_invocation", lambda *a, **k: virtual
-        )
-        monkeypatch.setattr(assistant_pkg.VirtualAssistantService, "delete", lambda aid: deleted.append(aid))
-        monkeypatch.setattr(tools_pkg.ToolsService, "find_tool_by_invoke_request", find)
-        monkeypatch.setattr(tools_pkg.ToolkitService, "get_toolkit_methods", lambda: {})
-
-        with pytest.raises(ValueError):
-            workflow_resolution.resolve_workflow_tool(_user(), "proj", "x")
-        assert deleted == ["va-2"]

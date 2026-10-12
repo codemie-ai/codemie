@@ -107,6 +107,9 @@ class WorkflowTool(BaseModel):
     resolve_dynamic_values_in_response: bool = False
     input_key: Optional[str] = None
     tokens_size_limit: Optional[int] = None
+    # Tools a workspace script of this step may call, chosen like the tools of a workflow assistant: an alias pins the
+    # integration, no alias means the automatic lookup. Only for the execute_workspace_script tool.
+    tool_access: Optional[list[WorkflowAssistantTool]] = None
 
 
 class CustomWorkflowNode(BaseModel):

@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from codemie.core.exceptions import NotFoundException, ValidationException
+from codemie.core.workflow_models.workflow_models import WorkflowAssistantTool, WorkflowTool
 from codemie.rest_api.models.assistant import InlineCredential
 from codemie.rest_api.models.workflow_marketplace import PublishWorkflowToMarketplaceRequest
 from codemie.service.workflow_config.workflow_marketplace_service import WorkflowMarketplaceService
@@ -359,3 +360,25 @@ def test_track_usage_swallows_exception(
     mock_config_repo.recompute_unique_users_count.side_effect = RuntimeError("DB error")
 
     service.track_usage(_WORKFLOW_ID, _USER_ID)
+
+
+@pytest.mark.asyncio
+async def test_validate_reports_script_step_aliases_as_inline_credentials(
+    service: WorkflowMarketplaceService, mock_workflow: MagicMock, mock_user: MagicMock
+) -> None:
+    mock_workflow.tools = [
+        WorkflowTool(
+            id="t1",
+            tool="execute_workspace_script",
+            tool_access=[WorkflowAssistantTool(name="generic_jira_tool", integration_alias="jira-a")],
+        )
+    ]
+    mock_workflow.assistants = []
+    with patch(_ENTITIES_PATCH, return_value=([], [])):
+        result = await service.validate(mock_workflow, mock_user)
+
+    assert [(c.tool, c.integration_alias, c.credential_type) for c in result.inline_credentials] == [
+        ("generic_jira_tool", "jira-a", "tool_integration_alias"),
+    ]
+    assert result.warnings == []
+    assert "script steps" in result.message

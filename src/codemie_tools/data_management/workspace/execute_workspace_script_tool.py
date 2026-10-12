@@ -39,6 +39,9 @@ class ExecuteWorkspaceScriptInput(BaseModel):
 
 
 class ExecuteWorkspaceScriptTool(CodeMieTool):
+    step_config_fields: ClassVar[tuple[str, ...]] = ("tool_access",)
+    tool_access_filter: ClassVar[str | None] = "script_callable"
+
     name: str = EXECUTE_WORKSPACE_SCRIPT_TOOL.name
     description: str = EXECUTE_WORKSPACE_SCRIPT_TOOL.description
     args_schema: Type[BaseModel] = ExecuteWorkspaceScriptInput

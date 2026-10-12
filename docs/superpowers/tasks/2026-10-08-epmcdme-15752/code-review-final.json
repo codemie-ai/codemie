@@ -1,0 +1,65 @@
+{
+  "decision": "request-changes",
+  "rationale": "Committed kube client private key (unrelated to the feature) and two unmet spec/story items (epic spec 7.5 edits absent; callable_tools has no generator/test-run consumer) block; update/validate router tests for treat_as_global are missing. Reachability was checked for the key candidates only; 16 lower-grade lens notes (schema strictness, error text, naming, docs wording, creator-vs-runtime-user alias validation which matches the spec) were dismissed as noise, 0 deferred.",
+  "confidence": "medium",
+  "risk_flags": ["security", "auth", "public-api", "data-contract"],
+  "business_review": [
+    {"kind": "spec", "item": "callable_tools() derives from policy; generator and test run use it", "status": "partial", "notes": "ProjectScope.callable_tools returns the map but no src consumer uses it"},
+    {"kind": "spec", "item": "Epic spec 7.5 gets two line edits (residual risk; PROJECT-settings row)", "status": "fail", "notes": "no change to architecture-spec.md in the diff"},
+    {"kind": "story-ac", "item": "Test run and generator of a script step offer and accept only the tools of the map", "status": "partial", "notes": "no generator or test-run code consumes callable_tools"},
+    {"kind": "story-ac", "item": "Editor of a workflow script step lets author pick tools and aliases (codemie-ui)", "status": "na", "notes": "UI criterion; backend-only sub-task"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "all 9 subjects in the range match the documented format"},
+    {"kind": "code-quality", "status": "pass", "notes": "no documented code-quality rule found broken from the changed-file list"},
+    {"kind": "security", "status": "fail", "notes": "commit b199c4783 adds .kube-local kubeconfigs with client-key-data; not gitignored"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": ".kube-local/kubeconfig.yaml",
+      "title": "Kube client private key committed",
+      "problem": "Commit b199c4783 adds .kube-local/kubeconfig.yaml and kubeconfig-internal.yaml containing client-certificate-data and client-key-data (EC private key, system:masters-style local cluster credentials). Not gitignored and unrelated to the script-step feature.",
+      "impact": "Cluster-admin credential material enters git history and any MR or clone.",
+      "recommendation": "Remove both files from the branch history, add .kube-local/ to .gitignore, and rotate the embedded client key and certificate if the cluster is reachable."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "docs/stories/2026-09-28-custom-tools/architecture-spec.md",
+      "title": "Epic spec 7.5 edits not made",
+      "problem": "The spec requires two line edits to epic architecture spec section 7.5 (residual risk; PROJECT-settings row now closed only for tools outside the list). The file is unchanged in the diff.",
+      "impact": "A required spec requirement is unmet; the epic spec still describes the pre-change risk posture.",
+      "recommendation": "Apply the two line edits to section 7.5 of architecture-spec.md."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/workflow.py",
+      "line": 697,
+      "title": "No test for treat_as_global on update/validate",
+      "problem": "update_workflow (~697) and validate_workflow (~768) pass treat_as_global=bool(is_global) to _consumer_slot_warnings, but only the create route (and publish) has a test asserting the collector receives it.",
+      "impact": "Dropping or inverting treat_as_global on save or validate would ship without a failing test, silently removing the warning that listed aliases run under the author's account for every user.",
+      "recommendation": "Add router tests for PUT /v1/workflows/{id} and the validate endpoint that patch collect_script_step_owner_integration_warnings and assert kwargs['treat_as_global'] == bool(proposed.is_global) and that the script-step warning is returned."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/service/script_tool_calls/context.py",
+      "line": 142,
+      "title": "callable_tools map has no generator/test-run consumer",
+      "problem": "ProjectScope.callable_tools returns the policy mapping, but grep of src shows no consumer; the script generator and test run are not shown to offer or accept only the tools of the step map (story AC partial).",
+      "impact": "Story criterion that test run and generator are limited to the step's map is not met in this change; authors can be offered tools the runtime then refuses.",
+      "recommendation": "Wire the generator and test-run tool offering to scope.callable_tools(), with a test; if they live in another ticket, record that in the task and spec."
+    }
+  ]
+}

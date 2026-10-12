@@ -210,7 +210,7 @@ def execution_service() -> MagicMock:
     return MagicMock(name="workflow_execution_service")
 
 
-def test_step_runs_in_the_workspace_keyed_by_the_execution_id_in_workflow_scope(
+def test_step_runs_in_the_workspace_keyed_by_the_execution_id_with_the_step_tool_list(
     workspace: _FakeWorkspaceService, execution_service: MagicMock
 ) -> None:
     _FakeBatchJobRunner.behaviours["scripts/run.py"] = _write_file("out/data.txt", b"payload", stdout="done")
@@ -219,7 +219,7 @@ def test_step_runs_in_the_workspace_keyed_by_the_execution_id_in_workflow_scope(
 
     assert set(workspace.created_for) == {EXECUTION_ID}
     (run_context,) = workspace.run_contexts
-    assert run_context is not None and run_context.scope_kind is ScriptScopeKind.WORKFLOW
+    assert run_context is not None and run_context.scope_kind is ScriptScopeKind.ASSISTANT
     assert run_context.user.id == "running-user"
 
 

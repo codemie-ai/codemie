@@ -101,7 +101,7 @@ class InlineCredentialsCollector:
         ]
 
     def _from_tool_node(self, tool: WorkflowTool) -> list[InlineCredential]:
-        """Collect credentials from a WorkflowTool node's MCP server and integration_alias."""
+        """Collect credentials from a WorkflowTool node's MCP server, integration_alias and script tool access."""
         credentials: list[InlineCredential] = []
         if tool.mcp_server is not None:
             credentials.extend(self._from_mcp_servers([tool.mcp_server]))
@@ -113,7 +113,21 @@ class InlineCredentialsCollector:
                     credential_type="tool_integration_alias",
                 )
             )
+        credentials.extend(self._from_tool_access(tool))
         return credentials
+
+    @staticmethod
+    def _from_tool_access(tool: WorkflowTool) -> list[InlineCredential]:
+        """One credential per tool a script step pins to an alias; they run as the workflow author once published."""
+        return [
+            InlineCredential(
+                tool=access.name,
+                integration_alias=access.integration_alias,
+                credential_type="tool_integration_alias",
+            )
+            for access in tool.tool_access or []
+            if access.integration_alias
+        ]
 
     # ── public ────────────────────────────────────────────────────────────────
 

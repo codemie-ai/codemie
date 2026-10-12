@@ -17,6 +17,7 @@ from typing import List, Dict, Optional
 
 from codemie_tools.base.models import ToolKit, ToolSet
 from codemie_tools.base import toolkit_provider
+from codemie_tools.base.tool_registry import ensure_loaded, is_script_callable
 from codemie_tools.data_management.file_system.toolkit import FileSystemToolkit
 from codemie_tools.data_management.workspace.toolkit import AgentWorkspaceToolkit
 from codemie_tools.file_analysis.toolkit import FileAnalysisToolkit
@@ -89,7 +90,17 @@ class ToolsInfoService:
         if exclude_toolkits:
             toolkits = [t for t in toolkits if t.get("toolkit") not in exclude_toolkits]
 
+        ToolsInfoService._mark_script_callable(toolkits)
         return toolkits
+
+    @staticmethod
+    def _mark_script_callable(toolkits: List[Dict]) -> None:
+        """Tell consumers which tools a workspace script may call (same registry the runtime uses)."""
+        ensure_loaded()
+        for toolkit in toolkits:
+            for tool in toolkit.get("tools") or []:
+                if isinstance(tool, dict) and tool.get("name"):
+                    tool["script_callable"] = is_script_callable(tool["name"])
 
     @classmethod
     def get_hedgeable_tools_info(cls, user: User) -> list[ToolKit]:

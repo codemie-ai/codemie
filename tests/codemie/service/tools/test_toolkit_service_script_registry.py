@@ -30,7 +30,6 @@ from codemie.rest_api.models.assistant import Assistant
 from codemie.rest_api.security.user import User
 from codemie.service.script_tool_calls.binding import bind_script_registries
 from codemie.service.script_tool_calls.context import (
-    ProjectScope,
     ScriptRunContext,
     ScriptScopeKind,
     ScriptToolRegistry,
@@ -114,16 +113,6 @@ class TestBindScriptRegistries:
         bind_script_registries([first, second, script])
 
         assert _names(_context(script)) == ["dup"]
-
-    def test_registry_built_for_a_tool_step_keeps_workflow_scope_when_bound(self) -> None:
-        script = _script_tool(ScriptToolRegistry(_user(), workflow_project="proj-1"))
-
-        bind_script_registries([_tool("a"), script])
-
-        context = _context(script)
-        assert context.scope_kind is ScriptScopeKind.WORKFLOW
-        assert isinstance(context.scope, ProjectScope)
-        assert context.scope.project == "proj-1"
 
     def test_tools_flagged_not_script_callable_are_left_out(self) -> None:
         script = _script_tool(ScriptToolRegistry(_user()))

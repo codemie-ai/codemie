@@ -1243,6 +1243,8 @@ def test_tc_tnc_016_marketplace_workflow_passes_publisher_owner_user_id(
     # Assert — publisher's user_id propagated to both service calls
     _, create_kwargs = mock_virtual_assistant_service.create_from_tool_config.call_args
     assert create_kwargs["owner_user_id"] == "publisher-user-id"
+    assert create_kwargs["is_global"] is True
+    assert create_kwargs["created_by_user_id"] == "publisher-user-id"
 
     _, find_kwargs = mock_tools_service.find_tool_from_config.call_args
     assert find_kwargs["owner_user_id"] == "publisher-user-id"

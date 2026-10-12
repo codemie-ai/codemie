@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional, Dict, Any, Literal
+from typing import Optional, Dict, Any, List, Literal
 from pydantic import BaseModel, Field
 
 from codemie.service.llm_service.llm_service import llm_service
+from codemie.service.tools.step_config import StepConfigEntry
 
 
 class InvokeParams(BaseModel):
@@ -50,6 +51,7 @@ class ToolSchemaResponse(BaseModel):
     tool_name: str
     creds_schema: Dict[str, SchemaField]
     args_schema: Dict[str, SchemaField]
+    step_config: List[StepConfigEntry] = Field(default_factory=list)
 
 
 class CodeDatasourceSearchParams(BaseModel):

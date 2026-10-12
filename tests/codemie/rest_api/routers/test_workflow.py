@@ -645,6 +645,43 @@ async def test_create_workflow_reports_consumer_slot_warnings(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("script_collector", ["returns", "raises"])
+@patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_entity_guardrail_assignments")
+async def test_create_workflow_script_step_warning_is_advisory(
+    mock_get_guardrail_assignments, script_collector, create_workflow_request, request_header
+):
+    warning = {"kind": "tool_access_owner_integration", "step_id": "s1", "tool_name": "t", "integration_alias": "a"}
+    collector_patch = (
+        patch(
+            "codemie.rest_api.routers.workflow.collect_tool_access_owner_integration_warnings", return_value=[warning]
+        )
+        if script_collector == "returns"
+        else patch(
+            "codemie.rest_api.routers.workflow.collect_tool_access_owner_integration_warnings",
+            side_effect=RuntimeError("boom"),
+        )
+    )
+    with (
+        patch("codemie.service.workflow_service.WorkflowService.create_workflow", return_value=workflow_config_data),
+        patch("codemie.service.workflow_service.WorkflowService.save_workflow_schema"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow"),
+        patch("codemie.rest_api.routers.workflow.project_access_check"),
+        patch("codemie.rest_api.routers.workflow.collect_consumer_slot_integration_warnings", return_value=[]),
+        collector_patch as collector,
+    ):
+        mock_get_guardrail_assignments.return_value = None
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.post("/v1/workflows", json=create_workflow_request.model_dump(), headers=request_header)
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json()["warnings"] == ([warning] if script_collector == "returns" else [])
+    assert collector.call_args.kwargs["treat_as_global"] == bool(workflow_config_data.is_global)
+
+
+@pytest.mark.asyncio
 async def test_create_autonomous_workflow(create_autonomous_workflow_request, request_header):
     with (
         patch(
@@ -998,7 +1035,7 @@ async def test_update_workflow_ignores_mismatched_body_id(
 async def test_update_workflow_exception(mock_get_wf, mock_ability, update_workflow_request, request_header):
     from unittest.mock import AsyncMock
 
-    mock_get_wf.return_value = workflow_config
+    mock_get_wf.return_value = workflow_config_data
     mock_ability.return_value = True
 
     with (
@@ -2721,3 +2758,99 @@ async def test_create_workflow_preserves_unavailable_assistant_models(
         assert [assistant.model for assistant in saved_config.assistants] == ["gpt-4o-2024-11-20"] * 3
         assert all(assistant.model not in restricted_project.allowed_models for assistant in saved_config.assistants)
         workflow_executor.assert_called_once()
+
+
+# ---- Script step owner-integration warning uses the stored global state ----
+
+
+_SCRIPT_STEP_WARNING = {
+    "kind": "tool_access_owner_integration",
+    "step_id": "s1",
+    "tool_name": "t",
+    "integration_alias": "a",
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_global", [True, False])
+@patch("codemie.core.ability.Ability.can", return_value=True)
+@patch("codemie.service.workflow_service.WorkflowService.get_workflow")
+@patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_entity_guardrail_assignments")
+async def test_update_workflow_script_step_warning_uses_stored_global_state(
+    mock_get_guardrail_assignments, mock_get_wf, _mock_ability, is_global, update_workflow_request, request_header
+):
+    from unittest.mock import AsyncMock
+
+    mock_get_guardrail_assignments.return_value = None
+    existing = WorkflowConfig(
+        id="workflow_123",
+        name="Existing",
+        description="d",
+        yaml_config=test_yaml_config,
+        project="demo",
+        is_global=is_global,
+    )
+    mock_get_wf.return_value = existing
+
+    with (
+        patch("codemie.service.workflow_service.WorkflowService.update_workflow", return_value=workflow_config_data),
+        patch("codemie.service.workflow_service.WorkflowService.validate_for_update", new_callable=AsyncMock),
+        patch("codemie.service.workflow_service.WorkflowService.save_workflow_schema"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
+        patch("codemie.rest_api.routers.workflow.project_access_check"),
+        patch("codemie.rest_api.routers.workflow.collect_consumer_slot_integration_warnings", return_value=[]),
+        patch(
+            "codemie.rest_api.routers.workflow.collect_tool_access_owner_integration_warnings",
+            return_value=[_SCRIPT_STEP_WARNING],
+        ) as collector,
+    ):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.put(
+                f"/v1/workflows/{existing.id}", json=update_workflow_request.model_dump(), headers=request_header
+            )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json()["warnings"] == [_SCRIPT_STEP_WARNING]
+    assert collector.call_args.kwargs["treat_as_global"] is is_global
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_global", [True, False])
+@patch("codemie.core.ability.Ability.can", return_value=True)
+@patch("codemie.service.workflow_service.WorkflowService.get_workflow")
+async def test_validate_workflow_script_step_warning_uses_stored_global_state(
+    mock_get_wf, _mock_ability, is_global, update_workflow_request, request_header
+):
+    from unittest.mock import AsyncMock
+
+    existing = WorkflowConfig(
+        id="workflow_123",
+        name="Existing",
+        description="d",
+        yaml_config=test_yaml_config,
+        project="demo",
+        is_global=is_global,
+    )
+    mock_get_wf.return_value = existing
+
+    with (
+        patch("codemie.service.workflow_service.WorkflowService.validate_for_update", new_callable=AsyncMock),
+        patch("codemie.rest_api.routers.workflow.project_access_check"),
+        patch("codemie.rest_api.routers.workflow.collect_consumer_slot_integration_warnings", return_value=[]),
+        patch(
+            "codemie.rest_api.routers.workflow.collect_tool_access_owner_integration_warnings",
+            return_value=[_SCRIPT_STEP_WARNING],
+        ) as collector,
+    ):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.post(
+                f"/v1/workflows/{existing.id}/validate",
+                json=update_workflow_request.model_dump(),
+                headers=request_header,
+            )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json()["warnings"] == [_SCRIPT_STEP_WARNING]
+    assert collector.call_args.kwargs["treat_as_global"] is is_global

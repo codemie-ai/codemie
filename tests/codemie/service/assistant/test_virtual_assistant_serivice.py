@@ -295,41 +295,96 @@ def test_delete_by_execution_id(mock_toolkit):
     assert VirtualAssistantService.assistants["third"]
 
 
-def test_create_defaults_to_not_a_tool_step(mock_toolkit):
-    assistant = VirtualAssistantService.create(toolkits=[mock_toolkit], project="Test", execution_id="exec-1")
-
-    assert assistant.is_tool_step is False
-
-
-def test_create_from_tool_config_marks_a_bare_tool_step(mock_toolkit):
-    with patch(
-        "codemie.service.assistant.virtual_assistant_service.ToolsService.get_toolkit_from_workflow_tool_config",
-        return_value=mock_toolkit,
+def _tool_step_assistant(mock_toolkit, tool_config=None, access_toolkits=None, **kwargs):
+    with (
+        patch(
+            "codemie.service.assistant.virtual_assistant_service.ToolsService.get_toolkit_from_workflow_tool_config",
+            return_value=mock_toolkit,
+        ),
+        patch(
+            "codemie.service.assistant.virtual_assistant_service.ToolsService.get_toolkits_for_tool_access",
+            return_value=access_toolkits or [],
+        ) as for_access,
     ):
         assistant = VirtualAssistantService.create_from_tool_config(
-            tool_config=MagicMock(), project_name="Test", user=User(id="test_user"), execution_id="exec-1"
+            tool_config=tool_config or WorkflowTool(id="s1", tool="execute_workspace_script"),
+            project_name="Test",
+            user=User(id="test_user"),
+            execution_id="exec-1",
+            **kwargs,
         )
+    return assistant, for_access
 
-    assert assistant.is_tool_step is True
+
+def test_create_from_tool_config_carries_the_toolkit_of_the_tool_and_the_execution_id(mock_toolkit):
+    assistant, _ = _tool_step_assistant(mock_toolkit)
+
+    assert assistant.toolkits == [mock_toolkit]
     assert assistant.execution_id == "exec-1"
 
 
-def test_create_from_virtual_asst_config_is_not_a_tool_step(mock_toolkit, workflow_assistant_config):
-    with patch(
-        "codemie.service.assistant.virtual_assistant_service.ToolsService.get_toolkits_from_assistant_tool_config",
-        return_value=[mock_toolkit],
-    ):
-        assistant = VirtualAssistantService.create_from_virtual_asst_config(
-            config=workflow_assistant_config, project_name="Test", user=User(id="test_user"), execution_id="exec-1"
-        )
+def test_create_from_tool_config_adds_one_toolkit_per_listed_tool(mock_toolkit):
+    listed = MagicMock(spec=ToolKitDetails)
+    step = WorkflowTool(
+        id="s1",
+        tool="execute_workspace_script",
+        tool_access=[WorkflowAssistantTool(name="jira", integration_alias="a")],
+    )
 
-    assert assistant.is_tool_step is False
+    assistant, for_access = _tool_step_assistant(mock_toolkit, step, access_toolkits=[listed])
+
+    assert assistant.toolkits == [mock_toolkit, listed]
+    assert for_access.call_args.args[:2] == ("execute_workspace_script", step.tool_access)
 
 
-def test_create_from_tool_invocation_is_not_a_tool_step(mock_toolkit):
-    with patch(
-        "codemie.service.assistant.virtual_assistant_service.ToolsService.get_toolkit", return_value=mock_toolkit
-    ):
-        assistant = VirtualAssistantService.create_from_tool_invocation("some_tool", User(id="test_user"), "Test")
+def test_a_tool_that_takes_no_tool_access_gets_no_listed_toolkits(mock_toolkit):
+    step = WorkflowTool(id="s1", tool="generic_jira_tool", tool_access=[WorkflowAssistantTool(name="jira")])
 
-    assert assistant.is_tool_step is False
+    assistant, for_access = _tool_step_assistant(mock_toolkit, step)
+
+    assert assistant.toolkits == [mock_toolkit]
+    for_access.assert_not_called()
+
+
+def test_global_workflow_looks_pinned_aliases_up_for_the_creator(mock_toolkit):
+    step = WorkflowTool(
+        id="s1",
+        tool="execute_workspace_script",
+        tool_access=[WorkflowAssistantTool(name="jira", integration_alias="a")],
+    )
+
+    _, for_access = _tool_step_assistant(mock_toolkit, step, is_global=True, created_by_user_id="creator-1")
+
+    assert for_access.call_args.kwargs["owner_user_id"] == "creator-1"
+
+
+@pytest.mark.parametrize("is_global", [True, False])
+def test_automatic_lookup_never_goes_to_the_creator(mock_toolkit, is_global):
+    step = WorkflowTool(id="s1", tool="execute_workspace_script", tool_access=[WorkflowAssistantTool(name="jira")])
+
+    _, for_access = _tool_step_assistant(mock_toolkit, step, is_global=is_global, created_by_user_id="creator-1")
+
+    assert for_access.call_args.kwargs["owner_user_id"] is None
+
+
+def test_non_global_workflow_looks_pinned_aliases_up_for_the_running_user(mock_toolkit):
+    step = WorkflowTool(
+        id="s1",
+        tool="execute_workspace_script",
+        tool_access=[WorkflowAssistantTool(name="jira", integration_alias="a")],
+    )
+
+    _, for_access = _tool_step_assistant(mock_toolkit, step, is_global=False, created_by_user_id="creator-1")
+
+    assert for_access.call_args.kwargs["owner_user_id"] is None
+
+
+def test_global_workflow_with_a_pinned_alias_and_no_creator_is_refused(mock_toolkit):
+    step = WorkflowTool(
+        id="s1",
+        tool="execute_workspace_script",
+        tool_access=[WorkflowAssistantTool(name="jira", integration_alias="a")],
+    )
+
+    with pytest.raises(ValueError, match="creator"):
+        _tool_step_assistant(mock_toolkit, step, is_global=True, created_by_user_id=None)

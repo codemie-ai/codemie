@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "generated": "2026-10-08T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 23,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 39,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Script tool-call package (authorizer, context, handler, policy, workflow_resolution) plus workflow/assistant models, marketplace and tool services, router, tool_node, validation, workspace toolkit and the code_executor runtime SDK." },
+    { "dimension": "technical_risk", "reason": "Authorization-sensitive step scope and integration alias handling in the script authorizer/policy; extends existing script tool-call pattern, so no novel approach." },
+    { "dimension": "file_change_estimate", "reason": "39 files changed per diffstat (about 19 are tests), which maps to XXL under the file-count mapping." },
+    { "dimension": "affected_layers", "reason": "API router, services, models/persistence fields, and the sandbox runtime SDK; no new schema migration confirmed. Scored from the caller's file summary, not from reading each file." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped: affects authorization of script tool calls (step scope, integration alias)"
+  ],
+  "split_recommendation": null
+}

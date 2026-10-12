@@ -22,7 +22,7 @@ print(envelope["http"]["status"], envelope["result"])
 | Where the script runs | Tools it may call | Credentials |
 |---|---|---|
 | A chat, or a workflow step that is an assistant (stored or inline) | The tools in that assistant's own tool list, attached skills included | The assistant's own settings and credentials |
-| A workflow tool step | Any tool of the catalog, by name | The running user's integrations in the workflow's project |
+| A workflow script step (`execute_workspace_script`) | Only the tools listed on the step (`tool_access`), each with its optional integration alias | The running user's integrations in the workflow's project; in a global workflow a listed alias runs under the creator's account |
 | A direct workspace run with no assistant or workflow (REST) | None: every call gives `no_context` | - |
 
 A tool class decides for itself whether a script may call it: `script_callable` is **opt-in**, `False` on the base
@@ -30,6 +30,31 @@ class, so a new tool is not callable from scripts until its class sets `script_c
 itself, MCP tools and `request_user_input` keep `script_callable = False`; supervisor handoff tools and tools bound to
 the chat stream are blocked by name or by their shape whatever the flag says.
 Use plain Python for files. A tool outside the allowed set gives `tool_unavailable` or `tool_blocked`.
+
+### Tools and aliases of a workflow script step
+
+The author lists on the step (`tool_access`) the tools its script may call, in the same form as the tools of a
+workflow assistant: a list of `{name, integration_alias}`, one entry per tool. `integration_alias` is optional: with it
+the tool runs under that integration, without it the tool uses the automatic lookup, exactly as for an assistant. The
+list is required: a step with no list can call no tool. The script never chooses an integration; `call_tool` and
+`call_tools` take no alias.
+
+| Call | Result |
+|---|---|
+| Tool not in the list | `tool_unavailable` |
+| Tool listed with an alias | Runs under that integration |
+| Tool listed without an alias | The running user's automatic lookup in the workflow's project |
+
+In a **global** workflow a listed alias resolves to the creator's integration, so everyone who runs the workflow uses the
+creator's account for that tool; if the creator is unknown, the step fails at its start. A pinned alias that nobody holds also fails the step at its start, as for the tools of a workflow assistant. Saving a step checks
+that each listed tool exists and is callable from a script, that no tool is listed twice, and that each alias exists for
+the creator and fits the tool's credential type. Publishing or saving as global shows a warning
+(`tool_access_owner_integration`) naming the tools and aliases that will run under the creator's account. A listed tool
+without an alias still reaches the project-level settings through the automatic lookup, with no access check.
+
+**Assistants.** In a chat or an assistant step the script uses the assistant's own tools and settings. An integration the assistant author pinned in a shared assistant
+can therefore be used in bulk by any user who runs a script there; this is an accepted risk. Do not pin a tool whose bulk
+use is a concern.
 
 ## Several calls at once
 
@@ -45,7 +70,7 @@ for key, item in zip(keys, call_tools(calls)):
         print(key, item["result"]["fields"]["summary"])
 ```
 
-`call_tools(calls, *, timeout=None)` takes a list of dicts, each with a `name` and optionally `args` and returns a list in the order given. Each item
+`call_tools(calls, *, timeout=None)` takes a list of dicts, each with a `name` and optionally `args`, and returns a list in the order given. Each item
 is the call's envelope, or a `ToolCallError` that is **returned, not raised**, so one failure does not hide the other
 results. Up to the `maxParallelCalls` setting (default 5) of the calls run at the same time; the rest wait their turn. The
 timeout is one for the whole batch, never beyond the run's time limit; a call not answered in time is a `ToolCallError` with

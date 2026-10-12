@@ -30,6 +30,7 @@ from codemie.configs import logger, config
 from codemie.service.assistant import VirtualAssistantService
 from codemie.service.tools import ToolsService
 from codemie.service.tools import ToolkitService
+from codemie_tools.base.tool_registry import takes_tool_access
 from codemie.workflows.utils import get_context_store_from_state_schema
 from codemie.workflows.utils.json_utils import UnwrappingJsonPointerEvaluator
 from codemie.service.mcp.toolkit_service import MCPToolkitService
@@ -199,6 +200,8 @@ class ToolNode(BaseNode[AgentMessages]):
             project_name=self.workflow_config.project,
             execution_id=self.execution_id,
             owner_user_id=owner_user_id,
+            is_global=bool(self.workflow_config.is_global),
+            created_by_user_id=self.workflow_config.created_by.user_id if self.workflow_config.created_by else None,
         )
         toolkits = ToolkitService.get_toolkit_methods(request_headers=self.request_headers)
 
@@ -211,15 +214,24 @@ class ToolNode(BaseNode[AgentMessages]):
             else None
         )
 
-        tool = ToolsService.find_tool_from_config(
-            self._tool_config,
-            toolkits,
-            assistant,
-            self.user,
-            self.workflow_config.project,
-            owner_user_id=owner_user_id,
-            execution_id=self.execution_id,
-        )
+        if takes_tool_access(self._tool_config.tool):
+            tool = ToolsService.find_tool_with_access(
+                self._tool_config,
+                assistant,
+                self.user,
+                self.execution_id,
+                request_headers=self.request_headers,
+            )
+        else:
+            tool = ToolsService.find_tool_from_config(
+                self._tool_config,
+                toolkits,
+                assistant,
+                self.user,
+                self.workflow_config.project,
+                owner_user_id=owner_user_id,
+                execution_id=self.execution_id,
+            )
 
         # Direct assignment is required here: CodeExecutorTool.__init__ ignores the `config`
         # kwarg and always calls CodeExecutorConfig.from_env(), so file_objects passed

@@ -49,6 +49,11 @@ from codemie.workflows.validation.models import (
     ToolMeta,
     ToolkitType,
 )
+from codemie.workflows.validation.tool_access import (
+    ToolAccessProblem,
+    validate_tool_access,
+    yaml_field_path,
+)
 from codemie.workflows.validation.line_lookup import YamlLineFinder, NullYamlLineFinder, extract_line_numbers
 from codemie.configs.customer_config import customer_config
 from codemie.configs.logger import logger
@@ -78,6 +83,7 @@ class WorkflowConfigResourcesValidationError(Exception):
         invalid_integration_tools: list[tuple[str, str, str]] = None,
         missing_integration_tools: list[tuple[str, str, str, str]] = None,
         unavailable_sub_workflows: list[tuple[str, str, str]] = None,
+        invalid_tool_access: list[ToolAccessProblem] = None,
     ):
         self.unavailable_assistants = unavailable_assistants
         self.unavailable_tools = unavailable_tools
@@ -86,6 +92,7 @@ class WorkflowConfigResourcesValidationError(Exception):
         self.missing_integration_tools = missing_integration_tools or []
         self.unavailable_datasources = unavailable_datasources
         self.unavailable_sub_workflows = unavailable_sub_workflows or []
+        self.invalid_tool_access = invalid_tool_access or []
         self.workflow_config_dict = workflow_config_dict or {}
         self.line_number_map = line_number_map or {}
         self.toolkits_metadata = toolkits_metadata or []
@@ -115,6 +122,10 @@ class WorkflowConfigResourcesValidationError(Exception):
             WorkflowConfigResourcesValidationError._format_list_message(
                 "Tools (referenced in assistant definitions) require missing integrations",
                 [tool for tool, *_ in (missing_integration_tools or [])],
+            ),
+            WorkflowConfigResourcesValidationError._format_list_message(
+                "Tool access is invalid",
+                [problem.message for problem in self.invalid_tool_access],
             ),
         ]
         message = [f"{title}:\n{details}" for title, details in self.messages if details]
@@ -151,6 +162,7 @@ class WorkflowConfigResourcesValidationError(Exception):
         errors.extend(self._build_invalid_integration_errors())
         errors.extend(self._build_missing_integration_errors())
         errors.extend(self._build_unavailable_datasource_errors())
+        errors.extend(self._build_invalid_tool_access_errors())
 
         return {
             "error_type": WorkflowErrorType.RESOURCE_VALIDATION.value,
@@ -262,6 +274,22 @@ class WorkflowConfigResourcesValidationError(Exception):
             if tool_name not in tool_names:
                 tool_names.append(tool_name)
         return grouped
+
+    def _build_invalid_tool_access_errors(self) -> list[dict]:
+        errors = []
+        for problem in self.invalid_tool_access:
+            error_detail = WorkflowValidationErrorDetail(
+                id=str(uuid.uuid4()),
+                message="Invalid tool access",
+                details=problem.message,
+                state_id=problem.state_id,
+                path=problem.path,
+                config_line=self.line_finder.find_line_for_tool_field(
+                    tool_ref=problem.tool_id, field_path=yaml_field_path(problem.path)
+                ),
+            )
+            errors.append(error_detail.model_dump(exclude_none=True))
+        return errors
 
     def _build_unavailable_datasource_errors(self) -> list[dict]:
         errors = []
@@ -503,6 +531,7 @@ def collect_consumer_slot_integration_warnings(workflow_config: WorkflowConfig, 
 
             warnings.append(
                 {
+                    "kind": "consumer_slot",
                     "assistant_ref": assistant.id,
                     "tool_name": missing.tool,
                     "credential_type": missing.credential_type or missing.toolkit or "Unknown",
@@ -737,6 +766,8 @@ def validate_workflow_config_resources_availability(workflow_config: WorkflowCon
                                                 assistants, or data sources) are
                                                 unavailable.
     """
+    # Lines are reported against the text the client sent, not the normalized YAML rewritten from the objects.
+    line_source_yaml = getattr(workflow_config, "_source_yaml_config", None) or workflow_config.yaml_config
     unavailable_assistants = _validate_assistants_availability(workflow_config, user)
     unavailable_tools = _validate_tools_avaiability(workflow_config, user)
     (
@@ -747,6 +778,7 @@ def validate_workflow_config_resources_availability(workflow_config: WorkflowCon
     missing_integration_tools.extend(_validate_referenced_assistants_integrations(workflow_config, user))
     unavailable_datasources = _validate_datasources_availability(workflow_config)
     unavailable_sub_workflows = _validate_sub_workflow_availability(workflow_config, user)
+    invalid_tool_access = validate_tool_access(workflow_config, user)
 
     unavailable_resources = (
         unavailable_assistants,
@@ -760,6 +792,7 @@ def validate_workflow_config_resources_availability(workflow_config: WorkflowCon
         or invalid_integration_tools
         or missing_integration_tools
         or unavailable_sub_workflows
+        or invalid_tool_access
     ):
         # Get toolkits metadata for enriching error messages
         toolkits_metadata = []
@@ -775,7 +808,7 @@ def validate_workflow_config_resources_availability(workflow_config: WorkflowCon
         line_number_map = None
 
         # Skip line number extraction if yaml_config is missing or not a string
-        if not workflow_config.yaml_config or not isinstance(workflow_config.yaml_config, str):
+        if not line_source_yaml or not isinstance(line_source_yaml, str):
             raise WorkflowConfigResourcesValidationError(
                 *unavailable_resources,
                 workflow_config_dict,
@@ -784,11 +817,12 @@ def validate_workflow_config_resources_availability(workflow_config: WorkflowCon
                 invalid_integration_tools,
                 missing_integration_tools,
                 unavailable_sub_workflows,
+                invalid_tool_access,
             )
 
         try:
-            line_number_map = extract_line_numbers(workflow_config.yaml_config)
-            workflow_config_dict = yaml.safe_load(workflow_config.yaml_config)
+            line_number_map = extract_line_numbers(line_source_yaml)
+            workflow_config_dict = yaml.safe_load(line_source_yaml)
         except Exception as e:
             # If extraction fails, continue without line numbers
             logger.warning(
@@ -804,4 +838,5 @@ def validate_workflow_config_resources_availability(workflow_config: WorkflowCon
             invalid_integration_tools,
             missing_integration_tools,
             unavailable_sub_workflows,
+            invalid_tool_access,
         )

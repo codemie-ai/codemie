@@ -21,6 +21,7 @@ from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.models.tool import SchemaField, ToolInvokeRequest, ToolInvokeResponse, ToolSchemaResponse
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
+from codemie.service.tools.step_config import get_step_config
 from codemie.service.tools.tools_info_service import ToolsInfoService
 from codemie.service.tools.tool_execution_service import ToolExecutionService
 from codemie.service.tools.discovery import ToolDiscoveryService
@@ -99,7 +100,12 @@ async def get_tool_schema(
         for field_name, field_info in formatted_schema.args_schema.items()
     }
 
-    return ToolSchemaResponse(tool_name=tool_name, creds_schema=creds_schema, args_schema=args_schema)
+    return ToolSchemaResponse(
+        tool_name=tool_name,
+        creds_schema=creds_schema,
+        args_schema=args_schema,
+        step_config=get_step_config(tool_name),
+    )
 
 
 @router.post(

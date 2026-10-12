@@ -57,6 +57,7 @@ from codemie.core.workflow_models.workflow_config import WorkflowMode
 from codemie.rest_api.models.guardrail import GuardrailAssignmentItem, GuardrailEntity
 from codemie.rest_api.routers.utils import raise_access_denied, raise_forbidden, run_in_thread_pool, raise_not_found
 from codemie.workflows.validation.resources import collect_consumer_slot_integration_warnings
+from codemie.workflows.validation.tool_access import collect_tool_access_owner_integration_warnings
 from codemie.rest_api.security.authentication import authenticate, project_access_check
 from codemie.rest_api.security.user import User
 from codemie.rest_api.models.workflow_generator import (
@@ -155,6 +156,8 @@ def _rewrite_yaml_config_from_objects(workflow_config: WorkflowConfig) -> None:
     custom_nodes_changed = _patch_model_ids_in_yaml(original, "custom_nodes", workflow_config.custom_nodes)
 
     if assistants_changed or custom_nodes_changed:
+        if workflow_config._source_yaml_config is None:
+            workflow_config._source_yaml_config = workflow_config.yaml_config  # validation errors point at this text
         workflow_config.yaml_config = yaml.safe_dump(original, sort_keys=False)
 
 
@@ -229,23 +232,35 @@ async def _run_pre_persist_update_validation(
         ) from e
 
 
-def _consumer_slot_warnings_sync(workflow_config: WorkflowConfig, user: User) -> list[dict[str, object]]:
-    """Collect the advisory slot warnings for an already-saved workflow.
+def _consumer_slot_warnings_sync(
+    workflow_config: WorkflowConfig, user: User, treat_as_global: bool = False
+) -> list[dict[str, object]]:
+    """Collect the advisory warnings for an already-saved workflow.
 
     Failures stay here: the workflow is already stored at this point, so a broken advisory must
     never turn a successful save into an error the client would read as "nothing was saved".
+    ``treat_as_global`` is the proposed global state, used by the script-step owner warning.
     """
+    warnings: list[dict[str, object]] = []
     try:
-        return collect_consumer_slot_integration_warnings(workflow_config, user)
+        warnings.extend(collect_consumer_slot_integration_warnings(workflow_config, user))
     except Exception as e:
         logger.warning(f"Failed to collect consumer slot warnings for a saved workflow: {e}")
-        return []
+    try:
+        warnings.extend(
+            collect_tool_access_owner_integration_warnings(workflow_config, treat_as_global=treat_as_global)
+        )
+    except Exception as e:
+        logger.warning(f"Failed to collect script step warnings for a saved workflow: {e}")
+    return warnings
 
 
-async def _consumer_slot_warnings(workflow_config: WorkflowConfig, user: User) -> list[dict[str, object]]:
+async def _consumer_slot_warnings(
+    workflow_config: WorkflowConfig, user: User, treat_as_global: bool = False
+) -> list[dict[str, object]]:
     """Same, for async handlers: collecting reads assistants and integrations, so keep it off the
     event loop."""
-    return await asyncio.to_thread(_consumer_slot_warnings_sync, workflow_config, user)
+    return await asyncio.to_thread(_consumer_slot_warnings_sync, workflow_config, user, treat_as_global)
 
 
 @router.get(
@@ -554,7 +569,9 @@ def _persist_and_finalize_new_workflow(
         return {
             "message": "Workflow created successfully",
             "data": workflow_config,
-            "warnings": _consumer_slot_warnings_sync(workflow_config, user),
+            "warnings": _consumer_slot_warnings_sync(
+                workflow_config, user, treat_as_global=bool(workflow_config.is_global)
+            ),
         }
     except SQLAlchemyError as e:
         raise ExtendedHTTPException(
@@ -665,6 +682,7 @@ async def update_workflow(
 
     updated_config.id = workflow_id
     logger.debug(f"Update workflow. Request: {request}")
+    was_global = bool(workflow.is_global)  # the request carries no is_global; the stored state decides
     await _run_pre_persist_update_validation(
         workflow, updated_config, user, error_format, request.guardrail_assignments
     )
@@ -691,7 +709,9 @@ async def update_workflow(
         return {
             "message": "Workflow updated successfully",
             "data": updated_workflow,
-            "warnings": await _consumer_slot_warnings(updated_config, user),
+            "warnings": await _consumer_slot_warnings(
+                updated_config, user, treat_as_global=was_global or bool(updated_config.is_global)
+            ),
         }
     except (ValidationException, NotFoundException):
         raise
@@ -757,7 +777,9 @@ async def validate_workflow(
 
     await _run_pre_persist_update_validation(workflow, proposed, user, error_format, request.guardrail_assignments)
 
-    warnings = await _consumer_slot_warnings(proposed, user)
+    warnings = await _consumer_slot_warnings(
+        proposed, user, treat_as_global=bool(workflow.is_global) or bool(proposed.is_global)
+    )
     return ValidateWorkflowResponse(message="Workflow configuration is valid", warnings=warnings)
 
 

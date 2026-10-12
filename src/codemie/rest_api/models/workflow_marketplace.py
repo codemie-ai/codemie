@@ -40,3 +40,4 @@ class WorkflowPublishValidationResponse(BaseModel):
     message: str
     inline_credentials: list[InlineCredential]
     workflow_id: str
+    warnings: list[dict[str, object]] = Field(default_factory=list)

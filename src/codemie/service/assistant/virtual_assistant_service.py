@@ -27,6 +27,7 @@ from codemie.rest_api.models.index import IndexInfo
 from codemie.core.workflow_models import WorkflowAssistant, WorkflowTool
 from codemie.rest_api.security.user import User
 from codemie.service.tools.tool_service import ToolsService
+from codemie_tools.base.tool_registry import takes_tool_access
 
 
 VIRTUAL_ASSISTANT_PREFIX = "Virtual"
@@ -68,14 +69,42 @@ class VirtualAssistantService:
         project_name: str,
         execution_id: str,
         owner_user_id: str | None = None,
+        is_global: bool = False,
+        created_by_user_id: str | None = None,
     ) -> "VirtualAssistant":
-        toolkit_details = ToolsService.get_toolkit_from_workflow_tool_config(
-            tool_config, user, project_name, owner_user_id=owner_user_id
-        )
+        """The temporary assistant of a tool step: the toolkit of the step's tool, and, for a tool that takes
+        ``tool_access``, one toolkit per tool listed there (the way a workflow assistant lists its tools)."""
+        toolkits = [
+            ToolsService.get_toolkit_from_workflow_tool_config(
+                tool_config, user, project_name, owner_user_id=owner_user_id
+            )
+        ]
+        if takes_tool_access(tool_config.tool):
+            toolkits.extend(
+                ToolsService.get_toolkits_for_tool_access(
+                    tool_config.tool,
+                    tool_config.tool_access,
+                    user,
+                    project_name,
+                    owner_user_id=cls._tool_access_owner(tool_config, is_global, created_by_user_id),
+                )
+            )
 
-        return VirtualAssistantService.create(
-            toolkits=[toolkit_details], project=project_name, execution_id=execution_id, is_tool_step=True
-        )
+        return VirtualAssistantService.create(toolkits=toolkits, project=project_name, execution_id=execution_id)
+
+    @staticmethod
+    def _tool_access_owner(tool_config: WorkflowTool, is_global: bool, created_by_user_id: str | None) -> str | None:
+        """Whose integrations a pinned alias of ``tool_access`` is looked up among.
+
+        In a global workflow a pinned alias is the creator's, as for the tools of a workflow assistant; with no known
+        creator it is refused, never looked up among the running user's integrations. Without an alias nothing is
+        looked up here, and the automatic lookup stays with the running user.
+        """
+        if not is_global or not any(entry.integration_alias for entry in tool_config.tool_access or []):
+            return None
+        if not created_by_user_id:
+            raise ValueError("tool_access pins an integration, but the creator of this global workflow is unknown.")
+        return created_by_user_id
 
     @classmethod
     def create_from_tool_invocation(

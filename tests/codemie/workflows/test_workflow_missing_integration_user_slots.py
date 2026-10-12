@@ -197,3 +197,78 @@ def test_no_warning_when_the_author_pinned_the_slot():
         ),
     ):
         assert collect_consumer_slot_integration_warnings(workflow_config, MagicMock()) == []
+
+
+def test_consumer_slot_warning_carries_kind_and_keeps_its_shape():
+    from codemie.workflows.validation.resources import collect_consumer_slot_integration_warnings
+
+    workflow_config, assistant_ref = _workflow_ref()
+    workflow_config.assistants = [assistant_ref]
+    db_assistant = _assistant_with("generic_confluence_tool", pinned=False, auto=True)
+
+    with (
+        patch("codemie.workflows.validation.resources._load_referenced_assistant", return_value=db_assistant),
+        patch(
+            "codemie.workflows.validation.resources._safely_collect_missing_integrations",
+            return_value=[_missing("generic_confluence_tool")],
+        ),
+    ):
+        warnings = collect_consumer_slot_integration_warnings(workflow_config, MagicMock())
+
+    assert warnings == [
+        {
+            "kind": "consumer_slot",
+            "assistant_ref": "assistant_1",
+            "tool_name": "generic_confluence_tool",
+            "credential_type": "Confluence",
+        }
+    ]
+
+
+def _script_workflow(access):
+    from codemie.core.workflow_models.workflow_models import WorkflowAssistantTool
+
+    tool = MagicMock()
+    tool.id = "script_tool"
+    tool.tool = "execute_workspace_script"
+    tool.tool_access = [WorkflowAssistantTool(name=n, integration_alias=a) for n, a in access]
+    state = MagicMock()
+    state.id = "step-1"
+    state.tool_id = "script_tool"
+    workflow_config = MagicMock()
+    workflow_config.tools = [tool]
+    workflow_config.states = [state]
+    workflow_config.is_global = False
+    return workflow_config
+
+
+def test_tool_access_owner_integration_warning_for_proposed_global():
+    from codemie.workflows.validation.tool_access import collect_tool_access_owner_integration_warnings
+
+    config = _script_workflow([("jira_tool", "work"), ("git_tool", None)])
+
+    warnings = collect_tool_access_owner_integration_warnings(config, treat_as_global=True)
+
+    assert len(warnings) == 1
+    item = warnings[0]
+    assert item["kind"] == "tool_access_owner_integration"
+    assert item["step_id"] == "step-1"
+    assert item["tool_name"] == "jira_tool"
+    assert item["integration_alias"] == "work"
+    assert "author" in item["message"]
+
+
+def test_tool_access_owner_integration_warning_absent_when_not_global():
+    from codemie.workflows.validation.tool_access import collect_tool_access_owner_integration_warnings
+
+    config = _script_workflow([("jira_tool", "work")])
+
+    assert collect_tool_access_owner_integration_warnings(config, treat_as_global=False) == []
+
+
+def test_tool_access_owner_integration_warning_absent_without_aliases():
+    from codemie.workflows.validation.tool_access import collect_tool_access_owner_integration_warnings
+
+    config = _script_workflow([("jira_tool", None)])
+
+    assert collect_tool_access_owner_integration_warnings(config, treat_as_global=True) == []

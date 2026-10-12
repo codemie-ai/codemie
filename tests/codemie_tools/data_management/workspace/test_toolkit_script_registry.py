@@ -21,15 +21,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from langchain_core.tools import BaseTool
 
 from codemie.core.models import AssistantChatRequest
 from codemie.rest_api.models.assistant import Assistant, VirtualAssistant
 from codemie.rest_api.security.user import User
 from codemie.service.agent_workspace_service import AgentWorkspaceService
-from codemie.service.script_tool_calls.authorizer import authorize_tool_call
 from codemie.service.script_tool_calls.context import (
-    ProjectScope,
     ScriptRunContext,
     ScriptScopeKind,
     ScriptToolRegistry,
@@ -53,16 +50,13 @@ def _assistant(project: str = "proj") -> Assistant:
     return Assistant(name="assistant", description="d", system_prompt="p", project=project)
 
 
-def _virtual_assistant(
-    execution_id: str | None, project: str = "wf-project", is_tool_step: bool = False
-) -> VirtualAssistant:
+def _virtual_assistant(execution_id: str | None, project: str = "wf-project") -> VirtualAssistant:
     return VirtualAssistant(
         name="virtual",
         description="d",
         system_prompt="p",
         project=project,
         execution_id=execution_id,
-        is_tool_step=is_tool_step,
     )
 
 
@@ -99,16 +93,6 @@ def test_no_assistant_or_regular_assistant_is_assistant_scope(assistant: Assista
     assert isinstance(context.scope, ToolListScope)
 
 
-def test_tool_step_virtual_assistant_is_workflow_scope_in_its_project() -> None:
-    assistant = _virtual_assistant("exec-1", is_tool_step=True)
-
-    context = _filled_context(_script_registry(assistant))
-
-    assert context.scope_kind is ScriptScopeKind.WORKFLOW
-    assert isinstance(context.scope, ProjectScope)
-    assert context.scope.project == "wf-project"
-
-
 @pytest.mark.parametrize("execution_id", [None, "", "exec-1"])
 def test_virtual_assistant_that_is_not_a_tool_step_is_assistant_scope(execution_id: str | None) -> None:
     """An inline workflow assistant node carries the run's execution id but is not a bare tool step."""
@@ -118,18 +102,6 @@ def test_virtual_assistant_that_is_not_a_tool_step_is_assistant_scope(execution_
 
     assert context.scope_kind is ScriptScopeKind.ASSISTANT
     assert isinstance(context.scope, ToolListScope)
-
-
-def test_tool_step_marker_survives_the_assistant_union_of_the_toolkit() -> None:
-    toolkit = AgentWorkspaceToolkit(
-        conversation_id="conversation-1",
-        user=User(id="user-1", auth_token=None),
-        assistant=_virtual_assistant("exec-1", is_tool_step=True),
-        image_generator=MagicMock(),
-    )
-
-    assert isinstance(toolkit.assistant, VirtualAssistant)
-    assert toolkit.assistant.is_tool_step is True
 
 
 def _bare_step_toolkit_registry(
@@ -145,36 +117,6 @@ def _bare_step_toolkit_registry(
     script_tool = next(tool for tool in toolkit.get_tools() if isinstance(tool, ExecuteWorkspaceScriptTool))
     assert script_tool.script_registry is not None
     return script_tool.script_registry
-
-
-def test_bare_workflow_step_gets_workflow_scope_without_toolkit_service_binding() -> None:
-    """A bare workflow tool step never reaches ToolkitService.get_tools, so its registry is never filled."""
-    registry = _bare_step_toolkit_registry(_virtual_assistant("exec-1", is_tool_step=True))
-
-    context = registry.context()
-
-    assert context.scope_kind is ScriptScopeKind.WORKFLOW
-    assert isinstance(context.scope, ProjectScope)
-    assert context.scope.project == "wf-project"
-    assert context.scope.callable_tools() is None, "the whole catalog is resolved by name, never listed"
-
-
-def test_bare_workflow_step_script_resolves_tools_by_name_in_the_workflow_project() -> None:
-    registry = _bare_step_toolkit_registry(_virtual_assistant("exec-1", is_tool_step=True))
-    resolved = MagicMock(spec=BaseTool)
-    resolved.name = "some_platform_tool"
-    resolved.script_callable = True  # a tool that opted in; the exclusion rules read the flag
-    resolver = MagicMock(return_value=resolved)
-    context = registry.context()
-    assert isinstance(context.scope, ProjectScope)
-    context.scope._resolver = resolver
-
-    tool = authorize_tool_call(context, "some_platform_tool")
-
-    assert tool is resolved
-    resolver.assert_called_once()
-    _, project, name = resolver.call_args.args
-    assert (project, name) == ("wf-project", "some_platform_tool")
 
 
 def test_request_supplied_workflow_execution_id_gains_no_workflow_scope() -> None:

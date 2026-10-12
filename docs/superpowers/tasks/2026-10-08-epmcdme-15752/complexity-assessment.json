@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "task": "Add a per-step tool map (tool to allowed integration aliases) and optional integration_alias on script tool calls, enforced in the workflow scope, with save-time validation and a publish warning.",
+  "generated": "2026-10-08T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 22,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Touches handler, authorizer, three scope resolve signatures, WorkflowToolResolver, resolve_workflow_tool, the ToolNode/VirtualAssistantService/AgentWorkspaceToolkit/ScriptToolRegistry plumbing, the WorkflowTool model, validation and router warnings, plus SDK. The step config has no path into the scope today, so a new carrier is needed." },
+    { "dimension": "technical_risk", "reason": "Security-sensitive: a script-supplied alias must never reach the creator's account unless listed. No exact precedent; the closest is ToolNode._owner_user_id and find_setting_for_tool, but the resolver build path lacks an owner id. ProjectScope swallows resolver errors into tool_unavailable, which conflicts with bad_arguments. The AC enumerates many edge cases with no existing parameterized template for them." },
+    { "dimension": "file_change_estimate", "reason": "About 12-15 source files (SDK, reference md, handler, authorizer, context, workflow_resolution, toolkit, virtual_assistant_service, tool_node, tool_service, workflow_models, validation/resources, router) plus 2 docs and many tests, across several directories." },
+    { "dimension": "affected_layers", "reason": "SDK/protocol, service, workflow model and persistence of the new field, API router warnings, and the settings/credential integration. The persistence format is not verified, and no UI work is in this repository." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk raised: affects authorization of tool calls and the creator's integration credentials",
+    "Component Scope raised: touches the shared script tool-call scope contract (callable_tools flips from the whole catalog to a listed set)"
+  ],
+  "split_recommendation": null
+}

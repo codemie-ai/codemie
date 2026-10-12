@@ -1,0 +1,85 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15752_script-step-tool-map",
+  "head": "5b89aed34ec8e5fc8c23947022bc4d786ea06668",
+  "runner": "poetry",
+  "started_at": "2026-10-08T12:33:00Z",
+  "completed_at": "2026-10-08T12:40:00Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 0,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 0,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 0,
+      "command": "make license-check",
+      "exit_code": 0,
+      "notes": "2444 files checked, 0 missing"
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 0,
+      "command": "make gitleaks",
+      "exit_code": 2,
+      "notes": "gitleaks dir: 4 private-key findings, all filesystem-only (re-run after overwriting gate-run.json). 2 in gitignored untracked .kube-local/kubeconfig.yaml and kubeconfig-internal.yaml (on disk, not in any branch commit); 2 in untracked run artifact code-review.diff quoting the same key. None in tracked source."
+    },
+    {
+      "id": "gitleaks-history",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 0,
+      "command": "gitleaks git --log-opts=e55bea30..HEAD",
+      "exit_code": 0,
+      "notes": "12 commits scanned, no leaks found. Branch commits are clean after history rewrite. (Full-repo history scan reports 180 findings, pre-existing in main history, out of scope.)"
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 0,
+      "command": "make test",
+      "exit_code": 0,
+      "notes": "19514 passed, 174 skipped"
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make sonar-local",
+      "exit_code": 0,
+      "notes": "Needs Sonar server/token and network; not run locally. Owed to pre-push hook."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "exit_code": 0,
+      "notes": "Only required when opening an MR; needs docker stack and fixtures."
+    }
+  ],
+  "failures": {
+    "gitleaks": "gitleaks dir scan: leaks found: 4 (private-key rule). Files: .kube-local/kubeconfig.yaml, .kube-local/kubeconfig-internal.yaml (gitignored, on disk only); run_dir code-review.diff (2). Key material omitted deliberately."
+  }
+}

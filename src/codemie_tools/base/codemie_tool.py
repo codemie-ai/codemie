@@ -87,6 +87,11 @@ class CodeMieTool(BaseTool):
 
     # Opt-in for workspace scripts: a tool is callable through the bridge only when its class sets this to True.
     script_callable: ClassVar[bool] = False
+    # Names of the extra workflow step fields a step with this tool takes (see codemie.service.tools.step_config).
+    step_config_fields: ClassVar[tuple[str, ...]] = ()
+    # A tool that takes ``tool_access`` (other tools made available to it, e.g. the script tool) names here the class
+    # flag, such as ``"script_callable"``, that a tool must carry to be listed there; ``None``: it lists no tools.
+    tool_access_filter: ClassVar[str | None] = None
 
     @classmethod
     def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:

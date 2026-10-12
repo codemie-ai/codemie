@@ -156,6 +156,7 @@ class Tool(BaseModel):
     settings_config: Optional[bool] = False
     description: Optional[str] = None
     user_description: Optional[str] = None
+    script_callable: bool = False
     config_class: Optional[Any] = Field(default=None, exclude=True)
     tool_class: Optional[Any] = Field(default=None, exclude=True)
 

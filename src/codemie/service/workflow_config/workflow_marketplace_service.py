@@ -69,7 +69,7 @@ class WorkflowMarketplaceService:
 
         if inline_credentials:
             message = (
-                "Workflow contains inline credentials in MCP servers or assistant toolkits "
+                "Workflow contains inline credentials in MCP servers, assistant toolkits or script steps "
                 "that will be shared with all users. Please confirm that you want to publish it."
             )
         else:

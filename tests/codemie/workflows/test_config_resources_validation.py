@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import pytest
+import yaml
 from unittest.mock import patch, MagicMock
 
 from codemie.core.workflow_models import WorkflowTool
@@ -947,3 +948,228 @@ def test_validate_sub_workflow_availability_access_denied(mock_workflow_config_w
         result = _validate_sub_workflow_availability(mock_workflow_config_with_id, mock_user)
     assert len(result) == 1
     assert "not found or access denied" in result[0][2]
+
+
+# ---- tool_access save-time validation ----
+
+_RES = "codemie.workflows.validation.resources"
+_SCRIPT = "codemie.workflows.validation.tool_access"
+
+
+def _script_config(access, tool_name="execute_workspace_script", created_by="creator-1"):
+    from codemie.core.workflow_models.workflow_models import WorkflowAssistantTool
+
+    config = MagicMock()
+    config.project = "proj"
+    config.created_by = MagicMock(user_id=created_by) if created_by else None
+    config.tools = [
+        WorkflowTool(
+            id="script_tool",
+            tool=tool_name,
+            tool_access=[WorkflowAssistantTool(name=n, integration_alias=a) for n, a in access],
+        )
+    ]
+    config.states = [MagicMock(id="step_1", tool_id="script_tool")]
+    return config
+
+
+@pytest.fixture
+def script_env():
+    from codemie_tools.base.models import CredentialTypes
+
+    setting = MagicMock()
+    setting.credential_type = CredentialTypes.JIRA
+    with (
+        patch(f"{_RES}.ToolsService.find_toolkit_for_tool", return_value={"toolkit": "Jira"}) as toolkit,
+        patch(f"{_SCRIPT}.can_be_listed_for", return_value=True) as callable_tool,
+        patch(f"{_RES}.ToolsService.find_setting_for_tool", return_value=setting) as find_setting,
+        patch(f"{_SCRIPT}.ToolMetadataService.requires_credentials", return_value=True),
+        patch(f"{_SCRIPT}.ToolMetadataService.get_config_class", return_value=object),
+        patch(f"{_SCRIPT}.ToolMetadataService.get_credential_type", return_value="Jira"),
+    ):
+        yield MagicMock(toolkit=toolkit, callable_tool=callable_tool, find_setting=find_setting, setting=setting)
+
+
+def test_tool_access_valid_map_passes(script_env, mock_user):
+    from codemie.workflows.validation.tool_access import validate_tool_access
+
+    config = _script_config([("jira_tool", "a1")])
+    assert validate_tool_access(config, mock_user) == []
+    script_env.find_setting.assert_called_once_with(
+        user=mock_user, project_name="proj", integration_alias="a1", owner_user_id="creator-1"
+    )
+
+
+def test_tool_access_on_other_tool_is_refused_naming_step(script_env, mock_user):
+    from codemie.workflows.validation.tool_access import validate_tool_access
+
+    config = _script_config([("jira_tool", "a1")], tool_name="other_tool")
+    errors = validate_tool_access(config, mock_user)
+    assert len(errors) == 1
+    assert "step_1" in errors[0].message
+    assert "other_tool" in errors[0].message
+
+
+def test_tool_access_unknown_tool_refused(script_env, mock_user):
+    from codemie.workflows.validation.tool_access import validate_tool_access
+
+    script_env.toolkit.side_effect = ValueError("nope")
+    errors = validate_tool_access(_script_config([("ghost", None)]), mock_user)
+    assert len(errors) == 1 and "ghost" in errors[0].message
+
+
+def test_tool_access_non_callable_tool_refused(script_env, mock_user):
+    from codemie.workflows.validation.tool_access import validate_tool_access
+
+    script_env.callable_tool.return_value = False
+    errors = validate_tool_access(_script_config([("jira_tool", None)]), mock_user)
+    assert len(errors) == 1 and "jira_tool" in errors[0].message
+
+
+def test_tool_access_missing_alias_refused(script_env, mock_user):
+    from codemie.workflows.validation.tool_access import validate_tool_access
+
+    script_env.find_setting.side_effect = ValueError("not found")
+    errors = validate_tool_access(_script_config([("jira_tool", "gone")]), mock_user)
+    assert len(errors) == 1
+    assert "jira_tool" in errors[0].message and "gone" in errors[0].message
+
+
+def test_tool_access_mismatched_credential_type_refused(script_env, mock_user):
+    from codemie.workflows.validation.tool_access import validate_tool_access
+    from codemie_tools.base.models import CredentialTypes
+
+    script_env.setting.credential_type = CredentialTypes.CONFLUENCE
+    errors = validate_tool_access(_script_config([("jira_tool", "a1")]), mock_user)
+    assert len(errors) == 1
+    assert "jira_tool" in errors[0].message and "a1" in errors[0].message
+
+
+def test_tool_access_credentialless_tool_with_alias_refused(script_env, mock_user):
+    from codemie.workflows.validation.tool_access import validate_tool_access
+
+    with patch(f"{_SCRIPT}.ToolMetadataService.requires_credentials", return_value=False):
+        errors = validate_tool_access(_script_config([("jira_tool", "a1")]), mock_user)
+    assert len(errors) == 1
+    assert "jira_tool" in errors[0].message and "a1" in errors[0].message
+
+
+def test_tool_access_undeterminable_type_skips_with_warning(script_env, mock_user):
+    from codemie.workflows.validation.tool_access import validate_tool_access
+
+    with (
+        patch(f"{_SCRIPT}.ToolMetadataService.get_credential_type", return_value=None),
+        patch(f"{_SCRIPT}.logger") as log,
+    ):
+        errors = validate_tool_access(_script_config([("jira_tool", "a1")]), mock_user)
+    assert errors == []
+    log.warning.assert_called_once()
+
+
+def test_tool_access_errors_refuse_the_save(script_env, mock_user):
+    script_env.find_setting.side_effect = ValueError("not found")
+    config = _script_config([("jira_tool", "gone")])
+    config.assistants = []
+    config.yaml_config = None
+    with (
+        patch(f"{_RES}._validate_assistants_availability", return_value=[]),
+        patch(f"{_RES}._validate_tools_avaiability", return_value=[]),
+        patch(f"{_RES}._validate_tools_from_assistants_availability", return_value=([], [], [])),
+        patch(f"{_RES}._validate_referenced_assistants_integrations", return_value=[]),
+        patch(f"{_RES}._validate_datasources_availability", return_value=[]),
+        patch(f"{_RES}._validate_sub_workflow_availability", return_value=[]),
+        pytest.raises(WorkflowConfigResourcesValidationError) as exc,
+    ):
+        validate_workflow_config_resources_availability(config, mock_user)
+    assert "gone" in str(exc.value)
+    details = [e["details"] for e in exc.value.to_dict()["errors"]]
+    assert any("gone" in d and "jira_tool" in d for d in details)
+
+
+def test_tool_access_errors_carry_the_row_path(script_env, mock_user):
+    from codemie.workflows.validation.tool_access import validate_tool_access
+
+    script_env.find_setting.side_effect = [script_env.setting, ValueError("not found")]
+    config = _script_config([("a_tool", "ok"), ("jira_tool", "gone")])
+    [error] = validate_tool_access(config, mock_user)
+    assert error.path == "tool_access.1.integration_alias"
+    assert error.state_id == "step_1"
+    assert error.tool_id == "script_tool"
+
+
+def test_tool_access_tool_level_problem_points_at_the_name(script_env, mock_user):
+    from codemie.workflows.validation.tool_access import validate_tool_access
+
+    script_env.callable_tool.side_effect = [True, False]
+    [error] = validate_tool_access(_script_config([("a_tool", None), ("tavily", None)]), mock_user)
+    assert error.path == "tool_access.1.name"
+    assert "is not allowed in tool_access" in error.message
+
+
+def test_tool_access_duplicate_name_is_refused_in_the_common_format(script_env, mock_user):
+    from codemie.workflows.validation.tool_access import validate_tool_access
+
+    [error] = validate_tool_access(_script_config([("jira_tool", None), ("jira_tool", "a1")]), mock_user)
+    assert error.path == "tool_access.1.name"
+    assert "more than once" in error.message and "jira_tool" in error.message
+    assert error.state_id == "step_1"
+
+
+def test_tool_access_error_line_points_at_the_entry_in_the_tools_section(mock_user):
+    from codemie.workflows.validation.resources import (
+        ToolAccessProblem,
+        WorkflowConfigResourcesValidationError,
+    )
+    from codemie.workflows.validation.line_lookup import extract_line_numbers
+
+    yaml_text = (
+        "states:\n"
+        "  - id: step_1\n"
+        "    tool_id: script_tool\n"
+        "tools:\n"
+        "  - id: script_tool\n"
+        "    tool: execute_workspace_script\n"
+        "    tool_access:\n"
+        "      - name: a_tool\n"
+        "      - name: dup\n"
+        "        integration_alias: one\n"
+    )
+    error = WorkflowConfigResourcesValidationError(
+        [],
+        [],
+        [],
+        [],
+        yaml.safe_load(yaml_text),
+        extract_line_numbers(yaml_text),
+        [],
+        invalid_tool_access=[
+            ToolAccessProblem("script_tool", "m", "step_1", "tool_access.1.integration_alias"),
+            ToolAccessProblem("script_tool", "n", "step_1", "tool_access.0.name"),
+        ],
+    )
+    lines = [e["config_line"] for e in error.to_dict()["errors"]]
+    assert lines == [10, 8]
+
+
+def test_resource_error_lines_follow_the_source_yaml_not_the_rewritten_one(mock_user):
+    from codemie.workflows.validation.resources import validate_workflow_config_resources_availability
+
+    source = "tools:\n- id: script_tool\n  tool: execute_workspace_script\n  tool_access:\n  - name: ghost\n"
+    config = _script_config([("ghost", None)])
+    config.assistants = []
+    config._source_yaml_config = source
+    config.yaml_config = "x: 1\n" * 30 + source  # the rewritten text puts the entry 30 lines further down
+    with (
+        patch(f"{_RES}._validate_assistants_availability", return_value=[]),
+        patch(f"{_RES}._validate_tools_avaiability", return_value=[]),
+        patch(f"{_RES}._validate_tools_from_assistants_availability", return_value=([], [], [])),
+        patch(f"{_RES}._validate_referenced_assistants_integrations", return_value=[]),
+        patch(f"{_RES}._validate_datasources_availability", return_value=[]),
+        patch(f"{_RES}._validate_sub_workflow_availability", return_value=[]),
+        patch(f"{_RES}.ToolsService.find_toolkit_for_tool", side_effect=ValueError("nope")),
+        pytest.raises(WorkflowConfigResourcesValidationError) as exc,
+    ):
+        validate_workflow_config_resources_availability(config, mock_user)
+    [error] = exc.value.to_dict()["errors"]
+    assert error["path"] == "tool_access.0.name"
+    assert error["config_line"] == 5

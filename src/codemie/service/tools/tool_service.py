@@ -14,13 +14,15 @@
 
 import operator
 from functools import reduce
+from collections.abc import Iterable
 from typing import Dict, List, Optional
 
 from codemie_tools.base.models import ToolSet
+from codemie_tools.base.tool_registry import can_be_listed_for
 
 from codemie.configs import logger
 from codemie.core.models import AssistantChatRequest
-from codemie.core.workflow_models import WorkflowAssistant, WorkflowTool
+from codemie.core.workflow_models import WorkflowAssistant, WorkflowAssistantTool, WorkflowTool
 from codemie.rest_api.models.assistant import Assistant, ToolDetails, ToolKitDetails
 from codemie.rest_api.models.settings import SettingsBase
 from codemie.rest_api.security.user import User
@@ -40,10 +42,46 @@ class ToolsService:
         project_name: str,
         owner_user_id: str | None = None,
     ) -> list[ToolKitDetails]:
+        return cls.get_toolkits_from_tools(config.tools, user, project_name, owner_user_id=owner_user_id)
+
+    @classmethod
+    def get_toolkits_from_tools(
+        cls,
+        tools: Iterable[WorkflowAssistantTool],
+        user: User,
+        project_name: str,
+        owner_user_id: str | None = None,
+    ) -> list[ToolKitDetails]:
+        """One toolkit per listed tool; an alias pins the integration (looked up for ``owner_user_id`` when given)."""
         return [
             cls.get_toolkit(tool.name, user, project_name, tool.integration_alias, owner_user_id=owner_user_id)
-            for tool in config.tools
+            for tool in tools
         ]
+
+    @classmethod
+    def get_toolkits_for_tool_access(
+        cls,
+        host_tool: str,
+        tool_access: Iterable[WorkflowAssistantTool] | None,
+        user: User,
+        project_name: str,
+        owner_user_id: str | None = None,
+    ) -> list[ToolKitDetails]:
+        """Toolkits of the tools a step lists in ``tool_access``, built like the tools of a workflow assistant.
+
+        The tool of the step (``host_tool``) names the filter a listed tool must pass (``tool_access_filter``); a tool
+        that does not pass is never built. A name listed twice is dropped too. Save validation refuses both, so one
+        that got here (import, direct write) is ambiguous or not allowed and must not widen the step's tools.
+        """
+        entries = list(tool_access or [])
+        names = [entry.name for entry in entries]
+        accepted = []
+        for entry in entries:
+            if names.count(entry.name) > 1 or not can_be_listed_for(host_tool, entry.name):
+                logger.warning(f"Tool '{entry.name}' is not allowed in tool_access of '{host_tool}'; it is left out.")
+                continue
+            accepted.append(entry)
+        return cls.get_toolkits_from_tools(accepted, user, project_name, owner_user_id=owner_user_id)
 
     @classmethod
     def get_toolkit_from_workflow_tool_config(
@@ -115,6 +153,46 @@ class ToolsService:
                 tools = toolkits[toolkit_name](assistant, user, '', '', AssistantChatRequest(**request_kwargs))
 
         return cls.find_tool(tool_config.tool, tools)
+
+    @classmethod
+    def find_tool_with_access(
+        cls,
+        tool_config: WorkflowTool,
+        assistant: Assistant,
+        user: User,
+        execution_id: str,
+        request_headers: dict[str, str] | None = None,
+    ):
+        """Build the tool of a step that takes ``tool_access`` together with the tools it lists.
+
+        ``assistant`` carries the toolkit of the step's tool and one toolkit per listed tool. They are assembled the way
+        the tools of an assistant are (``ToolkitService.get_tools``), and the tool sees exactly the listed tools: the
+        assembled list is cut to the names of those toolkits before it is handed to the tool, so nothing the assembly
+        adds on its own is reachable.
+        """
+        from codemie.service.script_tool_calls.binding import bind_script_registries
+        from codemie.service.tools import ToolkitService
+
+        request = AssistantChatRequest(
+            conversation_id=execution_id,
+            text="",
+            workflow_execution_id=execution_id,
+            tools_config=[config for toolkit in assistant.toolkits for config in toolkit.get_tool_configs()],
+        )
+        tools = ToolkitService.get_tools(
+            assistant=assistant,
+            request=request,
+            user=user,
+            llm_model=assistant.llm_model_type or "",
+            request_uuid=execution_id,
+            exclude_extra_context_tools=True,
+            request_headers=request_headers,
+        )
+        names = {tool.name for toolkit in assistant.toolkits for tool in toolkit.tools}
+        step_tools = [tool for tool in tools if tool.name in names]
+        # get_tools bound the registries to its whole list; bind again to the cut one.
+        bind_script_registries(step_tools, assistant)
+        return cls.find_tool(tool_config.tool, step_tools)
 
     @classmethod
     def find_tool_by_invoke_request(
