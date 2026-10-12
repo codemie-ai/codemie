@@ -221,7 +221,7 @@ class ToolkitSettingService:
         if file_config:
             configs["root_directory"] = file_config.root_directory
             configs["activate_command"] = file_config.activate_command
-        chat_model = get_llm_by_credentials(llm_model=llm_model, request_id=request_uuid)
+        chat_model = get_llm_by_credentials(llm_model=llm_model, request_id=request_uuid, fallback_to_default=True)
         return FileSystemToolkit.get_toolkit(
             configs=configs,
             file_repository=FileRepositoryFactory.get_current_repository(),

@@ -366,6 +366,35 @@ class TestGetFileSystemToolkit:
         assert len(tools) == 1
         mock_find_code_index.assert_called_once_with("test-project", "test-repo")
 
+    @patch('codemie.service.settings.settings.SettingsService')
+    @patch('codemie.service.tools.toolkit_settings_service.get_llm_by_credentials')
+    @patch('codemie.service.tools.toolkit_settings_service.FileSystemToolkit')
+    @patch('codemie.service.tools.toolkit_settings_service.FileRepositoryFactory')
+    def test_get_file_system_toolkit_empty_llm_model_falls_back_to_default(
+        self, mock_file_repo_factory, mock_fs_toolkit, mock_get_llm, mock_settings, mock_assistant, mock_user
+    ):
+        """A workflow Tool-node builds this toolkit with llm_model='' (no model resolved yet).
+
+        get_llm_by_credentials must be told to fall back to the default model instead of
+        raising ModelNotAllowedException for the empty name (regression from EPMCDME-14349).
+        """
+        mock_get_llm.return_value = MagicMock()
+        mock_settings.get_file_system_config.return_value = None
+
+        mock_toolkit_instance = MagicMock()
+        mock_toolkit_instance.get_tools.return_value = [MagicMock()]
+        mock_fs_toolkit.get_toolkit.return_value = mock_toolkit_instance
+
+        ToolkitSettingService.get_file_system_toolkit(
+            assistant=mock_assistant,
+            project_name="test-project",
+            user=mock_user,
+            llm_model="",
+            request_uuid="test-uuid",
+        )
+
+        mock_get_llm.assert_called_once_with(llm_model="", request_id="test-uuid", fallback_to_default=True)
+
 
 class TestImageGenerationModelSelection:
     """Tests for assistant-specific image generation model selection."""
