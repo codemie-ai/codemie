@@ -57,3 +57,16 @@ def test_dimension_hook_types_exclude_skill_dispatch():
     # Only these 13 hook types feed the dimensions.
     assert len(v.DIMENSION_HOOK_TYPES) == 13
     assert v.SKILL_DISPATCH_EVENT not in v.DIMENSION_HOOK_TYPES
+
+
+def test_known_harness_uses_its_override_label():
+    assert v.humanize_harness_name("claude-code") == "Claude Code"
+
+
+def test_unmapped_harness_is_generically_humanized():
+    assert v.humanize_harness_name("gemini_cli-beta") == "Gemini Cli Beta"
+
+
+def test_missing_harness_is_unknown():
+    assert v.humanize_harness_name(None) == "Unknown"
+    assert v.humanize_harness_name("") == "Unknown"

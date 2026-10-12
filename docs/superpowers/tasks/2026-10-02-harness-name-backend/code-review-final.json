@@ -1,0 +1,52 @@
+{
+  "decision": "approve",
+  "rationale": "CR-001 and CR-002 both flagged the same gap on each storage engine's harness-name subquery: ORDER BY <timestamp> ASC LIMIT 1 with no secondary sort key, so a tie on the exact timestamp let LIMIT 1 return either row nondeterministically, flipping harness_name across requests. CR-002 (Postgres, src/codemie/repository/cli_analytics/postgres/reader.py) was fixed in commit 5cb486a8a: ORDER BY ts ASC, resource_id ASC, with a dedicated regression test (test_session_detail_meta_service_name_tiebreak_is_deterministic) confirming the deterministic tiebreak; both still present on this branch. CR-001 (ClickHouse, src/codemie/repository/cli_analytics/clickhouse/reader.py) received the equivalent fix (ORDER BY Timestamp ASC, ServiceName ASC) in the same check round and passed its own regression test at the time (see test.local.log). That fix is now moot: an unrelated upstream change (EPMCDME-15302, 'remove ClickHouse and OTel Collector from CLI Analytics') deleted the entire ClickHouse backend -- src/codemie/repository/cli_analytics/clickhouse/reader.py and its test module no longer exist anywhere in the repository -- and this branch picked up that deletion. There is no ClickHouse code left for the finding to apply to; the only live harness-name query is the already-fixed Postgres one. The other 2 edge-case candidates were already dismissed in the original review as non-issues (hooks live in a separate table from log_events/spans; the vocabulary.py citation pointed at the wrong lines) and standards review (commit-format, code-quality, security) passed with no blocking findings. Acceptance lens still did not run (no story/spec artifact for this task), which caps confidence at low; 0 findings outstanding.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "All commit subjects in range use the documented 'EPMCDME-15326: Description' format (git-workflow.md commit message format), including the CR-001/CR-002 fix-up commit (5cb486a8a) and the follow-up ClickHouse-comment cleanup (9a76650db)."
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "humanize_harness_name uses modern union typing; Field description under Ruff line-length; new logic added to vocabulary.py, the module that already owns harness/service label overrides; no new module exceeds ~500 lines."
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "session_id/search values remain bound as query parameters in the Postgres reader; humanize_harness_name only does dict lookup and string replace, no logging of sensitive values, no injection point introduced."
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "outcome": "no_change_needed",
+      "file": "src/codemie/repository/cli_analytics/clickhouse/reader.py",
+      "line": 608,
+      "title": "Harness-name query lacks deterministic tiebreaker",
+      "problem": "get_session_detail_meta's harness-name subquery selected the session's earliest coding_agent_logs row via ORDER BY Timestamp ASC LIMIT 1 with no secondary sort key, over a DateTime64(9) column.",
+      "impact": "If two distinct raw log rows for the same session shared the exact same Timestamp, ClickHouse gave no guarantee which one LIMIT 1 returned across invocations (merges, replica reads), so harness_name could flip between requests for the same session.",
+      "recommendation": "Fixed at the time (ORDER BY Timestamp ASC, ServiceName ASC) and verified by a passing regression test, but the fix is now moot: EPMCDME-15302 deleted the entire ClickHouse backend (src/codemie/repository/cli_analytics/clickhouse/reader.py and its tests no longer exist in the repo) as unrelated upstream work this branch picked up. No ClickHouse code remains for this finding to apply to; no further action is needed."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "outcome": "fixed",
+      "file": "src/codemie/repository/cli_analytics/postgres/reader.py",
+      "line": 548,
+      "title": "Harness-name query lacks deterministic tiebreaker",
+      "problem": "get_session_detail_meta's h CTE unions log_events and spans for the session and picks the earliest row via ORDER BY ts ASC LIMIT 1, with no secondary sort key.",
+      "impact": "If two rows (within or across log_events/spans) share the exact same ts, Postgres gives no guarantee which one LIMIT 1 returns across invocations, so harness_name could flip between requests for the same session.",
+      "recommendation": "Fixed in commit 5cb486a8a: ORDER BY ts ASC, resource_id ASC makes the row selection deterministic, confirmed present in the current query and covered by test_session_detail_meta_service_name_tiebreak_is_deterministic in tests/codemie/repository/cli_analytics/postgres/test_reader.py."
+    }
+  ]
+}

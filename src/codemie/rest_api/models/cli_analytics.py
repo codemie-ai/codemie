@@ -248,6 +248,9 @@ class LocalAnalyticsSessionDetail(LocalAnalyticsSessionRow):
     tool_calls_success: int = 0
     tools: list[LocalAnalyticsToolWithSuccessRow] = Field(default_factory=list)
     dispatches: list[LocalAnalyticsDispatchRow] = Field(default_factory=list)
+    harness_name: str = Field(
+        ..., description="Resolved display label for the coding harness/client, e.g. 'Claude Code'."
+    )
 
 
 class LocalAnalyticsSessionDetailResponse(BaseModel):

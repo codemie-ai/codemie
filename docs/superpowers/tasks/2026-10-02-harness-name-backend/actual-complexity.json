@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "generated": "2026-10-02T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 18,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 10,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Five components touched end to end: the ClickHouse CliAnalyticsReader (new ServiceName join in get_session_detail_meta), the PostgreSQL CliAnalyticsReader (parallel otel_resources join), the shared vocabulary module (new HARNESS_LABEL_OVERRIDES + humanize_harness_name), the LocalAnalyticsSessionDetail response model (new harness_name field), and LocalAnalyticsHandler (wires humanize_harness_name(meta.get('harness_service_name')) into the response). Spans Persistence, Service and API layers." },
+    { "dimension": "file_change_estimate", "reason": "diffstat reports 10 files changed (145 insertions, 6 deletions); 5 production files plus their matching test files, all modifications of existing files — no new files, no new directories." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L to XL: the change touches codemie/repository/cli_analytics/vocabulary.py, a core shared utility explicitly documented as the single place that maps harness telemetry (span/event names, now also service names) onto canonical kinds, consumed by both the ClickHouse and PostgreSQL readers."
+  ],
+  "split_recommendation": null
+}

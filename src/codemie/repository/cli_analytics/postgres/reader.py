@@ -542,7 +542,14 @@ class PostgresCliAnalyticsReader:
     async def get_session_detail_meta(self, session_id: str) -> Rows:
         return await self._q(
             f"""
-        WITH c AS (SELECT DISTINCT session_id FROM cost_daily WHERE session_id = $sid::text)
+        WITH c AS (SELECT DISTINCT session_id FROM cost_daily WHERE session_id = $sid::text),
+             h AS (
+                 SELECT session_id, resource_id, ts FROM log_events WHERE session_id = $sid::text
+                 UNION ALL
+                 SELECT session_id, resource_id, ts FROM spans WHERE session_id = $sid::text
+                 ORDER BY ts ASC, resource_id ASC
+                 LIMIT 1
+             )
         SELECT c.session_id,
                coalesce(nullif(coalesce(nullif(d.jwt_email, ''), nullif(d.dev_name_max, '')), ''),
                         nullif(CASE WHEN d.started_at IS NOT NULL THEN d.developer_name END, ''),
@@ -552,8 +559,12 @@ class PostgresCliAnalyticsReader:
                nullif(d.project_name, '')                                             AS project_name,
                nullif(d.first_prompt, '')                                             AS prompt,
                coalesce(d.started_at, {_EPOCH})                                       AS started_at,  -- or 1970-01-01
-               coalesce({_ms("d.last_event_at")} - {_ms("d.started_at")}, 0)          AS duration_ms
-        FROM c LEFT JOIN session_dims d ON d.session_id = c.session_id""",
+               coalesce({_ms("d.last_event_at")} - {_ms("d.started_at")}, 0)          AS duration_ms,
+               nullif(o.service_name, '')                                             AS harness_service_name
+        FROM c
+        LEFT JOIN session_dims d ON d.session_id = c.session_id
+        LEFT JOIN h ON h.session_id = c.session_id
+        LEFT JOIN otel_resources o ON o.resource_id = h.resource_id""",
             {"sid": session_id},
         )
 

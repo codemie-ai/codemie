@@ -318,6 +318,35 @@ async def test_a_window_without_session_starts_returns_no_rows():
     assert await PostgresCliAnalyticsReader(recorder).get_session_durations(_flt()) == []  # type: ignore[arg-type]
 
 
+@pytest.mark.asyncio
+async def test_session_detail_meta_resolves_the_earliest_service_name():
+    recorder = _SqlRecorder()
+    reader = PostgresCliAnalyticsReader(recorder)
+
+    await reader.get_session_detail_meta("s1")
+
+    sql = " ".join(recorder.statements[0].split())
+    assert "otel_resources" in sql
+    assert "harness_service_name" in sql
+    assert "ORDER BY" in sql.upper()
+
+
+@pytest.mark.asyncio
+async def test_session_detail_meta_service_name_tiebreak_is_deterministic():
+    # Two rows (within or across log_events/spans) for the same session can
+    # share the exact same ts. Without a secondary sort key Postgres makes no
+    # guarantee which one LIMIT 1 returns, so harness_name could flip between
+    # requests. resource_id ASC after ts ASC pins the winner to whichever
+    # resource_id sorts first, every time.
+    recorder = _SqlRecorder()
+    reader = PostgresCliAnalyticsReader(recorder)
+
+    await reader.get_session_detail_meta("s1")
+
+    sql = " ".join(recorder.statements[0].split())
+    assert "ORDER BY ts ASC, resource_id ASC" in sql
+
+
 def test_window_bounds_are_inclusive_and_millisecond_truncated():
     p = window_params(LocalAnalyticsFilter(start_dt=datetime(2026, 9, 1, 0, 0, 0, 123999), end_dt=datetime(2026, 9, 2)))
 

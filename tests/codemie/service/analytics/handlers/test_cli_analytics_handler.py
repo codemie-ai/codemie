@@ -448,3 +448,52 @@ async def test_rows_with_developer_name_also_carry_user_email() -> None:
     for row in dumped:
         assert row["developer_name"] == email
         assert row["user_email"] == email
+
+
+def make_detail_handler(meta_row):
+    repo = MagicMock()
+    repo.get_session_detail_meta = AsyncMock(return_value=[meta_row])
+    repo.get_session_detail_cost = AsyncMock(
+        return_value=[
+            {
+                "model_name": "claude",
+                "cost_usd": 1.0,
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "cache_read_tokens": 0,
+                "cache_creation_tokens": 0,
+            }
+        ]
+    )
+    repo.get_session_detail_scalars = AsyncMock(
+        return_value=[
+            {
+                "turns": 1,
+                "tool_call_count": 0,
+                "lines_added": 0,
+                "lines_removed": 0,
+                "active_ms": 0,
+                "agent_count": 0,
+                "skill_count": 0,
+            }
+        ]
+    )
+    repo.get_session_detail_tools = AsyncMock(return_value=[])
+    repo.get_session_detail_events = AsyncMock(return_value=[])
+    repo.get_session_detail_dispatches = AsyncMock(return_value=[])
+    repo.get_skill_names_by_session = AsyncMock(return_value=[{"skill_names": []}])
+    return LocalAnalyticsHandler(repo)
+
+
+@pytest.mark.asyncio
+async def test_session_detail_harness_name_is_humanized():
+    handler = make_detail_handler({"session_id": "s1", "harness_service_name": "claude-code"})
+    detail, _ = await handler.get_session_detail("s1")
+    assert detail["harness_name"] == "Claude Code"
+
+
+@pytest.mark.asyncio
+async def test_session_detail_harness_name_unknown_when_unresolved():
+    handler = make_detail_handler({"session_id": "s1", "harness_service_name": None})
+    detail, _ = await handler.get_session_detail("s1")
+    assert detail["harness_name"] == "Unknown"

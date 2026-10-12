@@ -35,6 +35,7 @@ from typing import Any
 
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
 from codemie.repository.cli_analytics.ports import CliAnalyticsReader
+from codemie.repository.cli_analytics.vocabulary import humanize_harness_name
 from codemie.service.analytics.delivery_framework import classify_delivery_framework
 from codemie.service.analytics.handlers.coding_agent_pricing import cache_read_cost, lookup_cost_config
 
@@ -737,6 +738,7 @@ class LocalAnalyticsHandler:
         }
         skill_names = _first(skill_rows).get("skill_names") or []
         detail["delivery_framework"] = classify_delivery_framework(skill_names)
+        detail["harness_name"] = humanize_harness_name(meta.get("harness_service_name"))
         return detail, unpriced
 
     @staticmethod

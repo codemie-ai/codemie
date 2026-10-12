@@ -1,0 +1,124 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15326_harness-name-backend",
+  "head": "2582cb85c0b2fdde24ce8a5168fe19cc440d2004",
+  "runner": "poetry",
+  "started_at": "2026-10-02T14:43:24Z",
+  "completed_at": "2026-10-02T15:57:56Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 8400,
+      "command": "make ruff",
+      "exit_code": 0,
+      "notes": "Host has no poetry/ruff; ran ruff format + check --fix + check directly via /venv/bin/ruff (ruff 0.5.4, pip-installed) inside the running `codemie` docker-compose container (bind-mounted ./src and ./tests). First pass reformatted tests/codemie/service/analytics/handlers/test_cli_analytics_handler.py (ruff format auto-fix, per the guide's own Auto-fix note that `make ruff` already runs format+fix); that change is left in the working tree, unstaged. Second pass was clean (0 changes, all checks pass). The pre-commit hook's staged-diff fast path (_ruff_staged.sh) is a separate hook gate below; nothing is currently staged so it self-skips trivially."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 661000,
+      "command": "make build",
+      "exit_code": 0,
+      "notes": "Makefile is not bind-mounted into the container, so ran the underlying `poetry build` directly via /opt/poetry/bin/poetry (already present in the image) from /app. Built codemie-0.8.0.tar.gz and codemie-0.8.0-py3-none-any.whl successfully. Slow (~11 min) due to bind-mount filesystem I/O overhead on Windows, not a code issue."
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 112791,
+      "command": "make license-check",
+      "exit_code": 0,
+      "notes": "scripts/license_headers/ is not bind-mounted; docker cp'd check_license_headers.py, __init__.py, license_template.txt into the container and ran it with /venv/bin/python. Script fell back to a full filesystem scan ('Warning: Not in git repository, scanning all files...') since /app has no .git. Checked 2340 files, 0 missing license headers."
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 48000,
+      "command": "make gitleaks",
+      "exit_code": 0,
+      "notes": "CI/verify-gate secret scan. Ran the Makefile's docker command directly from the host (not the app container) against the full working tree with ghcr.io/gitleaks/gitleaks:v8.30.1 and .gitleaks.toml. 'no leaks found' over ~42.76 MB. Required an explicit Windows-style volume path and MSYS_NO_PATHCONV=1 to work around Git-Bash path-translation mangling -v mount paths on Windows; host Docker (Rancher Desktop) does have outbound network access despite the shell itself having none."
+    },
+    {
+      "id": "codemie-gitleaks",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 800,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": 0,
+      "notes": "Local pre-commit secret-scan hook (documented in the guide's Secret Scan section, wired via .pre-commit-config.yaml). Ran successfully (engine=docker) but there is nothing staged right now (git status shows only an unstaged ruff auto-fix and untracked task docs) -- self-skip evidence: 'INF 0 commits scanned.' / 'INF scanned ~0 bytes (0) in 793ms'. The committed content on this branch is already covered by the full-tree `gitleaks` gate above (same image/config, clean). Required MSYS2_ARG_CONV_EXCL=\"/workspace;--config=/workspace;--source=/workspace\" on this Windows/Git-Bash host to stop path-conversion from mangling the script's hardcoded -w /workspace and --config=/workspace docker arguments; to exercise this gate meaningfully, stage changes (`git add`) first."
+    },
+    {
+      "id": "commit-msg",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 50,
+      "command": "bash scripts/git-hooks/commit_msg.sh <msg-file>",
+      "exit_code": 0,
+      "notes": "Ran against HEAD's commit message ('EPMCDME-15326: Add deterministic tiebreaker...'). Matches the required EPMCDME-<n>: prefix."
+    },
+    {
+      "id": "pre-commit-ruff-staged",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 148,
+      "command": "bash scripts/git-hooks/_ruff_staged.sh",
+      "exit_code": 0,
+      "notes": "Staged-diff-only fast path inside the codemie-pre-commit hook chain. Self-skip evidence: '[pre-commit] No staged Python files - skipping Ruff format/fix check.' Nothing is currently staged. The full-tree ruff gate above already covers the actual change set."
+    },
+    {
+      "id": "pre-push",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 102,
+      "command": "bash scripts/git-hooks/pre_push.sh",
+      "exit_code": 0,
+      "notes": "Opt-in heavy pre-push hook (pytest + sonar-local), disabled by default. Self-skip evidence: '[pre-push] CODEMIE_PREPUSH_ENABLED=false -> skipping heavy checks.' Its constituent checks are already covered above: pytest tests/ ran via the 'test' gate (FAIL, see below) and sonar-local was skipped for lack of config/network (see 'sonar-local' gate). Set CODEMIE_PREPUSH_ENABLED=true to exercise this hook for real."
+    },
+    {
+      "id": "test",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 517850,
+      "command": "make test",
+      "exit_code": 1,
+      "notes": "66 failed, 17759 passed, 204 skipped, 1 error (18030 collected). Ran /venv/bin/pytest tests/ from /app inside the codemie container (host has no poetry/pytest). This container's venv was missing pytest-mock, pytest-xdist, pytest-httpx, and flake8 (all declared pyproject dependencies) plus scripts/git-hooks/ and .env.example (not bind-mounted); these were pip-installed / docker cp'd in during this run to get a trustworthy signal -- an initial pass without them showed 347 errors, almost all 'fixture mocker not found'. The 4 test files this branch actually changed (tests/codemie/repository/cli_analytics/{clickhouse,postgres}/test_reader.py, test_vocabulary.py, tests/codemie/service/analytics/handlers/test_cli_analytics_handler.py) were also run in isolation: all 321 tests PASS (22.97s). None of the 66 remaining failures or the 1 remaining error touch a file this diff changed. Root causes isolated from tracebacks: ~53 failures/error require the private `codemie-enterprise` package from a private GCP artifact registry (tests/enterprise/*, provider_adapters enterprise-token tests, toolkit_service_auth_resolver, test_logout_token_cleanup_mock_tms) -- unavailable, no registry credentials/network for that private feed; 5 code-linter tests (facade/impl) still fail with FileNotFoundError: 'flake8' because this container's `bash -lc` login shell resets PATH on every `docker exec`, clobbering an injected PATH override before flake8 (itself installed and importable) can be found by subprocess.run -- an exec-environment PATH-plumbing issue, not a code defect; 2 diff_update_utils and 2 filesystem_policy (matplotlib/openpyxl sandbox audit-hook) failures look like sandboxed-subprocess environment quirks unrelated to the diff; 1 pre_commit_fast_hook test needs more hook-script wiring than was copied in. A canonical `poetry install && make test` run on a clean checkout was not possible from this host."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "SKIPPED",
+      "command": "make coverage",
+      "notes": "Not requested by the caller; guide Skip-if: 'The user did not request coverage.'"
+    },
+    {
+      "id": "sonar-local",
+      "source": "guide",
+      "status": "SKIPPED",
+      "command": "make sonar-local",
+      "notes": "No .env.local and no SONAR_TOKEN/SONAR_HOST configured in this checkout, and scripts/sonar/run-local-sonar.js (requires Node + SonarLint connected-mode config + a reachable SonarQube server) is not reachable from this environment. Guide Skip-if: 'Sonar configuration, network access, or required credentials are unavailable.' To run locally: populate .env.local with SONAR_TOKEN/SONAR_HOST_URL and ensure .sonarlint/connectedMode.json resolves against a reachable server."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "N/A",
+      "command": "make verify",
+      "notes": "Composite of ruff + license + gitleaks + test, all already run individually above (test FAILs). Not re-executed to avoid a duplicate run; also, the Makefile itself is not present in the ad hoc docker-exec environment used for the other gates (only src/ and tests/ are bind-mounted), so `make verify` could not be invoked verbatim there anyway."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "SKIPPED",
+      "command": "make test-harness",
+      "notes": "Guide Skip-if: 'You are not opening a merge request (local iteration only).' This run is local gate verification, not an MR open. Prerequisites are also absent on this host: no ~/.codemie/test-harness.json and the docker stack's superadmin fixtures were not confirmed."
+    }
+  ],
+  "failures": {
+    "test": "FAILED tests/enterprise/mcp_auth/test_client_metadata_bridge.py::test_enabled_cimd_route_sanitizes_invalid_configured_base_url_without_echoing_tainted_values\nFAILED tests/enterprise/mcp_auth/test_discovery_probe_bridge.py::test_discovered_auth_gate_registration_failures_return_config_error_payload[no_supported_registration_mechanism-attempted_mechanisms0]\nFAILED tests/enterprise/mcp_auth/test_discovery_probe_bridge.py::test_discovered_auth_gate_registration_failures_return_config_error_payload[dcr_timeout-attempted_mechanisms1]\nFAILED tests/enterprise/mcp_auth/test_discovery_probe_bridge.py::test_discovered_auth_gate_registration_failures_return_config_error_payload[dcr_unavailable-attempted_mechanisms2]\nFAILED tests/enterprise/mcp_auth/test_discovery_probe_bridge.py::test_discovery_probe_bridge_does_not_await_async_db_engine_in_worker_loop\nFAILED tests/enterprise/mcp_auth/test_insufficient_scope_recovery_bridge.py::test_bridge_maps_real_assistant_recovery_payload_snapshot\nFAILED tests/enterprise/mcp_auth/test_mcp_auth_status_bridge.py::test_build_discovered_auth_status_response_uses_flow_store_and_tms[False-authentication_required]\nFAILED tests/enterprise/mcp_auth/test_mcp_auth_status_bridge.py::test_build_discovered_auth_status_response_uses_flow_store_and_tms[True-authenticated]\nFAILED tests/enterprise/mcp_auth/test_mcp_auth_status_bridge.py::test_build_discovered_auth_status_response_returns_config_error_snapshot\nFAILED tests/enterprise/mcp_auth/test_oauth2_callback_bridge.py::test_callback_entry_log_state_prefix_joins_to_initiate\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_initiate_route_recovery_attempt_three_returns_auth_required_envelope\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_build_oauth2_initiate_response_passes_canonical_resource_to_enterprise_builder\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_raise_client_error_logs_warning_with_sanitized_details_before_raising\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_static_oauth2_initiate_logs_info_with_state_prefix_and_authorize_fields\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_static_oauth2_initiate_info_log_never_contains_full_state\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_saml_initiate_logs_info_with_state_prefix_and_authorize_fields\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_build_saml_initiate_passes_mcp_config_id_as_required_param\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_static_initiate_survives_malformed_authorize_url\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_returns_retry_header_after_successful_force_refresh\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_retry_401_and_does_not_force_refresh_twice\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-token_not_found]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-reauth_required0]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-tms_unavailable]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-tms_persistence_error0]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-token_refresh_error]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-reauth_required1]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-tms_persistence_error1]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-warning-token_not_found]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-warning-reauth_required0]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-error-tms_unavailable]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-error-tms_persistence_error0]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-error-token_refresh_error]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-warning-reauth_required1]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-error-tms_persistence_error1]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_without_calling_tms_for_no_refresh_decisions[None-missing_www_authenticate]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_without_calling_tms_for_no_refresh_decisions[Bearer error=\"invalid_request\"-unsupported_bearer_error]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_detects_configured_discovered_identity_conflict\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_non_oauth_config_without_oauth_payload\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_normalizes_or_rejects_refreshed_token_type[bearer-Bearer fresh-access-None]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_normalizes_or_rejects_refreshed_token_type[Basic-None-refresh_result_invalid]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_when_oauth2_identity_is_incomplete[execution_context0-missing_user_id]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_when_oauth2_identity_is_incomplete[execution_context1-missing_auth_config_id]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_uses_discovered_oauth2_identity_when_no_configured_id\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_rejects_env_delivered_oauth2_refresh\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_omits_initiate_url_for_workflow_payload\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_uses_live_discovered_snapshot_for_reauth_initiate_url\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_rebuilds_discovered_snapshot_from_exact_flow_config\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_discovered_snapshot_missing_without_exact_config_is_non_resumable\nFAILED tests/enterprise/mcp_auth/test_private_network_allowlist_bridge.py::test_private_network_allowlist_reader_output_passes_to_enterprise_as_discovery\nFAILED tests/scripts/test_pre_commit_fast_hook.py::test_fast_path_passes_without_heavy_steps\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_matplotlib_png_generation\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_openpyxl_to_save_workbook\nERROR tests/codemie/service/security/test_logout_token_cleanup_mock_tms.py::test_logout_removes_only_the_users_rows_and_pod_fallback\n= 66 failed, 17759 passed, 204 skipped, 232 warnings, 1 error in 517.85s (0:08:37) =\nEXITCODE:1"
+  }
+}
