@@ -1347,3 +1347,80 @@ class TestResolveModelProjectLookup:
             model = _resolve_chosen_execution_model(assistant, request)
 
         assert model == "gpt-4"
+
+
+class TestSlugAmbiguityDetection:
+    """Regression for EPMCDME-14158: slug lookup without project must raise 422 when the
+    same slug exists in multiple projects.
+    """
+
+    def _make_assistant(self, project: str) -> Assistant:
+        return Assistant(
+            id=f"assistant-{project}",
+            name="Shared Assistant",
+            description="desc",
+            project=project,
+            system_prompt="prompt",
+            slug="shared-slug",
+        )
+
+    @patch("codemie.rest_api.models.assistant.Assistant.get_all_by_fields")
+    def test_ambiguous_slug_without_project_raises_422(self, mock_get_all):
+        from codemie.rest_api.routers.assistant import get_assistant_by_slug
+
+        mock_get_all.return_value = [
+            self._make_assistant("project-alpha"),
+            self._make_assistant("project-beta"),
+        ]
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            get_assistant_by_slug(
+                request=MagicMock(),
+                assistant_slug="shared-slug",
+                user=MagicMock(spec=User),
+                project=None,
+            )
+
+        assert exc_info.value.code == 422
+        assert "shared-slug" in exc_info.value.details
+        assert "2" in exc_info.value.details
+        assert "project" in exc_info.value.details.lower()
+
+    @patch("codemie.rest_api.models.assistant.Assistant.get_all_by_fields")
+    def test_slug_with_project_returns_single_assistant(self, mock_get_all):
+        """When project is supplied the lookup is already scoped; no 422 should fire."""
+        from codemie.rest_api.routers.assistant import _get_assistant_by_slug_or_raise
+
+        expected = self._make_assistant("project-alpha")
+        mock_get_all.return_value = [expected]
+
+        result = _get_assistant_by_slug_or_raise("shared-slug", project="project-alpha")
+
+        assert result is expected
+        mock_get_all.assert_called_once_with({"slug.keyword": "shared-slug", "project.keyword": "project-alpha"})
+
+    @patch("codemie.rest_api.models.assistant.Assistant.get_all_by_fields")
+    def test_slug_not_found_raises_404(self, mock_get_all):
+        """Empty result list must still raise 404 after the get_by_fields→get_all_by_fields refactor."""
+        from codemie.rest_api.routers.assistant import _get_assistant_by_slug_or_raise
+
+        mock_get_all.return_value = []
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            _get_assistant_by_slug_or_raise("nonexistent-slug")
+
+        assert exc_info.value.code == 404
+        assert "nonexistent-slug" in exc_info.value.details
+
+    @patch("codemie.rest_api.models.assistant.Assistant.get_all_by_fields")
+    def test_slug_without_project_single_match_returns_assistant(self, mock_get_all):
+        """Primary happy path: no project supplied, exactly one match — must return that assistant."""
+        from codemie.rest_api.routers.assistant import _get_assistant_by_slug_or_raise
+
+        expected = self._make_assistant("project-alpha")
+        mock_get_all.return_value = [expected]
+
+        result = _get_assistant_by_slug_or_raise("shared-slug")
+
+        assert result is expected
+        mock_get_all.assert_called_once_with({"slug.keyword": "shared-slug"})

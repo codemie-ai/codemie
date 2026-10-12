@@ -1,0 +1,58 @@
+{
+  "schema": 1,
+  "gate_id": "code-review.final",
+  "decision": "request-changes",
+  "rationale": "All 5 acceptance criteria are satisfied. Four major findings require fixes before handoff: (1) the len(matches)>1 guard must be conditioned on 'not project' to make the implicit DB-constraint dependency explicit and prevent a misleading 422 on a project-scoped query if the constraint is bypassed; (2) 'if project:' is falsy for empty-string, silently turning a scoped lookup into a cross-project one; (3) no test for the 404 branch after the get_by_fields→get_all_by_fields refactor; (4) no test for the primary no-project single-match success path. One deferred finding: full-table scan on slug-only lookup (acknowledged in technical analysis, needs a separate migration, out of scope). Breaking backward-compat is intentional and spec-documented — dismissed.",
+  "confidence": "high",
+  "risk_flags": ["breaking-change"],
+  "business_review": [
+    {"id": "AC-1", "status": "satisfied", "evidence": "_get_assistant_by_slug_or_raise raises HTTP_422_UNPROCESSABLE_ENTITY when len(matches) > 1."},
+    {"id": "AC-2", "status": "satisfied", "evidence": "details string includes match count and 'Add the project query parameter' instruction."},
+    {"id": "AC-3", "status": "satisfied", "evidence": "Project-scoped path returns matches[0]; test_slug_with_project_returns_single_assistant confirms it."},
+    {"id": "AC-4", "status": "satisfied", "evidence": "test_ambiguous_slug_without_project_raises_422 mocks two assistants in different projects and asserts 422 with correct details."},
+    {"id": "AC-5", "status": "satisfied", "evidence": "Docstring updated to remove backward-compat language and document the 422 behavior."}
+  ],
+  "standards_review": [
+    {"id": "S-1", "standard": "Commit format", "status": "pass", "notes": "EPMCDME-14158: Raise 422 on ambiguous slug lookup without project — matches EPMCDME-####: Description format."},
+    {"id": "S-2", "standard": "Code quality (ruff)", "status": "pass", "notes": "make ruff passed with zero violations."},
+    {"id": "S-3", "standard": "Security", "status": "pass", "notes": "No secrets, injection, or auth concerns in the diff."}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "triage": "patch",
+      "severity": "major",
+      "category": "correctness",
+      "problem": "The 'if len(matches) > 1' guard is unconditional — it fires even when project is supplied, relying implicitly on the DB unique constraint uq_assistants_project_slug to prevent a false 422.",
+      "impact": "If the constraint is bypassed (e.g., ES index stale duplicate, data migration, or future refactor), a project-scoped lookup can raise 422 'Ambiguous slug' with a misleading message telling the caller to add project — which was already supplied.",
+      "recommendation": "Change to 'if len(matches) > 1 and not project:' to make the invariant explicit and guard only the intended ambiguous case."
+    },
+    {
+      "id": "CR-002",
+      "triage": "patch",
+      "severity": "major",
+      "category": "correctness",
+      "problem": "'if project:' treats empty-string project (FastAPI parses '?project=' as '') as falsy, silently skipping the project filter and turning a scoped lookup into a cross-project query.",
+      "impact": "A client passing ?project= (empty string) gets either a 422 ambiguous-slug or the wrong project's assistant with no indication the project filter was ignored.",
+      "recommendation": "Change to 'if project is not None:' to distinguish between absent project (None) and empty-string project; optionally add an explicit 400 rejection for blank strings."
+    },
+    {
+      "id": "CR-003",
+      "triage": "patch",
+      "severity": "major",
+      "category": "test-gap",
+      "problem": "No test mocks get_all_by_fields to return [] and asserts the 404 ExtendedHTTPException fires after the get_by_fields→get_all_by_fields refactor.",
+      "impact": "A regression that accidentally swallows an empty list (e.g., wrong exception type inside get_all_by_fields) would pass the test suite and serve a 500 instead of a 404.",
+      "recommendation": "Add a test in TestSlugAmbiguityDetection: mock get_all_by_fields to return [], call _get_assistant_by_slug_or_raise without project, assert ExtendedHTTPException with code 404."
+    },
+    {
+      "id": "CR-004",
+      "triage": "patch",
+      "severity": "major",
+      "category": "test-gap",
+      "problem": "No test covers the no-project single-match success path (project=None, exactly one assistant returned) — the most common slug-without-project happy-path scenario.",
+      "impact": "A regression that accidentally raises on a single-match cross-project result would go undetected.",
+      "recommendation": "Add a test: mock get_all_by_fields to return [one_assistant], call get_assistant_by_slug with project=None, assert the returned assistant is correct and no exception is raised."
+    }
+  ]
+}

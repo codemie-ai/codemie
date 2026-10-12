@@ -2091,17 +2091,17 @@ def _get_assistant_by_slug_or_raise(assistant_slug: str, project: Optional[str] 
     Retrieves an assistant by slug or raises a standardized exception if not found.
 
     When ``project`` is provided the lookup is scoped to that project, which makes
-    the result deterministic given that slugs are unique per-project (this backs
-    the human-readable ``{project}/{slug}`` URLs). Without ``project`` the first
-    matching assistant is returned, preserving backward compatibility with older
-    links that carried only the slug.
+    the result deterministic (slugs are unique per-project via ``uq_assistants_project_slug``).
+    Without ``project``, raises HTTP 422 if the same slug exists in more than one project —
+    callers must supply ``project`` to disambiguate.
     """
     fields: dict[str, Any] = {"slug.keyword": assistant_slug}
-    if project:
+    if project is not None:
         fields["project.keyword"] = project
 
-    assistant = Assistant.get_by_fields(fields)
-    if not assistant:
+    matches = Assistant.get_all_by_fields(fields)
+
+    if not matches:
         scope_hint = f" in project '{project}'" if project else ""
         raise ExtendedHTTPException(
             code=status.HTTP_404_NOT_FOUND,
@@ -2109,7 +2109,19 @@ def _get_assistant_by_slug_or_raise(assistant_slug: str, project: Optional[str] 
             details=f"No assistant found with the slug '{assistant_slug}'{scope_hint}.",
             help="Please check the assistant slug and ensure it is correct. ",
         )
-    return assistant
+
+    if len(matches) > 1 and not project:
+        raise ExtendedHTTPException(
+            code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            message="Ambiguous slug",
+            details=(
+                f"Slug '{assistant_slug}' matches {len(matches)} assistants across different projects. "
+                "Add the 'project' query parameter to scope the lookup."
+            ),
+            help="Use GET /v1/assistants/slug/{slug}?project={project} to resolve a specific assistant.",
+        )
+
+    return matches[0]
 
 
 def _apply_skill_ids_to_assistant(assistant: Assistant, request_skill_ids: list[str]) -> None:

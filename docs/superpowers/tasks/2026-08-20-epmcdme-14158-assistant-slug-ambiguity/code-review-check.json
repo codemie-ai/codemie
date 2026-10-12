@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "gate_id": "code-review.check",
+  "decision": "approve",
+  "rationale": "All 4 blocking findings from the final round are resolved. CR-001: `if len(matches) > 1 and not project:` lands on line 147 of the fix-up diff. CR-002: `if project is not None:` lands on line 138. CR-003: test_slug_not_found_raises_404 added, mocks [] return and asserts 404. CR-004: test_slug_without_project_single_match_returns_assistant added, mocks single-result no-project path. Unrelated dirty-file changes in the fix-up diff (.claude, .codemie, doctor.json, pyproject.toml redis dep) introduce no new high-risk issues. No new findings.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"id": "AC-1", "status": "satisfied", "evidence": "_get_assistant_by_slug_or_raise raises HTTP_422_UNPROCESSABLE_ENTITY when len(matches) > 1."},
+    {"id": "AC-2", "status": "satisfied", "evidence": "details string includes match count and 'Add the project query parameter' instruction."},
+    {"id": "AC-3", "status": "satisfied", "evidence": "Project-scoped path returns matches[0]; test_slug_with_project_returns_single_assistant confirms it."},
+    {"id": "AC-4", "status": "satisfied", "evidence": "test_ambiguous_slug_without_project_raises_422 mocks two assistants in different projects and asserts 422 with correct details."},
+    {"id": "AC-5", "status": "satisfied", "evidence": "Docstring updated to remove backward-compat language and document the 422 behavior."}
+  ],
+  "standards_review": [
+    {"id": "S-1", "standard": "Commit format", "status": "pass", "notes": "Fix-up commit: 'EPMCDME-14158: Harden slug ambiguity guard and add missing test coverage' — matches EPMCDME-####: Description format."},
+    {"id": "S-2", "standard": "Code quality (ruff)", "status": "pass", "notes": "make ruff passed with zero violations after fix-up."},
+    {"id": "S-3", "standard": "Security", "status": "pass", "notes": "No secrets, injection, or auth concerns introduced in fix-up diff."}
+  ],
+  "finding_status": [
+    {"id": "CR-001", "status": "resolved", "evidence": "Line 147 of fix-up diff: `if len(matches) > 1 and not project:` — unconditional guard conditioned on project absence."},
+    {"id": "CR-002", "status": "resolved", "evidence": "Line 138 of fix-up diff: `if project is not None:` — falsy empty-string guard replaced with explicit None check."},
+    {"id": "CR-003", "status": "resolved", "evidence": "Lines 160–171 of fix-up diff: test_slug_not_found_raises_404 mocks get_all_by_fields returning [] and asserts ExtendedHTTPException code 404."},
+    {"id": "CR-004", "status": "resolved", "evidence": "Lines 173–184 of fix-up diff: test_slug_without_project_single_match_returns_assistant mocks single-result no-project path and asserts correct assistant returned."}
+  ],
+  "findings": []
+}
