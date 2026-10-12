@@ -509,17 +509,21 @@ class TestValidateAtLeastOneChatModelAllowed:
     llm_service.get_all_llm_model_info() anyway -- so it now calls that directly instead of
     routing through a fake user context."""
 
-    def _model(self, deployment_name, is_router=False):
+    def _model(self, deployment_name, is_router=False, enabled=True, forbidden_for_web=False):
         model = MagicMock()
         model.deployment_name = deployment_name
+        model.base_name = deployment_name
+        model.switchyard = []
         model.is_declared_litellm_router.return_value = is_router
+        model.enabled = enabled
+        model.forbidden_for_web = forbidden_for_web
         return model
 
     def test_none_allowed_models_is_always_valid(self):
-        ProjectService.validate_at_least_one_chat_model_allowed(None)  # should not raise
+        ProjectService.ensure_chat_model_allowed(None)  # should not raise
 
     def test_empty_list_is_valid_here_handled_elsewhere(self):
-        ProjectService.validate_at_least_one_chat_model_allowed([])  # should not raise
+        ProjectService.ensure_chat_model_allowed([])  # should not raise
 
     def test_raises_when_no_allowed_model_matches_the_catalog(self):
         catalog = [self._model("gpt-4"), self._model("claude-3-sonnet")]
@@ -528,7 +532,7 @@ class TestValidateAtLeastOneChatModelAllowed:
             return_value=catalog,
         ):
             with pytest.raises(ExtendedHTTPException) as exc_info:
-                ProjectService.validate_at_least_one_chat_model_allowed(["nonexistent-model"])
+                ProjectService.ensure_chat_model_allowed(["nonexistent-model"])
         assert exc_info.value.code == 400
 
     def test_passes_when_an_allowed_model_matches_the_catalog(self):
@@ -537,16 +541,120 @@ class TestValidateAtLeastOneChatModelAllowed:
             "codemie.service.llm_service.llm_service.llm_service.get_all_llm_model_info",
             return_value=catalog,
         ):
-            ProjectService.validate_at_least_one_chat_model_allowed(["gpt-4", "nonexistent-model"])
+            ProjectService.ensure_chat_model_allowed(["gpt-4", "nonexistent-model"])
 
-    def test_router_only_catalog_entry_does_not_count_as_a_chat_model(self):
+    def test_litellm_auto_router_base_name_counts_as_a_chat_model(self):
         catalog = [self._model("gpt-smart-router", is_router=True)]
         with patch(
             "codemie.service.llm_service.llm_service.llm_service.get_all_llm_model_info",
             return_value=catalog,
         ):
-            with pytest.raises(ExtendedHTTPException):
-                ProjectService.validate_at_least_one_chat_model_allowed(["gpt-smart-router"])
+            ProjectService.ensure_chat_model_allowed(["gpt-smart-router"])  # no raise
+
+    def test_switchyard_router_base_name_counts_as_a_chat_model(self):
+        from codemie.configs.llm_config import LLMRouter, RoutingMode, SwitchyardConfig
+
+        router = LLMRouter(
+            base_name="sy-signal-claude-4-5-sonnet-test",
+            label="Signal Router",
+            enabled=True,
+            forbidden_for_web=False,
+            provider=None,
+            switchyard=SwitchyardConfig(
+                capable_model="claude-4-5-sonnet",
+                efficient_model="claude-4-5-haiku",
+                mode=RoutingMode.SIGNAL,
+            ),
+        )
+        with (
+            patch(
+                "codemie.service.llm_service.llm_service.llm_service.get_all_llm_model_info",
+                return_value=[],
+            ),
+            patch(
+                "codemie.service.llm_service.llm_service.llm_service.get_llm_routers",
+                return_value=[router],
+            ),
+        ):
+            ProjectService.ensure_chat_model_allowed(["sy-signal-claude-4-5-sonnet-test"])  # no raise
+
+    def test_disabled_litellm_auto_router_does_not_count_as_a_chat_model(self):
+        catalog = [self._model("gpt-smart-router", is_router=True, enabled=False)]
+        with patch(
+            "codemie.service.llm_service.llm_service.llm_service.get_all_llm_model_info",
+            return_value=catalog,
+        ):
+            with pytest.raises(ExtendedHTTPException) as exc_info:
+                ProjectService.ensure_chat_model_allowed(["gpt-smart-router"])
+        assert exc_info.value.code == 400
+
+    def test_forbidden_for_web_litellm_auto_router_does_not_count_as_a_chat_model(self):
+        catalog = [self._model("gpt-smart-router", is_router=True, forbidden_for_web=True)]
+        with patch(
+            "codemie.service.llm_service.llm_service.llm_service.get_all_llm_model_info",
+            return_value=catalog,
+        ):
+            with pytest.raises(ExtendedHTTPException) as exc_info:
+                ProjectService.ensure_chat_model_allowed(["gpt-smart-router"])
+        assert exc_info.value.code == 400
+
+    def test_disabled_switchyard_router_does_not_count_as_a_chat_model(self):
+        from codemie.configs.llm_config import LLMRouter, RoutingMode, SwitchyardConfig
+
+        router = LLMRouter(
+            base_name="sy-signal-claude-4-5-sonnet-test",
+            label="Signal Router",
+            enabled=False,
+            forbidden_for_web=False,
+            provider=None,
+            switchyard=SwitchyardConfig(
+                capable_model="claude-4-5-sonnet",
+                efficient_model="claude-4-5-haiku",
+                mode=RoutingMode.SIGNAL,
+            ),
+        )
+        with (
+            patch(
+                "codemie.service.llm_service.llm_service.llm_service.get_all_llm_model_info",
+                return_value=[],
+            ),
+            patch(
+                "codemie.service.llm_service.llm_service.llm_service.get_llm_routers",
+                return_value=[router],
+            ),
+        ):
+            with pytest.raises(ExtendedHTTPException) as exc_info:
+                ProjectService.ensure_chat_model_allowed(["sy-signal-claude-4-5-sonnet-test"])
+        assert exc_info.value.code == 400
+
+    def test_forbidden_for_web_switchyard_router_does_not_count_as_a_chat_model(self):
+        from codemie.configs.llm_config import LLMRouter, RoutingMode, SwitchyardConfig
+
+        router = LLMRouter(
+            base_name="sy-signal-claude-4-5-sonnet-test",
+            label="Signal Router",
+            enabled=True,
+            forbidden_for_web=True,
+            provider=None,
+            switchyard=SwitchyardConfig(
+                capable_model="claude-4-5-sonnet",
+                efficient_model="claude-4-5-haiku",
+                mode=RoutingMode.SIGNAL,
+            ),
+        )
+        with (
+            patch(
+                "codemie.service.llm_service.llm_service.llm_service.get_all_llm_model_info",
+                return_value=[],
+            ),
+            patch(
+                "codemie.service.llm_service.llm_service.llm_service.get_llm_routers",
+                return_value=[router],
+            ),
+        ):
+            with pytest.raises(ExtendedHTTPException) as exc_info:
+                ProjectService.ensure_chat_model_allowed(["sy-signal-claude-4-5-sonnet-test"])
+        assert exc_info.value.code == 400
 
 
 class TestCheckAllowedModelsAuthorization:

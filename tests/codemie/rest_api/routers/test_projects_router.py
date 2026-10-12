@@ -3346,7 +3346,7 @@ class TestAllowedModelsEndpoint:
                 "codemie.rest_api.routers.projects.project_service.validate_allowed_models",
                 return_value=["gpt-4", "claude-3-sonnet"],
             ),
-            patch("codemie.rest_api.routers.projects.project_service.validate_at_least_one_chat_model_allowed"),
+            patch("codemie.rest_api.routers.projects.project_service.ensure_chat_model_allowed"),
             patch("codemie.rest_api.routers.projects.project_service.check_allowed_models_authorization"),
         ):
             with pytest.raises(ExtendedHTTPException) as exc_info:
@@ -3394,7 +3394,7 @@ class TestAllowedModelsEndpoint:
                 "codemie.rest_api.routers.projects.project_service.validate_allowed_models",
                 return_value=["gpt-4"],
             ),
-            patch("codemie.rest_api.routers.projects.project_service.validate_at_least_one_chat_model_allowed"),
+            patch("codemie.rest_api.routers.projects.project_service.ensure_chat_model_allowed"),
             patch("codemie.rest_api.routers.projects.project_service.check_allowed_models_authorization"),
         ):
             with pytest.raises(ExtendedHTTPException) as exc_info:
@@ -3441,7 +3441,7 @@ class TestAllowedModelsEndpoint:
         from codemie.service.project.project_service import ProjectService
 
         # Should not raise any exception
-        ProjectService.validate_at_least_one_chat_model_allowed(None)
+        ProjectService.ensure_chat_model_allowed(None)
         # llm_service should not be called when allowed_models is None
         mock_llm_service.get_all_llm_model_info.assert_not_called()
 
@@ -3463,7 +3463,7 @@ class TestAllowedModelsEndpoint:
         ]
 
         # Should not raise any exception
-        ProjectService.validate_at_least_one_chat_model_allowed(["gpt-4"])
+        ProjectService.ensure_chat_model_allowed(["gpt-4"])
         mock_llm_service.get_all_llm_model_info.assert_called_once()
 
     @patch("codemie.service.llm_service.llm_service.llm_service")
@@ -3480,7 +3480,7 @@ class TestAllowedModelsEndpoint:
 
         # Should raise exception when trying to select only non-chat models
         with pytest.raises(ExtendedHTTPException) as exc_info:
-            ProjectService.validate_at_least_one_chat_model_allowed(["non-existent-model"])
+            ProjectService.ensure_chat_model_allowed(["non-existent-model"])
 
         assert exc_info.value.code == 400
         assert "At least one chat model is required" in exc_info.value.message

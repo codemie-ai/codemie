@@ -171,7 +171,7 @@ class ProjectService:
                 models = llm_service.get_allowed_chat_models(user, include_all=False)
                 deployment_names = [m.deployment_name for m in models]
                 validated_models = cls.validate_allowed_models(deployment_names)
-                cls.validate_at_least_one_chat_model_allowed(validated_models)
+                cls.ensure_chat_model_allowed(validated_models)
                 project.allowed_models = validated_models
                 project.default_model = validated_models[0]
 
@@ -629,7 +629,7 @@ class ProjectService:
         return allowed_models
 
     @staticmethod
-    def validate_at_least_one_chat_model_allowed(allowed_models: list[str] | None) -> None:
+    def ensure_chat_model_allowed(allowed_models: list[str] | None) -> None:
         """Validate that at least one chat model is allowed in the given list.
 
         This ensures that when models are restricted, at least one chat model remains available.
@@ -643,27 +643,18 @@ class ProjectService:
             ExtendedHTTPException 400: If no chat models are in the allowed list
         """
         if allowed_models is None:
-            # None means all models are allowed - always valid
             return
 
         if not isinstance(allowed_models, list) or len(allowed_models) == 0:
-            # Empty list validation is handled elsewhere (validate_allowed_models)
             return
 
-        # Import here to avoid circular imports
         from codemie.service.llm_service.llm_service import llm_service
 
-        # Validate against the platform's declared catalog directly (get_all_llm_model_info
-        # takes no user, so there's no per-user/LiteLLM-integration narrowing to get wrong).
-        available_chat_models = [
-            model for model in llm_service.get_all_llm_model_info() if not model.is_declared_litellm_router()
-        ]
-        # allowed_models stores deployment identifiers (e.g. "gpt-4.1-2025-04-14")
-        available_chat_model_ids = {model.deployment_name for model in available_chat_models}
+        all_models = list(llm_service.get_all_llm_model_info())
+        available_chat_model_ids = ProjectService._get_available_chat_model_ids(all_models)
+        available_router_model_ids = ProjectService._get_available_router_model_ids(all_models)
 
-        # Check if any of the allowed models are chat models.
-        allowed_model_ids_set = set(allowed_models)
-        has_chat_model = bool(allowed_model_ids_set & available_chat_model_ids)
+        has_chat_model = bool(set(allowed_models) & (available_chat_model_ids | available_router_model_ids))
 
         if not has_chat_model:
             raise ExtendedHTTPException(
@@ -743,7 +734,7 @@ class ProjectService:
             ExtendedHTTPException 500: persistence failure
         """
         validated_models = cls.validate_allowed_models(allowed_models)
-        cls.validate_at_least_one_chat_model_allowed(validated_models)
+        cls.ensure_chat_model_allowed(validated_models)
 
         with get_session() as session:
             cls.check_allowed_models_authorization(session, user, project_name)
@@ -780,6 +771,30 @@ class ProjectService:
                 raise ExtendedHTTPException(code=500, message="Failed to update project allowed models")
 
             return project
+
+    @staticmethod
+    def _get_available_chat_model_ids(all_models: list) -> set[str]:
+        """Deployment_names of plain (non-router) chat models."""
+        return {model.deployment_name for model in all_models if not model.is_declared_litellm_router()}
+
+    @staticmethod
+    def _get_available_router_model_ids(all_models: list) -> set[str]:
+        """Base_names of enabled, non-forbidden_for_web switchyard and litellm_auto routers."""
+        from codemie.service.llm_service.llm_service import llm_service
+
+        switchyard_router_ids = {
+            router.base_name
+            for router in llm_service.get_llm_routers()
+            if router.enabled and not router.forbidden_for_web
+        }
+
+        litellm_auto_router_ids = {
+            model.base_name
+            for model in all_models
+            if model.is_declared_litellm_router() and model.enabled and not model.forbidden_for_web
+        }
+
+        return switchyard_router_ids | litellm_auto_router_ids
 
 
 project_service = ProjectService()
