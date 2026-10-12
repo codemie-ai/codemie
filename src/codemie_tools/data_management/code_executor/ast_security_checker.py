@@ -111,18 +111,22 @@ class CodeExecutorSecurityChecker(ast.NodeVisitor):
         return "<dynamic>"
 
     def _add_violation(self, node: ast.AST, description: str, severity: SecurityIssueSeverity) -> None:
-        """Add a security violation."""
+        """Add a security violation.
 
-        # Only add violations at or above threshold
-        if severity >= self.threshold:
-            violation = SecurityViolation(
-                description=description,
-                severity=severity,
-                line_number=getattr(node, "lineno", 0),
-                node_type=type(node).__name__,
-            )
-            self.violations.append(violation)
-            logger.debug(f"AST violation detected: {description} at line {violation.line_number}")
+        All violations this checker raises (dynamic __import__, exec/eval/compile,
+        __builtins__ access) are hardcoded SecurityIssueSeverity.HIGH sandbox-escape
+        vectors, so they are intentionally recorded unconditionally, at every
+        configured threshold. `self.threshold` is kept on the instance for
+        signature/documentation continuity but is no longer branched on here.
+        """
+        violation = SecurityViolation(
+            description=description,
+            severity=severity,
+            line_number=getattr(node, "lineno", 0),
+            node_type=type(node).__name__,
+        )
+        self.violations.append(violation)
+        logger.debug(f"AST violation detected: {description} at line {violation.line_number}")
 
 
 def check_code_with_ast(code: str, severity_threshold: SecurityIssueSeverity) -> tuple[bool, List[SecurityPattern]]:
@@ -131,7 +135,11 @@ def check_code_with_ast(code: str, severity_threshold: SecurityIssueSeverity) ->
 
     Args:
         code: Python code to analyze
-        severity_threshold: Minimum severity level to enforce
+        severity_threshold: Retained for signature continuity only. This checker's
+            hardcoded sandbox-escape detections (dynamic __import__, exec/eval/compile,
+            __builtins__ access) are recorded unconditionally regardless of this value —
+            see CodeExecutorSecurityChecker._add_violation. It does not gate which
+            violations are reported.
 
     Returns:
         tuple: (is_safe, violations) where is_safe is False if violations were found

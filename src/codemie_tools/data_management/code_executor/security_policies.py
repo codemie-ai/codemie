@@ -147,6 +147,21 @@ class _SecurityPolicyLoader:
         raise ValueError(f"Invalid severity type: {type(severity)}")
 
 
+def translate_security_threshold(security_threshold: SecurityIssueSeverity) -> SecurityIssueSeverity:
+    """Translate CodeMie's user-facing security_threshold (LOW=permissive .. HIGH=strict) into
+    the internal enforcement cutoff the existing severity >= cutoff comparisons already consume.
+    The upstream llm_sandbox.SecurityPolicy.severity_threshold field, and every comparison that
+    reads it, keep the opposite ("block when severity >= threshold") convention; this is the
+    single point where the two meanings are reconciled, so no comparison operator is rewritten.
+    """
+    return {
+        SecurityIssueSeverity.SAFE: SecurityIssueSeverity.SAFE,
+        SecurityIssueSeverity.LOW: SecurityIssueSeverity.HIGH,
+        SecurityIssueSeverity.MEDIUM: SecurityIssueSeverity.MEDIUM,
+        SecurityIssueSeverity.HIGH: SecurityIssueSeverity.LOW,
+    }[security_threshold]
+
+
 def get_codemie_security_policy(
     severity_threshold: Optional[SecurityIssueSeverity] = None, yaml_config_path: Optional[Path] = None
 ) -> SecurityPolicy:
@@ -169,12 +184,14 @@ def get_codemie_security_policy(
     - Dangerous code patterns (regex-based detection)
 
     Args:
-        severity_threshold: Security severity threshold.
+        severity_threshold: How strict enforcement should be. A higher threshold blocks more.
                           If None, no restrictions are applied (empty policy).
-                          SAFE (0): blocks nothing (most permissive).
-                          LOW (1): allows read operations like requests.get().
-                          MEDIUM (2): more restrictive.
-                          HIGH (3): only blocks critical operations.
+                          SAFE: enforcement disabled, blocks nothing.
+                          LOW: permissive, blocks HIGH severity entries only.
+                          MEDIUM: moderate, blocks MEDIUM and HIGH severity entries.
+                          HIGH: strict, blocks LOW, MEDIUM and HIGH severity entries.
+                          This value is translated to the upstream library's severity
+                          cutoff before being stored on the returned SecurityPolicy.
         yaml_config_path: Optional path to YAML configuration file.
                          If not provided, loads default_security_policies.yaml.
                          If provided, must exist or FileNotFoundError is raised.
@@ -219,9 +236,15 @@ def get_codemie_security_policy(
         logger.debug(f"Loading custom security policy: {yaml_config_path}")
         policy = _SecurityPolicyLoader.load_from_yaml(yaml_config_path)
 
-    # Set severity threshold from config (YAML doesn't contain threshold)
-    policy.severity_threshold = severity_threshold
-    logger.debug(f"Applied severity threshold: {severity_threshold.name}")
+    # Set severity threshold from config (YAML doesn't contain threshold).
+    # `severity_threshold` here is CodeMie's user-facing strictness value (LOW=permissive ..
+    # HIGH=strict); translate it into the internal enforcement cutoff before storing it, since
+    # `policy.severity_threshold` (and every comparison downstream that reads it) keeps the
+    # upstream "block when severity >= threshold" convention.
+    policy.severity_threshold = translate_security_threshold(severity_threshold)
+    logger.debug(
+        f"Applied severity threshold: {severity_threshold.name} (internal cutoff: {policy.severity_threshold.name})"
+    )
 
     return policy
 
@@ -230,31 +253,34 @@ def get_restricted_module_names(
     severity_threshold: Optional[SecurityIssueSeverity] = None, yaml_config_path: Optional[Path] = None
 ) -> list[str]:
     """
-    Get names of restricted modules that are at or above the specified severity threshold.
+    Get the names of the modules that the given strictness threshold blocks.
 
     This function is useful for dynamically generating lists of blocked modules
     for tool descriptions and documentation based on the configured security level.
 
     Args:
-        severity_threshold: Minimum severity level to include.
+        severity_threshold: How strict enforcement should be. A higher threshold
+                          blocks — and therefore returns — more modules.
                           If None, returns empty list (no restrictions).
-                          SAFE (0): returns all modules
-                          LOW (1): returns modules with LOW, MEDIUM, and HIGH severity
-                          MEDIUM (2): returns modules with MEDIUM and HIGH severity
-                          HIGH (3): returns only HIGH severity modules
+                          SAFE: returns nothing (enforcement disabled)
+                          LOW: returns only HIGH severity modules
+                          MEDIUM: returns modules with MEDIUM and HIGH severity
+                          HIGH: returns modules with LOW, MEDIUM, and HIGH severity
         yaml_config_path: Optional path to YAML configuration file.
                          If not provided, loads default_security_policies.yaml.
 
     Returns:
-        List of module names that are restricted at the given severity level,
+        List of module names that are restricted at the given threshold,
         sorted alphabetically for consistent output.
 
     Example:
+        >>> # LOW is permissive: only the HIGH severity modules are blocked.
         >>> get_restricted_module_names(SecurityIssueSeverity.LOW)
-        ['compile', 'eval', 'exec', 'glob', 'httpx', 'importlib', 'inspect', ...]
-
-        >>> get_restricted_module_names(SecurityIssueSeverity.HIGH)
         ['compile', 'eval', 'exec', 'httpx', 'multiprocessing', 'os', ...]
+
+        >>> # HIGH is strict: LOW, MEDIUM and HIGH severity modules are all blocked.
+        >>> get_restricted_module_names(SecurityIssueSeverity.HIGH)
+        ['compile', 'eval', 'exec', 'glob', 'httpx', 'importlib', 'inspect', ...]
 
         >>> get_restricted_module_names(None)
         []
@@ -266,8 +292,11 @@ def get_restricted_module_names(
     # Get the full security policy from YAML
     policy = get_codemie_security_policy(severity_threshold=severity_threshold, yaml_config_path=yaml_config_path)
 
-    # Extract module names from restricted modules that meet the severity threshold
-    restricted_names = [module.name for module in policy.restricted_modules if module.severity >= severity_threshold]
+    # Extract module names from restricted modules that meet the severity threshold.
+    # `severity_threshold` here is CodeMie's user-facing strictness value; translate it into the
+    # internal enforcement cutoff before comparing, matching `get_codemie_security_policy`.
+    internal_cutoff = translate_security_threshold(severity_threshold)
+    restricted_names = [module.name for module in policy.restricted_modules if module.severity >= internal_cutoff]
 
     # Return sorted list for consistent output
     return sorted(restricted_names)
@@ -338,4 +367,9 @@ def check_security_policy(policy: SecurityPolicy, code: str) -> tuple[bool, list
             if SecurityIssueSeverity.SAFE < threshold <= pattern_obj.severity:
                 return False, violations
 
-    return len(violations) == 0, violations
+    # Reaching this point means every matched pattern's severity stayed below the
+    # (translated) threshold — the loop above already returns early the moment any
+    # pattern crosses it. Collected `violations` below the cutoff are non-blocking by
+    # design (e.g. LOW threshold intentionally allows MEDIUM-severity matches like
+    # requests.get()); they are returned for visibility, not to flip is_safe to False.
+    return True, violations

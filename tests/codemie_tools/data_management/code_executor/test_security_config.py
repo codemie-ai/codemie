@@ -29,9 +29,9 @@ class TestSecurityThresholdConfig(unittest.TestCase):
     """Test suite for security threshold configuration."""
 
     def test_default_security_threshold(self):
-        """Test that default security threshold is LOW."""
+        """Default security threshold is HIGH (strict) after the semantic flip."""
         config = CodeExecutorConfig()
-        assert config.security_threshold == SecurityIssueSeverity.LOW
+        assert config.security_threshold == SecurityIssueSeverity.HIGH
 
     def test_security_threshold_from_env_low(self):
         """Test loading LOW threshold from environment."""
@@ -79,6 +79,20 @@ class TestSecurityThresholdConfig(unittest.TestCase):
             CodeExecutorConfig(security_threshold="")
 
 
+class TestSecurityThresholdTranslation(unittest.TestCase):
+    """Boundary translation from user-facing strictness to internal enforcement cutoff."""
+
+    def test_translation_mapping(self):
+        from codemie_tools.data_management.code_executor.security_policies import (
+            translate_security_threshold,
+        )
+
+        assert translate_security_threshold(SecurityIssueSeverity.SAFE) == SecurityIssueSeverity.SAFE
+        assert translate_security_threshold(SecurityIssueSeverity.LOW) == SecurityIssueSeverity.HIGH
+        assert translate_security_threshold(SecurityIssueSeverity.MEDIUM) == SecurityIssueSeverity.MEDIUM
+        assert translate_security_threshold(SecurityIssueSeverity.HIGH) == SecurityIssueSeverity.LOW
+
+
 class TestSecurityPolicyThreshold(unittest.TestCase):
     """Test suite for security policy threshold mapping."""
 
@@ -88,9 +102,9 @@ class TestSecurityPolicyThreshold(unittest.TestCase):
         assert policy.severity_threshold == SecurityIssueSeverity.SAFE
 
     def test_policy_with_low_threshold(self):
-        """Test policy creation with LOW threshold."""
+        """LOW is user-facing permissive; internally it becomes the HIGH cutoff."""
         policy = get_codemie_security_policy(severity_threshold=SecurityIssueSeverity.LOW)
-        assert policy.severity_threshold == SecurityIssueSeverity.LOW
+        assert policy.severity_threshold == SecurityIssueSeverity.HIGH
 
     def test_policy_with_medium_threshold(self):
         """Test policy creation with MEDIUM threshold."""
@@ -98,9 +112,9 @@ class TestSecurityPolicyThreshold(unittest.TestCase):
         assert policy.severity_threshold == SecurityIssueSeverity.MEDIUM
 
     def test_policy_with_high_threshold(self):
-        """Test policy creation with HIGH threshold."""
+        """HIGH is user-facing strict; internally it becomes the LOW cutoff."""
         policy = get_codemie_security_policy(severity_threshold=SecurityIssueSeverity.HIGH)
-        assert policy.severity_threshold == SecurityIssueSeverity.HIGH
+        assert policy.severity_threshold == SecurityIssueSeverity.LOW
 
     def test_policy_default_threshold(self):
         """Test that policy with no threshold returns None (unrestricted)."""
@@ -161,6 +175,29 @@ class TestRequestsSecurityPatterns(unittest.TestCase):
         assert "delete" in pattern_text.lower()
 
 
+class TestRequestsThresholdOrdering(unittest.TestCase):
+    """requests is still MEDIUM severity; substitutes for the retired pathlib scenario
+    (pathlib was removed from restricted_modules by a prior, unrelated commit)."""
+
+    def _check(self, threshold):
+        from codemie_tools.data_management.code_executor.security_policies import check_security_policy
+
+        policy = get_codemie_security_policy(severity_threshold=threshold)
+        return check_security_policy(policy, "import requests\nrequests.get('https://example.com')")
+
+    def test_safe_does_not_block(self):
+        assert self._check(SecurityIssueSeverity.SAFE)[0]
+
+    def test_low_does_not_block_medium_severity_requests(self):
+        assert self._check(SecurityIssueSeverity.LOW)[0]
+
+    def test_medium_blocks_medium_severity_requests(self):
+        assert not self._check(SecurityIssueSeverity.MEDIUM)[0]
+
+    def test_high_blocks_medium_severity_requests(self):
+        assert not self._check(SecurityIssueSeverity.HIGH)[0]
+
+
 class TestSecurityThresholdIntegration(unittest.TestCase):
     """Integration tests for security threshold configuration."""
 
@@ -183,8 +220,8 @@ class TestSecurityThresholdIntegration(unittest.TestCase):
             assert tool.security_policy.severity_threshold == SecurityIssueSeverity.MEDIUM
 
     @patch('codemie_tools.data_management.code_executor.code_executor_tool.SandboxSessionManager')
-    def test_tool_default_threshold_is_low(self, mock_manager_class):
-        """Test that CodeExecutorTool defaults to LOW threshold."""
+    def test_tool_default_threshold_is_high(self, mock_manager_class):
+        """CodeExecutorTool defaults to the HIGH (strict) threshold."""
         from codemie_tools.data_management.code_executor.code_executor_tool import CodeExecutorTool
 
         # Ensure env var is not set and force sandbox mode
@@ -196,17 +233,19 @@ class TestSecurityThresholdIntegration(unittest.TestCase):
                     user_id="test_user", file_repository=self.mock_file_repo, execution_mode=ExecutionMode.SANDBOX
                 )
 
-                assert tool.config.security_threshold == SecurityIssueSeverity.LOW
+                assert tool.config.security_threshold == SecurityIssueSeverity.HIGH
+                # HIGH (strict) translates to a LOW severity cutoff for the upstream policy,
+                # so LOW + MEDIUM + HIGH severity patterns are all blocked.
                 assert tool.security_policy.severity_threshold == SecurityIssueSeverity.LOW
 
 
 class TestOsModulePolicy(unittest.TestCase):
     """Tests that safe os calls are allowed while dangerous ones are blocked."""
 
-    def _check(self, code: str) -> tuple[bool, list]:
+    def _check(self, code: str, threshold: SecurityIssueSeverity = SecurityIssueSeverity.LOW) -> tuple[bool, list]:
         from codemie_tools.data_management.code_executor.security_policies import check_security_policy
 
-        policy = get_codemie_security_policy(severity_threshold=SecurityIssueSeverity.LOW)
+        policy = get_codemie_security_policy(severity_threshold=threshold)
         return check_security_policy(policy, code)
 
     def test_os_urandom_is_allowed(self):
@@ -263,14 +302,38 @@ class TestOsModulePolicy(unittest.TestCase):
         is_safe, violations = self._check(code)
         assert not is_safe
 
+    # os.system is a HIGH-severity pattern; re-verify blocking across every
+    # threshold (spec Section 6), not just the previously-hardcoded LOW input.
+    def test_os_system_not_blocked_at_safe_threshold(self):
+        """SAFE disables enforcement entirely — os.system is allowed."""
+        code = "import os\nos.system('id')"
+        is_safe, violations = self._check(code, SecurityIssueSeverity.SAFE)
+        assert is_safe, f"os.system unexpectedly blocked at SAFE: {[v.description for v in violations]}"
+
+    def test_os_system_blocked_at_low_threshold(self):
+        """LOW (permissive) still blocks HIGH-severity patterns like os.system."""
+        code = "import os\nos.system('id')"
+        is_safe, _ = self._check(code, SecurityIssueSeverity.LOW)
+        assert not is_safe, "os.system should be blocked at LOW"
+
+    def test_os_system_blocked_at_medium_threshold(self):
+        code = "import os\nos.system('id')"
+        is_safe, _ = self._check(code, SecurityIssueSeverity.MEDIUM)
+        assert not is_safe, "os.system should be blocked at MEDIUM"
+
+    def test_os_system_blocked_at_high_threshold(self):
+        code = "import os\nos.system('id')"
+        is_safe, _ = self._check(code, SecurityIssueSeverity.HIGH)
+        assert not is_safe, "os.system should be blocked at HIGH"
+
 
 class TestPipModulePolicy(unittest.TestCase):
     """Tests that pip import is blocked at pre-execution."""
 
-    def _check(self, code: str) -> tuple[bool, list]:
+    def _check(self, code: str, threshold: SecurityIssueSeverity = SecurityIssueSeverity.LOW) -> tuple[bool, list]:
         from codemie_tools.data_management.code_executor.security_policies import check_security_policy
 
-        policy = get_codemie_security_policy(severity_threshold=SecurityIssueSeverity.LOW)
+        policy = get_codemie_security_policy(severity_threshold=threshold)
         return check_security_policy(policy, code)
 
     def test_pip_import_is_blocked(self):
@@ -291,6 +354,65 @@ class TestPipModulePolicy(unittest.TestCase):
         pip_module = next((m for m in policy.restricted_modules if m.name == "pip"), None)
         assert pip_module is not None, "pip not found in restricted_modules"
         assert pip_module.severity == SecurityIssueSeverity.HIGH
+
+    # pip is a HIGH-severity restricted module; re-verify blocking across every
+    # threshold (spec Section 6), not just the previously-hardcoded LOW input.
+    def test_pip_import_not_blocked_at_safe_threshold(self):
+        """SAFE disables enforcement entirely — pip import is allowed."""
+        code = "import pip\npip.main(['install', 'requests'])"
+        is_safe, violations = self._check(code, SecurityIssueSeverity.SAFE)
+        assert is_safe, f"pip import unexpectedly blocked at SAFE: {[v.description for v in violations]}"
+
+    def test_pip_import_blocked_at_low_threshold(self):
+        """LOW (permissive) still blocks HIGH-severity restricted modules like pip."""
+        code = "import pip\npip.main(['install', 'requests'])"
+        is_safe, _ = self._check(code, SecurityIssueSeverity.LOW)
+        assert not is_safe, "pip import should be blocked at LOW"
+
+    def test_pip_import_blocked_at_medium_threshold(self):
+        code = "import pip\npip.main(['install', 'requests'])"
+        is_safe, _ = self._check(code, SecurityIssueSeverity.MEDIUM)
+        assert not is_safe, "pip import should be blocked at MEDIUM"
+
+    def test_pip_import_blocked_at_high_threshold(self):
+        code = "import pip\npip.main(['install', 'requests'])"
+        is_safe, _ = self._check(code, SecurityIssueSeverity.HIGH)
+        assert not is_safe, "pip import should be blocked at HIGH"
+
+
+class TestGetRestrictedModuleNames(unittest.TestCase):
+    """Direct coverage for get_restricted_module_names, which feeds the agent-facing
+    blocked-modules string shown in tool descriptions (CR-004)."""
+
+    def test_none_threshold_returns_empty_list(self):
+        from codemie_tools.data_management.code_executor.security_policies import get_restricted_module_names
+
+        assert get_restricted_module_names(None) == []
+
+    def test_low_threshold_returns_only_high_severity_module_names(self):
+        """LOW is permissive; internally it becomes the HIGH cutoff, so only
+        HIGH-severity restricted modules (e.g. pip, subprocess) are returned —
+        MEDIUM-severity modules (e.g. requests, glob) must not appear."""
+        from codemie_tools.data_management.code_executor.security_policies import get_restricted_module_names
+
+        names = get_restricted_module_names(SecurityIssueSeverity.LOW)
+        assert "pip" in names
+        assert "subprocess" in names
+        assert "requests" not in names
+        assert "glob" not in names
+        assert names == sorted(names)
+
+    def test_high_threshold_returns_low_medium_and_high_severity_module_names(self):
+        """HIGH is strict; internally it becomes the LOW cutoff, so it returns a
+        superset of the LOW-threshold list, including MEDIUM-severity modules."""
+        from codemie_tools.data_management.code_executor.security_policies import get_restricted_module_names
+
+        low_names = get_restricted_module_names(SecurityIssueSeverity.LOW)
+        high_names = get_restricted_module_names(SecurityIssueSeverity.HIGH)
+        assert set(low_names).issubset(set(high_names))
+        assert "requests" in high_names
+        assert "glob" in high_names
+        assert high_names == sorted(high_names)
 
 
 if __name__ == '__main__':

@@ -22,6 +22,36 @@ Code runs in an isolated Kubernetes sandbox pod. `CODE_EXECUTOR_EXECUTION_MODE`
 defaults to `sandbox`, which is the only accepted value, so it does not need to
 be set explicitly.
 
+## Migration: `CODE_EXECUTOR_SECURITY_THRESHOLD` semantics changed (EPMCDME-13877)
+
+**Breaking behavioral change.** `CODE_EXECUTOR_SECURITY_THRESHOLD` previously meant the opposite of
+what its name implies: `LOW` was the *strictest* setting and `HIGH` the *most permissive*. It now
+reads as strictness directly:
+
+| Threshold | Meaning | Blocks |
+|---|---|---|
+| `SAFE` | enforcement disabled | nothing |
+| `LOW` | permissive | `HIGH` severity only |
+| `MEDIUM` | moderate | `MEDIUM` + `HIGH` |
+| `HIGH` | strict | `LOW` + `MEDIUM` + `HIGH` |
+
+The default changed from `LOW` to `HIGH`. Because `HIGH` under the corrected semantics blocks exactly
+what `LOW` blocked under the old inverted semantics, **deployments that do not set this variable keep
+their current enforcement level unchanged.**
+
+**Action required:** if your deployment explicitly pins `CODE_EXECUTOR_SECURITY_THRESHOLD=LOW` in
+order to get strict enforcement, change it to `HIGH`. Left at `LOW` it now selects the most permissive
+non-disabled setting and will stop blocking `LOW` and `MEDIUM` severity patterns.
+
+Sandbox-escape techniques detected by the AST layer (`exec`, `eval`, `__import__`, `__builtins__`
+access) are blocked at every threshold, including `SAFE` and `LOW`, and are unaffected by this change —
+**but only on the `check_security_policy` path** (used by `SandboxMode.JOBS`, and any other caller of
+`check_code_with_ast`). The default `SandboxMode.SHARED` execution path
+(`_validate_code_security` in `code_executor_tool.py`) validates code via the sandbox session's own
+`is_safe()` check, which is regex-only and never invokes the AST layer. For the default sandbox mode,
+`security_threshold` is the only protection against these patterns — the AST layer's always-block
+guarantee does not apply there.
+
 ## Configuration
 
 All configuration is managed through environment variables. The tool automatically loads settings on initialization.
@@ -30,7 +60,7 @@ All configuration is managed through environment variables. The tool automatical
 
 **Essential Settings:**
 - `CODE_EXECUTOR_EXECUTION_MODE` - Execution mode (default: `sandbox`)
-- `CODE_EXECUTOR_SECURITY_THRESHOLD` - Security policy threshold (default: `LOW`)
+- `CODE_EXECUTOR_SECURITY_THRESHOLD` - Security policy strictness; higher blocks more (default: `HIGH`)
 - `CODE_EXECUTOR_NAMESPACE` - Kubernetes namespace (default: `codemie-code-executor`)
 - `CODE_EXECUTOR_EXECUTION_TIMEOUT` - Code timeout in seconds (default: `30.0`)
 - `CODE_EXECUTOR_MEMORY_LIMIT` - Pod memory limit (default: `256Mi`)
@@ -42,7 +72,7 @@ All configuration is managed through environment variables. The tool automatical
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `CODE_EXECUTOR_EXECUTION_MODE` | Execution mode. Code runs in an isolated Kubernetes sandbox pod. | `sandbox` |
-| `CODE_EXECUTOR_SECURITY_THRESHOLD` | Security policy: `SAFE`, `LOW`, `MEDIUM`, `HIGH` | `LOW` |
+| `CODE_EXECUTOR_SECURITY_THRESHOLD` | Enforcement strictness; a higher threshold blocks more. `SAFE` = disabled, `LOW` = blocks `HIGH` severity only, `MEDIUM` = blocks `MEDIUM`+`HIGH`, `HIGH` = blocks `LOW`+`MEDIUM`+`HIGH`. See [Migration](#migration-code_executor_security_threshold-semantics-changed-epmcdme-13877). | `HIGH` |
 
 #### Kubernetes Configuration
 
@@ -155,7 +185,7 @@ result = tool.execute(code=code, export_files=["output.csv"])
 
 ```bash
 export CODE_EXECUTOR_EXECUTION_MODE=sandbox
-export CODE_EXECUTOR_SECURITY_THRESHOLD=LOW
+export CODE_EXECUTOR_SECURITY_THRESHOLD=LOW  # intentionally permissive for local sandbox testing
 export CODE_EXECUTOR_NAMESPACE=dev-runtime
 export CODE_EXECUTOR_EXECUTION_TIMEOUT=60
 export CODE_EXECUTOR_VERBOSE=true
@@ -167,7 +197,7 @@ python app.py
 
 ```bash
 export CODE_EXECUTOR_EXECUTION_MODE=sandbox
-export CODE_EXECUTOR_SECURITY_THRESHOLD=LOW
+export CODE_EXECUTOR_SECURITY_THRESHOLD=HIGH
 export CODE_EXECUTOR_MEMORY_LIMIT=512Mi
 export CODE_EXECUTOR_CPU_LIMIT=2
 export CODE_EXECUTOR_EXECUTION_TIMEOUT=120
@@ -185,7 +215,7 @@ services:
     image: your-app
     environment:
       - CODE_EXECUTOR_EXECUTION_MODE=sandbox
-      - CODE_EXECUTOR_SECURITY_THRESHOLD=LOW
+      - CODE_EXECUTOR_SECURITY_THRESHOLD=HIGH
       - CODE_EXECUTOR_NAMESPACE=docker-runtime
       - CODE_EXECUTOR_EXECUTION_TIMEOUT=45
       - CODE_EXECUTOR_MEMORY_LIMIT=256Mi
@@ -208,7 +238,7 @@ spec:
         - name: CODE_EXECUTOR_EXECUTION_MODE
           value: "sandbox"
         - name: CODE_EXECUTOR_SECURITY_THRESHOLD
-          value: "LOW"
+          value: "HIGH"
         - name: CODE_EXECUTOR_NAMESPACE
           value: "production-runtime"
         - name: CODE_EXECUTOR_EXECUTION_TIMEOUT

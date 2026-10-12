@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "generated": "2026-09-25T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 15,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 8,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "technical_risk",
+      "reason": "The change corrects previously inverted security_threshold semantics in the code executor's sandbox-escape enforcement: security_policies.py adds translate_security_threshold(), a boundary-translation function reconciling CodeMie's user-facing LOW=permissive..HIGH=strict convention with the upstream llm_sandbox SecurityPolicy's opposite 'block when severity >= threshold' convention, and models.py flips the default security_threshold from LOW to HIGH. An existing pattern (the two-layer AST + regex security enforcement in security_policies.py/ast_security_checker.py) covers the security-sensitive surface and is well exercised by the test suite, but the fix itself touches live sandbox-escape gating with no exact precedent for the translation shim, so Technical Risk is bumped from the M baseline to L under the 'Security requirements' red flag."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "diffstat reports 8 files changed (284 insertions, 84 deletions): ast_security_checker.py, security_policies.py, models.py, default_security_policies.yaml, README.md, and three test files (test_ast_security_checker.py, test_models.py, test_security_config.py), all modified in place with no new files added. Per the actual-mode file-count mapping, 7-10 files maps to L."
+    }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from M to L: security/compliance-relevant change (correcting inverted security_threshold semantics that gate sandbox code-execution enforcement)"
+  ],
+  "split_recommendation": null
+}

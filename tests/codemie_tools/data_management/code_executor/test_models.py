@@ -63,7 +63,7 @@ class TestCodeExecutorConfigDefaults(unittest.TestCase):
         assert config.run_as_user == 1001
         assert config.run_as_group == 1001
         assert config.fs_group == 1001
-        assert config.security_threshold == SecurityIssueSeverity.LOW
+        assert config.security_threshold == SecurityIssueSeverity.HIGH
         assert config.yaml_policy_path == ""
         assert config.execution_mode == ExecutionMode.SANDBOX
         assert config.verbose is False

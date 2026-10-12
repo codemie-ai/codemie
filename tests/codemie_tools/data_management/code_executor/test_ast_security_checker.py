@@ -112,33 +112,29 @@ class TestBuiltinsAccess:
 
 
 class TestSeverityThreshold:
-    """Test severity threshold filtering."""
+    """Hardcoded-HIGH bypass detections (__import__, exec/eval/compile, __builtins__ access)
+    are intentionally unconditional: they block at every configured threshold."""
 
-    def test_high_threshold_blocks_high_severity(self):
-        """HIGH threshold should block HIGH severity violations."""
-        code = '__import__("os")'
-        is_safe, violations = check_code_with_ast(code, SecurityIssueSeverity.HIGH)
+    def test_safe_threshold_blocks_bypass_technique(self):
+        is_safe, violations = check_code_with_ast('__import__("os")', SecurityIssueSeverity.SAFE)
+        assert not is_safe and len(violations) >= 1
 
-        assert not is_safe
-        assert len(violations) >= 1
+    def test_low_threshold_blocks_bypass_technique(self):
+        is_safe, violations = check_code_with_ast('__import__("os")', SecurityIssueSeverity.LOW)
+        assert not is_safe and len(violations) >= 1
 
-    def test_low_threshold_blocks_high_severity(self):
-        """LOW threshold should block HIGH severity violations."""
-        code = '__import__("os")'
-        is_safe, violations = check_code_with_ast(code, SecurityIssueSeverity.LOW)
+    def test_medium_threshold_blocks_bypass_technique(self):
+        is_safe, violations = check_code_with_ast('__import__("os")', SecurityIssueSeverity.MEDIUM)
+        assert not is_safe and len(violations) >= 1
 
-        assert not is_safe
-        assert len(violations) >= 1
+    def test_high_threshold_blocks_bypass_technique(self):
+        is_safe, violations = check_code_with_ast('__import__("os")', SecurityIssueSeverity.HIGH)
+        assert not is_safe and len(violations) >= 1
 
-    def test_safe_threshold_allows_everything(self):
-        """SAFE threshold should allow everything."""
-        code = '__import__("os")'
-        is_safe, violations = check_code_with_ast(code, SecurityIssueSeverity.SAFE)
-
-        # With SAFE threshold, violations are still detected but not enforced
-        # The checker still finds them but threshold filtering may allow them
-        # Actual behavior depends on implementation
-        assert isinstance(is_safe, bool)
+    def test_safe_threshold_allows_non_bypass_code(self):
+        """SAFE must not flag ordinary code that triggers no bypass detection."""
+        is_safe, violations = check_code_with_ast("x = 1 + 2\nprint(x)", SecurityIssueSeverity.SAFE)
+        assert is_safe and violations == []
 
 
 class TestSafeCode:

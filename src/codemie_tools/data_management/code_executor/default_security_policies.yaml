@@ -5,11 +5,20 @@
 # This file defines security policies for code execution in shared
 # sandbox environments.
 #
-# Security Severity Levels:
-#   SAFE (0):   Blocks nothing (most permissive)
-#   LOW (1):    Allows read operations like requests.get()
-#   MEDIUM (2): More restrictive
-#   HIGH (3):   Only blocks critical operations
+# The `severity` on each entry below rates how dangerous that operation is.
+# It is compared against the configured CODE_EXECUTOR_SECURITY_THRESHOLD, which
+# expresses how strict enforcement should be:
+#
+#   SAFE:   enforcement disabled - blocks nothing
+#   LOW:    permissive           - blocks HIGH severity entries only
+#   MEDIUM: moderate             - blocks MEDIUM and HIGH severity entries
+#   HIGH:   strict               - blocks LOW, MEDIUM and HIGH severity entries
+#
+# So a higher threshold blocks more. Separately from this threshold (including at SAFE), the
+# AST layer's hardcoded sandbox-escape detections (exec, eval, __import__, __builtins__) are
+# always on — but only on the check_security_policy path (SandboxMode.JOBS). The default
+# SandboxMode.SHARED path validates via the sandbox session's own is_safe() check and does not
+# invoke the AST layer.
 
 version: "1.0"
 

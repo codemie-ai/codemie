@@ -181,14 +181,19 @@ class CodeExecutorConfig(CodeMieToolConfig):
     )
 
     security_threshold: SecurityIssueSeverity = Field(
-        default=SecurityIssueSeverity.LOW,
-        description="Security policy severity threshold. "
+        default=SecurityIssueSeverity.HIGH,
+        description="How strict security policy enforcement should be. "
         "Required; must be one of SAFE, LOW, MEDIUM, HIGH. "
-        "Defaults to LOW for balanced security. "
-        "SAFE (0): blocks nothing (most permissive). "
-        "LOW (1): allows read operations like requests.get(). "
-        "MEDIUM (2): more restrictive. "
-        "HIGH (3): only blocks critical operations.",
+        "A higher threshold blocks more. Defaults to HIGH (strict). "
+        "SAFE: disables this severity-based policy threshold; the regex/module layer blocks nothing. "
+        "LOW: permissive, blocks HIGH severity patterns only. "
+        "MEDIUM: moderate, blocks MEDIUM and HIGH severity patterns. "
+        "HIGH: strict, blocks LOW, MEDIUM and HIGH severity patterns. "
+        "Separately from this threshold (including at SAFE), the AST layer's hardcoded "
+        "sandbox-escape detections (exec, eval, __import__, __builtins__) are always on — "
+        "but only on the check_security_policy path (SandboxMode.JOBS); the default "
+        "SandboxMode.SHARED path validates via the sandbox session's own is_safe() check "
+        "and does not invoke the AST layer.",
     )
 
     yaml_policy_path: str = Field(
@@ -401,7 +406,7 @@ class CodeExecutorConfig(CodeMieToolConfig):
             run_as_user=int(os.getenv("CODE_EXECUTOR_RUN_AS_USER", "1001")),
             run_as_group=int(os.getenv("CODE_EXECUTOR_RUN_AS_GROUP", "1001")),
             fs_group=int(os.getenv("CODE_EXECUTOR_FS_GROUP", "1001")),
-            security_threshold=os.getenv("CODE_EXECUTOR_SECURITY_THRESHOLD", "LOW"),
+            security_threshold=os.getenv("CODE_EXECUTOR_SECURITY_THRESHOLD", "HIGH"),
             yaml_policy_path=os.getenv("CODE_EXECUTOR_YAML_POLICY_PATH", ""),
             verbose=str_to_bool(os.getenv("CODE_EXECUTOR_VERBOSE", "false")),
             keep_template=str_to_bool(os.getenv("CODE_EXECUTOR_KEEP_TEMPLATE", "true")),

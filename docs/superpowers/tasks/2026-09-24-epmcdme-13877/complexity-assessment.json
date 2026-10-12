@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "task": "Invert the CodeExecutor security_threshold comparison semantics (LOW=permissive, HIGH=strict) across three enforcement call sites, plus docs, env-var docs, YAML comments, and tests.",
+  "generated": "2026-09-24T12:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 19,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Three independent enforcement call sites (check_security_policy regex layer, get_restricted_module_names, CodeExecutorSecurityChecker._add_violation) must move in the same direction, plus the config field (models.py), the YAML policy-definition header, and the README env-var docs — spanning the config layer, policy/domain layer, and data/policy-definition layer within one subsystem."
+    },
+    {
+      "dimension": "requirements_clarity",
+      "reason": "Ticket AC are otherwise detailed, but the technical analysis surfaces a genuine open architectural decision the spec/plan stage must resolve explicitly: whether to translate CodeMie's security_threshold value at the assignment boundary into the upstream llm_sandbox SecurityPolicy.severity_threshold field (whose own documented convention matches CodeMie's current, ticket-named-inverted behavior) or accept a semantic mismatch between the two fields. This is directly analogous to the 'credential storage approach TBD' gap in the L-band calibration example (epmcdme-10401)."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "This is a security-enforcement inversion for the sandboxed code executor (blocks subprocess/eval/exec/os.system/import-bypass patterns) with no single exact precedent for getting all three call sites and the AST layer's currently-no-op threshold check consistently correct at once; a naive fix risks silently weakening bypass protection. Baseline scored L (no exact precedent, moderate security implications, rollback plan needed) then bumped to XL per the 'Security requirements' red flag. Note: this places Technical Risk one notch above the nearest L-band calibration anchor (epmcdme-10401, tech_risk=L/4, driven by config-migration/credential-storage risk) — flagged here as a deliberate escalation, not a silent resolution, because the bypass-protection surface here is more directly security-critical than that anchor's config-migration concern."
+    }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from L to XL: 'Security' requirement — inverting the core enforcement comparison that gates subprocess/eval/exec/os.system/import bypass detection across three call sites, with an identified risk that the AST layer's threshold check is presently a no-op and could regress in either direction under a naive fix."
+  ],
+  "split_recommendation": null
+}
