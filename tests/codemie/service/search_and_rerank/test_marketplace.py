@@ -75,3 +75,85 @@ class TestSearchAndRerankMarketplace:
 
         assert isinstance(result, list)
         assert not isinstance(result, tuple)
+
+    def test_execute_dedupes_chunks_per_assistant(self, instance):
+        # Arrange: RRF order; assistant "a" has two chunks, "x" has no id
+        a_chunk_1 = Document(page_content="a#1", metadata={"id": "a", "chunk_num": 1, "popularity_score": 0.5})
+        b_chunk_0 = Document(page_content="b#0", metadata={"id": "b", "chunk_num": 0, "popularity_score": 0.9})
+        a_chunk_0 = Document(page_content="a#0", metadata={"id": "a", "chunk_num": 0, "popularity_score": 0.5})
+        no_id = Document(page_content="x", metadata={"popularity_score": 0.1})
+
+        with patch.object(
+            instance.__class__.__bases__[0],
+            "execute",
+            return_value=([a_chunk_1, b_chunk_0, a_chunk_0, no_id], ["path1"]),
+        ):
+            # Act
+            result = instance.execute()
+
+        # Assert: best-ranked chunk per assistant kept, then popularity order
+        assert result == [b_chunk_0, a_chunk_1, no_id]
+
+    def test_execute_overfetches_then_returns_top_k_distinct_assistants(self, instance):
+        # Arrange: chunks of one long assistant would fill the top_k slots without over-fetching
+        instance.top_k = 2
+        docs = [
+            Document(page_content="a#0", metadata={"id": "a", "source": "A", "popularity_score": 0.5}),
+            Document(page_content="a#1", metadata={"id": "a", "source": "A", "popularity_score": 0.5}),
+            Document(page_content="b#0", metadata={"id": "b", "source": "B", "popularity_score": 0.4}),
+            Document(page_content="c#0", metadata={"id": "c", "source": "C", "popularity_score": 0.3}),
+        ]
+        seen_top_k = []
+
+        def base_execute(_self, routing_field_name=None):
+            seen_top_k.append(_self.top_k)
+            return docs[: _self.top_k], []
+
+        with patch.object(instance.__class__.__bases__[0], "execute", base_execute):
+            # Act
+            result = instance.execute()
+
+        # Assert
+        assert seen_top_k == [2 * SearchAndRerankMarketplace.DEDUP_OVERFETCH_FACTOR]
+        assert [d.page_content for d in result] == ["a#0", "b#0"]
+        assert instance.top_k == 2
+
+    def test_execute_reports_returned_chunks_as_complete_coverage(self, instance):
+        # Arrange: aggregation saw 44 chunks for "A"; marketplace intentionally returns one per assistant
+        instance.source_chunk_totals = {"A": 44, "B": 1, "Z": 3}
+        docs = [
+            Document(page_content="a#7", metadata={"id": "a", "source": "A", "popularity_score": 0.5}),
+            Document(page_content="a#2", metadata={"id": "a", "source": "A", "popularity_score": 0.5}),
+            Document(page_content="b#0", metadata={"id": "b", "source": "B", "popularity_score": 0.4}),
+        ]
+
+        with patch.object(instance.__class__.__bases__[0], "execute", return_value=(docs, [])):
+            # Act
+            instance.execute()
+
+        # Assert
+        assert instance.source_chunk_totals == {"A": 1, "B": 1}
+
+    def test_long_assistants_stay_routable(self, instance):
+        # Arrange: one assistant indexed as 44 chunks
+        instance.es.search.return_value = {
+            "aggregations": {
+                "unique_sources": {
+                    "buckets": [
+                        {
+                            "key": "Long Assistant",
+                            "doc_count": 44,
+                            "source_metadata": {
+                                "hits": {"hits": [{"_source": {"metadata": {"source": "Long Assistant"}}}]}
+                            },
+                        }
+                    ]
+                }
+            }
+        }
+
+        # Act
+        sources = instance._fetch_unique_sources("source")
+
+        # Assert
+        assert sources and "Long Assistant" in sources[0]

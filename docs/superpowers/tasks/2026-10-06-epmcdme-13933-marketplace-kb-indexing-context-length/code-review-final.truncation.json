@@ -1,0 +1,35 @@
+{
+  "decision": "request-changes",
+  "rationale": "All three lenses (blind, edge-case, acceptance) ran and every spec/story criterion passes. One major regression was introduced: on a new-assistant publish, the per-document fallback swallows an embedding failure, so the service and router log 'Successfully indexed' where they previously logged an error (CR-001). There are 2 deferred findings, both accepted trade-offs from the approved spec: skips are logged but not recorded on IndexInfo, and transient errors such as ES outages or 429s take the per-document skip path. A total failure still marks the index FAILED through NoChunksImported, and the Azure embeddings client retries internally. 10 findings were dismissed: batch_size 0 is pre-existing config with the same pattern in the base processor; tiktoken offline download is a pre-existing o200k_base usage; a None description is ruled out because the field is typed str; the tokenizer approximation is a spec decision with 2x headroom; the trim-loop cost is bounded at 4000 tokens; there are a trailing U+FFFD, duplicate info logs, provider error text in logs, the zip strict flag on py3.12, and an unchanged metadata path.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "story-ac", "item": "For the same user input, the Search Kb Marketplace Assistants tool does not return the observed indexing/context length error", "status": "pass", "notes": "Documents are capped at 4000 o200k tokens, and a full sync skips any failing document instead of failing the index. Clearing the persisted FAILED state needs the post-deploy reindex (ops)."},
+    {"kind": "spec", "item": "No single assistant can produce an embedding input over the model's context limit", "status": "pass", "notes": "page_content is truncated to PAGE_CONTENT_MAX_TOKENS=4000; covered by test_page_content_within_total_budget."},
+    {"kind": "spec", "item": "One assistant failing to embed during full sync does not fail the whole index", "status": "pass", "notes": "Handled by _store_batch_with_fallback; covered by test_batch_failure_falls_back_per_document."},
+    {"kind": "spec", "item": "Per-field token caps (description 2000, tools 500) using cached o200k_base helper", "status": "pass", "notes": "_truncate_to_tokens with lru_cache encoding; covered by loader tests."},
+    {"kind": "spec", "item": "System prompt keeps 1000-char cap; field order/labels preserved", "status": "pass", "notes": "Unchanged line; the test asserts the trailing fields survive."},
+    {"kind": "spec", "item": "Batches of STORAGE_CONFIG.embeddings_max_docs_count; progress only for stored docs; warning with entity_id/name/datasource_name/error", "status": "pass", "notes": "Covered by the batching, fallback and all-fail tests."},
+    {"kind": "spec", "item": "All-fail still marks index FAILED via NoChunksImportedException", "status": "pass", "notes": "Base process() calls _validate_indexing_result (base_datasource_processor.py:223)."},
+    {"kind": "spec", "item": "is_update=True path fail-fast, error propagates", "status": "pass", "notes": "Covered by test_update_path_propagates_error."},
+    {"kind": "spec", "item": "Operations: admin reindex after deploy noted in MR description", "status": "na", "notes": "MR-description step, outside the diff."}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "All 3 commits use the 'EPMCDME-13933: Description' format per git-workflow.md."},
+    {"kind": "code-quality", "status": "pass", "notes": "ruff format and check are clean; the license header check is clean."},
+    {"kind": "security", "status": "pass", "notes": "No secrets. The logs carry the entity id, name and provider error text, consistent with logging-patterns.md."}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/datasource/platform/base_platform_processor.py",
+      "line": 262,
+      "title": "New-assistant publish failure swallowed and logged as success",
+      "problem": "index_single_entity(is_update=False), used for a new marketplace publish, now goes through the batch fallback. An embedding failure is caught and logged as a warning, and _add_documents returns normally.",
+      "impact": "PlatformIndexingService.index_single_assistant and the router _index_marketplace_assistant then log 'Successfully indexed assistant', although the assistant is missing from the index. Previously the exception reached the router's logger.error. This is a misleading observability regression for publish.",
+      "recommendation": "Keep fail-fast semantics for single-entity indexing regardless of is_update. For example, index_single_entity calls a direct store path, or _add_documents gets a fail_fast flag that index_single_entity sets, and moves progress only on success when not is_update. Add a test that a failing new-entity publish raises."
+    }
+  ]
+}

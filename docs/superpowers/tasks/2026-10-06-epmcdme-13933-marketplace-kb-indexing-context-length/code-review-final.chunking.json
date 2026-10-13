@@ -1,0 +1,56 @@
+{
+  "decision": "request-changes",
+  "rationale": "All three lenses (blind, edge-case, acceptance) ran against the full branch diff, the spec is present, and every story and spec criterion passes, with live-check evidence. Three major regressions in marketplace search come from the move to multiple chunks per assistant. CR-001: de-duplication runs after the RRF top_k cut, so the search returns fewer distinct assistants. CR-002: the coverage notices tell the agent that results are incomplete or over the limit, which prompts pointless re-queries. CR-003: assistants with more than 20 chunks drop out of LLM source routing. Deferred (7): concurrent publish/reindex races and the unpublish-during-reindex window; progress counter drift on update; orphan partial chunks after a failed partial bulk write (cleaned on the next successful write); delete_by_query failures/version conflicts not inspected; update of an assistant that is now unpublished leaves its chunks (pre-existing behaviour); the header is not token-capped, although it is small in practice (categories are capped at 3, toolkit names are short); the mapping dependency on metadata.id.keyword (verified on the local index, which prod creates the same way). Dismissed (8): all-fail swallowed (process() still marks FAILED through NoChunksImported); missing id or random uuid (marketplace docs always carry an id); ids over 256 chars (ids are UUIDs); an oversized group exceeding the embedding batch (the embeddings client sub-batches, and 44 chunks worked live); tokenizer mismatch (about 1.6k-token chunks against an 8191 limit); no backoff (the embeddings client retries internally); docstring wording; the skip-log wording.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "story-ac", "item": "For the same user input, search_kb_marketplace_assistants does not return the indexing/context-length error", "status": "pass", "notes": "Chunks are capped at 1500 body tokens and failures are isolated per assistant. Live check: a 44-chunk assistant was indexed with error=f and completed=t. The ops reindex is needed after deploy."},
+    {"kind": "spec", "item": "No embedding input exceeds the model context limit", "status": "pass", "notes": "Each chunk is the header plus at most 1500 body tokens; tests assert at most 2000 tokens per chunk."},
+    {"kind": "spec", "item": "Full description and tools list searchable, nothing dropped", "status": "pass", "notes": "Tests find the last word and the last tool; the live search found the phrase at the end of the description."},
+    {"kind": "spec", "item": "One failing assistant does not fail the index", "status": "pass", "notes": "Per-group fallback; covered by test_batch_failure_skips_whole_assistant."},
+    {"kind": "spec", "item": "No stale or duplicate content after republish/update/unpublish/migration", "status": "pass", "notes": "Write first, then delete stale; unpublish deletes by metadata.id. The live check migrated a legacy doc and unpublish removed all chunks."},
+    {"kind": "spec", "item": "Search returns each assistant at most once", "status": "pass", "notes": "_best_chunk_per_assistant; the live search returned the assistant once."},
+    {"kind": "spec", "item": "System prompt keeps 1000-char cap", "status": "pass", "notes": "Covered by test_system_prompt_capped."},
+    {"kind": "spec", "item": "Operations: reindex after deploy recorded in MR description", "status": "na", "notes": "This is an MR-description step, outside the diff."}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "All commits use the 'EPMCDME-13933: ...' prefix."},
+    {"kind": "code-quality", "status": "pass", "notes": "ruff format and check are clean; the license headers check passes."},
+    {"kind": "security", "status": "pass", "notes": "There is no new exposure: the system prompt cap (1000 chars) is unchanged, and logs carry ids and names only."}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/search_and_rerank/marketplace.py",
+      "line": 61,
+      "title": "De-duplication after top_k returns fewer distinct assistants",
+      "problem": "SearchAndRerankKB.execute -> RRF slices the results to top_k (rrf.py:64) before SearchAndRerankMarketplace._best_chunk_per_assistant runs.",
+      "impact": "When several chunks of one long assistant rank in the top 10, the FAQ gets fewer than 10 distinct assistants. This is a regression compared with one document per assistant.",
+      "recommendation": "Over-fetch in the marketplace search: run the base search with top_k multiplied (for example x3), de-duplicate by metadata.id, then slice to the original top_k before the popularity sort. Add a test where chunk duplicates would otherwise crowd out distinct assistants."
+    },
+    {
+      "id": "CR-002",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/search_and_rerank/marketplace.py",
+      "line": 48,
+      "title": "Coverage notices tell the FAQ agent that marketplace results are incomplete",
+      "problem": "SearchKBTool builds the coverage lines from search.source_chunk_totals. A multi-chunk assistant, de-duplicated to one chunk, is reported as '1 of N parts included' together with the INCOMPLETE or OVERLIMIT notice. The live response confirmed '1 of 44 parts included (document exceeds the 20-part full-retrieval limit)'.",
+      "impact": "The INCOMPLETE notice instructs the agent to call the tool again with a narrower query. For marketplace search, where one chunk per assistant is intended, these retries are pointless: they cost extra tool calls and latency and can confuse answers.",
+      "recommendation": "In SearchAndRerankMarketplace.execute, after de-duplication, report one part per returned assistant, for example source_chunk_totals = {source: 1 for every returned source}, so the tool prints '1 of 1 parts' and raises no incomplete notice. Add a test."
+    },
+    {
+      "id": "CR-003",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/search_and_rerank/marketplace.py",
+      "line": 27,
+      "title": "Assistants with more than 20 chunks are excluded from LLM source routing",
+      "problem": "SearchAndRerankKB._fetch_unique_sources skips sources whose chunk count is above MAX_CHUNKS_FOR_SINGLE_DOCUMENT (20). A marketplace assistant whose description is larger than about 28k tokens now has more than 20 chunks under one source.",
+      "impact": "Exactly the long assistants this change targets can no longer be picked by the LLM routing step, which matches on name and summary. They are found only through vector and text search. Before this change every assistant was a single document and always routable.",
+      "recommendation": "Override MAX_CHUNKS_FOR_SINGLE_DOCUMENT in SearchAndRerankMarketplace to a large value, so every assistant stays routable (de-duplication still returns one chunk), or count routing per assistant id. Add a test."
+    }
+  ]
+}

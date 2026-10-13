@@ -1,0 +1,79 @@
+{
+  "task": "EPMCDME-13933: index long marketplace assistants as N token-bounded chunks (ES ids <id>_<n>, header repeated per chunk) with write-then-delete stale cleanup, per-entity batch fallback, chunk-wide unpublish delete, and per-assistant de-duplication in marketplace search instead of truncating to fit the embedding context length.",
+  "generated": "2026-10-08",
+  "dimensions": {
+    "component_scope": {
+      "score": 4,
+      "label": "L",
+      "affected": "AssistantLoader (chunking, header/body split, chunk metadata), BasePlatformLoader (multi-document entity contract), BasePlatformDatasourceProcessor (shared base: chunk ids, grouping, batching with per-entity fallback, stale-chunk delete_by_query, unpublish delete-all-chunks), SearchAndRerankMarketplace (over-fetch, best-chunk-per-assistant dedupe, coverage normalisation, routing limit override)",
+      "layers": "Datasource Loader / Indexing Service, Search Service, DB-Persistence (Elasticsearch)"
+    },
+    "requirements_clarity": {
+      "score": 3,
+      "label": "M",
+      "status": "Partially Clear",
+      "gaps": "Design changed mid-flight from truncation to chunking; chunk budget (1500 tokens, 100 overlap), over-fetch factor (3x) and handling of legacy single-document entries were implementation decisions rather than stated acceptance criteria."
+    },
+    "technical_risk": {
+      "score": 4,
+      "label": "L",
+      "risk_factors": "Changed Elasticsearch document identity scheme (<id>_<n>) on a live index with legacy single-doc entries, write-then-delete stale cleanup via delete_by_query (data loss if filter wrong), batch failure fallback semantics, progress counter accounting per chunk on unpublish, search result de-dup with over-fetch affecting ranking/popularity boost and source routing, shared base processor used by other platform datasources",
+      "mitigation": "Stale delete scoped by metadata.id terms with must_not on just-written ids and conflicts=proceed; delete failures logged not raised; single-entity paths fail fast; extensive unit tests across loader, processor and marketplace search; code review (3 major findings fixed in one round) and live check 13/13 on local stack"
+    },
+    "file_change_estimate": {
+      "score": 4,
+      "label": "L",
+      "modified_files": 8,
+      "modified_file_list": [
+        "src/codemie/datasource/loader/platform/assistant_loader.py",
+        "src/codemie/datasource/loader/platform/platform_loader.py",
+        "src/codemie/datasource/platform/base_platform_processor.py",
+        "src/codemie/service/search_and_rerank/marketplace.py",
+        "tests/codemie/datasource/loader/test_assistant_loader.py",
+        "tests/codemie/datasource/platform_tests/test_assistant_datasource_processor.py",
+        "tests/codemie/datasource/platform_tests/test_base_platform_processor.py",
+        "tests/codemie/service/search_and_rerank/test_marketplace.py"
+      ],
+      "new_files": 0,
+      "new_file_list": [],
+      "affected_dirs": [
+        "src/codemie/datasource/",
+        "src/codemie/service/",
+        "tests/codemie/datasource/",
+        "tests/codemie/service/"
+      ]
+    },
+    "dependencies": {
+      "score": 2,
+      "label": "S",
+      "new_packages": [],
+      "version_changes": []
+    },
+    "affected_layers": {
+      "score": 3,
+      "label": "M",
+      "layers_changed": [
+        "Service (datasource loader / indexing processor)",
+        "Service (marketplace search and rerank)",
+        "DB-Persistence (Elasticsearch document ids and delete_by_query)"
+      ],
+      "schema_migration": false,
+      "cross_system": false
+    }
+  },
+  "total": 20,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 8,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Four components changed across indexing and search: AssistantLoader, the BasePlatformLoader contract, the shared BasePlatformDatasourceProcessor (inherited by all platform datasources), and SearchAndRerankMarketplace. Base M(3), bumped to L(4) because shared base classes were touched." },
+    { "dimension": "technical_risk", "reason": "There was no exact precedent for multi-chunk platform entities. The work changed the ES document id scheme on a live index that still has legacy docs, added destructive delete_by_query stale cleanup and unpublish-all-chunks, and changed search ranking with over-fetch and dedupe. Code review found 3 major findings, which confirms non-trivial risk." },
+    { "dimension": "file_change_estimate", "reason": "diffstat reports 8 files (4 source + 4 test) across 4 directories, with 791 insertions and 109 deletions. 8 files maps to L under the 7-10 rule." },
+    { "dimension": "requirements_clarity", "reason": "The design was reworked mid-flight from truncation to chunking, and tuning constants and legacy-doc handling were decided during implementation." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from M to L: touches core shared base classes (BasePlatformLoader contract and BasePlatformDatasourceProcessor used by all platform datasources)"
+  ],
+  "split_recommendation": null
+}

@@ -1,0 +1,74 @@
+{
+  "decision": "approve",
+  "rationale": "CR-001 and CR-002 are resolved in commit 057835cd8. _process now splits first and runs guardrails on the final chunks, so the header text is guarded exactly as embedded (new test test_guardrails_applied_to_final_chunks_including_header, RED then GREEN). The storage fixtures are 1-based and the split test asserts the last tool name. 144 targeted tests pass, the image was rebuilt and the live check passes 13/13. No new high-risk issue: guardrails now run once per chunk instead of once per assistant, which only adds calls for multi-chunk assistants when guardrails are configured.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {
+      "kind": "story-ac",
+      "item": "For the same user input, search_kb_marketplace_assistants does not return the indexing/context-length error",
+      "status": "pass",
+      "notes": "FAQ end-to-end run on the branch image answered with the long assistant; main reproduced the error."
+    },
+    {
+      "kind": "spec",
+      "item": "§1 Splitting reuses base pipeline; loader returns whole documents; BasePlatformLoader contract unchanged (one constant added)",
+      "status": "pass",
+      "notes": "_split_entity_documents, _get_splitter and _process_chunk overrides; the loader contract matches main."
+    },
+    {
+      "kind": "spec",
+      "item": "§1 Chunks numbered 1..N per entity; ids <id>_<n>; header prepended; chunk_header not in chunk metadata",
+      "status": "pass",
+      "notes": "Unit tests plus the live check (ids <id>_1..N)."
+    },
+    {
+      "kind": "spec",
+      "item": "Goal: no stale/duplicate content incl. migration",
+      "status": "pass",
+      "notes": "The 0-based to 1-based migration removed every _0 id live."
+    },
+    {
+      "kind": "spec",
+      "item": "Testing: processor split keeps last word AND last tool name",
+      "status": "pass",
+      "notes": "Only the last word is checked after splitting. Fixed in 057835cd8."
+    },
+    {
+      "kind": "spec",
+      "item": "Testing: storage tests use the 1-based chunk id convention",
+      "status": "pass",
+      "notes": "The _chunks fixtures are still 0-based (a_0). Fixed in 057835cd8."
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "The commit message is prefixed with EPMCDME-13933."
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "ruff and the license check are clean."
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "CR-001 fixed: guardrails applied to final chunks incl. header (commit 057835cd8)."
+    }
+  ],
+  "findings": [],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "resolved",
+      "notes": "Guardrails applied after _split_entity_documents in _process; test added."
+    },
+    {
+      "id": "CR-002",
+      "status": "resolved",
+      "notes": "_chunks fixtures 1-based (ids _1..N); split test asserts tool_2999."
+    }
+  ]
+}

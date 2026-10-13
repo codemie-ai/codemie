@@ -1,0 +1,92 @@
+{
+  "task": "EPMCDME-13933: index long marketplace assistants as token-bounded chunks via the BaseDatasourceProcessor split pipeline (per-entity numbering, deterministic ES ids, write-then-delete stale cleanup, chunk-aware unpublish, guardrails on final chunks) and dedupe marketplace search results per assistant.",
+  "generated": "2026-10-08T00:00:00Z",
+  "dimensions": {
+    "component_scope": {
+      "score": 4,
+      "label": "L",
+      "affected": "AssistantLoader, BasePlatformLoader (CHUNK_HEADER_KEY contract constant), BasePlatformDatasourceProcessor (splitter, chunk header, per-entity grouping/batching, stale-chunk cleanup, unpublish), SearchAndRerankMarketplace (over-fetch, per-assistant dedup, coverage normalisation, routing limit)",
+      "layers": "Repository/Loader, Service (indexing processor), Service (search and rerank), DB-Persistence (Elasticsearch documents)"
+    },
+    "requirements_clarity": {
+      "score": 4,
+      "label": "L",
+      "status": "Partially Clear",
+      "gaps": "Solution approach was not settled up front: design pivoted twice mid-flight (truncation -> custom chunking -> base-pipeline chunking); search-side behaviour for multi-chunk assistants (dedup, coverage reporting, routing limit) emerged during review rounds"
+    },
+    "technical_risk": {
+      "score": 4,
+      "label": "L",
+      "risk_factors": "Elasticsearch document id scheme change (<id>_<n>) with legacy single-document coexistence, write-then-delete stale cleanup via delete_by_query, unpublish deleting all chunks with progress accounting, per-entity batch fallback on embedding failures, shared base processor used by all platform datasources, search over-fetch/dedup affecting ranking and LLM source routing, guardrails moved onto final chunks",
+      "mitigation": "Reuse of BaseDatasourceProcessor split pipeline, deterministic chunk ids, delete only after successful write, 3 review rounds (6 major findings fixed), live check 13/13, FAQ e2e verified, sanity-api harness 197 passed"
+    },
+    "file_change_estimate": {
+      "score": 4,
+      "label": "L",
+      "modified_files": 8,
+      "modified_file_list": [
+        "src/codemie/datasource/loader/platform/assistant_loader.py",
+        "src/codemie/datasource/loader/platform/platform_loader.py",
+        "src/codemie/datasource/platform/base_platform_processor.py",
+        "src/codemie/service/search_and_rerank/marketplace.py",
+        "tests/codemie/datasource/loader/test_assistant_loader.py",
+        "tests/codemie/datasource/platform_tests/test_assistant_datasource_processor.py",
+        "tests/codemie/service/search_and_rerank/test_marketplace.py"
+      ],
+      "new_files": 0,
+      "new_file_list": [
+        "tests/codemie/datasource/platform_tests/test_base_platform_processor.py"
+      ],
+      "affected_dirs": [
+        "src/codemie/datasource/",
+        "src/codemie/service/",
+        "tests/codemie/datasource/",
+        "tests/codemie/service/"
+      ]
+    },
+    "dependencies": {
+      "score": 2,
+      "label": "S",
+      "new_packages": [
+        "tests/codemie/datasource/platform_tests/test_base_platform_processor.py"
+      ],
+      "version_changes": []
+    },
+    "affected_layers": {
+      "score": 3,
+      "label": "M",
+      "layers_changed": [
+        "Repository/Loader",
+        "Service",
+        "DB-Persistence (Elasticsearch)"
+      ],
+      "schema_migration": false,
+      "cross_system": false
+    }
+  },
+  "total": 21,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 8,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Four components changed across loader, shared platform processor base, and marketplace search; the base processor is shared by all platform datasources, so chunking, id scheme and cleanup changes have cross-datasource reach."
+    },
+    {
+      "dimension": "requirements_clarity",
+      "reason": "Design changed twice during implementation (truncation, custom chunking, base-pipeline chunking) and search-side requirements surfaced in review, which is the rework risk the L criteria describe."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "No exact precedent for multi-chunk platform entities: deterministic chunk ids, write-then-delete stale cleanup, chunk-aware unpublish, batch fallback and search dedup/over-fetch all change ES data shape and ranking behaviour, with legacy documents coexisting until reindex."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "8 files (4 source, 4 test) across 4 directories with 805 insertions / 74 deletions; heavy test density from three review rounds."
+    }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

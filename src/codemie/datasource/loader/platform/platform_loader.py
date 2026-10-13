@@ -30,6 +30,9 @@ class BasePlatformLoader(BaseDatasourceLoader):
     - Convert entities to searchable documents
     """
 
+    # Metadata key for the identifying header the platform processor repeats in every chunk
+    CHUNK_HEADER_KEY = "chunk_header"
+
     def __init__(self):
         self.entities = []
 

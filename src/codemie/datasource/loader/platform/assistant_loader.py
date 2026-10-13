@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from typing import List, Optional
+
 from langchain_core.documents import Document
 from pydantic import BaseModel, Field
 
@@ -224,20 +225,14 @@ class AssistantLoader(BasePlatformLoader):
 
         return round(score, 4)
 
-    def _add_toolkits(self, content_parts: list[str], sanitized: AssistantDocument) -> None:
-        """Add toolkits and tools to content parts if present."""
+    def _toolkit_and_tool_names(self, sanitized: AssistantDocument) -> tuple[List[str], List[str]]:
+        """Return toolkit and tool names of the assistant."""
         if not sanitized.toolkits:
-            return
+            return [], []
 
         # Convert to dict format for compatibility with existing method
         toolkits_dict = [tk.model_dump() for tk in sanitized.toolkits]
-        toolkit_names, tool_names = self._extract_toolkits_info(toolkits_dict)
-
-        if toolkit_names:
-            content_parts.append(f"Toolkits: {', '.join(toolkit_names)}")
-
-        if tool_names:
-            content_parts.append(f"Tools: {', '.join(tool_names)}")
+        return self._extract_toolkits_info(toolkits_dict)
 
     def _add_creator(self, content_parts: list[str], sanitized: AssistantDocument) -> None:
         """Add creator information to content parts if present."""
@@ -256,35 +251,56 @@ class AssistantLoader(BasePlatformLoader):
         if usage_text:
             content_parts.append(usage_text)
 
-    def _build_page_content(self, sanitized: AssistantDocument) -> str:
+    def _build_header(self, sanitized: AssistantDocument) -> str:
         """
-        Build page content for document embeddings.
+        Build the identifying header repeated in every chunk of an assistant.
 
         Args:
             sanitized: Sanitized assistant data
 
         Returns:
-            Formatted page content string
+            Header text (name, slug, url, project, categories, toolkits, creator, usage)
         """
-        content_parts = [
-            f"Name: {sanitized.name}",
-            f"Page url with details: /#/assistants/{sanitized.id}",
-            f"Project: {sanitized.project}",
+        header_parts = [f"Name: {sanitized.name}"]
+
+        if sanitized.slug:
+            header_parts.append(f"Slug: {sanitized.slug}")
+
+        header_parts.append(f"Page url with details: /#/assistants/{sanitized.id}")
+        header_parts.append(f"Project: {sanitized.project}")
+
+        if sanitized.categories:
+            header_parts.append(f"Categories: {', '.join(sanitized.categories)}")
+
+        toolkit_names, _ = self._toolkit_and_tool_names(sanitized)
+        if toolkit_names:
+            header_parts.append(f"Toolkits: {', '.join(toolkit_names)}")
+
+        self._add_creator(header_parts, sanitized)
+        self._add_usage_stats(header_parts, sanitized)
+
+        return "\n\n".join(header_parts)
+
+    def _build_body(self, sanitized: AssistantDocument) -> str:
+        """
+        Build the body text that is split into chunks: full description, capped system prompt, full tools list.
+
+        Args:
+            sanitized: Sanitized assistant data
+
+        Returns:
+            Body text
+        """
+        body_parts = [
             f"Description: {sanitized.description}",
             f"System Prompt: {sanitized.system_prompt[: self.ASSISTANT_PROMPT_MAX_LENGTH]}",
         ]
 
-        if sanitized.slug:
-            content_parts.insert(1, f"Slug: {sanitized.slug}")
+        _, tool_names = self._toolkit_and_tool_names(sanitized)
+        if tool_names:
+            body_parts.append(f"Tools: {', '.join(tool_names)}")
 
-        if sanitized.categories:
-            content_parts.append(f"Categories: {', '.join(sanitized.categories)}")
-
-        self._add_toolkits(content_parts, sanitized)
-        self._add_creator(content_parts, sanitized)
-        self._add_usage_stats(content_parts, sanitized)
-
-        return "\n\n".join(content_parts)
+        return "\n\n".join(body_parts)
 
     def _build_metadata(self, sanitized: AssistantDocument) -> dict:
         """
@@ -294,7 +310,7 @@ class AssistantLoader(BasePlatformLoader):
             sanitized: Sanitized assistant data
 
         Returns:
-            Minimal metadata with id (for Elasticsearch), name, source, popularity_score, and analytics fields
+            Minimal metadata with id (assistant id), name, source, popularity_score and the chunk header
         """
         unique_users = sanitized.unique_users_count or 0
         likes = sanitized.unique_likes_count or 0
@@ -303,31 +319,36 @@ class AssistantLoader(BasePlatformLoader):
         popularity_score = self._calculate_popularity_score(unique_users, likes, dislikes)
 
         return {
-            'id': sanitized.id,  # Required for Elasticsearch document ID
+            'id': sanitized.id,  # Assistant id; Elasticsearch chunk ids are derived from it
             'name': sanitized.name,  # Assistant name for display and processed_files
             'source': sanitized.name,  # Required by RRF for exact match field (using name as unique identifier)
             'popularity_score': popularity_score,  # Normalized score for ranking
+            # Identifying header repeated in every chunk by the processor (not stored on chunks)
+            self.CHUNK_HEADER_KEY: self._build_header(sanitized),
         }
+
+    def _sanitized_to_document(self, sanitized: AssistantDocument) -> Document:
+        """Build the whole document; the processor splits it into token-bounded chunks."""
+        return Document(page_content=self._build_body(sanitized), metadata=self._build_metadata(sanitized))
 
     def _entity_to_document(self, assistant: Assistant) -> Document:
         """
         Convert Assistant to LangChain Document for indexing.
 
         The document structure:
-        - page_content: Text for embeddings (name + description + system_prompt + usage stats)
-        - metadata: All sanitized fields for filtering and retrieval
+        - page_content: Body text (full description, capped system prompt, full tools list)
+        - metadata: id, name, source, popularity_score and the identifying chunk header
+
+        Long assistants are split into chunks by the platform processor, not truncated.
 
         Args:
             assistant: Assistant to convert
 
         Returns:
-            LangChain Document ready for indexing
+            LangChain Document ready for chunking and indexing
         """
         sanitized = self._sanitize_entity(assistant)
-        page_content = self._build_page_content(sanitized)
-        metadata = self._build_metadata(sanitized)
-
-        return Document(page_content=page_content, metadata=metadata)
+        return self._sanitized_to_document(sanitized)
 
     def load_single_entity(self, entity_id: str) -> Optional[Document]:
         """

@@ -1,0 +1,87 @@
+{
+  "decision": "approve",
+  "rationale": "CR-001 is resolved. index_single_entity now passes fail_fast=True, so a single-entity publish failure propagates to the caller, which logs an error. Progress still moves only for new entities. Covered by test_single_entity_publish_propagates_error and test_single_entity_publish_moves_progress_on_success. The fix-up also corrects a runtime bug found during the fix: the skip-log extra key 'name' collided with a reserved LogRecord attribute and raised KeyError. It is renamed to entity_name and pinned by a test that uses the real logger. No new high-risk issue was introduced. Fix-up evidence: 45 targeted tests pass and ruff is clean.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {
+      "kind": "story-ac",
+      "item": "For the same user input, the Search Kb Marketplace Assistants tool does not return the observed indexing/context length error",
+      "status": "pass",
+      "notes": "Documents are capped at 4000 o200k tokens, and a full sync skips any failing document instead of failing the index. Clearing the persisted FAILED state needs the post-deploy reindex (ops)."
+    },
+    {
+      "kind": "spec",
+      "item": "No single assistant can produce an embedding input over the model's context limit",
+      "status": "pass",
+      "notes": "page_content is truncated to PAGE_CONTENT_MAX_TOKENS=4000; covered by test_page_content_within_total_budget."
+    },
+    {
+      "kind": "spec",
+      "item": "One assistant failing to embed during full sync does not fail the whole index",
+      "status": "pass",
+      "notes": "Handled by _store_batch_with_fallback; covered by test_batch_failure_falls_back_per_document."
+    },
+    {
+      "kind": "spec",
+      "item": "Per-field token caps (description 2000, tools 500) using cached o200k_base helper",
+      "status": "pass",
+      "notes": "_truncate_to_tokens with lru_cache encoding; covered by loader tests."
+    },
+    {
+      "kind": "spec",
+      "item": "System prompt keeps 1000-char cap; field order/labels preserved",
+      "status": "pass",
+      "notes": "Unchanged line; the test asserts the trailing fields survive."
+    },
+    {
+      "kind": "spec",
+      "item": "Batches of STORAGE_CONFIG.embeddings_max_docs_count; progress only for stored docs; warning with entity_id/name/datasource_name/error",
+      "status": "pass",
+      "notes": "Covered by the batching, fallback and all-fail tests."
+    },
+    {
+      "kind": "spec",
+      "item": "All-fail still marks index FAILED via NoChunksImportedException",
+      "status": "pass",
+      "notes": "Base process() calls _validate_indexing_result (base_datasource_processor.py:223)."
+    },
+    {
+      "kind": "spec",
+      "item": "is_update=True path fail-fast, error propagates",
+      "status": "pass",
+      "notes": "Covered by test_update_path_propagates_error."
+    },
+    {
+      "kind": "spec",
+      "item": "Operations: admin reindex after deploy noted in MR description",
+      "status": "na",
+      "notes": "MR-description step, outside the diff."
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "All 3 commits use the 'EPMCDME-13933: Description' format per git-workflow.md."
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "ruff format and check are clean; the license header check is clean."
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "No secrets. The logs carry the entity id, name and provider error text, consistent with logging-patterns.md."
+    }
+  ],
+  "findings": [],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "resolved",
+      "notes": "fail_fast path in _add_documents; index_single_entity sets fail_fast=True; tests added (commit 001bc22e1)."
+    }
+  ]
+}

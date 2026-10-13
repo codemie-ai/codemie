@@ -14,8 +14,9 @@
 
 """Marketplace-specific search and rerank implementation with popularity scoring."""
 
+from collections import Counter
 from dataclasses import dataclass
-from typing import Optional
+from typing import ClassVar, Optional
 
 from langchain_core.documents import Document
 
@@ -34,7 +35,14 @@ class SearchAndRerankMarketplace(SearchAndRerankKB):
     - Number of dislikes
 
     Popular and well-liked assistants will rank higher in search results.
+
+    Long assistants are indexed as several chunks; results are reduced to one chunk per assistant.
     """
+
+    # Base search is over-fetched so de-duplicating chunks still leaves top_k distinct assistants
+    DEDUP_OVERFETCH_FACTOR: ClassVar[int] = 3
+    # Every assistant must stay routable by the LLM source routing, however many chunks it has
+    MAX_CHUNKS_FOR_SINGLE_DOCUMENT: ClassVar[int] = 10_000
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -55,13 +63,43 @@ class SearchAndRerankMarketplace(SearchAndRerankKB):
         Returns:
             List of reranked documents with popularity boost applied.
         """
-        results, _ = super().execute(routing_field_name)
+        top_k = self.top_k
+        self.top_k = top_k * self.DEDUP_OVERFETCH_FACTOR
+        try:
+            results, _ = super().execute(routing_field_name)
+        finally:
+            self.top_k = top_k
+
+        unique_results = self._best_chunk_per_assistant(results)[:top_k]
+        # One chunk per assistant is the intended, complete answer for marketplace search;
+        # report it as such so the search tool does not flag results as partial.
+        self.source_chunk_totals = dict(Counter(doc.metadata.get('source') for doc in unique_results))
 
         results_with_scores = []
-        for doc in results:
+        for doc in unique_results:
             # popularity_score is already normalized to [0, 1] range by AssistantLoader
             popularity_score = doc.metadata.get('popularity_score', 0.0)
             results_with_scores.append((doc, popularity_score))
 
         results_with_scores.sort(key=lambda x: x[1], reverse=True)
         return [doc for doc, _ in results_with_scores]
+
+    @staticmethod
+    def _best_chunk_per_assistant(results: list[Document]) -> list[Document]:
+        """
+        Keep only the best-ranked chunk of each assistant.
+
+        Long assistants are indexed as several chunks; without this, one assistant could occupy
+        several result slots and receive its popularity boost more than once.
+        Documents without an assistant id are kept as-is.
+        """
+        seen_ids: set[str] = set()
+        unique_results = []
+        for doc in results:
+            assistant_id = doc.metadata.get('id')
+            if assistant_id is not None:
+                if assistant_id in seen_ids:
+                    continue
+                seen_ids.add(assistant_id)
+            unique_results.append(doc)
+        return unique_results

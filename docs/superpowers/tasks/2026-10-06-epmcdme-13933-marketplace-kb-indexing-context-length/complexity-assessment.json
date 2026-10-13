@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "task": "Bound marketplace assistant documents to a safe embedding token budget (truncate description/tools in AssistantLoader) and optionally make BasePlatformDatasourceProcessor embedding resilient per document so one oversized assistant no longer fails the marketplace_assistants index and breaks search_kb_marketplace_assistants.",
+  "generated": "2026-10-07T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 14,
+  "size": "S",
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Two components in the platform indexing pipeline: AssistantLoader._build_page_content (primary token-budget truncation) and BasePlatformDatasourceProcessor._add_documents/_process (per-document resilience). PlatformIndexingService, SearchKBTool, its health mixin, and the routers need no functional change." },
+    { "dimension": "technical_risk", "reason": "The pattern is established: tiktoken-based token bounding is used by every other indexer, and the loader already truncates the system prompt with a class constant. The risk is moderate for three reasons. The ada-002 cl100k and repo o200k_base tokenizers differ, so the budget needs headroom. Per-document failure handling changes the IndexInfo.error semantics on an untested processor path. Keeping one doc per assistant id preserves upsert/delete. Rollback is trivial." },
+    { "dimension": "requirements_clarity", "reason": "The acceptance criteria are concrete: the FAQ tool must not return the context-length/indexing error for the same query. Minor decisions remain open: the budget value, truncation versus splitting (truncation is recommended), and whether per-doc resilience is in scope. Clearing the existing FAILED state is an operational reindex outside the code." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

@@ -14,6 +14,8 @@
 
 from unittest.mock import Mock, patch
 
+from elastic_transport import ObjectApiResponse
+
 from codemie.datasource.platform.assistant_datasource_processor import AssistantDatasourceProcessor
 from codemie.service.constants import FullDatasourceTypes
 
@@ -48,8 +50,8 @@ class TestAssistantDatasourceProcessor:
     @patch('codemie.datasource.platform.base_platform_processor.logger')
     @patch('codemie.datasource.platform.base_platform_processor.ElasticSearchClient.get_client')
     @patch('codemie.datasource.platform.base_platform_processor.IndexInfo')
-    def test_remove_single_entity_removes_from_index(self, mock_index_info, mock_es_client, mock_logger):
-        """Test that remove_single_entity removes assistant from ES index and updates metadata."""
+    def test_remove_single_entity_removes_all_chunks(self, mock_index_info, mock_es_client, mock_logger):
+        """Test that remove_single_entity removes every chunk of the assistant and updates metadata."""
         # Arrange
         mock_index = Mock()
         mock_index.id = 'idx_123'
@@ -58,6 +60,8 @@ class TestAssistantDatasourceProcessor:
         mock_index_info.filter_by_project_and_repo.return_value = [mock_index]
 
         mock_client = Mock()
+        # Real ES client returns ObjectApiResponse (not a dict)
+        mock_client.delete_by_query.return_value = ObjectApiResponse(body={'deleted': 3}, meta=None)
         mock_es_client.return_value = mock_client
 
         processor = AssistantDatasourceProcessor(datasource_name='test_datasource')
@@ -66,13 +70,38 @@ class TestAssistantDatasourceProcessor:
         processor.remove_single_entity('asst_123', 'Test Assistant')
 
         # Assert
-        # Verify ES delete was called
-        mock_client.delete.assert_called_once()
-        call_kwargs = mock_client.delete.call_args[1]
-        assert call_kwargs['id'] == 'asst_123'
+        # Verify all chunks of the assistant were deleted by metadata id
+        mock_client.delete_by_query.assert_called_once()
+        call_kwargs = mock_client.delete_by_query.call_args[1]
+        assert call_kwargs['body'] == {'query': {'term': {'metadata.id.keyword': 'asst_123'}}}
+        assert call_kwargs['conflicts'] == 'proceed'
+        assert call_kwargs['refresh'] is True
 
-        # Verify decrease_progress was called with correct parameters
-        mock_index.decrease_progress.assert_called_once_with(chunks_count=1, processed_file='Test Assistant')
+        # Verify decrease_progress was called with the number of deleted chunks
+        mock_index.decrease_progress.assert_called_once_with(chunks_count=3, processed_file='Test Assistant')
+
+    @patch('codemie.datasource.platform.base_platform_processor.logger')
+    @patch('codemie.datasource.platform.base_platform_processor.ElasticSearchClient.get_client')
+    @patch('codemie.datasource.platform.base_platform_processor.IndexInfo')
+    def test_remove_single_entity_nothing_deleted(self, mock_index_info, mock_es_client, mock_logger):
+        """Test that remove_single_entity does not change progress when no chunks are found."""
+        # Arrange
+        mock_index = Mock()
+        mock_index.id = 'idx_123'
+        mock_index_info.filter_by_project_and_repo.return_value = [mock_index]
+
+        mock_client = Mock()
+        mock_client.delete_by_query.return_value = {'deleted': 0}
+        mock_es_client.return_value = mock_client
+
+        processor = AssistantDatasourceProcessor(datasource_name='test_datasource')
+
+        # Act
+        processor.remove_single_entity('asst_123', 'Test Assistant')
+
+        # Assert
+        mock_index.decrease_progress.assert_not_called()
+        mock_logger.warning.assert_called_once()
 
     @patch('codemie.datasource.platform.base_platform_processor.logger')
     @patch('codemie.datasource.platform.base_platform_processor.ElasticSearchClient.get_client')
@@ -85,7 +114,7 @@ class TestAssistantDatasourceProcessor:
         mock_index_info.filter_by_project_and_repo.return_value = [mock_index]
 
         mock_client = Mock()
-        mock_client.delete.side_effect = Exception("ES error")
+        mock_client.delete_by_query.side_effect = Exception("ES error")
         mock_es_client.return_value = mock_client
 
         processor = AssistantDatasourceProcessor(datasource_name='test_datasource')

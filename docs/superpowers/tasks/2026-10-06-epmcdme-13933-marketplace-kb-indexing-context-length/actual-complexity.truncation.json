@@ -1,0 +1,77 @@
+{
+  "task": "EPMCDME-13933: Keep marketplace assistant indexing from failing on embedding context length by capping documents with token budgets (tiktoken) in AssistantLoader and adding per-document fallback in the platform processor, so one bad entity is skipped instead of failing the whole index.",
+  "generated": "2026-10-07",
+  "dimensions": {
+    "component_scope": {
+      "score": 3,
+      "label": "M",
+      "affected": "AssistantLoader (token-budget truncation of description/tools/page_content), BasePlatformDatasourceProcessor (batched _add_documents with per-document fallback, fail_fast for single-entity indexing, skipped-document logging)",
+      "layers": "Service (datasource loader/processor), External (embedding model + Elasticsearch vector store)"
+    },
+    "requirements_clarity": {
+      "score": 2,
+      "label": "S",
+      "status": "Clear",
+      "gaps": "Minor: token budget values (2000/500/4000) and the skip-on-failure versus fail-fast split for single-entity indexing were implementation decisions; review round surfaced one major finding (CR-001) that needed a fix"
+    },
+    "technical_risk": {
+      "score": 3,
+      "label": "M",
+      "risk_factors": "New token-based truncation (tiktoken o200k_base, multi-byte decode trim loop), changed error semantics in shared base processor (batch failure now retries per document and skips silently-logged failures), base class shared by all platform processors (assistants, workflows, datasources), logging bug with reserved LogRecord 'name' key found in review",
+      "mitigation": "Cached encoding via lru_cache, update/single-entity paths keep fail-fast error propagation, skipped documents logged with entity id, dedicated resilience tests in test_base_platform_processor.py and truncation tests in test_assistant_loader.py"
+    },
+    "file_change_estimate": {
+      "score": 2,
+      "label": "S",
+      "modified_files": 3,
+      "modified_file_list": [
+        "src/codemie/datasource/loader/platform/assistant_loader.py",
+        "src/codemie/datasource/platform/base_platform_processor.py",
+        "tests/codemie/datasource/loader/test_assistant_loader.py"
+      ],
+      "new_files": 1,
+      "new_file_list": [
+        "tests/codemie/datasource/platform_tests/test_base_platform_processor.py"
+      ],
+      "affected_dirs": ["src/", "tests/"]
+    },
+    "dependencies": {
+      "score": 2,
+      "label": "S",
+      "new_packages": [],
+      "version_changes": []
+    },
+    "affected_layers": {
+      "score": 2,
+      "label": "S",
+      "layers_changed": ["Service", "External"],
+      "schema_migration": false,
+      "cross_system": false
+    }
+  },
+  "total": 14,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 4,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Two components in the datasource subsystem changed: AssistantLoader page-content building and the shared BasePlatformDatasourceProcessor indexing path, which is inherited by every platform datasource processor."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "No exact precedent for token-budget truncation in the loader, and the base processor's failure semantics changed from fail-whole-batch to retry-per-document-and-skip. Review found a major issue (CR-001) and a reserved LogRecord 'name' key bug, both fixed. Still within M: non-critical path, easy to roll back."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "4 files (2 source, 2 test, one test file new). 364 insertions, mostly test coverage."
+    },
+    {
+      "dimension": "dependencies",
+      "reason": "No dependency manifest changed. tiktoken, an existing library, is used in a new place."
+    }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

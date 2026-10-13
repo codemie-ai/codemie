@@ -1,0 +1,91 @@
+{
+  "decision": "approve",
+  "rationale": "All three findings are resolved in commit f148fb5aa. Evidence: 3 new unit tests (172 search and KB-tool tests pass) and a live re-check of 13/13 on the rebuilt image, where the long assistant shows '1 of 1 parts included' with no notice and appears once in results. The fix-up introduces no new high-risk issue. One behaviour note: marketplace results are now capped at top_k distinct assistants, and RRF exact-path matches still come first.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {
+      "kind": "story-ac",
+      "item": "For the same user input, search_kb_marketplace_assistants does not return the indexing/context-length error",
+      "status": "pass",
+      "notes": "Chunks are capped at 1500 body tokens and failures are isolated per assistant. Live check: a 44-chunk assistant was indexed with error=f and completed=t. The ops reindex is needed after deploy."
+    },
+    {
+      "kind": "spec",
+      "item": "No embedding input exceeds the model context limit",
+      "status": "pass",
+      "notes": "Each chunk is the header plus at most 1500 body tokens; tests assert at most 2000 tokens per chunk."
+    },
+    {
+      "kind": "spec",
+      "item": "Full description and tools list searchable, nothing dropped",
+      "status": "pass",
+      "notes": "Tests find the last word and the last tool; the live search found the phrase at the end of the description."
+    },
+    {
+      "kind": "spec",
+      "item": "One failing assistant does not fail the index",
+      "status": "pass",
+      "notes": "Per-group fallback; covered by test_batch_failure_skips_whole_assistant."
+    },
+    {
+      "kind": "spec",
+      "item": "No stale or duplicate content after republish/update/unpublish/migration",
+      "status": "pass",
+      "notes": "Write first, then delete stale; unpublish deletes by metadata.id. The live check migrated a legacy doc and unpublish removed all chunks."
+    },
+    {
+      "kind": "spec",
+      "item": "Search returns each assistant at most once",
+      "status": "pass",
+      "notes": "_best_chunk_per_assistant; the live search returned the assistant once."
+    },
+    {
+      "kind": "spec",
+      "item": "System prompt keeps 1000-char cap",
+      "status": "pass",
+      "notes": "Covered by test_system_prompt_capped."
+    },
+    {
+      "kind": "spec",
+      "item": "Operations: reindex after deploy recorded in MR description",
+      "status": "na",
+      "notes": "This is an MR-description step, outside the diff."
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "All commits use the 'EPMCDME-13933: ...' prefix."
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "ruff format and check are clean; the license headers check passes."
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "There is no new exposure: the system prompt cap (1000 chars) is unchanged, and logs carry ids and names only."
+    }
+  ],
+  "findings": [],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "resolved",
+      "notes": "Base search over-fetched x3 (DEDUP_OVERFETCH_FACTOR), deduped, sliced to top_k, top_k restored in finally; test_execute_overfetches_then_returns_top_k_distinct_assistants."
+    },
+    {
+      "id": "CR-002",
+      "status": "resolved",
+      "notes": "source_chunk_totals set to returned count per source after dedup; test_execute_reports_returned_chunks_as_complete_coverage; live response shows 1 of 1 and no NOTICE."
+    },
+    {
+      "id": "CR-003",
+      "status": "resolved",
+      "notes": "MAX_CHUNKS_FOR_SINGLE_DOCUMENT=10000 on marketplace search; test_long_assistants_stay_routable (44-chunk source included in routing)."
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "decision": "request-changes",
+  "rationale": "Review of iteration 3 (reuse of the base chunking pipeline) on diff e2989abb0..d21869acc. All three lenses ran and spec §1 is otherwise satisfied, backed by live and end-to-end evidence. CR-001 is a guardrail-coverage regression introduced by moving the header into metadata. CR-002 covers two test gaps that the acceptance lens marked as partial. Deferred (4): the header is not token-capped (already listed in the MR trade-offs); the on_split_documents monitoring estimate excludes the repeated header; there is no defensive fallback for an empty body (unreachable for assistants, whose body always contains 'Description:'); per-entity chunk-count logging. Dismissed (9): shared-dict mutation (the base copies metadata per chunk); 'abstract interface changed' (it was reverted to main's); orphans from 0-based ids (the stale cleanup removes them, as shown live); numbering-reset concurrency (a processor is created per call); the return-count semantics (same as main); disallowed_special={} (the base convention); the hardcoded o200k_base (the base convention); the processor-to-loader-constant import (no cycle, tests import fine); section labels only in the first chunk (inherent to splitting).",
+  "confidence": "high",
+  "risk_flags": ["security"],
+  "business_review": [
+    {"kind": "story-ac", "item": "For the same user input, search_kb_marketplace_assistants does not return the indexing/context-length error", "status": "pass", "notes": "FAQ end-to-end run on the branch image answered with the long assistant; main reproduced the error."},
+    {"kind": "spec", "item": "§1 Splitting reuses base pipeline; loader returns whole documents; BasePlatformLoader contract unchanged (one constant added)", "status": "pass", "notes": "_split_entity_documents, _get_splitter and _process_chunk overrides; the loader contract matches main."},
+    {"kind": "spec", "item": "§1 Chunks numbered 1..N per entity; ids <id>_<n>; header prepended; chunk_header not in chunk metadata", "status": "pass", "notes": "Unit tests plus the live check (ids <id>_1..N)."},
+    {"kind": "spec", "item": "Goal: no stale/duplicate content incl. migration", "status": "pass", "notes": "The 0-based to 1-based migration removed every _0 id live."},
+    {"kind": "spec", "item": "Testing: processor split keeps last word AND last tool name", "status": "partial", "notes": "Only the last word is checked after splitting."},
+    {"kind": "spec", "item": "Testing: storage tests use the 1-based chunk id convention", "status": "partial", "notes": "The _chunks fixtures are still 0-based (a_0)."}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "The commit message is prefixed with EPMCDME-13933."},
+    {"kind": "code-quality", "status": "pass", "notes": "ruff and the license check are clean."},
+    {"kind": "security", "status": "fail", "notes": "Guardrails no longer cover the header text (CR-001)."}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/datasource/platform/base_platform_processor.py",
+      "line": 156,
+      "title": "Header text bypasses knowledge-base guardrails",
+      "problem": "_process applies _apply_guardrails_for_documents to the whole documents. Guardrails mask or block document.page_content only. After the refactor, page_content is the body alone; the header (name, slug, project, categories, toolkits, 'Created by: <username>', usage) lives in metadata and is prepended later in _process_chunk.",
+      "impact": "Header text, including the creator username, is embedded and stored in ES without passing configured guardrails such as PII masking or blocking. This is a regression from main and from iteration 2, where the header was part of page_content.",
+      "recommendation": "Apply guardrails to the final chunks: call _apply_guardrails_for_documents(chunks) after _split_entity_documents in _process, so the embedded text is exactly the guarded text. Add a test proving that header text is passed to guardrails."
+    },
+    {
+      "id": "CR-002",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/datasource/platform_tests/test_base_platform_processor.py",
+      "title": "Spec test gaps: last tool after split; 0-based storage fixtures",
+      "problem": "TestSplitEntityDocuments does not assert that the last tool name survives splitting, and the _doc/_chunks fixtures number chunks from 0, so the expected ids look like a_0.",
+      "impact": "The spec Testing section is not fully met, and the fixtures show a chunk-id convention the code no longer produces.",
+      "recommendation": "Add a long tools list to the long-entity split test and assert that the last tool is present. Make _chunks 1-based and update the expected ids to _1..N."
+    }
+  ]
+}

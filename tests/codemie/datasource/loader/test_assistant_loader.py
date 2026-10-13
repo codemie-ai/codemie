@@ -14,7 +14,12 @@
 
 from unittest.mock import Mock, patch
 
-from codemie.datasource.loader.platform.assistant_loader import AssistantLoader
+from codemie.datasource.loader.platform.assistant_loader import (
+    AssistantDocument,
+    AssistantLoader,
+    SafeTool,
+    SafeToolKit,
+)
 from codemie.rest_api.models.assistant import Assistant
 
 
@@ -132,14 +137,14 @@ class TestAssistantLoader:
 
         # Assert
         assert document is not None
-        # Check page_content contains expected text
-        assert 'Test Assistant' in document.page_content
+        # Body holds description and prompt; identifying fields go to the chunk header
         assert 'Test description' in document.page_content
         assert 'You are a test assistant' in document.page_content
-        assert 'developer, code-review' in document.page_content
+        assert 'Name: Test Assistant' in document.metadata['chunk_header']
+        assert 'developer, code-review' in document.metadata['chunk_header']
 
-        # Check minimal metadata (id, name, source, popularity_score)
-        assert len(document.metadata) == 4
+        # Check minimal metadata (id, name, source, popularity_score, chunk_header)
+        assert set(document.metadata) == {'id', 'name', 'source', 'popularity_score', 'chunk_header'}
         assert document.metadata['id'] == 'asst_123'
         assert document.metadata['name'] == 'Test Assistant'
         assert document.metadata['source'] == 'Test Assistant'  # source uses name as unique identifier
@@ -178,8 +183,7 @@ class TestAssistantLoader:
 
         # Assert
         assert result is not None
-        # Check minimal metadata (id, name, source, popularity_score)
-        assert len(result.metadata) == 4
+        assert set(result.metadata) == {'id', 'name', 'source', 'popularity_score', 'chunk_header'}
         assert result.metadata['id'] == 'asst_123'
         assert result.metadata['name'] == 'Test Assistant'
         assert result.metadata['source'] == 'Test Assistant'  # source uses name as unique identifier
@@ -218,3 +222,77 @@ class TestAssistantLoader:
 
         # Assert
         assert result is None
+
+
+def _make_sanitized(
+    description: str = "Helps with docs",
+    tool_count: int = 2,
+    system_prompt: str = "You are helpful",
+    with_toolkits: bool = True,
+) -> AssistantDocument:
+    toolkits = (
+        [SafeToolKit(toolkit="git", tools=[SafeTool(name=f"tool_name_{i}") for i in range(tool_count)])]
+        if with_toolkits
+        else []
+    )
+    return AssistantDocument(
+        id="asst_big",
+        name="Big Assistant",
+        slug="big-assistant",
+        description=description,
+        project="demo",
+        system_prompt=system_prompt,
+        categories=["developer"],
+        toolkits=toolkits,
+        unique_users_count=10,
+    )
+
+
+class TestAssistantLoaderDocument:
+    """Loader builds one whole document; splitting happens in the processor (EPMCDME-13933)."""
+
+    def test_entity_to_document_body_and_header(self):
+        # Arrange
+        loader = AssistantLoader()
+        description = " ".join(f"w{i}" for i in range(20000))
+
+        # Act
+        document = loader._sanitized_to_document(_make_sanitized(description=description, tool_count=3000))
+
+        # Assert: body keeps everything, header carries identity
+        assert document.page_content.startswith("Description: w0 ")
+        assert "w19999" in document.page_content
+        assert "tool_name_2999" in document.page_content
+        header = document.metadata["chunk_header"]
+        for expected in (
+            "Name: Big Assistant",
+            "Page url with details: /#/assistants/asst_big",
+            "Categories: developer",
+            "Toolkits: git",
+            "Created by: System",
+        ):
+            assert expected in header
+        assert "Description:" not in header
+
+    def test_system_prompt_capped(self):
+        # Arrange
+        loader = AssistantLoader()
+        prompt = "a" * 1000 + "SECRET_TAIL" + "b" * 4000
+
+        # Act
+        document = loader._sanitized_to_document(_make_sanitized(system_prompt=prompt))
+
+        # Assert
+        assert "a" * 1000 in document.page_content
+        assert "SECRET_TAIL" not in document.page_content
+
+    def test_metadata_keys(self):
+        # Arrange
+        loader = AssistantLoader()
+
+        # Act
+        document = loader._sanitized_to_document(_make_sanitized())
+
+        # Assert
+        assert set(document.metadata) == {"id", "name", "source", "popularity_score", "chunk_header"}
+        assert document.metadata["source"] == "Big Assistant"
