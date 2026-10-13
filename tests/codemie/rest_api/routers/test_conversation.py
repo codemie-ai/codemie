@@ -25,8 +25,10 @@ from codemie.rest_api.models.conversation import (
     GeneratedMessage,
 )
 from codemie.rest_api.models.conversation_folder import ConversationFolder
+from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
 import codemie.rest_api.routers.conversation as conversation_router
+import codemie.rest_api.routers.conversation.history as history
 from unittest.mock import patch, MagicMock
 from pydantic import ValidationError
 from codemie.rest_api.models.assistant import Assistant
@@ -42,7 +44,7 @@ def user():
 
 @pytest.fixture(autouse=True)
 def override_dependency(user):
-    app.dependency_overrides[conversation_router.authenticate] = lambda: user
+    app.dependency_overrides[authenticate] = lambda: user
     yield
     app.dependency_overrides = {}
 
@@ -139,10 +141,10 @@ async def test_get_conversation_by_id_includes_finished_at(user):
     )
     with (
         patch(
-            "codemie.rest_api.routers.conversation.Conversation.find_by_id", return_value=conversation
+            "codemie.rest_api.routers.conversation.retrieval.Conversation.find_by_id", return_value=conversation
         ) as mock_find_by_id,
-        patch("codemie.rest_api.routers.conversation.Ability.can", return_value=True),
-        patch("codemie.rest_api.routers.conversation.Assistant.get_by_ids", return_value=[]),
+        patch("codemie.rest_api.routers.conversation.retrieval.Ability.can", return_value=True),
+        patch("codemie.rest_api.routers.conversation.retrieval.Assistant.get_by_ids", return_value=[]),
     ):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
@@ -169,8 +171,8 @@ async def test_finish_conversation_success(user):
     mock_session.__exit__.return_value = False
     mock_session.execute.return_value.rowcount = 1
     with (
-        patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", return_value=conversation),
-        patch("codemie.rest_api.routers.conversation.Ability.can", return_value=True),
+        patch("codemie.rest_api.routers.conversation.history.Conversation.find_by_id", return_value=conversation),
+        patch("codemie.rest_api.routers.conversation.history.Ability.can", return_value=True),
         patch("codemie.service.conversation_service.get_session", return_value=mock_session),
     ):
         transport = ASGITransport(app=app)
@@ -195,8 +197,8 @@ async def test_finish_conversation_raises_409_when_already_finished(user):
         finished_at=datetime(2026, 8, 11, 12, 0, 0),
     )
     with (
-        patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", return_value=conversation),
-        patch("codemie.rest_api.routers.conversation.Ability.can", return_value=True),
+        patch("codemie.rest_api.routers.conversation.history.Conversation.find_by_id", return_value=conversation),
+        patch("codemie.rest_api.routers.conversation.history.Ability.can", return_value=True),
     ):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
@@ -207,7 +209,7 @@ async def test_finish_conversation_raises_409_when_already_finished(user):
 
 @pytest.mark.asyncio
 async def test_finish_conversation_404_when_missing(user):
-    with patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", return_value=None):
+    with patch("codemie.rest_api.routers.conversation.history.Conversation.find_by_id", return_value=None):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
             response = await ac.post(
@@ -225,8 +227,8 @@ async def test_finish_conversation_403_when_not_owner(user):
         history=[],
     )
     with (
-        patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", return_value=conversation),
-        patch("codemie.rest_api.routers.conversation.Ability.can", return_value=False),
+        patch("codemie.rest_api.routers.conversation.history.Conversation.find_by_id", return_value=conversation),
+        patch("codemie.rest_api.routers.conversation.history.Ability.can", return_value=False),
     ):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
@@ -251,10 +253,10 @@ def test_admin_finish_conversations_bulk_mixed_results():
     payload = ConversationFinishBulkRequest(conversation_ids=["conv-1", "conv-2"])
 
     with patch(
-        "codemie.rest_api.routers.conversation.ConversationService.finish_conversations_bulk",
+        "codemie.rest_api.routers.conversation.history.ConversationService.finish_conversations_bulk",
         return_value=expected,
     ):
-        response = conversation_router.admin_finish_conversations_bulk(payload)
+        response = history.admin_finish_conversations_bulk(payload)
 
     assert response.total == 2
     results_by_id = {r.conversation_id: r for r in response.results}
@@ -272,10 +274,10 @@ def test_list_admin_conversations_filters_by_is_finished():
         ConversationListItem(id="conv-1", date=datetime(2026, 8, 11, 10, 0, 0), finished_at=None),
     ]
     with patch(
-        "codemie.rest_api.routers.conversation.Conversation.get_all_conversations_admin",
+        "codemie.rest_api.routers.conversation.history.Conversation.get_all_conversations_admin",
         return_value=(items, 1),
     ) as mock_query:
-        response = conversation_router.list_admin_conversations(
+        response = history.list_admin_conversations(
             is_finished=False, started_after=None, project=None, page=0, per_page=20
         )
 
@@ -289,10 +291,10 @@ def test_list_admin_conversations_filters_by_project():
         ConversationListItem(id="conv-1", date=datetime(2026, 8, 11, 10, 0, 0)),
     ]
     with patch(
-        "codemie.rest_api.routers.conversation.Conversation.get_all_conversations_admin",
+        "codemie.rest_api.routers.conversation.history.Conversation.get_all_conversations_admin",
         return_value=(items, 1),
     ) as mock_query:
-        response = conversation_router.list_admin_conversations(
+        response = history.list_admin_conversations(
             is_finished=None, started_after=None, project="my-app", page=0, per_page=20
         )
 
@@ -303,10 +305,10 @@ def test_list_admin_conversations_filters_by_project():
 def test_list_admin_conversations_paginates():
     items = [ConversationListItem(id="conv-1", date=datetime(2026, 8, 11, 10, 0, 0))]
     with patch(
-        "codemie.rest_api.routers.conversation.Conversation.get_all_conversations_admin",
+        "codemie.rest_api.routers.conversation.history.Conversation.get_all_conversations_admin",
         return_value=(items, 3),
     ):
-        response = conversation_router.list_admin_conversations(
+        response = history.list_admin_conversations(
             is_finished=None, started_after=None, project=None, page=0, per_page=1
         )
 
@@ -342,10 +344,10 @@ def conversation_folder(user):
 async def test_get_conversation_by_id(user, conversation):
     with (
         patch(
-            "codemie.rest_api.routers.conversation.Conversation.get_by_id", return_value=conversation
+            "codemie.rest_api.routers.conversation.retrieval.Conversation.get_by_id", return_value=conversation
         ) as mock_get_by_id,
-        patch("codemie.rest_api.routers.conversation.Ability.can", return_value=True),
-        patch("codemie.rest_api.routers.conversation.Assistant.get_by_ids", return_value=[]),
+        patch("codemie.rest_api.routers.conversation.retrieval.Ability.can", return_value=True),
+        patch("codemie.rest_api.routers.conversation.retrieval.Assistant.get_by_ids", return_value=[]),
     ):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
@@ -380,10 +382,11 @@ async def test_update_conversation_with_image_generation_fields(user):
     )
 
     with (
-        patch("codemie.rest_api.routers.conversation.Conversation.get_by_id", return_value=conversation),
-        patch("codemie.rest_api.routers.conversation.Ability.can", return_value=True),
+        patch("codemie.rest_api.routers.conversation.crud.Conversation.get_by_id", return_value=conversation),
+        patch("codemie.rest_api.routers.conversation.crud.Ability.can", return_value=True),
         patch(
-            "codemie.rest_api.routers.conversation.ConversationService.update_conversation", return_value=conversation
+            "codemie.rest_api.routers.conversation.crud.ConversationService.update_conversation",
+            return_value=conversation,
         ),
     ):
         transport = ASGITransport(app=app)
@@ -407,9 +410,9 @@ CONVETSATION_MSG_EXPORT_PATH = "/v1/conversations/123/history/0/0/export?export_
 
 
 @pytest.mark.asyncio
-@patch("codemie.rest_api.routers.conversation.Ability.can", return_value=True)
+@patch("codemie.rest_api.routers.conversation.history.Ability.can", return_value=True)
 @patch("codemie.service.conversation.MessageExporter.export_single_message")
-@patch("codemie.rest_api.routers.conversation.Conversation.get_by_id")
+@patch("codemie.rest_api.routers.conversation.history.Conversation.get_by_id")
 async def test_export_conversation_message(
     mock_get_conversation, mock_export_service, _mock_ability, conversation_with_history
 ):
@@ -425,7 +428,7 @@ async def test_export_conversation_message(
 
 
 @pytest.mark.asyncio
-@patch("codemie.rest_api.routers.conversation.Conversation.get_by_id")
+@patch("codemie.rest_api.routers.conversation.history.Conversation.get_by_id")
 async def test_export_conversation_message_not_found(mock_get_conversation):
     mock_get_conversation.return_value = None
 
@@ -453,8 +456,11 @@ async def test_get_conversation_with_deleted_workflow(user, workflow_conversatio
     from codemie.core.workflow_models import WorkflowConfig
 
     with (
-        patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", return_value=workflow_conversation),
-        patch("codemie.rest_api.routers.conversation.Ability.can", return_value=True),
+        patch(
+            "codemie.rest_api.routers.conversation.retrieval.Conversation.find_by_id",
+            return_value=workflow_conversation,
+        ),
+        patch("codemie.rest_api.routers.conversation.retrieval.Ability.can", return_value=True),
         patch.object(WorkflowConfig, "get_by_id", side_effect=KeyError("Workflow not found")) as mock_get_workflow,
     ):
         transport = ASGITransport(app=app)
@@ -489,8 +495,11 @@ async def test_get_conversation_with_existing_workflow(user, workflow_conversati
     )
 
     with (
-        patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", return_value=workflow_conversation),
-        patch("codemie.rest_api.routers.conversation.Ability.can", return_value=True),
+        patch(
+            "codemie.rest_api.routers.conversation.retrieval.Conversation.find_by_id",
+            return_value=workflow_conversation,
+        ),
+        patch("codemie.rest_api.routers.conversation.retrieval.Ability.can", return_value=True),
         patch.object(WorkflowConfig, "get_by_id", return_value=workflow) as mock_get_workflow,
     ):
         transport = ASGITransport(app=app)
@@ -512,8 +521,8 @@ async def test_get_conversation_with_existing_workflow(user, workflow_conversati
 
 
 @pytest.mark.asyncio
-@patch("codemie.rest_api.routers.conversation.Ability.can", return_value=False)
-@patch("codemie.rest_api.routers.conversation.Conversation.get_by_id")
+@patch("codemie.rest_api.routers.conversation.history.Ability.can", return_value=False)
+@patch("codemie.rest_api.routers.conversation.history.Conversation.get_by_id")
 async def test_export_conversation_message_permission_err(mock_get_conversation, _mock_ability):
     mock_get_conversation.return_value = conversation_with_history
 
@@ -523,7 +532,7 @@ async def test_export_conversation_message_permission_err(mock_get_conversation,
 
 
 @pytest.mark.asyncio
-@patch("codemie.rest_api.routers.conversation.ConversationFolder.get_all_by_fields")
+@patch("codemie.rest_api.routers.conversation.folders.ConversationFolder.get_all_by_fields")
 async def test_get_conversation_folder_list(mock_get_all_by_id, conversation_folder):
     mock_get_all_by_id.return_value = [conversation_folder]
 
@@ -574,11 +583,11 @@ class TestSearchConversations:
 
         with (
             patch(
-                'codemie.rest_api.routers.conversation.Conversation.search_by_name_and_user',
+                'codemie.rest_api.routers.conversation.retrieval.Conversation.search_by_name_and_user',
                 return_value=[chat],
             ),
             patch(
-                'codemie.rest_api.routers.conversation.ConversationFolder.search_by_name_and_user',
+                'codemie.service.conversation_service.ConversationFolder.search_by_name_and_user',
                 return_value=[folder],
             ),
         ):
@@ -612,9 +621,7 @@ class TestSearchConversations:
             assert response.status_code == 401
         finally:
             # Restore the override for subsequent tests
-            app.dependency_overrides[conversation_router.authenticate] = lambda: User(
-                id='123', username='testuser', name='Test User'
-            )
+            app.dependency_overrides[authenticate] = lambda: User(id='123', username='testuser', name='Test User')
 
     def test_search_conversations_validation_min_length(self):
         """Test query must be at least 3 characters"""
@@ -647,11 +654,11 @@ class TestSearchConversations:
 
         with (
             patch(
-                'codemie.rest_api.routers.conversation.Conversation.search_by_name_and_user',
+                'codemie.rest_api.routers.conversation.retrieval.Conversation.search_by_name_and_user',
                 return_value=[chat_newer],
             ),
             patch(
-                'codemie.rest_api.routers.conversation.ConversationFolder.search_by_name_and_user',
+                'codemie.service.conversation_service.ConversationFolder.search_by_name_and_user',
                 return_value=[folder_older],
             ),
         ):
@@ -678,11 +685,11 @@ class TestSearchConversations:
 
         with (
             patch(
-                'codemie.rest_api.routers.conversation.Conversation.search_by_name_and_user',
+                'codemie.rest_api.routers.conversation.retrieval.Conversation.search_by_name_and_user',
                 return_value=[chat],
             ),
             patch(
-                'codemie.rest_api.routers.conversation.ConversationFolder.search_by_name_and_user',
+                'codemie.service.conversation_service.ConversationFolder.search_by_name_and_user',
                 return_value=[folder],
             ),
         ):
@@ -702,11 +709,11 @@ class TestSearchConversations:
         """Test search returns empty list when no matches"""
         with (
             patch(
-                'codemie.rest_api.routers.conversation.Conversation.search_by_name_and_user',
+                'codemie.rest_api.routers.conversation.retrieval.Conversation.search_by_name_and_user',
                 return_value=[],
             ),
             patch(
-                'codemie.rest_api.routers.conversation.ConversationFolder.search_by_name_and_user',
+                'codemie.service.conversation_service.ConversationFolder.search_by_name_and_user',
                 return_value=[],
             ),
         ):

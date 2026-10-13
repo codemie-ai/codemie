@@ -24,10 +24,10 @@ from codemie.rest_api.security.user import User
 
 @pytest.fixture(autouse=True)
 def override_auth():
-    from codemie.rest_api.routers import assistant as assistant_router
+    from codemie.rest_api.security.authentication import authenticate
 
     user = User(id="123", username="testuser", name="Test User")
-    app.dependency_overrides[assistant_router.authenticate] = lambda: user
+    app.dependency_overrides[authenticate] = lambda: user
     yield
     app.dependency_overrides = {}
 
@@ -45,7 +45,7 @@ async def test_valid_sort_by_is_forwarded_to_repository():
     """Valid sort_by should be passed to repository.query()."""
     mock_result = {"data": [], "pagination": {"page": 0, "per_page": 12, "total": 0, "pages": 0}}
 
-    with patch("codemie.rest_api.routers.assistant.AssistantRepository") as mock_repo:
+    with patch("codemie.rest_api.routers.assistant.catalog.AssistantRepository") as mock_repo:
         instance = mock_repo.return_value
         instance.query.return_value = mock_result
 
@@ -66,7 +66,7 @@ async def test_group_by_is_global_default_is_true():
     """group_by_is_global should default to True."""
     mock_result = {"data": [], "pagination": {"page": 0, "per_page": 12, "total": 0, "pages": 0}}
 
-    with patch("codemie.rest_api.routers.assistant.AssistantRepository") as mock_repo:
+    with patch("codemie.rest_api.routers.assistant.catalog.AssistantRepository") as mock_repo:
         instance = mock_repo.return_value
         instance.query.return_value = mock_result
 

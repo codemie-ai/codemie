@@ -1,0 +1,187 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15651_split-router-modules",
+  "head": "c1f50e220c30a57e1d4c485ee32c4d209a9867e6",
+  "runner": "poetry",
+  "started_at": "2026-10-10T13:22:10Z",
+  "completed_at": "2026-10-10T13:31:38Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1101,
+      "command": "make ruff",
+      "exit_code": 0,
+      "notes": "Non-mutating pre-check (ruff format --check, ruff check --no-fix) passed first, then make ruff ran verbatim: 2802 files left unchanged, working tree unchanged. Also covers the codemie-pre-commit hook ruff steps."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 4157,
+      "command": "make build",
+      "exit_code": 0,
+      "notes": "codemie-0.8.0 sdist and wheel built (dist/ output)."
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 627,
+      "command": "make license-check",
+      "exit_code": 0,
+      "notes": "Checked 2510 files, 0 missing license headers. Also covers the codemie-pre-commit hook license step."
+    },
+    {
+      "id": "secrets",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 97473,
+      "command": "make gitleaks",
+      "exit_code": 2,
+      "notes": "KNOWN UNRELATED: 5 findings, exactly the caller's list (.codex/config.toml, .mcp.json.lock, opencode.json, opencode.json.lock, .codegraph/codegraph.db-wal), all untracked/ignored local files; zero findings in tracked source or tests. Secret values redacted."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 101381,
+      "command": "make test",
+      "exit_code": 2,
+      "notes": "KNOWN UNRELATED: 19539 passed, 175 skipped, 1 failed: tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_matplotlib_png_generation (sandbox guard RuntimeError, outside this step's files). Hook mismatch: the opt-in pre-push hook runs the same suite as 'pytest tests/ --ignore=tests/enterprise/ -W ignore::DeprecationWarning --cov --cov-report=xml:coverage.xml'; not run separately."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 30,
+      "command": "SONAR_SKIP_TESTS=1 make sonar-local",
+      "exit_code": 2,
+      "notes": "'[sonar-local] sonar-scanner was not found. Install the official SonarScanner CLI or set SONAR_SCANNER_PATH.' Enable locally: install SonarScanner CLI (SONAR_TOKEN is already set). Reuse-coverage form matches the pre-push hook; the plain target would re-run the whole suite first."
+    },
+    {
+      "id": "commit-msg",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 790,
+      "command": "for each commit in e55bea30059ee836da23825efbd9fa5ea801f8a6..HEAD: git log -1 --format=%B <sha> > msg; bash scripts/git-hooks/commit_msg.sh msg",
+      "exit_code": 0,
+      "notes": "80 commits checked (0 merges), 0 rejected; every subject starts with 'EPMCDME-<n>:'."
+    },
+    {
+      "id": "gitleaks-staged",
+      "source": "hook",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": null,
+      "notes": "codemie-gitleaks scans the staged diff only and nothing is staged (git diff --cached empty); the full working tree is covered by the secrets gate."
+    },
+    {
+      "id": "ci-pre-ci-guard",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": ".gitlab-ci.yml (pre-ci-guard, wait-ci-init)",
+      "exit_code": null,
+      "notes": "Runs only in a GitLab merge_request_event pipeline against main and waits on external contexts ci-pipeline and compliance-report; cannot run locally. Per AGENTS.md the repo has no real pipeline; the MR must ask a reviewer to post /sanity and carry a '## Test harness' block."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "exit_code": null,
+      "notes": "Guide: skip when not opening a merge request. MR comes only after the whole ticket (steps 0-7); needs the docker stack and ~/.codemie/test-harness.json."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make coverage",
+      "exit_code": null,
+      "notes": "Not requested for this run."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make verify",
+      "exit_code": null,
+      "notes": "Prerequisites ruff, license, gitleaks, test already ran individually above."
+    },
+    {
+      "id": "P1-AC1 file move, headers, renames",
+      "source": "proof",
+      "status": "PASS",
+      "duration_ms": 1908,
+      "command": "ls src/codemie/rest_api/routers/assistant/_inline_credentials.py; sed -n 13p + diff <(head -13 NEW) <(head -13 routers/assistant/_shared.py) for both new modules; grep -rnw -- <6 renamed names> src tests; grep -rnw --include='*.py' -- <4 kept private names> src tests",
+      "exit_code": 0,
+      "notes": "old file absent; both new modules line 13 == '# limitations under the License.' and header identical to _shared.py; 6 renamed names 0 whole-word hits in src/ tests/; 4 kept names only in service/assistant/inline_credentials.py and its moved test (AssistantIntegrationValidator._build_validation_result excluded)"
+    },
+    {
+      "id": "P2-AC6 router-import layering",
+      "source": "proof",
+      "status": "PASS",
+      "duration_ms": 4648,
+      "command": "AST scan of every src/**/*.py ImportFrom (underscore alias whose target module defines router); grep -rn \"rest_api.routers\" src/codemie/service src/codemie/rest_api/handlers; AST check of both new modules for routers imports",
+      "exit_code": 0,
+      "notes": "0 violations over 1551 modules (99 router-defining; scanner flags 2 of 2 in a synthetic negative); 21 allowed underscore imports (_shared 16, _ask 3, _sub_assistants 2); 4 hits in service/ (3) and handlers/ (1), all routers.utils; new modules import nothing from rest_api.routers"
+    },
+    {
+      "id": "P3-AC7 fresh-interpreter imports",
+      "source": "proof",
+      "status": "PASS",
+      "duration_ms": 33820,
+      "command": "poetry run python -I -c \"import codemie.service.assistant.inline_credentials\"; poetry run python -I -c \"import codemie.service.assistant.sensitive_prompt_variables\"; poetry run python -I -c \"import codemie.service.assistant\"; poetry run python -I -c \"import codemie.rest_api.routers.assistant\"",
+      "exit_code": 0,
+      "notes": "all 4 modules import with exit 0 in their own interpreter (inline_credentials, sensitive_prompt_variables, codemie.service.assistant, codemie.rest_api.routers.assistant)"
+    },
+    {
+      "id": "P4-AC8 router_guards and baselines",
+      "source": "proof",
+      "status": "PASS",
+      "duration_ms": 20787,
+      "command": "poetry run pytest tests/codemie/rest_api/router_guards -n 0 --show-capture=no -q; git diff --exit-code dc221e653f26c1442abe0045260480f14138ef80 -- tests/codemie/rest_api/router_guards src/codemie/rest_api/main.py",
+      "exit_code": 0,
+      "notes": "46 passed; git diff vs BASE empty (baselines and main.py byte-identical; regenerate_baselines not run)"
+    },
+    {
+      "id": "P5-AC9 affected test directories",
+      "source": "proof",
+      "status": "PASS",
+      "duration_ms": 60726,
+      "command": "poetry run pytest tests/codemie/rest_api/routers tests/unit/routers tests/codemie/service/assistant tests/codemie/rest_api/router_guards -n 0 --show-capture=no -q",
+      "exit_code": 0,
+      "notes": "2391 passed, 9 skipped (skips: pdflatex unavailable x2, WORKFLOW_GENERATION_ENABLED False x5, user_kata endpoint bug x1, none touch assistant code)"
+    },
+    {
+      "id": "P6-AC3 characterization tests vs Task 1",
+      "source": "proof",
+      "status": "PASS",
+      "duration_ms": 33,
+      "command": "diff of cea28a168c vs HEAD for test_inline_credentials.py (old path tests/codemie/rest_api/routers/) and test_sensitive_prompt_variables.py after applying the 6-name rename map; git diff --exit-code b0c0c49c53 HEAD -- tests/codemie/rest_api/routers/test_assistant_prompt_variable_wiring.py",
+      "exit_code": 0,
+      "notes": "after the mechanical rename only import lines differ in both files (no other changed line); assert/patch/fixture line counts equal (ic 39, sv 33, EncryptionFactory patch literal 1 before and after); wiring test byte-identical; annotations commit c1f50e220c did not touch these two files (its test addition is the new file test_signature_annotations.py, 56 lines)"
+    },
+    {
+      "id": "P7-stale importers of the deleted module path",
+      "source": "proof",
+      "status": "PASS",
+      "duration_ms": 1997,
+      "command": "grep -rnIE 'routers\\.assistant\\._inline_credentials|routers/assistant/_inline_credentials' over codemie, codemie-enterprise, codemie-mcp-connect-service, codemie-ui, codemie-public-skills (excl. docs/superpowers, local, .git, .venv, node_modules); git grep --untracked per repo",
+      "exit_code": 0,
+      "notes": "0 importer hits in all 5 repos (git grep tracked and untracked 0 each); only plain-grep hit is the gitignored generated codemie/coverage.xml:46871 (stale coverage report entry, not an importer)"
+    }
+  ],
+  "failures": {
+    "secrets": "Finding: <redacted>\nSecret: <redacted>\nRuleID:      generic-api-key\nEntropy:     4.016284\nFile:        /workspace/.codex/config.toml\nLine:        15\nFingerprint: /workspace/.codex/config.toml:generic-api-key:15\nFinding: <redacted>\nSecret: <redacted>\nRuleID:      generic-api-key\nEntropy:     4.696132\nFile:        /workspace/.mcp.json.lock\nLine:        11\nFingerprint: /workspace/.mcp.json.lock:generic-api-key:11\nFinding: <redacted>\nSecret: <redacted>\nRuleID:      generic-api-key\nEntropy:     4.016284\nFile:        /workspace/opencode.json\nLine:        26\nFingerprint: /workspace/opencode.json:generic-api-key:26\nFinding: <redacted>\nSecret: <redacted>\nRuleID:      generic-api-key\nEntropy:     4.016284\nFile:        /workspace/opencode.json.lock\nLine:        303\nFingerprint: /workspace/opencode.json.lock:generic-api-key:303\nFinding: <redacted>\nSecret: <redacted>\nRuleID:      generic-api-key\nEntropy:     3.740771\nFile:        /workspace/.codegraph/codegraph.db-wal\nLine:        176953\nFingerprint: /workspace/.codegraph/codegraph.db-wal:generic-api-key:176953\n1:25PM INF scanned ~225075981 bytes (225.08 MB) in 1m37.2s\n1:25PM WRN leaks found: 5",
+    "unit": "\ntests/codemie/service/settings/test_settings_request_validator.py::test_validate_git_request_rejects_unknown_auth_type\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/settings/test_settings_request_validator.py:556: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    validate_git_request(request)\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestSelectCandidatesFiltering::test_list_with_unknown_alias_raises_422\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:207: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._select_candidates(\"source\", {SettingType.PROJECT}, [\"jira-prod\", \"ghost-alias\"])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestSelectCandidatesFiltering::test_alias_excluded_by_type_filter_raises_type_mismatch_error\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:217: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._select_candidates(\"source\", {SettingType.PROJECT}, [\"user-cred\"])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestSelectCandidatesFiltering::test_subsystem_managed_alias_in_list_raises_reserved_error\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:229: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._select_candidates(\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestSelectCandidatesFiltering::test_alias_genuinely_absent_from_project_raises_422\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:241: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._select_candidates(\"source\", {SettingType.PROJECT}, [\"ghost-alias\"])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestSelectCandidatesFiltering::test_empty_list_raises_422\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:249: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._select_candidates(\"source\", {SettingType.PROJECT}, [])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestTransferNonTransferableInList::test_copy_blocked_alias_in_list_raises_422\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:282: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService.transfer(\"source\", \"target\", TransferMode.COPY, _ALL_TYPES, [\"gitlab-hook\"])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestTransferBothFlagsFalse::test_both_flags_false_raises_422\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:308: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService.transfer(\"source\", \"target\", TransferMode.MOVE, set(), None)\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestValidateProjects::test_rejects_same_source_and_target\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:347: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._validate_projects(\"same\", \"same\")\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestValidateAliasesPresent::test_rejects_row_with_empty_alias\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:391: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._validate_aliases_present([row])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestTransfer::test_null_alias_trigger_row_is_rejected_before_response_construction\n  /home/taras_spashchenko/EPAM/cm/codemie/src/codemie/service/settings/settings_transfer_service.py:372: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    cls._validate_aliases_present(candidates)\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_matplotlib_png_generation\n==== 1 failed, 19539 passed, 175 skipped, 261 warnings in 98.13s (0:01:38) =====\nmake: *** [Makefile:31: test] Error 1\n"
+  }
+}

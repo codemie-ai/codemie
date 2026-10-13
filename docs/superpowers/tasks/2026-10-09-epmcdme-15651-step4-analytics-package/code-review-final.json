@@ -1,0 +1,48 @@
+{
+  "decision": "request-changes",
+  "rationale": "spending.py's Apache header is truncated (CR-001), which fails AC1; the rest of the 12-module move reads as verbatim, and the installed FastAPI resolves handle_analytics_errors' string annotations via inspect.unwrap against each endpoint's own module. The diff is oversized, so confidence is low: verification was spot reads, and route/OpenAPI parity, make ruff, the test suites and per-module imports remain Stage 7 evidence. 1 deferred (the 11 /routing/* endpoints have no router-level tests, pre-existing; backlog in code-review-deferred.md), 7 dismissed as noise.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "spec", "item": "Scope: analytics.py replaced by package; bodies, decorators, docstrings, local imports, constants and 4 classes move byte-identical; __future__ import kept", "status": "pass", "notes": "analytics.py deleted; 85 handlers, 4 classes, helpers and constants match the removed text; only imports, headers, APIRouter(), logger differ; all 12 modules carry the __future__ import"},
+    {"kind": "spec", "item": "Scope: nine route modules in include order with 85 routes (usage 13, activity 11, cli 10, cli_insights 15, cli_insights_projects 2, enriched 5, spending 7, leaderboard 11, routing 11)", "status": "pass", "notes": "Decorator counts per module sum to 85 in source order; helpers and constants sit in the named modules"},
+    {"kind": "spec", "item": "Scope: _common and _spending_support hold shared helpers/constants; _spending_support imports _common only", "status": "pass", "notes": "Both match the removed text; no private module imports a route module"},
+    {"kind": "spec", "item": "Scope: cap of 500 lines per module", "status": "pass", "notes": "Largest module is 467 lines; none over 500"},
+    {"kind": "spec", "item": "Constraints: __init__.py holds router, one include_router per module in order, __all__ = [router]; route modules use a bare APIRouter()", "status": "pass", "notes": "Read __init__.py: prefix, tags, authenticate dependency, include order and __all__ match the spec"},
+    {"kind": "spec", "item": "Constraints: auth byte-identical; leaderboard dependency lists, authorization helpers, inline checks and feature gates move verbatim", "status": "pass", "notes": "Leaderboard dependencies= lines, inline role/403/404 checks, budget helpers and three gates equal the removed lines"},
+    {"kind": "spec", "item": "Constraints: helpers keep names; underscore names imported only from private modules; private modules never import route modules", "status": "pass", "notes": "Underscore imports come only from _common and _spending_support"},
+    {"kind": "spec", "item": "Constraints: each module reading logger defines logger = logging.getLogger(__name__)", "status": "pass", "notes": "Defined in _common, _spending_support, activity, spending, usage; the other modules never read it"},
+    {"kind": "spec", "item": "Constraints: main.py unchanged and resolves to the package", "status": "pass", "notes": "main.py not in changed_files; analytics.router now reads the package router"},
+    {"kind": "spec", "item": "Constraints: tests stay in files; 55 patch strings and 79 imports in 8 files retargeted to the module that resolves the name", "status": "pass", "notes": "Only the 8 listed test files changed; patch targets and imports resolve to the module that reads the name"},
+    {"kind": "spec", "item": "Route order: 85 routes keep their sequence (before/after dump)", "status": "pending-stage-7", "notes": "Static order check passes; the dump is execution evidence (HANDOFF reports COMPARE OK 85/85)"},
+    {"kind": "spec", "item": "OpenAPI: openapi.json and route_precedence.json byte-identical, nothing regenerated", "status": "pending-stage-7", "notes": "No baseline in the diff; equality is proven only by running router_guards (HANDOFF reports 46 passed)"},
+    {"kind": "spec", "item": "AC1: analytics.py gone; package holds __init__, 9 route modules, _common, _spending_support, each <=500 lines with the Apache header", "status": "fail", "notes": "spending.py header omits the last line '# limitations under the License.'; the other 11 files carry the full header. See CR-001"},
+    {"kind": "spec", "item": "AC2: route dump before/after equal (rows, neighbors, router prefix/tags/dependencies, leaderboard dependency order)", "status": "pending-stage-7", "notes": "Structure supports it; runtime result reported OK in task-13-report.md and HANDOFF.md"},
+    {"kind": "spec", "item": "AC3: only moved blocks, imports, headers, APIRouter(), include_router, __all__, logger differ; top-level defs/classes/assignments byte-identical", "status": "pass", "notes": "No content change found; ASTMOVE 119/119 reported in task-13-report.md"},
+    {"kind": "spec", "item": "AC4: no routers.analytics.<name> in src/tests unless router or a real submodule; patched names are read in a function body", "status": "pass", "notes": "Only router and real submodules are referenced; flip-check rows are listed in HANDOFF.md"},
+    {"kind": "spec", "item": "AC5: no src module imports an underscore name from a router-defining module; nothing in service/ or handlers/ imports routers/analytics", "status": "pass", "notes": "Underscore imports come only from _common and _spending_support; main.py unchanged"},
+    {"kind": "spec", "item": "AC6: each of 13 modules imports alone; guarded app builds hermetically; guards pass with baselines unchanged", "status": "pending-stage-7", "notes": "Needs execution; HANDOFF reports IMPORT OK x12 and GUARDS 46 passed"},
+    {"kind": "spec", "item": "AC7: make ruff passes; tests pass in the eight files, routers, unit/routers, enterprise/litellm and router_guards", "status": "pending-stage-7", "notes": "make ruff and the suites are Stage 7 evidence; the license checker will not catch the spending.py header gap"},
+    {"kind": "spec", "item": "AC8: handoff asks for /sanity and a ## Test harness block, and lists the moved auth code", "status": "pass", "notes": "HANDOFF.md lines 130-131 carry the request and the full auth-code list"},
+    {"kind": "spec", "item": "Non-goals: no class moves, renames, path/tag/operationId changes, dead-code deletion, handler shortening, new tests, main.py or guard edits", "status": "pass", "notes": "Dead code kept verbatim; classes keep names; changed files are the package, the deleted file and 8 test files"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "12 subjects in c810715..HEAD all match the documented EPMCDME-####: Description format (EPMCDME-15651: Capital description)"},
+    {"kind": "code-quality", "status": "pass", "notes": "Old functions and 85 routes AST-identical, present once; largest module 467 lines; no unused imports; patch targets resolve. Standards audit missed the spending.py header gap (CR-001)."},
+    {"kind": "security", "status": "pass", "notes": "Package router keeps dependencies=[Depends(authenticate)] with same prefix/tags; per-route Depends(authenticate) and authorization helper bodies unchanged; no new logging or secret handling"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/analytics/spending.py",
+      "line": 12,
+      "title": "Truncated Apache license header in spending.py",
+      "problem": "The Apache header at the top of spending.py stops at '# See the License for the specific language governing permissions and' (line 12) and omits the closing '# limitations under the License.' line; line 13 is blank. The other 11 package files carry the full 13-line header, and AC1 requires the Apache header on every module.",
+      "impact": "AC1 is unmet and a malformed license notice ships in a new source file. Confirmed by reading the file. Per the verification-gap lens, scripts/license_headers/check_license_headers.py only matches Apache marker strings, so make ruff and the license check will not flag it.",
+      "recommendation": "Append the missing final header line `# limitations under the License.` directly after line 12 of spending.py, so the header matches the 13-line header in the other 11 package files. Change nothing else in the file."
+    }
+  ]
+}

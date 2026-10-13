@@ -194,7 +194,7 @@ def _mock_async_session():
         "/v1/analytics/leaderboard/entries",
     ],
 )
-@patch("codemie.rest_api.routers.analytics.config")
+@patch("codemie.rest_api.routers.analytics.leaderboard.config")
 async def test_leaderboard_503_comes_from_leaderboard_guard_not_metrics_analytics(mock_cfg, path):
     """Leaderboard routes 503 when LEADERBOARD_ENABLED=False; detail must name the leaderboard guard."""
     mock_cfg.LEADERBOARD_ENABLED = False
@@ -268,7 +268,7 @@ async def test_user_project_spending_unaffected_by_enterprise_guard():
             new_callable=AsyncMock,
             return_value=([], []),
         ),
-        patch("codemie.rest_api.routers.analytics.get_async_session", return_value=_mock_async_session()),
+        patch("codemie.rest_api.routers.analytics.spending.get_async_session", return_value=_mock_async_session()),
     ):
         transport = ASGITransport(app=_APP)
         async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
@@ -282,13 +282,13 @@ async def test_project_member_spending_unaffected_by_enterprise_guard():
     """GET /project-member-spending returns 200 when enterprise absent (Group D, no metrics analytics guard)."""
     with (
         patch("codemie.enterprise.has_enterprise", return_value=False),
-        patch("codemie.rest_api.routers.analytics._authorize_admin_budget_view"),
+        patch("codemie.rest_api.routers.analytics.spending._authorize_admin_budget_view"),
         patch(
             "codemie.service.analytics.handlers.member_spend_service.MemberSpendService.get_project_member_spend",
             new_callable=AsyncMock,
             return_value=([], []),
         ),
-        patch("codemie.rest_api.routers.analytics.get_async_session", return_value=_mock_async_session()),
+        patch("codemie.rest_api.routers.analytics.spending.get_async_session", return_value=_mock_async_session()),
     ):
         transport = ASGITransport(app=_APP)
         async with AsyncClient(transport=transport, base_url="http://testserver") as ac:

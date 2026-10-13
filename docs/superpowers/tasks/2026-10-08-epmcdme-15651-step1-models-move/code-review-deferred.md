@@ -1,0 +1,4 @@
+# Deferred from code review — 2026-10-08-epmcdme-15651-step1-models-move (2026-10-08)
+
+- **New models modules use Optional[X] instead of X | None** — `src/codemie/rest_api/models/budget.py:18` (same pattern in cost_center.py, project.py, project_budget.py) — code-quality.md prefers `X | None`, but the four new modules use `Optional[...]` on most nullable fields and mix both forms. Pre-existing: the classes were moved verbatim from the routers, where the idiom already lived. The task is move-only with byte-identical class bodies, and the Ruff gate (no UP rules selected) does not flag it.
+- **ProjectUpdateRequest.validate_non_empty has no return annotation** — `src/codemie/rest_api/models/project.py:218` — the `@model_validator(mode="after")` method returns `self` but declares no return type. Pre-existing: moved verbatim from `routers/projects.py`; annotating it would alter a moved class body and break the `--color-moved` review.

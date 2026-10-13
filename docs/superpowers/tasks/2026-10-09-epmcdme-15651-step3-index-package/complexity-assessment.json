@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "task": "Split the 2,884-line routers/index.py (45 routes) into an index/ package of about 11 modules plus a combined-router __init__ exporting only router, move-only, retargeting 169 patch strings and 25 imports across 5 test files and preserving router-level and route-level auth dependencies.",
+  "generated": "2026-10-09T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 21,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "45 routes, 17 helpers and 13 shared constants spread over 11 ticket modules plus a new _common support module and a combined-router __init__; 5 helpers and 7 constants are shared across modules (new abstraction). One subsystem (the router) and a clear step-2 pattern keep it from going higher; Refactor-of-large-module flag lifts it L to XL." },
+    { "dimension": "requirements_clarity", "reason": "Move-only intent and criteria are user-resolved, but several design decisions are open: the Knowledge-base block (22 routes) interleaves types in source order so no per-type split reproduces 'sequence equals pre-move' and the criterion must be restated; POST /index/health and GET /index/jira/fields have no home in the ticket module list; code_repositories (562 lines) and Atlassian (about 470 plus jira/fields) need a private support module to stay under the 500-line cap; _common contents are undecided. Rework risk if the restated ordering criterion is not accepted." },
+    { "dimension": "technical_risk", "reason": "Closest pattern is the step-2 assistant package (dependencies=[]); it does not cover this router's non-empty router-level Depends(authenticate), which 19 handlers rely on alone for request.state.user, nor the 7 route-level access dependencies. Combined-router dependency order and the 405 Allow header order (KB same-path method order) are unguarded by the router_guards route dump (path+methods only). Stale whole-name patches (Ability, _index_unique_check) fail silently, 14 patch strings resolve outside the handler module, and 25 of 45 handlers have no direct test. Security-divergence auto-bump M to L. Rollback is a plain revert." },
+    { "dimension": "file_change_estimate", "reason": "About 12-13 new files (11 modules, __init__, probable private support module) plus index.py removed, 5 test files, 1 guide row: about 19-20 files total, past the 6+ new and 16+ total XXL thresholds although modified count alone is about 7. Package conversion changes directory structure. No OpenAPI or precedence baseline change expected (both router-local classes have plain unique component keys)." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L to XL: refactor of a large module (2,884 lines, 45 routes) into a package with new shared _common abstraction",
+    "Technical Risk bumped from M to L: auto-bump, closest pattern (step-2 assistant package, dependencies=[]) does not cover preserving router-level authenticate and route-level access dependencies"
+  ],
+  "split_recommendation": null
+}

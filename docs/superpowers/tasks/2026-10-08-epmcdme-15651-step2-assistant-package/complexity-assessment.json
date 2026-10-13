@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "task": "EPMCDME-15651 step 2: convert the 3,290-line routers/assistant.py into an assistant/ package (move-only, init exports only router), move two access-check helpers to routers/utils.py as public names, retarget ~135 patch strings across test files and 3 src importers, and re-baseline the OpenAPI snapshot if ReactionRequest/PublishToMarketplaceRequest move.",
+  "generated": "2026-10-08T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 21,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "One router module becomes roughly 8-10 package modules (catalog, toolkits, management, execution, marketplace, generation, versions, _shared, plus sub-splits). It carries 36 routes and 59 helpers, and 18 plus 15 call sites share the two access-check helpers. routers/utils.py (52 callers) gains two public helpers, and three sibling routers (ide, assistant_mapping, assistant_prompt_variable_mapping) are re-pointed. Pure move, no new behavior, so it stays below XXL." },
+    { "dimension": "requirements_clarity", "reason": "Ticket and step-0 spec fix the module list and the criteria (init exports only router, no cross-router underscore imports, OpenAPI identical except a reviewed re-baseline). Still open: snapshot treatment of the 2 component-key renames, final public helper names, how underscore helpers are shared inside the package, and how to sub-split execution (~750 lines), marketplace (~570-725) and catalog plus toolkits (~630) under the ~500-line rule. Ticket-vs-reading discrepancies (11 vs 13 test files, 3,214 vs 3,290 lines) show the count is not final." },
+    { "dimension": "technical_risk", "reason": "Closest patterns are the codemie/enterprise/mcp_auth package and the step 0/1 moves. None covers a 36-route combined router with 15 order-sensitive route-precedence pairs, nor the access-check (authz) helpers changing home. Hazards: circular imports once routers/utils.py imports Assistant/Ability, function-local imports that shadow module-level patch targets (get_request_handler, AssistantVersionService), patch retargeting that is not 1:1 (Ability, logger, asyncio), and preserving the unauthenticated conversation_metrics route and the dependencies=[] router. Versions, health, evaluate, generate, delete and ide.py have no tests, so only the guards (42 tests, OpenAPI snapshot, 45 route pairs) catch regressions there. Rollback is a plain revert." },
+    { "dimension": "file_change_estimate", "reason": "About 22+ modified files: the 3 src importers, routers/utils.py, optionally models/assistant.py, 15 assistant router test files (135 patch strings), 2 sibling-mapping test files (19 strings) and the baselines/openapi.json re-baseline. About 9-12 new package files, and assistant.py is replaced by the package. Well above the 16+ modified / 6+ new XXL bound; mostly mechanical." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L to XL: refactors a large (3,290-line) module and touches core shared utility routers/utils.py (52 callers)",
+    "Technical Risk bumped from M to L: relocates authorization helpers (_check_user_can_access_assistant, _get_assistant_by_id_or_raise); the closest precedents do not cover the circular-import risk of widening routers/utils.py or preserving the unauthenticated conversation_metrics route",
+    "Borderline 20->21: base sum was 20 with Component Scope at XL, so leaning higher; Requirements Clarity scored L for the open module sub-split and snapshot-treatment decisions"
+  ],
+  "split_recommendation": null
+}

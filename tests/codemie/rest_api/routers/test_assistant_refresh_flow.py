@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 from codemie.rest_api.main import app
 from codemie.service.generation_manager import GenerationManager
 from codemie.core.thread import CancellationReason, ThreadedGenerator
-from codemie.rest_api.routers.conversation import CONVERSATION_ABORTED_SUCCESS_MSG
+from codemie.rest_api.routers.conversation.streaming import CONVERSATION_ABORTED_SUCCESS_MSG
 from codemie.rest_api.models.base import ConversationStatus
 from codemie.rest_api.models.conversation import Conversation, GeneratedMessage
 from codemie.rest_api.security.authentication import authenticate
@@ -60,8 +60,8 @@ def test_generation_manager_abort():
     assert mgr.is_active("test_conv") is False
 
 
-@patch("codemie.rest_api.routers.conversation.Conversation.find_by_id")
-@patch("codemie.rest_api.routers.conversation.Ability")
+@patch("codemie.rest_api.routers.conversation.streaming.Conversation.find_by_id")
+@patch("codemie.rest_api.routers.conversation.streaming.Ability")
 def test_abort_endpoint_success(mock_ability, mock_find_by_id, authenticated_user):
     # Mock conversation ownership and write access
     conv = MagicMock(spec=Conversation)
@@ -363,15 +363,15 @@ def test_build_chat_history_messages_response_time_preserved_when_finished():
     assert assistant_msg.in_progress is False
 
 
-@patch("codemie.rest_api.routers.conversation.Conversation.find_by_id")
+@patch("codemie.rest_api.routers.conversation.streaming.Conversation.find_by_id")
 def test_conversation_stream_not_found(mock_find_by_id, authenticated_user):
     mock_find_by_id.return_value = None
     response = client.get("/v1/conversations/non_existent_id/stream")
     assert response.status_code == 404
 
 
-@patch("codemie.rest_api.routers.conversation.Conversation.find_by_id")
-@patch("codemie.rest_api.routers.conversation.Ability")
+@patch("codemie.rest_api.routers.conversation.streaming.Conversation.find_by_id")
+@patch("codemie.rest_api.routers.conversation.streaming.Ability")
 def test_conversation_stream_access_denied(mock_ability, mock_find_by_id, authenticated_user):
     mock_find_by_id.return_value = MagicMock(spec=Conversation)
     ability_instance = MagicMock()
@@ -382,8 +382,8 @@ def test_conversation_stream_access_denied(mock_ability, mock_find_by_id, authen
     assert response.status_code == 401
 
 
-@patch("codemie.rest_api.routers.conversation.Conversation.find_by_id")
-@patch("codemie.rest_api.routers.conversation.Ability")
+@patch("codemie.rest_api.routers.conversation.streaming.Conversation.find_by_id")
+@patch("codemie.rest_api.routers.conversation.streaming.Ability")
 def test_conversation_stream_no_active_generator(mock_ability, mock_find_by_id, authenticated_user):
     mock_find_by_id.return_value = MagicMock(spec=Conversation)
     ability_instance = MagicMock()
@@ -395,8 +395,8 @@ def test_conversation_stream_no_active_generator(mock_ability, mock_find_by_id, 
     assert response.text == ""
 
 
-@patch("codemie.rest_api.routers.conversation.Conversation.find_by_id")
-@patch("codemie.rest_api.routers.conversation.Ability")
+@patch("codemie.rest_api.routers.conversation.streaming.Conversation.find_by_id")
+@patch("codemie.rest_api.routers.conversation.streaming.Ability")
 def test_conversation_stream_replays_and_completes(mock_ability, mock_find_by_id, authenticated_user):
     mock_find_by_id.return_value = MagicMock(spec=Conversation)
     ability_instance = MagicMock()

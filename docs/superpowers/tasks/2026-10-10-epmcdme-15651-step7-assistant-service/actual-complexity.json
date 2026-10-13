@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "generated": "2026-10-10T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 1, "label": "XS" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 15,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 11,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "file_change_estimate",
+      "reason": "Diffstat reports 11 files (+809/-148), which maps to XL. 5 are source files (2 service modules in service/assistant/, 3 routers in rest_api/routers/assistant/) and 6 are test files (3 new: prompt-variable wiring, sensitive_prompt_variables, signature annotations; 1 moved: test_inline_credentials; 2 edited router tests). The count is inflated by tests and a relocation; per-file edits are small."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "Base S: the closest existing pattern is the earlier router-split extractions (steps 0-6), a pure move with no behavior change. That pattern does not cover the security-sensitive part: the moved code encrypts, restores and masks sensitive prompt variables (secret handling) and detects inline credentials. Bumped to M. Mitigated by characterization tests, handler-wiring tests, byte-identical guards and baselines, and 5 migrated patch literals. Rollback is a trivial revert."
+    }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from S to M: the closest pattern (pure router-to-service extraction) does not cover secret handling for sensitive prompt variable encrypt/restore/mask"
+  ],
+  "split_recommendation": null
+}

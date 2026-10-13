@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "task": "Move 10 inline-credential detection and prompt-variable encrypt/restore/mask helpers (~290 lines) from routers/assistant/{_inline_credentials,management,catalog} into a new service/assistant/ module, rewire handlers and migrate mock.patch targets with no API change.",
+  "generated": "2026-10-10T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 16,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "technical_risk",
+      "reason": "Closest precedent is the step 2-6 router-package moves, but those relied on a byte-identical AST proof that does not apply here because handlers now call a new service and patch targets move. That precedent also does not cover the security-sensitive aspects: encrypt, restore and mask have no direct tests (test_assistant.py:1068 patches the masker out), and the SENSITIVE_VALUE_MASK echo-and-restore contract with codemie-ui must be preserved exactly. Silent-pass risk: the 4 inert-able _validate_assistant_inline_integrations patches in test_assistant_marketplace.py go green if mis-aimed. Order (encrypt then restore before the try), unwrapped error propagation and the lazy EncryptionFactory resolution after the empty-list return must be kept. Reversible, no performance or schema exposure, so L rather than XL."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "About 7 modified (routers/assistant _inline_credentials, management, catalog, marketplace; test_inline_credentials, test_assistant_marketplace, test_assistant) plus 2-5 new (one or two service/assistant modules and new service tests for encrypt/restore/mask/detection) across 4 directories (routers/assistant, service/assistant, tests/rest_api/routers, tests/service/assistant). Modified count is M, new files and directory spread push to L."
+    }
+  ],
+  "red_flags_applied": [
+    "Technical Risk set to L (4): security-relevant code moves (encryption, masking, restore of prompt variables) and the nearest precedent does not cover the security aspect. Security red flag and the security-gap auto-bump describe the same signal and were counted once.",
+    "Component Scope held at M: no core shared utilities, no cross-service contract; callers are confined to the assistant router package and no service, handler or sibling repo calls the helpers."
+  ],
+  "split_recommendation": null
+}

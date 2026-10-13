@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "generated": "2026-10-10T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 16,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 12,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "One 1,253-line projects.py router (14 routes) split into a routers/projects/ package of 7 modules: 4 route modules (crud, management, membership, spending), 2 shared support modules (_common, _spending_support) and an __init__ aggregator that include_router()s the sub-routers. Single API layer and a repeated move-only pattern keep it at L rather than XL, but shared helpers (_authorize_project_access, _resolve_cost_center_name, _spend_repo) now cross module boundaries."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "diffstat reports 12 files (11-15 band = XL): 1 deleted (projects.py), 7 new package modules, 4 retargeted test files (314 patch literals, 27 imports). Churn is large (+1821/-1607) but almost entirely relocation; main.py and the OpenAPI/route-precedence baselines are untouched. Score follows the diffstat mapping, so it overstates effort relative to a move-only change."
+    }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from S to M: affects authorization - _authorize_project_access and the inline access checks in spending.py were relocated verbatim; route precedence and 314 mock patch targets must still resolve, guarded by unchanged OpenAPI and route-precedence baselines.",
+    "Component Scope held at L, not bumped: 'Touches core shared utilities' considered, but the shared helpers are internal to one router package and move-only."
+  ],
+  "split_recommendation": null
+}

@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "task": "Split the 1,243-line routers/conversation.py (29 routes, no classes) into a same-named move-only package routers/conversation/ and retarget importers and tests (EPMCDME-15651 step 6).",
+  "generated": "2026-10-10T12:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 17,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "One router module becomes roughly 7 route modules plus _common and an __init__ that builds the combined router (prefix, tags, router-level authenticate); 29 routes regroup under a strict-order constraint, but all within one layer and with no new abstraction, so L rather than XL." },
+    { "dimension": "technical_risk", "reason": "Exact precedent exists (steps 2-5 of the same ticket, tooling on disk, trivial revert), which holds Technical Risk at M. The pattern's AST byte-identity proof covers moved access-check code, but not silent loss of a dependency in the rebuilt combined router. Risk is raised to L by 109 of 117 patch strings being <Class>.<attr> (a mis-aimed literal passes silently), 15 routes with no handler test, 5 of 7 route-precedence pairs spanning modules, and the byte-exact OpenAPI/precedence baselines." },
+    { "dimension": "file_change_estimate", "reason": "About 9 new files (route modules, _common, __init__), 1 file replaced by the package, ide.py retargeted, and 5-6 test files with 117 patch strings, 5 imports and 8 attribute uses; spread over routers/conversation/, routers/, tests/.../routers and tests/.../service. Many new files but small modified count, so XL rather than XXL." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from M to L: affects authorization (14 Ability(user).can routes, admin_access_only on 2 routes, 401/403 split, router-level plus 26 handler-level authenticate relocated; MR needs /sanity)"
+  ],
+  "split_recommendation": null
+}

@@ -20,7 +20,7 @@ import pytest
 from fastapi import status
 
 from codemie.core.exceptions import ExtendedHTTPException
-from codemie.rest_api.routers.assistant import _validate_file_attachment_allowed_and_raise
+from codemie.rest_api.routers.assistant._ask import _validate_file_attachment_allowed_and_raise
 
 
 class TestValidateFileAttachmentAllowed:

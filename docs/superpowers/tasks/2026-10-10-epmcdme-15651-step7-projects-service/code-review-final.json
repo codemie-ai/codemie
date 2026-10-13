@@ -1,0 +1,42 @@
+{
+  "decision": "approve",
+  "rationale": "All four lenses and the standards audit ran with parseable output, nothing was truncated, and no reachability or standards gap remains. Against BASE, the moved bodies and the access predicates are verbatim (only renames and annotations changed) and the crud.py call-site gate is intact, so no blocking finding survives; AC8-AC10 stay pending-stage-7 execution evidence. 4 deferred as pre-existing/non-goal (mixed naive/aware reset TypeError; malformed budget_reset_at ValueError; key-row vs category lifetime mismatch; router-level spending_rows_limit forwarding unpinned) and listed in code-review-deferred.md; 12 dismissed as noise or spec-decided.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "spec", "item": "Purpose: move the 20 names of _spending_support.py into service/project/project_spending_service.py, no API change", "status": "pass", "notes": "git rename (74% similarity); crud.py and spending.py change only in import block and 4 call identifiers"},
+    {"kind": "spec", "item": "Scope: module functions, header verbatim, __future__ annotations, annotation-only imports under TYPE_CHECKING, no logging", "status": "pass", "notes": "header untouched; TYPE_CHECKING block added; no logging in diff"},
+    {"kind": "spec", "item": "Scope: no re-export from service/project/__init__.py; _spending_support.py deleted", "status": "pass", "notes": "__init__.py not changed; old module gone"},
+    {"kind": "spec", "item": "Name map: underscore dropped on 19 names, _WIDGET_COLUMNS stays private", "status": "pass", "notes": "0 old names left in src/tests; _WIDGET_COLUMNS only at its def and its use"},
+    {"kind": "spec", "item": "Decision (a): move set is all 20 names, no exception", "status": "pass", "notes": "both predicates and both IO functions are in the new module"},
+    {"kind": "spec", "item": "Decision (b): _spend_repo becomes public spend_repo, same single instance, not switched to the singleton", "status": "pass", "notes": "spend_repo = ProjectSpendTrackingRepository(); spending.py imports and uses it; TestSpendRepository pins it"},
+    {"kind": "spec", "item": "Decision (c): retarget rule, 35 literals to the service module, 9 spend_repo renames, crud literals untouched", "status": "pass", "notes": "diff counts 35 and 9 match; crud.get_async_session literals not in diff"},
+    {"kind": "spec", "item": "Decision (d): public names per the map for the pure helpers", "status": "pass", "notes": "all 19 renamed defs public; tests call them through the module object"},
+    {"kind": "spec", "item": "Decision (e): typed signatures on the nine named functions, other annotations unchanged", "status": "pass", "notes": "nine signatures parameterized; the other two keep BASE annotations"},
+    {"kind": "spec", "item": "Decision (f): characterization and wiring tests in the named new files, _WIDGET_COLUMNS pinned through the widget", "status": "pass", "notes": "both new test files added; test_widget_has_exactly_the_six_columns"},
+    {"kind": "spec", "item": "Behavior: access predicates (admin, auditor, project admin, personal), real bool, input order, early return before any session", "status": "pass", "notes": "bodies unchanged against BASE; TestAccessControl table and no-session early-return test"},
+    {"kind": "spec", "item": "Behavior: reset text (None, naive is UTC, 0 days, N day(s), N hour(s))", "status": "pass", "notes": "body only renamed; TestFormatTimeUntilReset with frozen clock"},
+    {"kind": "spec", "item": "Behavior: period open and parsing (strictly later, naive is UTC, Z read as +00:00)", "status": "pass", "notes": "bodies only renamed; TestIsBudgetPeriodOpen and TestParseBudgetResetAt"},
+    {"kind": "spec", "item": "Behavior: selection branches, aggregation window, latest row wins only on strictly later spend_date", "status": "pass", "notes": "bodies only renamed; selection, aggregation and tie-date tests present"},
+    {"kind": "spec", "item": "Behavior: summaries and widget (2-decimal rounding, 0.0 percent without limit, Default/Key ids, six columns, key row last)", "status": "pass", "notes": "bodies only renamed; summary, widget and populate test classes present"},
+    {"kind": "spec", "item": "Behavior: detail IO (one session, clock read after, subject type ladder, lifetime spend for that type)", "status": "pass", "notes": "body only renamed; TestAttachProjectDetailSpending asserts each ladder step"},
+    {"kind": "spec", "item": "AC1: module and names (old module gone, 0 hits for 19 old names, spend_repo only in service module and spending.py)", "status": "pass", "notes": "only the analytics/_spending_support twin hits remain"},
+    {"kind": "spec", "item": "AC2: body check (bodies identical under the rename map; crud.py/spending.py diff only imports and 4 identifiers)", "status": "pass", "notes": "every service hunk is a rename or an annotation-only edit on the nine functions"},
+    {"kind": "spec", "item": "AC3: characterization tests pin every Behavior bullet, three pinned_quirk tests, mutation set red", "status": "pass", "notes": "each bullet covered; quirk tests present; HANDOFF records 234 of 234 mutations red"},
+    {"kind": "spec", "item": "AC4: handler-level wiring tests naming no moved module or helper (member gets nothing, mixed list, nothing manageable)", "status": "pass", "notes": "wiring file patches repository class, singletons and codemie.clients.postgres only"},
+    {"kind": "spec", "item": "AC5: existing tests change only in imports, patch literals and renamed identifiers (35/9/4/7), flip control run", "status": "pass", "notes": "diff counts match; only the two named existing test files changed"},
+    {"kind": "spec", "item": "AC6: signature test fails on any bare list/dict or missing annotation for the nine functions", "status": "pass", "notes": "TestPublicSignatures reads inspect.signature strings and rejects bare generics"},
+    {"kind": "spec", "item": "AC7: layering (no underscore import from a router-defining module, no fastapi/routers import in the new module)", "status": "pass", "notes": "service module imports no fastapi or routers; only routers.utils allowed elsewhere"},
+    {"kind": "spec", "item": "AC8: cold imports of the new module, service.project and routers.projects exit 0", "status": "pending-stage-7", "notes": "no code gap seen; interpreter execution is Stage 7 evidence"},
+    {"kind": "spec", "item": "AC9: API frozen (router_guards pass, openapi.json and route_precedence.json unchanged, main.py/_common.py/models untouched)", "status": "pending-stage-7", "notes": "none of those files changed; router_guards run is Stage 7 evidence"},
+    {"kind": "spec", "item": "AC10: gates (make ruff; tests in routers, unit/routers, service/project, router_guards)", "status": "pending-stage-7", "notes": "no unused-import or F821 candidates seen; lint and suite runs are Stage 7 evidence"},
+    {"kind": "spec", "item": "AC11: HANDOFF.md Step 7c section with name map, decisions, flip result, quirks, non-goals, security note, /sanity and Test harness", "status": "pass", "notes": "local/router-split/HANDOFF.md section carries every listed item"},
+    {"kind": "spec", "item": "Non-goals: no quirk fixed, no twin merged, no class/injection/logging/re-export, no route/schema/model/main.py change", "status": "pass", "notes": "diff touches 3 src files and 4 test files only; renames preserve behavior"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "4 commit subjects in 8a209018b9..HEAD all match EPMCDME-####: Description format (EPMCDME-15651: Capital description)"},
+    {"kind": "code-quality", "status": "pass", "notes": "Renamed module (458 lines); moved functions typed with parameterized generics; __future__ annotations and license headers present; line length <=120; no stale _spending_support refs in src or tests"},
+    {"kind": "security", "status": "pass", "notes": "Behavior-preserving move and rename; no new endpoints, parsing, queries, logging or secrets. Authorization logic unchanged and routers still depend on authenticate. No concrete security issue found"}
+  ],
+  "findings": []
+}

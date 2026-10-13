@@ -82,9 +82,9 @@ def mock_jira_request():
     )
 
 
-@patch('codemie.rest_api.routers.index._index_unique_check')
-@patch('codemie.rest_api.routers.index.SettingsService.get_jira_creds')
-@patch('codemie.rest_api.routers.index.JiraDatasourceProcessor')
+@patch('codemie.rest_api.routers.index.kb_atlassian._index_unique_check')
+@patch('codemie.rest_api.routers.index.kb_atlassian.SettingsService.get_jira_creds')
+@patch('codemie.rest_api.routers.index.kb_atlassian.JiraDatasourceProcessor')
 @pytest.mark.asyncio
 async def test_index_knowledge_base_jira(mock_worker, mock_creds, mock_unique_check, mock_jira_request, auth_headers):
     mock_worker_instance = MagicMock()
@@ -101,8 +101,8 @@ async def test_index_knowledge_base_jira(mock_worker, mock_creds, mock_unique_ch
     }
 
 
-@patch('codemie.rest_api.routers.index._index_unique_check')
-@patch('codemie.rest_api.routers.index.SettingsService.get_xwiki_creds')
+@patch('codemie.rest_api.routers.index.kb_xwiki._index_unique_check')
+@patch('codemie.rest_api.routers.index.kb_xwiki.SettingsService.get_xwiki_creds')
 @pytest.mark.asyncio
 async def test_index_knowledge_base_xwiki_without_integration_returns_400(mock_creds, mock_unique_check, auth_headers):
     """No integration must fail here, not later. The processor passes the credentials straight to
@@ -126,8 +126,8 @@ async def test_index_knowledge_base_xwiki_without_integration_returns_400(mock_c
     assert "No xWiki integration is configured" in response.text
 
 
-@patch('codemie.rest_api.routers.index.SettingsService.get_jira_creds')
-@patch('codemie.rest_api.routers.index.KnowledgeBaseIndexInfo.filter_by_project_and_repo')
+@patch('codemie.rest_api.routers.index.kb_atlassian.SettingsService.get_jira_creds')
+@patch('codemie.rest_api.routers.index.kb_atlassian.KnowledgeBaseIndexInfo.filter_by_project_and_repo')
 @pytest.mark.asyncio
 async def test_update_index_knowledge_base_jira(mock_filter, mock_creds, mock_jira_request, auth_headers):
     mock_filter.return_value = [MagicMock()]
@@ -138,9 +138,9 @@ async def test_update_index_knowledge_base_jira(mock_filter, mock_creds, mock_ji
     assert response.json() == {"message": "Edit successful"}
 
 
-@patch('codemie.rest_api.routers.index.SettingsService.get_jira_creds')
-@patch('codemie.rest_api.routers.index.JiraDatasourceProcessor')
-@patch('codemie.rest_api.routers.index.KnowledgeBaseIndexInfo.filter_by_project_and_repo')
+@patch('codemie.rest_api.routers.index.kb_atlassian.SettingsService.get_jira_creds')
+@patch('codemie.rest_api.routers.index.kb_atlassian.JiraDatasourceProcessor')
+@patch('codemie.rest_api.routers.index.kb_atlassian.KnowledgeBaseIndexInfo.filter_by_project_and_repo')
 @patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_effective_guardrails")
 @pytest.mark.asyncio
 async def test_full_reindex_knowledge_base_jira(
@@ -168,7 +168,7 @@ async def test_full_reindex_knowledge_base_jira(
 @patch('codemie.core.ability.Ability.can')
 @patch('codemie.rest_api.models.index.IndexInfo.get_by_id')
 @patch("codemie.service.guardrail.guardrail_service.GuardrailService.remove_guardrail_assignments_for_entity")
-@patch("codemie.rest_api.routers.index.AgentMonitoringService.send_count_metric")
+@patch("codemie.rest_api.routers.index.queries.AgentMonitoringService.send_count_metric")
 async def test_index_deletion(mock_send_metric, mock_remove_guardrails, mock_get_index_info, mock_can, auth_headers):
     mock_remove_guardrails.return_value = None
     mock_send_metric.return_value = None
@@ -249,8 +249,8 @@ def mock_app_repo() -> Generator[MagicMock, None, None]:
     mock_application = MagicMock()
     mock_application.name = "demo"
     with (
-        patch("codemie.rest_api.routers.index.Application.get_by_id", return_value=mock_application),
-        patch("codemie.rest_api.routers.index.ensure_application_exists"),
+        patch("codemie.rest_api.routers.index.code_repositories.Application.get_by_id", return_value=mock_application),
+        patch("codemie.rest_api.routers.index.code_repositories.ensure_application_exists"),
     ):
         yield mock_application
 
@@ -265,13 +265,13 @@ def mock_create_processor() -> Generator[MagicMock, None, None]:
         yield mocked_processor_cls
 
 
-@patch('codemie.rest_api.routers.index.GitBatchLoader.test_public_access')
-@patch('codemie.rest_api.routers.index.SettingsService.get_git_creds')
+@patch('codemie.rest_api.routers.index._common.GitBatchLoader.test_public_access')
+@patch('codemie.rest_api.routers.index._common.SettingsService.get_git_creds')
 @patch('codemie.core.ability.Ability.can')
-@patch('codemie.rest_api.routers.index.IndexInfo.filter_by_project_and_repo')
-@patch('codemie.rest_api.routers.index.GitRepo.get_by_app_id')
-@patch('codemie.rest_api.routers.index.index_code_datasource_in_background')
-@patch('codemie.rest_api.routers.index.update_code_datasource_in_background')
+@patch('codemie.rest_api.routers.index.code_repositories.IndexInfo.filter_by_project_and_repo')
+@patch('codemie.rest_api.routers.index._repository_support.GitRepo.get_by_app_id')
+@patch('codemie.rest_api.routers.index.code_repositories.index_code_datasource_in_background')
+@patch('codemie.rest_api.routers.index.code_repositories.update_code_datasource_in_background')
 @pytest.mark.parametrize(
     "client_method, endpoint_format, existing_indexes, expected_response",
     [
@@ -344,10 +344,10 @@ async def test_index_application_link_with_spaces(
         assert mock_update_background_processing.call_args_list[0][1]["git_repo"].link == trimmed_link
 
 
-@patch('codemie.rest_api.routers.index.SettingsService.get_git_creds')
+@patch('codemie.rest_api.routers.index._common.SettingsService.get_git_creds')
 @patch('codemie.core.ability.Ability.can')
-@patch('codemie.rest_api.routers.index.IndexInfo.filter_by_project_and_repo')
-@patch('codemie.rest_api.routers.index.GitRepo.get_by_app_id')
+@patch('codemie.rest_api.routers.index.code_repositories.IndexInfo.filter_by_project_and_repo')
+@patch('codemie.rest_api.routers.index._repository_support.GitRepo.get_by_app_id')
 @pytest.mark.parametrize(
     "field_name, field_value, index_field_name",
     [
@@ -406,10 +406,10 @@ async def test_update_index_application(
     m_index_info.update_index.assert_called_once_with(**expected_index_update_args)
 
 
-@patch('codemie.rest_api.routers.index.SettingsService.get_git_creds')
+@patch('codemie.rest_api.routers.index._common.SettingsService.get_git_creds')
 @patch('codemie.core.ability.Ability.can')
-@patch('codemie.rest_api.routers.index.IndexInfo.filter_by_project_and_repo')
-@patch('codemie.rest_api.routers.index.GitRepo.get_by_app_id')
+@patch('codemie.rest_api.routers.index.code_repositories.IndexInfo.filter_by_project_and_repo')
+@patch('codemie.rest_api.routers.index._repository_support.GitRepo.get_by_app_id')
 @pytest.mark.parametrize(
     "absent_repo_field, repo_attr",
     [
@@ -491,10 +491,10 @@ async def test_update_index_omitted_fields_not_assigned_to_repository(
     )
 
 
-@patch('codemie.rest_api.routers.index.SettingsService.get_git_creds')
+@patch('codemie.rest_api.routers.index._common.SettingsService.get_git_creds')
 @patch('codemie.core.ability.Ability.can')
-@patch('codemie.rest_api.routers.index.IndexInfo.filter_by_project_and_repo')
-@patch('codemie.rest_api.routers.index.GitRepo.get_by_app_id')
+@patch('codemie.rest_api.routers.index.code_repositories.IndexInfo.filter_by_project_and_repo')
+@patch('codemie.rest_api.routers.index._repository_support.GitRepo.get_by_app_id')
 @pytest.mark.parametrize(
     "absent_index_field",
     [
@@ -544,7 +544,7 @@ async def test_update_index_omitted_fields_not_passed_to_update_index(
     assert response.status_code == status.HTTP_201_CREATED
 
     call_kwargs = m_index_info.update_index.call_args[1]
-    from codemie.rest_api.routers.index import _INDEX_FIELD_MAP
+    from codemie.rest_api.routers.index._repository_support import _INDEX_FIELD_MAP
 
     index_kwarg = _INDEX_FIELD_MAP.get(absent_index_field)
     assert index_kwarg not in call_kwargs, (
@@ -653,7 +653,7 @@ def test_get_index_info_id_denied(mock_find_by_name_and_type, mock_can, auth_hea
     assert response.json()['error']['message'] == "Access denied"
 
 
-@patch('codemie.rest_api.routers.index._get_elasticsearch_stats')
+@patch('codemie.rest_api.routers.index.queries._get_elasticsearch_stats')
 @patch('codemie.core.ability.Ability.can')
 @patch("codemie.rest_api.models.index.IndexInfo.find_by_id")
 def test_get_index_elasticsearch_stats_success(mock_find_by_id, mock_can, mock_get_stats, auth_headers):
@@ -713,7 +713,7 @@ def test_get_index_elasticsearch_stats_access_denied(mock_find_by_id, mock_can, 
     assert response.json()['error']['message'] == "Access denied"
 
 
-@patch('codemie.rest_api.routers.index._get_elasticsearch_stats')
+@patch('codemie.rest_api.routers.index.queries._get_elasticsearch_stats')
 @patch('codemie.core.ability.Ability.can')
 @patch("codemie.rest_api.models.index.IndexInfo.find_by_id")
 def test_get_index_elasticsearch_stats_not_available(mock_find_by_id, mock_can, mock_get_stats, auth_headers):
@@ -745,7 +745,7 @@ class TestParseJwtExp:
         """Returns exp claim from a real JWT payload."""
         import base64
         import json
-        from codemie.rest_api.routers.index import _parse_jwt_exp
+        from codemie.rest_api.routers.index.kb_sharepoint import _parse_jwt_exp
 
         header = base64.b64encode(b'{"alg":"RS256"}').decode()
         payload = base64.b64encode(json.dumps({"exp": 9999999999}).encode()).decode()
@@ -760,7 +760,7 @@ class TestParseJwtExp:
         import base64
         import json
         import time
-        from codemie.rest_api.routers.index import _parse_jwt_exp
+        from codemie.rest_api.routers.index.kb_sharepoint import _parse_jwt_exp
 
         header = base64.b64encode(b'{"alg":"RS256"}').decode()
         payload = base64.b64encode(json.dumps({"sub": "user"}).encode()).decode()
@@ -775,7 +775,7 @@ class TestParseJwtExp:
     def test_invalid_token_falls_back(self):
         """Malformed token falls back to now + 3600."""
         import time
-        from codemie.rest_api.routers.index import _parse_jwt_exp
+        from codemie.rest_api.routers.index.kb_sharepoint import _parse_jwt_exp
 
         result = _parse_jwt_exp("not-a-jwt")
 
@@ -784,16 +784,16 @@ class TestParseJwtExp:
     def test_empty_token_falls_back(self):
         """Empty token string falls back to now + 3600."""
         import time
-        from codemie.rest_api.routers.index import _parse_jwt_exp
+        from codemie.rest_api.routers.index.kb_sharepoint import _parse_jwt_exp
 
         result = _parse_jwt_exp("")
 
         assert result >= int(time.time()) + 3590
 
 
-@patch('codemie.rest_api.routers.index.SettingsService.get_jira_creds')
-@patch('codemie.rest_api.routers.index.JiraDatasourceProcessor')
-@patch('codemie.rest_api.routers.index.KnowledgeBaseIndexInfo.filter_by_project_and_repo')
+@patch('codemie.rest_api.routers.index.kb_atlassian.SettingsService.get_jira_creds')
+@patch('codemie.rest_api.routers.index.kb_atlassian.JiraDatasourceProcessor')
+@patch('codemie.rest_api.routers.index.kb_atlassian.KnowledgeBaseIndexInfo.filter_by_project_and_repo')
 @patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_effective_guardrails")
 @pytest.mark.asyncio
 async def test_reindex_jira_uses_stored_setting_id_when_request_setting_id_is_none(
@@ -819,9 +819,9 @@ async def test_reindex_jira_uses_stored_setting_id_when_request_setting_id_is_no
     )
 
 
-@patch('codemie.rest_api.routers.index.SettingsService.get_confluence_creds')
-@patch('codemie.rest_api.routers.index.ConfluenceDatasourceProcessor')
-@patch('codemie.rest_api.routers.index.KnowledgeBaseIndexInfo.filter_by_project_and_repo')
+@patch('codemie.rest_api.routers.index.kb_atlassian.SettingsService.get_confluence_creds')
+@patch('codemie.rest_api.routers.index.kb_atlassian.ConfluenceDatasourceProcessor')
+@patch('codemie.rest_api.routers.index.kb_atlassian.KnowledgeBaseIndexInfo.filter_by_project_and_repo')
 @patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_effective_guardrails")
 @pytest.mark.asyncio
 async def test_reindex_confluence_uses_stored_setting_id_when_request_setting_id_is_none(
@@ -847,9 +847,9 @@ async def test_reindex_confluence_uses_stored_setting_id_when_request_setting_id
     )
 
 
-@patch('codemie.rest_api.routers.index.SettingsService.get_xray_creds')
-@patch('codemie.rest_api.routers.index.XrayDatasourceProcessor')
-@patch('codemie.rest_api.routers.index.KnowledgeBaseIndexInfo.filter_by_project_and_repo')
+@patch('codemie.rest_api.routers.index.kb_atlassian.SettingsService.get_xray_creds')
+@patch('codemie.rest_api.routers.index.kb_atlassian.XrayDatasourceProcessor')
+@patch('codemie.rest_api.routers.index.kb_atlassian.KnowledgeBaseIndexInfo.filter_by_project_and_repo')
 @patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_effective_guardrails")
 @pytest.mark.asyncio
 async def test_reindex_xray_uses_stored_setting_id_when_request_setting_id_is_none(
@@ -875,9 +875,9 @@ async def test_reindex_xray_uses_stored_setting_id_when_request_setting_id_is_no
     )
 
 
-@patch('codemie.rest_api.routers.index.SettingsService.get_azure_devops_creds')
-@patch('codemie.rest_api.routers.index.AzureDevOpsWikiDatasourceProcessor')
-@patch('codemie.rest_api.routers.index.KnowledgeBaseIndexInfo.filter_by_project_and_repo')
+@patch('codemie.rest_api.routers.index.kb_azure_devops.SettingsService.get_azure_devops_creds')
+@patch('codemie.rest_api.routers.index.kb_azure_devops.AzureDevOpsWikiDatasourceProcessor')
+@patch('codemie.rest_api.routers.index.kb_azure_devops.KnowledgeBaseIndexInfo.filter_by_project_and_repo')
 @patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_effective_guardrails")
 @pytest.mark.asyncio
 async def test_reindex_azure_devops_wiki_uses_stored_setting_id_when_request_setting_id_is_none(
@@ -903,9 +903,9 @@ async def test_reindex_azure_devops_wiki_uses_stored_setting_id_when_request_set
     )
 
 
-@patch('codemie.rest_api.routers.index.SettingsService.get_azure_devops_creds')
-@patch('codemie.rest_api.routers.index.AzureDevOpsWorkItemDatasourceProcessor')
-@patch('codemie.rest_api.routers.index.KnowledgeBaseIndexInfo.filter_by_project_and_repo')
+@patch('codemie.rest_api.routers.index.kb_azure_devops.SettingsService.get_azure_devops_creds')
+@patch('codemie.rest_api.routers.index.kb_azure_devops.AzureDevOpsWorkItemDatasourceProcessor')
+@patch('codemie.rest_api.routers.index.kb_azure_devops.KnowledgeBaseIndexInfo.filter_by_project_and_repo')
 @patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_effective_guardrails")
 @pytest.mark.asyncio
 async def test_reindex_azure_devops_work_item_uses_stored_setting_id_when_request_setting_id_is_none(
@@ -931,9 +931,9 @@ async def test_reindex_azure_devops_work_item_uses_stored_setting_id_when_reques
     )
 
 
-@patch('codemie.rest_api.routers.index.SettingsService.get_jira_creds')
-@patch('codemie.rest_api.routers.index.JiraDatasourceProcessor')
-@patch('codemie.rest_api.routers.index.KnowledgeBaseIndexInfo.filter_by_project_and_repo')
+@patch('codemie.rest_api.routers.index.kb_atlassian.SettingsService.get_jira_creds')
+@patch('codemie.rest_api.routers.index.kb_atlassian.JiraDatasourceProcessor')
+@patch('codemie.rest_api.routers.index.kb_atlassian.KnowledgeBaseIndexInfo.filter_by_project_and_repo')
 @patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_effective_guardrails")
 @pytest.mark.asyncio
 async def test_reindex_jira_explicit_setting_id_takes_precedence_over_stored(
@@ -987,10 +987,10 @@ def _make_kb_index(wiql_query: str) -> MagicMock:
     return kb
 
 
-@patch("codemie.rest_api.routers.index.AzureDevOpsWorkItemDatasourceProcessor")
-@patch("codemie.rest_api.routers.index.SettingsService.get_azure_devops_creds")
+@patch("codemie.rest_api.routers.index.kb_azure_devops.AzureDevOpsWorkItemDatasourceProcessor")
+@patch("codemie.rest_api.routers.index.kb_azure_devops.SettingsService.get_azure_devops_creds")
 @patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_effective_guardrails")
-@patch("codemie.rest_api.routers.index.KnowledgeBaseIndexInfo.filter_by_project_and_repo")
+@patch("codemie.rest_api.routers.index.kb_azure_devops.KnowledgeBaseIndexInfo.filter_by_project_and_repo")
 @pytest.mark.asyncio
 async def test_put_reindex_uses_stored_wiql_when_request_is_empty(
     mock_filter, mock_guardrails, mock_creds, mock_processor_cls, auth_headers
@@ -1014,10 +1014,10 @@ async def test_put_reindex_uses_stored_wiql_when_request_is_empty(
     assert kwargs["wiql_query"] == _STORED_WIQL
 
 
-@patch("codemie.rest_api.routers.index.AzureDevOpsWorkItemDatasourceProcessor")
-@patch("codemie.rest_api.routers.index.SettingsService.get_azure_devops_creds")
+@patch("codemie.rest_api.routers.index.kb_azure_devops.AzureDevOpsWorkItemDatasourceProcessor")
+@patch("codemie.rest_api.routers.index.kb_azure_devops.SettingsService.get_azure_devops_creds")
 @patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_effective_guardrails")
-@patch("codemie.rest_api.routers.index.KnowledgeBaseIndexInfo.filter_by_project_and_repo")
+@patch("codemie.rest_api.routers.index.kb_azure_devops.KnowledgeBaseIndexInfo.filter_by_project_and_repo")
 @pytest.mark.asyncio
 async def test_put_reindex_uses_request_wiql_when_provided(
     mock_filter, mock_guardrails, mock_creds, mock_processor_cls, auth_headers
@@ -1044,10 +1044,10 @@ async def test_put_reindex_uses_request_wiql_when_provided(
     assert kwargs["wiql_query"] == custom_wiql
 
 
-@patch("codemie.rest_api.routers.index.AzureDevOpsWorkItemDatasourceProcessor")
-@patch("codemie.rest_api.routers.index.SettingsService.get_azure_devops_creds")
+@patch("codemie.rest_api.routers.index.kb_azure_devops.AzureDevOpsWorkItemDatasourceProcessor")
+@patch("codemie.rest_api.routers.index.kb_azure_devops.SettingsService.get_azure_devops_creds")
 @patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_effective_guardrails")
-@patch("codemie.rest_api.routers.index.KnowledgeBaseIndexInfo.filter_by_project_and_repo")
+@patch("codemie.rest_api.routers.index.kb_azure_devops.KnowledgeBaseIndexInfo.filter_by_project_and_repo")
 @pytest.mark.asyncio
 async def test_put_reindex_uses_none_when_no_stored_wiql(
     mock_filter, mock_guardrails, mock_creds, mock_processor_cls, auth_headers
@@ -1090,10 +1090,10 @@ _FILE_PUT_URL = "/v1/index/knowledge_base/file"
 # ---------------------------------------------------------------------------
 
 
-@patch('codemie.rest_api.routers.index._kb_demo_user_check')
-@patch('codemie.rest_api.routers.index._index_unique_check')
-@patch('codemie.rest_api.routers.index.FileRepositoryFactory.get_current_repository')
-@patch('codemie.rest_api.routers.index.FileDatasourceProcessor')
+@patch('codemie.rest_api.routers.index.kb_files._kb_demo_user_check')
+@patch('codemie.rest_api.routers.index.kb_files._index_unique_check')
+@patch('codemie.rest_api.routers.index.kb_files.FileRepositoryFactory.get_current_repository')
+@patch('codemie.rest_api.routers.index.kb_files.FileDatasourceProcessor')
 def test_post_file_datasource_success(
     mock_processor_cls, mock_file_repo_factory, mock_unique_check, mock_demo_check, auth_headers
 ):
@@ -1120,7 +1120,7 @@ def test_post_file_datasource_success(
     mock_processor.schedule.assert_called_once()
 
 
-@patch('codemie.rest_api.routers.index._index_unique_check')
+@patch('codemie.rest_api.routers.index.kb_files._index_unique_check')
 def test_post_file_datasource_duplicate_raises_409(mock_unique_check, auth_headers):
     """_index_unique_check raises 409 when the datasource already exists."""
     mock_unique_check.side_effect = ExtendedHTTPException(
@@ -1141,8 +1141,8 @@ def test_post_file_datasource_duplicate_raises_409(mock_unique_check, auth_heade
     assert response.json()['error']['message'] == "Index already exists"
 
 
-@patch('codemie.rest_api.routers.index._kb_demo_user_check')
-@patch('codemie.rest_api.routers.index._index_unique_check')
+@patch('codemie.rest_api.routers.index.kb_files._kb_demo_user_check')
+@patch('codemie.rest_api.routers.index.kb_files._index_unique_check')
 def test_post_file_datasource_demo_user_blocked_raises_403(mock_unique_check, mock_demo_check, auth_headers):
     """_kb_demo_user_check raises 403 for demo users who reached the repository limit."""
     mock_demo_check.side_effect = ExtendedHTTPException(
@@ -1163,8 +1163,8 @@ def test_post_file_datasource_demo_user_blocked_raises_403(mock_unique_check, mo
     assert response.json()['error']['message'] == "Repository limit reached"
 
 
-@patch('codemie.rest_api.routers.index._kb_demo_user_check')
-@patch('codemie.rest_api.routers.index._index_unique_check')
+@patch('codemie.rest_api.routers.index.kb_files._kb_demo_user_check')
+@patch('codemie.rest_api.routers.index.kb_files._index_unique_check')
 def test_post_file_datasource_invalid_guardrail_assignments_raises_400(
     mock_unique_check, mock_demo_check, auth_headers
 ):
@@ -1185,10 +1185,10 @@ def test_post_file_datasource_invalid_guardrail_assignments_raises_400(
     assert response.json()['error']['message'] == "Invalid guardrail_assignments parameter"
 
 
-@patch('codemie.rest_api.routers.index._kb_demo_user_check')
-@patch('codemie.rest_api.routers.index._index_unique_check')
-@patch('codemie.rest_api.routers.index.FileRepositoryFactory.get_current_repository')
-@patch('codemie.rest_api.routers.index.FileDatasourceProcessor')
+@patch('codemie.rest_api.routers.index.kb_files._kb_demo_user_check')
+@patch('codemie.rest_api.routers.index.kb_files._index_unique_check')
+@patch('codemie.rest_api.routers.index.kb_files.FileRepositoryFactory.get_current_repository')
+@patch('codemie.rest_api.routers.index.kb_files.FileDatasourceProcessor')
 def test_post_file_datasource_multiple_files_all_forwarded(
     mock_processor_cls, mock_file_repo_factory, mock_unique_check, mock_demo_check, auth_headers
 ):
@@ -1225,9 +1225,9 @@ def test_post_file_datasource_multiple_files_all_forwarded(
     assert len(kwargs["files_paths"]) == 3
 
 
-@patch('codemie.rest_api.routers.index._kb_demo_user_check')
-@patch('codemie.rest_api.routers.index._index_unique_check')
-@patch('codemie.rest_api.routers.index.FileDatasourceService.process_files_batch')
+@patch('codemie.rest_api.routers.index.kb_files._kb_demo_user_check')
+@patch('codemie.rest_api.routers.index.kb_files._index_unique_check')
+@patch('codemie.rest_api.routers.index.kb_files.FileDatasourceService.process_files_batch')
 def test_post_file_datasource_zip_extraction_error_raises_422(
     mock_process_batch, mock_unique_check, mock_demo_check, auth_headers
 ):
@@ -1254,7 +1254,7 @@ def test_post_file_datasource_zip_extraction_error_raises_422(
 # ---------------------------------------------------------------------------
 
 
-@patch('codemie.rest_api.routers.index.UpdateFileDatasourceUseCase')
+@patch('codemie.rest_api.routers.index.kb_files.UpdateFileDatasourceUseCase')
 def test_put_file_datasource_metadata_only_returns_edit_successful(mock_use_case_cls, auth_headers):
     """No file changes: use case returns 'Edit successful'."""
     mock_use_case_cls.return_value.execute.return_value = BaseResponse(message="Edit successful")
@@ -1270,7 +1270,7 @@ def test_put_file_datasource_metadata_only_returns_edit_successful(mock_use_case
     mock_use_case_cls.return_value.execute.assert_called_once()
 
 
-@patch('codemie.rest_api.routers.index.UpdateFileDatasourceUseCase')
+@patch('codemie.rest_api.routers.index.kb_files.UpdateFileDatasourceUseCase')
 def test_put_file_datasource_file_changes_returns_started_message(mock_use_case_cls, auth_headers):
     """File changes present: use case returns the processor started message."""
     started_msg = f"Indexing of {_FILE_DS_NAME} has started in the background"
@@ -1287,7 +1287,7 @@ def test_put_file_datasource_file_changes_returns_started_message(mock_use_case_
     assert response.json() == {"message": started_msg}
 
 
-@patch('codemie.rest_api.routers.index.UpdateFileDatasourceUseCase')
+@patch('codemie.rest_api.routers.index.kb_files.UpdateFileDatasourceUseCase')
 def test_put_file_datasource_not_found_returns_404(mock_use_case_cls, auth_headers):
     """Index not found: use case raises 404 and the handler returns 404."""
     mock_use_case_cls.return_value.execute.side_effect = ExtendedHTTPException(
@@ -1307,7 +1307,7 @@ def test_put_file_datasource_not_found_returns_404(mock_use_case_cls, auth_heade
     assert response.json()['error']['message'] == "Index not found"
 
 
-@patch('codemie.rest_api.routers.index.UpdateFileDatasourceUseCase')
+@patch('codemie.rest_api.routers.index.kb_files.UpdateFileDatasourceUseCase')
 def test_put_file_datasource_blocked_while_indexing_returns_409(mock_use_case_cls, auth_headers):
     """Indexing in progress: use case raises 409 and the handler returns 409."""
     mock_use_case_cls.return_value.execute.side_effect = ExtendedHTTPException(
@@ -1332,7 +1332,7 @@ def test_put_file_datasource_blocked_while_indexing_returns_409(mock_use_case_cl
 
 @patch("codemie.service.settings.scheduler_settings_service.SchedulerSettingsService.handle_schedule")
 def test_update_datasource_scheduler_passes_timezone(mock_handle):
-    from codemie.rest_api.routers.index import _update_datasource_scheduler
+    from codemie.rest_api.routers.index._common import _update_datasource_scheduler
     from codemie.rest_api.models.index import IndexInfo
 
     index_info = MagicMock(spec=IndexInfo)
@@ -1349,7 +1349,7 @@ def test_update_datasource_scheduler_passes_timezone(mock_handle):
 
 @patch("codemie.service.settings.scheduler_settings_service.SchedulerSettingsService.handle_schedule")
 def test_update_datasource_scheduler_no_timezone_passes_none(mock_handle):
-    from codemie.rest_api.routers.index import _update_datasource_scheduler
+    from codemie.rest_api.routers.index._common import _update_datasource_scheduler
     from codemie.rest_api.models.index import IndexInfo
 
     index_info = MagicMock(spec=IndexInfo)
@@ -1376,9 +1376,9 @@ def mock_jira_request_with_custom_fields():
     )
 
 
-@patch('codemie.rest_api.routers.index._index_unique_check')
-@patch('codemie.rest_api.routers.index.SettingsService.get_jira_creds')
-@patch('codemie.rest_api.routers.index.JiraDatasourceProcessor')
+@patch('codemie.rest_api.routers.index.kb_atlassian._index_unique_check')
+@patch('codemie.rest_api.routers.index.kb_atlassian.SettingsService.get_jira_creds')
+@patch('codemie.rest_api.routers.index.kb_atlassian.JiraDatasourceProcessor')
 @pytest.mark.asyncio
 async def test_create_jira_forwards_custom_fields(
     mock_worker, mock_creds, mock_unique_check, mock_jira_request_with_custom_fields, auth_headers
@@ -1399,9 +1399,9 @@ async def test_create_jira_forwards_custom_fields(
     assert mock_worker.return_value.check_jira_query.call_args.kwargs["custom_fields"] == ["customfield_10001"]
 
 
-@patch('codemie.rest_api.routers.index.SettingsService.get_jira_creds')
-@patch('codemie.rest_api.routers.index.JiraDatasourceProcessor')
-@patch('codemie.rest_api.routers.index.KnowledgeBaseIndexInfo.filter_by_project_and_repo')
+@patch('codemie.rest_api.routers.index.kb_atlassian.SettingsService.get_jira_creds')
+@patch('codemie.rest_api.routers.index.kb_atlassian.JiraDatasourceProcessor')
+@patch('codemie.rest_api.routers.index.kb_atlassian.KnowledgeBaseIndexInfo.filter_by_project_and_repo')
 @pytest.mark.asyncio
 async def test_update_jira_validates_and_persists_custom_fields(
     mock_filter, mock_worker, mock_creds, mock_jira_request_with_custom_fields, auth_headers
@@ -1421,9 +1421,9 @@ async def test_update_jira_validates_and_persists_custom_fields(
     assert kb_index.update_index.call_args.kwargs["custom_fields"] == ["customfield_10001"]
 
 
-@patch('codemie.rest_api.routers.index.SettingsService.get_jira_creds')
-@patch('codemie.rest_api.routers.index.JiraDatasourceProcessor')
-@patch('codemie.rest_api.routers.index.KnowledgeBaseIndexInfo.filter_by_project_and_repo')
+@patch('codemie.rest_api.routers.index.kb_atlassian.SettingsService.get_jira_creds')
+@patch('codemie.rest_api.routers.index.kb_atlassian.JiraDatasourceProcessor')
+@patch('codemie.rest_api.routers.index.kb_atlassian.KnowledgeBaseIndexInfo.filter_by_project_and_repo')
 @pytest.mark.asyncio
 async def test_update_jira_rejects_unknown_custom_field(
     mock_filter, mock_worker, mock_creds, mock_jira_request_with_custom_fields, auth_headers
@@ -1443,8 +1443,8 @@ async def test_update_jira_rejects_unknown_custom_field(
     kb_index.update_index.assert_not_called()
 
 
-@patch('codemie.rest_api.routers.index.SettingsService.get_jira_creds')
-@patch('codemie.rest_api.routers.index.JiraDatasourceProcessor.get_available_fields')
+@patch('codemie.rest_api.routers.index.queries.SettingsService.get_jira_creds')
+@patch('codemie.rest_api.routers.index.queries.JiraDatasourceProcessor.get_available_fields')
 @pytest.mark.asyncio
 async def test_get_jira_fields_returns_serialized_list(mock_fields, mock_creds, auth_headers):
     mock_fields.return_value = [
@@ -1465,8 +1465,8 @@ async def test_get_jira_fields_returns_serialized_list(mock_fields, mock_creds, 
     assert mock_creds.call_args.kwargs["project_name"] == "test_project"
 
 
-@patch('codemie.rest_api.routers.index.SettingsService.get_jira_creds')
-@patch('codemie.rest_api.routers.index.JiraDatasourceProcessor.get_available_fields')
+@patch('codemie.rest_api.routers.index.queries.SettingsService.get_jira_creds')
+@patch('codemie.rest_api.routers.index.queries.JiraDatasourceProcessor.get_available_fields')
 @pytest.mark.asyncio
 async def test_get_jira_fields_unreachable_instance_returns_422(mock_fields, mock_creds, auth_headers):
     """The VPN-specific branch must survive; without it the generic fallback hides the cause."""

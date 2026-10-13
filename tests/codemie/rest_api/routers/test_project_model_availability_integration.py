@@ -107,8 +107,8 @@ class TestEndToEndModelRestrictionFlow:
             "all_models": all_models,
         }
 
-    @patch("codemie.rest_api.routers.projects._ensure_user_management_enabled")
-    @patch("codemie.rest_api.routers.projects.project_service")
+    @patch("codemie.rest_api.routers.projects.management._ensure_user_management_enabled")
+    @patch("codemie.rest_api.routers.projects.management.project_service")
     @patch("codemie.rest_api.routers.llm_models.llm_service")
     @patch("codemie.rest_api.routers.llm_models.application_repository")
     @pytest.mark.anyio
@@ -126,10 +126,8 @@ class TestEndToEndModelRestrictionFlow:
         2. Changes are saved to backend
         3. When creating assistant and selecting project, only 3 models appear
         """
-        from codemie.rest_api.routers.projects import (
-            AllowedModelsUpdateRequest,
-            update_allowed_models,
-        )
+        from codemie.rest_api.models.project import AllowedModelsUpdateRequest
+        from codemie.rest_api.routers.projects.management import update_allowed_models
         from codemie.rest_api.routers.llm_models import get_llm_models
 
         project = setup_project_and_user["project"]
@@ -174,8 +172,8 @@ class TestEndToEndModelRestrictionFlow:
         assert len(models_for_assistant) == 3
         assert all(m.base_name in selected_models for m in models_for_assistant)
 
-    @patch("codemie.rest_api.routers.projects.project_service")
-    @patch("codemie.rest_api.routers.projects.application_repository")
+    @patch("codemie.rest_api.routers.projects.management.project_service")
+    @patch("codemie.rest_api.routers.projects._common.application_repository")
     @patch("codemie.rest_api.routers.llm_models.llm_service")
     @pytest.mark.anyio
     async def test_user_cannot_bypass_project_restrictions(
@@ -212,7 +210,7 @@ class TestEndToEndModelRestrictionFlow:
 
         assert exc_info.value.code == 400
 
-    @patch("codemie.rest_api.routers.projects.application_repository")
+    @patch("codemie.rest_api.routers.projects._common.application_repository")
     @patch("codemie.rest_api.routers.llm_models.application_repository")
     @pytest.mark.anyio
     async def test_multiple_projects_maintain_separate_restrictions(
@@ -247,8 +245,8 @@ class TestEndToEndModelRestrictionFlow:
         models_b_names = {m.base_name for m in models_b}
         assert models_a_names.isdisjoint(models_b_names)
 
-    @patch("codemie.rest_api.routers.projects._ensure_user_management_enabled")
-    @patch("codemie.rest_api.routers.projects.project_service")
+    @patch("codemie.rest_api.routers.projects.management._ensure_user_management_enabled")
+    @patch("codemie.rest_api.routers.projects.management.project_service")
     @pytest.mark.anyio
     async def test_changing_restrictions_updates_available_models(
         self,
@@ -257,10 +255,8 @@ class TestEndToEndModelRestrictionFlow:
         setup_project_and_user,
     ):
         """Test that changing model restrictions updates available models for new assistants."""
-        from codemie.rest_api.routers.projects import (
-            AllowedModelsUpdateRequest,
-            update_allowed_models,
-        )
+        from codemie.rest_api.models.project import AllowedModelsUpdateRequest
+        from codemie.rest_api.routers.projects.management import update_allowed_models
 
         project = setup_project_and_user["project"]
         user = setup_project_and_user["user"]
@@ -298,7 +294,7 @@ class TestEndToEndModelRestrictionFlow:
 class TestPermissionBoundaries:
     """Tests for authorization boundaries in model management."""
 
-    @patch("codemie.rest_api.routers.projects.project_service")
+    @patch("codemie.rest_api.routers.projects.management.project_service")
     @pytest.mark.anyio
     async def test_non_admin_cannot_modify_project_models(
         self,
@@ -336,7 +332,7 @@ class TestPermissionBoundaries:
 
         assert exc_info.value.code == 403
 
-    @patch("codemie.rest_api.routers.projects.project_service")
+    @patch("codemie.rest_api.routers.projects.management.project_service")
     @pytest.mark.anyio
     async def test_project_admin_can_modify_project_models(
         self,
@@ -363,7 +359,7 @@ class TestPermissionBoundaries:
 
         mock_proj_service.check_allowed_models_authorization.assert_called_once()
 
-    @patch("codemie.rest_api.routers.projects.project_service")
+    @patch("codemie.rest_api.routers.projects.management.project_service")
     @pytest.mark.anyio
     async def test_system_admin_can_modify_any_project_models(
         self,
@@ -393,8 +389,8 @@ class TestPermissionBoundaries:
 class TestDataConsistency:
     """Tests for data consistency and edge cases."""
 
-    @patch("codemie.rest_api.routers.projects._ensure_user_management_enabled")
-    @patch("codemie.rest_api.routers.projects.project_service")
+    @patch("codemie.rest_api.routers.projects.management._ensure_user_management_enabled")
+    @patch("codemie.rest_api.routers.projects.management.project_service")
     @pytest.mark.anyio
     async def test_backend_persists_model_selection(
         self,
@@ -404,11 +400,9 @@ class TestDataConsistency:
         """Test that model selection is persisted (via project_service.update_allowed_models,
         which manages its own DB session) and can be read back via the detail response mapper.
         """
-        from codemie.rest_api.routers.projects import (
-            AllowedModelsUpdateRequest,
-            update_allowed_models,
-            _build_project_detail_response,
-        )
+        from codemie.rest_api.models.project import AllowedModelsUpdateRequest
+        from codemie.rest_api.routers.projects.crud import _build_project_detail_response
+        from codemie.rest_api.routers.projects.management import update_allowed_models
 
         project = MagicMock()
         project.name = "test-project"
@@ -466,7 +460,7 @@ class TestDataConsistency:
         assert retrieved_project.allowed_models == selected_models
         assert retrieved_project.default_model == default_model
 
-    @patch("codemie.rest_api.routers.projects.project_service")
+    @patch("codemie.rest_api.routers.projects.management.project_service")
     def test_model_order_preserved_in_persistence(
         self,
         mock_proj_service,

@@ -14,17 +14,23 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Path, Query
-from pydantic import BaseModel, Field
 
 from codemie.clients.postgres import get_session
 from codemie.configs import config
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.repository.application_repository import application_repository
+from codemie.rest_api.models.cost_center import (
+    CostCenterCreateRequest,
+    CostCenterDetailResponse,
+    CostCenterResponse,
+    CostCenterUpdateRequest,
+    LinkedProjectResponse,
+    PaginatedCostCenterListResponse,
+    PaginationInfo,
+)
 from codemie.rest_api.security.authentication import admin_access_only, authenticate
 from codemie.rest_api.security.user import User
 from codemie.service.cost_center_service import cost_center_service
@@ -35,52 +41,6 @@ router = APIRouter(
     prefix="/v1/admin/cost-centers",
     dependencies=[],
 )
-
-
-class PaginationInfo(BaseModel):
-    total: int
-    page: int
-    per_page: int
-
-
-class CostCenterCreateRequest(BaseModel):
-    name: str
-    description: Optional[str] = Field(default=None)
-
-
-class CostCenterUpdateRequest(BaseModel):
-    description: Optional[str] = Field(default=None)
-
-
-class LinkedProjectResponse(BaseModel):
-    name: str
-    display_name: Optional[str] = None
-    description: Optional[str] = None
-    project_type: str
-    created_by: Optional[str] = None
-    created_at: Optional[datetime] = None
-    user_count: int
-    admin_count: int
-    cost_center_id: Optional[UUID] = None
-    cost_center_name: Optional[str] = None
-
-
-class CostCenterResponse(BaseModel):
-    id: UUID
-    name: str
-    description: Optional[str] = None
-    created_by: str
-    created_at: datetime
-    project_count: int
-
-
-class CostCenterDetailResponse(CostCenterResponse):
-    projects: list[LinkedProjectResponse]
-
-
-class PaginatedCostCenterListResponse(BaseModel):
-    data: list[CostCenterResponse]
-    pagination: PaginationInfo
 
 
 def _ensure_user_management_enabled() -> None:

@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "generated": "2026-10-10T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 1, "label": "XS" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 15,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 16,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "One 29-route router module (conversation.py) became a package of 7 route modules (retrieval, streaming, deletion, history, crud, folders, messages) plus a new shared _common module and an __init__ that composes them. Importers retargeted: ide.py (create_conversation) and 5 test files. Single API layer, no new abstractions beyond the package seam, so L rather than XL."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "diffstat reports 16 files (1 deleted, 9 new package files, 1 source import retarget, 5 test files with about 117 patch-literal edits), which maps to XXL (16+) by the file-count rule. The change is move-only and mechanical, so the file count overstates effort; that is absorbed by Requirements Clarity XS and Technical Risk S rather than by lowering this score. Nearest calibration anchor: bundled m/epmcdme-10203 (total 15, M) agrees on band despite a very different shape (few files of real logic there, many files of mechanical movement here)."
+    }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

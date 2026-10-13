@@ -1,0 +1,224 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15651_split-router-modules",
+  "head": "2d27a3b7058f33c2e33030488afe4abe19fad46d",
+  "runner": "poetry",
+  "started_at": "2026-10-10T14:40:03Z",
+  "completed_at": "2026-10-10T14:56:21Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1109,
+      "command": "make ruff",
+      "exit_code": 0,
+      "notes": "Non-mutating pre-check first (ruff format --check, ruff check --no-fix: clean), so make ruff changed no file. Hook pre-commit (_ruff_staged.sh) acts on staged files only; none staged, covered by this gate."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 4116,
+      "command": "make build",
+      "exit_code": 0,
+      "notes": "Wrote codemie-0.8.0 sdist and wheel to gitignored dist/."
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 604,
+      "command": "make license-check",
+      "exit_code": 0,
+      "notes": "Checked 2513 files, 0 missing license headers."
+    },
+    {
+      "id": "secrets",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 89938,
+      "command": "make gitleaks",
+      "exit_code": 2,
+      "notes": "5 findings (generic-api-key), all in local untracked or ignored files: .codex/config.toml, .mcp.json.lock, opencode.json, opencode.json.lock, .codegraph/codegraph.db-wal. No finding in any tracked file. Known unrelated failure listed by the caller."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 97358,
+      "command": "make test",
+      "exit_code": 2,
+      "notes": "2 failed, 19588 passed, 175 skipped. Failed: tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_matplotlib_png_generation and ::test_guard_allows_openpyxl_to_save_workbook (guard subprocess exit -2, KeyboardInterrupt in audit_hook). Known unrelated failure listed by the caller. Pre-push hook form (--ignore=tests/enterprise, --cov) is a subset of this run; skips are pre-existing and unrelated (WORKFLOW_GENERATION_ENABLED, EPMCDME-10598, pdflatex)."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 29,
+      "command": "SONAR_SKIP_TESTS=1 make sonar-local",
+      "exit_code": 2,
+      "notes": "Quote: '[sonar-local] sonar-scanner was not found. Install the official SonarScanner CLI or set SONAR_SCANNER_PATH.' Run with SONAR_SKIP_TESTS=1 (pre-push hook form) so the missing scanner is reached without a second full test run. Enable: install SonarScanner CLI (or set SONAR_SCANNER_PATH); SONAR_TOKEN is already set. Only CI/server-side can settle it."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make coverage",
+      "exit_code": null,
+      "notes": "Out of requested scope (guide: skip if coverage not requested)."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make verify",
+      "exit_code": null,
+      "notes": "Composite of ruff, license, gitleaks, test; each ran individually above."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "exit_code": null,
+      "notes": "Guide: skip unless opening an MR; the single MR for steps 0-7 comes after the whole ticket and needs a '## Test harness' block plus a /sanity request."
+    },
+    {
+      "id": "commit-msg",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 760,
+      "command": "for each of 85 commits in e55bea30059e..HEAD: git log -n1 --format=%B <sha> > msg; bash scripts/git-hooks/commit_msg.sh msg",
+      "exit_code": 0,
+      "notes": "85 commits checked, 0 rejected (EPMCDME-<n>: prefix); includes the 4 step commits 470b386de8, d3f1e1ebc4, 698996ecfa, 2d27a3b705."
+    },
+    {
+      "id": "staged-secrets",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 386,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": 0,
+      "notes": "Quote: '0 commits scanned. scanned ~0 bytes (0)'; nothing is staged, so nothing was scanned. Enable: stage changes (not done, per instructions). Substitute evidence: gitleaks git over e55bea30059e..HEAD with .gitleaks.toml, 80 commits scanned, no leaks found (exit 0)."
+    },
+    {
+      "id": "ci-pre-ci-guard",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": ".gitlab-ci.yml include codemie-gitlab-templates pre-ci-guard.yml",
+      "exit_code": null,
+      "notes": "Mismatch with guide ('no pipeline'): .gitlab-ci.yml exists but only runs the external pre-ci-guard template (waits for contexts ci-pipeline and compliance-report on MRs to main). Not reachable locally; no test or lint job is defined in this repo."
+    },
+    {
+      "id": "P1",
+      "name": "AC1 header and name sweep",
+      "source": "caller",
+      "status": "PASS",
+      "duration_ms": 2954,
+      "command": "sed -n 13p + 13-line header diff against _spending_support.py; whole-identifier search over src/ and tests/ for old private and twin names (proof/quick_proofs.py p1)",
+      "exit_code": null,
+      "notes": "header ok (line 13 + 13-line match), 3 old names 0 hits, 6 kept/twin names only in listed files Composite check: exit_code null."
+    },
+    {
+      "id": "P2",
+      "name": "AC2 body-AST check",
+      "source": "caller",
+      "status": "PASS",
+      "duration_ms": 178,
+      "command": "python3 bodycheck.py --expect 10 ; python3 bodycheck.py --negative (tool copied to scratchpad with BASE copy regenerated via git show e840b7f4e8; annotations relaxed for 3 public signatures per HANDOFF CR-001)",
+      "exit_code": null,
+      "notes": "--expect 10: exit 0, 10 of 10 OK=True; --negative: exit 1, NEGATIVE OK=True Composite check: exit_code null."
+    },
+    {
+      "id": "P3",
+      "name": "AC3 characterization tests + mutation set",
+      "source": "caller",
+      "status": "PASS",
+      "duration_ms": 357185,
+      "command": "poetry run pytest tests/codemie/service/analytics/test_spending_formatter.py -n 0 --show-capture=no -q ; python3 -I local/router-split/step7/analytics/mutate.py --moved",
+      "exit_code": 0,
+      "notes": "39 characterization tests pass; mutate.py read first (writes only the one moved source file, restores it with git checkout in a finally block, aborts if src is dirty beforehand, ends with git diff --exit-code -- src); 51 of 51 mutations red, 0 survived, 0 refused; afterwards git status --short shows only the untracked run dir, git diff --quiet -- src tests exit 0."
+    },
+    {
+      "id": "P4",
+      "name": "AC4 wiring test byte-identical, tests diff add-only",
+      "source": "caller",
+      "status": "PASS",
+      "duration_ms": 8,
+      "command": "git diff --quiet d3f1e1ebc4 HEAD -- <wiring test>; git show d3f1e1ebc4:<wiring test> | cmp; git diff --name-status e840b7f4e8..HEAD -- tests",
+      "exit_code": null,
+      "notes": "wiring byte-identical d3f1e1ebc4..HEAD; tests diff = 2 added files, 0 modified Composite check: exit_code null."
+    },
+    {
+      "id": "P5",
+      "name": "AC5 no patch literal names a moved helper",
+      "source": "caller",
+      "status": "PASS",
+      "duration_ms": 911,
+      "command": "whole-identifier search of tests/ and src/ for old and new names in patch lines; git diff e840b7f4e8..HEAD -- tests/codemie/rest_api/routers/test_analytics_capability_guards.py",
+      "exit_code": null,
+      "notes": "0 patch literals name a moved helper; _calculate_time_until_reset in tests only in twin test_budget_usage_service.py (no patch); test_analytics_capability_guards.py diff BASE..HEAD empty, :285 unchanged Composite check: exit_code null."
+    },
+    {
+      "id": "P6",
+      "name": "AC6 import-direction scan",
+      "source": "caller",
+      "status": "PASS",
+      "duration_ms": 3977,
+      "command": "AST scan of 1552 src modules (proof/p6_scan.py); grep -rn 'rest_api.routers' src/codemie/service src/codemie/rest_api/handlers; new-module import listing",
+      "exit_code": null,
+      "notes": "AST scan: 1552 modules, 99 router-defining, 0 underscore-import violations; routers imports in service/ + handlers/ = 4 (all routers.utils); new module imports nothing from rest_api Composite check: exit_code null."
+    },
+    {
+      "id": "P7",
+      "name": "AC7 isolated imports",
+      "source": "caller",
+      "status": "PASS",
+      "duration_ms": 4954,
+      "command": "poetry run python -I -c 'import codemie.service.analytics.spending_formatter' ; ...codemie.rest_api.routers.analytics ; ...codemie.service.analytics",
+      "exit_code": 0,
+      "notes": "exit codes: spending_formatter=0, analytics=0, analytics=0"
+    },
+    {
+      "id": "P8",
+      "name": "AC8 router_guards + baselines/main.py unchanged",
+      "source": "caller",
+      "status": "PASS",
+      "duration_ms": 20700,
+      "command": "poetry run pytest tests/codemie/rest_api/router_guards -n 0 --show-capture=no -q ; git diff --exit-code e840b7f4e80b171cf67ae781c5fd7daf64421084 -- tests/codemie/rest_api/router_guards src/codemie/rest_api/main.py",
+      "exit_code": 0,
+      "notes": "46 passed; git diff --exit-code vs e840b7f4e8 on router_guards (baselines) and main.py is empty; regenerate_baselines not run."
+    },
+    {
+      "id": "P9",
+      "name": "AC9 area test directories",
+      "source": "caller",
+      "status": "PASS",
+      "duration_ms": 61382,
+      "command": "poetry run pytest tests/codemie/rest_api/routers tests/unit/routers tests/codemie/service/analytics tests/enterprise/litellm tests/codemie/rest_api/router_guards -n 0 --show-capture=no -q",
+      "exit_code": 0,
+      "notes": "3036 passed, 17 skipped (pre-existing, unrelated skips: WORKFLOW_GENERATION_ENABLED, EPMCDME-10598, pdflatex, kata endpoint bug), 0 failed."
+    },
+    {
+      "id": "P10",
+      "name": "stale importers of removed private names",
+      "source": "caller",
+      "status": "PASS",
+      "duration_ms": 5863,
+      "command": "search of codemie src/tests and 4 sibling repos (excl. docs/superpowers, local, .git, .venv, node_modules) for removed names and _spending_support imports (proof/quick_proofs.py p10)",
+      "exit_code": null,
+      "notes": "12103 files scanned over 5 repos; removed-name hits outside twin files/new module: 0; names imported from routers.analytics._spending_support: ['_authorize_admin_budget_view'] Composite check: exit_code null."
+    }
+  ],
+  "failures": {
+    "secrets": "docker run --rm -v \"./:/workspace\" ghcr.io/gitleaks/gitleaks:v8.30.1 \\\n    dir --no-banner --verbose --config=/workspace/.gitleaks.toml /workspace\nFinding:      REDACTED\nSecret:      REDACTED\nRuleID:      generic-api-key\nEntropy:     4.016284\nFile:        /workspace/.codex/config.toml\nLine:        15\nFingerprint: /workspace/.codex/config.toml:generic-api-key:15\n\nFinding:      REDACTED\nSecret:      REDACTED\nRuleID:      generic-api-key\nEntropy:     4.696132\nFile:        /workspace/.mcp.json.lock\nLine:        11\nFingerprint: /workspace/.mcp.json.lock:generic-api-key:11\n\nFinding:      REDACTED\nSecret:      REDACTED\nRuleID:      generic-api-key\nEntropy:     4.016284\nFile:        /workspace/opencode.json\nLine:        26\nFingerprint: /workspace/opencode.json:generic-api-key:26\n\nFinding:      REDACTED\nSecret:      REDACTED\nRuleID:      generic-api-key\nEntropy:     4.016284\nFile:        /workspace/opencode.json.lock\nLine:        303\nFingerprint: /workspace/opencode.json.lock:generic-api-key:303\n\nFinding:      REDACTED\nSecret:      REDACTED\nRuleID:      generic-api-key\nEntropy:     3.740771\nFile:        /workspace/.codegraph/codegraph.db-wal\nLine:        174992\nFingerprint: /workspace/.codegraph/codegraph.db-wal:generic-api-key:174992\n\n2:42PM INF scanned ~225340160 bytes (225.34 MB) in 1m29.6s\n2:42PM WRN leaks found: 5\nmake: *** [Makefile:55: gitleaks] Error 1",
+    "unit": "[failure sections of the 2 failed tests, then summary; the last 50 log lines are warnings only]\n_________________ test_guard_allows_matplotlib_png_generation __________________\n[gw2] linux -- Python 3.12.13 /home/taras_spashchenko/EPAM/cm/codemie/.venv/bin/python\n\ntmp_path = PosixPath('/tmp/pytest-of-taras_spashchenko/pytest-161/popen-gw2/test_guard_allows_matplotlib_p0')\n\n    def test_guard_allows_matplotlib_png_generation(tmp_path: Path) -> None:\n        \"\"\"matplotlib.pyplot.savefig must complete without filesystem denials when\n        MPLCONFIGDIR resolves to an absolute path inside the workspace.  Subprocess\n        denials for font-discovery tools (fc-list, system_profiler) are expected\n        and must not prevent the chart from being saved.\"\"\"\n        workspace = tmp_path / \"workspace\"\n        workspace.mkdir()\n        result = _run_guarded_as_file_in_workspace(\n            workspace,\n            \"import matplotlib\\n\"\n            \"matplotlib.use('Agg')\\n\"\n            \"import matplotlib.pyplot as plt\\n\"\n            \"plt.plot([1, 2, 3], [4, 5, 6])\\n\"\n            \"plt.savefig('chart.png')\\n\"\n            \"print('saved')\\n\",\n        )\n>       assert result.returncode == 0\nE       assert -2 == 0\nE        +  where -2 = CompletedProcess(args=['/home/taras_spashchenko/EPAM/cm/codemie/.venv/bin/python', '/tmp/pytest-of-taras_spashchenko/p..._matplotlib_p0/workspace/script.py\", line 843, in audit_hook\\n    def audit_hook(event, args):\\n\\nKeyboardInterrupt\\n').returncode\n\ntests/codemie_tools/data_management/code_executor/test_filesystem_policy.py:731: AssertionError\n_________________ test_guard_allows_openpyxl_to_save_workbook __________________\n[gw2] linux -- Python 3.12.13 /home/taras_spashchenko/EPAM/cm/codemie/.venv/bin/python\n\ntmp_path = PosixPath('/tmp/pytest-of-taras_spashchenko/pytest-161/popen-gw2/test_guard_allows_openpyxl_to_0')\n\n    def test_guard_allows_openpyxl_to_save_workbook(tmp_path: Path) -> None:\n        \"\"\"openpyxl uses NamedTemporaryFile (absolute path in WORKSPACE_TMP) during\n        save and removes it in an atexit handler.  It also calls mimetypes which\n        probes /etc/mime.types with a read-only open.  Neither should produce denial\n        markers or crash the process.\"\"\"\n        workspace = tmp_path / \"workspace\"\n        workspace.mkdir()\n        result = _run_guarded_as_file_in_workspace(\n            workspace,\n            \"import openpyxl\\n\"\n            \"wb = openpyxl.Workbook()\\n\"\n            \"ws = wb.active\\n\"\n            \"ws['A1'] = 'test'\\n\"\n            \"wb.save('out.xlsx')\\n\"\n            \"print('saved')\\n\",\n        )\n>       assert result.returncode == 0\nE       assert -2 == 0\nE        +  where -2 = CompletedProcess(args=['/home/taras_spashchenko/EPAM/cm/codemie/.venv/bin/python', '/tmp/pytest-of-taras_spashchenko/p..._openpyxl_to_0/workspace/script.py\", line 843, in audit_hook\\n    def audit_hook(event, args):\\n\\nKeyboardInterrupt\\n').returncode\n\ntests/codemie_tools/data_management/code_executor/test_filesystem_policy.py:755: AssertionError\n=============================== warnings summary ===============================\n.venv/lib/python3.12/site-packages/google/auth/transport/grpc.py:44\n.venv/lib/python3.12/site-packages/google/auth/transport/grpc.py:44\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_matplotlib_png_generation\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_openpyxl_to_save_workbook\n==== 2 failed, 19588 passed, 175 skipped, 261 warnings in 94.10s (0:01:34) =====\nmake: *** [Makefile:31: test] Error 1"
+  }
+}

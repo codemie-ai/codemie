@@ -17,8 +17,8 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
+from codemie.rest_api.models.cost_center import CostCenterCreateRequest
 from codemie.rest_api.routers.cost_centers import (
-    CostCenterCreateRequest,
     create_cost_center,
     get_cost_center_detail,
     list_cost_centers,

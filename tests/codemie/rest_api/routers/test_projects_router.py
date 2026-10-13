@@ -26,12 +26,7 @@ from fastapi import FastAPI
 from fastapi.routing import APIRoute
 
 from codemie.core.exceptions import ExtendedHTTPException
-from codemie.rest_api.routers.projects import (
-    router as projects_router,
-    _authorize_project_access,
-    _is_budget_period_open,
-    _build_project_detail_response,
-    _raise_project_not_found,
+from codemie.rest_api.models.project import (
     ProjectAssignmentRequest,
     ProjectAssignmentUpdateRequest,
     ProjectCreateRequest,
@@ -40,16 +35,23 @@ from codemie.rest_api.routers.projects import (
     ProjectListItem,
     ProjectUpdateRequest,
     PaginatedProjectListResponse,
-    assign_user_to_project,
-    create_project,
-    delete_project,
-    get_project_detail,
-    get_project_spends,
-    list_projects,
-    remove_user_from_project,
-    update_project,
-    update_user_project_assignment,
     PaginatedSpendsResponse,
+)
+from codemie.rest_api.routers.projects import router as projects_router
+from codemie.rest_api.routers.projects._common import _authorize_project_access, _raise_project_not_found
+from codemie.service.project.project_spending_service import is_budget_period_open
+from codemie.rest_api.routers.projects.management import delete_project, update_project
+from codemie.rest_api.routers.projects.membership import (
+    assign_user_to_project,
+    remove_user_from_project,
+    update_user_project_assignment,
+)
+from codemie.rest_api.routers.projects.spending import get_project_spends
+from codemie.rest_api.routers.projects.crud import (
+    _build_project_detail_response,
+    create_project,
+    get_project_detail,
+    list_projects,
 )
 from codemie.configs import config
 from codemie.core.models import Application
@@ -75,9 +77,9 @@ def super_admin_user() -> User:
 
 
 class TestProjectCreationEndpoint:
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.project_service")
-    @patch("codemie.rest_api.routers.projects._resolve_cost_center_name")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.crud.project_service")
+    @patch("codemie.rest_api.routers.projects.crud._resolve_cost_center_name")
     def test_create_project_calls_service_directly(
         self,
         mock_resolve_cost_center_name,
@@ -111,9 +113,9 @@ class TestProjectCreationEndpoint:
             description="Analytics pipeline",
         )
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.project_service")
-    @patch("codemie.rest_api.routers.projects._resolve_cost_center_name")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.crud.project_service")
+    @patch("codemie.rest_api.routers.projects.crud._resolve_cost_center_name")
     def test_create_project_success(
         self,
         mock_resolve_cost_center_name,
@@ -145,9 +147,9 @@ class TestProjectCreationEndpoint:
         assert response.created_by == "user-1"
         assert response.created_at == datetime(2026, 2, 10, tzinfo=UTC)
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.project_service")
-    @patch("codemie.rest_api.routers.projects._resolve_cost_center_name")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.crud.project_service")
+    @patch("codemie.rest_api.routers.projects.crud._resolve_cost_center_name")
     def test_create_project_with_cost_center(
         self,
         mock_resolve_cost_center_name,
@@ -188,8 +190,8 @@ class TestProjectCreationEndpoint:
         assert response.cost_center_id == cost_center_id
         assert response.cost_center_name == "epm-cdme"
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.project_service")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.crud.project_service")
     def test_create_project_propagates_service_error(
         self,
         mock_project_service,
@@ -213,9 +215,9 @@ class TestProjectCreationEndpoint:
 
 
 class TestProjectsVisibilityEndpoints:
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_session")
-    @patch("codemie.rest_api.routers.projects.project_visibility_service")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.crud.get_session")
+    @patch("codemie.rest_api.routers.projects.crud.project_visibility_service")
     @pytest.mark.anyio
     async def test_list_projects_uses_visibility_filtered_search(
         self,
@@ -279,9 +281,9 @@ class TestProjectsVisibilityEndpoints:
             sort_order="asc",
         )
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_session")
-    @patch("codemie.rest_api.routers.projects.project_visibility_service")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.crud.get_session")
+    @patch("codemie.rest_api.routers.projects.crud.project_visibility_service")
     @pytest.mark.anyio
     async def test_get_project_detail_includes_created_at_and_members(
         self,
@@ -331,9 +333,9 @@ class TestProjectsVisibilityEndpoints:
         assert result.members[0].user_id == "user-1"
         assert result.members[0].is_project_admin is True
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_session")
-    @patch("codemie.rest_api.routers.projects.project_visibility_service")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.crud.get_session")
+    @patch("codemie.rest_api.routers.projects.crud.project_visibility_service")
     @pytest.mark.anyio
     async def test_get_project_detail_returns_404_when_invisible(
         self,
@@ -368,21 +370,30 @@ class TestProjectsVisibilityEndpoints:
         )
 
     @patch(
-        "codemie.rest_api.routers.projects.project_budget_assignment_repository."
+        "codemie.service.project.project_spending_service.project_budget_assignment_repository."
         "get_assigned_budget_summaries_for_projects",
         new_callable=AsyncMock,
     )
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.budget_repository.get_all_keyed_by_id", new_callable=AsyncMock)
-    @patch("codemie.rest_api.routers.projects._spend_repo.get_lifetime_spend", new_callable=AsyncMock)
+    @patch("codemie.rest_api.routers.projects._common.config")
     @patch(
-        "codemie.rest_api.routers.projects._spend_repo.get_latest_project_budget_rows_by_category",
+        "codemie.service.project.project_spending_service.budget_repository.get_all_keyed_by_id",
         new_callable=AsyncMock,
     )
-    @patch("codemie.rest_api.routers.projects._spend_repo.get_latest_budget_rows_for_project", new_callable=AsyncMock)
-    @patch("codemie.rest_api.routers.projects._spend_repo.get_latest_key_spending_for_project", new_callable=AsyncMock)
-    @patch("codemie.rest_api.routers.projects.get_async_session")
-    @patch("codemie.rest_api.routers.projects._get_project_detail_sync")
+    @patch("codemie.service.project.project_spending_service.spend_repo.get_lifetime_spend", new_callable=AsyncMock)
+    @patch(
+        "codemie.service.project.project_spending_service.spend_repo.get_latest_project_budget_rows_by_category",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "codemie.service.project.project_spending_service.spend_repo.get_latest_budget_rows_for_project",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "codemie.service.project.project_spending_service.spend_repo.get_latest_key_spending_for_project",
+        new_callable=AsyncMock,
+    )
+    @patch("codemie.service.project.project_spending_service.get_async_session")
+    @patch("codemie.rest_api.routers.projects.crud._get_project_detail_sync")
     @pytest.mark.anyio
     async def test_get_project_detail_fetches_spending_for_project_admin(
         self,
@@ -437,9 +448,9 @@ class TestProjectsVisibilityEndpoints:
         assert mock_get_category_rows.await_args.args[1] == ["proj-a"]
         assert mock_get_latest_budget_rows.await_count == 1
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.SettingsService.get_enforce_member_spend_limits")
-    @patch("codemie.rest_api.routers.projects._get_project_detail_sync")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.crud.SettingsService.get_enforce_member_spend_limits")
+    @patch("codemie.rest_api.routers.projects.crud._get_project_detail_sync")
     @pytest.mark.anyio
     async def test_get_project_detail_includes_project_member_budget_tracking_flag(
         self,
@@ -481,9 +492,9 @@ class TestProjectsVisibilityEndpoints:
         assert result.enforce_member_spend_limits is True
         mock_get_tracking_enabled.assert_called_once_with("proj-a")
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_session")
-    @patch("codemie.rest_api.routers.projects.project_visibility_service")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.crud.get_session")
+    @patch("codemie.rest_api.routers.projects.crud.project_visibility_service")
     @pytest.mark.anyio
     async def test_list_projects_pagination_first_page(
         self,
@@ -527,9 +538,9 @@ class TestProjectsVisibilityEndpoints:
         assert result.pagination.total == 100
         assert len(result.data) == 10
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_session")
-    @patch("codemie.rest_api.routers.projects.project_visibility_service")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.crud.get_session")
+    @patch("codemie.rest_api.routers.projects.crud.project_visibility_service")
     @pytest.mark.anyio
     async def test_list_projects_empty_results(
         self,
@@ -560,9 +571,9 @@ class TestProjectsVisibilityEndpoints:
         assert result.pagination.total == 0
         assert result.pagination.page == 0
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_session")
-    @patch("codemie.rest_api.routers.projects.project_visibility_service")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.crud.get_session")
+    @patch("codemie.rest_api.routers.projects.crud.project_visibility_service")
     @pytest.mark.anyio
     async def test_list_projects_super_admin_sees_all(
         self,
@@ -630,12 +641,13 @@ class TestProjectsVisibilityEndpoints:
             sort_order="asc",
         )
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_active_provider")
-    @patch("codemie.rest_api.routers.projects.project_budget_assignment_repository")
-    @patch("codemie.rest_api.routers.projects.get_async_session")
-    @patch("codemie.rest_api.routers.projects.get_session")
-    @patch("codemie.rest_api.routers.projects.project_visibility_service")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.crud.config")
+    @patch("codemie.rest_api.routers.projects.crud.get_active_provider")
+    @patch("codemie.rest_api.routers.projects.crud.project_budget_assignment_repository")
+    @patch("codemie.rest_api.routers.projects.crud.get_async_session")
+    @patch("codemie.rest_api.routers.projects.crud.get_session")
+    @patch("codemie.rest_api.routers.projects.crud.project_visibility_service")
     @pytest.mark.anyio
     async def test_list_projects_attaches_assigned_budgets_and_skips_invalid_categories(
         self,
@@ -645,9 +657,10 @@ class TestProjectsVisibilityEndpoints:
         mock_project_budget_repo,
         mock_get_active_provider,
         mock_config,
+        mock_common_config,
         regular_user,
     ):
-        mock_config.ENABLE_USER_MANAGEMENT = True
+        mock_common_config.ENABLE_USER_MANAGEMENT = True
         mock_config.LLM_PROXY_BUDGET_CHECK_ENABLED = True
         mock_get_active_provider.return_value = SimpleNamespace(provider_name="litellm")
         mock_session = MagicMock()
@@ -719,16 +732,16 @@ class TestProjectsVisibilityEndpoints:
         assert result.data[0].budgets[0].budget_category == BudgetCategory.CLI
 
     @patch(
-        "codemie.rest_api.routers.projects.project_budget_assignment_repository."
+        "codemie.service.project.project_spending_service.project_budget_assignment_repository."
         "get_assigned_budget_summaries_for_projects",
         new_callable=AsyncMock,
     )
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.budget_repository")
-    @patch("codemie.rest_api.routers.projects.get_async_session")
-    @patch("codemie.rest_api.routers.projects.get_session")
-    @patch("codemie.rest_api.routers.projects.project_visibility_service")
-    @patch("codemie.rest_api.routers.projects._spend_repo")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.service.project.project_spending_service.budget_repository")
+    @patch("codemie.service.project.project_spending_service.get_async_session")
+    @patch("codemie.rest_api.routers.projects.crud.get_session")
+    @patch("codemie.rest_api.routers.projects.crud.project_visibility_service")
+    @patch("codemie.service.project.project_spending_service.spend_repo")
     @pytest.mark.anyio
     async def test_list_projects_builds_spending_summary_from_latest_key_and_budget_rows(
         self,
@@ -814,9 +827,9 @@ class TestProjectsVisibilityEndpoints:
         assert result.data[0].spending.budget_limit == pytest.approx(16.0)
         assert result.data[0].spending.total_percent == pytest.approx(50.0)
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_session")
-    @patch("codemie.rest_api.routers.projects.project_visibility_service")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.crud.get_session")
+    @patch("codemie.rest_api.routers.projects.crud.project_visibility_service")
     @pytest.mark.anyio
     async def test_project_detail_includes_all_required_fields(
         self,
@@ -862,8 +875,8 @@ class TestProjectsVisibilityEndpoints:
 
 
 class TestProjectAssignmentEndpoints:
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_session")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.membership.get_session")
     @patch("codemie.service.project.project_assignment_service.project_assignment_service")
     def test_assign_user_returns_404_for_personal_project(
         self,
@@ -895,8 +908,8 @@ class TestProjectAssignmentEndpoints:
         assert exc_info.value.code == 404
         assert exc_info.value.message == "Project not found"
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_session")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.membership.get_session")
     @patch("codemie.service.project.project_assignment_service.project_assignment_service")
     def test_assign_user_success(
         self,
@@ -932,8 +945,8 @@ class TestProjectAssignmentEndpoints:
         assert response.project_name == "shared-proj"
         assert response.is_project_admin is True
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_session")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.membership.get_session")
     @patch("codemie.service.project.project_assignment_service.project_assignment_service")
     def test_update_assignment_returns_404_when_target_not_assigned(
         self,
@@ -966,8 +979,8 @@ class TestProjectAssignmentEndpoints:
         assert exc_info.value.code == 404
         assert exc_info.value.message == "User is not assigned to this project"
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_session")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.membership.get_session")
     @patch("codemie.service.project.project_assignment_service.project_assignment_service")
     def test_remove_assignment_success(
         self,
@@ -1022,8 +1035,8 @@ class TestProjectAssignmentEndpoints:
             in route_dependencies[("DELETE", "/v1/projects/{projectName}/assignment/{userId}")]
         )
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_session")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.membership.get_session")
     @patch("codemie.service.project.project_assignment_service.project_assignment_service")
     def test_assign_user_returns_409_when_already_assigned(
         self,
@@ -1056,8 +1069,8 @@ class TestProjectAssignmentEndpoints:
         assert exc_info.value.code == 409
         assert exc_info.value.message == "User already assigned to project"
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_session")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.membership.get_session")
     @patch("codemie.service.project.project_assignment_service.project_assignment_service")
     def test_assign_user_returns_404_when_target_user_not_found(
         self,
@@ -1090,8 +1103,8 @@ class TestProjectAssignmentEndpoints:
         assert exc_info.value.code == 404
         assert exc_info.value.message == "User not found"
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_session")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.membership.get_session")
     @patch("codemie.service.project.project_assignment_service.project_assignment_service")
     def test_update_assignment_returns_404_for_personal_project(
         self,
@@ -1125,8 +1138,8 @@ class TestProjectAssignmentEndpoints:
         assert exc_info.value.code == 404
         assert exc_info.value.message == "Project not found"
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_session")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.membership.get_session")
     @patch("codemie.service.project.project_assignment_service.project_assignment_service")
     def test_remove_assignment_returns_404_when_target_not_assigned(
         self,
@@ -1159,8 +1172,8 @@ class TestProjectAssignmentEndpoints:
         assert exc_info.value.code == 404
         assert exc_info.value.message == "User is not assigned to this project"
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_session")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.membership.get_session")
     @patch("codemie.service.project.project_assignment_service.project_assignment_service")
     def test_project_admin_can_remove_themselves(
         self,
@@ -1194,8 +1207,8 @@ class TestProjectAssignmentEndpoints:
         assert response.message == "User removed from project successfully"
         assert response.user_id == "user-1"
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_session")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.membership.get_session")
     @patch("codemie.service.project.project_assignment_service.project_assignment_service")
     def test_project_admin_can_demote_themselves(
         self,
@@ -1231,8 +1244,8 @@ class TestProjectAssignmentEndpoints:
         assert response.message == "User role updated successfully"
         assert response.is_project_admin is False
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_session")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.membership.get_session")
     @patch("codemie.service.project.project_assignment_service.project_assignment_service")
     def test_removing_last_project_admin_succeeds(
         self,
@@ -1265,8 +1278,8 @@ class TestProjectAssignmentEndpoints:
 
         assert response.message == "User removed from project successfully"
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_session")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.membership.get_session")
     @patch("codemie.service.project.project_assignment_service.project_assignment_service")
     def test_url_encoded_project_names_work_correctly(
         self,
@@ -1300,8 +1313,8 @@ class TestProjectAssignmentEndpoints:
 
         assert response.project_name == "team-analytics"
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_session")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.membership.get_session")
     @patch("codemie.service.project.project_assignment_service.project_assignment_service")
     def test_assignment_response_uses_snake_case(
         self,
@@ -1344,9 +1357,9 @@ class TestProjectAssignmentEndpoints:
 class TestDeleteProjectEndpoint:
     """Tests for DELETE /v1/projects/{projectName}."""
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_session")
-    @patch("codemie.rest_api.routers.projects.project_service")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.management.get_session")
+    @patch("codemie.rest_api.routers.projects.management.project_service")
     def test_delete_project_success_returns_200_with_message(
         self,
         mock_project_service,
@@ -1385,9 +1398,9 @@ class TestDeleteProjectEndpoint:
         )
         mock_session.commit.assert_called_once()
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_session")
-    @patch("codemie.rest_api.routers.projects.project_service")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.management.get_session")
+    @patch("codemie.rest_api.routers.projects.management.project_service")
     def test_delete_project_propagates_403_from_service(
         self,
         mock_project_service,
@@ -1421,9 +1434,9 @@ class TestDeleteProjectEndpoint:
         assert exc_info.value.message == "Cannot delete a personal project"
         mock_session.commit.assert_not_called()
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_session")
-    @patch("codemie.rest_api.routers.projects.project_service")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.management.get_session")
+    @patch("codemie.rest_api.routers.projects.management.project_service")
     def test_delete_project_propagates_409_from_service(
         self,
         mock_project_service,
@@ -1461,8 +1474,8 @@ class TestDeleteProjectEndpoint:
 class TestUpdateProjectEndpoint:
     """Tests for PATCH /v1/projects/{projectName}."""
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.project_service")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.management.project_service")
     def test_update_description_returns_updated_response(
         self,
         mock_project_service,
@@ -1505,8 +1518,8 @@ class TestUpdateProjectEndpoint:
             chargeback_attribution=None,
         )
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.project_service")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.management.project_service")
     def test_update_cost_center_id_sets_update_cost_center_true(
         self,
         mock_project_service,
@@ -1548,8 +1561,8 @@ class TestUpdateProjectEndpoint:
             chargeback_attribution=None,
         )
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.project_service")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.management.project_service")
     def test_clear_cost_center_passes_none_to_service(
         self,
         mock_project_service,
@@ -1590,8 +1603,8 @@ class TestUpdateProjectEndpoint:
             chargeback_attribution=None,
         )
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.project_service")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.management.project_service")
     def test_update_budget_tracking_flag_passes_value_to_service(
         self,
         mock_project_service,
@@ -1631,8 +1644,8 @@ class TestUpdateProjectEndpoint:
             chargeback_attribution=None,
         )
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.project_service")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.management.project_service")
     def test_update_project_propagates_exception_from_service(
         self,
         mock_project_service,
@@ -1682,7 +1695,7 @@ def anyio_backend():
 
 
 class TestRaiseProjectNotFound:
-    @patch("codemie.rest_api.routers.projects.logger")
+    @patch("codemie.rest_api.routers.projects._common.logger")
     def test_extracts_http_method_from_action(self, mock_logger):
         action = "POST /v1/projects/test-project/assignment"
         with pytest.raises(ExtendedHTTPException) as exc_info:
@@ -1696,14 +1709,14 @@ class TestRaiseProjectNotFound:
         # PII: project_name must NOT appear in log
         assert "test-project" not in log_message
 
-    @patch("codemie.rest_api.routers.projects.logger")
+    @patch("codemie.rest_api.routers.projects._common.logger")
     def test_action_without_path(self, mock_logger):
         with pytest.raises(ExtendedHTTPException):
             _raise_project_not_found(user_id="user-456", action="DELETE")
         log_message = mock_logger.warning.call_args[0][0]
         assert "method=DELETE" in log_message
 
-    @patch("codemie.rest_api.routers.projects.logger")
+    @patch("codemie.rest_api.routers.projects._common.logger")
     def test_empty_action_defaults_to_unknown(self, mock_logger):
         with pytest.raises(ExtendedHTTPException):
             _raise_project_not_found(user_id="user-789", action="")
@@ -1712,10 +1725,10 @@ class TestRaiseProjectNotFound:
 
 
 class TestCheckProjectAccess:
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_session")
-    @patch("codemie.rest_api.routers.projects.application_repository")
-    @patch("codemie.rest_api.routers.projects.Ability")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects._common.get_session")
+    @patch("codemie.rest_api.routers.projects._common.application_repository")
+    @patch("codemie.rest_api.routers.projects._common.Ability")
     def test_resolves_authorized_project(self, mock_ability_class, mock_app_repo, mock_get_session, mock_config):
         mock_config.ENABLE_USER_MANAGEMENT = True
 
@@ -1742,9 +1755,9 @@ class TestCheckProjectAccess:
         assert result is project
         mock_app_repo.get_by_name.assert_called_once_with(mock_session, "shared-proj")
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_session")
-    @patch("codemie.rest_api.routers.projects.application_repository")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects._common.get_session")
+    @patch("codemie.rest_api.routers.projects._common.application_repository")
     def test_pure_auditor_denied_write_access(self, mock_app_repo, mock_get_session, mock_config):
         """EPMCDME-10930 spec 5.2: a pure auditor (read-only role) must not be granted
         WRITE access via _authorize_project_access, which gates project update/delete.
@@ -1794,7 +1807,7 @@ class TestCheckProjectAccess:
 class TestValidateUsersFromCsvEndpoint:
     """Unit tests for the validate_users_from_csv endpoint (dry-run CSV validation)."""
 
-    from codemie.rest_api.routers.projects import validate_users_from_csv
+    from codemie.rest_api.routers.projects.membership import validate_users_from_csv
 
     def _make_upload(self, content: bytes, filename: str = "users.csv") -> MagicMock:
         """Return a mock UploadFile whose .file.read() returns *content*."""
@@ -1809,8 +1822,8 @@ class TestValidateUsersFromCsvEndpoint:
         proj.deleted_at = None
         return proj
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_session")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.membership.get_session")
     @patch("codemie.service.project.csv_import_service.csv_import_service")
     def test_valid_csv_returns_200_with_users_list(
         self,
@@ -1833,7 +1846,7 @@ class TestValidateUsersFromCsvEndpoint:
         authorized_project = self._make_project()
 
         # Act
-        from codemie.rest_api.routers.projects import validate_users_from_csv
+        from codemie.rest_api.routers.projects.membership import validate_users_from_csv
 
         response = validate_users_from_csv(
             file=self._make_upload(content),
@@ -1853,8 +1866,8 @@ class TestValidateUsersFromCsvEndpoint:
             content=content,
         )
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_session")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.membership.get_session")
     @patch("codemie.service.project.csv_import_service.csv_import_service")
     def test_mixed_rows_returns_200_with_errors_populated(
         self,
@@ -1877,7 +1890,7 @@ class TestValidateUsersFromCsvEndpoint:
         authorized_project = self._make_project()
 
         # Act
-        from codemie.rest_api.routers.projects import validate_users_from_csv
+        from codemie.rest_api.routers.projects.membership import validate_users_from_csv
 
         response = validate_users_from_csv(
             file=self._make_upload(content),
@@ -1890,8 +1903,8 @@ class TestValidateUsersFromCsvEndpoint:
         assert response.users[0].error is None
         assert response.users[1].error == "Invalid email address: 'bad-email'"
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_session")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.membership.get_session")
     @patch("codemie.service.project.csv_import_service.csv_import_service")
     def test_file_exceeding_size_limit_raises_413(
         self,
@@ -1909,7 +1922,7 @@ class TestValidateUsersFromCsvEndpoint:
         authorized_project = self._make_project()
 
         # Act & Assert
-        from codemie.rest_api.routers.projects import validate_users_from_csv
+        from codemie.rest_api.routers.projects.membership import validate_users_from_csv
 
         with pytest.raises(ExtendedHTTPException) as exc_info:
             validate_users_from_csv(
@@ -1922,8 +1935,8 @@ class TestValidateUsersFromCsvEndpoint:
         assert "too large" in exc_info.value.message.lower()
         mock_csv_service.validate_csv.assert_not_called()
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_session")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.membership.get_session")
     @patch("codemie.service.project.csv_import_service.csv_import_service")
     def test_structural_csv_error_propagates_422(
         self,
@@ -1947,7 +1960,7 @@ class TestValidateUsersFromCsvEndpoint:
         authorized_project = self._make_project()
 
         # Act & Assert
-        from codemie.rest_api.routers.projects import validate_users_from_csv
+        from codemie.rest_api.routers.projects.membership import validate_users_from_csv
 
         with pytest.raises(ExtendedHTTPException) as exc_info:
             validate_users_from_csv(
@@ -1959,7 +1972,7 @@ class TestValidateUsersFromCsvEndpoint:
         assert exc_info.value.code == 422
         assert "decoding" in exc_info.value.message.lower()
 
-    @patch("codemie.rest_api.routers.projects.config")
+    @patch("codemie.rest_api.routers.projects._common.config")
     def test_user_management_disabled_returns_400(self, mock_config):
         """ENABLE_USER_MANAGEMENT=False → 400 before any file is read or service called."""
         # Arrange
@@ -1967,7 +1980,7 @@ class TestValidateUsersFromCsvEndpoint:
         authorized_project = self._make_project()
 
         # Act & Assert
-        from codemie.rest_api.routers.projects import validate_users_from_csv
+        from codemie.rest_api.routers.projects.membership import validate_users_from_csv
 
         with pytest.raises(ExtendedHTTPException) as exc_info:
             validate_users_from_csv(
@@ -1979,8 +1992,8 @@ class TestValidateUsersFromCsvEndpoint:
         assert exc_info.value.code == 400
         assert "user management" in exc_info.value.message.lower()
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_session")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.membership.get_session")
     @patch("codemie.service.project.csv_import_service.csv_import_service")
     def test_validate_route_uses_authorize_project_access_dependency(
         self,
@@ -2005,8 +2018,8 @@ class TestValidateUsersFromCsvEndpoint:
         assert validate_key in route_deps
         assert "_authorize_project_access" in route_deps[validate_key]
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_session")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.membership.get_session")
     @patch("codemie.service.project.csv_import_service.csv_import_service")
     def test_file_read_requests_sentinel_byte_count(
         self,
@@ -2029,7 +2042,7 @@ class TestValidateUsersFromCsvEndpoint:
         authorized_project = self._make_project()
 
         # Act
-        from codemie.rest_api.routers.projects import validate_users_from_csv
+        from codemie.rest_api.routers.projects.membership import validate_users_from_csv
 
         validate_users_from_csv(
             file=mock_upload,
@@ -2090,16 +2103,16 @@ class TestPersonalProjectSpending:
     """Personal project owners can see their own spending summary and widget."""
 
     @patch(
-        "codemie.rest_api.routers.projects.project_budget_assignment_repository."
+        "codemie.service.project.project_spending_service.project_budget_assignment_repository."
         "get_assigned_budget_summaries_for_projects",
         new_callable=AsyncMock,
     )
-    @patch('codemie.rest_api.routers.projects.config')
-    @patch('codemie.rest_api.routers.projects.budget_repository')
-    @patch('codemie.rest_api.routers.projects.get_async_session')
-    @patch('codemie.rest_api.routers.projects.get_session')
-    @patch('codemie.rest_api.routers.projects.project_visibility_service')
-    @patch('codemie.rest_api.routers.projects._spend_repo')
+    @patch('codemie.rest_api.routers.projects._common.config')
+    @patch('codemie.service.project.project_spending_service.budget_repository')
+    @patch('codemie.service.project.project_spending_service.get_async_session')
+    @patch('codemie.rest_api.routers.projects.crud.get_session')
+    @patch('codemie.rest_api.routers.projects.crud.project_visibility_service')
+    @patch('codemie.service.project.project_spending_service.spend_repo')
     @pytest.mark.anyio
     async def test_personal_project_owner_sees_spending_in_list(
         self,
@@ -2173,16 +2186,16 @@ class TestPersonalProjectSpending:
         assert item.spending.budget_limit == pytest.approx(50.0)
 
     @patch(
-        "codemie.rest_api.routers.projects.project_budget_assignment_repository."
+        "codemie.service.project.project_spending_service.project_budget_assignment_repository."
         "get_assigned_budget_summaries_for_projects",
         new_callable=AsyncMock,
     )
-    @patch('codemie.rest_api.routers.projects.config')
-    @patch('codemie.rest_api.routers.projects.budget_repository')
-    @patch('codemie.rest_api.routers.projects.get_async_session')
-    @patch('codemie.rest_api.routers.projects.get_session')
-    @patch('codemie.rest_api.routers.projects.project_visibility_service')
-    @patch('codemie.rest_api.routers.projects._spend_repo')
+    @patch('codemie.rest_api.routers.projects._common.config')
+    @patch('codemie.service.project.project_spending_service.budget_repository')
+    @patch('codemie.service.project.project_spending_service.get_async_session')
+    @patch('codemie.rest_api.routers.projects.crud.get_session')
+    @patch('codemie.rest_api.routers.projects.crud.project_visibility_service')
+    @patch('codemie.service.project.project_spending_service.spend_repo')
     @pytest.mark.anyio
     async def test_personal_project_detail_returns_cumulative_and_period_spend(
         self,
@@ -2243,16 +2256,16 @@ class TestPersonalProjectSpending:
         assert result.spending.budget_limit == pytest.approx(50.0)
 
     @patch(
-        "codemie.rest_api.routers.projects.project_budget_assignment_repository."
+        "codemie.service.project.project_spending_service.project_budget_assignment_repository."
         "get_assigned_budget_summaries_for_projects",
         new_callable=AsyncMock,
     )
-    @patch('codemie.rest_api.routers.projects.config')
-    @patch('codemie.rest_api.routers.projects.budget_repository')
-    @patch('codemie.rest_api.routers.projects.get_async_session')
-    @patch('codemie.rest_api.routers.projects.get_session')
-    @patch('codemie.rest_api.routers.projects.project_visibility_service')
-    @patch('codemie.rest_api.routers.projects._spend_repo')
+    @patch('codemie.rest_api.routers.projects._common.config')
+    @patch('codemie.service.project.project_spending_service.budget_repository')
+    @patch('codemie.service.project.project_spending_service.get_async_session')
+    @patch('codemie.rest_api.routers.projects.crud.get_session')
+    @patch('codemie.rest_api.routers.projects.crud.project_visibility_service')
+    @patch('codemie.service.project.project_spending_service.spend_repo')
     @pytest.mark.anyio
     async def test_personal_project_detail_returns_spending_widget_with_budget_rows(
         self,
@@ -2317,9 +2330,9 @@ class TestPersonalProjectSpending:
 
         assert result.spending.budget_limit == pytest.approx(70.0)
 
-    @patch('codemie.rest_api.routers.projects.config')
-    @patch('codemie.rest_api.routers.projects.get_session')
-    @patch('codemie.rest_api.routers.projects.project_visibility_service')
+    @patch('codemie.rest_api.routers.projects._common.config')
+    @patch('codemie.rest_api.routers.projects.crud.get_session')
+    @patch('codemie.rest_api.routers.projects.crud.project_visibility_service')
     @pytest.mark.anyio
     async def test_personal_project_detail_no_spending_when_include_spending_false(
         self,
@@ -2351,11 +2364,11 @@ class TestPersonalProjectSpending:
 
 
 class TestGetProjectSpends:
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_async_session")
-    @patch("codemie.rest_api.routers.projects.get_session")
-    @patch("codemie.rest_api.routers.projects.application_repository")
-    @patch("codemie.rest_api.routers.projects._spend_repo")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.spending.get_async_session")
+    @patch("codemie.rest_api.routers.projects.spending.get_session")
+    @patch("codemie.rest_api.routers.projects.spending.application_repository")
+    @patch("codemie.rest_api.routers.projects.spending.spend_repo")
     @pytest.mark.anyio
     async def test_returns_paginated_spends_for_project_admin(
         self,
@@ -2406,11 +2419,11 @@ class TestGetProjectSpends:
         assert result.pagination.page == 0
         assert result.pagination.per_page == 20
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_async_session")
-    @patch("codemie.rest_api.routers.projects.get_session")
-    @patch("codemie.rest_api.routers.projects.application_repository")
-    @patch("codemie.rest_api.routers.projects._spend_repo")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.spending.get_async_session")
+    @patch("codemie.rest_api.routers.projects.spending.get_session")
+    @patch("codemie.rest_api.routers.projects.spending.application_repository")
+    @patch("codemie.rest_api.routers.projects.spending.spend_repo")
     @patch("codemie.rest_api.security.user.config")
     @pytest.mark.anyio
     async def test_returns_paginated_spends_for_global_admin(
@@ -2447,11 +2460,11 @@ class TestGetProjectSpends:
         assert result.rows == []
         assert result.pagination.total == 0
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_async_session")
-    @patch("codemie.rest_api.routers.projects.get_session")
-    @patch("codemie.rest_api.routers.projects.application_repository")
-    @patch("codemie.rest_api.routers.projects._spend_repo")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.spending.get_async_session")
+    @patch("codemie.rest_api.routers.projects.spending.get_session")
+    @patch("codemie.rest_api.routers.projects.spending.application_repository")
+    @patch("codemie.rest_api.routers.projects.spending.spend_repo")
     @pytest.mark.anyio
     async def test_returns_paginated_spends_for_global_maintainer(
         self,
@@ -2488,9 +2501,9 @@ class TestGetProjectSpends:
         assert isinstance(result, PaginatedSpendsResponse)
         assert result.total_spend == 7.5
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_session")
-    @patch("codemie.rest_api.routers.projects.application_repository")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.spending.get_session")
+    @patch("codemie.rest_api.routers.projects.spending.application_repository")
     @pytest.mark.anyio
     async def test_returns_404_when_project_not_found(
         self,
@@ -2515,9 +2528,9 @@ class TestGetProjectSpends:
 
         assert exc_info.value.code == 404
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_session")
-    @patch("codemie.rest_api.routers.projects.application_repository")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.spending.get_session")
+    @patch("codemie.rest_api.routers.projects.spending.application_repository")
     @pytest.mark.anyio
     async def test_returns_404_when_project_is_soft_deleted(
         self,
@@ -2544,9 +2557,9 @@ class TestGetProjectSpends:
 
         assert exc_info.value.code == 404
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_session")
-    @patch("codemie.rest_api.routers.projects.application_repository")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.spending.get_session")
+    @patch("codemie.rest_api.routers.projects.spending.application_repository")
     @patch("codemie.rest_api.security.user.config")
     @pytest.mark.anyio
     async def test_returns_404_when_user_is_not_project_admin(
@@ -2577,7 +2590,7 @@ class TestGetProjectSpends:
 
         assert exc_info.value.code == 404
 
-    @patch("codemie.rest_api.routers.projects.config")
+    @patch("codemie.rest_api.routers.projects._common.config")
     @pytest.mark.anyio
     async def test_returns_400_when_period_from_after_period_to(self, mock_config):
         mock_config.ENABLE_USER_MANAGEMENT = True
@@ -2595,11 +2608,11 @@ class TestGetProjectSpends:
 
         assert exc_info.value.code == 400
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_async_session")
-    @patch("codemie.rest_api.routers.projects.get_session")
-    @patch("codemie.rest_api.routers.projects.application_repository")
-    @patch("codemie.rest_api.routers.projects._spend_repo")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.spending.get_async_session")
+    @patch("codemie.rest_api.routers.projects.spending.get_session")
+    @patch("codemie.rest_api.routers.projects.spending.application_repository")
+    @patch("codemie.rest_api.routers.projects.spending.spend_repo")
     @pytest.mark.anyio
     async def test_returns_spends_for_personal_project_owner(
         self,
@@ -2638,9 +2651,9 @@ class TestGetProjectSpends:
         assert isinstance(result, PaginatedSpendsResponse)
         assert result.total_spend == 12.5
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_session")
-    @patch("codemie.rest_api.routers.projects.application_repository")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.spending.get_session")
+    @patch("codemie.rest_api.routers.projects.spending.application_repository")
     @patch("codemie.rest_api.security.user.config")
     @pytest.mark.anyio
     async def test_returns_404_for_non_member_of_personal_project(
@@ -2679,11 +2692,11 @@ class TestGetProjectSpends:
 
         assert exc_info.value.code == 404
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_async_session")
-    @patch("codemie.rest_api.routers.projects.get_session")
-    @patch("codemie.rest_api.routers.projects.application_repository")
-    @patch("codemie.rest_api.routers.projects._spend_repo")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.spending.get_async_session")
+    @patch("codemie.rest_api.routers.projects.spending.get_session")
+    @patch("codemie.rest_api.routers.projects.spending.application_repository")
+    @patch("codemie.rest_api.routers.projects.spending.spend_repo")
     @patch("codemie.rest_api.security.user.config")
     @pytest.mark.anyio
     async def test_budget_category_filter_forwarded_to_repo(
@@ -2720,11 +2733,11 @@ class TestGetProjectSpends:
         assert mock_spend_repo.get_spend_for_period.call_args.kwargs["budget_category"] == BudgetCategory.CLI
         assert mock_spend_repo.get_spend_for_period.call_args.kwargs["spend_subject_type"] is None
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_async_session")
-    @patch("codemie.rest_api.routers.projects.get_session")
-    @patch("codemie.rest_api.routers.projects.application_repository")
-    @patch("codemie.rest_api.routers.projects._spend_repo")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.spending.get_async_session")
+    @patch("codemie.rest_api.routers.projects.spending.get_session")
+    @patch("codemie.rest_api.routers.projects.spending.application_repository")
+    @patch("codemie.rest_api.routers.projects.spending.spend_repo")
     @patch("codemie.rest_api.security.user.config")
     @pytest.mark.anyio
     async def test_spend_subject_type_filter_forwarded_to_repo(
@@ -2761,11 +2774,11 @@ class TestGetProjectSpends:
         assert mock_spend_repo.get_spend_for_period.call_args.kwargs["spend_subject_type"] == "member_budget"
         assert mock_spend_repo.get_spend_for_period.call_args.kwargs["budget_category"] is None
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_async_session")
-    @patch("codemie.rest_api.routers.projects.get_session")
-    @patch("codemie.rest_api.routers.projects.application_repository")
-    @patch("codemie.rest_api.routers.projects._spend_repo")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.spending.get_async_session")
+    @patch("codemie.rest_api.routers.projects.spending.get_session")
+    @patch("codemie.rest_api.routers.projects.spending.application_repository")
+    @patch("codemie.rest_api.routers.projects.spending.spend_repo")
     @patch("codemie.rest_api.security.user.config")
     @pytest.mark.anyio
     async def test_both_filters_forwarded_to_repo(
@@ -2802,11 +2815,11 @@ class TestGetProjectSpends:
         assert mock_spend_repo.get_spend_for_period.call_args.kwargs["budget_category"] == BudgetCategory.PLATFORM
         assert mock_spend_repo.get_spend_for_period.call_args.kwargs["spend_subject_type"] == "budget"
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_async_session")
-    @patch("codemie.rest_api.routers.projects.get_session")
-    @patch("codemie.rest_api.routers.projects.application_repository")
-    @patch("codemie.rest_api.routers.projects._spend_repo")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.spending.get_async_session")
+    @patch("codemie.rest_api.routers.projects.spending.get_session")
+    @patch("codemie.rest_api.routers.projects.spending.application_repository")
+    @patch("codemie.rest_api.routers.projects.spending.spend_repo")
     @patch("codemie.rest_api.security.user.config")
     @pytest.mark.anyio
     async def test_no_filters_passes_none_to_repo(
@@ -2847,9 +2860,9 @@ class TestGetProjectSpends:
 class TestProjectDisplayNameEndpoints:
     """Tests for display_name field in create and update project endpoints."""
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.project_service")
-    @patch("codemie.rest_api.routers.projects._resolve_cost_center_name")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.crud.project_service")
+    @patch("codemie.rest_api.routers.projects.crud._resolve_cost_center_name")
     def test_create_project_with_display_name_passes_to_service(
         self,
         mock_resolve_cost_center_name,
@@ -2884,9 +2897,9 @@ class TestProjectDisplayNameEndpoints:
             display_name="My Team",
         )
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.project_service")
-    @patch("codemie.rest_api.routers.projects._resolve_cost_center_name")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.crud.project_service")
+    @patch("codemie.rest_api.routers.projects.crud._resolve_cost_center_name")
     def test_create_project_without_display_name_omits_kwarg(
         self,
         mock_resolve_cost_center_name,
@@ -2916,8 +2929,8 @@ class TestProjectDisplayNameEndpoints:
         call_kwargs = mock_project_service.create_shared_project.call_args.kwargs
         assert "display_name" not in call_kwargs
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.project_service")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.management.project_service")
     def test_update_project_with_display_name_passes_to_service(
         self,
         mock_project_service,
@@ -2959,8 +2972,8 @@ class TestProjectDisplayNameEndpoints:
             chargeback_attribution=None,
         )
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.project_service")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.management.project_service")
     def test_update_project_display_name_none_passes_through(
         self,
         mock_project_service,
@@ -3002,8 +3015,8 @@ class TestProjectDisplayNameEndpoints:
             chargeback_attribution=None,
         )
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.project_service")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.management.project_service")
     def test_clear_display_name_passes_true_to_service(
         self,
         mock_project_service,
@@ -3083,8 +3096,8 @@ class TestChargebackEnabledField:
         payload = ProjectUpdateRequest(chargeback_enabled=True)
         assert payload.chargeback_enabled is True
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.project_service")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.management.project_service")
     def test_update_project_passes_chargeback_enabled_to_service(self, mock_project_service, mock_config):
         mock_config.ENABLE_USER_MANAGEMENT = True
         updated_app = MagicMock()
@@ -3121,8 +3134,8 @@ class TestChargebackEnabledField:
             chargeback_attribution=None,
         )
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.project_service")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.management.project_service")
     def test_update_project_response_includes_chargeback_enabled(self, mock_project_service, mock_config):
         mock_config.ENABLE_USER_MANAGEMENT = True
         updated_app = MagicMock()
@@ -3184,8 +3197,8 @@ class TestChargebackAttributionField:
         payload = ProjectUpdateRequest(chargeback_attribution="cost_center")
         assert payload.chargeback_attribution == "cost_center"
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.project_service")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.management.project_service")
     def test_update_project_passes_chargeback_attribution_to_service(self, mock_project_service, mock_config):
         mock_config.ENABLE_USER_MANAGEMENT = True
         updated_app = MagicMock()
@@ -3221,8 +3234,8 @@ class TestChargebackAttributionField:
             chargeback_attribution="cost_center",
         )
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.project_service")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.management.project_service")
     def test_update_project_response_includes_chargeback_attribution(self, mock_project_service, mock_config):
         mock_config.ENABLE_USER_MANAGEMENT = True
         updated_app = MagicMock()
@@ -3264,11 +3277,11 @@ class TestChargebackAttributionField:
 
 
 class TestAllowedModelsEndpoint:
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.project_service")
-    @patch("codemie.rest_api.routers.projects._resolve_cost_center_name")
-    @patch("codemie.rest_api.routers.projects.application_repository")
-    @patch("codemie.rest_api.routers.projects.get_session")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.management.project_service")
+    @patch("codemie.rest_api.routers.projects.management._resolve_cost_center_name")
+    @patch("codemie.rest_api.routers.projects._common.application_repository")
+    @patch("codemie.rest_api.routers.projects.management.get_session")
     def test_update_allowed_models_success(
         self,
         mock_get_session,
@@ -3293,10 +3306,8 @@ class TestAllowedModelsEndpoint:
         project.default_model = None
         mock_project_service.update_allowed_models.return_value = project
 
-        from codemie.rest_api.routers.projects import (
-            AllowedModelsUpdateRequest,
-            update_allowed_models,
-        )
+        from codemie.rest_api.models.project import AllowedModelsUpdateRequest
+        from codemie.rest_api.routers.projects.management import update_allowed_models
 
         response = update_allowed_models(
             payload=AllowedModelsUpdateRequest(allowed_models=["gpt-4", "claude-3-sonnet"]),
@@ -3310,10 +3321,10 @@ class TestAllowedModelsEndpoint:
             regular_user, "my-project", ["gpt-4", "claude-3-sonnet"], None
         )
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects._resolve_cost_center_name")
-    @patch("codemie.rest_api.routers.projects.application_repository")
-    @patch("codemie.rest_api.routers.projects.get_session")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.management._resolve_cost_center_name")
+    @patch("codemie.rest_api.routers.projects._common.application_repository")
+    @patch("codemie.rest_api.routers.projects.management.get_session")
     def test_update_allowed_models_rejects_empty_string_default_model(
         self,
         mock_get_session,
@@ -3336,18 +3347,16 @@ class TestAllowedModelsEndpoint:
         mock_session = MagicMock()
         mock_get_session.return_value.__enter__.return_value = mock_session
 
-        from codemie.rest_api.routers.projects import (
-            AllowedModelsUpdateRequest,
-            update_allowed_models,
-        )
+        from codemie.rest_api.models.project import AllowedModelsUpdateRequest
+        from codemie.rest_api.routers.projects.management import update_allowed_models
 
         with (
             patch(
-                "codemie.rest_api.routers.projects.project_service.validate_allowed_models",
+                "codemie.rest_api.routers.projects.management.project_service.validate_allowed_models",
                 return_value=["gpt-4", "claude-3-sonnet"],
             ),
-            patch("codemie.rest_api.routers.projects.project_service.ensure_chat_model_allowed"),
-            patch("codemie.rest_api.routers.projects.project_service.check_allowed_models_authorization"),
+            patch("codemie.rest_api.routers.projects.management.project_service.ensure_chat_model_allowed"),
+            patch("codemie.rest_api.routers.projects.management.project_service.check_allowed_models_authorization"),
         ):
             with pytest.raises(ExtendedHTTPException) as exc_info:
                 update_allowed_models(
@@ -3358,10 +3367,10 @@ class TestAllowedModelsEndpoint:
 
         assert exc_info.value.code == 400
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects._resolve_cost_center_name")
-    @patch("codemie.rest_api.routers.projects.application_repository")
-    @patch("codemie.rest_api.routers.projects.get_session")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.management._resolve_cost_center_name")
+    @patch("codemie.rest_api.routers.projects._common.application_repository")
+    @patch("codemie.rest_api.routers.projects.management.get_session")
     def test_update_allowed_models_rejects_stale_default_not_in_narrowed_list(
         self,
         mock_get_session,
@@ -3384,18 +3393,16 @@ class TestAllowedModelsEndpoint:
         mock_session = MagicMock()
         mock_get_session.return_value.__enter__.return_value = mock_session
 
-        from codemie.rest_api.routers.projects import (
-            AllowedModelsUpdateRequest,
-            update_allowed_models,
-        )
+        from codemie.rest_api.models.project import AllowedModelsUpdateRequest
+        from codemie.rest_api.routers.projects.management import update_allowed_models
 
         with (
             patch(
-                "codemie.rest_api.routers.projects.project_service.validate_allowed_models",
+                "codemie.rest_api.routers.projects.management.project_service.validate_allowed_models",
                 return_value=["gpt-4"],
             ),
-            patch("codemie.rest_api.routers.projects.project_service.ensure_chat_model_allowed"),
-            patch("codemie.rest_api.routers.projects.project_service.check_allowed_models_authorization"),
+            patch("codemie.rest_api.routers.projects.management.project_service.ensure_chat_model_allowed"),
+            patch("codemie.rest_api.routers.projects.management.project_service.check_allowed_models_authorization"),
         ):
             with pytest.raises(ExtendedHTTPException) as exc_info:
                 update_allowed_models(
@@ -3406,7 +3413,7 @@ class TestAllowedModelsEndpoint:
 
         assert exc_info.value.code == 400
 
-    @patch("codemie.rest_api.routers.projects.project_service")
+    @patch("codemie.rest_api.routers.projects.management.project_service")
     def test_validate_allowed_models_rejects_empty_list(self, mock_project_service):
         from codemie.service.project.project_service import ProjectService
 
@@ -3501,10 +3508,10 @@ class TestProjectDescriptionOptional:
             chargeback_attribution="project",
         )
 
-    @patch("codemie.rest_api.routers.projects.SettingsService")
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.project_service")
-    @patch("codemie.rest_api.routers.projects._resolve_cost_center_name")
+    @patch("codemie.rest_api.routers.projects.crud.SettingsService")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.crud.project_service")
+    @patch("codemie.rest_api.routers.projects.crud._resolve_cost_center_name")
     def test_create_project_without_description_returns_201_null(
         self, mock_cc, mock_svc, mock_config, mock_settings, regular_user
     ):
@@ -3521,10 +3528,10 @@ class TestProjectDescriptionOptional:
 
         assert response.description is None
 
-    @patch("codemie.rest_api.routers.projects.SettingsService")
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.project_service")
-    @patch("codemie.rest_api.routers.projects._resolve_cost_center_name")
+    @patch("codemie.rest_api.routers.projects.management.SettingsService")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.management.project_service")
+    @patch("codemie.rest_api.routers.projects.management._resolve_cost_center_name")
     def test_project_response_null_description_not_coerced_to_empty(
         self, mock_cc, mock_svc, mock_config, mock_settings, super_admin_user
     ):
@@ -3555,10 +3562,10 @@ class TestProjectDescriptionOptional:
         req = ProjectUpdateRequest(clear_description=True)
         assert req.clear_description is True
 
-    @patch("codemie.rest_api.routers.projects.SettingsService")
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.project_service")
-    @patch("codemie.rest_api.routers.projects._resolve_cost_center_name")
+    @patch("codemie.rest_api.routers.projects.management.SettingsService")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.management.project_service")
+    @patch("codemie.rest_api.routers.projects.management._resolve_cost_center_name")
     def test_update_project_clear_description_returns_null(
         self, mock_cc, mock_svc, mock_config, mock_settings, super_admin_user
     ):
@@ -3595,14 +3602,14 @@ class TestIsBudgetPeriodOpen:
     _NOW = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
 
     def test_future_reset_is_open(self):
-        assert _is_budget_period_open(SimpleNamespace(budget_reset_at="2026-10-01T00:00:00Z"), self._NOW) is True
+        assert is_budget_period_open(SimpleNamespace(budget_reset_at="2026-10-01T00:00:00Z"), self._NOW) is True
 
     def test_past_reset_is_closed(self):
-        assert _is_budget_period_open(SimpleNamespace(budget_reset_at="2026-09-30T00:00:00Z"), self._NOW) is False
+        assert is_budget_period_open(SimpleNamespace(budget_reset_at="2026-09-30T00:00:00Z"), self._NOW) is False
 
     def test_missing_budget_or_reset_is_closed(self):
-        assert _is_budget_period_open(None, self._NOW) is False
-        assert _is_budget_period_open(SimpleNamespace(budget_reset_at=None), self._NOW) is False
+        assert is_budget_period_open(None, self._NOW) is False
+        assert is_budget_period_open(SimpleNamespace(budget_reset_at=None), self._NOW) is False
 
 
 def _category_row(budget_id: str, category: str, spend: float) -> SimpleNamespace:
@@ -3642,13 +3649,13 @@ class TestUnassignedCategorySpend:
 
     async def _detail(self, *, rows, budgets, assigned, lifetime=0.18):
         with (
-            patch("codemie.rest_api.routers.projects.config") as mock_config,
-            patch("codemie.rest_api.routers.projects._get_project_detail_sync") as mock_detail,
-            patch("codemie.rest_api.routers.projects.get_async_session") as mock_session,
-            patch("codemie.rest_api.routers.projects._spend_repo") as mock_spend_repo,
-            patch("codemie.rest_api.routers.projects.budget_repository") as mock_budget_repo,
+            patch("codemie.rest_api.routers.projects._common.config") as mock_config,
+            patch("codemie.rest_api.routers.projects.crud._get_project_detail_sync") as mock_detail,
+            patch("codemie.service.project.project_spending_service.get_async_session") as mock_session,
+            patch("codemie.service.project.project_spending_service.spend_repo") as mock_spend_repo,
+            patch("codemie.service.project.project_spending_service.budget_repository") as mock_budget_repo,
             patch(
-                "codemie.rest_api.routers.projects.project_budget_assignment_repository."
+                "codemie.service.project.project_spending_service.project_budget_assignment_repository."
                 "get_assigned_budget_summaries_for_projects",
                 new=AsyncMock(return_value={"project-3": assigned}),
             ),
@@ -3803,14 +3810,14 @@ class TestUnassignedCategorySpend:
     @pytest.mark.anyio
     async def test_project_list_counts_removed_category_spend(self, super_admin_user):
         with (
-            patch("codemie.rest_api.routers.projects.config") as mock_config,
-            patch("codemie.rest_api.routers.projects.get_session") as mock_get_session,
-            patch("codemie.rest_api.routers.projects.project_visibility_service") as mock_visibility,
-            patch("codemie.rest_api.routers.projects.get_async_session") as mock_async_session,
-            patch("codemie.rest_api.routers.projects._spend_repo") as mock_spend_repo,
-            patch("codemie.rest_api.routers.projects.budget_repository") as mock_budget_repo,
+            patch("codemie.rest_api.routers.projects._common.config") as mock_config,
+            patch("codemie.rest_api.routers.projects.crud.get_session") as mock_get_session,
+            patch("codemie.rest_api.routers.projects.crud.project_visibility_service") as mock_visibility,
+            patch("codemie.service.project.project_spending_service.get_async_session") as mock_async_session,
+            patch("codemie.service.project.project_spending_service.spend_repo") as mock_spend_repo,
+            patch("codemie.service.project.project_spending_service.budget_repository") as mock_budget_repo,
             patch(
-                "codemie.rest_api.routers.projects.project_budget_assignment_repository."
+                "codemie.service.project.project_spending_service.project_budget_assignment_repository."
                 "get_assigned_budget_summaries_for_projects",
                 new=AsyncMock(
                     return_value={"project-3": [_assigned(self._PLATFORM_ID, "platform", 55.0, self._ACTIVE_RESET)]}

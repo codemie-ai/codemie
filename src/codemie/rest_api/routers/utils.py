@@ -22,10 +22,13 @@ from fastapi import Request, status
 from starlette.responses import StreamingResponse
 
 from codemie.configs import config, logger
+from codemie.core.ability import Ability, Action
 from codemie.core.exceptions import ExtendedHTTPException
+from codemie.rest_api.models.assistant import Assistant
 
 if TYPE_CHECKING:
     from codemie.core.thread import ThreadedGenerator
+    from codemie.rest_api.security.user import User
     from codemie.workflows.workflow import WorkflowExecutor
 
 NDJSON_MEDIA_TYPE = "application/x-ndjson"
@@ -95,6 +98,29 @@ def raise_not_found(resource_id: str, resource_type: str) -> NoReturn:
         details=f"The {resource_type} with ID [{resource_id}] could not be found in the system.",
         help="Please ensure the specified ID is correct",
     )
+
+
+def get_assistant_by_id_or_raise(assistant_id: str) -> Assistant:
+    """
+    Retrieves an assistant by ID or raises a standardized exception if not found
+    """
+    assistant = Assistant.find_by_id(assistant_id)
+    if not assistant:
+        raise ExtendedHTTPException(
+            code=status.HTTP_404_NOT_FOUND,
+            message="Assistant not found",
+            details=f"No assistant found with the id '{assistant_id}'.",
+            help="Please check the assistant id and ensure it is correct. ",
+        )
+    return assistant
+
+
+def check_user_can_access_assistant(user: User, assistant: Assistant, action_name: str, action_type: Action) -> None:
+    """
+    Checks if a user has permission to perform an action on an assistant
+    """
+    if not Ability(user).can(action_type, assistant):
+        raise_access_denied(action_name)
 
 
 def run_in_thread_pool(func, *args):

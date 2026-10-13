@@ -21,23 +21,23 @@ import pytest
 from unittest.mock import Mock, patch
 
 from codemie.core.exceptions import ExtendedHTTPException
-from codemie.rest_api.routers.index import CreateIndexRequest
+from codemie.rest_api.routers.index.code_repositories import CreateIndexRequest
 
 
 class TestCreateDatasourceValidation:
     """Test that create datasource operation validates git credentials."""
 
-    @patch('codemie.rest_api.routers.index.ensure_application_exists')
-    @patch('codemie.rest_api.routers.index.index_code_datasource_in_background')
-    @patch('codemie.rest_api.routers.index.SettingsService.get_git_creds')
-    @patch('codemie.rest_api.routers.index.Application.get_by_id')
-    @patch('codemie.rest_api.routers.index.IndexInfo.filter_by_project_and_repo')
-    @patch('codemie.rest_api.routers.index.request_summary_manager.create_request_summary')
+    @patch('codemie.rest_api.routers.index.code_repositories.ensure_application_exists')
+    @patch('codemie.rest_api.routers.index.code_repositories.index_code_datasource_in_background')
+    @patch('codemie.rest_api.routers.index._common.SettingsService.get_git_creds')
+    @patch('codemie.rest_api.routers.index.code_repositories.Application.get_by_id')
+    @patch('codemie.rest_api.routers.index._common.IndexInfo.filter_by_project_and_repo')
+    @patch('codemie.rest_api.routers.index.code_repositories.request_summary_manager.create_request_summary')
     def test_create_datasource_validates_credentials(
         self, mock_summary, mock_index_filter, mock_get_app, mock_get_creds, mock_index_bg, mock_ensure_app
     ):
         """Test that creating a datasource validates git credentials."""
-        from codemie.rest_api.routers.index import create_index_application
+        from codemie.rest_api.routers.index.code_repositories import create_index_application
 
         # Mock that no existing datasource exists
         mock_index_filter.return_value = []
@@ -85,16 +85,16 @@ class TestCreateDatasourceValidation:
         )
         assert mock_get_creds.call_count >= 1
 
-    @patch('codemie.rest_api.routers.index.ensure_application_exists')
-    @patch('codemie.rest_api.routers.index.SettingsService.get_git_creds')
-    @patch('codemie.rest_api.routers.index.Application.get_by_id')
-    @patch('codemie.rest_api.routers.index.IndexInfo.filter_by_project_and_repo')
-    @patch('codemie.rest_api.routers.index.request_summary_manager.create_request_summary')
+    @patch('codemie.rest_api.routers.index.code_repositories.ensure_application_exists')
+    @patch('codemie.rest_api.routers.index._common.SettingsService.get_git_creds')
+    @patch('codemie.rest_api.routers.index.code_repositories.Application.get_by_id')
+    @patch('codemie.rest_api.routers.index._common.IndexInfo.filter_by_project_and_repo')
+    @patch('codemie.rest_api.routers.index.code_repositories.request_summary_manager.create_request_summary')
     def test_create_datasource_fails_with_missing_token(
         self, mock_summary, mock_index_filter, mock_get_app, mock_get_creds, mock_ensure_app
     ):
         """Test that creating a datasource fails with proper error when token is missing."""
-        from codemie.rest_api.routers.index import create_index_application
+        from codemie.rest_api.routers.index.code_repositories import create_index_application
 
         mock_index_filter.return_value = []
 
@@ -140,12 +140,12 @@ class TestCreateDatasourceValidation:
         assert exc_info.value.message == "Invalid Git Integration Configuration"
         assert "missing a required token" in exc_info.value.details
 
-    @patch('codemie.rest_api.routers.index.GitBatchLoader.test_public_access')
-    @patch('codemie.rest_api.routers.index.ensure_application_exists')
-    @patch('codemie.rest_api.routers.index.index_code_datasource_in_background')
-    @patch('codemie.rest_api.routers.index.Application.get_by_id')
-    @patch('codemie.rest_api.routers.index.IndexInfo.filter_by_project_and_repo')
-    @patch('codemie.rest_api.routers.index.request_summary_manager.create_request_summary')
+    @patch('codemie.rest_api.routers.index._common.GitBatchLoader.test_public_access')
+    @patch('codemie.rest_api.routers.index.code_repositories.ensure_application_exists')
+    @patch('codemie.rest_api.routers.index.code_repositories.index_code_datasource_in_background')
+    @patch('codemie.rest_api.routers.index.code_repositories.Application.get_by_id')
+    @patch('codemie.rest_api.routers.index._common.IndexInfo.filter_by_project_and_repo')
+    @patch('codemie.rest_api.routers.index.code_repositories.request_summary_manager.create_request_summary')
     def test_create_datasource_without_setting_id_probes_public_access(
         self,
         mock_summary,
@@ -156,7 +156,7 @@ class TestCreateDatasourceValidation:
         mock_test_public_access,
     ):
         """Test that creating a datasource without integration probes public accessibility."""
-        from codemie.rest_api.routers.index import create_index_application
+        from codemie.rest_api.routers.index.code_repositories import create_index_application
 
         mock_index_filter.return_value = []
         mock_app = Mock()
@@ -193,11 +193,11 @@ class TestCreateDatasourceValidation:
         mock_test_public_access.assert_called_once_with("https://github.com/owner/public-repo")
         assert result.message == "Indexing of datasource test-repo has been started in the background"
 
-    @patch('codemie.rest_api.routers.index.GitBatchLoader.test_public_access')
-    @patch('codemie.rest_api.routers.index.ensure_application_exists')
-    @patch('codemie.rest_api.routers.index.Application.get_by_id')
-    @patch('codemie.rest_api.routers.index.IndexInfo.filter_by_project_and_repo')
-    @patch('codemie.rest_api.routers.index.request_summary_manager.create_request_summary')
+    @patch('codemie.rest_api.routers.index._common.GitBatchLoader.test_public_access')
+    @patch('codemie.rest_api.routers.index.code_repositories.ensure_application_exists')
+    @patch('codemie.rest_api.routers.index.code_repositories.Application.get_by_id')
+    @patch('codemie.rest_api.routers.index._common.IndexInfo.filter_by_project_and_repo')
+    @patch('codemie.rest_api.routers.index.code_repositories.request_summary_manager.create_request_summary')
     def test_create_datasource_public_repo_inaccessible(
         self,
         mock_summary,
@@ -208,7 +208,7 @@ class TestCreateDatasourceValidation:
     ):
         """Test that creating a datasource with inaccessible public URL raises 422."""
         from codemie.datasource.exceptions import ConnectionException
-        from codemie.rest_api.routers.index import create_index_application
+        from codemie.rest_api.routers.index.code_repositories import create_index_application
 
         mock_index_filter.return_value = []
         mock_app = Mock()
@@ -247,13 +247,13 @@ class TestCreateDatasourceValidation:
         assert exc_info.value.message == "Repository Not Publicly Accessible"
         assert "Please select a Git integration" in exc_info.value.details
 
-    @patch('codemie.rest_api.routers.index.GitBatchLoader.test_public_access')
-    @patch('codemie.rest_api.routers.index.update_code_datasource_in_background')
-    @patch('codemie.rest_api.routers.index.GitRepo.get_by_app_id')
-    @patch('codemie.rest_api.routers.index.Application.get_by_id')
-    @patch('codemie.rest_api.routers.index.IndexInfo.filter_by_project_and_repo')
-    @patch('codemie.rest_api.routers.index.request_summary_manager.create_request_summary')
-    @patch('codemie.rest_api.routers.index.Ability')
+    @patch('codemie.rest_api.routers.index._common.GitBatchLoader.test_public_access')
+    @patch('codemie.rest_api.routers.index.code_repositories.update_code_datasource_in_background')
+    @patch('codemie.rest_api.routers.index._repository_support.GitRepo.get_by_app_id')
+    @patch('codemie.rest_api.routers.index.code_repositories.Application.get_by_id')
+    @patch('codemie.rest_api.routers.index.code_repositories.IndexInfo.filter_by_project_and_repo')
+    @patch('codemie.rest_api.routers.index.code_repositories.request_summary_manager.create_request_summary')
+    @patch('codemie.rest_api.routers.index.code_repositories.Ability')
     def test_reindex_public_repo_probes_accessibility(
         self,
         mock_ability,
@@ -265,7 +265,7 @@ class TestCreateDatasourceValidation:
         mock_test_public_access,
     ):
         """Test that reindexing a datasource with setting_id=None probes public accessibility."""
-        from codemie.rest_api.routers.index import update_index_application
+        from codemie.rest_api.routers.index.code_repositories import update_index_application
 
         mock_index = Mock()
         mock_index.project_name = "test-project"
@@ -313,13 +313,13 @@ class TestCreateDatasourceValidation:
 
         mock_test_public_access.assert_called_once_with("https://github.com/owner/public-repo")
 
-    @patch('codemie.rest_api.routers.index.GitBatchLoader.test_public_access')
-    @patch('codemie.rest_api.routers.index.update_code_datasource_in_background')
-    @patch('codemie.rest_api.routers.index.GitRepo.get_by_app_id')
-    @patch('codemie.rest_api.routers.index.Application.get_by_id')
-    @patch('codemie.rest_api.routers.index.IndexInfo.filter_by_project_and_repo')
-    @patch('codemie.rest_api.routers.index.request_summary_manager.create_request_summary')
-    @patch('codemie.rest_api.routers.index.Ability')
+    @patch('codemie.rest_api.routers.index._common.GitBatchLoader.test_public_access')
+    @patch('codemie.rest_api.routers.index.code_repositories.update_code_datasource_in_background')
+    @patch('codemie.rest_api.routers.index._repository_support.GitRepo.get_by_app_id')
+    @patch('codemie.rest_api.routers.index.code_repositories.Application.get_by_id')
+    @patch('codemie.rest_api.routers.index.code_repositories.IndexInfo.filter_by_project_and_repo')
+    @patch('codemie.rest_api.routers.index.code_repositories.request_summary_manager.create_request_summary')
+    @patch('codemie.rest_api.routers.index.code_repositories.Ability')
     def test_reindex_public_repo_inaccessible(
         self,
         mock_ability,
@@ -332,7 +332,7 @@ class TestCreateDatasourceValidation:
     ):
         """Test that reindexing raises 422 when public repo becomes inaccessible."""
         from codemie.datasource.exceptions import ConnectionException
-        from codemie.rest_api.routers.index import update_index_application
+        from codemie.rest_api.routers.index.code_repositories import update_index_application
 
         mock_index = Mock()
         mock_index.project_name = "test-project"
@@ -386,18 +386,18 @@ class TestCreateDatasourceValidation:
 class TestReindexValidation:
     """Test that reindex operations validate git credentials."""
 
-    @patch('codemie.rest_api.routers.index.update_code_datasource_in_background')
-    @patch('codemie.rest_api.routers.index.SettingsService.get_git_creds')
-    @patch('codemie.rest_api.routers.index.GitRepo.get_by_app_id')
-    @patch('codemie.rest_api.routers.index.Application.get_by_id')
-    @patch('codemie.rest_api.routers.index.IndexInfo.filter_by_project_and_repo')
-    @patch('codemie.rest_api.routers.index.request_summary_manager.create_request_summary')
-    @patch('codemie.rest_api.routers.index.Ability')
+    @patch('codemie.rest_api.routers.index.code_repositories.update_code_datasource_in_background')
+    @patch('codemie.rest_api.routers.index._common.SettingsService.get_git_creds')
+    @patch('codemie.rest_api.routers.index._repository_support.GitRepo.get_by_app_id')
+    @patch('codemie.rest_api.routers.index.code_repositories.Application.get_by_id')
+    @patch('codemie.rest_api.routers.index.code_repositories.IndexInfo.filter_by_project_and_repo')
+    @patch('codemie.rest_api.routers.index.code_repositories.request_summary_manager.create_request_summary')
+    @patch('codemie.rest_api.routers.index.code_repositories.Ability')
     def test_full_reindex_validates_credentials(
         self, mock_ability, mock_summary, mock_index_info, mock_get_app, mock_get_repos, mock_get_creds, mock_update_bg
     ):
         """Test that full reindex action validates git credentials."""
-        from codemie.rest_api.routers.index import update_index_application
+        from codemie.rest_api.routers.index.code_repositories import update_index_application
 
         mock_index = Mock()
         mock_index.project_name = "test-project"
@@ -453,17 +453,17 @@ class TestReindexValidation:
         )
         assert mock_get_creds.call_count >= 1
 
-    @patch('codemie.rest_api.routers.index.SettingsService.get_git_creds')
-    @patch('codemie.rest_api.routers.index.GitRepo.get_by_app_id')
-    @patch('codemie.rest_api.routers.index.Application.get_by_id')
-    @patch('codemie.rest_api.routers.index.IndexInfo.filter_by_project_and_repo')
-    @patch('codemie.rest_api.routers.index.request_summary_manager.create_request_summary')
-    @patch('codemie.rest_api.routers.index.Ability')
+    @patch('codemie.rest_api.routers.index._common.SettingsService.get_git_creds')
+    @patch('codemie.rest_api.routers.index._repository_support.GitRepo.get_by_app_id')
+    @patch('codemie.rest_api.routers.index.code_repositories.Application.get_by_id')
+    @patch('codemie.rest_api.routers.index.code_repositories.IndexInfo.filter_by_project_and_repo')
+    @patch('codemie.rest_api.routers.index.code_repositories.request_summary_manager.create_request_summary')
+    @patch('codemie.rest_api.routers.index.code_repositories.Ability')
     def test_full_reindex_fails_when_validation_fails(
         self, mock_ability, mock_summary, mock_index_info, mock_get_app, mock_get_repos, mock_get_creds
     ):
         """Test that full reindex fails with proper error when validation fails."""
-        from codemie.rest_api.routers.index import update_index_application
+        from codemie.rest_api.routers.index.code_repositories import update_index_application
 
         mock_index = Mock()
         mock_index.project_name = "test-project"
@@ -517,18 +517,18 @@ class TestReindexValidation:
         assert exc_info.value.message == "Invalid Git Integration Configuration"
         assert "missing a required token" in exc_info.value.details
 
-    @patch('codemie.rest_api.routers.index.update_code_datasource_in_background')
-    @patch('codemie.rest_api.routers.index.SettingsService.get_git_creds')
-    @patch('codemie.rest_api.routers.index.GitRepo.get_by_app_id')
-    @patch('codemie.rest_api.routers.index.Application.get_by_id')
-    @patch('codemie.rest_api.routers.index.IndexInfo.filter_by_project_and_repo')
-    @patch('codemie.rest_api.routers.index.request_summary_manager.create_request_summary')
-    @patch('codemie.rest_api.routers.index.Ability')
+    @patch('codemie.rest_api.routers.index.code_repositories.update_code_datasource_in_background')
+    @patch('codemie.rest_api.routers.index._common.SettingsService.get_git_creds')
+    @patch('codemie.rest_api.routers.index._repository_support.GitRepo.get_by_app_id')
+    @patch('codemie.rest_api.routers.index.code_repositories.Application.get_by_id')
+    @patch('codemie.rest_api.routers.index.code_repositories.IndexInfo.filter_by_project_and_repo')
+    @patch('codemie.rest_api.routers.index.code_repositories.request_summary_manager.create_request_summary')
+    @patch('codemie.rest_api.routers.index.code_repositories.Ability')
     def test_save_and_reindex_validates_credentials(
         self, mock_ability, mock_summary, mock_index_info, mock_get_app, mock_get_repos, mock_get_creds, mock_update_bg
     ):
         """Test that save and reindex validates git credentials."""
-        from codemie.rest_api.routers.index import update_index_application
+        from codemie.rest_api.routers.index.code_repositories import update_index_application
 
         mock_index = Mock()
         mock_index.project_name = "test-project"

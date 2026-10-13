@@ -60,7 +60,7 @@ def marketplace_assistant_mock():
 def marketplace_publish_env(marketplace_assistant_mock):
     with (
         patch(
-            "codemie.rest_api.routers.assistant.Assistant.find_by_id",
+            "codemie.rest_api.routers.assistant.marketplace.Assistant.find_by_id",
             return_value=marketplace_assistant_mock,
         ),
         patch(
@@ -68,21 +68,21 @@ def marketplace_publish_env(marketplace_assistant_mock):
             return_value=True,
         ),
         patch(
-            "codemie.rest_api.routers.assistant.config.MARKETPLACE_LLM_VALIDATION_ON_PUBLISH_ENABLED",
+            "codemie.rest_api.routers.assistant.marketplace.config.MARKETPLACE_LLM_VALIDATION_ON_PUBLISH_ENABLED",
             True,
         ),
         patch(
-            "codemie.rest_api.routers.assistant.category_service.validate_category_ids",
+            "codemie.rest_api.routers.assistant._sub_assistants.category_service.validate_category_ids",
             return_value=None,
         ),
         patch(
             "codemie.service.llm_service.utils.set_llm_context",
         ),
         patch(
-            "codemie.rest_api.routers.assistant._track_assistant_management_metric",
+            "codemie.rest_api.routers.assistant.marketplace._track_assistant_management_metric",
         ),
         patch(
-            "codemie.rest_api.routers.assistant._index_marketplace_assistant",
+            "codemie.rest_api.routers.assistant.marketplace._index_marketplace_assistant",
         ),
         patch.object(
             marketplace_assistant_mock,
@@ -102,9 +102,9 @@ def marketplace_publish_payload(**overrides):
 
 @pytest.fixture(autouse=True)
 def override_dependency(user):
-    from codemie.rest_api.routers import assistant as assistant_router
+    from codemie.rest_api.security.authentication import authenticate
 
-    app.dependency_overrides[assistant_router.authenticate] = lambda: user
+    app.dependency_overrides[authenticate] = lambda: user
     yield
     app.dependency_overrides = {}
 
@@ -121,10 +121,13 @@ async def test_validate_assistant_for_marketplace_no_credentials():
     validation_result = {"is_valid": True, "inline_credentials": []}
 
     with (
-        patch("codemie.rest_api.routers.assistant.Assistant.find_by_id", return_value=assistant_mock) as mock_find,
+        patch(
+            "codemie.rest_api.routers.assistant.marketplace.Assistant.find_by_id", return_value=assistant_mock
+        ) as mock_find,
         patch("codemie.core.ability.Ability.can", return_value=True),
         patch(
-            "codemie.rest_api.routers.assistant._validate_assistant_inline_integrations", return_value=validation_result
+            "codemie.rest_api.routers.assistant.marketplace.validate_assistant_inline_integrations",
+            return_value=validation_result,
         ) as mock_validate,
     ):
         transport = ASGITransport(app=app)
@@ -178,10 +181,13 @@ async def test_validate_assistant_for_marketplace_with_subassistants():
     validation_result = {"is_valid": True, "inline_credentials": []}
 
     with (
-        patch("codemie.rest_api.routers.assistant.Assistant.find_by_id", side_effect=find_by_id_side_effect),
+        patch(
+            "codemie.rest_api.routers.assistant.marketplace.Assistant.find_by_id", side_effect=find_by_id_side_effect
+        ),
         patch("codemie.core.ability.Ability.can", return_value=True),
         patch(
-            "codemie.rest_api.routers.assistant._validate_assistant_inline_integrations", return_value=validation_result
+            "codemie.rest_api.routers.assistant.marketplace.validate_assistant_inline_integrations",
+            return_value=validation_result,
         ),
     ):
         transport = ASGITransport(app=app)
@@ -250,10 +256,12 @@ async def test_validate_assistant_for_marketplace_with_subassistant_credentials(
         return {"is_valid": True, "inline_credentials": []}
 
     with (
-        patch("codemie.rest_api.routers.assistant.Assistant.find_by_id", side_effect=find_by_id_side_effect),
+        patch(
+            "codemie.rest_api.routers.assistant.marketplace.Assistant.find_by_id", side_effect=find_by_id_side_effect
+        ),
         patch("codemie.core.ability.Ability.can", return_value=True),
         patch(
-            "codemie.rest_api.routers.assistant._validate_assistant_inline_integrations",
+            "codemie.rest_api.routers.assistant.marketplace.validate_assistant_inline_integrations",
             side_effect=validate_integrations_side_effect,
         ),
     ):
@@ -303,10 +311,13 @@ async def test_validate_assistant_for_marketplace_with_credentials():
     }
 
     with (
-        patch("codemie.rest_api.routers.assistant.Assistant.find_by_id", return_value=assistant_mock) as mock_find,
+        patch(
+            "codemie.rest_api.routers.assistant.marketplace.Assistant.find_by_id", return_value=assistant_mock
+        ) as mock_find,
         patch("codemie.core.ability.Ability.can", return_value=True),
         patch(
-            "codemie.rest_api.routers.assistant._validate_assistant_inline_integrations", return_value=validation_result
+            "codemie.rest_api.routers.assistant.marketplace.validate_assistant_inline_integrations",
+            return_value=validation_result,
         ) as mock_validate,
     ):
         transport = ASGITransport(app=app)
@@ -333,7 +344,9 @@ async def test_validate_assistant_access_denied():
     assistant_id = "456"
 
     with (
-        patch("codemie.rest_api.routers.assistant.Assistant.find_by_id", return_value=MagicMock()) as mock_find,
+        patch(
+            "codemie.rest_api.routers.assistant.marketplace.Assistant.find_by_id", return_value=MagicMock()
+        ) as mock_find,
         patch("codemie.core.ability.Ability.can", return_value=False),
     ):
         transport = ASGITransport(app=app)
@@ -361,7 +374,7 @@ async def test_publish_assistant_to_marketplace_when_quality_validation_accepts(
     )
 
     with patch(
-        "codemie.rest_api.routers.assistant.AssistantGeneratorService.validate_assistant_for_publish",
+        "codemie.rest_api.routers.assistant.marketplace.AssistantGeneratorService.validate_assistant_for_publish",
         return_value=validation_result,
     ) as mock_quality_validation:
         async with AsyncClient(
@@ -395,7 +408,7 @@ async def test_publish_assistant_after_quality_validation_reject_and_user_bypass
     )
 
     with patch(
-        "codemie.rest_api.routers.assistant.AssistantGeneratorService.validate_assistant_for_publish",
+        "codemie.rest_api.routers.assistant.marketplace.AssistantGeneratorService.validate_assistant_for_publish",
         return_value=validation_result,
     ) as mock_quality_validation:
         async with AsyncClient(
@@ -471,15 +484,18 @@ async def test_publish_assistant_with_subassistants():
     )
 
     with (
-        patch("codemie.rest_api.routers.assistant.Assistant.find_by_id", side_effect=find_by_id_side_effect),
+        patch(
+            "codemie.rest_api.routers.assistant.marketplace.Assistant.find_by_id", side_effect=find_by_id_side_effect
+        ),
         patch("codemie.core.ability.Ability.can", return_value=True),
         patch.object(assistant_mock, "update") as mock_update_main,
         patch.object(sub1_mock, "update") as mock_update_sub1,
         patch.object(sub2_mock, "update") as mock_update_sub2,
-        patch("codemie.rest_api.routers.assistant._track_assistant_management_metric"),
+        patch("codemie.rest_api.routers.assistant.marketplace._track_assistant_management_metric"),
+        patch("codemie.rest_api.routers.assistant._sub_assistants._track_assistant_management_metric"),
         patch("codemie.service.assistant.category_service.category_service.validate_category_ids", return_value=None),
         patch(
-            "codemie.rest_api.routers.assistant.AssistantGeneratorService.validate_assistant_for_publish",
+            "codemie.rest_api.routers.assistant.marketplace.AssistantGeneratorService.validate_assistant_for_publish",
             return_value=quality_validation_mock,
         ),
     ):
@@ -538,14 +554,17 @@ async def test_publish_assistant_with_subassistants_and_settings():
     )
 
     with (
-        patch("codemie.rest_api.routers.assistant.Assistant.find_by_id", side_effect=find_by_id_side_effect),
+        patch(
+            "codemie.rest_api.routers.assistant.marketplace.Assistant.find_by_id", side_effect=find_by_id_side_effect
+        ),
         patch("codemie.core.ability.Ability.can", return_value=True),
         patch.object(assistant_mock, "update") as mock_update_main,
         patch.object(sub1_mock, "update") as mock_update_sub1,
-        patch("codemie.rest_api.routers.assistant._track_assistant_management_metric"),
+        patch("codemie.rest_api.routers.assistant.marketplace._track_assistant_management_metric"),
+        patch("codemie.rest_api.routers.assistant._sub_assistants._track_assistant_management_metric"),
         patch("codemie.service.assistant.category_service.category_service.validate_category_ids", return_value=None),
         patch(
-            "codemie.rest_api.routers.assistant.AssistantGeneratorService.validate_assistant_for_publish",
+            "codemie.rest_api.routers.assistant.marketplace.AssistantGeneratorService.validate_assistant_for_publish",
             return_value=quality_validation_mock,
         ),
     ):
@@ -590,7 +609,9 @@ async def test_unpublish_assistant_from_marketplace():
     assistant_mock.is_global = True
 
     with (
-        patch("codemie.rest_api.routers.assistant.Assistant.find_by_id", return_value=assistant_mock) as mock_find,
+        patch(
+            "codemie.rest_api.routers.assistant.marketplace.Assistant.find_by_id", return_value=assistant_mock
+        ) as mock_find,
         patch("codemie.core.ability.Ability.can", return_value=True),
         patch.object(assistant_mock, "update") as mock_update,
     ):
@@ -613,7 +634,9 @@ async def test_unpublish_assistant_access_denied():
     assistant_id = "456"
 
     with (
-        patch("codemie.rest_api.routers.assistant.Assistant.find_by_id", return_value=MagicMock()) as mock_find,
+        patch(
+            "codemie.rest_api.routers.assistant.marketplace.Assistant.find_by_id", return_value=MagicMock()
+        ) as mock_find,
         patch("codemie.core.ability.Ability.can", return_value=False),
     ):
         transport = ASGITransport(app=app)
@@ -637,7 +660,7 @@ async def test_publish_returns_422_when_categories_field_absent():
     assistant_mock.assistant_ids = []
 
     with (
-        patch("codemie.rest_api.routers.assistant.Assistant.find_by_id", return_value=assistant_mock),
+        patch("codemie.rest_api.routers.assistant.marketplace.Assistant.find_by_id", return_value=assistant_mock),
         patch("codemie.core.ability.Ability.can", return_value=True),
     ):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as ac:
@@ -662,7 +685,7 @@ async def test_publish_returns_422_when_categories_is_empty_list():
     assistant_mock.assistant_ids = []
 
     with (
-        patch("codemie.rest_api.routers.assistant.Assistant.find_by_id", return_value=assistant_mock),
+        patch("codemie.rest_api.routers.assistant.marketplace.Assistant.find_by_id", return_value=assistant_mock),
         patch("codemie.core.ability.Ability.can", return_value=True),
     ):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as ac:
@@ -688,7 +711,7 @@ async def test_publish_returns_400_when_categories_contain_invalid_ids():
     assistant_mock.assistant_ids = []
 
     with (
-        patch("codemie.rest_api.routers.assistant.Assistant.find_by_id", return_value=assistant_mock),
+        patch("codemie.rest_api.routers.assistant.marketplace.Assistant.find_by_id", return_value=assistant_mock),
         patch("codemie.core.ability.Ability.can", return_value=True),
         patch("codemie.repository.category_repository.CategoryRepository.get_by_ids", return_value=[]),
     ):
@@ -717,7 +740,7 @@ async def test_update_marketplace_assistant_requires_categories():
     assistant_mock.prompt_variables = []
 
     with (
-        patch("codemie.rest_api.routers.assistant.Assistant.find_by_id", return_value=assistant_mock),
+        patch("codemie.rest_api.routers.assistant.management.Assistant.find_by_id", return_value=assistant_mock),
         patch("codemie.core.ability.Ability.can", return_value=True),
     ):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as ac:

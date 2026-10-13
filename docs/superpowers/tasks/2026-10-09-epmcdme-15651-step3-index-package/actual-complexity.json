@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "generated": "2026-10-09T12:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 17,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 20,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "One 2,884-line, 45-route router module becomes an index/ package of 10 route modules (queries, code_repositories, kb_atlassian, kb_azure_devops, kb_google, kb_sharepoint, kb_xwiki, kb_git_faq, kb_files, providers) plus two shared support modules (_common, _repository_support) and a combined-router __init__. Shared helpers are consumed across modules, but the work stays inside one subsystem and is move-only, so L rather than XL. Nearest bundled anchor is the M example epmcdme-10203 (total 15, three layers, 6 files); this change has fewer layers but a much larger module count, which is why scope scores higher and layers lower than that example. Step 2 of the same ticket scored actual M 18 for a comparable change."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "diffstat reports 20 files, which maps to XXL (16+). The breakdown is 13 new package files, 1 deleted module (routers/index.py), 5 retargeted test files (191 patch strings and imports) and 1 guide row. The count is inflated by the mechanical split; per-file content is moved, not rewritten. Even so, file count alone puts the total in the M band, matching Step 2 where a 34-file change also scored M."
+    }
+  ],
+  "red_flags_applied": [
+    "Component Scope held at L: refactor of a large (2,884-line, 45-route) router subsystem into a package",
+    "Technical Risk bumped from S to M: the router-level Depends(authenticate) and route-level access dependencies have to survive the move to the combined-router __init__. Sub-routers carry no auth of their own, so this is security-relevant even though no authorization behaviour changes. Existing patterns from steps 1-2 of EPMCDME-15651 cover the shape, and the OpenAPI and route_precedence baselines guard against drift, so no further bump."
+  ],
+  "split_recommendation": null
+}

@@ -48,7 +48,7 @@ from codemie.service.spend_tracking.spend_models import ProjectSpendTracking
 if TYPE_CHECKING:
     from codemie.service.budget.provider import BudgetEnforcementProvider, BudgetProviderState, GlobalBudgetState
     from codemie.service.budget.provider import PersonalBudgetEntry
-    from codemie.rest_api.routers.budget_router import (
+    from codemie.rest_api.models.budget import (
         BudgetAssignmentBackfillResult,
         BudgetCreateRequest,
         BudgetSyncResult,
@@ -661,7 +661,7 @@ class BudgetService:
         actor_id: str,
     ) -> BudgetSyncResult:
         """Pull all global budgets from the provider, upsert differences and delete orphans."""
-        from codemie.rest_api.routers.budget_router import BudgetSyncResult
+        from codemie.rest_api.models.budget import BudgetSyncResult
 
         provider = get_active_provider()
         logger.debug(
@@ -847,7 +847,7 @@ class BudgetService:
         mirrors missing user/category assignments into user_budget_assignments and
         creates missing budget rows required by the assignment FK.
         """
-        from codemie.rest_api.routers.budget_router import BudgetAssignmentBackfillResult
+        from codemie.rest_api.models.budget import BudgetAssignmentBackfillResult
 
         provider = get_active_provider()
         all_entries = await provider.list_personal_budget_assignments()

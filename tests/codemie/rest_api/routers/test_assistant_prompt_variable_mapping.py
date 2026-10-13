@@ -92,10 +92,10 @@ class TestAssistantPromptVariableMapping:
         """Test creating or updating prompt variable mappings"""
         with (
             patch(
-                "codemie.rest_api.routers.assistant_prompt_variable_mapping._get_assistant_by_id_or_raise"
+                "codemie.rest_api.routers.assistant_prompt_variable_mapping.get_assistant_by_id_or_raise"
             ) as mock_get_assistant,
             patch(
-                "codemie.rest_api.routers.assistant_prompt_variable_mapping._check_user_can_access_assistant"
+                "codemie.rest_api.routers.assistant_prompt_variable_mapping.check_user_can_access_assistant"
             ) as mock_check_access,
         ):
             mock_get_assistant.return_value = MagicMock()
@@ -119,10 +119,10 @@ class TestAssistantPromptVariableMapping:
         """Test retrieving prompt variable mappings"""
         with (
             patch(
-                "codemie.rest_api.routers.assistant_prompt_variable_mapping._get_assistant_by_id_or_raise"
+                "codemie.rest_api.routers.assistant_prompt_variable_mapping.get_assistant_by_id_or_raise"
             ) as mock_get_assistant,
             patch(
-                "codemie.rest_api.routers.assistant_prompt_variable_mapping._check_user_can_access_assistant"
+                "codemie.rest_api.routers.assistant_prompt_variable_mapping.check_user_can_access_assistant"
             ) as mock_check_access,
         ):
             # Setup mock assistant with prompt_variables
@@ -165,10 +165,10 @@ class TestAssistantPromptVariableMapping:
         """Test retrieving prompt variable mappings with sensitive values masked"""
         with (
             patch(
-                "codemie.rest_api.routers.assistant_prompt_variable_mapping._get_assistant_by_id_or_raise"
+                "codemie.rest_api.routers.assistant_prompt_variable_mapping.get_assistant_by_id_or_raise"
             ) as mock_get_assistant,
             patch(
-                "codemie.rest_api.routers.assistant_prompt_variable_mapping._check_user_can_access_assistant"
+                "codemie.rest_api.routers.assistant_prompt_variable_mapping.check_user_can_access_assistant"
             ) as mock_check_access,
         ):
             # Setup mock assistant with sensitive prompt_variable

@@ -29,9 +29,11 @@ from fastapi.testclient import TestClient
 
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.main import extended_http_exception_handler
-from codemie.rest_api.routers.project_budget_router import (
+from codemie.rest_api.models.project_budget import (
     OverrideMemberAllocationRequest,
     ProjectBudgetResponse,
+)
+from codemie.rest_api.routers.project_budget_router import (
     _build_project_budget_response,
     _can_manage_project_budget_members,
     _ensure_can_manage_project_budget_members,
@@ -443,11 +445,11 @@ async def test_project_budget_write_routes_deny_pure_auditor():
 @pytest.mark.asyncio
 async def test_update_group_project_admin_own_project_categories_only_succeeds():
     """Project admin can update categories for a group in their own project."""
-    from codemie.rest_api.routers.project_budget_router import (
-        update_project_budget_group,
+    from codemie.rest_api.models.project_budget import (
         ProjectBudgetGroupUpdateRequest,
         CategoryBudgetSpecUpdate,
     )
+    from codemie.rest_api.routers.project_budget_router import update_project_budget_group
     from unittest.mock import AsyncMock, patch
     from contextlib import asynccontextmanager
 
@@ -500,10 +502,8 @@ async def test_update_group_project_admin_own_project_categories_only_succeeds()
 @pytest.mark.asyncio
 async def test_update_group_project_admin_non_categories_field_raises_403():
     """Project admin is rejected when payload contains non-categories fields."""
-    from codemie.rest_api.routers.project_budget_router import (
-        update_project_budget_group,
-        ProjectBudgetGroupUpdateRequest,
-    )
+    from codemie.rest_api.models.project_budget import ProjectBudgetGroupUpdateRequest
+    from codemie.rest_api.routers.project_budget_router import update_project_budget_group
 
     from unittest.mock import AsyncMock, patch
     from contextlib import asynccontextmanager
@@ -544,11 +544,11 @@ async def test_update_group_project_admin_non_categories_field_raises_403():
 
 
 def test_ensure_allowed_budget_group_update_fields_allows_categories_for_project_admin():
-    from codemie.rest_api.routers.project_budget_router import (
-        _ensure_allowed_budget_group_update_fields,
+    from codemie.rest_api.models.project_budget import (
         ProjectBudgetGroupUpdateRequest,
         CategoryBudgetSpecUpdate,
     )
+    from codemie.rest_api.routers.project_budget_router import _ensure_allowed_budget_group_update_fields
 
     payload = ProjectBudgetGroupUpdateRequest(categories={"platform": CategoryBudgetSpecUpdate(pct=100.0)})
     _ensure_allowed_budget_group_update_fields(project_admin_user(["project-alpha"]), payload)
@@ -558,10 +558,8 @@ def test_ensure_allowed_budget_group_update_fields_allows_categories_for_project
     "field,value", [("name", "x"), ("total_amount", 5.0), ("budget_duration", "30d"), ("description", "d")]
 )
 def test_ensure_allowed_budget_group_update_fields_rejects_restricted_fields(field, value):
-    from codemie.rest_api.routers.project_budget_router import (
-        _ensure_allowed_budget_group_update_fields,
-        ProjectBudgetGroupUpdateRequest,
-    )
+    from codemie.rest_api.models.project_budget import ProjectBudgetGroupUpdateRequest
+    from codemie.rest_api.routers.project_budget_router import _ensure_allowed_budget_group_update_fields
 
     payload = ProjectBudgetGroupUpdateRequest(**{field: value})
     with pytest.raises(ExtendedHTTPException) as exc_info:
@@ -570,10 +568,8 @@ def test_ensure_allowed_budget_group_update_fields_rejects_restricted_fields(fie
 
 
 def test_ensure_allowed_budget_group_update_fields_allows_any_field_for_maintainer():
-    from codemie.rest_api.routers.project_budget_router import (
-        _ensure_allowed_budget_group_update_fields,
-        ProjectBudgetGroupUpdateRequest,
-    )
+    from codemie.rest_api.models.project_budget import ProjectBudgetGroupUpdateRequest
+    from codemie.rest_api.routers.project_budget_router import _ensure_allowed_budget_group_update_fields
 
     payload = ProjectBudgetGroupUpdateRequest(name="new-name", total_amount=10.0)
     _ensure_allowed_budget_group_update_fields(maintainer_user(), payload)
@@ -593,11 +589,11 @@ def test_ensure_allowed_budget_group_update_fields_allows_any_field_for_maintain
 )
 async def test_update_group_write_access(user_factory, allowed):
     """Only maintainers, admins, and the group project's own admins may update it."""
-    from codemie.rest_api.routers.project_budget_router import (
-        update_project_budget_group,
+    from codemie.rest_api.models.project_budget import (
         ProjectBudgetGroupUpdateRequest,
         CategoryBudgetSpecUpdate,
     )
+    from codemie.rest_api.routers.project_budget_router import update_project_budget_group
     from unittest.mock import AsyncMock, patch as _patch
     from contextlib import asynccontextmanager
 

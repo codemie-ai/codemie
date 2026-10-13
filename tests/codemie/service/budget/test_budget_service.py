@@ -62,7 +62,7 @@ def _make_budget(**kwargs) -> Budget:
 
 
 def _make_create_request(**kwargs):
-    from codemie.rest_api.routers.budget_router import BudgetCreateRequest
+    from codemie.rest_api.models.budget import BudgetCreateRequest
 
     defaults = {
         "budget_id": "new-budget",
@@ -976,14 +976,14 @@ class TestBuildUpdateFieldsNotificationOwner:
     """Focused unit tests for the _build_update_fields helper + dedup reset."""
 
     def test_build_update_fields_includes_notification_owner_email_when_provided(self):
-        from codemie.rest_api.routers.budget_router import BudgetUpdateRequest
+        from codemie.rest_api.models.budget import BudgetUpdateRequest
 
         data = BudgetUpdateRequest(notification_owner_email="team@example.com")
         fields = BudgetService._build_update_fields(data, new_category=BudgetCategory.PLATFORM.value)
         assert fields.get("notification_owner_email") == "team@example.com"
 
     def test_build_update_fields_includes_explicit_null_notification_owner_email(self):
-        from codemie.rest_api.routers.budget_router import BudgetUpdateRequest
+        from codemie.rest_api.models.budget import BudgetUpdateRequest
 
         data = BudgetUpdateRequest(notification_owner_email=None)
         # `notification_owner_email` was explicitly set (even to None) → in model_fields_set
@@ -993,7 +993,7 @@ class TestBuildUpdateFieldsNotificationOwner:
         assert fields["notification_owner_email"] is None
 
     def test_build_update_fields_omits_notification_owner_email_when_not_provided(self):
-        from codemie.rest_api.routers.budget_router import BudgetUpdateRequest
+        from codemie.rest_api.models.budget import BudgetUpdateRequest
 
         data = BudgetUpdateRequest(name="new-name")
         fields = BudgetService._build_update_fields(data, new_category=BudgetCategory.PLATFORM.value)
@@ -1004,7 +1004,7 @@ class TestCreateBudgetPersistsNotificationOwner:
     @pytest.mark.asyncio
     async def test_create_budget_passes_notification_owner_email_to_model(self):
         """The Budget row constructed in create_budget must carry notification_owner_email."""
-        from codemie.rest_api.routers.budget_router import BudgetCreateRequest
+        from codemie.rest_api.models.budget import BudgetCreateRequest
 
         service = _make_service()
         request = BudgetCreateRequest(
@@ -1058,7 +1058,7 @@ class TestUpdateBudgetResetsSoftLimitNotifiedAt:
 
     @pytest.mark.asyncio
     async def test_soft_budget_change_clears_notified_at(self):
-        from codemie.rest_api.routers.budget_router import BudgetUpdateRequest
+        from codemie.rest_api.models.budget import BudgetUpdateRequest
 
         service = _make_service()
         existing = _make_budget(
@@ -1118,7 +1118,7 @@ class TestUpdateBudgetResetsSoftLimitNotifiedAt:
 
     @pytest.mark.asyncio
     async def test_notification_owner_email_change_clears_notified_at(self):
-        from codemie.rest_api.routers.budget_router import BudgetUpdateRequest
+        from codemie.rest_api.models.budget import BudgetUpdateRequest
 
         service = _make_service()
         existing = _make_budget(
@@ -1163,7 +1163,7 @@ class TestUpdateBudgetResetsSoftLimitNotifiedAt:
 
     @pytest.mark.asyncio
     async def test_unrelated_change_preserves_notified_at(self):
-        from codemie.rest_api.routers.budget_router import BudgetUpdateRequest
+        from codemie.rest_api.models.budget import BudgetUpdateRequest
 
         service = _make_service()
         existing = _make_budget(

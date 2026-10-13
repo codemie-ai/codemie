@@ -55,9 +55,11 @@ def test_resume_returns_404_when_no_checkpoint(mock_assistant):
     """When no pending checkpoint exists, the endpoint returns 404."""
     from codemie.service.conversation_checkpoint_service import ConversationCheckpointService
 
-    with patch("codemie.rest_api.routers.assistant._get_assistant_by_id_or_raise", return_value=mock_assistant):
+    with patch(
+        "codemie.rest_api.routers.assistant.execution.get_assistant_by_id_or_raise", return_value=mock_assistant
+    ):
         with patch.object(ConversationCheckpointService, "get_checkpoint", return_value=None):
-            from codemie.rest_api.routers.assistant import _resume_tool_call
+            from codemie.rest_api.routers.assistant.execution import _resume_tool_call
 
             with pytest.raises(Exception) as exc_info:
                 _resume_tool_call(
@@ -76,7 +78,7 @@ def test_resume_returns_404_when_no_checkpoint(mock_assistant):
 def test_allow_action_calls_resume_from_interrupt_on_agent(mock_assistant, mock_user, mock_raw_request, pending_event):
     """allow action delegates to agent.resume_from_interrupt() via handle_tool_call_resume."""
     from codemie.rest_api.handlers.assistant_handlers import StandardAssistantHandler
-    from codemie.rest_api.routers.assistant import ToolCallResumeRequest
+    from codemie.rest_api.models.assistant import ToolCallResumeRequest
 
     mock_agent = MagicMock()
     request = ToolCallResumeRequest(conversation_id="conv_1", action="allow")
@@ -118,7 +120,7 @@ def test_allow_action_calls_resume_from_interrupt_on_agent(mock_assistant, mock_
 def test_deny_action_calls_reject_tool_call_on_agent(mock_assistant, mock_user, mock_raw_request, pending_event):
     """deny action delegates to agent.reject_tool_call(pending) via handle_tool_call_resume."""
     from codemie.rest_api.handlers.assistant_handlers import StandardAssistantHandler
-    from codemie.rest_api.routers.assistant import ToolCallResumeRequest
+    from codemie.rest_api.models.assistant import ToolCallResumeRequest
 
     mock_agent = MagicMock()
     request = ToolCallResumeRequest(conversation_id="conv_1", action="deny")

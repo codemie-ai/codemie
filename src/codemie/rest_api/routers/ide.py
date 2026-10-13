@@ -27,8 +27,10 @@ from codemie.core.models import (
 )
 from codemie.rest_api.models.assistant import VirtualIdeAssistant
 from codemie.rest_api.models.ide import IdeConfigurationResponse, IdeConfigurationRequest
-from codemie.rest_api.routers.assistant import ask_assistant_by_id, _get_assistant_by_id_or_raise, get_request_handler
-from codemie.rest_api.routers.conversation import create_conversation
+from codemie.rest_api.handlers.assistant_handlers import get_request_handler
+from codemie.rest_api.routers.assistant.execution import ask_assistant_by_id
+from codemie.rest_api.routers.conversation.crud import create_conversation
+from codemie.rest_api.routers.utils import get_assistant_by_id_or_raise
 from codemie.service.settings.settings import SettingsService
 from codemie.service.monitoring.agent_monitoring_service import AgentMonitoringService
 from fastapi import APIRouter, status, Request, Depends, BackgroundTasks
@@ -149,7 +151,7 @@ async def inference(
     request: IdeChatRequest,
     user: User = Depends(authenticate),
 ):
-    assistant = _get_assistant_by_id_or_raise(assistant_id)
+    assistant = get_assistant_by_id_or_raise(assistant_id)
     try:
         result = await ask_assistant_by_id(
             raw_request=raw_request,

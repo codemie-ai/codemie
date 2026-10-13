@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "generated": "2026-10-09T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 1, "label": "XS" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 16,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 21,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "One 3,113-line router module becomes an analytics/ package of 9 route modules plus two shared support modules (_common, _spending_support) and a combined-router __init__ exporting only router. 85 routes under /v1/analytics, but all in the router layer, move-only, no new behaviour; the shared support modules and the router-level authenticate wiring keep it at L rather than M. Single subsystem prevents XL."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "Diffstat reports 21 files (12 new package modules, 1 deleted monolith, 8 test files with retargeted patch strings and imports), which maps mechanically to XXL (16+). Line churn (3665+/3245-) is almost entirely relocation, so XXL overstates effort relative to the other dimensions; the score is kept because the actual-mode file-count mapping is explicit."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "Closest precedent is the earlier router-split steps (assistant, index): an established move-only pattern with trivial rollback, which alone would be S. Bumped to M because the change relocates the authentication and authorization wiring (router-level authenticate on the combined router, 11 leaderboard access dependencies that must stay in order) and rewrites mock patch targets across 8 test files, where a wrong target fails silently. The unchanged OpenAPI and route_precedence baselines are the guard for the wiring."
+    }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from S to M: affects authentication and authorization wiring (router-level authenticate moved to the combined router, 11 leaderboard access dependencies preserved in order)",
+    "Calibration note: nearest bundled M example (epmcdme-10203, 6 files, 3 layers) differs in shape from this single-layer 21-file move-only refactor, so it was used only for the M band boundary. Comparable earlier steps scored M 18 (assistant, 34 files) and M 17 (index, 20 files); this step lands at M 16."
+  ],
+  "split_recommendation": null
+}

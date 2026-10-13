@@ -57,7 +57,7 @@ from codemie.service.budget.provider import BudgetEnforcementProvider, BudgetPro
 from codemie.service.budget.provider_registry import get_active_provider
 
 if TYPE_CHECKING:
-    from codemie.rest_api.routers.project_budget_router import (
+    from codemie.rest_api.models.project_budget import (
         ProjectBudgetCreateRequest,
         ProjectBudgetGroupCreateRequest,
         ProjectBudgetGroupUpdateRequest,

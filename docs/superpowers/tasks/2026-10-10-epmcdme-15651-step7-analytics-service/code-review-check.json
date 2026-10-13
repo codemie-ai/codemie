@@ -1,0 +1,50 @@
+{
+  "decision": "approve",
+  "rationale": "The one blocking prior finding (CR-001, bare dict annotations) is resolved: current source parameterizes all three flagged signatures at spending_formatter.py:49, :76 and :160-166, with bodies unchanged and Any imported. Business and standards rows are carried forward from the final round, not re-audited; AC3, AC7, AC8 and AC9 remain pending-stage-7 execution, and the carried code-quality partial row stemmed from CR-001. The brief was written to code-review-brief.md.",
+  "confidence": "high",
+  "risk_flags": ["security", "migration"],
+  "business_review": [
+    {"kind": "spec", "item": "Scope: four formatters + _SPENDING_METRIC_DEFINITIONS in service/analytics/spending_formatter.py, bodies unchanged, spending.py sole importer", "status": "pass", "notes": "Bodies match BASE under the rename map; stdlib + ResponseFormatter imports only; no __init__ re-export."},
+    {"kind": "spec", "item": "Decision: access gate _authorize_admin_budget_view stays in the router, unchanged", "status": "pass", "notes": "Gate verbatim at _spending_support.py:147-161; still imported by spending.py:40."},
+    {"kind": "spec", "item": "Decision: dead cluster stays; _build_spending_row calls calculate_time_until_reset; orphaned imports and logger removed", "status": "pass", "notes": "Import at :27, call at :99; remaining imports all used; no dangling logger or datetime reference (file read in full)."},
+    {"kind": "spec", "item": "Decision: one module named like response_formatter.py; paginate_tabular rides along", "status": "pass", "notes": "All four functions live in spending_formatter.py."},
+    {"kind": "spec", "item": "Decision: test_analytics_capability_guards.py:285 patch left unchanged", "status": "pass", "notes": "File absent from the diff."},
+    {"kind": "spec", "item": "Behavior: metric labels and descriptions; unknown id is its own label; format key only when truthy", "status": "pass", "notes": "spending_formatter.py:27-73 identical to BASE; pinned by TestBuildSpendingMetric."},
+    {"kind": "spec", "item": "Behavior: empty/None data is unavailable; budget_limit None stays a number metric; reset date vs string", "status": "pass", "notes": ":76-119 identical to BASE with renamed calls; pinned by unit and handler-level wiring tests."},
+    {"kind": "spec", "item": "Behavior: time until reset format; past gives 0 days 0 hours 0 mins; None/invalid gives None; Z read as +00:00", "status": "pass", "notes": ":122-155 identical to BASE including the redundant local timezone import."},
+    {"kind": "spec", "item": "Behavior: paginate_tabular slices rows, totals=None, unsliced total_count and filters_applied passed through", "status": "pass", "notes": ":158-182 identical to BASE; both callers bound page (ge=0) and per_page (ge=1, le=1000) via Query."},
+    {"kind": "spec", "item": "AC1: header line 13, renamed names have 0 hits, definitions only in the new module", "status": "pass", "notes": "Confirmed by lens greps and handoff proof; spending.py reads only public names."},
+    {"kind": "spec", "item": "AC2: ast.dump check of moved and kept functions against BASE under the rename map", "status": "pass", "notes": "Handoff: bodycheck 10 of 10 OK, negative control OK. CR-001 edits annotations, which that check includes."},
+    {"kind": "spec", "item": "AC3: characterization tests pin every Behavior bullet; mutation set red per mutation", "status": "pending-stage-7", "notes": "Tests present with four *_pinned_quirk names; BASE-green and mutation kills need execution."},
+    {"kind": "spec", "item": "AC4: handler-level wiring tests import no moved name; no existing test file edited", "status": "pass", "notes": "Handler params all supplied, LiteLLM names imported lazily so patches apply, get_async_session patched at module."},
+    {"kind": "spec", "item": "AC5: no patch literal names a moved helper; flip control on :285 stays inert", "status": "pass", "notes": "No patch literal names a moved helper; flip result recorded in handoff."},
+    {"kind": "spec", "item": "AC6: no src import of an underscore name from a router-defining module; service/ imports only routers.utils", "status": "pass", "notes": "Neither _common.py nor _spending_support.py defines a router; new module imports no routers module."},
+    {"kind": "spec", "item": "AC7: python -I import of the new module exits 0; guarded app builds hermetically", "status": "pending-stage-7", "notes": "Module imports only stdlib and response_formatter; import and app-build proof needs execution."},
+    {"kind": "spec", "item": "AC8: router_guards pass; openapi.json, route_precedence.json and main.py unchanged", "status": "pending-stage-7", "notes": "None of those files changed and handler signatures and routes are untouched; guard run needs execution."},
+    {"kind": "spec", "item": "AC9: make ruff passes (no F401/F821, complexity, license); listed test areas pass", "status": "pending-stage-7", "notes": "Static read: imports used, headers present; lint and test execution owned by Stage 7."},
+    {"kind": "spec", "item": "AC10: handoff records name map, decisions, inert list, logger rename, quirks; /sanity and Test harness duty", "status": "pass", "notes": "HANDOFF.md Step 7b section records all items, including the /sanity and Test harness duty."},
+    {"kind": "spec", "item": "Non-goals: quirks not fixed, twins not merged, gate and dead code not moved or deleted, no new logging", "status": "pass", "notes": "Moved bodies keep their quirks; spending.py hunks change only imports and five call identifiers."}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "3 subjects in the review range all match the documented EPMCDME-####: Description format (EPMCDME-15651: Capital description)"},
+    {"kind": "code-quality", "status": "partial", "notes": "Headers, __future__ import and module cohesion met; but code-quality.md prefers parameterized generics over bare dict and the new module uses bare dict in several signatures"},
+    {"kind": "security", "status": "pass", "notes": "No auth or role code changed (_authorize_admin_budget_view untouched); no credentials or tokens logged; no untrusted-input normalization added; moved parser returns None on malformed input"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/analytics/spending_formatter.py",
+      "line": 49,
+      "title": "Parameterize bare dict annotations",
+      "problem": "The new module annotates build_spending_metric -> dict (line 49), build_spending_metrics(spending_data: dict | None) -> list[dict] (line 76) and paginate_tabular(columns: list[dict], rows: list[dict], filters_applied: dict) -> dict (lines 160-166) with bare dict. code-quality.md (Types And Imports) lists bare list/dict annotations under Avoid and parameterized generics under Prefer. The signatures are verbatim from BASE _spending_support.py, but the module is new to service/analytics/ and these are its public functions.",
+      "impact": "New public service-layer signatures miss the documented type-hint standard (blocking code-quality standards_review partial). Annotations are strings under `from __future__ import annotations`, so runtime behavior is unaffected; reachability is not applicable to a static annotation.",
+      "recommendation": "Use dict[str, Any] for metric and response dicts and for filters_applied, list[dict[str, Any]] for columns and rows, and dict[str, Any] | None for spending_data (Any is already imported). Annotations only; bodies stay unchanged. The handoff bodycheck compares ast.dump including annotations, so relax that comparison for these three signatures and record the deviation in HANDOFF.md."
+    }
+  ],
+  "finding_status": [
+    {"id": "CR-001", "status": "resolved", "notes": "spending_formatter.py now annotates :49 -> dict[str, Any], :76 spending_data: dict[str, Any] | None -> list[dict[str, Any]], :160-166 columns/rows list[dict[str, Any]], filters_applied dict[str, Any], -> dict[str, Any]; no bare dict remains, Any imported at :19, bodies unchanged."}
+  ]
+}

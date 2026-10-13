@@ -23,7 +23,7 @@ from codemie.service.security.token_providers.base_provider import BrokerAuthReq
 from codemie.core.models import AssistantChatRequest
 from codemie.rest_api.models.assistant import Assistant
 from codemie.rest_api.models.guardrail import GuardrailEntity, GuardrailSource
-from codemie.rest_api.routers.assistant import _ask_assistant, _ask_virtual_assistant
+from codemie.rest_api.routers.assistant._ask import _ask_assistant, _ask_virtual_assistant
 from codemie.rest_api.security.user import User
 
 
@@ -55,11 +55,11 @@ def mock_assistant():
 class TestAskAssistantWithGuardrails:
     """Tests for _ask_assistant method with guardrail functionality."""
 
-    @patch("codemie.rest_api.routers.assistant.assistant_user_interaction_service.record_usage")
-    @patch("codemie.rest_api.routers.assistant.request_summary_manager.create_request_summary")
-    @patch("codemie.rest_api.routers.assistant.Ability")
-    @patch("codemie.rest_api.routers.assistant.GuardrailService.apply_guardrails_for_entity")
-    @patch("codemie.rest_api.routers.assistant.get_request_handler")
+    @patch("codemie.rest_api.routers.assistant._ask.assistant_user_interaction_service.record_usage")
+    @patch("codemie.rest_api.routers.assistant._ask.request_summary_manager.create_request_summary")
+    @patch("codemie.rest_api.routers.utils.Ability")
+    @patch("codemie.rest_api.routers.assistant._ask.GuardrailService.apply_guardrails_for_entity")
+    @patch("codemie.rest_api.routers.assistant._ask.get_request_handler")
     def test_applies_guardrails_to_input_text(
         self,
         mock_get_handler,
@@ -115,8 +115,8 @@ class TestAskAssistantWithGuardrails:
         # Verify processing continued with modified text
         mock_handler.process_request.assert_called_once()
 
-    @patch("codemie.rest_api.routers.assistant.Ability")
-    @patch("codemie.rest_api.routers.assistant.GuardrailService.apply_guardrails_for_entity")
+    @patch("codemie.rest_api.routers.utils.Ability")
+    @patch("codemie.rest_api.routers.assistant._ask.GuardrailService.apply_guardrails_for_entity")
     def test_raises_exception_when_guardrails_block_content(
         self, mock_apply_guardrails, mock_ability, mock_user, mock_assistant
     ):
@@ -149,11 +149,11 @@ class TestAskAssistantWithGuardrails:
         assert "HATE" in exc_info.value.details
         assert "POLITICS" in exc_info.value.details
 
-    @patch("codemie.rest_api.routers.assistant.assistant_user_interaction_service.record_usage")
-    @patch("codemie.rest_api.routers.assistant.request_summary_manager.create_request_summary")
-    @patch("codemie.rest_api.routers.assistant.Ability")
-    @patch("codemie.rest_api.routers.assistant.GuardrailService.apply_guardrails_for_entity")
-    @patch("codemie.rest_api.routers.assistant.get_request_handler")
+    @patch("codemie.rest_api.routers.assistant._ask.assistant_user_interaction_service.record_usage")
+    @patch("codemie.rest_api.routers.assistant._ask.request_summary_manager.create_request_summary")
+    @patch("codemie.rest_api.routers.utils.Ability")
+    @patch("codemie.rest_api.routers.assistant._ask.GuardrailService.apply_guardrails_for_entity")
+    @patch("codemie.rest_api.routers.assistant._ask.get_request_handler")
     def test_skips_guardrails_when_no_text(
         self,
         mock_get_handler,
@@ -187,11 +187,11 @@ class TestAskAssistantWithGuardrails:
         # Guardrails should not be called
         mock_apply_guardrails.assert_not_called()
 
-    @patch("codemie.rest_api.routers.assistant.assistant_user_interaction_service.record_usage")
-    @patch("codemie.rest_api.routers.assistant.request_summary_manager.create_request_summary")
-    @patch("codemie.rest_api.routers.assistant.Ability")
-    @patch("codemie.rest_api.routers.assistant.GuardrailService.apply_guardrails_for_entity")
-    @patch("codemie.rest_api.routers.assistant.get_request_handler")
+    @patch("codemie.rest_api.routers.assistant._ask.assistant_user_interaction_service.record_usage")
+    @patch("codemie.rest_api.routers.assistant._ask.request_summary_manager.create_request_summary")
+    @patch("codemie.rest_api.routers.utils.Ability")
+    @patch("codemie.rest_api.routers.assistant._ask.GuardrailService.apply_guardrails_for_entity")
+    @patch("codemie.rest_api.routers.assistant._ask.get_request_handler")
     def test_skips_guardrails_when_no_assistant_id(
         self,
         mock_get_handler,
@@ -224,9 +224,9 @@ class TestAskAssistantWithGuardrails:
         # Guardrails should not be called
         mock_apply_guardrails.assert_not_called()
 
-    @patch("codemie.rest_api.routers.assistant.Ability")
-    @patch("codemie.rest_api.routers.assistant.GuardrailService.apply_guardrails_for_entity")
-    @patch("codemie.rest_api.routers.assistant.get_request_handler")
+    @patch("codemie.rest_api.routers.utils.Ability")
+    @patch("codemie.rest_api.routers.assistant._ask.GuardrailService.apply_guardrails_for_entity")
+    @patch("codemie.rest_api.routers.assistant._ask.get_request_handler")
     def test_deduplicates_blocked_reasons(
         self, mock_get_handler, mock_apply_guardrails, mock_ability, mock_user, mock_assistant
     ):
@@ -260,10 +260,10 @@ class TestAskAssistantWithGuardrails:
         assert details_str.count("HATE") == 1  # Should appear only once despite duplicate
         assert "POLITICS" in details_str
 
-    @patch("codemie.rest_api.routers.assistant._save_error")
-    @patch("codemie.rest_api.routers.assistant.request_summary_manager.create_request_summary")
-    @patch("codemie.rest_api.routers.assistant.assistant_user_interaction_service.record_usage")
-    @patch("codemie.rest_api.routers.assistant.get_request_handler")
+    @patch("codemie.rest_api.routers.assistant._ask._save_error")
+    @patch("codemie.rest_api.routers.assistant._ask.request_summary_manager.create_request_summary")
+    @patch("codemie.rest_api.routers.assistant._ask.assistant_user_interaction_service.record_usage")
+    @patch("codemie.rest_api.routers.assistant._ask.get_request_handler")
     def test_reraises_mcp_authentication_required_without_wrapping(
         self,
         mock_get_handler,
@@ -311,12 +311,12 @@ class TestAskAssistantWithGuardrails:
         assert 'auth-1' not in details_text
         assert 'initiate' not in details_text
 
-    @patch("codemie.rest_api.routers.assistant._save_error")
-    @patch("codemie.rest_api.routers.assistant.request_summary_manager.create_request_summary")
-    @patch("codemie.rest_api.routers.assistant._validate_assistant_supports_model_change_and_raise")
-    @patch("codemie.rest_api.routers.assistant._validate_assistant_supports_files_and_raise")
-    @patch("codemie.rest_api.routers.assistant._validate_remote_entities_and_raise")
-    @patch("codemie.rest_api.routers.assistant.get_request_handler")
+    @patch("codemie.rest_api.routers.assistant._ask._save_error")
+    @patch("codemie.rest_api.routers.assistant._ask.request_summary_manager.create_request_summary")
+    @patch("codemie.rest_api.routers.assistant._ask._validate_assistant_supports_model_change_and_raise")
+    @patch("codemie.rest_api.routers.assistant._ask._validate_assistant_supports_files_and_raise")
+    @patch("codemie.rest_api.routers.assistant._ask._validate_remote_entities_and_raise")
+    @patch("codemie.rest_api.routers.assistant._ask.get_request_handler")
     def test_virtual_assistant_reraises_mcp_authentication_required_without_wrapping(
         self,
         mock_get_handler,
@@ -362,10 +362,10 @@ class TestAskAssistantWithGuardrails:
         mock_validate_model.assert_called_once_with(mock_assistant, request.llm_model)
         mock_save_error.assert_not_called()
 
-    @patch("codemie.rest_api.routers.assistant._save_error")
-    @patch("codemie.rest_api.routers.assistant.request_summary_manager.create_request_summary")
-    @patch("codemie.rest_api.routers.assistant.assistant_user_interaction_service.record_usage")
-    @patch("codemie.rest_api.routers.assistant.get_request_handler")
+    @patch("codemie.rest_api.routers.assistant._ask._save_error")
+    @patch("codemie.rest_api.routers.assistant._ask.request_summary_manager.create_request_summary")
+    @patch("codemie.rest_api.routers.assistant._ask.assistant_user_interaction_service.record_usage")
+    @patch("codemie.rest_api.routers.assistant._ask.get_request_handler")
     def test_ask_assistant_broker_auth_saves_error_and_reraises(
         self,
         mock_get_handler,
@@ -401,10 +401,10 @@ class TestAskAssistantWithGuardrails:
         assert 'oauth/start' not in details_text.lower()
         assert '401' in details_text or 'broker' in details_text.lower() or 'authentication' in details_text.lower()
 
-    @patch("codemie.rest_api.routers.assistant._save_error")
-    @patch("codemie.rest_api.routers.assistant.request_summary_manager.create_request_summary")
-    @patch("codemie.rest_api.routers.assistant.assistant_user_interaction_service.record_usage")
-    @patch("codemie.rest_api.routers.assistant.get_request_handler")
+    @patch("codemie.rest_api.routers.assistant._ask._save_error")
+    @patch("codemie.rest_api.routers.assistant._ask.request_summary_manager.create_request_summary")
+    @patch("codemie.rest_api.routers.assistant._ask.assistant_user_interaction_service.record_usage")
+    @patch("codemie.rest_api.routers.assistant._ask.get_request_handler")
     def test_ask_assistant_mcp_auth_reraises_when_save_error_fails(
         self,
         mock_get_handler,
@@ -435,10 +435,10 @@ class TestAskAssistantWithGuardrails:
         assert exc_info.value is auth_error
         mock_save_error.assert_called_once()
 
-    @patch("codemie.rest_api.routers.assistant._save_error")
-    @patch("codemie.rest_api.routers.assistant.request_summary_manager.create_request_summary")
-    @patch("codemie.rest_api.routers.assistant.assistant_user_interaction_service.record_usage")
-    @patch("codemie.rest_api.routers.assistant.get_request_handler")
+    @patch("codemie.rest_api.routers.assistant._ask._save_error")
+    @patch("codemie.rest_api.routers.assistant._ask.request_summary_manager.create_request_summary")
+    @patch("codemie.rest_api.routers.assistant._ask.assistant_user_interaction_service.record_usage")
+    @patch("codemie.rest_api.routers.assistant._ask.get_request_handler")
     def test_ask_assistant_broker_auth_reraises_when_save_error_fails(
         self,
         mock_get_handler,
@@ -469,10 +469,10 @@ class TestAskAssistantWithGuardrails:
         assert exc_info.value is broker_error
         mock_save_error.assert_called_once()
 
-    @patch("codemie.rest_api.routers.assistant._save_error")
-    @patch("codemie.rest_api.routers.assistant.request_summary_manager.create_request_summary")
-    @patch("codemie.rest_api.routers.assistant.assistant_user_interaction_service.record_usage")
-    @patch("codemie.rest_api.routers.assistant.get_request_handler")
+    @patch("codemie.rest_api.routers.assistant._ask._save_error")
+    @patch("codemie.rest_api.routers.assistant._ask.request_summary_manager.create_request_summary")
+    @patch("codemie.rest_api.routers.assistant._ask.assistant_user_interaction_service.record_usage")
+    @patch("codemie.rest_api.routers.assistant._ask.get_request_handler")
     def test_manual_model_401_returns_401_payload_unchanged(
         self,
         mock_get_handler,
@@ -522,7 +522,7 @@ class TestPrepareAssistantForExecutionWithSkills:
         This verifies the fix for the bug where skill_ids provided in the request body
         were being saved to the database when they should only be applied during runtime.
         """
-        from codemie.rest_api.routers.assistant import _prepare_assistant_for_execution
+        from codemie.rest_api.routers.assistant._ask import _prepare_assistant_for_execution
 
         # Create an assistant with initial skill_ids
         original_assistant = MagicMock(spec=Assistant)
@@ -572,7 +572,7 @@ class TestPrepareAssistantForExecutionWithSkills:
 
     def test_no_skill_ids_in_request_preserves_original(self):
         """Test that when no skill_ids are in the request, the original assistant is used."""
-        from codemie.rest_api.routers.assistant import _prepare_assistant_for_execution
+        from codemie.rest_api.routers.assistant._ask import _prepare_assistant_for_execution
 
         original_assistant = MagicMock(spec=Assistant)
         original_assistant.id = "assistant-123"
@@ -588,10 +588,10 @@ class TestPrepareAssistantForExecutionWithSkills:
         assert execution_assistant is original_assistant
         assert execution_assistant.skill_ids == ["skill-1", "skill-2"]
 
-    @patch("codemie.rest_api.routers.assistant.AssistantVersionService.apply_version_to_assistant")
+    @patch("codemie.rest_api.routers.assistant._ask.AssistantVersionService.apply_version_to_assistant")
     def test_version_request_with_skill_ids_creates_copy(self, mock_apply_version):
         """Test that when a version is requested AND skill_ids are provided, a copy is created."""
-        from codemie.rest_api.routers.assistant import _prepare_assistant_for_execution
+        from codemie.rest_api.routers.assistant._ask import _prepare_assistant_for_execution
 
         original_assistant = MagicMock(spec=Assistant)
         original_assistant.id = "assistant-123"
@@ -674,19 +674,21 @@ class TestCreateAssistantSlug:
         mock_app.default_model = None
 
         patches = [
-            patch("codemie.rest_api.routers.assistant.project_access_check"),
-            patch("codemie.rest_api.routers.assistant.ensure_application_exists"),
+            patch("codemie.rest_api.routers.assistant.management.project_access_check"),
+            patch("codemie.rest_api.routers.assistant.management.ensure_application_exists"),
             patch("codemie.service.assistant.assistant_version_service.AssistantVersionService.create_initial_version"),
-            patch("codemie.rest_api.routers.assistant.GuardrailService.sync_guardrail_assignments_for_entity"),
-            patch("codemie.rest_api.routers.assistant._track_mcp_usage_on_create"),
-            patch("codemie.rest_api.routers.assistant._track_assistant_management_metric"),
+            patch(
+                "codemie.rest_api.routers.assistant.management.GuardrailService.sync_guardrail_assignments_for_entity"
+            ),
+            patch("codemie.rest_api.routers.assistant.management._track_mcp_usage_on_create"),
+            patch("codemie.rest_api.routers.assistant.management._track_assistant_management_metric"),
             patch.object(Application, "get_by_id", return_value=mock_app),
         ]
         return patches
 
     def _run_create(self, request, save_side_effect=None):
         """Invoke create_assistant with collaborators patched; capture the saved slug."""
-        from codemie.rest_api.routers.assistant import create_assistant
+        from codemie.rest_api.routers.assistant.management import create_assistant
 
         captured = {}
 
@@ -711,7 +713,7 @@ class TestCreateAssistantSlug:
             for cm in ctx_managers:
                 cm.stop()
 
-    @patch("codemie.rest_api.routers.assistant.AssistantService.ensure_unique_slug")
+    @patch("codemie.rest_api.routers.assistant.management.AssistantService.ensure_unique_slug")
     def test_provided_slug_kept_and_not_suffixed(self, mock_ensure):
         # Client supplied a slug -> kept verbatim, ensure_unique_slug must NOT run.
         request = self._build_request(slug="my-custom-slug")
@@ -737,7 +739,7 @@ class TestCreateAssistantSlug:
         assert exc_info.value.code == 400
         assert "taken-slug" in exc_info.value.details
 
-    @patch("codemie.rest_api.routers.assistant.AssistantService.ensure_unique_slug")
+    @patch("codemie.rest_api.routers.assistant.management.AssistantService.ensure_unique_slug")
     def test_derived_slug_auto_suffixed_on_collision(self, mock_ensure):
         # No slug provided -> derived from name and run through ensure_unique_slug.
         mock_ensure.return_value = "knowledge-companion_ab12"
@@ -748,7 +750,7 @@ class TestCreateAssistantSlug:
         mock_ensure.assert_called_once_with("knowledge-companion", "demo")
         assert captured["slug"] == "knowledge-companion_ab12"
 
-    @patch("codemie.rest_api.routers.assistant.AssistantService.ensure_unique_slug")
+    @patch("codemie.rest_api.routers.assistant.management.AssistantService.ensure_unique_slug")
     def test_no_slug_and_empty_derivation_yields_null(self, mock_ensure):
         # Name without slug-eligible characters -> slug stays NULL, ensure_unique_slug skipped.
         request = self._build_request(slug=None, name="???")
@@ -813,7 +815,7 @@ class TestAssistantMcpGovernance:
         )
 
     def test_create_restricted_mode_rejects_handwritten_server(self):
-        from codemie.rest_api.routers.assistant import create_assistant
+        from codemie.rest_api.routers.assistant.management import create_assistant
         from codemie.rest_api.models.assistant import MCPServerDetails
         from codemie.core.exceptions import ValidationException
 
@@ -826,7 +828,7 @@ class TestAssistantMcpGovernance:
 
     def test_create_admin_user_violating_payload_still_rejected(self):
         # AC7: admin/maintainer is not a bypass — set the flags explicitly on the mock.
-        from codemie.rest_api.routers.assistant import create_assistant
+        from codemie.rest_api.routers.assistant.management import create_assistant
         from codemie.rest_api.models.assistant import MCPServerDetails
         from codemie.core.exceptions import ValidationException
 
@@ -841,7 +843,7 @@ class TestAssistantMcpGovernance:
                 create_assistant(request, user=user)
 
     def test_update_restricted_mode_rejects_handwritten_server(self):
-        from codemie.rest_api.routers.assistant import update_assistant
+        from codemie.rest_api.routers.assistant.management import update_assistant
         from codemie.rest_api.models.assistant import MCPServerDetails, Assistant
         from codemie.core.exceptions import ValidationException
 
@@ -852,10 +854,10 @@ class TestAssistantMcpGovernance:
         existing.project = "demo"
         with (
             patch("codemie.service.mcp.access_control.customer_config", mode),
-            patch("codemie.rest_api.routers.assistant.project_access_check"),
-            patch("codemie.rest_api.routers.assistant._get_assistant_by_id_or_raise", return_value=existing),
-            patch("codemie.rest_api.routers.assistant._check_user_can_access_assistant"),
-            patch("codemie.rest_api.routers.assistant._validate_remote_entities_and_raise"),
+            patch("codemie.rest_api.routers.assistant.management.project_access_check"),
+            patch("codemie.rest_api.routers.assistant.management.get_assistant_by_id_or_raise", return_value=existing),
+            patch("codemie.rest_api.routers.assistant.management.check_user_can_access_assistant"),
+            patch("codemie.rest_api.routers.assistant.management._validate_remote_entities_and_raise"),
         ):
             with pytest.raises(ValidationException, match="rogue"):
                 update_assistant("assistant-1", request, background_tasks=MagicMock(), user=MagicMock(spec=User))
@@ -863,19 +865,21 @@ class TestAssistantMcpGovernance:
     def test_create_open_mode_allows_handwritten_server(self):
         # AC8: toggle off, same payload, save succeeds — reuses TestCreateAssistantSlug's
         # _patches()/fake-save shape (Assistant.save patched to a no-op).
-        from codemie.rest_api.routers.assistant import create_assistant
+        from codemie.rest_api.routers.assistant.management import create_assistant
         from codemie.rest_api.models.assistant import MCPServerDetails, Assistant
 
         request = self._request([MCPServerDetails(name="ok", command="npx", enabled=True)])
         mode = MagicMock()
         mode.is_component_enabled.return_value = False
         patches = [
-            patch("codemie.rest_api.routers.assistant.project_access_check"),
-            patch("codemie.rest_api.routers.assistant.ensure_application_exists"),
+            patch("codemie.rest_api.routers.assistant.management.project_access_check"),
+            patch("codemie.rest_api.routers.assistant.management.ensure_application_exists"),
             patch("codemie.service.assistant.assistant_version_service.AssistantVersionService.create_initial_version"),
-            patch("codemie.rest_api.routers.assistant.GuardrailService.sync_guardrail_assignments_for_entity"),
-            patch("codemie.rest_api.routers.assistant._track_mcp_usage_on_create"),
-            patch("codemie.rest_api.routers.assistant._track_assistant_management_metric"),
+            patch(
+                "codemie.rest_api.routers.assistant.management.GuardrailService.sync_guardrail_assignments_for_entity"
+            ),
+            patch("codemie.rest_api.routers.assistant.management._track_mcp_usage_on_create"),
+            patch("codemie.rest_api.routers.assistant.management._track_assistant_management_metric"),
         ]
         for p in patches:
             p.start()
@@ -918,17 +922,19 @@ class TestCreateAssistantCloneTracking:
         mock_app.default_model = None
 
         return [
-            patch("codemie.rest_api.routers.assistant.project_access_check"),
-            patch("codemie.rest_api.routers.assistant.ensure_application_exists"),
+            patch("codemie.rest_api.routers.assistant.management.project_access_check"),
+            patch("codemie.rest_api.routers.assistant.management.ensure_application_exists"),
             patch("codemie.service.assistant.assistant_version_service.AssistantVersionService.create_initial_version"),
-            patch("codemie.rest_api.routers.assistant.GuardrailService.sync_guardrail_assignments_for_entity"),
-            patch("codemie.rest_api.routers.assistant._track_mcp_usage_on_create"),
-            patch("codemie.rest_api.routers.assistant._track_assistant_management_metric"),
+            patch(
+                "codemie.rest_api.routers.assistant.management.GuardrailService.sync_guardrail_assignments_for_entity"
+            ),
+            patch("codemie.rest_api.routers.assistant.management._track_mcp_usage_on_create"),
+            patch("codemie.rest_api.routers.assistant.management._track_assistant_management_metric"),
             patch.object(Application, "get_by_id", return_value=mock_app),
         ]
 
     def _run_create(self, request):
-        from codemie.rest_api.routers.assistant import create_assistant
+        from codemie.rest_api.routers.assistant.management import create_assistant
 
         def fake_save(self, *args, **kwargs):
             return MagicMock()
@@ -949,9 +955,9 @@ class TestCreateAssistantCloneTracking:
             for cm in ctx_managers:
                 cm.stop()
 
-    @patch("codemie.rest_api.routers.assistant.AssistantRepository")
-    @patch("codemie.rest_api.routers.assistant.Assistant.find_by_id")
-    @patch("codemie.rest_api.routers.assistant.AssistantCloneEventRepository")
+    @patch("codemie.rest_api.routers.assistant.management.AssistantRepository")
+    @patch("codemie.rest_api.routers.assistant.management.Assistant.find_by_id")
+    @patch("codemie.rest_api.routers.assistant.management.AssistantCloneEventRepository")
     def test_source_assistant_id_logs_event_and_updates_clone_count(
         self, mock_clone_event_repo_class, mock_find_by_id, mock_assistant_repo_class
     ):
@@ -966,9 +972,9 @@ class TestCreateAssistantCloneTracking:
         mock_assistant_repo_class.update_clone_count.assert_called_once_with("source-id-1")
         assert response.assistant_id is not None
 
-    @patch("codemie.rest_api.routers.assistant.AssistantRepository")
-    @patch("codemie.rest_api.routers.assistant.Assistant.find_by_id")
-    @patch("codemie.rest_api.routers.assistant.AssistantCloneEventRepository")
+    @patch("codemie.rest_api.routers.assistant.management.AssistantRepository")
+    @patch("codemie.rest_api.routers.assistant.management.Assistant.find_by_id")
+    @patch("codemie.rest_api.routers.assistant.management.AssistantCloneEventRepository")
     def test_repeat_clone_from_same_source_increments_each_call(
         self, mock_clone_event_repo_class, mock_find_by_id, mock_assistant_repo_class
     ):
@@ -986,9 +992,9 @@ class TestCreateAssistantCloneTracking:
         assert mock_assistant_repo_class.update_clone_count.call_count == 2
         mock_assistant_repo_class.update_clone_count.assert_called_with("source-id-1")
 
-    @patch("codemie.rest_api.routers.assistant.AssistantRepository")
-    @patch("codemie.rest_api.routers.assistant.Assistant.find_by_id")
-    @patch("codemie.rest_api.routers.assistant.AssistantCloneEventRepository")
+    @patch("codemie.rest_api.routers.assistant.management.AssistantRepository")
+    @patch("codemie.rest_api.routers.assistant.management.Assistant.find_by_id")
+    @patch("codemie.rest_api.routers.assistant.management.AssistantCloneEventRepository")
     def test_nonexistent_source_assistant_id_skips_clone_tracking(
         self, mock_clone_event_repo_class, mock_find_by_id, mock_assistant_repo_class
     ):
@@ -1003,8 +1009,8 @@ class TestCreateAssistantCloneTracking:
         mock_assistant_repo_class.update_clone_count.assert_not_called()
         assert response.assistant_id is not None
 
-    @patch("codemie.rest_api.routers.assistant.AssistantRepository")
-    @patch("codemie.rest_api.routers.assistant.AssistantCloneEventRepository")
+    @patch("codemie.rest_api.routers.assistant.management.AssistantRepository")
+    @patch("codemie.rest_api.routers.assistant.management.AssistantCloneEventRepository")
     def test_no_source_assistant_id_is_noop(self, mock_clone_event_repo_class, mock_assistant_repo_class):
         mock_clone_event_repo = mock_clone_event_repo_class.return_value
 
@@ -1014,10 +1020,10 @@ class TestCreateAssistantCloneTracking:
         mock_clone_event_repo.log_clone_event.assert_not_called()
         mock_assistant_repo_class.update_clone_count.assert_not_called()
 
-    @patch("codemie.rest_api.routers.assistant.AssistantRepository")
-    @patch("codemie.rest_api.routers.assistant.Assistant.find_by_id")
-    @patch("codemie.rest_api.routers.assistant.AssistantCloneEventRepository")
-    @patch("codemie.rest_api.routers.assistant.logger")
+    @patch("codemie.rest_api.routers.assistant.management.AssistantRepository")
+    @patch("codemie.rest_api.routers.assistant.management.Assistant.find_by_id")
+    @patch("codemie.rest_api.routers.assistant.management.AssistantCloneEventRepository")
+    @patch("codemie.rest_api.routers.assistant.management.logger")
     def test_clone_tracking_exception_does_not_fail_create(
         self, mock_logger, mock_clone_event_repo_class, mock_find_by_id, mock_assistant_repo_class
     ):
@@ -1054,15 +1060,15 @@ class TestAssistantDetailEnrichment:
     def _enrichment_patches(self):
         """Patch the enrichment collaborators shared by both detail endpoints."""
         return [
-            patch("codemie.rest_api.routers.assistant._check_user_can_access_assistant"),
-            patch("codemie.rest_api.routers.assistant._validate_remote_entities_and_raise"),
-            patch("codemie.rest_api.routers.assistant.ToolsInfoService.get_tools_info", return_value=[]),
-            patch("codemie.rest_api.routers.assistant.Assistant.get_by_ids", return_value=[]),
-            patch("codemie.rest_api.routers.assistant._get_categories_data"),
-            patch("codemie.rest_api.routers.assistant._mask_sensitive_prompt_variables"),
-            patch("codemie.rest_api.routers.assistant.AssistantRepository"),
+            patch("codemie.rest_api.routers.assistant.catalog.check_user_can_access_assistant"),
+            patch("codemie.rest_api.routers.assistant.catalog._validate_remote_entities_and_raise"),
+            patch("codemie.rest_api.routers.assistant.catalog.ToolsInfoService.get_tools_info", return_value=[]),
+            patch("codemie.rest_api.routers.assistant.catalog.Assistant.get_by_ids", return_value=[]),
+            patch("codemie.rest_api.routers.assistant.catalog._get_categories_data"),
+            patch("codemie.rest_api.routers.assistant.catalog.mask_sensitive_prompt_variables"),
+            patch("codemie.rest_api.routers.assistant.catalog.AssistantRepository"),
             patch(
-                "codemie.rest_api.routers.assistant.GuardrailService.get_entity_guardrail_assignments",
+                "codemie.rest_api.routers.assistant.catalog.GuardrailService.get_entity_guardrail_assignments",
                 return_value=[],
             ),
             # Project-level model resolution hits Application.get_by_id for every assistant
@@ -1078,11 +1084,11 @@ class TestAssistantDetailEnrichment:
             ),
         ]
 
-    @patch("codemie.rest_api.routers.assistant.Ability")
-    @patch("codemie.rest_api.routers.assistant._get_assistant_by_slug_or_raise")
+    @patch("codemie.rest_api.routers.assistant.catalog.Ability")
+    @patch("codemie.rest_api.routers.assistant.catalog._get_assistant_by_slug_or_raise")
     def test_slug_response_includes_user_abilities(self, mock_get_by_slug, mock_ability):
         from codemie.core.ability import Action
-        from codemie.rest_api.routers.assistant import get_assistant_by_slug
+        from codemie.rest_api.routers.assistant.catalog import get_assistant_by_slug
 
         assistant = self._build_assistant()
         mock_get_by_slug.return_value = assistant
@@ -1114,10 +1120,10 @@ class TestAssistantDetailEnrichment:
 
 
 class TestAskAssistantSingleUserInvariant:
-    @patch("codemie.rest_api.routers.assistant.assistant_user_interaction_service.record_usage")
-    @patch("codemie.rest_api.routers.assistant.request_summary_manager.create_request_summary")
-    @patch("codemie.rest_api.routers.assistant.Ability")
-    @patch("codemie.rest_api.routers.assistant.get_request_handler")
+    @patch("codemie.rest_api.routers.assistant._ask.assistant_user_interaction_service.record_usage")
+    @patch("codemie.rest_api.routers.assistant._ask.request_summary_manager.create_request_summary")
+    @patch("codemie.rest_api.routers.utils.Ability")
+    @patch("codemie.rest_api.routers.assistant._ask.get_request_handler")
     def test_single_user_drives_both_access_control_and_record_usage(
         self,
         mock_get_handler,
@@ -1127,7 +1133,7 @@ class TestAskAssistantSingleUserInvariant:
         mock_user,
         mock_assistant,
     ):
-        from codemie.rest_api.routers.assistant import _ask_assistant
+        from codemie.rest_api.routers.assistant._ask import _ask_assistant
         from codemie.core.models import AssistantChatRequest
         from unittest.mock import MagicMock
 
@@ -1149,13 +1155,14 @@ class TestAskAssistantSingleUserInvariant:
 
 class TestAskVirtualAssistantSingleUserInvariant:
     @pytest.mark.asyncio
-    @patch("codemie.rest_api.routers.assistant.asyncio.to_thread")
+    @patch("codemie.rest_api.routers.assistant.execution.asyncio.to_thread")
     async def test_virtual_assistant_uses_single_user_throughout(
         self,
         mock_to_thread,
         mock_user,
     ):
-        from codemie.rest_api.routers.assistant import ask_virtual_assistant, VirtualAssistantChatRequest
+        from codemie.rest_api.routers.assistant.execution import ask_virtual_assistant
+        from codemie.rest_api.models.assistant import VirtualAssistantChatRequest
         from unittest.mock import MagicMock
 
         mock_user.current_project = "caller-project"
@@ -1186,8 +1193,8 @@ class TestAskVirtualAssistantMcpGovernance:
 
     @pytest.mark.asyncio
     async def test_restricted_mode_rejects_handwritten_server(self):
-        from codemie.rest_api.routers.assistant import ask_virtual_assistant, VirtualAssistantChatRequest
-        from codemie.rest_api.models.assistant import MCPServerDetails
+        from codemie.rest_api.routers.assistant.execution import ask_virtual_assistant
+        from codemie.rest_api.models.assistant import MCPServerDetails, VirtualAssistantChatRequest
         from codemie.core.exceptions import ValidationException
 
         async def _noop():
@@ -1208,8 +1215,8 @@ class TestAskVirtualAssistantMcpGovernance:
 
     @pytest.mark.asyncio
     async def test_open_mode_allows_handwritten_server(self):
-        from codemie.rest_api.routers.assistant import ask_virtual_assistant, VirtualAssistantChatRequest
-        from codemie.rest_api.models.assistant import MCPServerDetails
+        from codemie.rest_api.routers.assistant.execution import ask_virtual_assistant
+        from codemie.rest_api.models.assistant import MCPServerDetails, VirtualAssistantChatRequest
 
         async def _noop():
             return None
@@ -1225,7 +1232,7 @@ class TestAskVirtualAssistantMcpGovernance:
 
         with (
             patch("codemie.service.mcp.access_control.customer_config", mode),
-            patch("codemie.rest_api.routers.assistant.asyncio.to_thread", return_value={"response": "ok"}),
+            patch("codemie.rest_api.routers.assistant.execution.asyncio.to_thread", return_value={"response": "ok"}),
         ):
             await ask_virtual_assistant(raw_request, MagicMock(), request, user)
 
@@ -1237,7 +1244,7 @@ def test_resume_tool_call_never_had_and_still_has_no_billing_user_param():
     unmodified."""
     import inspect
 
-    from codemie.rest_api.routers.assistant import resume_tool_call, _ask_assistant_resume
+    from codemie.rest_api.routers.assistant.execution import resume_tool_call, _ask_assistant_resume
 
     resume_params = inspect.signature(resume_tool_call).parameters
     assert "billing_user" not in resume_params
@@ -1267,7 +1274,7 @@ class TestResolveModelProjectLookup:
         )
 
     def test_resolve_effective_llm_model_applies_project_fallback(self):
-        from codemie.rest_api.routers.assistant import _resolve_effective_llm_model
+        from codemie.rest_api.routers.assistant.catalog import _resolve_effective_llm_model
 
         assistant = self._build_assistant(llm_model_type="disallowed-model")
 
@@ -1289,7 +1296,7 @@ class TestResolveModelProjectLookup:
         assert response_data["llm_model_type"] == "gpt-4"
 
     def test_resolve_effective_llm_model_project_not_found_skips_restriction(self):
-        from codemie.rest_api.routers.assistant import _resolve_effective_llm_model
+        from codemie.rest_api.routers.assistant.catalog import _resolve_effective_llm_model
 
         assistant = self._build_assistant()
 
@@ -1309,7 +1316,7 @@ class TestResolveModelProjectLookup:
         assert source == "assistant"
 
     def test_resolve_chosen_execution_model_applies_project_fallback(self):
-        from codemie.rest_api.routers.assistant import _resolve_chosen_execution_model
+        from codemie.rest_api.routers.assistant._ask import _resolve_chosen_execution_model
 
         assistant = self._build_assistant(llm_model_type="disallowed-model")
         request = AssistantChatRequest(text="hi")
@@ -1329,7 +1336,7 @@ class TestResolveModelProjectLookup:
         assert model == "gpt-4"
 
     def test_resolve_chosen_execution_model_project_not_found_skips_restriction(self):
-        from codemie.rest_api.routers.assistant import _resolve_chosen_execution_model
+        from codemie.rest_api.routers.assistant._ask import _resolve_chosen_execution_model
 
         assistant = self._build_assistant()
         request = AssistantChatRequest(text="hi")
@@ -1366,7 +1373,7 @@ class TestSlugAmbiguityDetection:
 
     @patch("codemie.rest_api.models.assistant.Assistant.get_all_by_fields")
     def test_ambiguous_slug_without_project_raises_422(self, mock_get_all):
-        from codemie.rest_api.routers.assistant import get_assistant_by_slug
+        from codemie.rest_api.routers.assistant.catalog import get_assistant_by_slug
 
         mock_get_all.return_value = [
             self._make_assistant("project-alpha"),
@@ -1389,7 +1396,7 @@ class TestSlugAmbiguityDetection:
     @patch("codemie.rest_api.models.assistant.Assistant.get_all_by_fields")
     def test_slug_with_project_returns_single_assistant(self, mock_get_all):
         """When project is supplied the lookup is already scoped; no 422 should fire."""
-        from codemie.rest_api.routers.assistant import _get_assistant_by_slug_or_raise
+        from codemie.rest_api.routers.assistant._shared import _get_assistant_by_slug_or_raise
 
         expected = self._make_assistant("project-alpha")
         mock_get_all.return_value = [expected]
@@ -1402,7 +1409,7 @@ class TestSlugAmbiguityDetection:
     @patch("codemie.rest_api.models.assistant.Assistant.get_all_by_fields")
     def test_slug_not_found_raises_404(self, mock_get_all):
         """Empty result list must still raise 404 after the get_by_fields→get_all_by_fields refactor."""
-        from codemie.rest_api.routers.assistant import _get_assistant_by_slug_or_raise
+        from codemie.rest_api.routers.assistant._shared import _get_assistant_by_slug_or_raise
 
         mock_get_all.return_value = []
 
@@ -1415,7 +1422,7 @@ class TestSlugAmbiguityDetection:
     @patch("codemie.rest_api.models.assistant.Assistant.get_all_by_fields")
     def test_slug_without_project_single_match_returns_assistant(self, mock_get_all):
         """Primary happy path: no project supplied, exactly one match — must return that assistant."""
-        from codemie.rest_api.routers.assistant import _get_assistant_by_slug_or_raise
+        from codemie.rest_api.routers.assistant._shared import _get_assistant_by_slug_or_raise
 
         expected = self._make_assistant("project-alpha")
         mock_get_all.return_value = [expected]

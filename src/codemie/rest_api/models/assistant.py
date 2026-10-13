@@ -38,6 +38,7 @@ from codemie.core.models import (
     ChatMessage,
     CreatedByUser,
     FileNamesCountValidatorMixin,
+    ToolCallAction,
     ToolCallPolicy,
     ToolConfig,
 )
@@ -1584,3 +1585,9 @@ class VirtualAssistantChatRequest(FileNamesCountValidatorMixin, BaseModel):
         default=False,
         description='Always False for virtual assistants. Field is accepted but ignored.',
     )
+
+
+class ToolCallResumeRequest(BaseModel):
+    conversation_id: str
+    action: ToolCallAction
+    stream: bool = True

@@ -14,7 +14,7 @@
 
 """Schema validation tests for project budget router models."""
 
-from codemie.rest_api.routers.project_budget_router import (
+from codemie.rest_api.models.project_budget import (
     CategoryBudgetSpec,
     CategoryBudgetSpecUpdate,
 )

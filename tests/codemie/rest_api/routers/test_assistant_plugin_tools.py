@@ -44,7 +44,7 @@ def mock_auth_header():
 @pytest.fixture(autouse=True)
 def mock_authenticate(mock_user):
     """Mock authentication dependency."""
-    with patch("codemie.rest_api.routers.assistant.authenticate", return_value=mock_user) as mock:
+    with patch("codemie.rest_api.routers.assistant.toolkits.authenticate", return_value=mock_user) as mock:
         yield mock
 
 

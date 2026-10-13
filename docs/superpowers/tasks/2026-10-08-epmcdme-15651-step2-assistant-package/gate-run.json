@@ -1,0 +1,132 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15651_split-router-modules",
+  "head": "19832481f7ab81fcc21c41ce25c55b5d26ff78fb",
+  "runner": "poetry",
+  "started_at": "2026-10-09T07:32:30Z",
+  "completed_at": "2026-10-09T07:41:41Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1251,
+      "exit_code": 0,
+      "command": "make ruff",
+      "notes": "format left 2761 files unchanged; working tree not modified"
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 8376,
+      "exit_code": 0,
+      "command": "make build"
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 752,
+      "exit_code": 0,
+      "command": "make license-check",
+      "notes": "2469 files checked, 0 missing headers"
+    },
+    {
+      "id": "secrets",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 101159,
+      "exit_code": 2,
+      "command": "make gitleaks",
+      "notes": "6 findings (generic-api-key), all in untracked or gitignored local files, none in tracked/committed content. 4 known: .codex/config.toml, .mcp.json.lock, opencode.json, opencode.json.lock. 2 NEW vs known list: .codegraph/codegraph.db-wal (gitignored CodeGraph index WAL, lines 139414 and 151313; a local index copy of the same local config content, not part of the change). Secret values redacted."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 112454,
+      "exit_code": 2,
+      "command": "make test",
+      "notes": "1 failed, 19482 passed, 175 skipped. Only failure is the known unrelated test_filesystem_policy.py::test_guard_allows_matplotlib_png_generation. test_guard_allows_openpyxl_to_save_workbook passed in this run (failed in the sonar-local run). Also covers the pre-push hook pytest step (hook adds --ignore=tests/enterprise and coverage)."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "N/A",
+      "command": "make coverage",
+      "notes": "Skip if: coverage not requested by caller."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 136776,
+      "exit_code": 2,
+      "command": "make sonar-local",
+      "notes": "Exit 2 at coverage generation: its pytest run failed the two known test_filesystem_policy.py tests (matplotlib_png_generation, openpyxl_to_save_workbook), so sonar-scanner was never invoked. sonar-scanner is also not installed (known). Same step the pre-push hook runs (opt-in via CODEMIE_PREPUSH_ENABLED=true). Enable locally: install SonarScanner CLI or set SONAR_SCANNER_PATH, plus SONAR_* config."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "N/A",
+      "command": "make verify",
+      "notes": "Aggregate of ruff, license, gitleaks, test; each prerequisite was run as its own gate above."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "command": "make test-harness",
+      "notes": "Skip if: not opening an MR in this run; needs docker stack, superadmin fixtures and ~/.codemie/test-harness.json."
+    },
+    {
+      "id": "commit-msg",
+      "source": "hook",
+      "status": "PASS",
+      "command": "bash scripts/git-hooks/commit_msg.sh <msg-file> for each commit in origin/main..HEAD",
+      "duration_ms": 303,
+      "exit_code": 0,
+      "notes": "28 commits checked, 0 rejected"
+    },
+    {
+      "id": "codemie-gitleaks",
+      "source": "hook",
+      "status": "N/A",
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "notes": "Scans staged changes only; nothing is staged. Committed content is covered by the secrets gate (make gitleaks), whose findings are all outside tracked files."
+    },
+    {
+      "id": "step-pytest",
+      "source": "caller",
+      "status": "PASS",
+      "duration_ms": 82816,
+      "exit_code": 0,
+      "command": "poetry run pytest tests/codemie/rest_api/router_guards tests/codemie/rest_api/routers tests/unit/routers tests/codemie/rest_api/test_xwiki_index_endpoints.py tests/codemie/rest_api/test_main_retrieval_backend_disabled.py tests/codemie/service/budget -n 0 --show-capture=no -q",
+      "notes": "2144 passed, 9 skipped; caller-specified step 2 check"
+    },
+    {
+      "id": "import-check",
+      "source": "caller",
+      "status": "PASS",
+      "command": "for m in <modules>; do .venv/bin/python -c \"import $m\"; done",
+      "duration_ms": 154668,
+      "exit_code": 0,
+      "notes": "16 modules imported in fresh interpreters, all exit 0: codemie.rest_api.routers.assistant package, its 12 submodules (_ask, _inline_credentials, _shared, _sub_assistants, catalog, execution, generation, health, management, marketplace, toolkits, versions), codemie.rest_api.routers.utils, codemie.rest_api.routers.ide, codemie.rest_api.handlers.assistant_handlers; caller-specified step 2 check"
+    },
+    {
+      "id": "import-scheduler_run_service",
+      "source": "caller",
+      "status": "N/A",
+      "command": "python -c \"import codemie.service.assistant.scheduler_run_service\"",
+      "notes": "Module does not exist (no scheduler_run_service.py or package under src/codemie/service/assistant/); caller said 'if it exists'."
+    }
+  ],
+  "failures": {
+    "secrets": "Entropy:     4.016284\nFile:        /workspace/.codex/config.toml\nLine:        15\nFingerprint: /workspace/.codex/config.toml:generic-api-key:15\n\nFinding:     <REDACTED>\nSecret:      <REDACTED>\nRuleID:      generic-api-key\nEntropy:     4.696132\nFile:        /workspace/.mcp.json.lock\nLine:        11\nFingerprint: /workspace/.mcp.json.lock:generic-api-key:11\n\nFinding:     <REDACTED>\nSecret:      <REDACTED>\nRuleID:      generic-api-key\nEntropy:     4.016284\nFile:        /workspace/opencode.json\nLine:        26\nFingerprint: /workspace/opencode.json:generic-api-key:26\n\nFinding:     <REDACTED>\nSecret:      <REDACTED>\nRuleID:      generic-api-key\nEntropy:     4.016284\nFile:        /workspace/opencode.json.lock\nLine:        303\nFingerprint: /workspace/opencode.json.lock:generic-api-key:303\n\nFinding:     <REDACTED>\n[\u0006\u0017[\u0001Y\u0002classsrc/cod...\nSecret:      <REDACTED>\nRuleID:      generic-api-key\nEntropy:     3.581829\nFile:        /workspace/.codegraph/codegraph.db-wal\nLine:        139414\nFingerprint: /workspace/.codegraph/codegraph.db-wal:generic-api-key:139414\n\nFinding:     <REDACTED>\n\ufffd\u001b\u0001_\u0002variablesrc...\nSecret:      <REDACTED>\nRuleID:      generic-api-key\nEntropy:     3.717896\nFile:        /workspace/.codegraph/codegraph.db-wal\nLine:        151313\nFingerprint: /workspace/.codegraph/codegraph.db-wal:generic-api-key:151313\n\n7:34AM INF scanned ~172831150 bytes (172.83 MB) in 1m41s\n7:34AM WRN leaks found: 6\nmake: *** [Makefile:55: gitleaks] Error 1",
+    "unit": "\ntests/codemie/service/test_mcp_config_service_auth_validation.py: 11 warnings\n  /home/taras_spashchenko/EPAM/cm/codemie/src/codemie/service/mcp_config_service.py:281: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_auth_config_for_save(request.config)\n\ntests/codemie/service/test_mcp_config_service_auth_validation.py: 11 warnings\n  /home/taras_spashchenko/EPAM/cm/codemie/src/codemie/service/mcp_config_service.py:473: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_auth_config_for_save(mcp_config.config, config_id=config_id)\n\ntests/codemie/rest_api/routers/test_assistant.py::TestAskAssistantWithGuardrails::test_raises_exception_when_guardrails_block_content\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/rest_api/routers/test_assistant.py:145: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _ask_assistant(mock_assistant, raw_request, request, mock_user, background_tasks)\n\ntests/codemie/rest_api/routers/test_assistant.py::TestAskAssistantWithGuardrails::test_deduplicates_blocked_reasons\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/rest_api/routers/test_assistant.py:256: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _ask_assistant(mock_assistant, raw_request, request, mock_user, background_tasks)\n\ntests/codemie/rest_api/routers/test_assistant_marketplace.py::test_publish_assistant_after_quality_validation_reject_and_user_bypasses\n  /home/taras_spashchenko/EPAM/cm/codemie/src/codemie/rest_api/routers/assistant/marketplace.py:226: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    published_with_bypass = _llm_validate_on_marketplace_publish(raw_request, assistant, user, is_bypassing)\n\ntests/codemie/service/datasource/test_file_datasource_service.py::TestUploadAndPrepareFiles::test_combined_kept_and_new_over_limit_raises\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/datasource/test_file_datasource_service.py:297: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    FileDatasourceService.upload_and_prepare_files(\n\ntests/codemie/service/datasource/test_file_datasource_service.py::TestUploadAndPrepareFiles::test_raises_422_when_json_file_has_invalid_content\n  /home/taras_spashchenko/EPAM/cm/codemie/src/codemie/service/datasource/file_datasource_service.py:287: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_json_file(file.filename, content)\n\ntests/codemie/service/datasource/test_file_datasource_service.py::TestValidateJsonFile::test_raises_422_on_missing_content_key\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/datasource/test_file_datasource_service.py:416: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_json_file(\"file.json\", content)\n\ntests/codemie/service/datasource/test_file_datasource_service.py::TestValidateJsonFile::test_raises_422_on_missing_metadata_key\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/datasource/test_file_datasource_service.py:422: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_json_file(\"file.json\", content)\n\ntests/codemie/service/datasource/test_file_datasource_service.py::TestValidateJsonFile::test_raises_422_on_invalid_json_bytes\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/datasource/test_file_datasource_service.py:427: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_json_file(\"file.json\", b\"not-json-content\")\n\ntests/codemie/service/datasource/test_file_datasource_service.py::TestUploadAndPrepareFilesZip::test_upload_and_prepare_files_zip_validates_json_entries\n  /home/taras_spashchenko/EPAM/cm/codemie/src/codemie/service/datasource/file_datasource_service.py:214: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_json_file(name, content)\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_matplotlib_png_generation\n==== 1 failed, 19482 passed, 175 skipped, 261 warnings in 108.48s (0:01:48) ====\nmake: *** [Makefile:31: test] Error 1",
+    "sonar": "  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:207: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._select_candidates(\"source\", {SettingType.PROJECT}, [\"jira-prod\", \"ghost-alias\"])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestSelectCandidatesFiltering::test_alias_excluded_by_type_filter_raises_type_mismatch_error\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:217: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._select_candidates(\"source\", {SettingType.PROJECT}, [\"user-cred\"])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestSelectCandidatesFiltering::test_subsystem_managed_alias_in_list_raises_reserved_error\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:229: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._select_candidates(\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestSelectCandidatesFiltering::test_alias_genuinely_absent_from_project_raises_422\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:241: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._select_candidates(\"source\", {SettingType.PROJECT}, [\"ghost-alias\"])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestSelectCandidatesFiltering::test_empty_list_raises_422\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:249: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._select_candidates(\"source\", {SettingType.PROJECT}, [])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestTransferNonTransferableInList::test_copy_blocked_alias_in_list_raises_422\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:282: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService.transfer(\"source\", \"target\", TransferMode.COPY, _ALL_TYPES, [\"gitlab-hook\"])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestTransferBothFlagsFalse::test_both_flags_false_raises_422\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:308: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService.transfer(\"source\", \"target\", TransferMode.MOVE, set(), None)\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestValidateProjects::test_rejects_same_source_and_target\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:347: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._validate_projects(\"same\", \"same\")\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestValidateAliasesPresent::test_rejects_row_with_empty_alias\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:391: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._validate_aliases_present([row])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestTransfer::test_null_alias_trigger_row_is_rejected_before_response_construction\n  /home/taras_spashchenko/EPAM/cm/codemie/src/codemie/service/settings/settings_transfer_service.py:372: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    cls._validate_aliases_present(candidates)\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n================================ tests coverage ================================\n_______________ coverage: platform linux, python 3.12.13-final-0 _______________\n\nCoverage XML written to file coverage.xml\n=========================== short test summary info ============================\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_matplotlib_png_generation\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_openpyxl_to_save_workbook\n==== 2 failed, 19481 passed, 175 skipped, 260 warnings in 132.38s (0:02:12) ====\n[sonar-local] coverage generation exited with code 1\nmake: *** [Makefile:68: sonar-local] Error 1"
+  }
+}

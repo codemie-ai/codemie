@@ -1,0 +1,3 @@
+# Deferred from code review — 2026-10-09-epmcdme-15651-step4-analytics-package (2026-10-09)
+
+- **No router-level tests for the 11 /routing/* endpoints** — `src/codemie/rest_api/routers/analytics/routing.py:39` — `_ensure_routing_analytics_enabled` (the routingAnalytics 404 gate) and the 11 handlers' AnalyticsService wiring are exercised by no test; only the OpenAPI snapshot and route-order guards touch them, and those pin paths and schemas, not the gate or handler bodies. Pre-existing: no test covered these routes before the move, and the task is move-only with no new tests, so the gap is not introduced by this change.

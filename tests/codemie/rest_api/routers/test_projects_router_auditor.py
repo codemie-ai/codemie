@@ -46,28 +46,28 @@ def _make_auditor():
 class TestProjectsRouterAuditor:
     def test_manageable_project_names_includes_auditor(self):
         """Auditor should see all projects as manageable (for spending summaries)."""
-        from codemie.rest_api.routers.projects import _manageable_project_names
+        from codemie.service.project.project_spending_service import manageable_project_names
 
         auditor = _make_auditor()
         enriched = [
             {"name": "p1", "is_project_admin": False, "project_type": "shared"},
             {"name": "p2", "is_project_admin": True, "project_type": "shared"},
         ]
-        result = _manageable_project_names(enriched, auditor)
+        result = manageable_project_names(enriched, auditor)
         assert "p1" in result
         assert "p2" in result
 
     def test_can_see_project_spending_true_for_auditor(self):
         """Auditor should be able to see project spending."""
-        from codemie.rest_api.routers.projects import _can_see_project_spending
+        from codemie.service.project.project_spending_service import can_see_project_spending
 
         auditor = _make_auditor()
         project_detail = {"project_type": "shared", "is_project_admin": False}
-        assert _can_see_project_spending(auditor, project_detail) is True
+        assert can_see_project_spending(auditor, project_detail) is True
 
     def test_can_see_project_spending_false_for_regular_user(self):
         """Regular user without project admin should not see spending."""
-        from codemie.rest_api.routers.projects import _can_see_project_spending
+        from codemie.service.project.project_spending_service import can_see_project_spending
 
         with patch.object(config, 'ENV', 'dev'), patch.object(config, 'ENABLE_USER_MANAGEMENT', True):
             regular = User(
@@ -79,7 +79,7 @@ class TestProjectsRouterAuditor:
                 admin_project_names=[],
             )
         project_detail = {"project_type": "shared", "is_project_admin": False}
-        assert _can_see_project_spending(regular, project_detail) is False
+        assert can_see_project_spending(regular, project_detail) is False
 
 
 class TestProjectsRouterAuditorRouteLevel:
@@ -89,14 +89,14 @@ class TestProjectsRouterAuditorRouteLevel:
     or evaluate the inline can_access disjunction).
     """
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_session")
-    @patch("codemie.rest_api.routers.projects.project_visibility_service")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.crud.get_session")
+    @patch("codemie.rest_api.routers.projects.crud.project_visibility_service")
     @pytest.mark.anyio
     async def test_list_projects_passes_is_admin_true_for_auditor(
         self, mock_visibility_service, mock_get_session, mock_config
     ):
-        from codemie.rest_api.routers.projects import list_projects
+        from codemie.rest_api.routers.projects.crud import list_projects
 
         mock_config.ENABLE_USER_MANAGEMENT = True
         mock_get_session.return_value.__enter__.return_value = MagicMock()
@@ -119,11 +119,11 @@ class TestProjectsRouterAuditorRouteLevel:
         call_kwargs = mock_visibility_service.list_visible_projects_paginated.call_args.kwargs
         assert call_kwargs["is_admin"] is True
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_async_session")
-    @patch("codemie.rest_api.routers.projects.get_session")
-    @patch("codemie.rest_api.routers.projects.application_repository")
-    @patch("codemie.rest_api.routers.projects._spend_repo")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.spending.get_async_session")
+    @patch("codemie.rest_api.routers.projects.spending.get_session")
+    @patch("codemie.rest_api.routers.projects.spending.application_repository")
+    @patch("codemie.rest_api.routers.projects.spending.spend_repo")
     @pytest.mark.anyio
     async def test_get_project_spends_allows_auditor_with_no_other_access(
         self, mock_spend_repo, mock_app_repo, mock_get_session, mock_get_async_session, mock_config
@@ -131,7 +131,7 @@ class TestProjectsRouterAuditorRouteLevel:
         """Auditor has no admin_project_names and isn't a project/application admin,
         yet must still pass the can_access check per spec's platform-wide read access.
         """
-        from codemie.rest_api.routers.projects import get_project_spends
+        from codemie.rest_api.routers.projects.spending import get_project_spends
 
         mock_config.ENABLE_USER_MANAGEMENT = True
         mock_project = MagicMock()
@@ -153,14 +153,14 @@ class TestProjectsRouterAuditorRouteLevel:
 
         assert result.pagination.total == 0
 
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.get_session")
-    @patch("codemie.rest_api.routers.projects.project_visibility_service")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.crud.get_session")
+    @patch("codemie.rest_api.routers.projects.crud.project_visibility_service")
     @pytest.mark.anyio
     async def test_get_project_detail_passes_is_admin_true_for_auditor(
         self, mock_visibility_service, mock_get_session, mock_config
     ):
-        from codemie.rest_api.routers.projects import get_project_detail
+        from codemie.rest_api.routers.projects.crud import get_project_detail
 
         mock_config.ENABLE_USER_MANAGEMENT = True
         mock_get_session.return_value.__enter__.return_value = MagicMock()
@@ -185,13 +185,13 @@ class TestProjectsRouterAuditorRouteLevel:
         call_kwargs = mock_visibility_service.get_visible_project_with_members.call_args.kwargs
         assert call_kwargs["is_admin"] is True
 
-    @patch("codemie.rest_api.routers.projects.project_budget_assignment_repository")
-    @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.budget_repository")
-    @patch("codemie.rest_api.routers.projects._spend_repo")
-    @patch("codemie.rest_api.routers.projects.get_async_session")
-    @patch("codemie.rest_api.routers.projects.get_session")
-    @patch("codemie.rest_api.routers.projects.project_visibility_service")
+    @patch("codemie.service.project.project_spending_service.project_budget_assignment_repository")
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.service.project.project_spending_service.budget_repository")
+    @patch("codemie.service.project.project_spending_service.spend_repo")
+    @patch("codemie.service.project.project_spending_service.get_async_session")
+    @patch("codemie.rest_api.routers.projects.crud.get_session")
+    @patch("codemie.rest_api.routers.projects.crud.project_visibility_service")
     @pytest.mark.anyio
     async def test_get_project_detail_include_spending_true_includes_spending_for_auditor(
         self,
@@ -206,7 +206,7 @@ class TestProjectsRouterAuditorRouteLevel:
         """EPMCDME-10930 spec 5.2: GET /v1/projects/{name}?include_spending=true actually
         returns spending data for a pure auditor (not just is_admin=True passed downstream).
         """
-        from codemie.rest_api.routers.projects import get_project_detail
+        from codemie.rest_api.routers.projects.crud import get_project_detail
 
         mock_project_budget_repo.get_assigned_budget_summaries_for_projects = AsyncMock(return_value={})
 

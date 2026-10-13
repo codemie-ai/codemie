@@ -35,9 +35,9 @@ def assistant():
 
 @pytest.fixture(autouse=True)
 def override_dependency(user):
-    from codemie.rest_api.routers import assistant as assistant_router
+    from codemie.rest_api.security.authentication import authenticate
 
-    app.dependency_overrides[assistant_router.authenticate] = lambda: user
+    app.dependency_overrides[authenticate] = lambda: user
     yield
     app.dependency_overrides = {}
 
@@ -48,7 +48,7 @@ async def test_react_to_assistant_invalid_reaction():
     assistant_id = "456"
     reaction_data = {"reaction": "invalid_reaction"}  # Invalid reaction type
 
-    with patch("codemie.rest_api.routers.assistant.Assistant.find_by_id", return_value=MagicMock()):
+    with patch("codemie.rest_api.routers.assistant.marketplace.Assistant.find_by_id", return_value=MagicMock()):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
             response = await ac.post(
@@ -67,7 +67,7 @@ async def test_react_to_nonexistent_assistant():
     assistant_id = "nonexistent"
     reaction_data = {"reaction": "like"}
 
-    with patch("codemie.rest_api.routers.assistant.Assistant.find_by_id", return_value=None):
+    with patch("codemie.rest_api.routers.assistant.marketplace.Assistant.find_by_id", return_value=None):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
             response = await ac.post(
@@ -85,7 +85,7 @@ async def test_remove_reactions_nonexistent_assistant():
     """Test removing reactions from a non-existent assistant."""
     assistant_id = "nonexistent"
 
-    with patch("codemie.rest_api.routers.assistant.Assistant.find_by_id", return_value=None):
+    with patch("codemie.rest_api.routers.assistant.marketplace.Assistant.find_by_id", return_value=None):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
             response = await ac.delete(

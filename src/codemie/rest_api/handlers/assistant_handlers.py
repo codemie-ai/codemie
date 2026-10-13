@@ -24,7 +24,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, List
 
 if TYPE_CHECKING:
-    from codemie.rest_api.routers.assistant import ToolCallResumeRequest
+    from codemie.rest_api.models.assistant import ToolCallResumeRequest
 
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from pydantic import BaseModel

@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "generated": "2026-10-08T12:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 1, "label": "XS" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 17,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 26,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Five router modules (assistant, budget_router, cost_centers, project_budget_router, projects) each shed their request/response classes into five models modules (assistant, budget, cost_center, project, project_budget); importers re-pointed in budget_service, project_budget_service and assistant_handlers. Four or more components, but move-only with no new abstractions, so L rather than XL." },
+    { "dimension": "file_change_estimate", "reason": "26 files per diffstat (4 new model modules, 9 modified source files, 13 modified test files incl. OpenAPI baseline) maps to XXL (16+) by the actual-mode file-count rule. Most edits are mechanical import re-points, so this dimension overstates effort relative to the nearest M-band calibration example (epmcdme-10203, 6 files); the total still lands in M." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

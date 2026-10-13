@@ -9,7 +9,7 @@ Keep HTTP concerns in routers, business orchestration in services, and persisten
 | Calling database code directly from routers | Delegate from `src/codemie/rest_api/routers/` to `src/codemie/service/` |
 | Returning HTTP response objects from repositories | Return domain/data objects and let upper layers format |
 
-Evidence: routers are registered from `src/codemie/rest_api/main.py:658`; service files live under `src/codemie/service/assistant_service.py`; repositories live under `src/codemie/repository/application_repository.py`.
+Evidence: routers are registered from `src/codemie/rest_api/main.py:1030`; service files live under `src/codemie/service/assistant_service.py`; repositories live under `src/codemie/repository/application_repository.py`.
 
 ## Startup And Router Ownership
 
@@ -20,7 +20,7 @@ Register API surfaces centrally and keep feature startup side effects explicit.
 | Hidden route registration in service modules | Add routers through the main FastAPI app registration area |
 | Feature flags scattered across routers | Gate optional routers where the app is assembled |
 
-Evidence: the FastAPI app is created at `src/codemie/rest_api/main.py:629`; optional user-management routers are gated at `src/codemie/rest_api/main.py:706`.
+Evidence: the FastAPI app is created at `src/codemie/rest_api/main.py:1000`; optional user-management routers are gated at `src/codemie/rest_api/main.py:1092`.
 
 ## Shared Core
 
@@ -31,4 +31,4 @@ Put cross-cutting exceptions, constants, config, and utilities in core/config mo
 | Defining duplicate exception types per feature | Use shared exceptions from `codemie.core` |
 | Reading environment variables directly throughout code | Use config modules under `src/codemie/configs/` |
 
-Evidence: API exception handlers consume shared exceptions at `src/codemie/rest_api/main.py:804`.
+Evidence: API exception handlers consume shared exceptions at `src/codemie/rest_api/main.py:1192`.

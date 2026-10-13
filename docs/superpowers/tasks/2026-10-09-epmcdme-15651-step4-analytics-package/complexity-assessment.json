@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "task": "EPMCDME-15651 step 4: convert the 3,113-line routers/analytics.py (85 wrappers, prefix /v1/analytics) into a move-only analytics/ package of ~8 route modules plus private _common, a spending support module and a router-only __init__, and retarget 51 patch strings and 75 imports across 7 test files.",
+  "generated": "2026-10-09T12:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 18,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "About 10 new router modules (usage, activity, cli, cli_insights, cli_enriched_users, spending, leaderboard, routing) plus private _common and a spending support module (291-line helper cluster); 85 routes re-homed, 4 router-local Pydantic classes, shared handle_analytics_errors/_create_response/AnalyticsQueryParams. Scored XL on component count but all inside one layer and behavior-preserving (move-only), so no extra refactor bump." },
+    { "dimension": "technical_risk", "reason": "Closest pattern is the step 3 index/ package (private _common, route-order dump script, stale-patch detector, byte-identical bodies). It does not cover the security-sensitive part: 11 leaderboard routes carry route-level access dependencies whose order (authenticate, access check, feature flag; CR-004 403-before-503) must survive, inline authorization helpers (_authorize_admin_budget_view, _resolve_admin_budget_subject, leaderboard user-detail check) and feature gates move, and the guard route dump holds only path and methods, so a one-off dependency-order check is needed. Also 11 routing routes have no tests and whole-name patches bound to the wrong module can pass silently. Rollback is a trivial revert, so no further bump. Calibration: step 3 actual M 17, step 2 actual M 18." },
+    { "dimension": "file_change_estimate", "reason": "About 11 new files (package __init__, _common, spending support, 8 route modules) plus analytics.py removed and 7 test files edited, roughly 19 files touched; new-file count is above the XL band but test edits are mechanical string and import retargeting, and main.py and baselines are expected unchanged. Scored XL, not XXL." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped M to L: security-sensitive access dependencies and authorization helpers move, and the closest precedent (step 3) plus the guard dump do not cover per-route dependency order"
+  ],
+  "split_recommendation": null
+}

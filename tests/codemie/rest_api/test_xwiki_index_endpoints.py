@@ -74,7 +74,7 @@ def test_create_route_forwards_setting_id_to_credential_resolution():
     the health check just validated."""
     import inspect
 
-    from codemie.rest_api.routers.index import index_knowledge_base_xwiki
+    from codemie.rest_api.routers.index.kb_xwiki import index_knowledge_base_xwiki
 
     source = inspect.getsource(index_knowledge_base_xwiki)
     creds_call = source.split("get_xwiki_creds", 1)[1].split(")", 1)[0]
@@ -86,7 +86,7 @@ def test_update_route_rejects_a_datasource_of_another_type():
     a guard the reindex path dereferences kb_index.xwiki and 500s."""
     import inspect
 
-    from codemie.rest_api.routers.index import update_knowledge_base_xwiki
+    from codemie.rest_api.routers.index.kb_xwiki import update_knowledge_base_xwiki
 
     source = inspect.getsource(update_knowledge_base_xwiki)
     assert "if not kb_index.xwiki:" in source
@@ -100,12 +100,10 @@ def test_update_route_guards_against_missing_xwiki_creds_on_full_reindex():
     from unittest.mock import MagicMock, patch
 
     from codemie.core.exceptions import ExtendedHTTPException
-    from codemie.rest_api.routers.index import (
-        INCORRECT_DATASOURCE_SETUP_MESSAGE,
-        update_knowledge_base_xwiki,
-    )
+    from codemie.rest_api.routers.index.kb_xwiki import update_knowledge_base_xwiki
+    from codemie.rest_api.routers.index._common import INCORRECT_DATASOURCE_SETUP_MESSAGE
 
-    _router = "codemie.rest_api.routers.index"
+    _router = "codemie.rest_api.routers.index.kb_xwiki"
     kb_index = MagicMock()
     kb_index.xwiki = MagicMock()  # truthy — passes the type guard at the top of the handler
 
@@ -132,7 +130,7 @@ def test_update_route_reindexes_under_the_new_project_name():
     the row rebuilds the previous Elasticsearch index."""
     import inspect
 
-    from codemie.rest_api.routers.index import update_knowledge_base_xwiki
+    from codemie.rest_api.routers.index.kb_xwiki import update_knowledge_base_xwiki
 
     source = inspect.getsource(update_knowledge_base_xwiki)
     assert "project_name=request.new_project_name or request.project_name" in source

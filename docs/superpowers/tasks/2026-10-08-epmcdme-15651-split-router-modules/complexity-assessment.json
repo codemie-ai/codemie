@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "task": "Split the five oversized FastAPI router modules (assistant, analytics, index, projects, conversation) into packages of per-concern modules with no API change, via guard tests, a models move, five split steps and per-package service-helper moves (EPMCDME-15651).",
+  "generated": "2026-10-08T12:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 6, "label": "XXL" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 24,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Five router modules (about 12k lines, 208 routes) become packages, plus rest_api/models (about 70 classes), service/budget, rest_api/handlers and the cross-router importers (ide, assistant_mapping, assistant_prompt_variable_mapping). New abstractions: package-style routers with _shared/_common modules (none exist today), a fourth projects module, and the layering of services away from routers. Base XL, bumped to XXL by the large-subsystem refactor flag. The OpenAPI contract and route registration order are shared contracts that must stay byte-identical."
+    },
+    {
+      "dimension": "requirements_clarity",
+      "reason": "Ticket has a target split, delivery plan and eight criteria, but the technical analysis found criteria that conflict with the tree: criterion 2 (identical OpenAPI) versus step 1 renaming the four same-named PaginationInfo components; criterion 1 (handlers about 60 lines) versus move-only criterion 7 (at least 25 handlers over 60 lines); criterion 4 (export only router) versus the two-router modules and tests importing handlers; criterion 5 versus an assistant/_shared module that is still another router's private module, with services arriving only in step 7; the '40 pairs' baseline is unverified (16 reproduced). Design decisions open, rework risk."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "Closest existing pattern is the flat routers/<resource>.py module registered from main.py; no package-style router, no route-order test and no OpenAPI snapshot exist, so the pattern does not cover the security-relevant aspects: Depends(authenticate) hoisted onto a combined router and the access check (_check_user_can_access_assistant) relocated to _shared. A dropped dependency would expose endpoints without authentication, and 16+ overlapping route pairs (including {x:path} collisions) depend on registration order. Criterion 3 enumerates these order cases and no test template covers them, so Technical Risk is bumped L to XL once (auth relocation and route order are the same uncovered gap). Not XXL: behaviour-preserving, no data change, each of the 12 MRs reverts cleanly. About 700 mock.patch targets must follow each name's new owner, so retargets are not 1:1 (Ability, config, logger, AnalyticsService)."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "Five source modules are replaced by roughly 40 new package modules; about 15 src files change for the models move; service and handler files change for import removal and helper moves; 30+ router test files and tests outside tests/codemie/rest_api/routers are retargeted. Well over 16 modified and 6 new files across rest_api/routers, rest_api/models, service, handlers and tests. Volume note: the total lands in the L band because dependencies and layers are low, but the technical analysis estimates about 17 engineer-days in 12 sequential MRs (steps 0, 1, 2 to 6, and step 7 per package), which exceeds the L typical cycle. The same analysis recommends this run implement step 0 (guard tests) only; the caller should treat that step plan as the delivery constraint."
+    }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from XL to XXL: refactor of large router subsystems (about 12k lines across five modules, plus models, services and handlers)",
+    "Technical Risk bumped from L to XL: acceptance criteria enumerate route-precedence cases and no existing test template covers them; the same gap covers auth dependency and access-check relocation (counted once, not stacked)"
+  ],
+  "split_recommendation": null
+}

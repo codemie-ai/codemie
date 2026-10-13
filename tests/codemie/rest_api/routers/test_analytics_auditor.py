@@ -37,7 +37,7 @@ def _make_auditor():
 class TestAnalyticsAuditorGuards:
     def test_authorize_admin_budget_view_allows_auditor(self):
         """Auditor caller should not raise in _authorize_admin_budget_view."""
-        from codemie.rest_api.routers.analytics import _authorize_admin_budget_view
+        from codemie.rest_api.routers.analytics._spending_support import _authorize_admin_budget_view
 
         auditor = _make_auditor()
         # Should not raise (returns None)
@@ -46,7 +46,7 @@ class TestAnalyticsAuditorGuards:
 
     def test_authorize_admin_budget_view_still_raises_for_regular_user(self):
         """Regular user without admin_project_names raises in _authorize_admin_budget_view."""
-        from codemie.rest_api.routers.analytics import _authorize_admin_budget_view
+        from codemie.rest_api.routers.analytics._spending_support import _authorize_admin_budget_view
         from codemie.core.exceptions import ExtendedHTTPException
 
         with patch.object(config, 'ENV', 'dev'), patch.object(config, 'ENABLE_USER_MANAGEMENT', True):
@@ -68,15 +68,15 @@ class TestAnalyticsAuditorCrossProjectAccess:
     """
 
     @pytest.mark.asyncio
-    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
+    @patch("codemie.rest_api.routers.analytics.leaderboard.AnalyticsService")
     async def test_leaderboard_user_detail_allows_auditor(self, mock_service_class):
-        from codemie.rest_api.routers.analytics import get_leaderboard_user_detail
+        from codemie.rest_api.routers.analytics.leaderboard import get_leaderboard_user_detail
 
         mock_service = AsyncMock()
         mock_service.get_leaderboard_user_detail.return_value = {}
         mock_service_class.return_value = mock_service
 
-        with patch("codemie.rest_api.routers.analytics._create_response", return_value=MagicMock()):
+        with patch("codemie.rest_api.routers.analytics.leaderboard._create_response", return_value=MagicMock()):
             await get_leaderboard_user_detail(user_id="target-1", user=_make_auditor())
 
         mock_service.get_leaderboard_user_detail.assert_called_once()

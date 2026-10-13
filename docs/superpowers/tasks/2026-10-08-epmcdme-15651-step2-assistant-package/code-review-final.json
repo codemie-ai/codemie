@@ -1,0 +1,67 @@
+{
+  "decision": "request-changes",
+  "rationale": "AC 5 is partially unmet in tests (decision_needed: its wording contradicts the spec's own test-import rule) and the newly public check_user_can_access_assistant lacks a return annotation; AC 2, 6, 7 and 8 still need Stage 7 runtime evidence. The diff is oversized and no content-search tool was available, so reachability was read only for blocking and top-impact candidates and the stale-reference sweep relies on the acceptance lens, hence low confidence. 19 pre-existing defects in verbatim-moved code were deferred to code-review-deferred.md (e.g. unauthenticated conversation_metrics, body-less publish returning 500, partial sub-assistant publish, typing debt) and 12 candidates were dismissed as noise.",
+  "confidence": "low",
+  "risk_flags": ["security", "public-api"],
+  "business_review": [
+    {"kind": "spec", "item": "Purpose: the two access helpers move to routers/utils.py as public get_assistant_by_id_or_raise / check_user_can_access_assistant (the only renames)", "status": "pass", "notes": "Defined at routers/utils.py:103,118; bodies and messages identical to the removed defs."},
+    {"kind": "spec", "item": "Scope: 8 route modules hold the 36 routes in the old include order", "status": "pass", "notes": "36 decorators removed and added, per-module 6/1/6/3/6/5/5/4; include order equals old order. Spec arithmetic misstates execution (6 routes)."},
+    {"kind": "spec", "item": "Scope: 4 private modules (_shared, _ask, _sub_assistants, _inline_credentials) hold the listed helpers", "status": "pass", "notes": "Placement matches the scope list; marketplace-only helpers stay in marketplace.py."},
+    {"kind": "spec", "item": "Constraint: bodies, decorators, docstrings, function-local imports byte-identical; only imports and new-file headers change", "status": "pass", "notes": "Per-def line spans equal; 31 function-local imports reappear one-for-one."},
+    {"kind": "spec", "item": "Constraint: __init__.py holds the combined router, one include_router per module, __all__ = [router], nothing else", "status": "pass", "notes": "routers/assistant/__init__.py defines no class or function."},
+    {"kind": "spec", "item": "Constraint: route modules use bare APIRouter(); versions keep tags Assistant + Assistant Versioning", "status": "pass", "notes": "Bare router in all 8 modules; versions decorators keep their extra tag."},
+    {"kind": "spec", "item": "Constraint: helpers keep names; underscore names imported only from private modules, never from a router-defining module", "status": "pass", "notes": "src conforms; test-side imports tracked under AC 5."},
+    {"kind": "spec", "item": "Constraint: routers/utils.py bodies unchanged; Ability and Assistant imported at module level", "status": "pass", "notes": "User under TYPE_CHECKING is safe: utils.py has from __future__ import annotations."},
+    {"kind": "spec", "item": "Constraint: ide.py and the two mapping routers import from execution, handlers and utils", "status": "pass", "notes": "Import lines and call sites updated; no residual underscore import."},
+    {"kind": "spec", "item": "Constraint: conversation_metrics keeps no auth dependency; combined router keeps dependencies=[]", "status": "pass", "notes": "Preserved as specified."},
+    {"kind": "spec", "item": "Constraint: test patch rules (resolving module, public helper names, authenticate override sites, defining-submodule imports)", "status": "pass", "notes": "All listed patch/import/docstring retargets present in the test diff."},
+    {"kind": "spec", "item": "OpenAPI: PublishToMarketplaceRequest and ReactionRequest keys plus two $refs renamed in place", "status": "pass", "notes": "Exactly four one-line hunks in openapi.json."},
+    {"kind": "spec", "item": "OpenAPI: BuiltinSubagentListItem and SystemPromptValidation* keys unchanged", "status": "pass", "notes": "No openapi.json hunk touches them."},
+    {"kind": "spec", "item": "AC 1: assistant.py gone; __init__.py plus 12 modules, each at most 500 lines with Apache header; main.py unchanged", "status": "pass", "notes": "Largest module management.py at 481 lines; main.py not in changed files."},
+    {"kind": "spec", "item": "AC 2: (method, path, name) sequence of the 36 routes equals pre-move; conversation_metrics unauthenticated; combined router dependencies empty", "status": "pending-stage-7", "notes": "Static structure matches; before/after app.routes comparison is runtime evidence."},
+    {"kind": "spec", "item": "AC 3: git diff --color-moved shows only moved blocks, imports, headers and the two renames", "status": "pass", "notes": "Equal per-def spans; extra lines are imports, router creation, include_router, __all__, headers."},
+    {"kind": "spec", "item": "AC 4: no _get_assistant_by_id_or_raise / _check_user_can_access_assistant left; public helpers defined only in routers/utils.py", "status": "pass", "notes": "Repo-wide grep (acceptance lens) returns 0 matches."},
+    {"kind": "spec", "item": "AC 5: no underscore import from a router-defining module; nothing outside the package imports except router and public handlers", "status": "partial", "notes": "src conforms. Tests import underscore helpers from execution, catalog, management as the spec's test rule requires; AC wording conflicts (CR-001)."},
+    {"kind": "spec", "item": "AC 6: 13 package modules and 4 dependants import cleanly alone in a fresh interpreter; guarded app builds hermetically", "status": "pending-stage-7", "notes": "No import cycle visible; fresh-interpreter imports and app build are runtime evidence."},
+    {"kind": "spec", "item": "AC 7: old baseline plus the four renames equals new openapi.json; route_precedence.json byte-identical; guards pass", "status": "pending-stage-7", "notes": "Diff is exactly the four approved lines; guard run is runtime evidence."},
+    {"kind": "spec", "item": "AC 8: make ruff passes; router, unit-router, budget and router_guards suites pass", "status": "pending-stage-7", "notes": "Implementation and test edits present; lint and suite results are Stage 7 evidence."},
+    {"kind": "spec", "item": "AC 9: handoff says the eventual MR must ask a reviewer to post /sanity", "status": "pass", "notes": "local/router-split/HANDOFF.md line 49 (gitignored, not in the diff)."},
+    {"kind": "spec", "item": "Non-goal: no class moved to rest_api/models/; CategoriesRequest not deleted", "status": "pass", "notes": "All 6 classes stay in route modules; CategoriesRequest kept in catalog.py."},
+    {"kind": "spec", "item": "Non-goal: no helper renamed beyond the two; endpoint names, paths, tags, operationIds, response models unchanged", "status": "pass", "notes": "Only openapi.json change is the two approved schema key renames."},
+    {"kind": "spec", "item": "Non-goal: no helpers moved into service/; no handler shortened; no behavior change", "status": "pass", "notes": "No service/ files in the diff; per-def spans unchanged."},
+    {"kind": "spec", "item": "Non-goal: no new tests, no test-file splitting", "status": "pass", "notes": "No added test function or class; test hunks are patch strings and imports only."},
+    {"kind": "spec", "item": "Non-goal: no main.py, steps 3 to 6 or guard test code changes (only regenerated openapi.json)", "status": "pass", "notes": "Changed files contain no main.py and no guard code."},
+    {"kind": "spec", "item": "Non-goal: no commits, push or MR beyond the flow's own", "status": "na", "notes": "Process constraint, not observable in the frozen diff."}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "13 subjects in diff_base..HEAD all match EPMCDME-####: Description with a capitalised description."},
+    {"kind": "code-quality", "status": "partial", "notes": "12 new modules lack __future__ annotations; 12 Optional[...]/List[...] copied verbatim; check_user_can_access_assistant lacks a return type. Headers ok, max 481 lines."},
+    {"kind": "security", "status": "pass", "notes": "Route set identical, Depends(authenticate) count 35 on both sides, access-check calls preserved, logger count unchanged, no credentials logged, no unsafe SQL or path building."}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "decision",
+      "severity": "critical",
+      "triage": "decision_needed",
+      "file": "docs/superpowers/tasks/2026-10-08-epmcdme-15651-step2-assistant-package/spec.md",
+      "line": 46,
+      "title": "AC 5 conflicts with spec test-import rule",
+      "problem": "AC 5 forbids any module importing an underscore name from a router-defining module, yet Scope keeps _resolve_effective_llm_model, _enrich_toolkit_settings_config, _create_settings_config_lookup, _filter_invalid_datasources, _ask_assistant_resume and _resume_tool_call in route modules and the test rule says imports take the defining submodule. Tests (test_assistant.py, test_assistant_filter_invalid_datasources.py, test_tool_call_resume.py, test_toolkit_settings_config.py) import them from assistant.catalog, .management and .execution, so AC 5 as written is partially unmet.",
+      "impact": "Shipping as is leaves a required criterion partially unmet. Satisfying it literally would change Scope and break the byte-identical move, so the intended rule needs a human call.",
+      "recommendation": "Human decision needed: either scope AC 5 to src/ (tests then keep importing underscore helpers from their defining route module, as the spec's test rule says), or move those helpers into a private module and re-point the tests. Record the outcome in spec.md."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/utils.py",
+      "line": 118,
+      "title": "Public helper lacks return annotation",
+      "problem": "check_user_can_access_assistant, made public by this change, annotates its parameters but declares no return type; code-quality.md requires explicit parameter and return types on public functions.",
+      "impact": "Documented typing standard is broken on a helper now shared across routers and services; the standards audit marks it workflow-blocking. Reachability is static: the function is defined and called from the moved routers.",
+      "recommendation": "Annotate the return type: def check_user_can_access_assistant(user: User, assistant: Assistant, action_name: str, action_type: Action) -> None:"
+    }
+  ]
+}

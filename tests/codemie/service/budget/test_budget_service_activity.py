@@ -61,7 +61,7 @@ def _make_budget(**kwargs) -> Budget:
 
 
 def _make_create_request(**kwargs):
-    from codemie.rest_api.routers.budget_router import BudgetCreateRequest
+    from codemie.rest_api.models.budget import BudgetCreateRequest
 
     defaults = {
         "budget_id": "new-budget",
@@ -76,7 +76,7 @@ def _make_create_request(**kwargs):
 
 
 def _make_update_request(**kwargs):
-    from codemie.rest_api.routers.budget_router import BudgetUpdateRequest
+    from codemie.rest_api.models.budget import BudgetUpdateRequest
 
     defaults = {
         "soft_budget": 15.0,
@@ -410,7 +410,7 @@ def _make_project_service():
 
 
 def _make_project_budget_create_request(**kwargs):
-    from codemie.rest_api.routers.project_budget_router import ProjectBudgetCreateRequest
+    from codemie.rest_api.models.project_budget import ProjectBudgetCreateRequest
 
     defaults = {
         "budget_id": "proj-budget",

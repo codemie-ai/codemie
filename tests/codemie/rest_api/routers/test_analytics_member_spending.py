@@ -74,7 +74,7 @@ def _mock_session_ctx() -> MagicMock:
 def _patch_lookup(db_user, project_names):
     """Patch the sync user/membership lookup the route runs via asyncio.to_thread."""
     return patch(
-        "codemie.rest_api.routers.analytics.asyncio.to_thread",
+        "codemie.rest_api.routers.analytics.spending.asyncio.to_thread",
         new_callable=AsyncMock,
         return_value=(db_user, project_names),
     )
@@ -104,13 +104,13 @@ class TestPaginationDefaults:
     """The declared pagination defaults are part of the public contract."""
 
     def test_user_project_spending_defaults(self):
-        from codemie.rest_api.routers.analytics import get_user_project_spending
+        from codemie.rest_api.routers.analytics.spending import get_user_project_spending
 
         assert _declared_default(get_user_project_spending, "page") == 0
         assert _declared_default(get_user_project_spending, "per_page") == config.ANALYTICS_DEFAULT_PAGE_SIZE
 
     def test_project_member_spending_defaults(self):
-        from codemie.rest_api.routers.analytics import get_project_member_spending
+        from codemie.rest_api.routers.analytics.spending import get_project_member_spending
 
         assert _declared_default(get_project_member_spending, "page") == 0
         assert _declared_default(get_project_member_spending, "per_page") == config.ANALYTICS_DEFAULT_PAGE_SIZE
@@ -121,7 +121,7 @@ class TestUserProjectSpendingEndpoint:
 
     @pytest.mark.asyncio
     async def test_returns_200_with_empty_rows_when_user_has_no_projects(self):
-        from codemie.rest_api.routers.analytics import get_user_project_spending
+        from codemie.rest_api.routers.analytics.spending import get_user_project_spending
 
         with (
             _patch_lookup(_target_user(), set()),
@@ -138,7 +138,7 @@ class TestUserProjectSpendingEndpoint:
 
     @pytest.mark.asyncio
     async def test_includes_pagination_block(self):
-        from codemie.rest_api.routers.analytics import get_user_project_spending
+        from codemie.rest_api.routers.analytics.spending import get_user_project_spending
 
         rows = [{"project_name": "atlas-core", "platform": 0, "cli": 0, "premium_models": 0}]
         with (
@@ -157,7 +157,7 @@ class TestUserProjectSpendingEndpoint:
     @pytest.mark.asyncio
     async def test_passes_resolved_user_id_and_trimmed_email(self):
         """The service is keyed by the resolved user id, and only the first email is used."""
-        from codemie.rest_api.routers.analytics import get_user_project_spending
+        from codemie.rest_api.routers.analytics.spending import get_user_project_spending
 
         spend = AsyncMock(return_value=(USER_COLUMNS, []))
         with (
@@ -177,7 +177,7 @@ class TestUserProjectSpendingEndpoint:
 
     @pytest.mark.asyncio
     async def test_unknown_target_user_is_404(self):
-        from codemie.rest_api.routers.analytics import get_user_project_spending
+        from codemie.rest_api.routers.analytics.spending import get_user_project_spending
 
         with _patch_lookup(None, set()):
             with pytest.raises(ExtendedHTTPException) as exc:
@@ -187,7 +187,7 @@ class TestUserProjectSpendingEndpoint:
 
     @pytest.mark.asyncio
     async def test_project_admin_sharing_a_project_with_the_target_is_allowed(self):
-        from codemie.rest_api.routers.analytics import get_user_project_spending
+        from codemie.rest_api.routers.analytics.spending import get_user_project_spending
 
         with (
             _patch_lookup(_target_user(), {"atlas-core", "other-project"}),
@@ -205,7 +205,7 @@ class TestUserProjectSpendingEndpoint:
 
     @pytest.mark.asyncio
     async def test_non_admin_caller_is_forbidden(self):
-        from codemie.rest_api.routers.analytics import get_user_project_spending
+        from codemie.rest_api.routers.analytics.spending import get_user_project_spending
 
         with _patch_lookup(_target_user(), {"other-project"}):
             with pytest.raises(ExtendedHTTPException) as exc:
@@ -219,7 +219,7 @@ class TestProjectMemberSpendingEndpoint:
 
     @pytest.mark.asyncio
     async def test_returns_200_with_empty_rows_for_project_with_no_members(self):
-        from codemie.rest_api.routers.analytics import get_project_member_spending
+        from codemie.rest_api.routers.analytics.spending import get_project_member_spending
 
         with (
             patch("codemie.clients.postgres.get_async_session", return_value=_mock_session_ctx()),
@@ -235,7 +235,7 @@ class TestProjectMemberSpendingEndpoint:
 
     @pytest.mark.asyncio
     async def test_paginates_rows(self):
-        from codemie.rest_api.routers.analytics import get_project_member_spending
+        from codemie.rest_api.routers.analytics.spending import get_project_member_spending
 
         rows = [{"user_id": f"u-{i}", "platform": 0, "cli": 0, "premium_models": 0} for i in range(5)]
         with (
@@ -253,7 +253,7 @@ class TestProjectMemberSpendingEndpoint:
 
     @pytest.mark.asyncio
     async def test_second_page_returns_the_next_slice(self):
-        from codemie.rest_api.routers.analytics import get_project_member_spending
+        from codemie.rest_api.routers.analytics.spending import get_project_member_spending
 
         rows = [{"user_id": f"u-{i}"} for i in range(5)]
         with (
@@ -270,7 +270,7 @@ class TestProjectMemberSpendingEndpoint:
 
     @pytest.mark.asyncio
     async def test_project_admin_of_the_requested_project_is_allowed(self):
-        from codemie.rest_api.routers.analytics import get_project_member_spending
+        from codemie.rest_api.routers.analytics.spending import get_project_member_spending
 
         with (
             patch("codemie.clients.postgres.get_async_session", return_value=_mock_session_ctx()),
@@ -287,7 +287,7 @@ class TestProjectMemberSpendingEndpoint:
 
     @pytest.mark.asyncio
     async def test_admin_of_a_different_project_is_forbidden(self):
-        from codemie.rest_api.routers.analytics import get_project_member_spending
+        from codemie.rest_api.routers.analytics.spending import get_project_member_spending
 
         with pytest.raises(ExtendedHTTPException) as exc:
             await get_project_member_spending(
@@ -298,7 +298,7 @@ class TestProjectMemberSpendingEndpoint:
 
     @pytest.mark.asyncio
     async def test_non_admin_caller_is_forbidden(self):
-        from codemie.rest_api.routers.analytics import get_project_member_spending
+        from codemie.rest_api.routers.analytics.spending import get_project_member_spending
 
         with pytest.raises(ExtendedHTTPException) as exc:
             await get_project_member_spending(user=_plain_user(), projects="atlas-core", **PAGE_ARGS)
@@ -317,7 +317,7 @@ class TestUserProjectSpendingLookupClosure:
     @pytest.mark.asyncio
     async def test_authorizes_on_the_target_users_projects_not_the_callers(self):
         """A project admin of 'shared' may read a target who is also in 'shared'."""
-        from codemie.rest_api.routers.analytics import get_user_project_spending
+        from codemie.rest_api.routers.analytics.spending import get_user_project_spending
 
         target = MagicMock()
         target.id = "target-1"
@@ -334,7 +334,7 @@ class TestUserProjectSpendingLookupClosure:
                 return_value={"shared", "other"},
             ) as get_projects,
             patch("codemie.clients.postgres.get_session"),
-            patch("codemie.rest_api.routers.analytics.get_async_session"),
+            patch("codemie.rest_api.routers.analytics.spending.get_async_session"),
             patch(
                 "codemie.service.analytics.handlers.member_spend_service.member_spend_service.get_user_project_spend",
                 new=spend,
@@ -349,7 +349,7 @@ class TestUserProjectSpendingLookupClosure:
 
     @pytest.mark.asyncio
     async def test_project_admin_denied_when_target_shares_no_admin_project(self):
-        from codemie.rest_api.routers.analytics import get_user_project_spending
+        from codemie.rest_api.routers.analytics.spending import get_user_project_spending
 
         target = MagicMock()
         target.id = "target-1"
@@ -374,7 +374,7 @@ class TestUserProjectSpendingLookupClosure:
     @pytest.mark.asyncio
     async def test_unknown_user_is_403_not_404_for_non_admins(self):
         """Otherwise the endpoint is an email-keyed oracle for who is a registered user."""
-        from codemie.rest_api.routers.analytics import get_user_project_spending
+        from codemie.rest_api.routers.analytics.spending import get_user_project_spending
 
         caller = _project_admin_user(["mine"])
 
@@ -392,7 +392,7 @@ class TestUserProjectSpendingLookupClosure:
 
     @pytest.mark.asyncio
     async def test_unknown_user_is_still_404_for_global_admins(self):
-        from codemie.rest_api.routers.analytics import get_user_project_spending
+        from codemie.rest_api.routers.analytics.spending import get_user_project_spending
 
         with (
             patch(

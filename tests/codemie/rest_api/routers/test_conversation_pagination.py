@@ -27,7 +27,6 @@ from docx import Document as DocxDocument
 from fastapi.testclient import TestClient
 from pypdf import PdfReader
 
-import codemie.rest_api.routers.conversation as conversation_router
 from codemie.chains.base import Thought
 from codemie.rest_api.main import app
 from codemie.rest_api.models.conversation import (
@@ -37,6 +36,7 @@ from codemie.rest_api.models.conversation import (
     GeneratedMessage,
 )
 from codemie.rest_api.models.index import SortOrder
+from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
 
 
@@ -62,12 +62,12 @@ def client(mock_litellm_startup):
 
 @pytest.fixture(autouse=True)
 def override_dependency(user):
-    app.dependency_overrides[conversation_router.authenticate] = lambda: user
+    app.dependency_overrides[authenticate] = lambda: user
     yield
     app.dependency_overrides = {}
 
 
-@patch("codemie.rest_api.routers.conversation.Conversation.get_user_conversations", new_callable=MagicMock)
+@patch("codemie.rest_api.routers.conversation.crud.Conversation.get_user_conversations", new_callable=MagicMock)
 def test_get_conversations_without_pagination(mock_get, client):
     """
     Test GET /v1/conversations without pagination parameters.
@@ -95,7 +95,8 @@ def test_get_conversations_without_pagination(mock_get, client):
 
 
 @patch(
-    "codemie.rest_api.routers.conversation.ConversationService.get_user_conversations_paginated", new_callable=MagicMock
+    "codemie.rest_api.routers.conversation.crud.ConversationService.get_user_conversations_paginated",
+    new_callable=MagicMock,
 )
 def test_get_conversations_with_pagination(mock_paginated, client):
     """
@@ -123,7 +124,7 @@ def test_get_conversations_with_pagination(mock_paginated, client):
     mock_paginated.assert_called_once()
 
 
-@patch("codemie.rest_api.routers.conversation.Conversation.get_user_conversations", new_callable=MagicMock)
+@patch("codemie.rest_api.routers.conversation.crud.Conversation.get_user_conversations", new_callable=MagicMock)
 def test_get_conversations_without_pagination_forwards_is_finished_filter(mock_get, client):
     mock_get.return_value = []
 
@@ -134,7 +135,8 @@ def test_get_conversations_without_pagination_forwards_is_finished_filter(mock_g
 
 
 @patch(
-    "codemie.rest_api.routers.conversation.ConversationService.get_user_conversations_paginated", new_callable=MagicMock
+    "codemie.rest_api.routers.conversation.crud.ConversationService.get_user_conversations_paginated",
+    new_callable=MagicMock,
 )
 def test_get_conversations_with_pagination_forwards_is_finished_filter(mock_paginated, client):
     mock_paginated.return_value = []
@@ -145,9 +147,9 @@ def test_get_conversations_with_pagination_forwards_is_finished_filter(mock_pagi
     mock_paginated.assert_called_once_with(user_id="user-123", page=0, per_page=10, is_finished=True)
 
 
-@patch("codemie.rest_api.routers.conversation.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
-@patch("codemie.rest_api.routers.conversation.Ability.can", new_callable=MagicMock, return_value=True)
-@patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", new_callable=MagicMock)
+@patch("codemie.rest_api.routers.conversation.messages.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
+@patch("codemie.rest_api.routers.conversation.messages.Ability.can", new_callable=MagicMock, return_value=True)
+@patch("codemie.rest_api.routers.conversation.messages.Conversation.find_by_id", new_callable=MagicMock)
 def test_export_json_without_pagination(mock_find, _mock_can, _mock_assistants, client):
     """
     Test GET /v1/conversations/{id}/export without pagination (JSON).
@@ -175,9 +177,9 @@ def test_export_json_without_pagination(mock_find, _mock_can, _mock_assistants, 
     mock_find.assert_called_once_with("conv-123")
 
 
-@patch("codemie.rest_api.routers.conversation.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
-@patch("codemie.rest_api.routers.conversation.Ability.can", new_callable=MagicMock, return_value=True)
-@patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", new_callable=MagicMock)
+@patch("codemie.rest_api.routers.conversation.messages.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
+@patch("codemie.rest_api.routers.conversation.messages.Ability.can", new_callable=MagicMock, return_value=True)
+@patch("codemie.rest_api.routers.conversation.messages.Conversation.find_by_id", new_callable=MagicMock)
 def test_export_json_without_pagination_no_dates(mock_find, _mock_can, _mock_assistants, client):
     """
     Timestamps are absent from the export JSON when no messages have a date value.
@@ -198,10 +200,11 @@ def test_export_json_without_pagination_no_dates(mock_find, _mock_can, _mock_ass
     mock_find.assert_called_once_with("conv-123")
 
 
-@patch("codemie.rest_api.routers.conversation.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
-@patch("codemie.rest_api.routers.conversation.Ability.can", new_callable=MagicMock, return_value=True)
+@patch("codemie.rest_api.routers.conversation.messages.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
+@patch("codemie.rest_api.routers.conversation.messages.Ability.can", new_callable=MagicMock, return_value=True)
 @patch(
-    "codemie.rest_api.routers.conversation.ConversationService.get_conversation_history_slice", new_callable=MagicMock
+    "codemie.rest_api.routers.conversation.messages.ConversationService.get_conversation_history_slice",
+    new_callable=MagicMock,
 )
 def test_export_json_with_pagination(mock_slice, _mock_can, _mock_assistants, client):
     """
@@ -229,7 +232,7 @@ def test_export_json_with_pagination(mock_slice, _mock_can, _mock_assistants, cl
 
 
 @patch(
-    "codemie.rest_api.routers.conversation.ConversationService.get_conversation_history_slice",
+    "codemie.rest_api.routers.conversation.messages.ConversationService.get_conversation_history_slice",
     new_callable=MagicMock,
     return_value=(None, 0, None, None),
 )
@@ -343,10 +346,10 @@ def _write_source_as_output(*, source, to, outputfile, **_kwargs):
 
 @pytest.mark.parametrize("export_format", ["pdf", "docx"])
 @pytest.mark.parametrize("query_suffix", ["", "&include_tool_outputs=false"])
-@patch("codemie.rest_api.routers.conversation.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
-@patch("codemie.rest_api.routers.conversation.Ability.can", new_callable=MagicMock, return_value=True)
-@patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", new_callable=MagicMock)
-@patch("codemie.rest_api.routers.conversation.MessageExporter")
+@patch("codemie.rest_api.routers.conversation.messages.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
+@patch("codemie.rest_api.routers.conversation.messages.Ability.can", new_callable=MagicMock, return_value=True)
+@patch("codemie.rest_api.routers.conversation.messages.Conversation.find_by_id", new_callable=MagicMock)
+@patch("codemie.rest_api.routers.conversation.messages.MessageExporter")
 def test_export_concise_mode_omits_thoughts(
     mock_exporter_cls, mock_find, _mock_can, _mock_assistants, client, export_format, query_suffix
 ):
@@ -366,10 +369,10 @@ def test_export_concise_mode_omits_thoughts(
 
 
 @pytest.mark.parametrize("export_format", ["pdf", "docx"])
-@patch("codemie.rest_api.routers.conversation.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
-@patch("codemie.rest_api.routers.conversation.Ability.can", new_callable=MagicMock, return_value=True)
-@patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", new_callable=MagicMock)
-@patch("codemie.rest_api.routers.conversation.MessageExporter")
+@patch("codemie.rest_api.routers.conversation.messages.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
+@patch("codemie.rest_api.routers.conversation.messages.Ability.can", new_callable=MagicMock, return_value=True)
+@patch("codemie.rest_api.routers.conversation.messages.Conversation.find_by_id", new_callable=MagicMock)
+@patch("codemie.rest_api.routers.conversation.messages.MessageExporter")
 def test_export_full_mode_keeps_thoughts(
     mock_exporter_cls, mock_find, _mock_can, _mock_assistants, client, export_format
 ):
@@ -386,9 +389,9 @@ def test_export_full_mode_keeps_thoughts(
     assert mock_exporter_cls.call_args.kwargs["include_tool_outputs"] is True
 
 
-@patch("codemie.rest_api.routers.conversation.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
-@patch("codemie.rest_api.routers.conversation.Ability.can", new_callable=MagicMock, return_value=True)
-@patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", new_callable=MagicMock)
+@patch("codemie.rest_api.routers.conversation.messages.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
+@patch("codemie.rest_api.routers.conversation.messages.Ability.can", new_callable=MagicMock, return_value=True)
+@patch("codemie.rest_api.routers.conversation.messages.Conversation.find_by_id", new_callable=MagicMock)
 def test_export_json_unaffected_by_include_tool_outputs_param(mock_find, _mock_can, _mock_assistants, client):
     """json export must not error and must ignore include_tool_outputs when the frontend sends it anyway."""
     mock_find.return_value = _conversation_with_thought_and_empty_pair()
@@ -405,9 +408,9 @@ def test_export_json_unaffected_by_include_tool_outputs_param(mock_find, _mock_c
 
 @pytest.mark.parametrize("export_format", ["pdf", "docx"])
 @patch("codemie.service.conversation.message_exporter.pypandoc.convert_text", side_effect=_write_source_as_output)
-@patch("codemie.rest_api.routers.conversation.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
-@patch("codemie.rest_api.routers.conversation.Ability.can", new_callable=MagicMock, return_value=True)
-@patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", new_callable=MagicMock)
+@patch("codemie.rest_api.routers.conversation.messages.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
+@patch("codemie.rest_api.routers.conversation.messages.Ability.can", new_callable=MagicMock, return_value=True)
+@patch("codemie.rest_api.routers.conversation.messages.Conversation.find_by_id", new_callable=MagicMock)
 def test_export_concise_mode_omits_thought_content_end_to_end(
     mock_find, _mock_can, _mock_assistants, _mock_convert, client, export_format
 ):
@@ -427,9 +430,9 @@ def test_export_concise_mode_omits_thought_content_end_to_end(
 
 @pytest.mark.parametrize("export_format", ["pdf", "docx"])
 @patch("codemie.service.conversation.message_exporter.pypandoc.convert_text", side_effect=_write_source_as_output)
-@patch("codemie.rest_api.routers.conversation.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
-@patch("codemie.rest_api.routers.conversation.Ability.can", new_callable=MagicMock, return_value=True)
-@patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", new_callable=MagicMock)
+@patch("codemie.rest_api.routers.conversation.messages.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
+@patch("codemie.rest_api.routers.conversation.messages.Ability.can", new_callable=MagicMock, return_value=True)
+@patch("codemie.rest_api.routers.conversation.messages.Conversation.find_by_id", new_callable=MagicMock)
 def test_export_concise_mode_explicit_false_omits_thought_content_end_to_end(
     mock_find, _mock_can, _mock_assistants, _mock_convert, client, export_format
 ):
@@ -451,9 +454,9 @@ def test_export_concise_mode_explicit_false_omits_thought_content_end_to_end(
 
 @pytest.mark.parametrize("export_format", ["pdf", "docx"])
 @patch("codemie.service.conversation.message_exporter.pypandoc.convert_text", side_effect=_write_source_as_output)
-@patch("codemie.rest_api.routers.conversation.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
-@patch("codemie.rest_api.routers.conversation.Ability.can", new_callable=MagicMock, return_value=True)
-@patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", new_callable=MagicMock)
+@patch("codemie.rest_api.routers.conversation.messages.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
+@patch("codemie.rest_api.routers.conversation.messages.Ability.can", new_callable=MagicMock, return_value=True)
+@patch("codemie.rest_api.routers.conversation.messages.Conversation.find_by_id", new_callable=MagicMock)
 def test_export_full_mode_keeps_thought_content_end_to_end(
     mock_find, _mock_can, _mock_assistants, _mock_convert, client, export_format
 ):
@@ -473,9 +476,9 @@ def test_export_full_mode_keeps_thought_content_end_to_end(
 @pytest.mark.parametrize("export_format", ["pdf", "docx"])
 @pytest.mark.parametrize("query_suffix", ["", "&include_tool_outputs=true"])
 @patch("codemie.service.conversation.message_exporter.pypandoc.convert_text", side_effect=_write_source_as_output)
-@patch("codemie.rest_api.routers.conversation.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
-@patch("codemie.rest_api.routers.conversation.Ability.can", new_callable=MagicMock, return_value=True)
-@patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", new_callable=MagicMock)
+@patch("codemie.rest_api.routers.conversation.messages.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
+@patch("codemie.rest_api.routers.conversation.messages.Ability.can", new_callable=MagicMock, return_value=True)
+@patch("codemie.rest_api.routers.conversation.messages.Conversation.find_by_id", new_callable=MagicMock)
 def test_export_keeps_empty_pair_whose_thoughts_were_never_exportable(
     mock_find, _mock_can, _mock_assistants, _mock_convert, client, export_format, query_suffix
 ):
@@ -532,9 +535,9 @@ def _is_code_style(paragraph) -> bool:
 
 @requires_pandoc
 @pytest.mark.parametrize("query_suffix", ["", "&include_tool_outputs=true"])
-@patch("codemie.rest_api.routers.conversation.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
-@patch("codemie.rest_api.routers.conversation.Ability.can", new_callable=MagicMock, return_value=True)
-@patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", new_callable=MagicMock)
+@patch("codemie.rest_api.routers.conversation.messages.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
+@patch("codemie.rest_api.routers.conversation.messages.Ability.can", new_callable=MagicMock, return_value=True)
+@patch("codemie.rest_api.routers.conversation.messages.Conversation.find_by_id", new_callable=MagicMock)
 def test_export_docx_renders_fenced_code_block_as_code_run(
     mock_find, _mock_can, _mock_assistants, client, query_suffix, tmp_path
 ):
@@ -556,9 +559,9 @@ def test_export_docx_renders_fenced_code_block_as_code_run(
 
 @requires_pandoc
 @pytest.mark.parametrize("query_suffix", ["", "&include_tool_outputs=true"])
-@patch("codemie.rest_api.routers.conversation.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
-@patch("codemie.rest_api.routers.conversation.Ability.can", new_callable=MagicMock, return_value=True)
-@patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", new_callable=MagicMock)
+@patch("codemie.rest_api.routers.conversation.messages.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
+@patch("codemie.rest_api.routers.conversation.messages.Ability.can", new_callable=MagicMock, return_value=True)
+@patch("codemie.rest_api.routers.conversation.messages.Conversation.find_by_id", new_callable=MagicMock)
 def test_export_docx_renders_list_table_link_correctly(
     mock_find, _mock_can, _mock_assistants, client, query_suffix, tmp_path
 ):
@@ -590,9 +593,9 @@ def test_export_docx_renders_list_table_link_correctly(
 @requires_pandoc
 @requires_pdflatex
 @pytest.mark.parametrize("query_suffix", ["", "&include_tool_outputs=true"])
-@patch("codemie.rest_api.routers.conversation.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
-@patch("codemie.rest_api.routers.conversation.Ability.can", new_callable=MagicMock, return_value=True)
-@patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", new_callable=MagicMock)
+@patch("codemie.rest_api.routers.conversation.messages.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
+@patch("codemie.rest_api.routers.conversation.messages.Ability.can", new_callable=MagicMock, return_value=True)
+@patch("codemie.rest_api.routers.conversation.messages.Conversation.find_by_id", new_callable=MagicMock)
 def test_export_pdf_renders_real_pdf_document(mock_find, _mock_can, _mock_assistants, client, query_suffix):
     """CR-005: the DOCX branch had real-render coverage and the PDF branch had none - every other
     PDF assertion stops at the markdown handed to pandoc. This is the only test that proves the
@@ -621,9 +624,9 @@ def test_export_pdf_renders_real_pdf_document(mock_find, _mock_can, _mock_assist
     ],
 )
 @patch("codemie.service.conversation.message_exporter.pypandoc.convert_text", side_effect=_write_source_as_output)
-@patch("codemie.rest_api.routers.conversation.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
-@patch("codemie.rest_api.routers.conversation.Ability.can", new_callable=MagicMock, return_value=True)
-@patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", new_callable=MagicMock)
+@patch("codemie.rest_api.routers.conversation.messages.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
+@patch("codemie.rest_api.routers.conversation.messages.Ability.can", new_callable=MagicMock, return_value=True)
+@patch("codemie.rest_api.routers.conversation.messages.Conversation.find_by_id", new_callable=MagicMock)
 def test_export_passes_format_specific_pandoc_args(
     mock_find, _mock_can, _mock_assistants, mock_convert, client, export_format, expected_args, absent_args
 ):
@@ -650,9 +653,9 @@ def test_export_passes_format_specific_pandoc_args(
 
 @pytest.mark.parametrize("export_format", ["pdf", "docx"])
 @patch("codemie.service.conversation.message_exporter.pypandoc.convert_text", side_effect=_write_source_as_output)
-@patch("codemie.rest_api.routers.conversation.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
-@patch("codemie.rest_api.routers.conversation.Ability.can", new_callable=MagicMock, return_value=True)
-@patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", new_callable=MagicMock)
+@patch("codemie.rest_api.routers.conversation.messages.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
+@patch("codemie.rest_api.routers.conversation.messages.Ability.can", new_callable=MagicMock, return_value=True)
+@patch("codemie.rest_api.routers.conversation.messages.Conversation.find_by_id", new_callable=MagicMock)
 def test_export_list_table_link_content_survives_concise_filtering_end_to_end(
     mock_find, _mock_can, _mock_assistants, _mock_convert, client, export_format
 ):
@@ -715,11 +718,12 @@ def _make_pagination(page=0, per_page=2, total=5, pages=3, has_next=True, has_pr
 
 
 @patch(
-    "codemie.rest_api.routers.conversation.ConversationService.get_conversation_history_slice", new_callable=MagicMock
+    "codemie.rest_api.routers.conversation.retrieval.ConversationService.get_conversation_history_slice",
+    new_callable=MagicMock,
 )
-@patch("codemie.rest_api.routers.conversation.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
-@patch("codemie.rest_api.routers.conversation.Ability.can", new_callable=MagicMock, return_value=True)
-@patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", new_callable=MagicMock)
+@patch("codemie.rest_api.routers.conversation.retrieval.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
+@patch("codemie.rest_api.routers.conversation.retrieval.Ability.can", new_callable=MagicMock, return_value=True)
+@patch("codemie.rest_api.routers.conversation.retrieval.Conversation.find_by_id", new_callable=MagicMock)
 def test_get_conversation_no_params_pagination_absent(mock_find, _mock_can, _mock_assistants, mock_slice, client):
     """
     When no pagination/sort params are provided, the response must not include
@@ -742,10 +746,11 @@ def test_get_conversation_no_params_pagination_absent(mock_find, _mock_can, _moc
 
 
 @patch(
-    "codemie.rest_api.routers.conversation.ConversationService.get_conversation_history_slice", new_callable=MagicMock
+    "codemie.rest_api.routers.conversation.retrieval.ConversationService.get_conversation_history_slice",
+    new_callable=MagicMock,
 )
-@patch("codemie.rest_api.routers.conversation.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
-@patch("codemie.rest_api.routers.conversation.Ability.can", new_callable=MagicMock, return_value=True)
+@patch("codemie.rest_api.routers.conversation.retrieval.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
+@patch("codemie.rest_api.routers.conversation.retrieval.Ability.can", new_callable=MagicMock, return_value=True)
 def test_get_conversation_with_page_and_per_page(_mock_can, _mock_assistants, mock_slice, client):
     """
     When page and per_page are provided, get_conversation_history_slice is called and
@@ -779,10 +784,11 @@ def test_get_conversation_with_page_and_per_page(_mock_can, _mock_assistants, mo
 
 
 @patch(
-    "codemie.rest_api.routers.conversation.ConversationService.get_conversation_history_slice", new_callable=MagicMock
+    "codemie.rest_api.routers.conversation.retrieval.ConversationService.get_conversation_history_slice",
+    new_callable=MagicMock,
 )
-@patch("codemie.rest_api.routers.conversation.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
-@patch("codemie.rest_api.routers.conversation.Ability.can", new_callable=MagicMock, return_value=True)
+@patch("codemie.rest_api.routers.conversation.retrieval.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
+@patch("codemie.rest_api.routers.conversation.retrieval.Ability.can", new_callable=MagicMock, return_value=True)
 def test_get_conversation_with_only_sort_order(_mock_can, _mock_assistants, mock_slice, client):
     """
     When only sort_order is provided (no page/per_page), it still triggers pagination
@@ -802,10 +808,11 @@ def test_get_conversation_with_only_sort_order(_mock_can, _mock_assistants, mock
 
 
 @patch(
-    "codemie.rest_api.routers.conversation.ConversationService.get_conversation_history_slice", new_callable=MagicMock
+    "codemie.rest_api.routers.conversation.retrieval.ConversationService.get_conversation_history_slice",
+    new_callable=MagicMock,
 )
-@patch("codemie.rest_api.routers.conversation.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
-@patch("codemie.rest_api.routers.conversation.Ability.can", new_callable=MagicMock, return_value=True)
+@patch("codemie.rest_api.routers.conversation.retrieval.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
+@patch("codemie.rest_api.routers.conversation.retrieval.Ability.can", new_callable=MagicMock, return_value=True)
 def test_get_conversation_sort_order_desc(_mock_can, _mock_assistants, mock_slice, client):
     """
     DESC sort_order is forwarded to get_conversation_history_slice correctly.
@@ -831,7 +838,8 @@ def test_get_conversation_sort_order_desc(_mock_can, _mock_assistants, mock_slic
 
 
 @patch(
-    "codemie.rest_api.routers.conversation.ConversationService.get_conversation_history_slice", new_callable=MagicMock
+    "codemie.rest_api.routers.conversation.retrieval.ConversationService.get_conversation_history_slice",
+    new_callable=MagicMock,
 )
 def test_get_conversation_not_found(mock_slice, client):
     """404 is returned when conversation does not exist, even with pagination params."""

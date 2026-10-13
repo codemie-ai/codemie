@@ -21,7 +21,7 @@ from fastapi import Response
 from starlette.requests import Request
 
 from codemie.rest_api.models.conversation import Conversation, GeneratedMessage, UpsertHistoryRequest
-from codemie.rest_api.routers.conversation import upsert_conversation_history
+from codemie.rest_api.routers.conversation.history import upsert_conversation_history
 from codemie.service.conversation_service import ConversationService
 
 _resolve_import_source = ConversationService.resolve_chat_import_source
@@ -97,9 +97,9 @@ def test_resolve_import_source_mapping(client_type, cli_header, expected):
         ({}, None),
     ],
 )
-@patch("codemie.rest_api.routers.conversation.config.CONVERSATION_HISTORY_UPSERT_NOOP_ENABLED", False)
-@patch("codemie.rest_api.routers.conversation.ConversationService.upsert_conversation_with_history")
-@patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", return_value=None)
+@patch("codemie.rest_api.routers.conversation.history.config.CONVERSATION_HISTORY_UPSERT_NOOP_ENABLED", False)
+@patch("codemie.rest_api.routers.conversation.history.ConversationService.upsert_conversation_with_history")
+@patch("codemie.rest_api.routers.conversation.history.Conversation.find_by_id", return_value=None)
 def test_upsert_history_resolves_headers_before_calling_service(mock_find, mock_upsert, headers, expected, mock_user):
     mock_upsert.return_value = {
         "conversation_id": "conv-1",

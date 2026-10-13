@@ -28,7 +28,7 @@ from codemie.rest_api.models.usage.assistant_user_mapping import (
     AssistantMappingRequest,
     AssistantMappingResponse,
 )
-from codemie.rest_api.routers.assistant import _get_assistant_by_id_or_raise
+from codemie.rest_api.routers.utils import get_assistant_by_id_or_raise
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
 from codemie.service.assistant.assistant_user_mapping_service import assistant_user_mapping_service
@@ -132,7 +132,7 @@ def create_or_update_mapping(request: AssistantMappingRequest, assistant_id: str
     }
     ```
     """
-    assistant = _get_assistant_by_id_or_raise(assistant_id)
+    assistant = get_assistant_by_id_or_raise(assistant_id)
 
     _validate_mapping_access(request.tools_config, user, assistant.project, marketplace=bool(assistant.is_global))
 
@@ -183,7 +183,7 @@ def get_assistant_mapping(
     of them the response reports what the resolution chain would pick right now, so slots the user
     never chose explicitly can be pre-selected with the integration a run would actually use.
     """
-    assistant = _get_assistant_by_id_or_raise(assistant_id)
+    assistant = get_assistant_by_id_or_raise(assistant_id)
 
     try:
         # Inside the try: resolving walks the settings chain and touches the store, so a transient

@@ -15,7 +15,7 @@
 from unittest.mock import MagicMock, patch
 
 from codemie.rest_api.models.assistant import Assistant, Context, ContextType
-from codemie.rest_api.routers.assistant import _filter_invalid_datasources
+from codemie.rest_api.routers.assistant.management import _filter_invalid_datasources
 
 KB = Context(context_type=ContextType.KNOWLEDGE_BASE, name="kb-alive")
 CODE_GONE = Context(context_type=ContextType.CODE, name="repo-deleted")

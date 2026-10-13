@@ -1,0 +1,188 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15651_split-router-modules",
+  "head": "6d98ff02bbf6531f8bb7dbc6d33fff0abd08c054",
+  "runner": "poetry",
+  "started_at": "2026-10-09T12:06:31Z",
+  "completed_at": "2026-10-09T12:18:00Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1108,
+      "command": "make ruff",
+      "exit_code": 0,
+      "notes": "format left 2773 files unchanged; working tree unchanged after run"
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 4109,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-headers",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 582,
+      "command": "make license-check",
+      "exit_code": 0,
+      "notes": "Checked 2481 files, 0 missing license headers"
+    },
+    {
+      "id": "secrets",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 92489,
+      "command": "make gitleaks",
+      "exit_code": 2,
+      "notes": "KNOWN UNRELATED (caller-listed): 9 generic-api-key findings, all in untracked/gitignored local files (.codex/config.toml, .mcp.json.lock, opencode.json, opencode.json.lock, .codegraph/codegraph.db-wal x5); none in tracked source. Raw output withheld (contains secret values)."
+    },
+    {
+      "id": "codemie-gitleaks",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 376,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": 0,
+      "notes": "Exit 0 but did no work: '0 commits scanned', 'scanned ~0 bytes' because nothing is staged. Enable by staging the changes (git add) before running. Also wired as the codemie-gitleaks pre-commit hook. Committed content is covered by the secrets gate (dir scan)."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 103010,
+      "command": "make test",
+      "exit_code": 2,
+      "notes": "KNOWN UNRELATED (caller-listed): 1 failed, 19482 passed, 175 skipped. Failed: tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_matplotlib_png_generation. The openpyxl test passed in this run."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make coverage",
+      "exit_code": null,
+      "notes": "Not requested by the caller; coverage.xml was produced by the sonar gate's pytest --cov run."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 120888,
+      "command": "make sonar-local",
+      "exit_code": 2,
+      "notes": "KNOWN UNRELATED (caller-listed): SONAR_TOKEN is set, so the script ran pytest --cov; coverage generation exited 1 on 2 known failures (test_guard_allows_matplotlib_png_generation, test_guard_allows_openpyxl_to_save_workbook). The scanner stage was never reached; sonar-scanner is not on PATH (make sonar-local cannot pass locally)."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make verify",
+      "exit_code": null,
+      "notes": "Aggregate of ruff, license, gitleaks and test; each ran as its own gate above."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "exit_code": null,
+      "notes": "Skip if not opening a merge request (local iteration; caller said no MR). Would also need the docker compose stack, superadmin fixtures and ~/.codemie/test-harness.json."
+    },
+    {
+      "id": "hook-commit-msg",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 102,
+      "command": "bash scripts/git-hooks/commit_msg.sh <message file>  (run over each of the 12 commits in 23c80b8023..HEAD)",
+      "exit_code": 0,
+      "notes": "All 12 subjects match ^EPMCDME-[0-9]+:"
+    },
+    {
+      "id": "hook-pre-commit",
+      "source": "hook",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "bash scripts/git-hooks/pre_commit.sh",
+      "exit_code": null,
+      "notes": "Nothing staged, so the staged-ruff step has no input; its ruff check and license check are the lint and license-headers gates above (both PASS)."
+    },
+    {
+      "id": "hook-pre-push",
+      "source": "hook",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "bash scripts/git-hooks/pre_push.sh",
+      "exit_code": null,
+      "notes": "Opt-in hook (CODEMIE_PREPUSH_ENABLED, off by default). Its commands (pytest --cov, make sonar-local) already ran as the unit and sonar gates."
+    },
+    {
+      "id": "ci-pre-ci-guard",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": ".gitlab-ci.yml (wait-ci-init: EXPECTED_CONTEXTS ci-pipeline, compliance-report)",
+      "exit_code": null,
+      "notes": "Runs only on GitLab merge request events against main and waits on external contexts; cannot run locally. compliance-report is the auto_epm-cdme_vcs bot reading the MR description (needs '## Test harness' block; MR should ask a reviewer for /sanity). Still owed at MR time."
+    },
+    {
+      "id": "step-pytest",
+      "source": "caller",
+      "status": "PASS",
+      "duration_ms": 75016,
+      "command": "poetry run pytest tests/codemie/rest_api/router_guards tests/codemie/rest_api/routers tests/unit/routers tests/codemie/rest_api/test_xwiki_index_endpoints.py tests/codemie/rest_api/test_main_retrieval_backend_disabled.py tests/codemie/rest_api/models/test_index_info.py -n 0 --show-capture=no -q",
+      "exit_code": 0,
+      "notes": "2014 passed, 9 skipped; tracked tree and baselines unchanged after run"
+    },
+    {
+      "id": "import-check",
+      "source": "caller",
+      "status": "PASS",
+      "duration_ms": 139773,
+      "command": ".venv/bin/python -c 'import X' per module (14 modules, fresh interpreter each)",
+      "exit_code": 0,
+      "notes": "OK: codemie.rest_api.routers.index, its 12 submodules (_common, _repository_support, queries, code_repositories, kb_atlassian, kb_azure_devops, kb_google, kb_sharepoint, kb_xwiki, kb_git_faq, kb_files, providers) and codemie.rest_api.main"
+    },
+    {
+      "id": "compare",
+      "source": "caller",
+      "status": "PASS",
+      "duration_ms": 49,
+      "command": "/home/taras_spashchenko/EPAM/cm/codemie/local/router-split/step3/routes.sh <scratch>/routes_after_scratch.json && /home/taras_spashchenko/EPAM/cm/codemie/local/router-split/step3/compare.sh <scratch>/routes_after_scratch.json",
+      "exit_code": 0,
+      "notes": "Spec AC 2: COMPARE OK (all equal), checks (a)-(e) all OK; 45 index routes, 570 total, app.routes[53..97]. Run in the explicit-dump form so routes_after.json in the scripts dir was not overwritten. Order inside the block differs from BASE at 33 of 45 positions (expected, informational)."
+    },
+    {
+      "id": "astmove",
+      "source": "caller",
+      "status": "PASS",
+      "duration_ms": 91,
+      "command": "/home/taras_spashchenko/EPAM/cm/codemie/local/router-split/step3/astmove.sh",
+      "exit_code": 0,
+      "notes": "Spec AC 3 (AST part): ASTMOVE OK; 80 BASE top-level names byte-identical in exactly one of 13 package modules. git diff --color-moved review not run (visual)."
+    },
+    {
+      "id": "leftover",
+      "source": "caller",
+      "status": "FAIL",
+      "duration_ms": 40,
+      "command": "/home/taras_spashchenko/EPAM/cm/codemie/local/router-split/step3/leftover.sh",
+      "exit_code": 1,
+      "notes": "Spec AC 4 detector exits 1 with 1 hit: src/codemie/rest_api/routers/index/__init__.py:17 'from codemie.rest_api.routers.index import (' - the package's own multi-line import of its 10 route submodules (code_repositories, kb_atlassian, kb_azure_devops, kb_files, kb_git_faq, kb_google, kb_sharepoint, kb_xwiki, providers, queries), all real submodules. The script's second alternative ('routers.index import (?!router\\b)') cannot tell a submodule import from a stale name; no stale name in src/ or tests/ was found. Reported literally as FAIL; caller rules."
+    }
+  ],
+  "failures": {
+    "secrets": "9 findings (details withheld, raw gitleaks output contains secret values):\ngeneric-api-key  .codex/config.toml:15\ngeneric-api-key  .mcp.json.lock:11\ngeneric-api-key  opencode.json:26\ngeneric-api-key  opencode.json.lock:303\ngeneric-api-key  .codegraph/codegraph.db-wal:167341 (x2), :167913, :177080, :200560\nscanned ~222051417 bytes in 1m32.1s; leaks found: 9; make: *** [Makefile:55: gitleaks] Error 1",
+    "unit": "\ntests/codemie/service/settings/test_scheduler_settings_service.py::test_validate_timezone_string_invalid[UTC+2]\ntests/codemie/service/settings/test_scheduler_settings_service.py::test_validate_timezone_string_invalid[Europe/Nowhere]\ntests/codemie/service/settings/test_scheduler_settings_service.py::test_validate_timezone_string_invalid[Bad/Zone]\ntests/codemie/service/settings/test_scheduler_settings_service.py::test_validate_timezone_string_invalid[not_a_timezone]\ntests/codemie/service/settings/test_scheduler_settings_service.py::test_validate_timezone_string_invalid[]\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/settings/test_scheduler_settings_service.py:91: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    validate_timezone_string(tz)\n\ntests/codemie/service/settings/test_settings_litellm_validation.py::TestLiteLLMValidation::test_validate_litellm_request_with_empty_string_api_key\ntests/codemie/service/settings/test_settings_litellm_validation.py::TestLiteLLMValidation::test_validate_litellm_request_with_whitespace_only_api_key\ntests/codemie/service/settings/test_settings_litellm_validation.py::TestLiteLLMValidation::test_validate_litellm_request_with_missing_api_key\n  /home/taras_spashchenko/EPAM/cm/codemie/src/codemie/service/settings/settings_request_validator.py:510: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    validate_litellm_api_key(request)\n\ntests/codemie/service/settings/test_settings_litellm_validation.py::TestLiteLLMValidation::test_validate_litellm_api_key_with_none_value\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/settings/test_settings_litellm_validation.py:133: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    validate_litellm_api_key(request)\n\ntests/codemie/service/settings/test_settings_litellm_validation.py::TestLiteLLMValidation::test_validate_litellm_api_key_with_mixed_whitespace\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/settings/test_settings_litellm_validation.py:150: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    validate_litellm_api_key(request)\n\ntests/codemie/service/settings/test_settings_request_validator.py::test_validate_datasource_type_for_scheduler_rejects_unsupported[knowledge_base_file]\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/settings/test_settings_request_validator.py:55: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    validate_datasource_type_for_scheduler(datasource)\n\ntests/codemie/service/settings/test_settings_request_validator.py::test_validate_timezone_value_invalid[UTC+2]\ntests/codemie/service/settings/test_settings_request_validator.py::test_validate_timezone_value_invalid[Bad/Zone]\ntests/codemie/service/settings/test_settings_request_validator.py::test_validate_timezone_value_invalid[not_a_timezone]\ntests/codemie/service/settings/test_settings_request_validator.py::test_validate_timezone_value_invalid[]\n  /home/taras_spashchenko/EPAM/cm/codemie/src/codemie/service/settings/settings_request_validator.py:733: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    validate_timezone_string(timezone_cred.value)\n\ntests/codemie/service/settings/test_settings_request_validator.py::test_validate_git_request_rejects_folded_gitlab_oauth_missing_app_credential[client_id]\ntests/codemie/service/settings/test_settings_request_validator.py::test_validate_git_request_rejects_folded_gitlab_oauth_missing_app_credential[client_secret]\ntests/codemie/service/settings/test_settings_request_validator.py::test_validate_git_request_rejects_folded_gitlab_oauth_blank_app_credential[client_id]\ntests/codemie/service/settings/test_settings_request_validator.py::test_validate_git_request_rejects_folded_gitlab_oauth_blank_app_credential[client_secret]\n  /home/taras_spashchenko/EPAM/cm/codemie/src/codemie/service/settings/settings_request_validator.py:231: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_oauth_authentication(values)\n\ntests/codemie/service/settings/test_settings_request_validator.py::test_validate_git_request_rejects_unknown_auth_type\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/settings/test_settings_request_validator.py:556: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    validate_git_request(request)\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_matplotlib_png_generation\n==== 1 failed, 19482 passed, 175 skipped, 261 warnings in 99.72s (0:01:39) =====\nmake: *** [Makefile:31: test] Error 1",
+    "sonar": "  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/settings/test_scheduler_settings_service.py:91: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    validate_timezone_string(tz)\n\ntests/codemie/service/settings/test_settings_litellm_validation.py::TestLiteLLMValidation::test_validate_litellm_request_with_empty_string_api_key\ntests/codemie/service/settings/test_settings_litellm_validation.py::TestLiteLLMValidation::test_validate_litellm_request_with_whitespace_only_api_key\ntests/codemie/service/settings/test_settings_litellm_validation.py::TestLiteLLMValidation::test_validate_litellm_request_with_missing_api_key\n  /home/taras_spashchenko/EPAM/cm/codemie/src/codemie/service/settings/settings_request_validator.py:510: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    validate_litellm_api_key(request)\n\ntests/codemie/service/settings/test_settings_litellm_validation.py::TestLiteLLMValidation::test_validate_litellm_api_key_with_none_value\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/settings/test_settings_litellm_validation.py:133: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    validate_litellm_api_key(request)\n\ntests/codemie/service/settings/test_settings_litellm_validation.py::TestLiteLLMValidation::test_validate_litellm_api_key_with_mixed_whitespace\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/settings/test_settings_litellm_validation.py:150: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    validate_litellm_api_key(request)\n\ntests/codemie/service/settings/test_settings_request_validator.py::test_validate_datasource_type_for_scheduler_rejects_unsupported[knowledge_base_file]\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/settings/test_settings_request_validator.py:55: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    validate_datasource_type_for_scheduler(datasource)\n\ntests/codemie/service/settings/test_settings_request_validator.py::test_validate_timezone_value_invalid[UTC+2]\ntests/codemie/service/settings/test_settings_request_validator.py::test_validate_timezone_value_invalid[Bad/Zone]\ntests/codemie/service/settings/test_settings_request_validator.py::test_validate_timezone_value_invalid[not_a_timezone]\ntests/codemie/service/settings/test_settings_request_validator.py::test_validate_timezone_value_invalid[]\n  /home/taras_spashchenko/EPAM/cm/codemie/src/codemie/service/settings/settings_request_validator.py:733: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    validate_timezone_string(timezone_cred.value)\n\ntests/codemie/service/settings/test_settings_request_validator.py::test_validate_git_request_rejects_folded_gitlab_oauth_missing_app_credential[client_id]\ntests/codemie/service/settings/test_settings_request_validator.py::test_validate_git_request_rejects_folded_gitlab_oauth_missing_app_credential[client_secret]\ntests/codemie/service/settings/test_settings_request_validator.py::test_validate_git_request_rejects_folded_gitlab_oauth_blank_app_credential[client_id]\ntests/codemie/service/settings/test_settings_request_validator.py::test_validate_git_request_rejects_folded_gitlab_oauth_blank_app_credential[client_secret]\n  /home/taras_spashchenko/EPAM/cm/codemie/src/codemie/service/settings/settings_request_validator.py:231: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_oauth_authentication(values)\n\ntests/codemie/service/settings/test_settings_request_validator.py::test_validate_git_request_rejects_unknown_auth_type\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/settings/test_settings_request_validator.py:556: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    validate_git_request(request)\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n================================ tests coverage ================================\n_______________ coverage: platform linux, python 3.12.13-final-0 _______________\n\nCoverage XML written to file coverage.xml\n=========================== short test summary info ============================\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_matplotlib_png_generation\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_openpyxl_to_save_workbook\n==== 2 failed, 19481 passed, 175 skipped, 261 warnings in 116.81s (0:01:56) ====\n[sonar-local] coverage generation exited with code 1\nmake: *** [Makefile:68: sonar-local] Error 1",
+    "leftover": "src/codemie/rest_api/routers/index/__init__.py:17:from codemie.rest_api.routers.index import (\nLEFTOVER FAIL: 1 hits in 1 files"
+  }
+}

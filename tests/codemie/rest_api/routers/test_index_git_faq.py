@@ -68,10 +68,10 @@ def update_request():
     )
 
 
-@patch("codemie.rest_api.routers.index._kb_demo_user_check")
-@patch("codemie.rest_api.routers.index._index_unique_check")
-@patch("codemie.rest_api.routers.index._validate_git_credentials")
-@patch("codemie.rest_api.routers.index.GitFaqDatasourceProcessor")
+@patch("codemie.rest_api.routers.index.kb_git_faq._kb_demo_user_check")
+@patch("codemie.rest_api.routers.index.kb_git_faq._index_unique_check")
+@patch("codemie.rest_api.routers.index.kb_git_faq._validate_git_credentials")
+@patch("codemie.rest_api.routers.index.kb_git_faq.GitFaqDatasourceProcessor")
 @pytest.mark.asyncio
 async def test_create_faq_datasource_schedules_indexing(
     mock_processor,
@@ -103,8 +103,8 @@ async def test_create_faq_datasource_schedules_indexing(
     instance.schedule.assert_called_once()
 
 
-@patch("codemie.rest_api.routers.index._kb_demo_user_check")
-@patch("codemie.rest_api.routers.index._index_unique_check")
+@patch("codemie.rest_api.routers.index.kb_git_faq._kb_demo_user_check")
+@patch("codemie.rest_api.routers.index.kb_git_faq._index_unique_check")
 @pytest.mark.asyncio
 async def test_create_faq_duplicate_name_conflicts(mock_unique, mock_demo, create_request, auth_headers):  # noqa: F811
     from fastapi import HTTPException
@@ -118,7 +118,7 @@ async def test_create_faq_duplicate_name_conflicts(mock_unique, mock_demo, creat
     assert response.status_code == 409
 
 
-@patch("codemie.rest_api.routers.index.KnowledgeBaseIndexInfo.filter_by_project_and_repo")
+@patch("codemie.rest_api.routers.index.kb_git_faq.KnowledgeBaseIndexInfo.filter_by_project_and_repo")
 @pytest.mark.asyncio
 async def test_update_faq_not_found(mock_filter, update_request, auth_headers):  # noqa: F811
     mock_filter.return_value = []
@@ -130,7 +130,7 @@ async def test_update_faq_not_found(mock_filter, update_request, auth_headers): 
     assert response.status_code == 404
 
 
-@patch("codemie.rest_api.routers.index.KnowledgeBaseIndexInfo.filter_by_project_and_repo")
+@patch("codemie.rest_api.routers.index.kb_git_faq.KnowledgeBaseIndexInfo.filter_by_project_and_repo")
 @pytest.mark.asyncio
 async def test_update_faq_metadata_only(mock_filter, update_request, auth_headers):  # noqa: F811
     index_mock = MagicMock()
@@ -146,7 +146,7 @@ async def test_update_faq_metadata_only(mock_filter, update_request, auth_header
     assert kwargs["description"] == "updated description"
 
 
-@patch("codemie.rest_api.routers.index.KnowledgeBaseIndexInfo.filter_by_project_and_repo")
+@patch("codemie.rest_api.routers.index.kb_git_faq.KnowledgeBaseIndexInfo.filter_by_project_and_repo")
 @pytest.mark.asyncio
 async def test_update_faq_source_fields_require_full_reindex(mock_filter, auth_headers):  # noqa: F811
     mock_filter.return_value = [MagicMock()]
@@ -163,9 +163,9 @@ async def test_update_faq_source_fields_require_full_reindex(mock_filter, auth_h
     assert response.json()["error"]["message"] == "FAQ source fields require a full reindex"
 
 
-@patch("codemie.rest_api.routers.index._validate_git_credentials")
-@patch("codemie.rest_api.routers.index._build_git_faq_processor_from_index")
-@patch("codemie.rest_api.routers.index.KnowledgeBaseIndexInfo.filter_by_project_and_repo")
+@patch("codemie.rest_api.routers.index.kb_git_faq._validate_git_credentials")
+@patch("codemie.rest_api.routers.index.kb_git_faq._build_git_faq_processor_from_index")
+@patch("codemie.rest_api.routers.index.kb_git_faq.KnowledgeBaseIndexInfo.filter_by_project_and_repo")
 @pytest.mark.asyncio
 async def test_update_faq_clears_integration_with_empty_string(
     mock_filter,
@@ -196,9 +196,9 @@ async def test_update_faq_clears_integration_with_empty_string(
     assert kwargs["setting_id"] is None
 
 
-@patch("codemie.rest_api.routers.index._validate_git_credentials")
-@patch("codemie.rest_api.routers.index._build_git_faq_processor_from_index")
-@patch("codemie.rest_api.routers.index.KnowledgeBaseIndexInfo.filter_by_project_and_repo")
+@patch("codemie.rest_api.routers.index.kb_git_faq._validate_git_credentials")
+@patch("codemie.rest_api.routers.index.kb_git_faq._build_git_faq_processor_from_index")
+@patch("codemie.rest_api.routers.index.kb_git_faq.KnowledgeBaseIndexInfo.filter_by_project_and_repo")
 @pytest.mark.asyncio
 async def test_update_faq_source_fields_with_full_reindex_reindexes(
     mock_filter,
@@ -232,8 +232,8 @@ async def test_update_faq_source_fields_with_full_reindex_reindexes(
     assert instance.schedule.call_args.args[1] is instance.reprocess
 
 
-@patch("codemie.rest_api.routers.index._validate_project_change")
-@patch("codemie.rest_api.routers.index.KnowledgeBaseIndexInfo.filter_by_project_and_repo")
+@patch("codemie.rest_api.routers.index.kb_git_faq._validate_project_change")
+@patch("codemie.rest_api.routers.index.kb_git_faq.KnowledgeBaseIndexInfo.filter_by_project_and_repo")
 @pytest.mark.asyncio
 async def test_update_faq_project_change_requires_full_reindex(mock_filter, mock_project_change, auth_headers):  # noqa: F811
     mock_filter.return_value = [MagicMock()]
@@ -249,9 +249,9 @@ async def test_update_faq_project_change_requires_full_reindex(mock_filter, mock
     assert "new_project_name" in response.json()["error"]["details"]
 
 
-@patch("codemie.rest_api.routers.index._validate_git_credentials")
-@patch("codemie.rest_api.routers.index._build_git_faq_processor_from_index")
-@patch("codemie.rest_api.routers.index.KnowledgeBaseIndexInfo.filter_by_project_and_repo")
+@patch("codemie.rest_api.routers.index.kb_git_faq._validate_git_credentials")
+@patch("codemie.rest_api.routers.index.kb_git_faq._build_git_faq_processor_from_index")
+@patch("codemie.rest_api.routers.index.kb_git_faq.KnowledgeBaseIndexInfo.filter_by_project_and_repo")
 @pytest.mark.asyncio
 async def test_reindex_git_faq_route_schedules_reprocess(
     mock_filter,
@@ -277,7 +277,7 @@ async def test_reindex_git_faq_route_schedules_reprocess(
 
 
 def test_build_git_faq_processor_from_index_passes_setting_id():
-    from codemie.rest_api.routers.index import _build_git_faq_processor_from_index
+    from codemie.rest_api.routers.index.kb_git_faq import _build_git_faq_processor_from_index
     from codemie.rest_api.security.user import User
 
     index_mock = MagicMock()

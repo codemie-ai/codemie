@@ -1,0 +1,227 @@
+[
+  {
+    "earlier": "/v1/assistants/{assistant_id}/users/mapping",
+    "later": "/v1/assistants/slug/{assistant_slug:path}",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/assistants/id/{assistant_id}",
+    "later": "/v1/assistants/{assistant_id}/versions",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/assistants/id/{assistant_id}",
+    "later": "/v1/assistants/{assistant_id}/skills",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/assistants/slug/{assistant_slug:path}",
+    "later": "/v1/assistants/{assistant_id}/versions",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/assistants/slug/{assistant_slug:path}",
+    "later": "/v1/assistants/{assistant_id}/versions/{version_number}",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/assistants/slug/{assistant_slug:path}",
+    "later": "/v1/assistants/{assistant_id}/versions/{version1}/compare/{version2}",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/assistants/slug/{assistant_slug:path}",
+    "later": "/v1/assistants/{assistant_id}/users/prompt-variables",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/assistants/slug/{assistant_slug:path}",
+    "later": "/v1/assistants/{assistant_id}/skills",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/assistants/prebuilt/{slug}",
+    "later": "/v1/assistants/{assistant_id}/versions",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/assistants/prebuilt/{slug}",
+    "later": "/v1/assistants/{assistant_id}/skills",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/assistants/virtual/model",
+    "later": "/v1/assistants/{assistant_id}/model",
+    "method": "POST"
+  },
+  {
+    "earlier": "/v1/assistants/metrics/{conversation_id}",
+    "later": "/v1/assistants/{assistant_id}/versions",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/assistants/metrics/{conversation_id}",
+    "later": "/v1/assistants/{assistant_id}/skills",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/assistants/{assistant_id}/reactions",
+    "later": "/v1/assistants/categories/{id}",
+    "method": "DELETE"
+  },
+  {
+    "earlier": "/v1/assistants/{assistant_id}/versions",
+    "later": "/v1/assistants/categories/{id}",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/assistants/categories/list",
+    "later": "/v1/assistants/categories/{id}",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/assistants/categories/{id}",
+    "later": "/v1/assistants/{assistant_id}/skills",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/index/users",
+    "later": "/v1/index/{index_id}",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/index/find_id",
+    "later": "/v1/index/{index_id}",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/conversations/search",
+    "later": "/v1/conversations/{conversation_id}",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/conversations/new",
+    "later": "/v1/conversations/{conversation_id}",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/conversations/{conversation_id}/history/{history_index}",
+    "later": "/v1/conversations/folder/{folder:path}",
+    "method": "DELETE"
+  },
+  {
+    "earlier": "/v1/conversations/{conversation_id}/history",
+    "later": "/v1/conversations/folder/{folder:path}",
+    "method": "DELETE"
+  },
+  {
+    "earlier": "/v1/conversations/{conversation_id}/history/{history_index}",
+    "later": "/v1/conversations/folder/{folder:path}",
+    "method": "PUT"
+  },
+  {
+    "earlier": "/v1/conversations/{conversation_id}/history",
+    "later": "/v1/conversations/folder/{folder:path}",
+    "method": "PUT"
+  },
+  {
+    "earlier": "/v1/conversations/folder/{folder:path}",
+    "later": "/v1/conversations/{conversation_id}/messages/{history_index}/output",
+    "method": "PUT"
+  },
+  {
+    "earlier": "/v1/workflows/prebuilt/{slug}",
+    "later": "/v1/workflows/{workflow_id}/executions",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/workflows/id/{workflow_id}",
+    "later": "/v1/workflows/{workflow_id}/executions",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/workflows/custom-nodes/{custom_node_id}/schema",
+    "later": "/v1/workflows/{workflow_id}/executions/{execution_id}",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/guardrails/assignments",
+    "later": "/v1/guardrails/{guardrail_id}",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/vendors/{origin}/{entity}/settings",
+    "later": "/v1/vendors/{origin}/{entity}/{vendor_entity_id}",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/vendors/{origin}/{entity}/{vendor_entity_id}/aliases",
+    "later": "/v1/vendors/{origin}/{entity}/{vendor_entity_id}/{importable_entity_detail}",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/vendors/{origin}/{entity}/{vendor_entity_id}/versions",
+    "later": "/v1/vendors/{origin}/{entity}/{vendor_entity_id}/{importable_entity_detail}",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/vendors/{origin}/{entity}/{vendor_entity_id}/endpoints",
+    "later": "/v1/vendors/{origin}/{entity}/{vendor_entity_id}/{importable_entity_detail}",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/workspaces/conversations/{conversation_id}",
+    "later": "/v1/workspaces/{workspace_id}/files",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/providers/datasource_schemas",
+    "later": "/v1/providers/{provider_id}",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/ide/inference/virtual",
+    "later": "/v1/ide/inference/{assistant_id}",
+    "method": "POST"
+  },
+  {
+    "earlier": "/v1/katas/leaderboard",
+    "later": "/v1/katas/{kata_id}",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/katas/tags",
+    "later": "/v1/katas/{kata_id}",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/katas/roles",
+    "later": "/v1/katas/{kata_id}",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/skills/events",
+    "later": "/v1/skills/{skill_id}",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/skills/categories",
+    "later": "/v1/skills/{skill_id}",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/skills/users",
+    "later": "/v1/skills/{skill_id}",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/skills/config",
+    "later": "/v1/skills/{skill_id}",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/scheduler-runs/stats",
+    "later": "/v1/scheduler-runs/{run_id}",
+    "method": "GET"
+  }
+]

@@ -1,0 +1,92 @@
+{
+  "decision": "request-changes",
+  "rationale": "Four blocking findings: the AC4 MR statement of the computed total (45 pairs) is missing, MCP-auth routers sit outside the guarded profile despite the docstring, the probe helper re-spawns on failure and drops stderr on timeout, and three bare dict annotations break code-quality.md. No lens failed or was truncated and nothing was deferred; 13 candidates were dismissed as noise (spec-directed warn-only behavior, theoretical environment drift, or already caught by the full-snapshot test), and AC3 and AC7c remain pending-stage-7.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "spec", "item": "OpenAPI snapshot: committed JSON of app.openapi() from e55bea3005, sorted keys, stable indentation", "status": "pass", "notes": "baselines/openapi.json written via canonical_json (sort_keys, indent=2); 469 paths per implementation notes"},
+    {"kind": "spec", "item": "Snapshot test compares full live schema byte-identically with a readable diff on failure", "status": "pass", "notes": "test_openapi_snapshot.py exact-text compare of app.openapi(); unified diff capped at 200 lines in baseline.py"},
+    {"kind": "spec", "item": "Failing run never rewrites the snapshot; regeneration is explicit, documented, manual", "status": "pass", "notes": "baseline.py is read-only; regenerate_baselines.py is the documented manual entry; test_baseline.py asserts bytes unchanged"},
+    {"kind": "spec", "item": "Route precedence: compute every same-method overlapping pair from live app.routes, modelling {x} and {x:path}", "status": "pass", "notes": "route_overlap.py exact pattern intersection; test_route_overlap.py covers {x}, {x:path}, empty path, literal-next-to-param"},
+    {"kind": "spec", "item": "Generic-first pairs recorded as they are; ordered pairs by method and path template committed as baseline", "status": "pass", "notes": "route_precedence.json holds 45 pairs (verified) incl. generic-first ones; registration order kept"},
+    {"kind": "spec", "item": "Precedence test fails on swapped pair or missing baseline route; new overlapping pairs reported, not failed", "status": "pass", "notes": "_order_violations fails; _new_pairs emit warnings.warn; pytest.ini does not escalate UserWarning; unit-tested"},
+    {"kind": "spec", "item": "Cross-check: computed baseline contains all 16 hand-reproduced pairs (technical-analysis.md section 2)", "status": "pass", "notes": "test_baseline_contains_hand_reproduced_pairs asserts len==16 and subset; all 16 present"},
+    {"kind": "spec", "item": "App construction: main.py built with all conditional includes on plus WORKFLOW_GENERATION_ENABLED", "status": "pass", "notes": "PROFILE_ENV and is_litellm_enabled patch; profile test asserts index, budget, users, local-auth, workflows/generate in OpenAPI"},
+    {"kind": "spec", "item": "StateImportService().import_indexes() neutralized at import so no real service is contacted", "status": "pass", "notes": "patched in app_probe.py before importing main"},
+    {"kind": "spec", "item": "Profile is fixed in code, independent of the developer's environment", "status": "pass", "notes": "only PATH and HOME inherited; dotenv and pydantic .env reads patched; APP_VERSION and PYTHONHASHSEED pinned"},
+    {"kind": "story-ac", "item": "AC1: snapshot test passes on the unchanged base tree and fails when an operationId, tag, path or component changes", "status": "pass", "notes": "test.local.log: 42 passed incl. test_openapi_matches_baseline; any text difference fails"},
+    {"kind": "story-ac", "item": "AC2: a failing run never rewrites the snapshot", "status": "pass", "notes": "baseline.py read-only; no flag or env switch; test_baseline.py asserts bytes unchanged"},
+    {"kind": "story-ac", "item": "AC3: precedence test passes on base and fails on swapped order; both failure modes shown once with a reverted mutation", "status": "pending-stage-7", "notes": "passes on base; swap and missing-route detection unit-tested; live mutation demo is execution evidence"},
+    {"kind": "story-ac", "item": "AC4: baseline holds all 16 hand-reproduced pairs and the computed total is stated in the MR", "status": "partial", "notes": "16 pairs enforced by test; total 45 confirmed in route_precedence.json; MR statement not yet written (CR-001)"},
+    {"kind": "story-ac", "item": "AC5: conditional routers (index, budget, user-management, local auth) are in the guarded app, or the gap is recorded", "status": "pass", "notes": "all four plus workflow generation covered by test_guarded_app_profile.py; no gap to record"},
+    {"kind": "story-ac", "item": "AC6: building the app contacts no network, database or Elasticsearch", "status": "pass", "notes": "socket connect/connect_ex refused and recorded, get_engine and import_indexes patched; profile test asserts contacts_attempted == []"},
+    {"kind": "story-ac", "item": "AC7a: nothing under src/ changes; only new tests and committed fixtures are added", "status": "pass", "notes": "all 13 changed paths are new files under tests/codemie/rest_api/router_guards/"},
+    {"kind": "story-ac", "item": "AC7b: new .py files carry the Apache header", "status": "pass", "notes": "all 11 new .py files start with the Apache 2.0 header, same text as existing tests"},
+    {"kind": "story-ac", "item": "AC7c: make ruff and the new tests pass", "status": "pending-stage-7", "notes": "test.local.log shows 42 passed; ruff output is owned by Stage 7"},
+    {"kind": "spec", "item": "Non-goal: no change to src/, main.py registration, endpoint behavior, paths or response shapes", "status": "pass", "notes": "diff touches only tests/codemie/rest_api/router_guards/"},
+    {"kind": "spec", "item": "Non-goal: no retargeting of mock.patch references or edits to existing tests", "status": "pass", "notes": "every diff entry is a new file; implementation notes record no renames"},
+    {"kind": "spec", "item": "Non-goal: no runtime behavior tests (including auth enforcement); step 0 guards schema and order only", "status": "pass", "notes": "tests check OpenAPI text, route order and app-build profile only; no request is sent"},
+    {"kind": "spec", "item": "Ticket criterion 1: module-size target (about 500 lines) binds; handler length soft", "status": "na", "notes": "applies to split steps 1-7"},
+    {"kind": "spec", "item": "Ticket criterion 2: OpenAPI stays identical except one regeneration at step 1 limited to PaginationInfo renames", "status": "na", "notes": "applies to steps 1-7; step 0 creates the snapshot"},
+    {"kind": "spec", "item": "Ticket criterion 3: baseline is the computed pair set, {x:path} included, not the number 40", "status": "pass", "notes": "baseline is computed (45 pairs) and {x:path} is modelled; no test hard-codes 40"},
+    {"kind": "spec", "item": "Ticket criterion 4: export only router, no re-exports, for the five target packages", "status": "na", "notes": "applies to steps 1-7"},
+    {"kind": "spec", "item": "Ticket criterion 5: step 2 moves access helpers to routers/utils.py; step 1 removes router-class imports", "status": "na", "notes": "applies to steps 1-2"},
+    {"kind": "spec", "item": "Ticket criterion 6: test retargeting scope and ruff max-complexity 16", "status": "na", "notes": "applies to steps 1-7; no existing tests or ruff config touched"},
+    {"kind": "spec", "item": "Ticket criterion 7: split MRs are move-only, reviewable with git diff --color-moved", "status": "na", "notes": "applies to split MRs"},
+    {"kind": "spec", "item": "Ticket criterion 8: /sanity requested in MRs moving auth, access-check or authorization code", "status": "na", "notes": "step 0 moves no auth code; applies to steps 2, 4, 5, 7"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "5 commit subjects in e55bea3..HEAD all match the documented EPMCDME-####: Description format in git-workflow.md"},
+    {"kind": "code-quality", "status": "partial", "notes": "unmet: bare dict annotations (code-quality.md Types And Imports) at test_guarded_app_profile.py:25, test_route_overlap.py:45, test_route_precedence.py:96; other checks met"},
+    {"kind": "security", "status": "pass", "notes": "no violation of security-patterns.md; list-argv subprocess without shell, scrubbed child env, outbound sockets refused, baselines hold no secrets"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "evidence",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "tests/codemie/rest_api/router_guards/baselines/route_precedence.json",
+      "title": "AC4 computed pair total not stated in MR",
+      "problem": "AC4 requires the baseline to hold all 16 hand-reproduced pairs and the computed total to be stated in the MR. The 16 pairs are enforced by test_baseline_contains_hand_reproduced_pairs, and route_precedence.json holds 45 entries (verified: 227 lines, 5 per entry plus brackets). The 45-pair total appears only in the implementation notes and regenerate_baselines output, not in any MR-bound text; the acceptance lens graded the criterion partial.",
+      "impact": "A story acceptance criterion stays partially met: the MR reviewer cannot see how many order-dependent pairs the guard pins, against the 40 pairs the ticket's static scan estimated.",
+      "recommendation": "State the computed total (45 overlapping route pairs, versus the ticket's 40 static-scan estimate) in the MR description and record that text as the evidence artifact mapped to CR-001 for the check round."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/rest_api/router_guards/guarded_app.py",
+      "line": 55,
+      "title": "MCP auth routers outside guarded profile",
+      "problem": "PROFILE_ENV sets \"MCP_AUTH_ENABLED\": \"false\" (guarded_app.py:55-56), so get_mcp_auth_router() and get_cimd_router() (main.py:1099-1100) return the 503 stub routers (src/codemie/enterprise/mcp_auth/router.py:522-531). The enabled_router and enabled_cimd_router routes (for example GET /v1/mcp-auth/oauth2/callback-page.js and the 200 variant of GET /v1/mcp-auth/status) and their schemas are in neither the OpenAPI snapshot nor the precedence baseline, while the module docstring (guarded_app.py:22) says \"Every conditional router of ``main.py`` is on\".",
+      "impact": "The guard's stated coverage is false. These routers are registered last and are outside the five packages being split, so no regression is expected from the split itself, but whether a later step can affect them was not established (reachability of that consequence unconfirmed).",
+      "recommendation": "Either enable MCP auth in the hermetic profile (regenerate both baselines and assert an enabled-only route in test_guarded_app_profile.py), or keep it off and correct the docstring to name the MCP auth enabled variants as an intentional, recorded gap."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/rest_api/router_guards/guarded_app.py",
+      "line": 76,
+      "title": "Probe failure re-spawns per test; timeout drops stderr",
+      "problem": "load_guarded_app_dump is decorated with @functools.cache (guarded_app.py:71), which stores only successful returns. subprocess.run(..., timeout=_PROBE_TIMEOUT_SECONDS) (lines 76-83, 180 s) has no except subprocess.TimeoutExpired, and only the non-zero-exit branch (lines 84-85) puts result.stderr in its error. A failing or hanging import of main.py therefore re-runs the probe for each consuming test (test_openapi_snapshot, the precedence tests, the module-scoped profile fixture), and a timeout surfaces without the child's stderr.",
+      "impact": "On a loaded or broken CI runner a hung probe costs up to 180 s per consuming test before failing, which can exhaust the job timeout and lose the pytest report, and the stalled import cannot be diagnosed. The guard still fails rather than passing, so this is a failure-path robustness gap.",
+      "recommendation": "Cache the failure so later calls re-raise the same RuntimeError, and catch subprocess.TimeoutExpired to raise a RuntimeError that includes the child's captured stderr (exc.stderr)."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/rest_api/router_guards/test_guarded_app_profile.py",
+      "line": 25,
+      "title": "Bare dict return annotations in new tests",
+      "problem": "code-quality.md (Types And Imports, line 19) lists bare dict annotations under Avoid and prefers parameterized generics. New code has three: test_guarded_app_profile.py:25 `def dump() -> dict:`, test_route_overlap.py:45 and test_route_precedence.py:96, both `def _route(path: str, *methods: str) -> dict:`.",
+      "impact": "A documented code-quality standard is broken in new code, and the standards review marks it blocking for the workflow.",
+      "recommendation": "Parameterize the annotations: `-> dict[str, Any]` for dump() (it holds openapi, routes and contacts_attempted) and `-> dict[str, object]` for both _route() helpers; import Any in test_guarded_app_profile.py."
+    }
+  ]
+}

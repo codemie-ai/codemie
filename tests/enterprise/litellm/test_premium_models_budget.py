@@ -510,10 +510,10 @@ class TestSpendingEndpointPremiumMetric:
 
         with _patch_budget_name("premium_models"):
             with patch(
-                "codemie.rest_api.routers.analytics.asyncio.to_thread",
+                "codemie.rest_api.routers.analytics.spending.asyncio.to_thread",
                 new=AsyncMock(side_effect=[standard_spending, None, premium_spending]),
             ):
-                from codemie.rest_api.routers.analytics import get_user_spending
+                from codemie.rest_api.routers.analytics.spending import get_user_spending
 
                 response = await get_user_spending(user=mock_user)
                 body = response.body
@@ -544,10 +544,10 @@ class TestSpendingEndpointPremiumMetric:
 
         with _patch_cli_budget_name("cli_budget"):
             with patch(
-                "codemie.rest_api.routers.analytics.asyncio.to_thread",
+                "codemie.rest_api.routers.analytics.spending.asyncio.to_thread",
                 new=AsyncMock(side_effect=[standard_spending, cli_spending]),
             ):
-                from codemie.rest_api.routers.analytics import get_user_spending
+                from codemie.rest_api.routers.analytics.spending import get_user_spending
 
                 response = await get_user_spending(user=mock_user)
                 import json
@@ -571,10 +571,10 @@ class TestSpendingEndpointPremiumMetric:
 
         with _patch_budget_name(""):
             with patch(
-                "codemie.rest_api.routers.analytics.asyncio.to_thread",
+                "codemie.rest_api.routers.analytics.spending.asyncio.to_thread",
                 new=AsyncMock(return_value=standard_spending),
             ):
-                from codemie.rest_api.routers.analytics import get_user_spending
+                from codemie.rest_api.routers.analytics.spending import get_user_spending
 
                 response = await get_user_spending(user=mock_user)
                 import json
@@ -599,10 +599,10 @@ class TestSpendingEndpointPremiumMetric:
 
         with _patch_budget_name("premium_models"):
             with patch(
-                "codemie.rest_api.routers.analytics.asyncio.to_thread",
+                "codemie.rest_api.routers.analytics.spending.asyncio.to_thread",
                 new=AsyncMock(side_effect=[standard_spending, None]),
             ):
-                from codemie.rest_api.routers.analytics import get_user_spending
+                from codemie.rest_api.routers.analytics.spending import get_user_spending
 
                 response = await get_user_spending(user=mock_user)
                 import json

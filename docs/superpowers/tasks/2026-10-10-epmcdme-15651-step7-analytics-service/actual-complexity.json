@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "generated": "2026-10-10T12:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 1, "label": "XS" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 12,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 5,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Three modules touched across two layers: new service/analytics/spending_formatter.py (one private constant, build_spending_metric, build_spending_metrics, calculate_time_until_reset, paginate_tabular), routers/analytics/_spending_support.py (formatters removed, now imports calculate_time_until_reset), and routers/analytics/spending.py (single importer rewired). Function bodies unchanged; admin budget-view gate and dead cluster stay in the router. Scored M, not S, because the move spans router and service layers." },
+    { "dimension": "file_change_estimate", "reason": "diffstat 5 files (2 modified source, 1 new source, 2 new test files: test_spending_formatter.py, test_analytics_spending_wiring.py) maps to M. The 770 insertions are mostly characterization and wiring tests; the 176 deletions are the formatter bodies leaving the router package." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

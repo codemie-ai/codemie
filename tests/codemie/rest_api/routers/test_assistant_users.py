@@ -32,9 +32,9 @@ def user():
 
 @pytest.fixture(autouse=True)
 def override_dependency(user):
-    from codemie.rest_api.routers import assistant as assistant_router
+    from codemie.rest_api.security.authentication import authenticate
 
-    app.dependency_overrides[assistant_router.authenticate] = lambda: user
+    app.dependency_overrides[authenticate] = lambda: user
     yield
     app.dependency_overrides = {}
 

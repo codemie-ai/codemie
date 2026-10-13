@@ -33,9 +33,8 @@ from fastapi.routing import APIRoute
 
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.enterprise.litellm.budget_categories import BudgetCategory
+from codemie.rest_api.models.budget import BudgetCreateRequest, BudgetUpdateRequest
 from codemie.rest_api.routers.budget_router import (
-    BudgetCreateRequest,
-    BudgetUpdateRequest,
     router,
     create_budget,
     get_budget,

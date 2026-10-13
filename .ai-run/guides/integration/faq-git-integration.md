@@ -67,7 +67,7 @@ retrieval can return the relevant section without loading the entire article int
 | Processor | `src/codemie/datasource/git_faq/git_faq_datasource_processor.py` |
 | Base embedding pipeline | `src/codemie/datasource/base_datasource_processor.py` |
 | Retrieval dispatch | `src/codemie/agents/tools/kb/search_kb.py` |
-| REST | `POST/PUT /v1/index/knowledge_base/git_faq` in `src/codemie/rest_api/routers/index.py` |
+| REST | `POST/PUT /v1/index/knowledge_base/git_faq` in `src/codemie/rest_api/routers/index/kb_git_faq.py` |
 | Triggers | `reindex_git_faq` actor, webhook/cron FAQ branches, `UNSUPPORTED_RESUME_TYPES` |
 | Processor tests | `tests/codemie/datasource/git_faq/test_git_faq_datasource_processor.py` |
 | Loader/parser tests | `tests/codemie/datasource/loader/test_git_faq_loader.py`, `test_faq_markdown_parser.py` |

@@ -22,8 +22,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from codemie.enterprise.litellm.budget_categories import BudgetCategory
+from codemie.rest_api.models.budget import BudgetAssignmentBackfillResult
 from codemie.rest_api.routers.budget_router import (
-    BudgetAssignmentBackfillResult,
     _build_budget_response,
     backfill_user_budget_assignments,
     sync_budgets,

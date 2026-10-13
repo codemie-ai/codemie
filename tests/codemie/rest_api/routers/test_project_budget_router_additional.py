@@ -21,8 +21,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from codemie.core.exceptions import ExtendedHTTPException
+from codemie.rest_api.models.project_budget import RebalanceProjectBudgetRequest
 from codemie.rest_api.routers.project_budget_router import (
-    RebalanceProjectBudgetRequest,
     _member_budget_id,
     clear_member_override,
     get_project_budget,

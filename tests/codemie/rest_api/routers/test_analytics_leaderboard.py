@@ -62,7 +62,7 @@ def anyio_backend():
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("endpoint", _LEADERBOARD_READ_ENDPOINTS)
-@patch("codemie.rest_api.routers.analytics.config")
+@patch("codemie.rest_api.routers.analytics.leaderboard.config")
 async def test_leaderboard_read_returns_503_when_disabled(mock_config, endpoint):
     """Every leaderboard GET endpoint must return 503 when LEADERBOARD_ENABLED=False."""
     mock_config.LEADERBOARD_ENABLED = False
@@ -76,8 +76,8 @@ async def test_leaderboard_read_returns_503_when_disabled(mock_config, endpoint)
 
 
 @pytest.mark.anyio
-@patch("codemie.rest_api.routers.analytics.AnalyticsService")
-@patch("codemie.rest_api.routers.analytics.config")
+@patch("codemie.rest_api.routers.analytics.leaderboard.AnalyticsService")
+@patch("codemie.rest_api.routers.analytics.leaderboard.config")
 async def test_leaderboard_compute_returns_503_when_disabled(mock_config, mock_service_class):
     """POST /leaderboard/compute must return 503 and make no service call when LEADERBOARD_ENABLED=False."""
     mock_config.LEADERBOARD_ENABLED = False
@@ -92,8 +92,8 @@ async def test_leaderboard_compute_returns_503_when_disabled(mock_config, mock_s
 
 
 @pytest.mark.anyio
-@patch("codemie.rest_api.routers.analytics.AnalyticsService")
-@patch("codemie.rest_api.routers.analytics.config")
+@patch("codemie.rest_api.routers.analytics.leaderboard.AnalyticsService")
+@patch("codemie.rest_api.routers.analytics.leaderboard.config")
 async def test_leaderboard_summary_200_when_enabled(mock_config, mock_service_class):
     """GET /leaderboard/summary returns 200 when LEADERBOARD_ENABLED=True."""
     mock_config.LEADERBOARD_ENABLED = True
@@ -131,7 +131,7 @@ def _denied_access():
 @pytest.mark.anyio
 @pytest.mark.parametrize("endpoint", _LEADERBOARD_READ_ENDPOINTS)
 @pytest.mark.parametrize("flag_enabled", [True, False])
-@patch("codemie.rest_api.routers.analytics.config")
+@patch("codemie.rest_api.routers.analytics.leaderboard.config")
 async def test_leaderboard_read_denies_unauthorized_caller_regardless_of_flag(mock_config, flag_enabled, endpoint):
     """An unauthorized caller must get the same 403 whether LEADERBOARD_ENABLED is True or False —
     the flag check must never run (and thus never leak) before the access check fails."""
@@ -153,8 +153,8 @@ async def test_leaderboard_read_denies_unauthorized_caller_regardless_of_flag(mo
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("flag_enabled", [True, False])
-@patch("codemie.rest_api.routers.analytics.AnalyticsService")
-@patch("codemie.rest_api.routers.analytics.config")
+@patch("codemie.rest_api.routers.analytics.leaderboard.AnalyticsService")
+@patch("codemie.rest_api.routers.analytics.leaderboard.config")
 async def test_leaderboard_compute_denies_unauthorized_caller_regardless_of_flag(
     mock_config, mock_service_class, flag_enabled
 ):

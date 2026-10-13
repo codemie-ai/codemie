@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "task": "Split the 1,253-line routers/projects.py into a move-only routers/projects/ package (about 3 route modules plus 2 private modules, __init__ exporting only router) and retarget 313 test patch strings and 27 imports across 5 test files, keeping OpenAPI and route-precedence baselines byte-identical.",
+  "generated": "2026-10-09T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 15,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "One router becomes about 6 modules (3 route modules, 2 private modules such as _common and _spending_support, plus __init__ composing one router) with shared private helpers whose readers (config, get_session, get_async_session, _spend_repo) split by caller. All in the REST router layer, move-only, no new abstraction and no class, so it stays L rather than XL. Grouping (crud/spending/membership vs a fourth management module) and where R4 lands relative to R3/R5 is the open design choice."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "About 6 new source files, projects.py removed, 4 to 5 test files edited (313 patch strings, 27 imports; 3,868-line test_projects_router.py alone holds 267 strings). About 12 files in 2 directories (routers/, tests/.../routers); main.py untouched. New-file count sits at XL but modified count and single-subsystem locality hold it at L."
+    }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from S to M: authorization code moves (_authorize_project_access for 8 routes, _raise_project_not_found, R4 inline can_access, spending visibility helpers, auditor flags), so /sanity is required; 24+ inert patch strings can pass silently when mis-aimed, and a dropped Depends(authenticate) or Depends(_authorize_project_access) changes the byte-exact OpenAPI snapshot."
+  ],
+  "split_recommendation": null
+}

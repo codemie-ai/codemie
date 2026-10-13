@@ -1,0 +1,196 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15651_split-router-modules",
+  "head": "21a3dc3c3c3a3858c1027f8f24138e503c23c90f",
+  "runner": "poetry",
+  "started_at": "2026-10-10T17:21:30Z",
+  "completed_at": "2026-10-10T17:44:16Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1270,
+      "command": "make ruff",
+      "exit_code": 0,
+      "notes": "ruff format: 2807 files left unchanged; ruff check --fix and ruff check: All checks passed; git status and git diff hash identical before and after (tree unchanged)"
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 4031,
+      "command": "make build",
+      "exit_code": 0,
+      "notes": "poetry build produced codemie-0.8.0 sdist and wheel (dist/ is gitignored)"
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 603,
+      "command": "make license-check",
+      "exit_code": 0,
+      "notes": "Checked 2515 files, 0 missing license headers"
+    },
+    {
+      "id": "secrets",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 92387,
+      "command": "make gitleaks",
+      "exit_code": 2,
+      "notes": "Literal gate result FAIL: make gitleaks exit 2, 'leaks found: 6', all rule generic-api-key. All 6 are in the caller-accepted list: 5 known local ignored/untracked files (.codex/config.toml:15, .mcp.json.lock:11, opencode.json:26, opencode.json.lock:303, .codegraph/codegraph.db-wal:173745 - a WAL file, its line number moves between runs) and the untracked gitignored run-dir file code-review.local.diff:2122. The previous tracked-file finding tests/codemie/service/project/test_project_spending_service.py:983 is GONE: zero tracked-file hits, zero hits in any committed-candidate run-dir artifact. Corroboration with the same image and .gitleaks.toml over a git-archive extract of HEAD (tracked files only): 'no leaks found', exit 0. Informational, outside make gitleaks (a dir scan): gitleaks git over 8a209018b9..HEAD still reports 1 historical hit, test_project_spending_service.py:981 in commit edc2600103 (the old keyword-argument line, fixed forward by 21a3dc3c3c, history not rewritten). Whether the accepted findings clear this gate is the caller's ruling."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 99612,
+      "command": "make test",
+      "exit_code": 2,
+      "notes": "Literal gate result FAIL: make test exit 2, 2 failed, 19692 passed, 175 skipped in 96s. Both failures are the known unrelated tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_matplotlib_png_generation and ::test_guard_allows_openpyxl_to_save_workbook (sandbox subprocess returncode -2, KeyboardInterrupt in audit_hook). No other test failed; the known email-analysis flake did not occur. Every test this step added or touched passes (P3, P4, P6, P10). Whether known failures clear this gate is the caller's ruling."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 124568,
+      "command": "make sonar-local",
+      "exit_code": 2,
+      "notes": "Scan never started: sonar-scanner is not installed (not on PATH, SONAR_SCANNER_PATH unset), and the coverage run that precedes the scan exited 1 ('[sonar-local] coverage generation exited with code 1': the same 2 known unrelated failures). SONAR_TOKEN is set. Enable locally: install the SonarScanner CLI or set SONAR_SCANNER_PATH, then run with SONAR_SKIP_TESTS=1 against the coverage.xml this run wrote (gitignored). Owed to the server; nothing local settles it."
+    },
+    {
+      "id": "commit-msg",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 2387,
+      "command": "for each of the 91 commits in e55bea30059e..HEAD: bash scripts/git-hooks/commit_msg.sh <message file>",
+      "exit_code": 0,
+      "notes": "91 of 91 subjects accepted (EPMCDME-<n>: prefix), including the new 21a3dc3c3c; 0 rejected; 0 merge/revert/fixup/squash/amend bypass subjects; 0 merge commits; all 91 also have a capitalized description after the prefix"
+    },
+    {
+      "id": "hook-staged-only",
+      "source": "hook",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "scripts/git-hooks/_ruff_staged.sh; scripts/git-hooks/validate_secrets.sh (gitleaks protect --staged)",
+      "exit_code": 0,
+      "notes": "Pre-commit steps that inspect staged changes only; nothing is staged. Whole-tree equivalents ran as lint, license and secrets."
+    },
+    {
+      "id": "ci-pre-ci-guard",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": ".gitlab-ci.yml wait-ci-init (remote template pre-ci-guard.yml)",
+      "exit_code": 0,
+      "notes": "Waits on external contexts ci-pipeline and compliance-report from a remote GitLab template; needs GitLab, cannot run locally. The repo has no other pipeline config (no .github/workflows, .husky, lefthook, Jenkinsfile, .tekton, azure-pipelines)."
+    },
+    {
+      "id": "P1",
+      "source": "spec",
+      "status": "PASS",
+      "duration_ms": 565,
+      "command": "git grep -nw (19 old names|_WIDGET_COLUMNS|spend_repo) src tests; header diff vs BASE file; ls old module; git diff BASE..HEAD -- analytics",
+      "exit_code": 0,
+      "notes": "AC1: header lines 1-13 identical to the BASE file (line 13 is '# limitations under the License.'); old routers/projects/_spending_support.py absent in tree and at HEAD (present at BASE); 0 hits for the 19 old names (git grep -nw, src+tests); _WIDGET_COLUMNS 2 hits, both in the new module (definition :45, use :457); spend_repo only in the service module and spending.py (:39 import, :97 use); 0 imports of the old module path; analytics twin (_spending_support.py, spending.py, its test files) untouched BASE..HEAD and present; new module 458 lines"
+    },
+    {
+      "id": "P2",
+      "source": "spec",
+      "status": "PASS",
+      "duration_ms": 337,
+      "command": "python bodycheck.py --expect 20; python bodycheck.py --negative (BASE 8a209018b9)",
+      "exit_code": 0,
+      "notes": "AC2: bodycheck --expect 20: 20 of 20 OK (exit 0); --negative: 'NEGATIVE OK: the alteration was detected as exactly the altered item' (exit 1 by design). Tools run from a byte-identical scratchpad copy (cmp-verified), BASE file regenerated with git show. git diff BASE..HEAD of crud.py and spending.py is only the import blocks and the 4 renamed call identifiers (8+2 insertions, 8+2 deletions)."
+    },
+    {
+      "id": "P3",
+      "source": "spec",
+      "status": "PASS",
+      "duration_ms": 663689,
+      "command": "pytest tests/codemie/service/project/test_project_spending_service.py -n 0; python mutate.py --moved",
+      "exit_code": 0,
+      "notes": "AC3: characterization file 96 passed (87 characterization + 9 signature); mutate.py --moved 234 of 234 mutations red, 'tree clean: True'. mutate.py read first: it writes only into private worker copies (rsync of src plus a minimal test tree under its own work dir), restores in finally, refuses a dirty src and ends with git diff/status checks; run from a cmp-verified copy in the scratchpad (--check first: 234 of 234 rows applicable), worker dirs removed after. Afterwards git diff --exit-code -- src tests exit 0 and git status --porcelain -- src tests empty."
+    },
+    {
+      "id": "P4",
+      "source": "spec",
+      "status": "PASS",
+      "duration_ms": 14,
+      "command": "git diff --exit-code c1b03d26b3 HEAD -- tests/codemie/rest_api/routers/test_projects_spending_wiring.py",
+      "exit_code": 0,
+      "notes": "AC4: blob 0b6a16a4f1 identical at c1b03d26b3 and HEAD, working copy clean; the wiring file passes (8 passed)"
+    },
+    {
+      "id": "P5",
+      "source": "spec",
+      "status": "PASS",
+      "duration_ms": 59,
+      "command": "python retarget.py --check; git diff --name-status BASE..HEAD -- tests; flip-report.txt",
+      "exit_code": 0,
+      "notes": "AC5: 'RETARGET CHECK OK: literal 35, whole-name 9, import 4, call 7'. Modified test files: tests/codemie/rest_api/routers/test_projects_router.py (88 lines) and test_projects_router_auditor.py (22) only; added: test_projects_spending_wiring.py and tests/codemie/service/project/test_project_spending_service.py. Flip report (recorded, not re-run): 44 literals, PASS(inert) 21, FAIL(caught) 23 = HANDOFF 21 of 44."
+    },
+    {
+      "id": "P6",
+      "source": "spec",
+      "status": "PASS",
+      "duration_ms": 44276,
+      "command": "pytest ... -k TestPublicSignatures -n 0; python mutate.py --signatures",
+      "exit_code": 0,
+      "notes": "AC6: signature test 9 passed; mutate.py --signatures 9 of 9 mutations red, 'tree clean: True' (same private-copy mechanism as P3); git diff --exit-code -- src tests exit 0 afterwards."
+    },
+    {
+      "id": "P7",
+      "source": "spec",
+      "status": "PASS",
+      "duration_ms": 6149,
+      "command": "python -I p7_scan2.py <src> (AST); git grep -n rest_api.routers -- src/codemie/service src/codemie/rest_api/handlers",
+      "exit_code": 0,
+      "notes": "AC7: AST scan of 1552 src modules (99 define a top-level router, 399 underscore-name ImportFrom statements): 0 violations; synthetic positive control (a module importing _x from a router-defining module) detected. service/ and rest_api/handlers/ import from routers/ only routers.utils (4 statements: assistant_handlers.py:58, scheduler_run_service.py:31, scheduler_settings_service.py:705, thought_consumer.py:22). New module: no fastapi, no routers, no relative imports, no logging; crud.py and spending.py import only public names from it."
+    },
+    {
+      "id": "P8",
+      "source": "spec",
+      "status": "PASS",
+      "duration_ms": 26418,
+      "command": "poetry run python -I -c 'import <module>' x3 (project_spending_service, service.project, rest_api.routers.projects)",
+      "exit_code": 0,
+      "notes": "AC8: all three fresh-interpreter imports exit 0 (no cycle)."
+    },
+    {
+      "id": "P9",
+      "source": "spec",
+      "status": "PASS",
+      "duration_ms": 29202,
+      "command": "poetry run pytest tests/codemie/rest_api/router_guards -n 0 --show-capture=no -q; git diff --exit-code BASE -- router_guards main.py _common.py models service/project/__init__.py",
+      "exit_code": 0,
+      "notes": "AC9: router_guards 46 passed; git diff --exit-code 8a209018b9 over tests/codemie/rest_api/router_guards, src/codemie/rest_api/main.py, routers/projects/_common.py, rest_api/models, service/project/__init__.py exits 0 (empty; baselines unchanged; regenerate_baselines not run)."
+    },
+    {
+      "id": "P10",
+      "source": "spec",
+      "status": "PASS",
+      "duration_ms": 80128,
+      "command": "poetry run pytest tests/codemie/rest_api/routers tests/unit/routers tests/codemie/service/project tests/enterprise/litellm tests/codemie/rest_api/router_guards -n 0 --show-capture=no -q",
+      "exit_code": 0,
+      "notes": "AC10: 2749 passed, 9 skipped, 0 failed in 65s."
+    },
+    {
+      "id": "P11",
+      "source": "spec",
+      "status": "PASS",
+      "duration_ms": 1802,
+      "command": "grep -rIEn routers.projects._spending_support|routers/projects/_spending_support over codemie/src, codemie/tests and 4 sibling repos (excl .git .venv node_modules superpowers local dist .codegraph)",
+      "exit_code": 0,
+      "notes": "Stale importers: 0 hits for the module path in codemie/src, codemie/tests, codemie-enterprise, codemie-mcp-connect-service, codemie-ui, codemie-public-skills. Broader checks: no '_spending_support' outside the analytics twin in any of the six trees; 0 hits for the 19 old underscore names in the four sibling repos."
+    }
+  ],
+  "failures": {
+    "secrets": "make gitleaks exit 2: leaks found: 6 (Secret/Match values deliberately not copied)\nRuleID: generic-api-key File: /workspace/.codex/config.toml Line: 15\nRuleID: generic-api-key File: /workspace/.mcp.json.lock Line: 11\nRuleID: generic-api-key File: /workspace/docs/superpowers/tasks/2026-10-10-epmcdme-15651-step7-projects-service/code-review.local.diff Line: 2122\nRuleID: generic-api-key File: /workspace/opencode.json Line: 26\nRuleID: generic-api-key File: /workspace/opencode.json.lock Line: 303\nRuleID: generic-api-key File: /workspace/.codegraph/codegraph.db-wal Line: 173745",
+    "unit": "FAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_matplotlib_png_generation\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_openpyxl_to_save_workbook\nE       assert -2 == 0   (both tests; sandbox subprocess returncode -2, KeyboardInterrupt in audit_hook)\n==== 2 failed, 19692 passed, 175 skipped, 261 warnings in 96.07s (0:01:36) =====\nmake: *** [Makefile:31: test] Error 1"
+  }
+}

@@ -62,7 +62,7 @@ def index_info(request):
     return index_obj
 
 
-@patch('codemie.rest_api.routers.index.IndexStatusService.get_index_info_list')
+@patch('codemie.rest_api.routers.index.queries.IndexStatusService.get_index_info_list')
 @pytest.mark.asyncio
 async def test_index_indexes_progress_no_filters(mock_get_index_info):
     mock_get_index_info.return_value = {}
@@ -70,7 +70,7 @@ async def test_index_indexes_progress_no_filters(mock_get_index_info):
     mock_get_index_info.assert_called_once()
 
 
-@patch('codemie.rest_api.routers.index.IndexStatusService.get_index_info_list')
+@patch('codemie.rest_api.routers.index.queries.IndexStatusService.get_index_info_list')
 @pytest.mark.asyncio
 async def test_index_indexes_progress_with_filters(mock_get_index_info):
     filters = json.dumps({"key": "value"})

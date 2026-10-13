@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "generated": "2026-10-10T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 15,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 7,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "file_change_estimate",
+      "reason": "7 files per diffstat (1480 insertions, 137 deletions): 3 production modules (new service/project/project_spending_service.py, routers/projects/crud.py, routers/projects/spending.py), 2 retargeted existing router test files, 2 new test files (service characterization tests, router wiring tests); spans 4 directories. 7 files maps to L."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "Closest pattern is the earlier steps of the same router split (move helpers into service/, bodies unchanged), so the move itself is low risk and trivially revertible. Bumped S to M because the moved code includes the access-control predicates (can_see_project_spending, manageable_project_names) and the retargeting of 35 patch literals could silently mask a broken wiring. The change adds its own defensive coverage (access table, 234-mutation scripted set, handler wiring tests, signature test), so the security aspect is covered."
+    }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from S to M: affects authorization (access-control predicates relocated to the service layer, behavior unchanged)"
+  ],
+  "split_recommendation": null
+}

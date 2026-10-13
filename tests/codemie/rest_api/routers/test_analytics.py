@@ -36,7 +36,7 @@ from fastapi.responses import JSONResponse
 
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.models.analytics import SummariesResponse, TabularResponse
-from codemie.rest_api.routers.analytics import _create_response, handle_analytics_errors
+from codemie.rest_api.routers.analytics._common import _create_response, handle_analytics_errors
 from codemie.rest_api.security.user import User
 from codemie.configs import config
 
@@ -161,7 +161,7 @@ class TestHandleAnalyticsErrorsDecorator:
         assert "Database connection lost" in exception.details
 
     @pytest.mark.asyncio
-    @patch("codemie.rest_api.routers.analytics.logger")
+    @patch("codemie.rest_api.routers.analytics._common.logger")
     async def test_decorator_logs_user_id_from_kwargs(self, mock_logger, mock_user):
         """Verify user context is extracted for logging."""
         # Arrange
@@ -181,7 +181,7 @@ class TestHandleAnalyticsErrorsDecorator:
         assert "user123@example.com" in call_args
 
     @pytest.mark.asyncio
-    @patch("codemie.rest_api.routers.analytics.logger")
+    @patch("codemie.rest_api.routers.analytics._common.logger")
     async def test_decorator_handles_missing_user(self, mock_logger):
         """Verify decorator handles cases where user is not in kwargs."""
 
@@ -270,11 +270,11 @@ class TestGetSummariesEndpoint:
     """Tests for the /v1/analytics/summaries endpoint."""
 
     @pytest.mark.asyncio
-    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
+    @patch("codemie.rest_api.routers.analytics.usage.AnalyticsService")
     async def test_with_time_period(self, mock_service_class, mock_user, sample_summaries_response_data):
         """Verify predefined time period is passed to service."""
         # Arrange
-        from codemie.rest_api.routers.analytics import get_summaries
+        from codemie.rest_api.routers.analytics.usage import get_summaries
 
         mock_service = AsyncMock()
         mock_service.get_summaries.return_value = sample_summaries_response_data
@@ -299,11 +299,11 @@ class TestGetSummariesEndpoint:
         assert response.status_code == status.HTTP_200_OK
 
     @pytest.mark.asyncio
-    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
+    @patch("codemie.rest_api.routers.analytics.usage.AnalyticsService")
     async def test_with_custom_date_range(self, mock_service_class, mock_user, sample_summaries_response_data):
         """Verify custom date range parameters are parsed correctly."""
         # Arrange
-        from codemie.rest_api.routers.analytics import get_summaries
+        from codemie.rest_api.routers.analytics.usage import get_summaries
 
         mock_service = AsyncMock()
         mock_service.get_summaries.return_value = sample_summaries_response_data
@@ -331,11 +331,11 @@ class TestGetSummariesEndpoint:
         assert response.status_code == status.HTTP_200_OK
 
     @pytest.mark.asyncio
-    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
+    @patch("codemie.rest_api.routers.analytics.usage.AnalyticsService")
     async def test_with_user_filter(self, mock_service_class, mock_user, sample_summaries_response_data):
         """Verify comma-separated users are parsed into list."""
         # Arrange
-        from codemie.rest_api.routers.analytics import get_summaries
+        from codemie.rest_api.routers.analytics.usage import get_summaries
 
         mock_service = AsyncMock()
         mock_service.get_summaries.return_value = sample_summaries_response_data
@@ -364,11 +364,11 @@ class TestGetSummariesEndpoint:
         assert isinstance(response, JSONResponse)
 
     @pytest.mark.asyncio
-    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
+    @patch("codemie.rest_api.routers.analytics.usage.AnalyticsService")
     async def test_with_project_filter(self, mock_service_class, mock_user, sample_summaries_response_data):
         """Verify comma-separated projects are parsed into list."""
         # Arrange
-        from codemie.rest_api.routers.analytics import get_summaries
+        from codemie.rest_api.routers.analytics.usage import get_summaries
 
         mock_service = AsyncMock()
         mock_service.get_summaries.return_value = sample_summaries_response_data
@@ -397,12 +397,12 @@ class TestGetSummariesEndpoint:
         assert isinstance(response, JSONResponse)
 
     @pytest.mark.asyncio
-    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
+    @patch("codemie.rest_api.routers.analytics.usage.AnalyticsService")
     async def test_with_client_source_filter(self, mock_service_class, mock_user, sample_summaries_response_data):
         """Verify client_source enum query param is threaded to the service as its string value."""
         # Arrange
         from codemie.rest_api.utils.client_context import ClientSource
-        from codemie.rest_api.routers.analytics import get_summaries
+        from codemie.rest_api.routers.analytics.usage import get_summaries
 
         mock_service = AsyncMock()
         mock_service.get_summaries.return_value = sample_summaries_response_data
@@ -431,14 +431,14 @@ class TestGetSummariesEndpoint:
         assert isinstance(response, JSONResponse)
 
     @pytest.mark.asyncio
-    @patch("codemie.rest_api.routers.analytics.logger")
-    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
+    @patch("codemie.rest_api.routers.analytics.usage.logger")
+    @patch("codemie.rest_api.routers.analytics.usage.AnalyticsService")
     async def test_logs_request_parameters(
         self, mock_service_class, mock_logger, mock_user, sample_summaries_response_data
     ):
         """Verify request parameters are logged for audit trail."""
         # Arrange
-        from codemie.rest_api.routers.analytics import get_summaries
+        from codemie.rest_api.routers.analytics.usage import get_summaries
 
         mock_service = AsyncMock()
         mock_service.get_summaries.return_value = sample_summaries_response_data
@@ -468,11 +468,12 @@ class TestPaginationEndpoints:
     """Tests for pagination in analytics endpoints."""
 
     @pytest.mark.asyncio
-    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
+    @patch("codemie.rest_api.routers.analytics.usage.AnalyticsService")
     async def test_pagination_defaults(self, mock_service_class, mock_user, sample_tabular_response_data):
         """Verify default pagination values are applied."""
         # Arrange
-        from codemie.rest_api.routers.analytics import AnalyticsQueryParams, get_assistants_chats
+        from codemie.rest_api.routers.analytics._common import AnalyticsQueryParams
+        from codemie.rest_api.routers.analytics.usage import get_assistants_chats
 
         mock_service = AsyncMock()
         mock_service.get_assistants_chats.return_value = sample_tabular_response_data
@@ -494,11 +495,12 @@ class TestPaginationEndpoints:
         assert isinstance(response, JSONResponse)
 
     @pytest.mark.asyncio
-    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
+    @patch("codemie.rest_api.routers.analytics.usage.AnalyticsService")
     async def test_pagination_custom_values(self, mock_service_class, mock_user, sample_tabular_response_data):
         """Verify custom pagination parameters are respected."""
         # Arrange
-        from codemie.rest_api.routers.analytics import AnalyticsQueryParams, get_assistants_chats
+        from codemie.rest_api.routers.analytics._common import AnalyticsQueryParams
+        from codemie.rest_api.routers.analytics.usage import get_assistants_chats
 
         mock_service = AsyncMock()
         mock_service.get_assistants_chats.return_value = sample_tabular_response_data
@@ -524,11 +526,12 @@ class TestWorkflowsEndpoint:
     """Tests for the /v1/analytics/workflows endpoint."""
 
     @pytest.mark.asyncio
-    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
+    @patch("codemie.rest_api.routers.analytics.usage.AnalyticsService")
     async def test_workflows_endpoint_basic(self, mock_service_class, mock_user, sample_tabular_response_data):
         """Verify workflows endpoint processes request correctly."""
         # Arrange
-        from codemie.rest_api.routers.analytics import AnalyticsQueryParams, get_workflows
+        from codemie.rest_api.routers.analytics._common import AnalyticsQueryParams
+        from codemie.rest_api.routers.analytics.usage import get_workflows
 
         mock_service = AsyncMock()
         mock_service.get_workflows.return_value = sample_tabular_response_data
@@ -553,11 +556,12 @@ class TestToolsUsageEndpoint:
     """Tests for the /v1/analytics/tools-usage endpoint."""
 
     @pytest.mark.asyncio
-    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
+    @patch("codemie.rest_api.routers.analytics.usage.AnalyticsService")
     async def test_tools_usage_endpoint_with_filters(self, mock_service_class, mock_user, sample_tabular_response_data):
         """Verify tools usage endpoint applies filters correctly."""
         # Arrange
-        from codemie.rest_api.routers.analytics import AnalyticsQueryParams, get_tools_usage
+        from codemie.rest_api.routers.analytics._common import AnalyticsQueryParams
+        from codemie.rest_api.routers.analytics.usage import get_tools_usage
 
         mock_service = AsyncMock()
         mock_service.get_tools_usage.return_value = sample_tabular_response_data
@@ -594,11 +598,11 @@ class TestErrorHandlingIntegration:
     """Integration tests for error handling across endpoints."""
 
     @pytest.mark.asyncio
-    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
+    @patch("codemie.rest_api.routers.analytics.usage.AnalyticsService")
     async def test_service_value_error_returns_400(self, mock_service_class, mock_user):
         """Verify ValueError from service returns 400 with helpful message."""
         # Arrange
-        from codemie.rest_api.routers.analytics import get_summaries
+        from codemie.rest_api.routers.analytics.usage import get_summaries
 
         mock_service = AsyncMock()
         mock_service.get_summaries.side_effect = ValueError("Invalid time_period: 'invalid_value'")
@@ -622,11 +626,11 @@ class TestErrorHandlingIntegration:
         assert "Invalid time_period" in exception.details
 
     @pytest.mark.asyncio
-    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
+    @patch("codemie.rest_api.routers.analytics.usage.AnalyticsService")
     async def test_service_generic_exception_returns_500(self, mock_service_class, mock_user):
         """Verify unexpected service errors return 500."""
         # Arrange
-        from codemie.rest_api.routers.analytics import get_summaries
+        from codemie.rest_api.routers.analytics.usage import get_summaries
 
         mock_service = AsyncMock()
         mock_service.get_summaries.side_effect = Exception("Database connection failed")
@@ -682,11 +686,12 @@ class TestMultipleEndpointsPatterns:
     """Test patterns that apply across multiple analytics endpoints."""
 
     @pytest.mark.asyncio
-    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
+    @patch("codemie.rest_api.routers.analytics.usage.AnalyticsService")
     async def test_agents_usage_endpoint(self, mock_service_class, mock_user, sample_tabular_response_data):
         """Verify agents usage endpoint follows standard pattern."""
         # Arrange
-        from codemie.rest_api.routers.analytics import AnalyticsQueryParams, get_agents_usage
+        from codemie.rest_api.routers.analytics._common import AnalyticsQueryParams
+        from codemie.rest_api.routers.analytics.usage import get_agents_usage
 
         mock_service = AsyncMock()
         mock_service.get_agents_usage.return_value = sample_tabular_response_data
@@ -707,11 +712,12 @@ class TestMultipleEndpointsPatterns:
         assert "ETag" in response.headers
 
     @pytest.mark.asyncio
-    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
+    @patch("codemie.rest_api.routers.analytics.activity.AnalyticsService")
     async def test_llms_usage_endpoint(self, mock_service_class, mock_user, sample_tabular_response_data):
         """Verify LLMs usage endpoint follows standard pattern."""
         # Arrange
-        from codemie.rest_api.routers.analytics import AnalyticsQueryParams, get_llms_usage
+        from codemie.rest_api.routers.analytics._common import AnalyticsQueryParams
+        from codemie.rest_api.routers.analytics.activity import get_llms_usage
 
         mock_service = AsyncMock()
         mock_service.get_llms_usage.return_value = sample_tabular_response_data
@@ -749,11 +755,11 @@ class TestCliEndpoints:
     """Tests for CLI-specific analytics endpoints."""
 
     @pytest.mark.asyncio
-    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
+    @patch("codemie.rest_api.routers.analytics.cli.AnalyticsService")
     async def test_cli_summary_endpoint(self, mock_service_class, mock_user, sample_summaries_response_data):
         """Verify CLI summary endpoint returns SummariesResponse format."""
         # Arrange
-        from codemie.rest_api.routers.analytics import get_cli_summary
+        from codemie.rest_api.routers.analytics.cli import get_cli_summary
 
         mock_service = AsyncMock()
         mock_service.get_cli_summary.return_value = sample_summaries_response_data
@@ -770,11 +776,12 @@ class TestCliEndpoints:
         assert response.status_code == status.HTTP_200_OK
 
     @pytest.mark.asyncio
-    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
+    @patch("codemie.rest_api.routers.analytics.cli.AnalyticsService")
     async def test_cli_agents_endpoint(self, mock_service_class, mock_user, sample_tabular_response_data):
         """Verify CLI agents endpoint with pagination."""
         # Arrange
-        from codemie.rest_api.routers.analytics import AnalyticsQueryParams, get_cli_agents
+        from codemie.rest_api.routers.analytics._common import AnalyticsQueryParams
+        from codemie.rest_api.routers.analytics.cli import get_cli_agents
 
         mock_service = AsyncMock()
         mock_service.get_cli_agents.return_value = sample_tabular_response_data
@@ -792,12 +799,13 @@ class TestCliEndpoints:
         assert response.status_code == status.HTTP_200_OK
 
     @pytest.mark.asyncio
-    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
+    @patch("codemie.rest_api.routers.analytics.cli_insights.AnalyticsService")
     async def test_cli_insights_weekday_pattern_endpoint(
         self, mock_service_class, mock_user, sample_tabular_response_data
     ):
         """Verify CLI insights weekday pattern endpoint returns tabular response."""
-        from codemie.rest_api.routers.analytics import AnalyticsQueryParams, get_cli_insights_weekday_pattern
+        from codemie.rest_api.routers.analytics._common import AnalyticsQueryParams
+        from codemie.rest_api.routers.analytics.cli_insights import get_cli_insights_weekday_pattern
 
         mock_service = AsyncMock()
         mock_service.get_cli_insights_weekday_pattern.return_value = sample_tabular_response_data
@@ -813,12 +821,13 @@ class TestCliEndpoints:
         assert response.status_code == status.HTTP_200_OK
 
     @pytest.mark.asyncio
-    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
+    @patch("codemie.rest_api.routers.analytics.cli_insights.AnalyticsService")
     async def test_cli_insights_top_spenders_endpoint(
         self, mock_service_class, mock_user, sample_tabular_response_data
     ):
         """Verify CLI insights Top Spenders endpoint returns tabular response."""
-        from codemie.rest_api.routers.analytics import AnalyticsQueryParams, get_cli_insights_top_spenders
+        from codemie.rest_api.routers.analytics._common import AnalyticsQueryParams
+        from codemie.rest_api.routers.analytics.cli_insights import get_cli_insights_top_spenders
 
         mock_service = AsyncMock()
         mock_service.get_cli_insights_top_spenders.return_value = sample_tabular_response_data
@@ -834,10 +843,10 @@ class TestCliEndpoints:
         assert response.status_code == status.HTTP_200_OK
 
     @pytest.mark.asyncio
-    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
+    @patch("codemie.rest_api.routers.analytics.cli_insights.AnalyticsService")
     async def test_cli_insights_user_detail_endpoint(self, mock_service_class, mock_user):
         """Verify CLI insights user detail endpoint returns detail response."""
-        from codemie.rest_api.routers.analytics import get_cli_insights_user_detail
+        from codemie.rest_api.routers.analytics.cli_insights import get_cli_insights_user_detail
 
         mock_service = AsyncMock()
         mock_service.get_cli_insights_user_detail.return_value = {
@@ -894,13 +903,13 @@ class TestUsersListEndpoint:
         }
 
     @pytest.mark.asyncio
-    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
+    @patch("codemie.rest_api.routers.analytics.activity.AnalyticsService")
     async def test_get_users_list_returns_correct_response(
         self, mock_service_class, mock_user, sample_users_list_response_data
     ):
         """Verify endpoint returns correct response model."""
         # Arrange
-        from codemie.rest_api.routers.analytics import get_users_list
+        from codemie.rest_api.routers.analytics.activity import get_users_list
 
         mock_service = AsyncMock()
         mock_service.get_users_list.return_value = sample_users_list_response_data
@@ -919,11 +928,11 @@ class TestUsersListEndpoint:
         assert response_body["data"]["total_count"] == 2
 
     @pytest.mark.asyncio
-    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
+    @patch("codemie.rest_api.routers.analytics.activity.AnalyticsService")
     async def test_get_users_list_passes_filters(self, mock_service_class, mock_user, sample_users_list_response_data):
         """Verify filters are passed to service."""
         # Arrange
-        from codemie.rest_api.routers.analytics import get_users_list
+        from codemie.rest_api.routers.analytics.activity import get_users_list
 
         mock_service = AsyncMock()
         mock_service.get_users_list.return_value = sample_users_list_response_data
@@ -979,13 +988,13 @@ class TestGetProjectsUniqueDaily:
         }
 
     @pytest.mark.asyncio
-    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
+    @patch("codemie.rest_api.routers.analytics.activity.AnalyticsService")
     async def test_get_projects_unique_daily_success(
         self, mock_service_class, mock_user, sample_projects_unique_daily_response_data
     ):
         """Verify successful response with default parameters."""
         # Arrange
-        from codemie.rest_api.routers.analytics import get_projects_unique_daily
+        from codemie.rest_api.routers.analytics.activity import get_projects_unique_daily
 
         mock_service = AsyncMock()
         mock_service.get_projects_unique_daily.return_value = sample_projects_unique_daily_response_data
@@ -1004,13 +1013,13 @@ class TestGetProjectsUniqueDaily:
         assert response_body["data"]["columns"][1]["id"] == "unique_projects"
 
     @pytest.mark.asyncio
-    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
+    @patch("codemie.rest_api.routers.analytics.activity.AnalyticsService")
     async def test_get_projects_unique_daily_with_date_range(
         self, mock_service_class, mock_user, sample_projects_unique_daily_response_data
     ):
         """Verify custom date range parameters are passed correctly."""
         # Arrange
-        from codemie.rest_api.routers.analytics import get_projects_unique_daily
+        from codemie.rest_api.routers.analytics.activity import get_projects_unique_daily
 
         mock_service = AsyncMock()
         mock_service.get_projects_unique_daily.return_value = sample_projects_unique_daily_response_data
@@ -1033,13 +1042,13 @@ class TestGetProjectsUniqueDaily:
         mock_service.get_projects_unique_daily.assert_called_once_with(None, start, end, None, None)
 
     @pytest.mark.asyncio
-    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
+    @patch("codemie.rest_api.routers.analytics.activity.AnalyticsService")
     async def test_get_projects_unique_daily_with_filters(
         self, mock_service_class, mock_user, sample_projects_unique_daily_response_data
     ):
         """Verify user and project filters are parsed from CSV strings."""
         # Arrange
-        from codemie.rest_api.routers.analytics import get_projects_unique_daily
+        from codemie.rest_api.routers.analytics.activity import get_projects_unique_daily
 
         mock_service = AsyncMock()
         mock_service.get_projects_unique_daily.return_value = sample_projects_unique_daily_response_data
@@ -1064,7 +1073,7 @@ class TestGetProjectsUniqueDaily:
     async def test_get_projects_unique_daily_validates_date_order(self, mock_user):
         """Verify start_date must be before end_date."""
         # Arrange
-        from codemie.rest_api.routers.analytics import get_projects_unique_daily
+        from codemie.rest_api.routers.analytics.activity import get_projects_unique_daily
 
         start = datetime(2026, 1, 31, 0, 0, 0)
         end = datetime(2026, 1, 1, 0, 0, 0)  # End before start (invalid)
@@ -1085,11 +1094,11 @@ class TestGetProjectsUniqueDaily:
         assert "start_date" in exc_info.value.details.lower() or "end_date" in exc_info.value.details.lower()
 
     @pytest.mark.asyncio
-    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
+    @patch("codemie.rest_api.routers.analytics.activity.AnalyticsService")
     async def test_get_projects_unique_daily_handles_empty_result(self, mock_service_class, mock_user):
         """Verify handling of empty result set."""
         # Arrange
-        from codemie.rest_api.routers.analytics import get_projects_unique_daily
+        from codemie.rest_api.routers.analytics.activity import get_projects_unique_daily
 
         mock_service = AsyncMock()
         empty_response = {
@@ -1123,13 +1132,13 @@ class TestGetProjectsUniqueDaily:
         assert response_body["pagination"]["total_count"] == 0
 
     @pytest.mark.asyncio
-    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
+    @patch("codemie.rest_api.routers.analytics.activity.AnalyticsService")
     async def test_get_projects_unique_daily_response_format(
         self, mock_service_class, mock_user, sample_projects_unique_daily_response_data
     ):
         """Verify response format matches TabularResponse model."""
         # Arrange
-        from codemie.rest_api.routers.analytics import get_projects_unique_daily
+        from codemie.rest_api.routers.analytics.activity import get_projects_unique_daily
 
         mock_service = AsyncMock()
         mock_service.get_projects_unique_daily.return_value = sample_projects_unique_daily_response_data
@@ -1170,7 +1179,7 @@ class TestGetUserSpending:
     @pytest.mark.asyncio
     async def test_get_user_spending_success(self, mock_user):
         """Test successful spending data retrieval."""
-        from codemie.rest_api.routers.analytics import get_user_spending
+        from codemie.rest_api.routers.analytics.spending import get_user_spending
 
         # Mock spending data from LiteLLM
         mock_spending_data = {
@@ -1228,7 +1237,7 @@ class TestGetUserSpending:
     @pytest.mark.asyncio
     async def test_get_user_spending_no_data(self, mock_user):
         """Test spending endpoint when budget tracking is not available (returns N/A values)."""
-        from codemie.rest_api.routers.analytics import get_user_spending
+        from codemie.rest_api.routers.analytics.spending import get_user_spending
 
         # Patch at the source
         with patch("codemie.enterprise.litellm.dependencies.get_customer_spending") as mock_get_spending:
@@ -1266,7 +1275,7 @@ class TestGetUserSpending:
     @pytest.mark.asyncio
     async def test_get_user_spending_calculates_time_correctly(self, mock_user):
         """Test that time until reset is calculated correctly."""
-        from codemie.rest_api.routers.analytics import get_user_spending
+        from codemie.rest_api.routers.analytics.spending import get_user_spending
         from datetime import datetime, timedelta, timezone
 
         # Set reset date to 10 days from now
@@ -1302,7 +1311,7 @@ class TestGetUserSpending:
     @pytest.mark.asyncio
     async def test_get_user_spending_handles_null_reset_date(self, mock_user):
         """Test spending endpoint when reset date is null."""
-        from codemie.rest_api.routers.analytics import get_user_spending
+        from codemie.rest_api.routers.analytics.spending import get_user_spending
 
         mock_spending_data = {
             "customer_id": "testuser",
@@ -1342,7 +1351,7 @@ class TestGetUserKeySpending:
     @pytest.mark.asyncio
     async def test_returns_grouped_key_spending_success(self, mock_user):
         """Test endpoint returns tabular spending with personal budget rows and member allocation rows."""
-        from codemie.rest_api.routers.analytics import get_user_budget_usage
+        from codemie.rest_api.routers.analytics.spending import get_user_budget_usage
         from codemie.service.analytics.handlers.budget_usage_service import _get_key_spending_columns
 
         mock_rows = [
@@ -1407,7 +1416,7 @@ class TestGetUserKeySpending:
     @pytest.mark.asyncio
     async def test_returns_single_budget_row(self, mock_user):
         """Test endpoint returns a single platform budget row when service returns one row."""
-        from codemie.rest_api.routers.analytics import get_user_budget_usage
+        from codemie.rest_api.routers.analytics.spending import get_user_budget_usage
         from codemie.service.analytics.handlers.budget_usage_service import _get_key_spending_columns
 
         mock_rows = [
@@ -1436,7 +1445,7 @@ class TestGetUserKeySpending:
     @pytest.mark.asyncio
     async def test_handles_empty_budget_usage(self, mock_user):
         """Test endpoint returns empty rows when service returns no rows."""
-        from codemie.rest_api.routers.analytics import get_user_budget_usage
+        from codemie.rest_api.routers.analytics.spending import get_user_budget_usage
         from codemie.service.analytics.handlers.budget_usage_service import _get_key_spending_columns
 
         with patch("codemie.clients.postgres.get_async_session", return_value=self._mock_session_ctx()):
@@ -1453,7 +1462,7 @@ class TestGetUserKeySpending:
     @pytest.mark.asyncio
     async def test_raises_500_on_backend_error(self, mock_user):
         """Test endpoint returns 500 error when the service raises an unexpected exception."""
-        from codemie.rest_api.routers.analytics import get_user_budget_usage
+        from codemie.rest_api.routers.analytics.spending import get_user_budget_usage
 
         with patch("codemie.clients.postgres.get_async_session", return_value=self._mock_session_ctx()):
             with patch(
@@ -1471,7 +1480,7 @@ class TestGetUserKeySpending:
     @pytest.mark.asyncio
     async def test_handles_none_budget_reset_at(self, mock_user):
         """Test endpoint passes through None budget_reset_at and time_until_reset from service."""
-        from codemie.rest_api.routers.analytics import get_user_budget_usage
+        from codemie.rest_api.routers.analytics.spending import get_user_budget_usage
         from codemie.service.analytics.handlers.budget_usage_service import _get_key_spending_columns
 
         mock_rows = [
@@ -1501,7 +1510,7 @@ class TestGetUserKeySpending:
     @pytest.mark.asyncio
     async def test_response_metadata_contains_required_fields(self, mock_user):
         """Test that response metadata contains all required fields."""
-        from codemie.rest_api.routers.analytics import get_user_budget_usage
+        from codemie.rest_api.routers.analytics.spending import get_user_budget_usage
         from codemie.service.analytics.handlers.budget_usage_service import _get_key_spending_columns
 
         with patch("codemie.clients.postgres.get_async_session", return_value=self._mock_session_ctx()):
@@ -1523,7 +1532,7 @@ class TestGetUserKeySpending:
     @pytest.mark.asyncio
     async def test_user_id_returns_400_when_user_management_disabled(self, mock_user):
         """user_id parameter requires ENABLE_USER_MANAGEMENT=True."""
-        from codemie.rest_api.routers.analytics import get_user_budget_usage
+        from codemie.rest_api.routers.analytics.spending import get_user_budget_usage
 
         with patch.object(config, "ENABLE_USER_MANAGEMENT", False):
             with pytest.raises(ExtendedHTTPException) as exc_info:
@@ -1534,13 +1543,13 @@ class TestGetUserKeySpending:
     @pytest.mark.asyncio
     async def test_user_id_returns_404_when_target_not_found(self, mock_user):
         """Returns 404 when the target user does not exist in the database."""
-        from codemie.rest_api.routers.analytics import get_user_budget_usage
+        from codemie.rest_api.routers.analytics.spending import get_user_budget_usage
 
         mock_user.is_admin = True
 
         with patch.object(config, "ENABLE_USER_MANAGEMENT", True):
             with patch(
-                "codemie.rest_api.routers.analytics.asyncio.to_thread",
+                "codemie.rest_api.routers.analytics.spending.asyncio.to_thread",
                 new_callable=AsyncMock,
                 return_value=(None, []),
             ):
@@ -1552,7 +1561,7 @@ class TestGetUserKeySpending:
     @pytest.mark.asyncio
     async def test_user_id_returns_403_when_caller_has_no_project_overlap(self, mock_user):
         """Returns 403 when caller is not global admin and shares no projects with the target."""
-        from codemie.rest_api.routers.analytics import get_user_budget_usage
+        from codemie.rest_api.routers.analytics.spending import get_user_budget_usage
 
         target_db = MagicMock()
         target_db.id = "target-id"
@@ -1564,7 +1573,7 @@ class TestGetUserKeySpending:
 
         with patch.object(config, "ENABLE_USER_MANAGEMENT", True):
             with patch(
-                "codemie.rest_api.routers.analytics.asyncio.to_thread",
+                "codemie.rest_api.routers.analytics.spending.asyncio.to_thread",
                 new_callable=AsyncMock,
                 return_value=(target_db, {"target-only-project"}),
             ):
@@ -1576,7 +1585,7 @@ class TestGetUserKeySpending:
     @pytest.mark.asyncio
     async def test_user_id_global_admin_can_view_any_user_budget(self, mock_user):
         """Global admin can view any user's budget regardless of project membership."""
-        from codemie.rest_api.routers.analytics import get_user_budget_usage
+        from codemie.rest_api.routers.analytics.spending import get_user_budget_usage
         from codemie.service.analytics.handlers.budget_usage_service import _get_key_spending_columns
 
         target_db = MagicMock()
@@ -1588,7 +1597,7 @@ class TestGetUserKeySpending:
 
         with patch.object(config, "ENABLE_USER_MANAGEMENT", True):
             with patch(
-                "codemie.rest_api.routers.analytics.asyncio.to_thread",
+                "codemie.rest_api.routers.analytics.spending.asyncio.to_thread",
                 new_callable=AsyncMock,
                 return_value=(target_db, {"some-project"}),
             ):
@@ -1606,7 +1615,7 @@ class TestGetUserKeySpending:
     @pytest.mark.asyncio
     async def test_user_id_project_admin_with_shared_project_can_view_budget(self, mock_user):
         """Project admin who shares at least one project with target can view the budget."""
-        from codemie.rest_api.routers.analytics import get_user_budget_usage
+        from codemie.rest_api.routers.analytics.spending import get_user_budget_usage
         from codemie.service.analytics.handlers.budget_usage_service import _get_key_spending_columns
 
         target_db = MagicMock()
@@ -1619,7 +1628,7 @@ class TestGetUserKeySpending:
 
         with patch.object(config, "ENABLE_USER_MANAGEMENT", True):
             with patch(
-                "codemie.rest_api.routers.analytics.asyncio.to_thread",
+                "codemie.rest_api.routers.analytics.spending.asyncio.to_thread",
                 new_callable=AsyncMock,
                 return_value=(target_db, {"shared-project", "other-project"}),
             ):
@@ -1638,21 +1647,21 @@ class TestAuthorizeAdminBudgetView:
     """Tests for _authorize_admin_budget_view authorization helper."""
 
     def test_global_admin_always_authorized(self):
-        from codemie.rest_api.routers.analytics import _authorize_admin_budget_view
+        from codemie.rest_api.routers.analytics._spending_support import _authorize_admin_budget_view
 
         caller = MagicMock(spec=User)
         caller.is_admin = True
         _authorize_admin_budget_view(caller, {"any-project"})  # must not raise
 
     def test_global_admin_authorized_for_empty_target_projects(self):
-        from codemie.rest_api.routers.analytics import _authorize_admin_budget_view
+        from codemie.rest_api.routers.analytics._spending_support import _authorize_admin_budget_view
 
         caller = MagicMock(spec=User)
         caller.is_admin = True
         _authorize_admin_budget_view(caller, set())  # must not raise
 
     def test_project_admin_with_shared_project_is_authorized(self):
-        from codemie.rest_api.routers.analytics import _authorize_admin_budget_view
+        from codemie.rest_api.routers.analytics._spending_support import _authorize_admin_budget_view
 
         caller = MagicMock(spec=User)
         caller.is_admin = False
@@ -1660,7 +1669,7 @@ class TestAuthorizeAdminBudgetView:
         _authorize_admin_budget_view(caller, {"shared-project", "other-project"})  # must not raise
 
     def test_non_admin_without_shared_project_raises_403(self):
-        from codemie.rest_api.routers.analytics import _authorize_admin_budget_view
+        from codemie.rest_api.routers.analytics._spending_support import _authorize_admin_budget_view
 
         caller = MagicMock(spec=User)
         caller.is_admin = False
@@ -1672,7 +1681,7 @@ class TestAuthorizeAdminBudgetView:
         assert exc_info.value.code == status.HTTP_403_FORBIDDEN
 
     def test_empty_admin_project_names_raises_403(self):
-        from codemie.rest_api.routers.analytics import _authorize_admin_budget_view
+        from codemie.rest_api.routers.analytics._spending_support import _authorize_admin_budget_view
 
         caller = MagicMock(spec=User)
         caller.is_admin = False
@@ -1684,7 +1693,7 @@ class TestAuthorizeAdminBudgetView:
         assert exc_info.value.code == status.HTTP_403_FORBIDDEN
 
     def test_none_admin_project_names_raises_403(self):
-        from codemie.rest_api.routers.analytics import _authorize_admin_budget_view
+        from codemie.rest_api.routers.analytics._spending_support import _authorize_admin_budget_view
 
         caller = MagicMock(spec=User)
         caller.is_admin = False

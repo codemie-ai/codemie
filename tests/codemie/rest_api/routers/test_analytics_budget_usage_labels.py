@@ -22,7 +22,7 @@ from codemie.rest_api.security.user import User
 @pytest.mark.asyncio
 async def test_budget_usage_uses_username_as_subject_label():
     """Budget stats always use username as the subject label, regardless of email."""
-    from codemie.rest_api.routers.analytics import get_user_budget_usage
+    from codemie.rest_api.routers.analytics.spending import get_user_budget_usage
     from codemie.service.analytics.handlers.budget_usage_service import _get_key_spending_columns
 
     mock_user = User(
@@ -70,7 +70,7 @@ async def test_budget_usage_uses_username_as_subject_label():
 @pytest.mark.asyncio
 async def test_budget_usage_uses_username_even_when_email_differs():
     """When email != username (client deployment), username is still used — not email."""
-    from codemie.rest_api.routers.analytics import get_user_budget_usage
+    from codemie.rest_api.routers.analytics.spending import get_user_budget_usage
     from codemie.service.analytics.handlers.budget_usage_service import _get_key_spending_columns
 
     mock_user = User(

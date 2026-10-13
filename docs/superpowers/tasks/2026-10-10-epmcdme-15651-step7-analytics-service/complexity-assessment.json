@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "task": "EPMCDME-15651 step 7 (analytics): relocate the spending formatting helpers from routers/analytics/_spending_support.py into service/analytics/ with no API change, rewiring the single importer, test imports and one patch literal, and adding characterization tests.",
+  "generated": "2026-10-10T12:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 16,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "technical_risk",
+      "reason": "Closest pattern is the run 7a assistant-helper relocation (module functions, bodies unchanged, characterization tests first, AST body check, patch flip check). It covers the pure formatters but not the security-sensitive aspect: _authorize_admin_budget_view is an authorization gate (admin/auditor/project-intersection/403) that depends on router-owned constants and ExtendedHTTPException, and a service copy cannot import _common without an import cycle and an AC 5 violation, so that divergence bumps the risk. Further traps: dead _build_spending_row calls live _calculate_time_until_reset (undefined name if the live one moves alone), three divergent time-until-reset twins, label/description text, 'X days Y hours Z mins' arithmetic and expired text are unpinned by tests, and the capability_guards.py:285 patch literal passes silently if mis-aimed. Rollback is trivial (git revert). The nearest M calibration example (EPMCDME-10203) scores risk 2 for a plain pattern-following endpoint; this task scores higher because of the authz gate and silent-pass traps, not because of novelty."
+    }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from M to L: affects authorization (admin budget-view gate is among the candidate helpers; conditional on the gate moving, else risk stays M and total is 15, still M)",
+    "Auto-bump: closest existing pattern (7a) does not cover the security-sensitive aspect (access gate with router-owned constants and HTTP exceptions) - treated as divergence"
+  ],
+  "split_recommendation": null
+}

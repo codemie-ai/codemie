@@ -95,7 +95,7 @@ def override_dependency(user):
 async def test_create_or_update_mapping_success(assistant_id, sample_mapping_request, user):
     # Arrange
     with (
-        patch("codemie.rest_api.routers.assistant_mapping._get_assistant_by_id_or_raise") as mock_get_assistant,
+        patch("codemie.rest_api.routers.assistant_mapping.get_assistant_by_id_or_raise") as mock_get_assistant,
         patch("codemie.rest_api.routers.assistant_mapping.search_settings_by_id") as mock_search_settings,
         patch("codemie.rest_api.routers.assistant_mapping.user_can_access_setting", return_value=True),
         patch(
@@ -136,7 +136,7 @@ async def test_create_or_update_mapping_success(assistant_id, sample_mapping_req
 async def test_create_or_update_mapping_failure(assistant_id, sample_mapping_request):
     # Arrange
     with (
-        patch("codemie.rest_api.routers.assistant_mapping._get_assistant_by_id_or_raise") as mock_get_assistant,
+        patch("codemie.rest_api.routers.assistant_mapping.get_assistant_by_id_or_raise") as mock_get_assistant,
         patch("codemie.rest_api.routers.assistant_mapping.search_settings_by_id") as mock_search_settings,
         patch("codemie.rest_api.routers.assistant_mapping.user_can_access_setting", return_value=True),
         patch(
@@ -205,7 +205,7 @@ async def test_create_or_update_mapping_forwards_marketplace_flag(assistant_id, 
     marketplace_assistant.is_global = True
 
     with (
-        patch("codemie.rest_api.routers.assistant_mapping._get_assistant_by_id_or_raise") as mock_get_assistant,
+        patch("codemie.rest_api.routers.assistant_mapping.get_assistant_by_id_or_raise") as mock_get_assistant,
         patch("codemie.rest_api.routers.assistant_mapping._validate_mapping_access") as mock_validate,
         patch(
             "codemie.service.assistant.assistant_user_mapping_service.assistant_user_mapping_service.create_or_update_mapping"
@@ -231,7 +231,7 @@ async def test_create_or_update_mapping_forwards_marketplace_flag(assistant_id, 
 async def test_get_assistant_mapping_found(assistant_id, user, sample_mapping_db):
     # Arrange
     with (
-        patch("codemie.rest_api.routers.assistant_mapping._get_assistant_by_id_or_raise") as mock_get_assistant,
+        patch("codemie.rest_api.routers.assistant_mapping.get_assistant_by_id_or_raise") as mock_get_assistant,
         patch(
             "codemie.service.assistant.assistant_user_mapping_service.assistant_user_mapping_service.get_mapping"
         ) as mock_get_mapping,
@@ -272,7 +272,7 @@ async def test_get_assistant_mapping_found(assistant_id, user, sample_mapping_db
 async def test_get_assistant_mapping_not_found(assistant_id, user):
     # Arrange
     with (
-        patch("codemie.rest_api.routers.assistant_mapping._get_assistant_by_id_or_raise") as mock_get_assistant,
+        patch("codemie.rest_api.routers.assistant_mapping.get_assistant_by_id_or_raise") as mock_get_assistant,
         patch(
             "codemie.service.assistant.assistant_user_mapping_service.assistant_user_mapping_service.get_mapping"
         ) as mock_get_mapping,
@@ -307,7 +307,7 @@ async def test_get_assistant_mapping_not_found(assistant_id, user):
 async def test_get_assistant_mapping_error(assistant_id, user):
     # Arrange
     with (
-        patch("codemie.rest_api.routers.assistant_mapping._get_assistant_by_id_or_raise") as mock_get_assistant,
+        patch("codemie.rest_api.routers.assistant_mapping.get_assistant_by_id_or_raise") as mock_get_assistant,
         patch(
             "codemie.service.assistant.assistant_user_mapping_service.assistant_user_mapping_service.get_mapping"
         ) as mock_get_mapping,
@@ -336,7 +336,7 @@ async def test_get_assistant_mapping_error(assistant_id, user):
 async def test_get_assistant_mapping_extended_http_exception(assistant_id, user):
     # Arrange
     with (
-        patch("codemie.rest_api.routers.assistant_mapping._get_assistant_by_id_or_raise") as mock_get_assistant,
+        patch("codemie.rest_api.routers.assistant_mapping.get_assistant_by_id_or_raise") as mock_get_assistant,
         patch(
             "codemie.service.assistant.assistant_user_mapping_service.assistant_user_mapping_service.get_mapping"
         ) as mock_get_mapping,
@@ -369,7 +369,7 @@ async def test_get_assistant_mapping_extended_http_exception(assistant_id, user)
 async def test_create_or_update_mapping_forwards_the_workflow_scope(assistant_id, user):
     # Arrange
     with (
-        patch("codemie.rest_api.routers.assistant_mapping._get_assistant_by_id_or_raise") as mock_get_assistant,
+        patch("codemie.rest_api.routers.assistant_mapping.get_assistant_by_id_or_raise") as mock_get_assistant,
         patch("codemie.rest_api.routers.assistant_mapping.search_settings_by_id") as mock_search_settings,
         patch("codemie.rest_api.routers.assistant_mapping.user_can_access_setting", return_value=True),
         patch(
@@ -404,7 +404,7 @@ async def test_create_or_update_mapping_forwards_the_workflow_scope(assistant_id
 async def test_create_or_update_mapping_without_workflow_stays_assistant_scoped(assistant_id, user):
     # Arrange: existing clients that never send a workflow must keep today's behaviour.
     with (
-        patch("codemie.rest_api.routers.assistant_mapping._get_assistant_by_id_or_raise") as mock_get_assistant,
+        patch("codemie.rest_api.routers.assistant_mapping.get_assistant_by_id_or_raise") as mock_get_assistant,
         patch("codemie.rest_api.routers.assistant_mapping.search_settings_by_id") as mock_search_settings,
         patch("codemie.rest_api.routers.assistant_mapping.user_can_access_setting", return_value=True),
         patch(
@@ -433,7 +433,7 @@ async def test_create_or_update_mapping_without_workflow_stays_assistant_scoped(
 async def test_get_mapping_with_workflow_returns_the_effective_config(assistant_id, user):
     # Arrange
     with (
-        patch("codemie.rest_api.routers.assistant_mapping._get_assistant_by_id_or_raise"),
+        patch("codemie.rest_api.routers.assistant_mapping.get_assistant_by_id_or_raise"),
         patch(
             "codemie.service.assistant.assistant_user_mapping_service.assistant_user_mapping_service.get_effective_tools_config"
         ) as mock_effective,
@@ -462,7 +462,7 @@ async def test_get_mapping_reports_what_auto_lookup_would_resolve(assistant_id, 
     # The panel pre-selects these values, so the same resolution chain that runs at execution time
     # must answer the question "what applies to this slot right now".
     with (
-        patch("codemie.rest_api.routers.assistant_mapping._get_assistant_by_id_or_raise") as mock_get_assistant,
+        patch("codemie.rest_api.routers.assistant_mapping.get_assistant_by_id_or_raise") as mock_get_assistant,
         patch(
             "codemie.service.assistant.assistant_user_mapping_service.assistant_user_mapping_service.get_mapping"
         ) as mock_get_mapping,
@@ -493,7 +493,7 @@ async def test_get_mapping_reports_what_auto_lookup_would_resolve(assistant_id, 
 @pytest.mark.asyncio
 async def test_get_mapping_hides_auto_resolved_the_user_cannot_access(assistant_id, user):
     with (
-        patch("codemie.rest_api.routers.assistant_mapping._get_assistant_by_id_or_raise") as mock_get_assistant,
+        patch("codemie.rest_api.routers.assistant_mapping.get_assistant_by_id_or_raise") as mock_get_assistant,
         patch(
             "codemie.service.assistant.assistant_user_mapping_service.assistant_user_mapping_service.get_mapping"
         ) as mock_get_mapping,
@@ -521,7 +521,7 @@ async def test_get_mapping_hides_auto_resolved_the_user_cannot_access(assistant_
 @pytest.mark.asyncio
 async def test_get_mapping_without_credential_types_reports_nothing(assistant_id, user):
     with (
-        patch("codemie.rest_api.routers.assistant_mapping._get_assistant_by_id_or_raise"),
+        patch("codemie.rest_api.routers.assistant_mapping.get_assistant_by_id_or_raise"),
         patch(
             "codemie.service.assistant.assistant_user_mapping_service.assistant_user_mapping_service.get_mapping"
         ) as mock_get_mapping,

@@ -140,8 +140,8 @@ def mock_llm_models():
 class TestProjectLevelModelRestriction:
     """Tests for setting allowed models at project level."""
 
-    @patch("codemie.rest_api.routers.projects._ensure_user_management_enabled")
-    @patch("codemie.rest_api.routers.projects.project_service")
+    @patch("codemie.rest_api.routers.projects.management._ensure_user_management_enabled")
+    @patch("codemie.rest_api.routers.projects.management.project_service")
     def test_update_allowed_models_restricts_to_three_models(
         self,
         mock_project_service,
@@ -150,10 +150,8 @@ class TestProjectLevelModelRestriction:
         mock_project,
     ):
         """Test updating project to allow only 3 specific models."""
-        from codemie.rest_api.routers.projects import (
-            AllowedModelsUpdateRequest,
-            update_allowed_models,
-        )
+        from codemie.rest_api.models.project import AllowedModelsUpdateRequest
+        from codemie.rest_api.routers.projects.management import update_allowed_models
 
         selected_models = ["gpt-4", "claude-3-sonnet", "gpt-3.5-turbo"]
 
@@ -172,8 +170,8 @@ class TestProjectLevelModelRestriction:
         assert response.allowed_models == selected_models
         assert len(response.allowed_models) == 3
 
-    @patch("codemie.rest_api.routers.projects._ensure_user_management_enabled")
-    @patch("codemie.rest_api.routers.projects.project_service")
+    @patch("codemie.rest_api.routers.projects.management._ensure_user_management_enabled")
+    @patch("codemie.rest_api.routers.projects.management.project_service")
     def test_update_allowed_models_with_default_model(
         self,
         mock_project_service,
@@ -182,10 +180,8 @@ class TestProjectLevelModelRestriction:
         mock_project,
     ):
         """Test updating allowed models and setting a default model."""
-        from codemie.rest_api.routers.projects import (
-            AllowedModelsUpdateRequest,
-            update_allowed_models,
-        )
+        from codemie.rest_api.models.project import AllowedModelsUpdateRequest
+        from codemie.rest_api.routers.projects.management import update_allowed_models
 
         selected_models = ["gpt-4", "claude-3-sonnet"]
         default_model = "gpt-4"
@@ -209,7 +205,7 @@ class TestProjectLevelModelRestriction:
         assert response.allowed_models == selected_models
         assert response.default_model == default_model
 
-    @patch("codemie.rest_api.routers.projects.project_service")
+    @patch("codemie.rest_api.routers.projects.management.project_service")
     def test_cannot_set_default_model_outside_allowed_models(self, mock_project_service):
         """Test that default model must be in allowed_models list."""
         from codemie.service.project.project_service import ProjectService
@@ -223,8 +219,8 @@ class TestProjectLevelModelRestriction:
 
         assert exc_info.value.code == 400
 
-    @patch("codemie.rest_api.routers.projects._ensure_user_management_enabled")
-    @patch("codemie.rest_api.routers.projects.project_service")
+    @patch("codemie.rest_api.routers.projects.management._ensure_user_management_enabled")
+    @patch("codemie.rest_api.routers.projects.management.project_service")
     def test_update_allowed_models_authorization_check(
         self,
         mock_project_service,
@@ -233,10 +229,8 @@ class TestProjectLevelModelRestriction:
         mock_project,
     ):
         """Test that only project admins can update allowed models."""
-        from codemie.rest_api.routers.projects import (
-            AllowedModelsUpdateRequest,
-            update_allowed_models,
-        )
+        from codemie.rest_api.models.project import AllowedModelsUpdateRequest
+        from codemie.rest_api.routers.projects.management import update_allowed_models
         from codemie.core.exceptions import ExtendedHTTPException
 
         mock_project_service.update_allowed_models.side_effect = ExtendedHTTPException(
@@ -708,7 +702,7 @@ class TestWorkflowCreationWithBlockedModels:
         with the same reason. Enforcement is consistent across asset types.
 
         Production code only wires this validation into assistant creation
-        (codemie.rest_api.routers.assistant.create_assistant) today; this test
+        (create_assistant in codemie.rest_api.routers.assistant.management) today; this test
         verifies the shared ModelAvailabilityService raises consistently
         regardless of which asset type is passed through.
         """
@@ -782,7 +776,7 @@ class TestWorkflowCreationWithBlockedModels:
 class TestEdgeCases:
     """Tests for edge cases and error conditions."""
 
-    @patch("codemie.rest_api.routers.projects.project_service")
+    @patch("codemie.rest_api.routers.projects.management.project_service")
     def test_cannot_restrict_all_models(self, mock_project_service):
         """Test that project cannot have empty allowed_models list."""
         from codemie.service.project.project_service import ProjectService
@@ -794,7 +788,7 @@ class TestEdgeCases:
         assert exc_info.value.code == 400
         assert "At least one chat model is required" in exc_info.value.message
 
-    @patch("codemie.rest_api.routers.projects.project_service")
+    @patch("codemie.rest_api.routers.projects.management.project_service")
     def test_reset_to_no_restriction(self, mock_project_service):
         """Test that project can reset to allow all models (allowed_models=None)."""
         from codemie.service.project.project_service import ProjectService
@@ -822,8 +816,8 @@ class TestEdgeCases:
 
         assert exc_info.value.status_code == 404
 
-    @patch("codemie.rest_api.routers.projects._ensure_user_management_enabled")
-    @patch("codemie.rest_api.routers.projects.project_service")
+    @patch("codemie.rest_api.routers.projects.management._ensure_user_management_enabled")
+    @patch("codemie.rest_api.routers.projects.management.project_service")
     def test_update_allowed_models_preserves_order(
         self,
         mock_project_service,
@@ -832,10 +826,8 @@ class TestEdgeCases:
         mock_project,
     ):
         """Test that model order is preserved when updating allowed_models."""
-        from codemie.rest_api.routers.projects import (
-            AllowedModelsUpdateRequest,
-            update_allowed_models,
-        )
+        from codemie.rest_api.models.project import AllowedModelsUpdateRequest
+        from codemie.rest_api.routers.projects.management import update_allowed_models
 
         models_in_order = ["claude-3-sonnet", "gpt-4", "gpt-3.5-turbo"]
 
@@ -866,7 +858,7 @@ class TestUIModelConfigurationPersistence:
         ``project_visibility_service``. We exercise that real mapping function
         directly rather than re-mocking the whole async detail pipeline.
         """
-        from codemie.rest_api.routers.projects import _build_project_detail_response
+        from codemie.rest_api.routers.projects.crud import _build_project_detail_response
 
         selected_models = ["gpt-4", "claude-3-sonnet", "gpt-3.5-turbo"]
         default_model = "gpt-4"
@@ -891,8 +883,8 @@ class TestUIModelConfigurationPersistence:
         assert response.allowed_models == selected_models
         assert response.default_model == default_model
 
-    @patch("codemie.rest_api.routers.projects._ensure_user_management_enabled")
-    @patch("codemie.rest_api.routers.projects.project_service")
+    @patch("codemie.rest_api.routers.projects.management._ensure_user_management_enabled")
+    @patch("codemie.rest_api.routers.projects.management.project_service")
     def test_ui_updates_persist_to_backend(
         self,
         mock_project_service,
@@ -901,10 +893,8 @@ class TestUIModelConfigurationPersistence:
         mock_project,
     ):
         """Test that UI changes to allowed_models persist to backend via PATCH."""
-        from codemie.rest_api.routers.projects import (
-            AllowedModelsUpdateRequest,
-            update_allowed_models,
-        )
+        from codemie.rest_api.models.project import AllowedModelsUpdateRequest
+        from codemie.rest_api.routers.projects.management import update_allowed_models
 
         new_models = ["claude-3-opus", "llama-2-70b"]
 
@@ -957,7 +947,7 @@ class TestMultiProjectIsolation:
 class TestDefaultModelHandling:
     """Tests for default model selection within allowed models."""
 
-    @patch("codemie.rest_api.routers.projects.project_service")
+    @patch("codemie.rest_api.routers.projects.management.project_service")
     def test_default_model_must_be_in_allowed_models(self, mock_project_service):
         """Test that default_model must be in allowed_models list."""
         from codemie.service.project.project_service import ProjectService
@@ -969,7 +959,7 @@ class TestDefaultModelHandling:
         result = ProjectService.validate_default_model(valid_default, allowed_models)
         assert result is None
 
-    @patch("codemie.rest_api.routers.projects.project_service")
+    @patch("codemie.rest_api.routers.projects.management.project_service")
     def test_reset_default_model_to_none(self, mock_project_service):
         """Test that default_model can be reset to None."""
         from codemie.service.project.project_service import ProjectService

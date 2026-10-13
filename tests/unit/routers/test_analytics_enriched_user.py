@@ -29,7 +29,7 @@ from fastapi import status
 from fastapi.responses import JSONResponse
 
 from codemie.core.exceptions import ExtendedHTTPException
-from codemie.rest_api.routers.analytics import (
+from codemie.rest_api.routers.analytics.cli_enriched_users import (
     CLIEnrichedUserParams,
     get_cli_insights_by_enriched_user_city,
     get_cli_insights_by_enriched_user_country,
@@ -91,14 +91,14 @@ def default_params():
 def _patch_feature(enabled: bool):
     mock_cfg = MagicMock()
     mock_cfg.is_feature_enabled.return_value = enabled
-    return patch("codemie.rest_api.routers.analytics.customer_config", mock_cfg)
+    return patch("codemie.rest_api.routers.analytics.cli_enriched_users.customer_config", mock_cfg)
 
 
 def _patch_service(return_data: dict):
     mock_service = AsyncMock()
     mock_service.get_cli_insights_by_enriched_user.return_value = return_data
     return patch(
-        "codemie.rest_api.routers.analytics.AnalyticsService",
+        "codemie.rest_api.routers.analytics.cli_enriched_users.AnalyticsService",
         return_value=mock_service,
     ), mock_service
 

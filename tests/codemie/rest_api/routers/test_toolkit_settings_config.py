@@ -17,7 +17,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from codemie.rest_api.models.assistant import ToolKitDetails, ToolDetails
-from codemie.rest_api.routers.assistant import _enrich_toolkit_settings_config
+from codemie.rest_api.routers.assistant.catalog import _enrich_toolkit_settings_config
 
 
 @pytest.fixture
@@ -64,7 +64,7 @@ def tools_info():
 
 def test_create_settings_config_lookup(tools_info):
     """Test the creation of a settings config lookup dictionary."""
-    from codemie.rest_api.routers.assistant import _create_settings_config_lookup
+    from codemie.rest_api.routers.assistant.catalog import _create_settings_config_lookup
 
     lookup = _create_settings_config_lookup(tools_info)
 

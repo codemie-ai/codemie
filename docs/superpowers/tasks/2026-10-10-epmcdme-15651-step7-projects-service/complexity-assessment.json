@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "task": "EPMCDME-15651 step 7 (projects): relocate the 20 spending helpers from routers/projects/_spending_support.py into service/project/project_spending_service.py, rewire crud.py and spending.py, retarget 35 test patch literals and 4 imports, add characterization tests, with no API change.",
+  "generated": "2026-10-10T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 14,
+  "size": "S",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "writing-plans",
+  "key_reasoning": [
+    {
+      "dimension": "technical_risk",
+      "reason": "Closest pattern is run 7a (assistant -> service/assistant), which also moved security code under characterization-first tests, body-AST check and flip check; rollback is a revert. Base S, bumped to M because the access-control predicates (_manageable_project_names, _can_see_project_spending: admin / auditor / project admin / personal owner) change module, and 19 of the 35 patch literals pass silently if mis-aimed. The 7a/7b template covers the security aspect (bodies byte-equal under a rename map, so no new validation surface) and the characterization-test pattern covers the role edge cases, so the two auto-bumps add nothing further. Residual unknowns: first service/ module importing rest_api.models.project (cold-import cycle check) and the shared _spend_repo instance used by spending.py. Merge needs /sanity."
+    },
+    {
+      "dimension": "component_scope",
+      "reason": "New project_spending_service module (2 access-control, 2 async DB-IO, 7 aggregation, 8 formatting helpers plus _WIDGET_COLUMNS and _spend_repo), two router importers (crud.py, spending.py), retired _spending_support module, two test files. Clear pattern, two layers; the nearest M example (epmcdme-10203) spans three layers, so this sits at M, not above."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "About 4 modified (crud.py, spending.py, test_projects_router.py, test_projects_router_auditor.py), 1 removed (_spending_support.py), 2 new (project_spending_service.py, a service characterization test file) across 4 directories; fits M by file counts, directory spread pushes toward L but the changes are mechanical. Guards and baselines stay untouched."
+    }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from S to M: affects authorization (project spending visibility predicates move to the service layer)"
+  ],
+  "split_recommendation": null
+}

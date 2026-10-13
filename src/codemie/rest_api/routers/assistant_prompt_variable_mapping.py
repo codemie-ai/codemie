@@ -25,7 +25,7 @@ from codemie.rest_api.models.usage.assistant_prompt_variable_mapping import (
     AssistantPromptVariableMappingRequest,
     AssistantPromptVariableMappingResponse,
 )
-from codemie.rest_api.routers.assistant import _get_assistant_by_id_or_raise, _check_user_can_access_assistant
+from codemie.rest_api.routers.utils import check_user_can_access_assistant, get_assistant_by_id_or_raise
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
 from codemie.core.ability import Action
@@ -65,8 +65,8 @@ def create_or_update_prompt_variable_mapping(
     ```
     """
     # Verify that the assistant exists and user has access
-    assistant = _get_assistant_by_id_or_raise(assistant_id)
-    _check_user_can_access_assistant(user, assistant, "view", Action.READ)
+    assistant = get_assistant_by_id_or_raise(assistant_id)
+    check_user_can_access_assistant(user, assistant, "view", Action.READ)
 
     try:
         # Store the variables_config with encryption for sensitive variables
@@ -98,10 +98,10 @@ def get_assistant_prompt_variable_mapping(assistant_id: str, user: User = Depend
     Get prompt variable mappings for a specific assistant and the current user.
     """
     # Verify that the assistant exists
-    assistant = _get_assistant_by_id_or_raise(assistant_id)
+    assistant = get_assistant_by_id_or_raise(assistant_id)
 
     # Verify that the user has access to the assistant
-    _check_user_can_access_assistant(user, assistant, "view", Action.READ)
+    check_user_can_access_assistant(user, assistant, "view", Action.READ)
 
     try:
         # Get the mappings with masked sensitive variables
