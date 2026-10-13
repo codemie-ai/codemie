@@ -80,8 +80,11 @@ def test_migration_declares_expected_revision_chain():
     assert migration.down_revision == "f88ad134467d"
 
 
-def test_alembic_chain_has_single_head_at_this_migration():
-    assert _script_directory().get_heads() == [MIGRATION_REVISION]
+def test_alembic_chain_has_a_single_head_that_includes_this_migration():
+    script = _script_directory()
+    heads = script.get_heads()
+    assert len(heads) == 1
+    assert MIGRATION_REVISION in {rev.revision for rev in script.iterate_revisions(heads[0], "base")}
 
 
 def test_pre_matches_latest_credentialtypes_sync_in_chain():
