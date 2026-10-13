@@ -8,11 +8,12 @@ import os
 import threading
 import unittest
 from contextlib import contextmanager
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 from codemie_tools.data_management.code_executor.code_executor_tool import CodeExecutorTool
 from codemie_tools.data_management.code_executor.job_bridge import JobBridgeOptions, new_job_bridge_options
 from codemie_tools.data_management.code_executor.tool_calling_limits import ToolCallingSettings
+from codemie_tools.data_management.code_executor.run_observer import RunOutcome, SandboxFailure
 from codemie_tools.data_management.code_executor.models import (
     ExecutionMode,
     SandboxMode,
@@ -42,7 +43,7 @@ class TestSandboxSessionDispatch(unittest.TestCase):
             with tool._sandbox_session("/home/codemie/u") as session:
                 assert session is fake_session
 
-            acquire.assert_called_once_with("/home/codemie/u")
+            acquire.assert_called_once_with("/home/codemie/u", None)
 
     def test_sandbox_helpers_take_no_min_remaining_seconds(self):
         for helper in (CodeExecutorTool._sandbox_session, CodeExecutorTool._acquire_session):
@@ -72,7 +73,7 @@ class TestExecuteSandboxIntegration(unittest.TestCase):
         fake_session.run.return_value = fake_result
 
         @contextmanager
-        def fake_sandbox_session(workdir):
+        def fake_sandbox_session(workdir, sandbox_run=None):
             yield fake_session
 
         with (
@@ -83,7 +84,7 @@ class TestExecuteSandboxIntegration(unittest.TestCase):
         ):
             out = tool.execute("print('hello')")
 
-        sb.assert_called_once_with("/home/codemie/u")
+        sb.assert_called_once_with("/home/codemie/u", ANY)
         executed_code = fake_session.run.call_args.args[0]
         assert "__CODEMIE_FS_DENIED__" in executed_code
         assert "print('hello')" in executed_code
@@ -114,6 +115,7 @@ class TestExecuteSandboxJobsMode(unittest.TestCase):
             "input_files": {},
             "export_files": None,
             "workdir": tool._get_user_workdir(),
+            "sandbox_run": ANY,
         }
         fmt.assert_called_once_with(fake_result)
         sb.assert_not_called()
@@ -142,6 +144,7 @@ class TestExecuteSandboxJobsMode(unittest.TestCase):
             "input_files": {"data.csv": b"a,b\n1,2\n"},
             "export_files": None,
             "workdir": tool._get_user_workdir(),
+            "sandbox_run": ANY,
         }
 
     def test_jobs_mode_stores_exported_files_via_export_service(self):
@@ -172,6 +175,7 @@ class TestExecuteSandboxJobsMode(unittest.TestCase):
             "input_files": {},
             "export_files": ["out.txt"],
             "workdir": tool._get_user_workdir(),
+            "sandbox_run": ANY,
         }
         store.assert_called_once_with({"out.txt": b"contents"})
         assert "sandbox:/v1/files/abc" in out
@@ -401,6 +405,7 @@ class TestWorkspaceScriptRunnerJobsMode(unittest.TestCase):
             "workdir": "/home/codemie/conv",
             "baseline_hashes": {},
             "bridge": None,
+            "sandbox_run": None,
         }
         sb.assert_not_called()
         assert out == "ok"
@@ -449,7 +454,7 @@ class TestWorkspaceScriptRunnerJobsMode(unittest.TestCase):
         fake_session.run.return_value = MagicMock(exit_code=0, stdout="", stderr="", plots=[])
 
         @contextmanager
-        def fake_sandbox_session(workdir):
+        def fake_sandbox_session(workdir, sandbox_run=None):
             yield fake_session
 
         with (
@@ -463,7 +468,7 @@ class TestWorkspaceScriptRunnerJobsMode(unittest.TestCase):
         ):
             out = runner._execute_sandbox_script("script.py")
 
-        sb.assert_called_once_with("/home/codemie/conv")
+        sb.assert_called_once_with("/home/codemie/conv", None)
         executed_code = fake_session.run.call_args.args[0]
         assert "__CODEMIE_FS_DENIED__" in executed_code
         assert "runpy.run_path" in executed_code
@@ -518,3 +523,181 @@ class TestExecuteCodeSandbox(unittest.TestCase):
 
         assert f"timed out after {tool.config.execution_timeout:g} seconds" in str(ctx.exception)
         assert not lock.locked()
+
+
+class TestCapacityMetrics(unittest.TestCase):
+    """execute() reports the run's capacity facts, whatever the ending."""
+
+    def setUp(self):
+        from codemie.service.monitoring.code_execution_monitoring_service import CodeExecutionMonitoringService
+        from codemie_tools.base.execution_timing import sandbox_run_sinks
+
+        sandbox_run_sinks.clear()
+        CodeExecutionMonitoringService.register()
+        self.addCleanup(sandbox_run_sinks.clear)
+
+    def _tool(self, sandbox_mode: SandboxMode = SandboxMode.JOBS) -> CodeExecutorTool:
+        tool = _make_tool(sandbox_mode)
+        tool.user_id = "u-1"
+        tool.metadata = {"agent_name": "asst", "llm_model": "gpt", "user_name": "User", "assistant_id": "a-1"}
+        return tool
+
+    def test_a_finished_run_is_reported_with_the_tool_the_mode_and_the_dimensions(self):
+        tool = self._tool()
+        with (
+            patch.object(tool, "_execute_sandbox", return_value="ok") as run,
+            patch(
+                "codemie.service.monitoring.code_execution_monitoring_service.CodeExecutionMonitoringService.send_run"
+            ) as send_run,
+        ):
+            tool.execute("print(1)")
+
+        sandbox_run = run.call_args.args[2]
+        kwargs = send_run.call_args.kwargs
+        assert kwargs["sandbox_run"] is sandbox_run
+        assert kwargs["tool_name"] == tool.name
+        assert kwargs["sandbox_mode"] == "sandbox-jobs"
+        assert kwargs["dimensions"]["user_id"] == "u-1"
+        assert kwargs["dimensions"]["assistant_id"] == "a-1"
+
+    def test_a_failed_run_is_reported_too(self):
+        tool = self._tool(SandboxMode.SHARED)
+        with (
+            patch.object(tool, "_execute_sandbox", side_effect=RuntimeError("boom")),
+            patch(
+                "codemie.service.monitoring.code_execution_monitoring_service.CodeExecutionMonitoringService.send_run"
+            ) as send_run,
+        ):
+            with self.assertRaises(RuntimeError):
+                tool.execute("print(1)")
+
+        send_run.assert_called_once()
+        assert send_run.call_args.kwargs["sandbox_mode"] == "sandbox-shared"
+
+    def test_a_jobs_run_hands_the_observer_to_the_job_runner(self):
+        tool = self._tool()
+        fake_result = MagicMock(stdout="", stderr="", exit_code=0, exported_files={})
+        with (
+            patch("codemie_tools.data_management.code_executor.batch_job_runner.BatchJobRunner") as runner_cls,
+            patch.object(tool, "_format_execution_result", return_value=""),
+            patch(
+                "codemie.service.monitoring.code_execution_monitoring_service.CodeExecutionMonitoringService.send_run"
+            ) as send_run,
+        ):
+            runner_cls.return_value.run.return_value = fake_result
+            tool.execute("print(1)")
+
+        assert runner_cls.return_value.run.call_args.kwargs["sandbox_run"] is send_run.call_args.kwargs["sandbox_run"]
+
+
+class TestRunOutcomeAndTiming(unittest.TestCase):
+    """execute() hands the metrics the run's outcome and how long the whole run took."""
+
+    def setUp(self):
+        from codemie.service.monitoring.code_execution_monitoring_service import CodeExecutionMonitoringService
+        from codemie_tools.base.execution_timing import sandbox_run_sinks
+
+        sandbox_run_sinks.clear()
+        CodeExecutionMonitoringService.register()
+        self.addCleanup(sandbox_run_sinks.clear)
+
+    def _tool(self) -> CodeExecutorTool:
+        return _make_tool(SandboxMode.JOBS)
+
+    def _send_run(self):
+        return patch(
+            "codemie.service.monitoring.code_execution_monitoring_service.CodeExecutionMonitoringService.send_run"
+        )
+
+    def test_the_run_is_timed_from_start_to_finish(self):
+        tool = self._tool()
+        with patch.object(tool, "_execute_sandbox", return_value="ok"), self._send_run() as send_run:
+            tool.execute("print(1)")
+
+        assert send_run.call_args.kwargs["elapsed_seconds"] >= 0
+        assert send_run.call_args.kwargs["sandbox_run"].outcome.value == "ok"
+
+    def test_a_failure_names_how_the_run_ended(self):
+        tool = self._tool()
+        failure = SandboxFailure("never ran", RunOutcome.TIMEOUT)
+        with patch.object(tool, "_execute_sandbox", side_effect=failure), self._send_run() as send_run:
+            with self.assertRaises(SandboxFailure):
+                tool.execute("print(1)")
+
+        assert send_run.call_args.kwargs["sandbox_run"].outcome is RunOutcome.TIMEOUT
+
+    def test_any_other_exception_is_a_plain_error(self):
+        tool = self._tool()
+        with patch.object(tool, "_execute_sandbox", side_effect=RuntimeError("boom")), self._send_run() as send_run:
+            with self.assertRaises(RuntimeError):
+                tool.execute("print(1)")
+
+        assert send_run.call_args.kwargs["sandbox_run"].outcome is RunOutcome.ERROR
+
+    def test_code_refused_by_the_security_policy_is_policy_denied_and_keeps_its_message(self):
+        tool = self._tool()
+        with (
+            patch.object(
+                tool, "_validate_code_security_policy", side_effect=SandboxFailure("blocked", RunOutcome.POLICY_DENIED)
+            ),
+            self._send_run() as send_run,
+        ):
+            with self.assertRaisesRegex(SandboxFailure, "blocked"):
+                tool.execute("import os")
+
+        assert send_run.call_args.kwargs["sandbox_run"].outcome is RunOutcome.POLICY_DENIED
+
+    def test_the_real_policy_check_raises_policy_denied(self):
+        tool = self._tool()
+        with patch(
+            "codemie_tools.data_management.code_executor.code_executor_tool.check_security_policy",
+            return_value=(False, [MagicMock(severity=MagicMock(name="HIGH"), description="os use")]),
+        ):
+            with self.assertRaises(SandboxFailure) as raised:
+                tool._validate_code_security_policy("import os")
+
+        assert raised.exception.outcome is RunOutcome.POLICY_DENIED
+
+
+class TestSandboxRunReport(unittest.TestCase):
+    """The tool needs no knowledge of metrics: it hands the run to whatever sink was added."""
+
+    def test_the_run_reaches_a_sink_with_the_tool_the_mode_and_the_identity(self):
+        from codemie_tools.base.execution_timing import sandbox_run_sinks
+
+        heard = []
+        sandbox_run_sinks.clear()
+        sandbox_run_sinks.add(heard.append)
+        self.addCleanup(sandbox_run_sinks.clear)
+        tool = _make_tool(SandboxMode.JOBS)
+        tool.user_id = "u-1"
+        tool.metadata = {"agent_name": "asst"}
+
+        with patch.object(tool, "_execute_sandbox", return_value="ok"):
+            tool.execute("print(1)")
+
+        (report,) = heard
+        assert report.tool_name == tool.name
+        assert report.sandbox_mode == "sandbox-jobs"
+        assert report.user_id == "u-1"
+        assert report.metadata == {"agent_name": "asst"}
+
+
+class TestCancelledRun(unittest.TestCase):
+    """A cancelled run (a BaseException, not an Exception) ends with the outcome `error`, not `ok`."""
+
+    def test_a_cancelled_run_is_not_reported_as_ok(self):
+        from codemie_tools.base.execution_timing import sandbox_run_sinks
+
+        heard = []
+        sandbox_run_sinks.clear()
+        sandbox_run_sinks.add(heard.append)
+        self.addCleanup(sandbox_run_sinks.clear)
+        tool = _make_tool(SandboxMode.JOBS)
+
+        with patch.object(tool, "_execute_sandbox", side_effect=KeyboardInterrupt()):
+            with self.assertRaises(KeyboardInterrupt):
+                tool.execute("print(1)")
+
+        (report,) = heard
+        assert report.sandbox_run.outcome.value == "error"

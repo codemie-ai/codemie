@@ -12,16 +12,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections.abc import Mapping
 from typing import Optional, TYPE_CHECKING, Dict, Any
 
-from codemie.core.constants import AGENT_NAME, LLM_MODEL, USER_NAME, TOOL_TYPE, ToolType, PROJECT
+from codemie.core.constants import (
+    TOOL_TYPE,
+    ToolType,
+)
 from codemie.core.dependecies import get_current_project
 from codemie.rest_api.security.user import User
 from codemie.service.monitoring.base_monitoring_service import BaseMonitoringService
+from codemie.service.monitoring.tool_run_context import ToolRunContext
 from codemie.service.monitoring.metrics_constants import (
     TOOLS_USAGE_TOTAL_METRIC,
     TOOLS_USAGE_TOKENS_METRIC,
     TOOLS_USAGE_ERRORS_METRIC,
+    SCRIPT_TOOL_CALLS_REFUSED_METRIC,
+    INVOKED_BY_SCRIPT,
+    ScriptCallKind,
     MetricsAttributes,
     MCP_SERVERS_ASSISTANT_METRIC,
 )
@@ -42,12 +50,9 @@ class AgentMonitoringService(BaseMonitoringService):
     ):
         metadata = tool_metadata or {}
         attributes = {
+            **ToolRunContext.from_metadata(metadata, with_user_id=False).dimensions(),
             MetricsAttributes.TOOL_NAME: tool_name,
-            MetricsAttributes.ASSISTANT_NAME: metadata.get(AGENT_NAME, ""),
-            MetricsAttributes.LLM_MODEL: metadata.get(LLM_MODEL, ""),
-            MetricsAttributes.USER_NAME: metadata.get(USER_NAME, ""),
             MetricsAttributes.TOOL_TYPE: metadata.get(TOOL_TYPE, ToolType.INTERNAL),
-            MetricsAttributes.PROJECT: get_current_project(fallback=metadata.get(PROJECT)),
         }
         if additional_attributes:
             attributes.update(additional_attributes)
@@ -67,6 +72,46 @@ class AgentMonitoringService(BaseMonitoringService):
                 name=TOOLS_USAGE_ERRORS_METRIC,
                 attributes=attributes,
             )
+
+    @classmethod
+    def send_script_tool_call_metrics(
+        cls,
+        *,
+        kind: str,
+        tool_name: str,
+        tool_type: str,
+        dimensions: Mapping[str, str],
+        error_code: str | None = None,
+        error_class: str | None = None,
+    ) -> None:
+        """One record for a tool call made from a workspace script, from explicit values.
+
+        The polling thread that settles the call has no request contextvars, so nothing is read from them here, and no
+        tokens are written (the script run itself is counted once as ``execute_workspace_script``). ``dimensions`` is
+        the run's shared set (user, project, assistant, workflow, model, source kind). ``kind`` picks the metric:
+        success and abandoned go to the usage total with ``status``, an error to the errors total, a refusal only to
+        the refused counter. ``error_code`` is written for errors and refusals, ``error_class`` for errors.
+        """
+        attributes = {
+            **dimensions,
+            MetricsAttributes.TOOL_NAME: tool_name,
+            MetricsAttributes.BASE_TOOL_NAME: tool_name,
+            MetricsAttributes.TOOL_TYPE: tool_type,
+        }
+        if kind != ScriptCallKind.REFUSED:
+            # The refused counter is script-only by definition and (ticket decision 4) has no `invoked_by`.
+            attributes[MetricsAttributes.INVOKED_BY] = INVOKED_BY_SCRIPT
+        if kind in (ScriptCallKind.SUCCESS, ScriptCallKind.ABANDONED):
+            attributes[MetricsAttributes.STATUS] = kind
+            name = TOOLS_USAGE_TOTAL_METRIC
+        else:
+            attributes[MetricsAttributes.ERROR_CODE] = error_code or ""
+            # Like a direct call, `error_class` is the exception's class name; the protocol code is `error_code`.
+            # Written only when the handler saw an exception (a timeout, say, has none).
+            if kind == ScriptCallKind.ERROR and error_class:
+                attributes[MetricsAttributes.ERROR_CLASS] = error_class
+            name = SCRIPT_TOOL_CALLS_REFUSED_METRIC if kind == ScriptCallKind.REFUSED else TOOLS_USAGE_ERRORS_METRIC
+        cls.send_count_metric(name=name, attributes=attributes)
 
     @classmethod
     def send_assistant_mngmnt_metric(

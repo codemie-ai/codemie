@@ -34,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from codemie.configs.config import config
 from codemie.enterprise.litellm.budget_categories import BudgetCategory, derive_category_from_user_id
 from codemie.repository.metrics_elastic_repository import MetricsElasticRepository
+from codemie.service.monitoring.metrics_constants import INVOKED_BY_SCRIPT, MetricsAttributes
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,7 @@ ATTR_USER_ID_KEYWORD = "attributes.user_id.keyword"
 ATTR_ASSISTANT_ID_KEYWORD = "attributes.assistant_id.keyword"
 ATTR_MCP_NAME_KEYWORD = "attributes.mcp_name.keyword"
 ATTR_CLI_REQUEST = "attributes.cli_request"
+ATTR_INVOKED_BY_KEYWORD = f"attributes.{MetricsAttributes.INVOKED_BY}.keyword"
 ATTR_MONEY_SPENT = "attributes.money_spent"
 METRIC_NAME_KEYWORD = "metric_name.keyword"
 
@@ -896,7 +898,13 @@ class LeaderboardCollector:
                     "terms": self._by_user_terms(),
                     "aggs": {
                         "tool_usage": {
-                            "filter": self._metric_term("codemie_tools_usage_total"),
+                            "filter": {
+                                "bool": {
+                                    "must": [self._metric_term("codemie_tools_usage_total")],
+                                    # calls made from a workspace script are not distinct tools the user picked
+                                    "must_not": [{"term": {ATTR_INVOKED_BY_KEYWORD: INVOKED_BY_SCRIPT}}],
+                                }
+                            },
                             "aggs": {
                                 "unique_tools": {"cardinality": {"field": "attributes.tool_name.keyword"}},
                             },

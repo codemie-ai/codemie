@@ -16,6 +16,7 @@ import logging
 import os
 import re
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Type, Optional, Any, List, Tuple
@@ -27,9 +28,11 @@ from llm_sandbox.exceptions import SandboxTimeoutError
 from llm_sandbox.security import SecurityPolicy
 from pydantic import BaseModel, Field
 
+from codemie_tools.base.execution_timing import SandboxRunReport, report_sandbox_run
 from codemie_tools.base.codemie_tool import CodeMieTool
 from codemie_tools.base.file_object import FileObject
 from codemie_tools.data_management.code_executor.batch_job_runner import run_via_jobs
+from codemie_tools.data_management.code_executor.run_observer import RunOutcome, SandboxFailure, SandboxRunObserver
 from codemie_tools.data_management.code_executor.file_export_service import FileExportService
 from codemie_tools.data_management.code_executor.file_upload_service import FileUploadService
 from codemie_tools.data_management.code_executor.llm_sandbox import apply_llm_sandbox_patch
@@ -390,7 +393,7 @@ class CodeExecutorTool(CodeMieTool):
             },
         }
 
-    def execute(self, code: str, export_files: Optional[List[str]] = None) -> str:
+    def execute(self, code: str, export_files: list[str] | None = None) -> str:
         """
         Execute Python code using sandbox execution.
 
@@ -419,9 +422,32 @@ class CodeExecutorTool(CodeMieTool):
             f"Executing code in SANDBOX mode (reason: "
             f"{'explicit parameter' if hasattr(self, '_mode_override') else 'CODE_EXECUTOR_EXECUTION_MODE env var or default'})"
         )
-        return self._execute_sandbox(code, export_files)
+        sandbox_run = SandboxRunObserver()
+        started = time.monotonic()
+        try:
+            return self._execute_sandbox(code, export_files, sandbox_run)
+        except BaseException as error:  # a cancelled run is an ended run too: its outcome must say so
+            sandbox_run.fail(error)
+            raise
+        finally:
+            self._report_run(sandbox_run, time.monotonic() - started)
 
-    def _execute_sandbox(self, code: str, export_files: Optional[List[str]] = None) -> str:
+    def _report_run(self, sandbox_run: SandboxRunObserver, elapsed_seconds: float) -> None:
+        """Hand the run's facts to whoever listens (the platform turns them into metrics)."""
+        report_sandbox_run(
+            SandboxRunReport(
+                tool_name=self.name,
+                sandbox_mode=self.config.sandbox_mode.value,
+                sandbox_run=sandbox_run,
+                elapsed_seconds=elapsed_seconds,
+                metadata=self.metadata,
+                user_id=self.user_id,
+            )
+        )
+
+    def _execute_sandbox(
+        self, code: str, export_files: list[str] | None = None, sandbox_run: SandboxRunObserver | None = None
+    ) -> str:
         """
         Execute Python code in isolated Kubernetes sandbox environment.
 
@@ -460,15 +486,18 @@ class CodeExecutorTool(CodeMieTool):
                     self._store_exported_bytes,
                     self._log_execution_timing,
                     lambda stdout, stderr: self._log_guard_denials(stdout, stderr, workdir=user_workdir),
+                    sandbox_run,
                 )
 
-            with self._sandbox_session(user_workdir) as session:
+            with self._sandbox_session(user_workdir, sandbox_run) as session:
                 if self.input_files:
                     self._upload_files_to_sandbox(session, self.input_files, user_workdir)
 
                 self._validate_code_security(session, code, user_id=self.user_id, creator_env=self.config.creator_env)
 
                 result, exec_time = self._execute_code_sandbox(session, guarded_code)
+                if sandbox_run is not None:
+                    sandbox_run.set_exit_code(getattr(result, "exit_code", None))
                 self._log_execution_timing(0.0, exec_time)
                 self._log_guard_denials(result.stdout or "", result.stderr or "", workdir=user_workdir)
 
@@ -523,21 +552,26 @@ class CodeExecutorTool(CodeMieTool):
         upload_service.upload_files_to_sandbox(session, file_objects, workdir)
 
     @contextmanager
-    def _sandbox_session(self, user_workdir: str):
+    def _sandbox_session(
+        self, user_workdir: str, sandbox_run: SandboxRunObserver | None = None
+    ) -> Iterator[SandboxSession]:
         """Yield a sandbox session from the long-lived pool (SHARED mode).
 
         JOBS mode submits a V1Job and is dispatched before this helper is
         called, so this helper is SHARED-only by construction.
         """
-        session, _ = self._acquire_session(user_workdir)
+        session, _ = self._acquire_session(user_workdir, sandbox_run)
         yield session
 
-    def _acquire_session(self, user_workdir: str) -> Tuple[SandboxSession, float]:
+    def _acquire_session(
+        self, user_workdir: str, sandbox_run: SandboxRunObserver | None = None
+    ) -> Tuple[SandboxSession, float]:
         """
         Acquire a sandbox session for code execution.
 
         Args:
             user_workdir: User-specific working directory
+            sandbox_run: Learns that the run asked for a pod, and whether it had to wait or was refused
 
         Returns:
             tuple: (session, elapsed_time_seconds)
@@ -546,6 +580,8 @@ class CodeExecutorTool(CodeMieTool):
             ToolException: If session acquisition fails
         """
         start_time = time.time()
+        if sandbox_run is not None:
+            sandbox_run.mark_requested()
 
         # IMPORTANT: Do NOT call _get_available_pod_name() here!
         # Let session_manager.get_session() make ALL pod selection decisions
@@ -558,12 +594,17 @@ class CodeExecutorTool(CodeMieTool):
         pod_manifest = self._custom_pod_manifest or self._create_default_pod_manifest("codemie-executor-new")
 
         logger.debug(f"Requesting session for workdir: {user_workdir}")
-        session = session_manager.get_session(
-            pod_name=None,  # Let session_manager decide which pod to use
-            workdir=user_workdir,
-            pod_manifest=pod_manifest,
-            security_policy=self.security_policy,
-        )
+        try:
+            session = session_manager.get_session(
+                pod_name=None,  # Let session_manager decide which pod to use
+                workdir=user_workdir,
+                pod_manifest=pod_manifest,
+                security_policy=self.security_policy,
+                sandbox_run=sandbox_run,
+            )
+        finally:
+            if sandbox_run is not None:
+                sandbox_run.set_acquire_seconds(time.time() - start_time)
 
         elapsed = time.time() - start_time
         logger.debug(f"Session ready in {elapsed:.2f}s")
@@ -600,7 +641,7 @@ class CodeExecutorTool(CodeMieTool):
                 f"violations={len(violations)}, details={', '.join([v.description for v in violations[:3]])}, "
                 f"created_by_env={creator_env}, domain=code_executor"
             )
-            raise ToolException(error_msg)
+            raise SandboxFailure(error_msg, RunOutcome.POLICY_DENIED)
 
     def _validate_code_security_policy(self, code: str) -> None:
         """Session-less variant used by JOBS mode where no session exists yet."""
@@ -619,7 +660,7 @@ class CodeExecutorTool(CodeMieTool):
                 f"violations={len(violations)}, details={', '.join([v.description for v in violations[:3]])}, "
                 f"created_by_env={self.config.creator_env}, domain=code_executor"
             )
-            raise ToolException(error_msg)
+            raise SandboxFailure(error_msg, RunOutcome.POLICY_DENIED)
 
     @staticmethod
     def _validate_export_paths(export_files: Optional[List[str]], workdir: str) -> None:

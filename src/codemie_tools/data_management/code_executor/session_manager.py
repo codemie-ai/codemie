@@ -31,6 +31,7 @@ from llm_sandbox import SandboxSession
 from llm_sandbox.exceptions import SandboxTimeoutError
 from llm_sandbox.security import SecurityPolicy
 
+from codemie_tools.data_management.code_executor.run_observer import RunOutcome, SandboxFailure, SandboxRunObserver
 from codemie_tools.data_management.code_executor.k8s_client_manager import (
     KubernetesClientManager,
 )
@@ -203,6 +204,7 @@ class SandboxSessionManager:
         workdir: str,
         pod_manifest: dict,
         security_policy: SecurityPolicy,
+        sandbox_run: SandboxRunObserver | None = None,
     ) -> SandboxSession:
         """
         Get or create a persistent session for the specified pod.
@@ -215,6 +217,7 @@ class SandboxSessionManager:
             workdir: Working directory for the session
             pod_manifest: Pod manifest for creating new pods
             security_policy: Security policy for code validation
+            sandbox_run: Learns whether the pool was full with no pod ready (the call waited) and whether it was refused
 
         Returns:
             SandboxSession: Active session for the pod
@@ -229,7 +232,7 @@ class SandboxSessionManager:
                 return session
 
             # Determine which pod to use
-            selected_pod_name = pod_name if pod_name else self._select_or_wait_for_pod()
+            selected_pod_name = pod_name if pod_name else self._select_or_wait_for_pod(sandbox_run)
 
             # Try to reuse session for selected pod
             session = self._try_reuse_session(selected_pod_name, workdir)
@@ -291,7 +294,7 @@ class SandboxSessionManager:
 
         return session
 
-    def _select_or_wait_for_pod(self) -> Optional[str]:
+    def _select_or_wait_for_pod(self, sandbox_run: SandboxRunObserver | None = None) -> str | None:
         """
         Select an available pod or wait if at capacity.
 
@@ -315,6 +318,9 @@ class SandboxSessionManager:
         # AND its temp ID is still in _pods_being_created. Adding them would overcount.
         total_pods = max(len(all_pods), len(self._pods_being_created))
 
+        if sandbox_run is not None:
+            sandbox_run.mark_requested()
+
         # Under capacity: create new pod
         if total_pods < self._config.max_pod_pool_size:
             logger.debug(
@@ -332,6 +338,8 @@ class SandboxSessionManager:
             return pod_name
 
         # At capacity without running pods: wait
+        if sandbox_run is not None:
+            sandbox_run.mark_waited()
         logger.warning(
             f"At capacity ({total_pods}/{self._config.max_pod_pool_size} pod(s)) but none are Running "
             f"in namespace '{self._config.namespace}'. Waiting..."
@@ -344,9 +352,13 @@ class SandboxSessionManager:
             return pod_name
 
         # Still no running pods — log details for operators, keep user message clean
+        if sandbox_run is not None:
+            sandbox_run.mark_rejected()
         for pod_name, status in all_pods:
             logger.error(f"Code executor pod not ready: {pod_name} [{status}]")
-        raise ToolException("Code execution is currently unavailable: executor pods are not ready. ")
+        raise SandboxFailure(
+            "Code execution is currently unavailable: executor pods are not ready. ", RunOutcome.CAPACITY_REJECTED
+        )
 
     def _create_new_pod_session(
         self, workdir: str, pod_manifest: dict, security_policy: SecurityPolicy

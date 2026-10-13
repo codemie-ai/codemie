@@ -50,12 +50,16 @@ ToolCallHandler = Callable[[Mapping[str, object]], object]
 
 
 class ToolCallRefused(Exception):
-    """Raised by a handler to refuse a call with a specific error ``code`` and script-facing ``message``."""
+    """Raised by a handler to refuse a call with a specific error ``code`` and script-facing ``message``.
 
-    def __init__(self, code: str, message: str) -> None:
+    ``cause_class`` is the class name of the exception that made the handler refuse (for metrics only; the script never
+    sees it)."""
+
+    def __init__(self, code: str, message: str, cause_class: str | None = None) -> None:
         super().__init__(f"{code}: {message}")
         self.code: str = code
         self.message: str = message
+        self.cause_class: str | None = cause_class
 
 
 @final
@@ -112,6 +116,14 @@ def current_call_cancelled() -> threading.Event | None:
     return _current_cancel.get()
 
 
+_current_call_seq: contextvars.ContextVar[int | None] = contextvars.ContextVar("tool_call_seq", default=None)
+
+
+def current_call_seq() -> int | None:
+    """The sequence number of the call being served (unique per call of a dispatcher); ``None`` outside one."""
+    return _current_call_seq.get()
+
+
 def ensure_not_cancelled() -> None:
     """Raise ``ToolCallRefused`` (``timeout``) when the script has stopped waiting for the call being served.
 
@@ -128,8 +140,10 @@ class CallOutcome:
     """How one request ended: the one record that the trace, the metric and the audit of later stories consume.
 
     ``tool`` is the ``name`` of the payload when there is one (the tool of a ``tool.call``), ``code`` the error code the
-    script got (``None`` for a result). ``delivered`` and ``withdrawn`` are filled by the transport: whether the answer
-    was written, and whether the script stopped waiting before it was.
+    script got (``None`` for a result). ``seq`` tells calls apart even when a ``call_id`` repeats, ``request_bytes`` is
+    the UTF-8 size of the tool name plus its serialized arguments (0 when the request was unusable; kept for the trace and audit of later stories, no metric reads it yet). ``delivered`` and ``withdrawn`` are filled by the transport: whether the answer
+    was written, and whether the script stopped waiting before it was. ``concurrency`` is how many of the run's calls
+    were in flight (running or queued for a worker) when this one was accepted, itself included; 0 when unknown.
     """
 
     call_id: str
@@ -138,11 +152,24 @@ class CallOutcome:
     code: str | None
     duration_seconds: float
     response_bytes: int
+    seq: int
+    request_bytes: int
     delivered: bool | None = None
     withdrawn: bool = False
+    concurrency: int = 0
 
-    def settled(self, *, delivered: bool, withdrawn: bool = False) -> CallOutcome:
-        return replace(self, delivered=delivered, withdrawn=withdrawn)
+    @property
+    def abandoned(self) -> bool:
+        """The script stopped waiting, or the call ended without an answer or an error code (the one definition)."""
+        return self.withdrawn or (not self.delivered and self.code is None)
+
+    def settled(self, *, delivered: bool, withdrawn: bool = False, concurrency: int | None = None) -> CallOutcome:
+        return replace(
+            self,
+            delivered=delivered,
+            withdrawn=withdrawn,
+            concurrency=self.concurrency if concurrency is None else concurrency,
+        )
 
 
 @final
@@ -181,6 +208,16 @@ def parse_request(body: str | None) -> tuple[str, Mapping[str, object], str | No
     return op, payload, None
 
 
+def _request_bytes(payload: Mapping[str, object]) -> int:
+    """UTF-8 bytes of the tool name plus its serialized arguments; what the script sent, as the model would have seen."""
+    name = payload.get("name")
+    size = len(name.encode("utf-8", "replace")) if isinstance(name, str) else 0
+    args = payload.get("args")
+    if args is not None:
+        size += len(json.dumps(args, ensure_ascii=False).encode("utf-8", "replace"))
+    return size
+
+
 @final
 class _Trace:
     """What the dispatcher learns about one request on the way, for its :class:`CallOutcome`."""
@@ -189,6 +226,7 @@ class _Trace:
         self.op: str | None = None
         self.tool: str | None = None
         self.code: str | None = None
+        self.request_bytes: int = 0
 
 
 @final
@@ -210,20 +248,32 @@ class RequestDispatcher:
         self._handlers: Mapping[str, ToolCallHandler] = {} if handlers is None else dict(handlers)
         self.max_payload_bytes: int = max_payload_bytes
         self._deadline: CallDeadline = CallDeadline(time_left or (lambda: None), deadline_margin)
+        self._seq_lock: threading.Lock = threading.Lock()
+        self._seq: int = 0
+
+    def next_seq(self) -> int:
+        """The next call sequence number; the transport takes one when it accepts a call, :meth:`handle` otherwise."""
+        with self._seq_lock:
+            self._seq += 1
+            return self._seq
 
     def dispatch(self, request: PendingRequest) -> bytes:
         """Answer one request. Total: whatever goes wrong becomes an error response, never an exception."""
         return self.handle(request).body
 
-    def handle(self, request: PendingRequest, cancelled: threading.Event | None = None) -> DispatchResult:
+    def handle(
+        self, request: PendingRequest, cancelled: threading.Event | None = None, seq: int | None = None
+    ) -> DispatchResult:
         """:meth:`dispatch` plus the record of how the request ended. Total.
 
         ``cancelled`` is set by the transport when the script stopped waiting; a request not started by then is not run.
+        ``seq`` is the number the transport took with :meth:`next_seq`; none given, one is taken here.
         """
         started = time.monotonic()
         trace = _Trace()
+        call_seq = self.next_seq() if seq is None else seq
         try:
-            body = self._answer(request, cancelled, trace)
+            body = self._answer(request, cancelled, trace, call_seq)
         except Exception as exc:  # noqa: BLE001 - one bad request or handler must not end the channel
             logger.warning("tool_call_protocol: request %s failed: %s", request.call_id, type(exc).__name__)
             body = self._fail(trace, request.call_id, CODE_INTERNAL_ERROR, "the request could not be processed")
@@ -234,6 +284,8 @@ class RequestDispatcher:
             code=trace.code,
             duration_seconds=time.monotonic() - started,
             response_bytes=len(body),
+            seq=call_seq,
+            request_bytes=trace.request_bytes,
         )
         return DispatchResult(body=body, outcome=outcome)
 
@@ -242,7 +294,7 @@ class RequestDispatcher:
         trace.code = code
         return error_response(call_id, code, message)
 
-    def _answer(self, request: PendingRequest, cancelled: threading.Event | None, trace: _Trace) -> bytes:
+    def _answer(self, request: PendingRequest, cancelled: threading.Event | None, trace: _Trace, seq: int) -> bytes:
         call_id = request.call_id
         if request.oversize:
             return self._fail(trace, call_id, CODE_PAYLOAD_TOO_LARGE, f"request exceeds {self.max_payload_bytes} bytes")
@@ -254,11 +306,13 @@ class RequestDispatcher:
         trace.op = op
         name = payload.get("name")
         trace.tool = name if isinstance(name, str) else None
+        trace.request_bytes = _request_bytes(payload)
         handler = self._handlers.get(op)
         if handler is None:
             return self._fail(trace, call_id, CODE_UNKNOWN_OP, f"unknown operation: {op!r}")
         deadline_token = _current_deadline.set(self._deadline)
         cancel_token = _current_cancel.set(cancelled)
+        seq_token = _current_call_seq.set(seq)
         try:
             ensure_not_cancelled()
             self._deadline.ensure()
@@ -272,6 +326,7 @@ class RequestDispatcher:
             logger.warning("tool_call_protocol: handler %r produced no serialisable result: %s", op, type(exc).__name__)
             return self._fail(trace, call_id, CODE_BAD_REQUEST, f"operation {op!r} produced no valid result")
         finally:
+            _current_call_seq.reset(seq_token)
             _current_cancel.reset(cancel_token)
             _current_deadline.reset(deadline_token)
         if len(encoded) > self.max_payload_bytes:

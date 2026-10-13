@@ -386,7 +386,13 @@ Rules and limits:
   is never run again. When the run ends, calls still in flight write nothing and are settled as not delivered.
   Every request ends in one `CallOutcome` record made by the dispatcher (call id, op, tool name, error code, duration,
   response size; refused and malformed requests too), completed by the channel with `delivered` and `withdrawn` and
-  handed to `on_settled(outcome)`; nothing listens yet.
+  handed to `on_settled(outcome)`. In the backend, `ExecuteWorkspaceScriptTool` and
+  `AgentWorkspaceService.execute_workspace_script` pass a per-run observer (`service/script_tool_calls/`) that fans each
+  outcome out to the usage-metric listener and aggregates it for the run-end records (the sandbox run record, estimated token
+  savings).
+  The estimated-savings `inner_calls` side is emitted for assistant scope only (workflow tool steps get no estimate), and
+  `bridge_calls` is the label `none|some` in the savings metric. (This amends
+  architecture-spec D23, whose local copy is gitignored.)
 - **An oversized HTTP result is refused before it is parsed.** The body's length is compared with the cap first and
   `payload_too_large` is returned without parsing it, so a huge response is not held, parsed and encoded just to be
   refused.

@@ -17,6 +17,7 @@ from __future__ import annotations
 import functools
 import hashlib
 import mimetypes
+import time
 from collections.abc import Sequence
 from pathlib import PurePosixPath
 from typing import Any
@@ -43,10 +44,16 @@ from codemie.rest_api.security.user import User
 from codemie.service.file_service.blob_ref_rules import is_safe_blob_ref
 from codemie.service.file_service.download_rules import can_download
 from codemie.service.script_tool_calls.context import ScriptRunContext
+from codemie.service.script_tool_calls.fanout import fan_out
 from codemie.service.script_tool_calls.handler import build_tool_call_handlers
+from codemie.service.script_tool_calls.observer import ScriptRunObserver
+from codemie.service.script_tool_calls.outcome_metrics import ScriptCallMetricsListener
 from codemie.service.workspace_script_bridge import resolve_tool_calling_settings
 from codemie_tools.base.file_object import FileObject
+from codemie_tools.base.execution_timing import SandboxRunReport, report_sandbox_run
+from codemie_tools.data_management.code_executor.run_observer import SandboxRunObserver
 from codemie_tools.data_management.code_executor.job_bridge import new_job_bridge_options
+from codemie_tools.data_management.workspace.tools_vars import EXECUTE_WORKSPACE_SCRIPT_TOOL
 from codemie_tools.data_management.code_executor.tool_calling_limits import ToolCallingSettings
 from codemie_tools.data_management.workspace.workspace_script_runner import WorkspaceScriptRunner
 
@@ -565,38 +572,79 @@ class AgentWorkspaceService:
         export_files: list[str] | None = None,
         run_context: ScriptRunContext | None = None,
         tool_calling: ToolCallingSettings | None = None,
+        observer: ScriptRunObserver | None = None,
     ) -> ExecuteWorkspaceScriptResponse:
         """Run a workspace script. ``run_context`` says which platform tools the script may call;
         without one (a direct REST run) every ``tool.call`` is answered ``no_context``. ``tool_calling`` is the run's
-        tool-calling settings as the caller already read them; without them the settings are read here."""
+        tool-calling settings as the caller already read them; without them the settings are read here.
+
+        ``observer`` collects the run's call facts; a caller that wants to read them afterwards passes its own, any
+        other run gets one made here. The observer is closed when the run ends, whatever the ending.
+        """
         workspace = self.get_workspace(workspace_id, user)
         input_files = self.get_workspace_input_files(workspace_id, user)
         settings = tool_calling if tool_calling is not None else resolve_tool_calling_settings()
-        bridge = (
-            None
-            if settings is None
-            else new_job_bridge_options(
-                settings,
-                build_tool_call_handlers(
-                    run_context or ScriptRunContext.without_context(user),
-                    max_payload_bytes=settings.max_payload_bytes,
-                ),
+        context = run_context or ScriptRunContext.without_context(user)
+        run_observer = observer if observer is not None else ScriptRunObserver()
+        run_observer.set_attribution(context)
+        run_observer.set_response_cap_tokens(self._response_cap_tokens(context, settings))
+        sandbox_run = SandboxRunObserver()
+        executor: WorkspaceScriptRunner | None = None
+        started = time.monotonic()
+        try:
+            bridge = (
+                None
+                if settings is None
+                else new_job_bridge_options(
+                    settings,
+                    build_tool_call_handlers(
+                        context, max_payload_bytes=settings.max_payload_bytes, observer=run_observer
+                    ),
+                    on_settled=fan_out(run_observer, ScriptCallMetricsListener(run_observer)),
+                )
             )
-        )
-        executor = WorkspaceScriptRunner(
-            file_repository=self.file_repository,
-            user_id=user.id,
-            input_files=input_files,
-            conversation_id=workspace.conversation_id,
-            bridge=bridge,
-        )
-        output = executor.execute_script(script_path=script_path, export_files=export_files)
-        synced_files = self._sync_execution_files(workspace.id, executor.last_execution_files)
+            executor = WorkspaceScriptRunner(
+                file_repository=self.file_repository,
+                user_id=user.id,
+                input_files=input_files,
+                conversation_id=workspace.conversation_id,
+                bridge=bridge,
+                sandbox_run=sandbox_run,
+            )
+            output = executor.execute_script(script_path=script_path, export_files=export_files)
+            synced_files = self._sync_execution_files(workspace.id, executor.last_execution_files)
+        except BaseException as error:  # a cancelled run is an ended run too: its outcome must match run_ok
+            sandbox_run.fail(error)
+            raise
+        finally:
+            snapshot = run_observer.close()
+            # A run that failed before its runner was built is a run too (mode unknown): counting it keeps the runs
+            # counter equal to the number of scripts started.
+            report_sandbox_run(
+                SandboxRunReport(
+                    tool_name=EXECUTE_WORKSPACE_SCRIPT_TOOL.name,
+                    sandbox_mode=executor.config.sandbox_mode.value if executor is not None else "unknown",
+                    sandbox_run=sandbox_run,
+                    elapsed_seconds=time.monotonic() - started,
+                    metadata=context.to_metadata(),
+                    user_id=context.user_id,
+                    calls=snapshot,
+                )
+            )
         return ExecuteWorkspaceScriptResponse(
             message="Workspace script executed successfully",
             output=output,
             workspace_files=synced_files,
         )
+
+    @staticmethod
+    def _response_cap_tokens(context: ScriptRunContext, settings: ToolCallingSettings | None) -> int | None:
+        """The most one inner call may add to the savings estimate: what a direct call of the tool would have shown
+        the model, the assistant's output limit in tokens when known, else the bridge's payload bound in tokens."""
+        limit = context.tools_tokens_size_limit
+        if limit:
+            return limit
+        return settings.max_payload_bytes // 4 if settings is not None else None
 
     def _sync_execution_files(
         self, workspace_id: str, execution_files: list[FileObject]

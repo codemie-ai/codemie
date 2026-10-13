@@ -1390,6 +1390,9 @@ class AssistantRollbackRequest(BaseModel):
 
 class VirtualAssistant(AssistantBase):
     execution_id: Optional[str] = None
+    # True only for the temporary assistant of a workflow tool step; set by trusted workflow code, never from a
+    # request. A tool step has no model that wrote the script, so its script runs get no savings estimate.
+    is_tool_step: bool = False
 
 
 class VirtualIdeAssistant(AssistantBase):

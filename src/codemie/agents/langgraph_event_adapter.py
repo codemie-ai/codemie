@@ -22,8 +22,16 @@ from langchain_core.messages import AIMessage, ToolMessage
 from codemie.agents.supervisor.constants import METADATA_KEY_HANDOFF_BACK, METADATA_KEY_HANDOFF_DESTINATION
 from codemie.chains.base import ThoughtOutputFormat
 from codemie.configs.logger import logger
-from codemie.core.constants import OUTPUT_FORMAT
+from codemie.core.constants import (
+    OUTPUT_FORMAT,
+    TOOL_TYPE,
+)
 from codemie.core.utils import extract_text_from_llm_output, unpack_json_strings
+from codemie.service.monitoring.tool_run_context import IDENTITY_METADATA_KEYS
+
+# What the monitoring callback attributes a tool call by. Deliberately not the whole tool metadata: its
+# ``output_format`` would change how the thought of the call is rendered.
+_ATTRIBUTION_KEYS = (*IDENTITY_METADATA_KEYS, TOOL_TYPE)
 
 
 class LangGraphCallbackBridge:
@@ -75,6 +83,15 @@ class LangGraphCallbackBridge:
                 self._log_error(f"On llm error callback {callback} error: {callback_error}")
         self.agent._current_llm_run_id = None
 
+    def _attribution_metadata(self, tool_name: str) -> dict[str, Any]:
+        """The run attribution the agent stamped on the tool (see ``_configure_tools``); empty for a tool the agent
+        does not own. The stream hands the callbacks only the tool name, unlike a LangChain-driven tool run."""
+        for tool in getattr(self.agent, "tools", None) or []:
+            if getattr(tool, "name", None) == tool_name:
+                metadata = getattr(tool, "metadata", None) or {}
+                return {key: metadata[key] for key in _ATTRIBUTION_KEYS if key in metadata}
+        return {}
+
     def on_tool_start(
         self,
         tool_name: str,
@@ -84,9 +101,10 @@ class LangGraphCallbackBridge:
     ) -> None:
         serialized = {"name": tool_name}
         callback_run_id = run_id or uuid.uuid4()
+        metadata = self._attribution_metadata(tool_name)
         for callback in self.agent.callbacks:
             try:
-                callback.on_tool_start(serialized, input_str, run_id=callback_run_id, author=author)
+                callback.on_tool_start(serialized, input_str, run_id=callback_run_id, author=author, metadata=metadata)
             except Exception as error:
                 self._log_error(f"On tool start callback {callback} error: {error}")
 

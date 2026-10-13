@@ -86,6 +86,25 @@ def test_send_tool_metrics_success(mock_send_count_metric):
 
 
 @patch.object(AgentMonitoringService, "send_count_metric")
+def test_send_tool_metrics_writes_assistant_and_workflow_ids_when_the_run_has_them(mock_send_count_metric):
+    AgentMonitoringService.send_tool_metrics("t", True, tool_metadata={"assistant_id": "asst-1", "workflow_id": "wf-1"})
+
+    for call in mock_send_count_metric.call_args_list:
+        assert call.kwargs["attributes"]["assistant_id"] == "asst-1"
+        assert call.kwargs["attributes"]["workflow_id"] == "wf-1"
+
+
+@patch.object(AgentMonitoringService, "send_count_metric")
+def test_send_tool_metrics_leaves_empty_ids_out(mock_send_count_metric):
+    AgentMonitoringService.send_tool_metrics("t", False, tool_metadata={"assistant_id": "", "workflow_id": None})
+    AgentMonitoringService.send_tool_metrics("t", True)
+
+    for call in mock_send_count_metric.call_args_list:
+        assert "assistant_id" not in call.kwargs["attributes"]
+        assert "workflow_id" not in call.kwargs["attributes"]
+
+
+@patch.object(AgentMonitoringService, "send_count_metric")
 def test_send_tool_metrics_failure(mock_send_count_metric):
     tool_name = "test_tool"
     output_tokens_used = 100
@@ -198,3 +217,77 @@ def test_send_assistant_mngmnt_metric_error(mock_send_count_metric, mock_assista
     )
 
     mock_send_count_metric.assert_called_once_with(name=metric_name + "_error", attributes=expected_attributes)
+
+
+_DIMENSIONS = {
+    "assistant_name": "a",
+    "llm_model": "m",
+    "user_name": "u",
+    "user_id": "uid",
+    "project": "p",
+}
+_SCRIPT_ARGS = {"tool_name": "t", "tool_type": "internal", "dimensions": _DIMENSIONS}
+
+
+@pytest.mark.parametrize(
+    ("kind", "metric", "extra"),
+    [
+        ("success", "codemie_tools_usage_total", {"status": "success"}),
+        ("abandoned", "codemie_tools_usage_total", {"status": "abandoned"}),
+        ("error", "codemie_tools_usage_errors_total", {"error_code": "tool_failed", "error_class": "ValueError"}),
+        ("refused", "codemie_script_tool_calls_refused_total", {"error_code": "tool_failed"}),
+    ],
+)
+@patch.object(AgentMonitoringService, "send_count_metric")
+def test_send_script_tool_call_metrics_writes_one_record_without_tokens(mock_send, kind, metric, extra):
+    AgentMonitoringService.send_script_tool_call_metrics(
+        kind=kind, error_code="tool_failed", error_class="ValueError", **_SCRIPT_ARGS
+    )
+
+    mock_send.assert_called_once()
+    assert mock_send.call_args.kwargs["name"] == metric
+    attributes = mock_send.call_args.kwargs["attributes"]
+    if kind == "refused":
+        assert "invoked_by" not in attributes
+    else:
+        assert attributes["invoked_by"] == "script"
+    assert attributes["base_tool_name"] == "t"
+    assert attributes["user_id"] == "uid"
+    for key, value in extra.items():
+        assert attributes[key] == value
+    if kind in ("success", "abandoned"):
+        assert "error_code" not in attributes
+    if kind != "error":
+        assert "error_class" not in attributes
+
+
+@pytest.mark.parametrize("kind", ["success", "abandoned", "error", "refused"])
+@patch.object(AgentMonitoringService, "send_count_metric")
+def test_send_script_tool_call_metrics_writes_every_dimension_of_the_run(mock_send, kind):
+    dimensions = {**_DIMENSIONS, "assistant_id": "virtual", "workflow_id": "wf-1", "skill_id": "sk1"}
+
+    AgentMonitoringService.send_script_tool_call_metrics(
+        kind=kind, tool_name="t", tool_type="internal", dimensions=dimensions, error_code="tool_failed"
+    )
+
+    attributes = mock_send.call_args.kwargs["attributes"]
+    for key, value in dimensions.items():
+        assert attributes[key] == value
+
+
+@patch.object(AgentMonitoringService, "send_count_metric")
+def test_send_script_tool_call_metrics_does_not_change_the_dimensions_it_is_given(mock_send):
+    dimensions = dict(_DIMENSIONS)
+
+    AgentMonitoringService.send_script_tool_call_metrics(kind="success", **{**_SCRIPT_ARGS, "dimensions": dimensions})
+
+    assert dimensions == _DIMENSIONS
+
+
+@patch.object(AgentMonitoringService, "send_count_metric")
+def test_an_error_without_an_exception_has_a_code_but_no_class(mock_send):
+    AgentMonitoringService.send_script_tool_call_metrics(kind="error", error_code="timeout", **_SCRIPT_ARGS)
+
+    attributes = mock_send.call_args.kwargs["attributes"]
+    assert attributes["error_code"] == "timeout"
+    assert "error_class" not in attributes

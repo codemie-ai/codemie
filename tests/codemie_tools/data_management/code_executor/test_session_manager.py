@@ -20,6 +20,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from langchain_core.tools import ToolException
+
+from codemie_tools.data_management.code_executor.run_observer import RunOutcome, SandboxRunObserver
 from codemie_tools.data_management.code_executor.models import CodeExecutorConfig
 from codemie_tools.data_management.code_executor.session_manager import SandboxSessionManager
 
@@ -201,6 +204,54 @@ class TestSandboxSessionManager(unittest.TestCase):
 
                     # Should randomly select one of the existing pods instead of creating new one
                     assert pod_name in existing_pods
+
+    def test_a_pool_with_room_is_a_request_without_a_wait(self):
+        manager = SandboxSessionManager(config=self.config)
+        sandbox_run = SandboxRunObserver()
+        with patch.object(manager._pod_discovery, 'list_available_pods', return_value=[]):
+            with patch.object(manager._pod_discovery, 'list_all_executor_pods', return_value=[]):
+                manager._select_or_wait_for_pod(sandbox_run)
+
+        assert (sandbox_run.requested, sandbox_run.waited, sandbox_run.rejected) == (True, False, False)
+
+    def test_reusing_a_running_pod_of_a_full_pool_is_not_a_wait(self):
+        manager = SandboxSessionManager(config=self.config)
+        sandbox_run = SandboxRunObserver()
+        pods = ["pod-1", "pod-2", "pod-3"]
+        with patch.object(manager._pod_discovery, 'list_available_pods', return_value=pods):
+            with patch.object(
+                manager._pod_discovery, 'list_all_executor_pods', return_value=[(p, "Running") for p in pods]
+            ):
+                with patch.object(manager._config, 'max_pod_pool_size', 3):
+                    manager._select_or_wait_for_pod(sandbox_run)
+
+        assert (sandbox_run.requested, sandbox_run.waited, sandbox_run.rejected) == (True, False, False)
+
+    def test_a_full_pool_with_no_running_pod_is_a_wait_that_ends_when_one_is_ready(self):
+        manager = SandboxSessionManager(config=self.config)
+        sandbox_run = SandboxRunObserver()
+        pods = [("pod-1", "Pending"), ("pod-2", "Pending"), ("pod-3", "Pending")]
+        with patch.object(manager._pod_discovery, 'list_available_pods', return_value=[]):
+            with patch.object(manager._pod_discovery, 'list_all_executor_pods', return_value=pods):
+                with patch.object(manager._pod_discovery, 'wait_for_available_pods', return_value=["pod-1"]):
+                    with patch.object(manager._config, 'max_pod_pool_size', 3):
+                        assert manager._select_or_wait_for_pod(sandbox_run) == "pod-1"
+
+        assert (sandbox_run.requested, sandbox_run.waited, sandbox_run.rejected) == (True, True, False)
+
+    def test_a_full_pool_that_never_gets_a_running_pod_is_a_wait_and_a_rejection(self):
+        manager = SandboxSessionManager(config=self.config)
+        sandbox_run = SandboxRunObserver()
+        pods = [("pod-1", "Pending"), ("pod-2", "Pending"), ("pod-3", "Pending")]
+        with patch.object(manager._pod_discovery, 'list_available_pods', return_value=[]):
+            with patch.object(manager._pod_discovery, 'list_all_executor_pods', return_value=pods):
+                with patch.object(manager._pod_discovery, 'wait_for_available_pods', return_value=[]):
+                    with patch.object(manager._config, 'max_pod_pool_size', 3):
+                        with pytest.raises(ToolException) as raised:
+                            manager._select_or_wait_for_pod(sandbox_run)
+
+        assert (sandbox_run.requested, sandbox_run.waited, sandbox_run.rejected) == (True, True, True)
+        assert raised.value.outcome is RunOutcome.CAPACITY_REJECTED
 
     def test_get_available_pod_name_respects_max_limit(self):
         """Test that new pod is not created beyond max limit."""

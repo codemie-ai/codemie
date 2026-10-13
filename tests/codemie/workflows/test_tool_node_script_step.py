@@ -106,6 +106,7 @@ class _FakeWorkspaceService(AgentWorkspaceService):
         export_files: list[str] | None = None,
         run_context: ScriptRunContext | None = None,
         tool_calling: object | None = None,
+        observer: object | None = None,
     ) -> ExecuteWorkspaceScriptResponse:
         self.run_contexts.append(run_context)
         conversation_id = self.get_workspace(workspace_id, user).conversation_id
@@ -179,6 +180,7 @@ def catalog() -> Iterator[None]:
 def _node(script_path: str, execution_service: MagicMock) -> ToolNode:
     tool = WorkflowTool(id="script_step", tool="execute_workspace_script", tool_args={"script_path": script_path})
     config = MagicMock(spec=WorkflowConfig)
+    config.id = "wf-1"
     config.project = PROJECT
     config.tools = [tool]
     config.is_global = False

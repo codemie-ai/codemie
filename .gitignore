@@ -135,6 +135,9 @@ standalone/external-config/*
 
 # CLI Analytics engine comparison and integration testing: local tooling, not committed
 /scripts/cli_analytics_testing/
+
+# Local k3s kubeconfig (docker compose)
+.kube-local/
 .kube-local/
 /opencode.json.lock
 /skills-lock.json

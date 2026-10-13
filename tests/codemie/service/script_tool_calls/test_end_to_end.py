@@ -36,7 +36,9 @@ from codemie.configs.script_call_log_guard import ScriptCallLogFilter, install_s
 from codemie.rest_api.security.user import User
 from codemie.service.script_tool_calls.concurrency import ToolRunGate
 from codemie.service.script_tool_calls.context import ScriptToolRegistry
+from codemie.service.script_tool_calls.fanout import fan_out
 from codemie.service.script_tool_calls.handler import build_tool_call_handlers
+from codemie.service.script_tool_calls.observer import ScriptRunObserver
 from codemie_tools.base.codemie_tool import CodeMieTool
 from codemie_tools.data_management.code_executor.runtime_sdk.codemie_runtime_sdk import (
     MAX_PAYLOAD_BYTES,
@@ -96,11 +98,17 @@ def sdk() -> ModuleType:
 
 
 @contextmanager
-def _serving(workspace: Path, sdk: ModuleType, tool: CodeMieTool, max_parallel_calls: int = 1) -> Iterator[None]:
+def _serving(
+    workspace: Path,
+    sdk: ModuleType,
+    tool: CodeMieTool,
+    max_parallel_calls: int = 1,
+    observer: ScriptRunObserver | None = None,
+) -> Iterator[None]:
     """Fill a registry with ``tool``, start a real channel on its handlers, point the SDK at it."""
     registry = ScriptToolRegistry(User(id="user-1", username="u1"))
     registry.fill([tool])
-    handlers = build_tool_call_handlers(registry.context(), gate=ToolRunGate(10))
+    handlers = build_tool_call_handlers(registry.context(), gate=ToolRunGate(10), observer=observer)
     exchange_dir = exchange_dir_path(new_exchange_dir_name())
     (workspace / exchange_dir).mkdir(parents=True)
     sdk._configure({"exchange_dir": str(workspace / exchange_dir)})
@@ -108,6 +116,7 @@ def _serving(workspace: Path, sdk: ModuleType, tool: CodeMieTool, max_parallel_c
         LocalExecRunner(workspace),
         exchange_dir,
         dispatcher=RequestDispatcher(handlers),
+        on_settled=fan_out(observer) if observer is not None else None,
         max_parallel_calls=max_parallel_calls,
         poll_interval=0.02,
         backoff_seconds=0.01,
@@ -358,3 +367,23 @@ def test_a_guarded_script_runs_call_tools_end_to_end_in_a_subprocess(tmp_path: P
 
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout.splitlines() == ["served", "['served', 'tool_unavailable', 'served']"]
+
+
+def test_the_observer_sees_each_call_under_its_resolved_tool_through_the_real_channel(
+    tmp_path: Path, sdk: ModuleType
+) -> None:
+    observer = ScriptRunObserver()
+    tool = _FakeTool(reply="hello")
+
+    with _serving(tmp_path, sdk, tool, observer=observer):
+        _call(sdk)
+        _call(sdk)
+        with pytest.raises(Exception):  # noqa: B017 - the SDK raises its own error type for a refused call
+            _call(sdk, name="missing_tool")
+
+    snapshot = observer.close()
+    assert snapshot.bridge_calls == 3
+    assert snapshot.success_calls == 2
+    assert snapshot.failed_calls == 1
+    assert list(snapshot.tool_tokens) == ["fake_tool"]
+    assert snapshot.tool_tokens["fake_tool"][1] > 0

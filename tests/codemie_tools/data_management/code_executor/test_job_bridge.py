@@ -26,7 +26,12 @@ from codemie_tools.data_management.code_executor.job_bridge import (
     is_bridge_path,
     new_job_bridge_options,
 )
-from codemie_tools.data_management.code_executor.tool_call_protocol import ToolCallHandler
+from codemie_tools.data_management.code_executor.tool_call_protocol import (
+    PendingRequest,
+    RequestDispatcher,
+    ToolCallHandler,
+    current_call_seq,
+)
 from codemie_tools.data_management.code_executor.tool_calling_limits import RunBudget, ToolCallingSettings
 
 _JB = "codemie_tools.data_management.code_executor.job_bridge"
@@ -230,6 +235,20 @@ class TestJobToolCallBridgeHandlers:
 
         assert seen == ["base", "base"]
         assert _probe.get() == "base"
+
+    def test_handler_still_sees_the_dispatchers_per_call_state(self) -> None:
+        seen: list[int | None] = []
+        wrapped = _started_handlers({"tool.call": lambda _params: seen.append(current_call_seq()) or {}})
+        request = PendingRequest(
+            call_id="c1",
+            file_name="req.c1.json",
+            oversize=False,
+            body='{"v": 1, "id": "c1", "op": "tool.call", "payload": {}}',
+        )
+
+        RequestDispatcher(wrapped).handle(request, seq=41)
+
+        assert seen == [41]
 
     def test_no_handlers_leaves_the_dispatcher_on_its_defaults(self) -> None:
         with (

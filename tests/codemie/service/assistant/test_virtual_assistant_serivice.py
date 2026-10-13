@@ -323,6 +323,18 @@ def test_create_from_tool_config_carries_the_toolkit_of_the_tool_and_the_executi
     assert assistant.execution_id == "exec-1"
 
 
+def test_create_from_tool_config_marks_the_assistant_as_a_tool_step(mock_toolkit):
+    assistant, _ = _tool_step_assistant(mock_toolkit)
+
+    assert assistant.is_tool_step is True
+
+
+def test_create_keeps_is_tool_step_off_by_default(mock_toolkit):
+    assistant = VirtualAssistantService.create(toolkits=[mock_toolkit], project="Test", execution_id="exec-2")
+
+    assert assistant.is_tool_step is False
+
+
 def test_create_from_tool_config_adds_one_toolkit_per_listed_tool(mock_toolkit):
     listed = MagicMock(spec=ToolKitDetails)
     step = WorkflowTool(

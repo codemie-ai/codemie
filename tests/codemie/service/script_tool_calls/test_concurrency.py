@@ -24,7 +24,7 @@ from unittest.mock import patch
 import pytest
 
 from codemie.service.script_tool_calls import concurrency
-from codemie.service.script_tool_calls.concurrency import ToolRunGate, process_gate
+from codemie.service.script_tool_calls.concurrency import GateTicket, GateTimeout, ToolRunGate, process_gate
 from codemie_tools.data_management.code_executor.tool_call_protocol import (
     PendingRequest,
     RequestDispatcher,
@@ -328,3 +328,51 @@ class TestMaxHoldSeconds:
             assert gate._max_hold_seconds == 42.0
         finally:
             process_gate.cache_clear()
+
+
+class TestGateTicket:
+    def test_a_call_that_finds_a_free_place_did_not_wait(self) -> None:
+        gate = ToolRunGate(2)
+
+        with gate.hold() as ticket:
+            pass
+
+        assert ticket == GateTicket(waited=False, wait_seconds=ticket.wait_seconds)
+        assert ticket.wait_seconds < 0.05
+
+    def test_a_call_that_had_to_wait_says_so_and_for_how_long(self) -> None:
+        gate = ToolRunGate(1)
+        tickets: list[GateTicket] = []
+
+        def second() -> None:
+            with gate.hold() as ticket:
+                tickets.append(ticket)
+
+        with gate.hold():
+            thread = threading.Thread(target=second)
+            thread.start()
+            time.sleep(0.3)
+        thread.join(timeout=5)
+
+        assert tickets[0].waited is True
+        assert tickets[0].wait_seconds >= 0.25
+
+    def test_a_call_that_gives_up_is_a_gate_timeout_that_knows_how_long_it_waited(self) -> None:
+        gate = ToolRunGate(1)
+        failures: list[GateTimeout] = []
+
+        def handler(payload: Mapping[str, object]) -> object:
+            try:
+                with gate.hold():
+                    return {"ok": True}
+            except GateTimeout as timeout:
+                failures.append(timeout)
+                raise
+
+        dispatcher = RequestDispatcher({"hold": handler}, time_left=lambda: 2.3, deadline_margin=2.0)
+        with gate.hold():
+            _decode(dispatcher.dispatch(_request()))
+
+        assert len(failures) == 1
+        assert failures[0].code == "deadline_exceeded"
+        assert failures[0].wait_seconds >= 0.2

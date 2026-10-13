@@ -16,8 +16,8 @@ import json
 import traceback
 from abc import abstractmethod
 from collections.abc import Mapping
-from time import time
-from typing import Any, ClassVar, Optional, Union
+from time import perf_counter, time
+from typing import Any, Callable, ClassVar, Optional, Union
 
 from langchain_core.tools import BaseTool
 from langchain_core.tools.base import ToolException
@@ -27,6 +27,12 @@ from codemie.configs import config
 from codemie.configs.logger import logger
 from codemie_tools.base import tool_registry
 from codemie_tools.base.errors import TruncatedOutputError
+from codemie_tools.base.execution_timing import (
+    INVOKED_BY_DIRECT,
+    INVOKED_BY_SCRIPT,
+    ToolExecution,
+    report_tool_execution,
+)
 from codemie_tools.base.models import ToolOutputFormat
 from codemie_tools.base.script_result import JsonValue, ScriptResult, ScriptResultSource
 from codemie_tools.base.utils import get_encoding, sanitize_string, humanize_error
@@ -138,7 +144,7 @@ class CodeMieTool(BaseTool):
         try:
             # Validate configuration before executing
             self._validate_config()
-            result = self.execute(*args, **kwargs)
+            result = self._timed(INVOKED_BY_DIRECT, lambda: self.execute(*args, **kwargs))
             output, _ = self._limit_output_content(result)
             return self._post_process_output_content(output, *args, **kwargs)
         except Exception as ex:
@@ -152,6 +158,31 @@ class CodeMieTool(BaseTool):
             logger.error(f"{error_message}. Error stacktrace: {stacktrace} duration={duration:.2f}s")
             raise ToolException(error_message) from ex
 
+    def _timed(self, invoked_by: str, call: Callable[[], Any]) -> Any:
+        """Run ``call`` (the tool's own work) and report how long it took and whether it failed. The result and any
+        exception pass through unchanged."""
+        started = perf_counter()
+        ok = False
+        error_class: str | None = None
+        try:
+            result = call()
+            ok = True
+            return result
+        except Exception as error:
+            error_class = type(error).__name__
+            raise
+        finally:
+            report_tool_execution(
+                ToolExecution(
+                    tool_name=self.name,
+                    invoked_by=invoked_by,
+                    duration_seconds=perf_counter() - started,
+                    ok=ok,
+                    metadata=self.metadata,
+                    error_class=error_class,
+                )
+            )
+
     def _execute_for_script(self, *args: Any, **kwargs: Any) -> Any:
         """The raw output of a run for a workspace script. By default the tool's own ``execute``; a tool whose
         script run differs from its model run (for example an HTTP tool that returns a non-2xx status as data)
@@ -163,7 +194,7 @@ class CodeMieTool(BaseTool):
 
         Exceptions propagate unchanged.
         """
-        return to_script_result(self._execute_for_script(*args, **kwargs))
+        return to_script_result(self._timed(INVOKED_BY_SCRIPT, lambda: self._execute_for_script(*args, **kwargs)))
 
     def run_for_script(self, arguments: Mapping[str, object], *, max_result_bytes: int | None = None) -> ScriptResult:
         """Run the tool for a workspace script: validate config, run with ``arguments``, convert the output.
@@ -172,7 +203,8 @@ class CodeMieTool(BaseTool):
         converted (see :class:`ScriptResultTooLarge`).
         """
         self._validate_config()
-        return to_script_result(self._execute_for_script(**arguments), max_result_bytes)
+        output = self._timed(INVOKED_BY_SCRIPT, lambda: self._execute_for_script(**arguments))
+        return to_script_result(output, max_result_bytes)
 
     @abstractmethod
     def execute(self, *args, **kwargs) -> Any:

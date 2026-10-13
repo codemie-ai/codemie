@@ -9,8 +9,10 @@
 """Unit tests for batch_job_runner module."""
 
 import base64
+import contextlib
 import io
 import tarfile
+import threading
 import unittest
 from unittest.mock import MagicMock, call, patch
 
@@ -22,6 +24,7 @@ from codemie_tools.data_management.code_executor.batch_job_runner import (
     BatchJobRunner,
     JobResult,
 )
+from codemie_tools.data_management.code_executor.run_observer import RunOutcome, SandboxFailure, SandboxRunObserver
 from codemie_tools.data_management.code_executor.job_bridge import JobBridgeOptions
 from codemie_tools.data_management.code_executor.models import CodeExecutorConfig
 from codemie_tools.data_management.code_executor.tool_calling_limits import RunBudget, ToolCallingSettings
@@ -394,6 +397,144 @@ class TestBatchJobRunnerHappyPath(unittest.TestCase):
         assert denial.decode() in result.stderr
 
 
+class TestBatchJobRunnerRunObserver(unittest.TestCase):
+    """What the runner tells the run observer: timings, the exit code and the way a failed run ended."""
+
+    def setUp(self):
+        BatchJobRunner._instance = None
+
+    def _run(self, *, status, exit_code=0, runner_setup=None, observer=None, code="print(1)"):
+        batch = MagicMock()
+        core = MagicMock()
+        batch.read_namespaced_job_status.return_value = status
+        core.list_namespaced_pod.return_value = MagicMock(items=[_pod(phase="Running", exit_code=exit_code)])
+        core.read_namespaced_pod_log.return_value = ""
+        observer = observer or SandboxRunObserver()
+        with patch("codemie_tools.data_management.code_executor.batch_job_runner.KubernetesClientManager") as mgr_cls:
+            mgr = mgr_cls.return_value
+            mgr.get_batch_client.return_value = batch
+            mgr.get_client.return_value = core
+            runner = BatchJobRunner(_make_config())
+            _patch_runner_internals(runner)
+            if runner_setup:
+                runner_setup(runner)
+            with patch.object(runner, "_upload_payload"), patch.object(runner, "_download_exports", return_value={}):
+                with contextlib.suppress(ToolException):
+                    runner.run(code, sandbox_run=observer)
+        return observer
+
+    def test_a_clean_run_measures_every_phase_and_is_ok(self):
+        observer = self._run(status=_terminal_status(succeeded=1))
+
+        assert observer.outcome is RunOutcome.OK
+        assert observer.requested is True and observer.waited is False
+        assert observer.acquire_seconds is not None and observer.acquire_seconds >= 0
+        assert observer.pod_start_seconds is not None and observer.pod_start_seconds >= 0
+        assert observer.pod_seconds is not None and observer.pod_seconds >= observer.pod_start_seconds
+
+    def test_a_script_that_exits_non_zero_is_a_script_error(self):
+        observer = self._run(status=_terminal_status(succeeded=0, failed=1), exit_code=2)
+
+        assert observer.outcome is RunOutcome.SCRIPT_ERROR
+
+    def test_a_pod_that_never_runs_is_a_timeout_and_the_job_life_is_still_measured(self):
+        def setup(runner):
+            runner._wait_for_pod_running = MagicMock(side_effect=SandboxFailure("never ran", RunOutcome.TIMEOUT))
+
+        observer = self._run(status=_terminal_status(succeeded=1), runner_setup=setup)
+
+        assert observer.outcome is RunOutcome.TIMEOUT
+        assert observer.pod_seconds is not None
+        assert observer.pod_start_seconds is None
+
+    def test_a_cancelled_run_is_an_error_not_ok(self):
+        def setup(runner):
+            runner._wait_for_pod_running = MagicMock(side_effect=KeyboardInterrupt())
+
+        observer = SandboxRunObserver()
+        with pytest.raises(KeyboardInterrupt):
+            self._run(status=_terminal_status(succeeded=1), runner_setup=setup, observer=observer)
+
+        assert observer.outcome is RunOutcome.ERROR
+
+    def test_a_job_that_cannot_be_created_is_a_sandbox_error(self):
+        observer = SandboxRunObserver()
+        batch = MagicMock()
+        batch.create_namespaced_job.side_effect = ApiException(status=500, reason="boom")
+        with patch("codemie_tools.data_management.code_executor.batch_job_runner.KubernetesClientManager") as mgr_cls:
+            mgr = mgr_cls.return_value
+            mgr.get_batch_client.return_value = batch
+            mgr.get_client.return_value = MagicMock()
+            with pytest.raises(ToolException):
+                BatchJobRunner(_make_config()).run("print(1)", sandbox_run=observer)
+
+        assert observer.outcome is RunOutcome.SANDBOX_ERROR
+
+    def test_an_unexpected_exception_is_a_plain_error(self):
+        def setup(runner):
+            runner._wait_for_pod_running = MagicMock(side_effect=RuntimeError("weird"))
+
+        batch = MagicMock()
+        observer = SandboxRunObserver()
+        with patch("codemie_tools.data_management.code_executor.batch_job_runner.KubernetesClientManager") as mgr_cls:
+            mgr = mgr_cls.return_value
+            mgr.get_batch_client.return_value = batch
+            mgr.get_client.return_value = MagicMock()
+            runner = BatchJobRunner(_make_config())
+            setup(runner)
+            with pytest.raises(RuntimeError):
+                runner.run("print(1)", sandbox_run=observer)
+
+        assert observer.outcome is RunOutcome.ERROR
+
+    def test_no_slot_is_a_rejection_that_names_how_long_it_waited(self):
+        observer = SandboxRunObserver()
+        with patch("codemie_tools.data_management.code_executor.batch_job_runner.KubernetesClientManager"):
+            runner = BatchJobRunner(_make_config(max_pod_pool_size=1, default_timeout=0.05))
+            assert runner.semaphore.acquire(blocking=False) is True
+            with pytest.raises(SandboxFailure) as raised:
+                runner.run("print(1)", sandbox_run=observer)
+
+        assert raised.value.outcome is RunOutcome.CAPACITY_REJECTED
+        assert observer.outcome is RunOutcome.CAPACITY_REJECTED
+        assert observer.acquire_seconds is not None and observer.acquire_seconds >= 0.05
+        assert observer.pod_seconds is None
+
+
+class TestBatchJobRunnerTypedFailures(unittest.TestCase):
+    """The failures that end a run carry the outcome the metrics report."""
+
+    def setUp(self):
+        BatchJobRunner._instance = None
+
+    def _runner(self):
+        with patch("codemie_tools.data_management.code_executor.batch_job_runner.KubernetesClientManager"):
+            return BatchJobRunner(_make_config())
+
+    def test_a_pod_that_does_not_run_in_time_is_a_timeout(self):
+        runner = self._runner()
+        with patch.object(runner, "_find_job_pod", return_value=None):
+            with pytest.raises(SandboxFailure) as raised:
+                runner._wait_for_pod_running("job-x", RunBudget(seconds=0.0, deadline=0.0))
+
+        assert raised.value.outcome is RunOutcome.TIMEOUT
+
+    def test_a_pod_that_stops_before_the_upload_is_a_sandbox_error(self):
+        runner = self._runner()
+        with patch.object(runner, "_find_job_pod", return_value=_pod(phase="Failed")):
+            with pytest.raises(SandboxFailure) as raised:
+                runner._wait_for_pod_running("job-x", _FAR)
+
+        assert raised.value.outcome is RunOutcome.SANDBOX_ERROR
+
+    def test_a_job_that_does_not_finish_in_time_is_a_timeout(self):
+        runner = self._runner()
+        with pytest.raises(SandboxFailure) as raised:
+            runner._wait_for_completion("job-x", RunBudget(seconds=0.0, deadline=0.0))
+
+        assert raised.value.outcome is RunOutcome.TIMEOUT
+
+
 class TestBatchJobRunnerFiles(unittest.TestCase):
     def setUp(self):
         BatchJobRunner._instance = None
@@ -666,6 +807,39 @@ class TestBatchJobRunnerErrors(unittest.TestCase):
             assert runner.semaphore.acquire(blocking=False) is True
             with pytest.raises(ToolException, match="at capacity"):
                 runner.run("print('x')")
+
+    def test_a_free_slot_is_a_request_without_a_wait(self):
+        config = _make_config(max_pod_pool_size=1, default_timeout=0.05)
+        sandbox_run = SandboxRunObserver()
+        with patch("codemie_tools.data_management.code_executor.batch_job_runner.KubernetesClientManager"):
+            runner = BatchJobRunner(config)
+
+            runner._acquire_slot(sandbox_run)
+
+        assert (sandbox_run.requested, sandbox_run.waited, sandbox_run.rejected) == (True, False, False)
+
+    def test_a_slot_that_frees_up_in_time_is_a_wait_not_a_rejection(self):
+        config = _make_config(max_pod_pool_size=1, default_timeout=2.0)
+        sandbox_run = SandboxRunObserver()
+        with patch("codemie_tools.data_management.code_executor.batch_job_runner.KubernetesClientManager"):
+            runner = BatchJobRunner(config)
+            assert runner.semaphore.acquire(blocking=False) is True
+            threading.Timer(0.05, runner.semaphore.release).start()
+
+            runner._acquire_slot(sandbox_run)
+
+        assert (sandbox_run.requested, sandbox_run.waited, sandbox_run.rejected) == (True, True, False)
+
+    def test_no_slot_in_time_is_a_wait_and_a_rejection(self):
+        config = _make_config(max_pod_pool_size=1, default_timeout=0.05)
+        sandbox_run = SandboxRunObserver()
+        with patch("codemie_tools.data_management.code_executor.batch_job_runner.KubernetesClientManager"):
+            runner = BatchJobRunner(config)
+            assert runner.semaphore.acquire(blocking=False) is True
+            with pytest.raises(ToolException, match="at capacity"):
+                runner.run("print('x')", sandbox_run=sandbox_run)
+
+        assert (sandbox_run.requested, sandbox_run.waited, sandbox_run.rejected) == (True, True, True)
 
     def test_delete_swallows_404(self):
         config = _make_config()

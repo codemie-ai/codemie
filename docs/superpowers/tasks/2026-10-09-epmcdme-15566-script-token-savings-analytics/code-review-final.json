@@ -1,0 +1,242 @@
+{
+  "decision": "request-changes",
+  "rationale": "Diff is oversized, so coverage of the whole change is partial and reachability was checked only on sampled candidates. 4 blocking findings; 1 deferred (request metadata can still influence user_name/llm_model dimensions, pre-existing pattern; see code-review-deferred.md); 16 dismissed as noise or handled/speculative. D23 doc update could not be confirmed in the repo.",
+  "confidence": "low",
+  "risk_flags": [
+    "security",
+    "sandbox isolation and NetworkPolicy",
+    "tool-call authorization path",
+    "metric labels must never take raw script text",
+    "metrics must never fail a run"
+  ],
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "Script-made call counted under its tool name with invoked_by=script and direct-call attribution",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "Every outcome lands in exactly the stated metric; refusal only to refused counter",
+      "status": "partial",
+      "notes": "Refused record carries invoked_by=script; decision 4 says none"
+    },
+    {
+      "kind": "spec",
+      "item": "Script run counted once; each inner call once under its own name",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "Withdrawn/abandoned call is a use with status=abandoned",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "No codemie_tools_usage_tokens record for script calls",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "Assistant-scope run emits script_tool model_output/model_input, also on raise",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "inner_calls records aggregated per run and tool, capped, shared estimator",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "Script-tool input includes script code tokens",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "Both estimate sides carry run_ok",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "Shared dimensions across usage, errors, refused and estimates; no script path labels",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "Leaderboard unique_tools excludes invoked_by=script",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "Listener failure never breaks a run or other listeners",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "Direct tool calls of LangGraph agent carry full attribution; request cannot set ids",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "Sandbox runs counted once by outcome; capacity attempt/wait/rejection",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "Sandbox run record with durations, calls, parallelism, gate waits",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "CallOutcome carries seq and request_bytes",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "Local sandbox deny-all NetworkPolicy",
+      "status": "pass",
+      "notes": "Namespace coupling untested, see findings"
+    },
+    {
+      "kind": "spec",
+      "item": "Tool run latency measured once in CodeMieTool; sinks registered at start-up",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "Architecture spec D23 and code_executor README updated",
+      "status": "partial",
+      "notes": "README updated; D23 document not in diff"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Each script call counted in tool usage with direct-call attribution",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "story-ac",
+      "item": "Failed script call counted as tool error",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "story-ac",
+      "item": "No double counting of script run and inner calls",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "story-ac",
+      "item": "Skill script-run metric",
+      "status": "na",
+      "notes": "Moved to separate story by owner"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Script with no tool calls changes nothing",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "story-ac",
+      "item": "Failure to errors with code; policy refusal to refused counter",
+      "status": "partial",
+      "notes": "Routing correct; refused record has invoked_by"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Call finishing after run end counted as abandoned",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "story-ac",
+      "item": "Script in workflow counted per decisions",
+      "status": "pass",
+      "notes": ""
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "all 11 subjects in the range match the documented EPMCDME-####: Description format"
+    },
+    {
+      "kind": "code-quality",
+      "status": "partial",
+      "notes": "new source files carry license headers; but session_manager.py _select_or_wait_for_pod signature edited in this change keeps typing.Optional[str] where the guide prefers X | None"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "no credential logging, shell=True, disabled TLS verification or unsafe input handling found in added lines; warning logs carry exception type or call ids only; sandbox gains a deny-all NetworkPolicy"
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "docker/k3s/manifests/code-executor.yaml",
+      "title": "Deny-all policy not pinned to executor namespace",
+      "problem": "The NetworkPolicy is bound to the literal namespace codemie-code-executor; CodeExecutorConfig namespace is configurable and no test ties the manifest to the config default. The compose healthcheck only checks the literal namespace.",
+      "impact": "A changed default or CODE_EXECUTOR_NAMESPACE runs sandbox pods with no deny-all policy, letting scripts reach postgres and elasticsearch. Reachability of the misconfiguration is unconfirmed (config-dependent).",
+      "recommendation": "Add a unit test that parses the manifest and asserts the NetworkPolicy and Namespace names equal CodeExecutorConfig.from_env().namespace; optionally fail startup when the configured namespace lacks the policy."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/service/monitoring/agent_monitoring_service.py",
+      "line": 97,
+      "title": "Refused counter carries invoked_by=script",
+      "problem": "send_script_tool_call_metrics adds INVOKED_BY for every kind including REFUSED, while ticket decision 4 lists the refused counter attributes and says no invoked_by; test_outcome_metrics.py asserts the label.",
+      "impact": "Required spec/story criterion is only partially met: refused-counter series carry a dimension the owner excluded.",
+      "recommendation": "Omit invoked_by (and base_tool_name/tool_type if not in decision 4) for the REFUSED kind and update the test, or get decision 4 amended."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie_tools/data_management/code_executor/code_executor_tool.py",
+      "line": 429,
+      "title": "Cancelled code_executor run reported as ok",
+      "problem": "execute catches only Exception before sandbox_run.fail, while the workspace-script path deliberately catches BaseException so a cancelled run's outcome matches. CancelledError/KeyboardInterrupt leaves outcome ok. The same applies to BatchJobRunner.run.",
+      "impact": "Cancelled runs inflate the success counters of the sandbox run metrics; the two sandbox tools disagree. Reachability of cancellation here was not confirmed.",
+      "recommendation": "Use except BaseException as error: sandbox_run.fail(error); raise in CodeExecutorTool.execute and BatchJobRunner.run."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie_tools/data_management/code_executor/session_manager.py",
+      "line": 297,
+      "title": "Optional[str] on a line this change edited",
+      "problem": "_select_or_wait_for_pod keeps typing.Optional[str] as return annotation while the new parameter uses X | None; code-quality guide prefers X | None.",
+      "impact": "Documented type-hint standard not met on a touched line (standards review: partial).",
+      "recommendation": "Change the return annotation to str | None and drop unused Optional imports if any."
+    }
+  ]
+}

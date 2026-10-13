@@ -21,10 +21,12 @@ from codemie.rest_api.models.assistant import Assistant, VirtualAssistant
 from codemie.rest_api.models.agent_workspace import CreateAgentWorkspaceRequest
 from codemie.rest_api.security.user import User
 from codemie.service.agent_workspace_service import AgentWorkspaceService
+from codemie.service.monitoring.run_ids import assistant_id_label, workflow_id_label
 from codemie.service.script_tool_calls.context import ScriptToolRegistry
 from codemie.service.workspace_script_bridge import resolve_tool_calling_settings
 from codemie_tools.base.base_toolkit import BaseToolkit
 from codemie_tools.base.models import Tool, ToolKit
+from codemie_tools.data_management.code_executor.sandbox_restrictions import read_sandbox_restrictions
 from codemie_tools.data_management.code_executor.sdk_reference import compose_description, read_sdk_reference
 from codemie_tools.data_management.code_executor.tool_calling_limits import ToolCallingSettings
 from codemie_tools.data_management.workspace.generate_image_tool_v2 import GenerateWorkspaceImageToolV2
@@ -71,7 +73,8 @@ class AgentWorkspaceToolkitUI(ToolKit):
 class AgentWorkspaceToolkit(BaseToolkit):
     conversation_id: str
     user: User
-    # VirtualAssistant must stay a member: with only Assistant, pydantic converts it and drops execution_id.
+    # VirtualAssistant must stay a member: with only Assistant, pydantic converts it and drops execution_id and
+    # is_tool_step.
     assistant: Assistant | VirtualAssistant | None = None
     request: AssistantChatRequest | None = None
     request_uuid: str | None = None
@@ -84,15 +87,15 @@ class AgentWorkspaceToolkit(BaseToolkit):
 
     @staticmethod
     def _script_tool_description(tool_calling: ToolCallingSettings | None) -> str:
-        """The script tool's description: the base text, plus the SDK reference only while tool calling is on.
+        """The script tool's description: the base text, the sandbox restrictions, and the SDK reference only while
+        tool calling is on.
 
         Built from parts so that further sections (for example the result shapes of tools) can be appended.
         """
-        sections: list[str] = []
+        sections: list[str] = [read_sandbox_restrictions()]
         if tool_calling is not None:
             sections.append(read_sdk_reference(tool_calling))
-        base = EXECUTE_WORKSPACE_SCRIPT_TOOL.description or ""
-        return compose_description(base, sections) if sections else base
+        return compose_description(EXECUTE_WORKSPACE_SCRIPT_TOOL.description or "", sections)
 
     def get_tools(self) -> list:
         shared_service = AgentWorkspaceService()
@@ -145,7 +148,13 @@ class AgentWorkspaceToolkit(BaseToolkit):
                 user=self.user,
                 workspace_service=shared_service,
                 workspace_id=resolved_workspace_id,
-                script_registry=ScriptToolRegistry(self.user),
+                script_registry=ScriptToolRegistry(
+                    self.user,
+                    assistant_id=assistant_id_label(self.assistant),
+                    workflow_id=workflow_id_label(),
+                    project=self.assistant.project if self.assistant is not None else None,
+                    is_tool_step=isinstance(self.assistant, VirtualAssistant) and self.assistant.is_tool_step,
+                ),
                 description=self._script_tool_description(tool_calling),
                 tool_calling=tool_calling,
             ),

@@ -61,6 +61,7 @@ def _node(user: User, *, is_global: bool, integration_alias: str | None = None) 
         tool_access=[WorkflowAssistantTool(name="catalog_tool")],
     )
     config = MagicMock(spec=WorkflowConfig)
+    config.id = "wf-1"
     config.project = PROJECT
     config.tools = [tool]
     config.is_global = is_global

@@ -37,6 +37,7 @@ from kubernetes.stream import stream
 from langchain_core.tools import ToolException
 from tenacity import retry, retry_if_exception, stop_after_attempt
 
+from codemie_tools.data_management.code_executor.run_observer import RunOutcome, SandboxFailure, SandboxRunObserver
 from codemie_tools.data_management.code_executor.job_bridge import (
     JobBridgeOptions,
     JobToolCallBridge,
@@ -166,6 +167,7 @@ class BatchJobRunner:
         baseline_hashes: Optional[Dict[str, str]] = None,
         *,
         bridge: JobBridgeOptions | None = None,
+        sandbox_run: SandboxRunObserver | None = None,
     ) -> JobResult:
         """Submit a Job, upload inputs, wait, pull exports, return result.
 
@@ -180,13 +182,17 @@ class BatchJobRunner:
         `ToolCallChannel` bound to the Job pod answers the script's calls from the moment the pod
         is Running until the done sentinel appears; it is stopped and its exchange folder removed
         before any file is downloaded. `None` keeps the `execution_timeout` based budget.
+
+        `capacity` learns whether the run had to wait for a Job slot and whether it was refused for the lack of one.
         """
-        self._acquire_slot()
+        self._acquire_slot(sandbox_run)
+        slot_at = time.monotonic()
         job_name = f"{self.config.pod_name_prefix}{uuid4().hex[:12]}"
         settings = None if bridge is None else bridge.settings
         job_seconds = self._budget_seconds(settings)
         active_bridge: JobToolCallBridge | None = None
         try:
+            created_at = time.monotonic()
             self._create_job(job_name, workdir, job_seconds)
             logger.info(
                 f"Sandbox Job created: {job_name} "
@@ -194,6 +200,8 @@ class BatchJobRunner:
             )
             budget = RunBudget.starting_now(job_seconds)
             pod_name = self._wait_for_pod_running(job_name, budget)
+            if sandbox_run is not None:
+                sandbox_run.set_pod_start_seconds(time.monotonic() - created_at)
             if bridge is not None:
                 active_bridge = JobToolCallBridge(
                     bridge, namespace=self.config.namespace, kubeconfig_path=self.config.kubeconfig_path or None
@@ -210,6 +218,8 @@ class BatchJobRunner:
             stderr_bytes = self._exec_tar_out(pod_name, workdir, _STDERR_FILE)
             self._signal_cleanup(pod_name, workdir)
             exit_code = self._wait_for_completion(job_name, budget)
+            if sandbox_run is not None:
+                sandbox_run.set_exit_code(exit_code)
             logs = self._read_pod_logs(job_name)
             return JobResult(
                 stdout=logs,
@@ -218,19 +228,39 @@ class BatchJobRunner:
                 exported_files=exported,
                 changed_files=changed,
             )
+        except BaseException as error:  # a cancelled run is an ended run too: its outcome must say so
+            if sandbox_run is not None:
+                sandbox_run.fail(error)
+            raise
         finally:
             if active_bridge is not None:
                 active_bridge.close()
             self._delete_job(job_name)
+            if sandbox_run is not None:
+                sandbox_run.set_pod_seconds(time.monotonic() - slot_at)
             self.semaphore.release()
 
-    def _acquire_slot(self) -> None:
+    def _acquire_slot(self, sandbox_run: SandboxRunObserver | None = None) -> None:
         timeout = self.config.default_timeout
         logger.debug(f"Acquiring Job slot (timeout={timeout}s)")
-        if not self.semaphore.acquire(blocking=True, timeout=timeout):
-            raise ToolException(
-                f"Code executor is at capacity ({self.max_capacity}/{self.max_capacity} Jobs). Please retry."
-            )
+        asked_at = time.monotonic()
+        if sandbox_run is not None:
+            sandbox_run.mark_requested()
+        try:
+            if self.semaphore.acquire(blocking=False):
+                return
+            if sandbox_run is not None:
+                sandbox_run.mark_waited()
+            if not self.semaphore.acquire(blocking=True, timeout=timeout):
+                if sandbox_run is not None:
+                    sandbox_run.mark_rejected()
+                raise SandboxFailure(
+                    f"Code executor is at capacity ({self.max_capacity}/{self.max_capacity} Jobs). Please retry.",
+                    RunOutcome.CAPACITY_REJECTED,
+                )
+        finally:
+            if sandbox_run is not None:
+                sandbox_run.set_acquire_seconds(time.monotonic() - asked_at)
 
     def _budget_seconds(self, settings: ToolCallingSettings | None) -> float:
         """Wall-clock budget for one Job: the script's own limit, or the run limit when tool calling is on, plus buffer."""
@@ -332,7 +362,7 @@ class BatchJobRunner:
         try:
             batch.create_namespaced_job(namespace=self.config.namespace, body=manifest)
         except ApiException as e:
-            raise ToolException(f"Failed to create sandbox Job {job_name}: {e}") from e
+            raise SandboxFailure(f"Failed to create sandbox Job {job_name}: {e}", RunOutcome.SANDBOX_ERROR) from e
 
     def _wait_for_pod_running(self, job_name: str, budget: RunBudget) -> str:
         """Block until the Job's pod is Running, then return its name."""
@@ -343,9 +373,14 @@ class BatchJobRunner:
                 if phase == "Running":
                     return pod.metadata.name
                 if phase in ("Failed", "Succeeded"):
-                    raise ToolException(f"Sandbox Job {job_name} pod entered terminal phase '{phase}' before upload.")
+                    raise SandboxFailure(
+                        f"Sandbox Job {job_name} pod entered terminal phase '{phase}' before upload.",
+                        RunOutcome.SANDBOX_ERROR,
+                    )
             time.sleep(_POLL_INTERVAL_SECONDS)
-        raise ToolException(f"Sandbox Job {job_name} pod did not reach Running within {budget.seconds:.0f}s.")
+        raise SandboxFailure(
+            f"Sandbox Job {job_name} pod did not reach Running within {budget.seconds:.0f}s.", RunOutcome.TIMEOUT
+        )
 
     def _upload_payload(
         self,
@@ -381,8 +416,9 @@ class BatchJobRunner:
                 return
             except ToolException:
                 time.sleep(_POLL_INTERVAL_SECONDS)
-        raise ToolException(
-            f"Sandbox Job script did not complete within {budget.seconds:.0f}s (sentinel {path} never appeared)."
+        raise SandboxFailure(
+            f"Sandbox Job script did not complete within {budget.seconds:.0f}s (sentinel {path} never appeared).",
+            RunOutcome.TIMEOUT,
         )
 
     def _download_exports(self, pod_name: str, workdir: str, paths: List[str]) -> Dict[str, bytes]:
@@ -463,13 +499,15 @@ class BatchJobRunner:
             try:
                 status = batch.read_namespaced_job_status(name=job_name, namespace=self.config.namespace).status
             except ApiException as e:
-                raise ToolException(f"Failed to read Job status for {job_name}: {e}") from e
+                raise SandboxFailure(f"Failed to read Job status for {job_name}: {e}", RunOutcome.SANDBOX_ERROR) from e
 
             if status is not None and self._is_terminal(status):
                 return self._extract_exit_code(job_name)
             time.sleep(_POLL_INTERVAL_SECONDS)
 
-        raise ToolException(f"Sandbox Job {job_name} did not complete within {budget.seconds:.0f}s.")
+        raise SandboxFailure(
+            f"Sandbox Job {job_name} did not complete within {budget.seconds:.0f}s.", RunOutcome.TIMEOUT
+        )
 
     @staticmethod
     def _is_terminal(status) -> bool:
@@ -607,7 +645,9 @@ class BatchJobRunner:
             resp.close()
         if rc not in (0, None):
             stderr_text = b"".join(stderr_chunks).decode("utf-8", errors="replace")
-            raise ToolException(f"exec {command!r} in pod {pod_name} failed (rc={rc}): {stderr_text.strip()}")
+            raise SandboxFailure(
+                f"exec {command!r} in pod {pod_name} failed (rc={rc}): {stderr_text.strip()}", RunOutcome.SANDBOX_ERROR
+            )
         return b"".join(stdout_chunks)
 
     def _exec_tar_in(self, pod_name: str, workdir: str, files: Dict[str, bytes]) -> None:
@@ -670,6 +710,7 @@ def run_via_jobs(
     store_exports: Callable[[Dict[str, bytes]], List[str]],
     log_timing: Callable[[float, float], None],
     log_denials: Callable[[str, str], None] | None = None,
+    sandbox_run: SandboxRunObserver | None = None,
 ) -> str:
     """Run a single execution via BatchJobRunner and format the user-facing result.
 
@@ -682,6 +723,7 @@ def run_via_jobs(
         input_files=input_bytes,
         export_files=export_files,
         workdir=workdir,
+        sandbox_run=sandbox_run,
     )
     log_timing(0.0, time.time() - start)
     if log_denials is not None:

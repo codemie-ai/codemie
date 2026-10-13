@@ -65,11 +65,16 @@ def _run_in_request_context(handler: ToolCallHandler, base: contextvars.Context)
     """Wrap a handler so each call runs in a fresh copy of the request's context.
 
     The channel serves handlers from its own threads, which do not see the request thread's contextvars; a fresh
-    copy per call also keeps one call's contextvar writes from leaking into the next.
+    copy per call also keeps one call's contextvar writes from leaking into the next. The copy starts from the
+    dispatcher's own context, so the per-call state it set (the call's sequence number, deadline, cancel event) stays
+    visible to the handler, and the request's variables are laid over it.
     """
 
     def run(params: Mapping[str, object]) -> object:
-        return base.copy().run(handler, params)
+        context = contextvars.copy_context()
+        for var, value in base.items():
+            context.run(var.set, value)
+        return context.run(handler, params)
 
     return run
 

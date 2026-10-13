@@ -185,3 +185,68 @@ class TestLangGraphCallbackBridgeSupervisorHandoff:
 
         serialized = callback.on_tool_start.call_args.args[0]
         assert serialized == {"name": "transfer_to_x", "tool_name": "transfer_to_x"}
+
+
+class TestLangGraphCallbackBridgeToolAttribution:
+    """The stream gives the callbacks only a tool name; the bridge adds the attribution the agent stamped on the tool."""
+
+    @staticmethod
+    def _bridge(tools):
+        agent = MagicMock()
+        agent.tools = tools
+        agent.callbacks = [MagicMock()]
+        return LangGraphCallbackBridge(agent, get_logger=MagicMock()), agent.callbacks[0]
+
+    @staticmethod
+    def _tool(name, metadata):
+        tool = MagicMock()
+        tool.name = name
+        tool.metadata = metadata
+        return tool
+
+    def test_the_callbacks_get_the_attribution_of_the_tool(self):
+        metadata = {
+            "agent_name": "asst",
+            "llm_model": "gpt",
+            "user_name": "u",
+            "project": "p",
+            "assistant_id": "a-1",
+            "workflow_id": "wf-1",
+            "tool_type": "plugin",
+            "request_id": "r",
+            "user_id": "u-1",
+        }
+        bridge, callback = self._bridge([self._tool("search", metadata)])
+
+        bridge.on_tool_start("search", "{}", run_id=uuid4())
+
+        assert callback.on_tool_start.call_args.kwargs["metadata"] == {
+            "agent_name": "asst",
+            "llm_model": "gpt",
+            "user_name": "u",
+            "project": "p",
+            "assistant_id": "a-1",
+            "workflow_id": "wf-1",
+            "tool_type": "plugin",
+        }
+
+    def test_the_output_format_is_not_passed_so_the_thought_is_rendered_as_before(self):
+        bridge, callback = self._bridge([self._tool("search", {"output_format": "markdown", "agent_name": "asst"})])
+
+        bridge.on_tool_start("search", "{}", run_id=uuid4())
+
+        assert "output_format" not in callback.on_tool_start.call_args.kwargs["metadata"]
+
+    def test_a_tool_the_agent_does_not_own_gets_empty_metadata(self):
+        bridge, callback = self._bridge([self._tool("search", {"agent_name": "asst"})])
+
+        bridge.on_tool_start("somebody_elses_tool", "{}", run_id=uuid4())
+
+        assert callback.on_tool_start.call_args.kwargs["metadata"] == {}
+
+    def test_a_tool_without_metadata_gets_empty_metadata(self):
+        bridge, callback = self._bridge([self._tool("search", None)])
+
+        bridge.on_tool_start("search", "{}", run_id=uuid4())
+
+        assert callback.on_tool_start.call_args.kwargs["metadata"] == {}

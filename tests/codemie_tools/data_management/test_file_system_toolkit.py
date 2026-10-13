@@ -29,6 +29,12 @@ from codemie_tools.data_management.file_system.tools import (
 
 
 class TestFileSystemToolkit:
+    @pytest.fixture(autouse=True)
+    def default_gating_env(self, monkeypatch):
+        # A developer's local .env may enable these; tests assume the defaults unless they set them
+        monkeypatch.setenv("FILE_SYSTEM_TOOLS_ENABLED", "false")
+        monkeypatch.setenv("CODE_EXECUTOR_ENABLED", "false")
+
     @pytest.fixture
     def toolkit(self):
         return FileSystemToolkit.get_toolkit(configs={})

@@ -53,6 +53,7 @@ class MetricName(str, Enum):
     CODEMIE_TOOLS_USAGE_TOTAL = "codemie_tools_usage_total"
     CODEMIE_TOOLS_USAGE_TOKENS = "codemie_tools_usage_tokens"
     CODEMIE_TOOLS_USAGE_ERRORS = "codemie_tools_usage_errors_total"
+    CODEMIE_SCRIPT_TOOL_CALLS_REFUSED = "codemie_script_tool_calls_refused_total"
     AGENT_EXECUTION_TOTAL = "agent_execution_total"
     WEBHOOK_INVOCATION_TOTAL = "webhook_invocation_total"
 
@@ -86,6 +87,7 @@ class MetricName(str, Enum):
     # dashboards can keep filtering by metric name during the transition.
     CLI_SKILL_COMMAND_TOTAL = "codemie_cli_skill_command_total"
     SKILL_TOOL_INVOKED = "codemie_skill_tool_invoked"
+    SCRIPT_TOKENS_ESTIMATED = "codemie_script_tokens_estimated"
 
     # Generator metrics
     ASSISTANT_GENERATOR_TOTAL = "codemie_assistant_generator_total"

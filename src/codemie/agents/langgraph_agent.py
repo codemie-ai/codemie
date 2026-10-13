@@ -90,11 +90,11 @@ from codemie.core.constants import (
     USER_NAME,
     LLM_MODEL,
     AGENT_NAME,
-    ASSISTANT_ID,
     PROJECT,
     OUTPUT_FORMAT,
     SUPERVISOR_HANDOFF_TOOL_PREFIX,
 )
+from codemie.service.monitoring.run_ids import run_id_metadata
 from codemie.core.models import ChatMessage, AssistantChatRequest
 from codemie.core.thread import HedgingCancellationReason, ThreadedGenerator
 from codemie.core.utils import extract_text_from_llm_output, calculate_tokens, unpack_json_strings
@@ -1158,9 +1158,9 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
             USER_NAME: self.user.name,
             LLM_MODEL: self.llm_model,
             AGENT_NAME: self.agent_name,
-            ASSISTANT_ID: self.assistant.id if self.assistant else None,
             PROJECT: self.assistant.project if self.assistant else None,
             **(self.request.metadata or {}),
+            **run_id_metadata(self.assistant),
         }
         for tool in self.tools:
             if hasattr(tool, 'metadata') and tool.metadata:

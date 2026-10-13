@@ -1,3 +1,10 @@
+# Profiles (select in .env via COMPOSE_PROFILES, comma separated; no profile = base services only):
+#   base (always):  postgres, elasticsearch, mermaid-server, k3s (code executor sandbox)
+#   app:            codemie
+#   litellm:        litellm
+#   observability:  jaeger, kibana, prometheus, grafana, pyroscope
+#   full:           everything above
+# Examples: COMPOSE_PROFILES=app | app,litellm | app,observability | full
 services:
   mermaid-server:
     image: tomwright/mermaid-server:latest
@@ -15,10 +22,13 @@ services:
       #│  • To: http://host.docker.internal:10000/api/endpoint
       - "host.docker.internal:host-gateway"
     container_name: codemie
+    profiles: [app, full]
     depends_on:
       elasticsearch:
         condition: service_healthy
       postgres:
+        condition: service_healthy
+      k3s:
         condition: service_healthy
     build:
       context: .
@@ -34,6 +44,7 @@ services:
       - codemie_repos:/app/codemie-repos
       - ./config:/app/config
       - codemie_storage:/app/codemie-storage
+      - ./.kube-local:/kube:ro
     ports:
       - 8080:8080
       - 9091:9091
@@ -43,7 +54,52 @@ services:
       - PG_URL=postgresql://postgres:password@postgres:5432/postgres
       - KEYCLOAK_LOGOUT_URL=http://localhost:5010/docs
       - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials.json
+      - CODE_EXECUTOR_KUBECONFIG_PATH=/kube/kubeconfig-internal.yaml
     command: poetry run uvicorn codemie.rest_api.main:app --host=0.0.0.0 --port=8080 --reload
+
+  # Local Kubernetes for the code executor sandbox (pods are created and driven via pods/exec).
+  # kubeconfig for codemie running on the host: ./.kube-local/kubeconfig.yaml (server 127.0.0.1:6443).
+  # kubeconfig for codemie running in compose: ./.kube-local/kubeconfig-internal.yaml (server k3s:6443),
+  # derived from the first one in the background before k3s is reported healthy.
+  k3s:
+    image: rancher/k3s:v1.34.12-k3s1
+    container_name: k3s
+    hostname: k3s # stable node name: it survives container recreation
+    entrypoint:
+      - sh
+      - -c
+      - |
+        rm -f /output/kubeconfig.yaml /output/kubeconfig-internal.yaml
+        (n=0; until grep -q client-key-data /output/kubeconfig.yaml 2>/dev/null || [ $$n -ge 300 ]; do n=$$((n+1)); sleep 1; done
+        sed 's#https://127.0.0.1:6443#https://k3s:6443#' /output/kubeconfig.yaml > /output/kubeconfig-internal.yaml) &
+        exec k3s "$$@"
+      - k3s
+    command:
+      - server
+      - --disable=traefik
+      - --disable=servicelb
+      - --disable=metrics-server
+      - --tls-san=k3s
+      - --write-kubeconfig-mode=644
+    privileged: true
+    tmpfs:
+      - /run
+      - /var/run
+    environment:
+      - K3S_KUBECONFIG_OUTPUT=/output/kubeconfig.yaml
+    ports:
+      - "127.0.0.1:6443:6443"
+    volumes:
+      - k3s_data:/var/lib/rancher/k3s
+      - ./docker/k3s/manifests:/var/lib/rancher/k3s/server/manifests/codemie:ro
+      - ./.kube-local:/output
+    healthcheck:
+      test: ["CMD-SHELL", "kubectl get --raw /readyz && grep -q k3s:6443 /output/kubeconfig-internal.yaml && kubectl -n codemie-code-executor get networkpolicy deny-all || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+    restart: unless-stopped
 
   postgres:
     image: pgvector/pgvector:pg17
@@ -94,6 +150,7 @@ services:
   jaeger:
     image: jaegertracing/all-in-one:latest
     container_name: jaeger
+    profiles: [observability, full]
     environment:
       - COLLECTOR_OTLP_ENABLED=true
     ports:
@@ -105,6 +162,7 @@ services:
   kibana:
     image: docker.elastic.co/kibana/kibana:8.18.4
     container_name: kibana
+    profiles: [observability, full]
     depends_on:
       - elasticsearch
     ports:
@@ -116,6 +174,7 @@ services:
 
   litellm:
     image: ghcr.io/berriai/litellm:1.99.2
+    profiles: [litellm, full]
     volumes:
       - ./litellm_config.yaml:/app/config.yaml
       - ./credentials.json:/app/credentials.json
@@ -153,6 +212,7 @@ services:
   pyroscope:
     image: grafana/pyroscope:latest
     container_name: pyroscope
+    profiles: [observability, full]
     ports:
       - "4040:4040"
     restart: unless-stopped
@@ -160,6 +220,7 @@ services:
   prometheus:
     image: prom/prometheus:latest
     container_name: prometheus
+    profiles: [observability, full]
     ports:
       - "9090:9090"
     volumes:
@@ -170,6 +231,7 @@ services:
   codemie-grafana:
     image: grafana/grafana:latest
     container_name: grafana
+    profiles: [observability, full]
     depends_on:
       - prometheus
       - pyroscope
@@ -194,6 +256,7 @@ volumes:
   postgres_data:
   codemie_storage:
   codemie_repos:
+  k3s_data:
 
 secrets:
   google_credentials:

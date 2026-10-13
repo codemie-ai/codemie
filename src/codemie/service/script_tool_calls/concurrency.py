@@ -20,6 +20,7 @@ import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from functools import cache
 
 from codemie.configs import config, logger
@@ -33,6 +34,23 @@ from codemie_tools.data_management.code_executor.tool_call_protocol import (
 _WAIT_SLICE_SECONDS: float = 0.1
 #: A wait for a place at least this long is logged, so a crowded process is visible.
 _SLOW_WAIT_LOG_SECONDS: float = 1.0
+
+
+@dataclass(frozen=True)
+class GateTicket:
+    """What a call learned while it got its place: whether it had to wait, and for how long."""
+
+    waited: bool
+    wait_seconds: float
+
+
+class GateTimeout(ToolCallRefused):
+    """No place became free before the call's time ran out (``deadline_exceeded``), as opposed to the run's own
+    deadline passing for some other reason."""
+
+    def __init__(self, code: str, message: str, wait_seconds: float = 0.0) -> None:
+        super().__init__(code, message)
+        self.wait_seconds = wait_seconds
 
 
 class ToolRunGate:
@@ -81,23 +99,25 @@ class ToolRunGate:
         """How many places were ever given back early because the call holding them ran past the hold limit."""
         return self._overdue
 
-    def _acquire(self, remaining: float | None) -> bool:
+    def _acquire(self, remaining: float | None) -> tuple[bool, bool]:
         """Wait for a place for at most ``remaining`` seconds (``None``: as long as it takes), in short slices so
-        that a withdrawn call stops waiting."""
+        that a withdrawn call stops waiting. Returns ``(got_a_place, had_to_wait)``."""
         give_up_at = None if remaining is None else time.monotonic() + max(remaining, 0.0)
+        had_to_wait = False
         while True:
             ensure_not_cancelled()
             if self._semaphore.acquire(blocking=False):
-                return True
+                return True, had_to_wait
+            had_to_wait = True
             now = time.monotonic()
             if give_up_at is not None and now >= give_up_at:
-                return False
+                return False, had_to_wait
             wait = _WAIT_SLICE_SECONDS if give_up_at is None else min(_WAIT_SLICE_SECONDS, give_up_at - now)
             if self._semaphore.acquire(timeout=wait):
-                return True
+                return True, had_to_wait
 
     @contextmanager
-    def hold(self) -> Iterator[None]:
+    def hold(self) -> Iterator[GateTicket]:
         """Wait for a free place, then run the body holding it. Takes the clock of the call being served, if any.
 
         Past ``max_hold_seconds`` the place is released on a timer, whether or not the body has returned (see the
@@ -109,7 +129,7 @@ class ToolRunGate:
         with self._lock:
             self._waiting += 1
         try:
-            acquired = self._acquire(remaining)
+            acquired, had_to_wait = self._acquire(remaining)
         finally:
             with self._lock:
                 self._waiting -= 1
@@ -123,9 +143,10 @@ class ToolRunGate:
                 self._waiting,
             )
         if not acquired:
-            raise ToolCallRefused(
+            raise GateTimeout(
                 CODE_DEADLINE_EXCEEDED,
                 "no free place became available before the run's time ran out; the call was not started",
+                wait_seconds=waited,
             )
         with self._lock:
             self._running += 1
@@ -135,7 +156,7 @@ class ToolRunGate:
             if deadline is not None:
                 deadline.ensure()
             ensure_not_cancelled()
-            yield
+            yield GateTicket(waited=had_to_wait, wait_seconds=waited)
         finally:
             if timer is not None:
                 timer.cancel()

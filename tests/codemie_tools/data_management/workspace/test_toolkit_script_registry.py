@@ -22,6 +22,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+from codemie.rest_api.security.workflow_context import set_current_workflow_id
 from codemie.core.models import AssistantChatRequest
 from codemie.rest_api.models.assistant import Assistant, VirtualAssistant
 from codemie.rest_api.security.user import User
@@ -50,13 +51,16 @@ def _assistant(project: str = "proj") -> Assistant:
     return Assistant(name="assistant", description="d", system_prompt="p", project=project)
 
 
-def _virtual_assistant(execution_id: str | None, project: str = "wf-project") -> VirtualAssistant:
+def _virtual_assistant(
+    execution_id: str | None, project: str = "wf-project", is_tool_step: bool = False
+) -> VirtualAssistant:
     return VirtualAssistant(
         name="virtual",
         description="d",
         system_prompt="p",
         project=project,
         execution_id=execution_id,
+        is_tool_step=is_tool_step,
     )
 
 
@@ -127,3 +131,60 @@ def test_request_supplied_workflow_execution_id_gains_no_workflow_scope() -> Non
     assert registry.context().scope_kind is ScriptScopeKind.NONE
     registry.fill([])
     assert registry.context().scope_kind is ScriptScopeKind.ASSISTANT
+
+
+def _context_of(
+    assistant: Assistant | VirtualAssistant | None, request: AssistantChatRequest | None = None
+) -> ScriptRunContext:
+    registry = _bare_step_toolkit_registry(assistant, request) if assistant is not None else _script_registry(None)
+    registry.fill([])
+    return registry.context()
+
+
+def test_stored_assistant_id_is_the_assistant_id_label() -> None:
+    stored = Assistant(id="asst-1", name="assistant", description="d", system_prompt="p", project="proj")
+
+    assert _context_of(stored).assistant_id == "asst-1"
+
+
+def test_virtual_assistant_gets_the_virtual_label_not_its_per_run_id() -> None:
+    assert _context_of(_virtual_assistant("exec-1")).assistant_id == "virtual"
+
+
+def test_no_assistant_means_no_assistant_id() -> None:
+    assert _context_of(None).assistant_id == ""
+
+
+@pytest.fixture
+def in_workflow():
+    set_current_workflow_id("wf-1")
+    yield
+    set_current_workflow_id(None)
+
+
+def test_workflow_id_of_a_workflow_run_reaches_the_context(in_workflow) -> None:
+    assert _context_of(_virtual_assistant("exec-1")).workflow_id == "wf-1"
+    assert _context_of(_assistant()).workflow_id == "wf-1"
+
+
+def test_workflow_id_and_the_tool_step_marker_of_a_tool_step_reach_the_context(in_workflow) -> None:
+    context = _filled_context(_script_registry(_virtual_assistant("exec-1", is_tool_step=True)))
+
+    assert context.workflow_id == "wf-1"
+    assert context.is_tool_step is True
+    assert context.project == "wf-project"
+
+
+def test_an_assistant_node_is_not_a_tool_step() -> None:
+    assert _filled_context(_script_registry(_virtual_assistant("exec-1"))).is_tool_step is False
+
+
+def test_outside_a_workflow_there_is_no_workflow_id() -> None:
+    assert _context_of(_assistant()).workflow_id == ""
+    assert _context_of(_virtual_assistant("exec-1")).workflow_id == ""
+
+
+def test_the_workflow_id_a_client_sends_is_not_used() -> None:
+    request = AssistantChatRequest.model_validate({"text": "x", "workflowId": "forged", "workflow_id": "forged"})
+
+    assert _context_of(_assistant(), request).workflow_id == ""

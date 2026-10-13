@@ -198,7 +198,8 @@ class ToolCallChannel:
         self._poll_backoff_cap: float = max(poll_backoff_cap, backoff_seconds)
         self._on_settled: SettledCallback | None = on_settled
         # Touched by the polling thread only: the calls being served, and those already answered.
-        self._in_flight: set[str] = set()
+        self._in_flight: dict[str, int] = {}  # call id -> the seq of the call
+        self._arrival: dict[str, int] = {}  # call id -> how many calls were in flight when it was accepted
         self._answered: set[str] = set()
         # The script stopped waiting for these (its request file is gone): they must not start or be answered.
         self._cancel_events: dict[str, threading.Event] = {}
@@ -442,13 +443,16 @@ class ToolCallChannel:
         for request in requests:
             if request.call_id in self._in_flight or request.call_id in self._answered:
                 continue
-            self._in_flight.add(request.call_id)
+            seq = self._dispatcher.next_seq()
+            self._in_flight[request.call_id] = seq
+            self._arrival[request.call_id] = len(self._in_flight)
             cancelled = self._cancel_events.setdefault(request.call_id, threading.Event())
             try:
-                pool.submit(lambda request=request, cancelled=cancelled: self._serve(request, cancelled))
+                pool.submit(lambda request=request, cancelled=cancelled, seq=seq: self._serve(request, cancelled, seq))
             except RuntimeError:
                 # The pool was shut down by stop(): the run is over.
-                self._in_flight.discard(request.call_id)
+                self._in_flight.pop(request.call_id, None)
+                self._arrival.pop(request.call_id, None)
                 self._cancel_events.pop(request.call_id, None)
                 return
 
@@ -464,16 +468,16 @@ class ToolCallChannel:
                 event.set()
             logger.info("tool_call_channel: the script stopped waiting for call %s", call_id)
 
-    def _serve(self, request: PendingRequest, cancelled: threading.Event) -> None:
+    def _serve(self, request: PendingRequest, cancelled: threading.Event, seq: int) -> None:
         """Runs in a pool worker: build the response and queue it for the polling thread to write."""
         try:
-            result = self._dispatcher.handle(request, cancelled)
+            result = self._dispatcher.handle(request, cancelled, seq)
         except Exception:  # noqa: BLE001 - handle is total; this keeps a request from staying unanswered
             logger.exception("tool_call_channel: serving call %s failed", request.call_id)
             body = error_response(request.call_id, CODE_INTERNAL_ERROR, "the request could not be processed")
             result = DispatchResult(
                 body=body,
-                outcome=CallOutcome(request.call_id, None, None, CODE_INTERNAL_ERROR, 0.0, len(body)),
+                outcome=CallOutcome(request.call_id, None, None, CODE_INTERNAL_ERROR, 0.0, len(body), seq, 0),
             )
         self._finished.append((request, result))
         self._wake_event.set()
@@ -486,9 +490,10 @@ class ToolCallChannel:
         while self._finished and not self._run_is_over():
             request, result = self._finished.popleft()
             call_id = request.call_id
+            arrival = self._arrival.get(call_id, 0)
             if call_id in self._withdrawn:
                 self._forget(call_id)
-                self._settle(result.outcome.settled(delivered=False, withdrawn=True))
+                self._settle(result.outcome.settled(delivered=False, withdrawn=True, concurrency=arrival))
                 continue
             try:
                 self._write_response(request, result.body)
@@ -497,10 +502,11 @@ class ToolCallChannel:
                 raise
             self._forget(call_id)
             self._answered.add(call_id)
-            self._settle(result.outcome.settled(delivered=True))
+            self._settle(result.outcome.settled(delivered=True, concurrency=arrival))
 
     def _forget(self, call_id: str) -> None:
-        self._in_flight.discard(call_id)
+        self._in_flight.pop(call_id, None)
+        self._arrival.pop(call_id, None)
         self._cancel_events.pop(call_id, None)
         self._withdrawn.discard(call_id)
 
@@ -529,9 +535,11 @@ class ToolCallChannel:
 
     def _settle_unfinished(self) -> None:
         """The run is over: every call that was not answered is settled as not delivered, and no response is written."""
-        unfinished = sorted(self._in_flight)
+        unfinished = sorted(self._in_flight.items())
         withdrawn = set(self._withdrawn)
+        arrivals = dict(self._arrival)
         self._in_flight.clear()
+        self._arrival.clear()
         self._finished.clear()
         # Tell every call still waiting for a place in the gate that nobody is left to read its answer: it leaves the
         # wait instead of starting a tool (possibly one with side effects) after the run is over.
@@ -539,10 +547,22 @@ class ToolCallChannel:
             cancelled.set()
         self._cancel_events.clear()
         self._withdrawn.clear()
-        for call_id in unfinished:
+        for call_id, seq in unfinished:
             logger.info(
                 "tool_call_channel: call %s did not finish before the run ended; its answer is dropped", call_id
             )
             self._settle(
-                CallOutcome(call_id, None, None, None, 0.0, 0, delivered=False, withdrawn=call_id in withdrawn)
+                CallOutcome(
+                    call_id,
+                    None,
+                    None,
+                    None,
+                    0.0,
+                    0,
+                    seq,
+                    0,
+                    delivered=False,
+                    withdrawn=call_id in withdrawn,
+                    concurrency=arrivals.get(call_id, 0),
+                )
             )

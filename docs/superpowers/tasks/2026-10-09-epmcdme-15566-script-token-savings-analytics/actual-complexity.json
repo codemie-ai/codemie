@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "generated": "2026-10-11T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 21,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 39,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "New script_tool_calls abstractions (fanout, observer, outcome_metrics, skill_script_run, token_estimate) plus touches to analytics metric names, leaderboard collector, monitoring, workspace service/repository and the code_executor bridge/channel/protocol." },
+    { "dimension": "file_change_estimate", "reason": "39 files changed (2444 insertions, 71 deletions), roughly half being tests; spans service, repository, tools and docs directories." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped to XL: affects multiple subsystems (analytics, monitoring, leaderboard, code executor bridge)"
+  ],
+  "split_recommendation": null
+}

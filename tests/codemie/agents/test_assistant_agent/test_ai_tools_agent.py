@@ -19,6 +19,7 @@ from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel
 
+from codemie.rest_api.security.workflow_context import set_current_workflow_id
 from codemie.agents.assistant_agent import AIToolsAgent, TaskResult
 from codemie.agents.callbacks.agent_streaming_callback import AgentStreamingCallback
 from codemie.agents.callbacks.monitoring_callback import MonitoringCallback
@@ -127,6 +128,27 @@ def test_init_agent(
         patch.object(AIToolsAgent, "get_prompt_template"),
     ):
         agent._configure_tools([])
+
+
+def test_configure_tools_stamps_the_trusted_ids_over_request_metadata(
+    agent: AIToolsAgent, mock_tools: typing.Any
+) -> None:
+    agent.request.metadata = {"assistant_id": "forged", "workflow_id": "forged"}
+    agent.assistant = MagicMock(id="assistant-1", project="proj", tools_tokens_size_limit=None)
+    agent.tools = mock_tools
+
+    set_current_workflow_id("wf-1")
+    try:
+        with (
+            patch("codemie.agents.assistant_agent.create_tool_calling_agent", return_value=MagicMock()),
+            patch.object(AIToolsAgent, "get_prompt_template"),
+        ):
+            agent._configure_tools([])
+    finally:
+        set_current_workflow_id(None)
+
+    assert mock_tools[0].metadata["assistant_id"] == "assistant-1"
+    assert mock_tools[0].metadata["workflow_id"] == "wf-1"
 
 
 def test_configure_callbacks_with_stream_steps(

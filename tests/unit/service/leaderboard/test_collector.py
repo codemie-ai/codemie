@@ -22,6 +22,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from codemie.service.monitoring.metrics_constants import INVOKED_BY_SCRIPT, MetricsAttributes
+
 from codemie.service.leaderboard.collector import (
     ATTR_ASSISTANT_ID_KEYWORD,
     ATTR_CLI_REQUEST,
@@ -210,6 +212,18 @@ class TestQueryBuilders:
         bool_query = query["query"]["bool"]
         assert {"term": {ATTR_CLI_REQUEST: True}} in bool_query["must_not"]
         assert {"exists": {"field": ATTR_MCP_NAME_KEYWORD}} in bool_query["must"][1]["bool"]["should"]
+
+    def test_build_tool_usage_query_excludes_script_calls_from_unique_tools_only(self, collector):
+        query = collector._build_tool_usage_query({"range": "value"})
+
+        tool_usage = query["aggs"]["by_user"]["aggs"]["tool_usage"]
+        assert tool_usage["filter"]["bool"]["must"] == [collector._metric_term("codemie_tools_usage_total")]
+        assert tool_usage["filter"]["bool"]["must_not"] == [
+            {"term": {f"attributes.{MetricsAttributes.INVOKED_BY}.keyword": INVOKED_BY_SCRIPT}}
+        ]
+        # totals terms (the top-level should clauses) are unchanged
+        should = query["query"]["bool"]["must"][1]["bool"]["should"]
+        assert collector._metric_term("codemie_tools_usage_total") in should
 
     def test_build_cli_query_uses_money_and_cli_constants(self, collector):
         query = collector._build_cli_query({"range": "value"})

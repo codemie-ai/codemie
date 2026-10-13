@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "task": "Emit script-made tool calls from the script bridge into tools-usage analytics with invoked_by=script, plus a refused-calls counter, a per-skill script-run metric and an estimated tokens-kept-out-of-context metric.",
+  "generated": "2026-10-09T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 22,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Touches the bridge protocol (CallOutcome, channel, job_bridge on_settled), script_tool_calls (handler, context, registry, binding), AgentWorkspaceService, ledger repository, AgentMonitoringService, SkillMonitoringService, metrics constants and analytics readers; needs a new fan-out listener abstraction." },
+    { "dimension": "technical_risk", "reason": "Closest pattern is MonitoringCallback/send_tool_metrics, which does not fit: it always emits a tokens metric and has no error code. Listener runs on the channel thread outside the request contextvars copy. Abandoned calls lose the tool name. The shared metric name changes numbers in existing readers and the leaderboard. No precedent for the ledger lookup by folder." },
+    { "dimension": "file_change_estimate", "reason": "About 12-15 modified source files across code_executor, script_tool_calls, workspace service, repository and monitoring/analytics, plus 1-3 new files (listener, metric helper) and new tests." },
+    { "dimension": "affected_layers", "reason": "Tool/bridge, service, monitoring/analytics and persistence read of the seed ledger. No schema change is required." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk at L: shared metric name flows into existing readers and leaderboard, so existing numbers change.",
+    "Technical Risk: concurrency and contextvars in the listener thread, with no exact precedent."
+  ],
+  "split_recommendation": null
+}

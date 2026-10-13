@@ -16,13 +16,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol
 
 from langchain_core.tools import BaseTool
 
+from codemie.service.monitoring.tool_run_context import ToolRunContext
 from codemie.rest_api.security.user import User
 from codemie_tools.data_management.code_executor.runtime_sdk.codemie_runtime_sdk import CODE_NO_CONTEXT
 from codemie_tools.data_management.code_executor.tool_call_protocol import ToolCallRefused
@@ -69,6 +70,8 @@ class ToolListScope:
 
     def __init__(self, tools: Sequence[BaseTool], assistant_id: str | None = None) -> None:
         self.assistant_id: str | None = assistant_id
+        #: The assistant's direct-call tool output limit in tokens, when known (caps the inner-call savings estimate).
+        self.tools_tokens_size_limit: int | None = None
         self._tools: dict[str, BaseTool] = {tool.name: tool for tool in tools}
 
     def resolve(self, name: str) -> BaseTool | None:
@@ -78,18 +81,58 @@ class ToolListScope:
         return tuple(self._tools.values())
 
 
-@dataclass(frozen=True)
-class ScriptRunContext:
-    """Immutable description of who runs a script and which tools it may call."""
+@dataclass(frozen=True, kw_only=True)
+class ScriptRunContext(ToolRunContext):
+    """Immutable description of who runs a script and which tools it may call.
+
+    The attribution (user, project, assistant, workflow, model) is the ``ToolRunContext`` part: captured in the request
+    thread, because the channel's polling thread has no request contextvars.
+    """
 
     user: User
     scope: ScriptScope
     scope_kind: ScriptScopeKind
+    #: True for a workflow tool step: no model wrote its script, so its runs get no savings estimate.
+    is_tool_step: bool = False
+    #: The assistant's direct-call tool output limit in tokens, when known (caps the inner-call savings estimate).
+    tools_tokens_size_limit: int | None = None
+
+    def __post_init__(self) -> None:
+        if not self.user_name:  # the run's user is the user the context was built for
+            object.__setattr__(self, "user_name", getattr(self.user, "name", "") or "")
+
+    @property
+    def counts_toward_savings(self) -> bool:
+        """The one rule for the savings estimate (both of its halves): a run an assistant's model wrote."""
+        return self.scope_kind is ScriptScopeKind.ASSISTANT and not self.is_tool_step
 
     @classmethod
-    def without_context(cls, user: User) -> ScriptRunContext:
+    def without_context(cls, user: User, metadata: Mapping[str, object] | None = None) -> ScriptRunContext:
         """Context that refuses every tool call."""
-        return cls(user=user, scope=NoScope(), scope_kind=ScriptScopeKind.NONE)
+        return cls(
+            user=user,
+            scope=NoScope(),
+            scope_kind=ScriptScopeKind.NONE,
+            **_attribution(user, metadata, project_fallback=None),
+        )
+
+
+def _text(value: object) -> str:
+    return "" if value is None else str(value)
+
+
+def _attribution(
+    user: User, metadata: Mapping[str, object] | None, *, project_fallback: str | None
+) -> dict[str, object]:
+    """The context's attribution: read from the script tool's own metadata (filled by the assistant agent; absent for a
+    workflow tool step, whose project comes from ``project_fallback``, its virtual assistant's project)."""
+    return ToolRunContext.attribution_from_metadata(
+        metadata,
+        _text(user.id),
+        user_name=getattr(user, "name", None) or None,
+        project_fallback=project_fallback,
+        workflow_from_thread=False,  # the registry carries the workflow id, read in the request by the toolkit
+    )
 
 
 class ScriptToolRegistry:
@@ -100,15 +143,43 @@ class ScriptToolRegistry:
     workflow assistant node, a workflow tool step with ``tool_access``) fills it with the final tool list.
     """
 
-    def __init__(self, user: User) -> None:
+    def __init__(
+        self,
+        user: User,
+        *,
+        assistant_id: str | None = None,
+        workflow_id: str | None = None,
+        project: str | None = None,
+        is_tool_step: bool = False,
+    ) -> None:
         self._user: User = user
+        self._assistant_id: str = assistant_id or ""
+        self._workflow_id: str = workflow_id or ""
+        self._project: str | None = project
+        self._is_tool_step: bool = is_tool_step
         self._tool_scope: ToolListScope | None = None
 
     def fill(self, tools: Sequence[BaseTool], assistant: Assistant | VirtualAssistant | None = None) -> None:
         """Record the run's final tools, and the assistant they belong to."""
         self._tool_scope = ToolListScope(tools, assistant.id if assistant is not None else None)
+        limit = getattr(assistant, "tools_tokens_size_limit", None)
+        self._tool_scope.tools_tokens_size_limit = limit if isinstance(limit, int) and limit > 0 else None
 
-    def context(self) -> ScriptRunContext:
+    def context(self, metadata: Mapping[str, object] | None = None) -> ScriptRunContext:
+        """The run's context. Call it in the request thread: attribution is read from ``metadata`` (the script tool's
+        own) and the request's contextvars here, because the polling thread sees neither."""
+        attribution = _attribution(self._user, metadata, project_fallback=self._project)
+        # The ids the registry was built with (the toolkit read them in the request) win over the metadata's.
+        attribution.update(
+            {k: v for k, v in (("assistant_id", self._assistant_id), ("workflow_id", self._workflow_id)) if v}
+        )
         if self._tool_scope is None:
-            return ScriptRunContext.without_context(self._user)
-        return ScriptRunContext(user=self._user, scope=self._tool_scope, scope_kind=ScriptScopeKind.ASSISTANT)
+            return ScriptRunContext(user=self._user, scope=NoScope(), scope_kind=ScriptScopeKind.NONE, **attribution)
+        return ScriptRunContext(
+            user=self._user,
+            scope=self._tool_scope,
+            scope_kind=ScriptScopeKind.ASSISTANT,
+            is_tool_step=self._is_tool_step,
+            tools_tokens_size_limit=self._tool_scope.tools_tokens_size_limit,
+            **attribution,
+        )

@@ -1,0 +1,37 @@
+# Applied automatically by k3s (mounted into server/manifests). Local code executor sandbox setup.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: codemie-code-executor
+---
+# Pre-pulls the sandbox image so the first script run does not wait for the download.
+# Keep the image in sync with CODE_EXECUTOR_DOCKER_IMAGE (default in src/codemie_tools/data_management/code_executor/models.py).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: prepull-code-executor-image
+  namespace: codemie-code-executor
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: prepull
+          image: codemie/codemie-python:2.52.0
+          command: ["sh", "-c", "true"]
+---
+# Default-deny for every sandbox pod: no traffic in, none out (the exec channel the backend uses goes through the API
+# server and the kubelet, which the policy does not touch). Without it a script could reach postgres, elasticsearch and
+# codemie in the compose network. k3s enforces NetworkPolicy with its built-in controller.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all
+  namespace: codemie-code-executor
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress

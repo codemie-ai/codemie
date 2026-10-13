@@ -71,6 +71,7 @@ from codemie.core.constants import (
     OUTPUT_FORMAT,
 )
 from codemie.core.dependecies import get_llm_by_credentials
+from codemie.service.monitoring.run_ids import run_id_metadata
 from codemie.core.exceptions import MCPAuthenticationRequiredException
 from codemie.core.models import ChatMessage, AssistantChatRequest
 from codemie.core.thread import HedgingCancellationReason, ThreadedGenerator
@@ -369,6 +370,7 @@ class AIToolsAgent(WorkspaceAwareAgent):
             AGENT_NAME: self.agent_name,
             PROJECT: self.assistant.project if self.assistant else None,
             **(self.request.metadata or {}),
+            **run_id_metadata(self.assistant),
         }
         for tool in self.tools:
             tool.callbacks = callbacks

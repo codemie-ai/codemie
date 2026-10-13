@@ -20,6 +20,7 @@ from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langchain_core.callbacks import BaseCallbackHandler
 
+from codemie.rest_api.security.workflow_context import set_current_workflow_id
 from codemie.agents.langgraph_agent import LangGraphAgent
 from codemie.configs import config
 from codemie.core.models import ChatMessage, AssistantChatRequest
@@ -129,6 +130,41 @@ class TestLangGraphAgent:
         agent._configure_tools()
 
         assert tool.tokens_size_limit == 10
+
+    def test_configure_tools_stamps_the_trusted_ids_over_request_metadata(self, mock_user):
+        """A request cannot supply the assistant id or the workflow id of a run: the workflow executor binds the latter."""
+        from codemie.core.models import AssistantChatRequest
+
+        request = AssistantChatRequest(text="t", metadata={"assistant_id": "forged", "workflow_id": "forged"})
+        tool = MagicMock()
+        tool.metadata = {}
+        assistant = MagicMock()
+        assistant.id = "assistant-1"
+        assistant.project = "test"
+        assistant.tools_tokens_size_limit = None
+
+        agent = self._build_agent_with(mock_user, request, tool, assistant)
+        set_current_workflow_id("wf-1")
+        try:
+            agent._configure_tools()
+        finally:
+            set_current_workflow_id(None)
+
+        assert tool.metadata["assistant_id"] == "assistant-1"
+        assert tool.metadata["workflow_id"] == "wf-1"
+
+    def test_configure_tools_overrides_forged_ids_when_the_run_has_none(self, mock_user):
+        from codemie.core.models import AssistantChatRequest
+
+        request = AssistantChatRequest(text="t", metadata={"workflow_id": "forged"})
+        tool = MagicMock()
+        tool.metadata = {}
+
+        agent = self._build_agent_with(mock_user, request, tool, None)
+        agent._configure_tools()
+
+        assert tool.metadata["workflow_id"] == ""
+        assert tool.metadata["assistant_id"] == ""
 
     def test_configure_tools_keeps_default_when_limit_unset(self, mock_user, mock_request):
         """When the assistant has no limit, the tool keeps its own tokens_size_limit."""

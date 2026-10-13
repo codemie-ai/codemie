@@ -90,7 +90,9 @@ class VirtualAssistantService:
                 )
             )
 
-        return VirtualAssistantService.create(toolkits=toolkits, project=project_name, execution_id=execution_id)
+        return VirtualAssistantService.create(
+            toolkits=toolkits, project=project_name, execution_id=execution_id, is_tool_step=True
+        )
 
     @staticmethod
     def _tool_access_owner(tool_config: WorkflowTool, is_global: bool, created_by_user_id: str | None) -> str | None:

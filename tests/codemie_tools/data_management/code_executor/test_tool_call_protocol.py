@@ -39,6 +39,7 @@ from codemie_tools.data_management.code_executor.tool_call_protocol import (
     ToolCallRefused,
     current_call_cancelled,
     current_call_deadline,
+    current_call_seq,
     ensure_not_cancelled,
     error_response,
     parse_request,
@@ -340,6 +341,51 @@ class TestCallOutcome:
         assert outcome.delivered is None
 
 
+class TestCallSeqAndRequestBytes:
+    """``seq`` tells calls apart even when ``call_id`` repeats; ``request_bytes`` sizes what the script sent."""
+
+    def test_the_outcome_carries_a_distinct_seq_per_call_even_when_the_call_id_repeats(self) -> None:
+        dispatcher = RequestDispatcher({"tool.call": _echo})
+        request = _request(_body(op="tool.call", payload={"name": "x"}))
+
+        first = dispatcher.handle(request).outcome
+        second = dispatcher.handle(request).outcome
+
+        assert first.call_id == second.call_id
+        assert first.seq != second.seq
+
+    def test_request_bytes_is_the_utf8_size_of_the_name_and_the_serialized_args(self) -> None:
+        dispatcher = RequestDispatcher({"tool.call": _echo})
+        payload = {"name": "jira-\u00e9", "args": {"q": "caf\u00e9"}}
+
+        outcome = dispatcher.handle(_request(_body(op="tool.call", payload=payload))).outcome
+
+        expected = len("jira-\u00e9".encode("utf-8")) + len(
+            json.dumps(payload["args"], ensure_ascii=False).encode("utf-8")
+        )
+        assert outcome.request_bytes == expected
+
+    @pytest.mark.parametrize(
+        "request_",
+        [
+            PendingRequest("c1", "f", True, None),
+            PendingRequest("c1", "f", False, None, bad_encoding=True),
+            _request("{nope"),
+        ],
+    )
+    def test_request_bytes_is_zero_when_the_request_is_unusable(self, request_: PendingRequest) -> None:
+        assert RequestDispatcher({"tool.call": _echo}).handle(request_).outcome.request_bytes == 0
+
+    def test_a_handler_reads_the_seq_of_its_call_and_it_is_reset_afterwards(self) -> None:
+        seen: list[int | None] = []
+        dispatcher = RequestDispatcher({"tool.call": lambda payload: seen.append(current_call_seq())})
+
+        outcome = dispatcher.handle(_request(_body(op="tool.call", payload={"name": "x"}))).outcome
+
+        assert seen == [outcome.seq]
+        assert current_call_seq() is None
+
+
 class TestCancellation:
     def test_a_request_withdrawn_before_it_starts_is_not_run_and_is_answered_timeout(self) -> None:
         ran: list[int] = []
@@ -377,3 +423,14 @@ class TestCancellation:
 
     def test_without_an_event_nothing_is_ever_cancelled(self) -> None:
         ensure_not_cancelled()
+
+
+def test_settling_an_outcome_keeps_its_concurrency_unless_told_otherwise() -> None:
+    outcome = CallOutcome("c1", "tool.call", "t", None, 0.1, 10, 1, 4, concurrency=2)
+
+    assert outcome.settled(delivered=True).concurrency == 2
+    assert outcome.settled(delivered=True, concurrency=5).concurrency == 5
+
+
+def test_an_outcome_does_not_know_its_concurrency_until_the_channel_says() -> None:
+    assert CallOutcome("c1", "tool.call", "t", None, 0.1, 10, 1, 4).concurrency == 0

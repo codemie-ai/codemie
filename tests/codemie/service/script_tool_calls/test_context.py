@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 import dataclasses
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from langchain_core.tools import BaseTool
@@ -203,3 +203,113 @@ class TestExclusions:
 
     def test_tool_with_none_thread_generator_is_kept(self) -> None:
         assert is_excluded_from_script_calls(_StreamTool(thread_generator=None)) is False
+
+
+class TestRunAttribution:
+    """The fields the polling thread cannot read from request contextvars are captured when the context is built."""
+
+    METADATA = {
+        "agent_name": "my-assistant",
+        "llm_model": "gpt-x",
+        "project": "assistant-project",
+        "user_name": "U One",
+    }
+
+    def test_assistant_context_takes_name_model_and_project_from_the_tool_metadata(self, user: User) -> None:
+        registry = ScriptToolRegistry(user)
+        registry.fill([_PlainTool()])
+
+        context = registry.context(self.METADATA)
+
+        assert (context.assistant_name, context.llm_model, context.project, context.user_id) == (
+            "my-assistant",
+            "gpt-x",
+            "assistant-project",
+            "user-1",
+        )
+
+    def test_project_is_the_request_thread_billing_project_when_there_is_one(self, user: User) -> None:
+        registry = ScriptToolRegistry(user)
+        registry.fill([_PlainTool()])
+
+        with patch("codemie.core.dependecies.get_current_project") as current:
+            current.side_effect = lambda fallback=None: "billing@example.com" if fallback else ""
+            context = registry.context(self.METADATA)
+
+        assert context.project == "billing@example.com"
+        current.assert_called_once_with(fallback="assistant-project")
+
+    def test_captured_values_survive_the_end_of_the_request_context(self, user: User) -> None:
+        registry = ScriptToolRegistry(user)
+        registry.fill([_PlainTool()])
+        with patch("codemie.core.dependecies.get_current_project", return_value="billing-project"):
+            context = registry.context(self.METADATA)
+
+        assert context.project == "billing-project"
+        assert context.user_id == "user-1"
+
+    def test_missing_metadata_gives_empty_fields_and_the_user_id(self, user: User) -> None:
+        context = ScriptToolRegistry(user).context()
+
+        assert (context.assistant_name, context.llm_model, context.project) == ("", "", "")
+        assert context.user_id == "user-1"
+
+    def test_non_text_model_is_stored_as_text(self, user: User) -> None:
+        registry = ScriptToolRegistry(user)
+        registry.fill([_PlainTool()])
+
+        assert registry.context({"llm_model": 42}).llm_model == "42"
+
+    def test_tool_step_has_no_assistant_and_no_model_but_the_project_of_its_assistant(self, user: User) -> None:
+        """A tool step never runs the assistant agent's ``_configure_tools``, so its tool carries no metadata: the
+        project comes from the step's virtual assistant."""
+        registry = ScriptToolRegistry(user, project="wf-project", is_tool_step=True)
+        registry.fill([_PlainTool()])
+
+        context = registry.context()
+
+        assert context.scope_kind is ScriptScopeKind.ASSISTANT
+        assert context.is_tool_step is True
+        assert context.assistant_name == ""
+        assert context.llm_model == ""
+        assert context.project == "wf-project"
+        assert context.user_id == "user-1"
+
+    def test_without_context_still_carries_the_user_id(self, user: User) -> None:
+        assert ScriptRunContext.without_context(user).user_id == "user-1"
+
+
+class TestRunIds:
+    """The assistant id and workflow id given to the registry reach every kind of context it builds."""
+
+    def test_assistant_scope_context_carries_both_ids(self, user: User) -> None:
+        registry = ScriptToolRegistry(user, assistant_id="asst-1", workflow_id="wf-1")
+        registry.fill([_PlainTool()])
+
+        context = registry.context()
+
+        assert context.scope_kind is ScriptScopeKind.ASSISTANT
+        assert (context.assistant_id, context.workflow_id) == ("asst-1", "wf-1")
+
+    def test_workflow_tool_step_context_carries_the_workflow_id(self, user: User) -> None:
+        registry = ScriptToolRegistry(user, workflow_id="wf-1", is_tool_step=True)
+        registry.fill([_PlainTool()])
+
+        context = registry.context()
+
+        assert context.workflow_id == "wf-1"
+        assert context.is_tool_step is True
+
+    def test_an_unfilled_registry_still_carries_the_ids(self, user: User) -> None:
+        context = ScriptToolRegistry(user, assistant_id="asst-1", workflow_id="wf-1").context()
+
+        assert context.scope_kind is ScriptScopeKind.NONE
+        assert (context.assistant_id, context.workflow_id) == ("asst-1", "wf-1")
+
+    def test_ids_default_to_empty(self, user: User) -> None:
+        registry = ScriptToolRegistry(user)
+        registry.fill([_PlainTool()])
+
+        context = registry.context()
+
+        assert (context.assistant_id, context.workflow_id) == ("", "")

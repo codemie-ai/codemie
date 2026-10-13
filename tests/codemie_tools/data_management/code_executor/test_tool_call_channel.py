@@ -54,9 +54,11 @@ from codemie_tools.data_management.code_executor.tool_call_channel import (
 )
 from codemie_tools.data_management.code_executor.tool_call_protocol import (
     DEADLINE_MARGIN_SECONDS,
+    CallOutcome,
     RequestDispatcher,
     ToolCallHandler,
     ToolCallRefused,
+    current_call_seq,
 )
 
 SDK_PATH: Path = (
@@ -1240,18 +1242,25 @@ class TestParallelCalls:
         entered = threading.Event()
         release = threading.Event()
         settled: list[tuple[str, bool]] = []
+        abandoned: list[CallOutcome] = []
+        handler_seq: list[int | None] = []
 
         def slow(payload: Mapping[str, object]) -> object:
+            handler_seq.append(current_call_seq())
             entered.set()
             release.wait(timeout=20.0)
             return {"result": 1}
+
+        def on_settled(outcome: CallOutcome) -> None:
+            abandoned.append(outcome)
+            settled.append((outcome.call_id, bool(outcome.delivered)))
 
         channel = _channel(
             LocalExecRunner(workspace),
             exchange_dir,
             handlers={"tool.call": slow},
             done_path=".done",
-            on_settled=lambda outcome: settled.append((outcome.call_id, bool(outcome.delivered))),
+            on_settled=on_settled,
         )
         channel.start()
         try:
@@ -1269,6 +1278,8 @@ class TestParallelCalls:
 
         time.sleep(0.3)
         assert settled == [(call_id, False)]
+        assert abandoned[0].seq == handler_seq[0], "an abandoned call keeps the seq it was served with"
+        assert abandoned[0].request_bytes == 0
         assert not (workspace / exchange_dir / f"{RESP_PREFIX}{call_id}{FILE_SUFFIX}").exists()
 
     def test_an_answered_call_is_settled_as_delivered(self, workspace: Path, sdk: ModuleType) -> None:
@@ -1610,6 +1621,50 @@ class TestWithdrawnCalls:
 
         assert result == [{"result": "a"}]
         assert [(o.delivered, o.withdrawn) for o in settled] == [(True, False)]  # type: ignore[attr-defined]
+
+    def test_a_batch_is_seen_as_calls_in_flight_together(self, workspace: Path, sdk: ModuleType) -> None:
+        exchange_dir = _prepare(workspace, sdk)
+        probe = ConcurrencyProbe(hold=0.3)
+        settled: list[CallOutcome] = []
+        channel = _channel(
+            LocalExecRunner(workspace),
+            exchange_dir,
+            handlers={"tool.call": probe},
+            max_parallel_calls=3,
+            on_settled=settled.append,
+        )
+        channel.start()
+        try:
+            sdk.call_tools([{"name": "a"}, {"name": "b"}, {"name": "c"}], timeout=10.0)
+            deadline = time.monotonic() + 5.0
+            while len(settled) < 3 and time.monotonic() < deadline:
+                time.sleep(0.02)
+        finally:
+            channel.stop()
+
+        assert len(settled) == 3
+        assert max(o.concurrency for o in settled) == 3
+
+    def test_calls_made_one_after_another_are_never_in_flight_together(self, workspace: Path, sdk: ModuleType) -> None:
+        exchange_dir = _prepare(workspace, sdk)
+        settled: list[CallOutcome] = []
+        channel = _channel(
+            LocalExecRunner(workspace),
+            exchange_dir,
+            handlers={"tool.call": lambda payload: {"result": 1}},
+            on_settled=settled.append,
+        )
+        channel.start()
+        try:
+            for name in ("a", "b"):
+                sdk.call_tool(name, {}, timeout=10.0)
+            deadline = time.monotonic() + 5.0
+            while len(settled) < 2 and time.monotonic() < deadline:
+                time.sleep(0.02)
+        finally:
+            channel.stop()
+
+        assert [o.concurrency for o in settled] == [1, 1]
 
     def test_the_outcome_names_the_tool_and_the_op(self, workspace: Path, sdk: ModuleType) -> None:
         exchange_dir = _prepare(workspace, sdk)

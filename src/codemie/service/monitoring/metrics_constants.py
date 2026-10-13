@@ -12,9 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from codemie_tools.base.execution_timing import INVOKED_BY_SCRIPT as _INVOKED_BY_SCRIPT
+
 TOOLS_USAGE_TOTAL_METRIC = "codemie_tools_usage_total"
 TOOLS_USAGE_TOKENS_METRIC = "codemie_tools_usage_tokens"
 TOOLS_USAGE_ERRORS_METRIC = "codemie_tools_usage_errors_total"
+SCRIPT_TOOL_CALLS_REFUSED_METRIC = "codemie_script_tool_calls_refused_total"
+TOOL_EXECUTION_METRIC = "codemie_tool_execution"
+TOOL_EXECUTION_SECONDS_METRIC = "codemie_tool_execution_seconds"
 MCP_SERVERS_ASSISTANT_METRIC = "codemie_mcp_servers"
 PLUGIN_KEYS_TOTAL_METRIC = "codemie_plugin_keys_usage_total"
 PLUGIN_KEYS_ERRORS_METRIC = "codemie_plugin_keys_errors_total"
@@ -47,6 +52,16 @@ SKILL_ATTACHED_METRIC = "codemie_skill_attached"
 SKILL_TOOL_INVOKED_METRIC = "codemie_skill_tool_invoked"
 SKILL_TOOL_COMPANION_FILE_INVOKED_METRIC = "codemie_skill_tool_companion_file_invoked"
 SKILL_EXPORTED_METRIC = "codemie_skill_exported"
+SCRIPT_TOKENS_ESTIMATED_METRIC = "codemie_script_tokens_estimated"
+CODE_EXECUTION_ATTEMPTS_METRIC = "codemie_code_execution_attempts_total"
+CODE_EXECUTION_CAPACITY_WAITS_METRIC = "codemie_code_execution_capacity_waits_total"
+CODE_EXECUTION_CAPACITY_REJECTIONS_METRIC = "codemie_code_execution_capacity_rejections_total"
+CODE_EXECUTION_RUNS_METRIC = "codemie_code_execution_runs_total"
+CODE_EXECUTION_RUN_METRIC = "codemie_code_execution_run"
+CODE_EXECUTION_RUN_SECONDS_METRIC = "codemie_code_execution_run_seconds"
+CODE_EXECUTION_ACQUIRE_SECONDS_METRIC = "codemie_code_execution_acquire_seconds"
+CODE_EXECUTION_POD_START_SECONDS_METRIC = "codemie_code_execution_pod_start_seconds"
+CODE_EXECUTION_POD_SECONDS_METRIC = "codemie_code_execution_pod_seconds"
 SKILL_GENERATOR_TOTAL_METRIC = "codemie_skill_generator_total"
 SKILL_GENERATOR_ERRORS_METRIC = "codemie_skill_generator_errors_total"
 WORKFLOW_GENERATOR_TOTAL_METRIC = "codemie_workflow_generator_total"
@@ -63,7 +78,38 @@ MODEL_AVAILABILITY_VALIDATIONS_TOTAL_METRIC = "codemie_model_availability_valida
 MODEL_AVAILABILITY_FALLBACKS_TOTAL_METRIC = "codemie_model_availability_fallbacks_total"
 
 
+class ScriptCallKind:
+    """How a tool call made from a workspace script ended; also the ``status`` value of its usage record."""
+
+    SUCCESS = "success"
+    ABANDONED = "abandoned"
+    ERROR = "error"
+    REFUSED = "refused"
+
+
+#: ``invoked_by`` value of a call made from a workspace script (a direct call carries no such attribute).
+# One definition for the tools library and the platform (a tool run by a script is counted under this value).
+INVOKED_BY_SCRIPT = _INVOKED_BY_SCRIPT
+
+
+class ScriptEstimateSide:
+    """The ``side`` value of a ``codemie_script_tokens_estimated`` record."""
+
+    INNER_CALLS = "inner_calls"
+    SCRIPT_TOOL = "script_tool"
+
+
 class MetricsAttributes:
+    DIRECTION = "direction"
+    SIDE = "side"
+    ESTIMATOR = "estimator"
+    BRIDGE_OK = "bridge_ok"
+    RUN_OK = "run_ok"
+    BRIDGE_CALLS = "bridge_calls"
+    INVOKED_BY = "invoked_by"
+    ERROR_CODE = "error_code"
+    ERROR_CLASS = "error_class"
+    BASE_TOOL_NAME = "base_tool_name"
     USER_ID = "user_id"
     USER_NAME = "user_name"
     USER_EMAIL = "user_email"
@@ -83,6 +129,8 @@ class MetricsAttributes:
     ASSISTANT_DESCRIPTION = "assistant_description"
     LLM_MODEL = "llm_model"
     TOOL_NAME = "tool_name"
+    SANDBOX_MODE = "sandbox_mode"
+    OUTCOME = "outcome"
     SLUG = "slug"
     INPUT_TOKENS = "input_tokens"
     OUTPUT_TOKENS = "output_tokens"

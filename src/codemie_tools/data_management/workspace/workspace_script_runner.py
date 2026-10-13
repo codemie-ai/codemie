@@ -30,6 +30,7 @@ from pydantic import Field
 
 from codemie_tools.base.file_object import FileObject
 from codemie_tools.data_management.code_executor.batch_job_runner import BatchJobRunner
+from codemie_tools.data_management.code_executor.run_observer import SandboxRunObserver
 from codemie_tools.data_management.code_executor.code_executor_tool import CodeExecutorTool
 from codemie_tools.data_management.code_executor.file_export_service import FileExportService
 from codemie_tools.data_management.code_executor.job_bridge import JobBridgeOptions
@@ -49,6 +50,8 @@ class WorkspaceScriptRunner(CodeExecutorTool):
     last_execution_files: list[FileObject] = Field(default_factory=list, exclude=True)
     #: Script tool calls for this run (jobs mode only); ``None``: the script cannot call tools.
     bridge: JobBridgeOptions | None = Field(default=None, exclude=True)
+    #: Learns whether the run had to wait for executor capacity or was refused for the lack of it.
+    sandbox_run: SandboxRunObserver | None = Field(default=None, exclude=True)
 
     def __init__(
         self,
@@ -58,6 +61,7 @@ class WorkspaceScriptRunner(CodeExecutorTool):
         execution_mode: ExecutionMode | None = None,
         conversation_id: str | None = None,
         bridge: JobBridgeOptions | None = None,
+        sandbox_run: SandboxRunObserver | None = None,
     ):
         super().__init__(
             file_repository=file_repository,
@@ -67,6 +71,7 @@ class WorkspaceScriptRunner(CodeExecutorTool):
         )
         self.conversation_id = conversation_id
         self.bridge = bridge
+        self.sandbox_run = sandbox_run
 
     def _get_user_workdir(self) -> str:
         base_workdir = super()._get_user_workdir()
@@ -184,7 +189,7 @@ class WorkspaceScriptRunner(CodeExecutorTool):
         if self.config.sandbox_mode == SandboxMode.JOBS:
             return self._execute_sandbox_script_jobs(script_path, export_files, user_workdir)
 
-        with self._sandbox_session(user_workdir) as session:
+        with self._sandbox_session(user_workdir, self.sandbox_run) as session:
             input_file_hashes = self._get_input_file_hashes()
 
             if self.input_files:
@@ -233,6 +238,7 @@ class WorkspaceScriptRunner(CodeExecutorTool):
             workdir=user_workdir,
             baseline_hashes=input_file_hashes,
             bridge=bridge,
+            sandbox_run=self.sandbox_run,
         )
         self._log_execution_timing(0.0, _time.time() - start)
         self._log_guard_denials(result.stdout or "", result.stderr or "", workdir=user_workdir)

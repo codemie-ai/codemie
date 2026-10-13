@@ -27,12 +27,14 @@ import sys
 import tempfile
 import unittest
 
+from codemie.service.script_tool_calls.token_count import count_tokens
 from codemie.rest_api.models.agent_workspace import (
     ExecuteWorkspaceScriptResponse,
     WorkspaceFileItemResponse,
 )
 from codemie.rest_api.security.user import User
 from codemie.service.script_tool_calls.context import ScriptScopeKind, ScriptToolRegistry
+from codemie.service.script_tool_calls.observer import ScriptRunObserver
 from codemie_tools.base.file_object import FileObject
 from codemie_tools.data_management.code_executor.models import (
     CodeExecutorConfig,
@@ -41,7 +43,7 @@ from codemie_tools.data_management.code_executor.models import (
 )
 from codemie_tools.data_management.code_executor.runtime_sdk.codemie_runtime_sdk import BRIDGE_DIR_NAME
 from codemie_tools.data_management.code_executor.job_bridge import JobBridgeOptions, new_job_bridge_options
-from codemie_tools.data_management.code_executor.tool_call_protocol import ToolCallHandler
+from codemie_tools.data_management.code_executor.tool_call_protocol import CallOutcome, ToolCallHandler
 from codemie_tools.data_management.code_executor.tool_calling_limits import ToolCallingSettings
 from codemie_tools.data_management.workspace.execute_workspace_script_tool import ExecuteWorkspaceScriptTool
 from codemie_tools.data_management.workspace.workspace_script_runner import (
@@ -50,6 +52,7 @@ from codemie_tools.data_management.workspace.workspace_script_runner import (
 )
 
 _MODULE = "codemie_tools.data_management.workspace.workspace_script_runner"
+_TOOL = "codemie_tools.data_management.workspace.execute_workspace_script_tool"
 
 
 def _make_file_item() -> WorkspaceFileItemResponse:
@@ -243,7 +246,7 @@ class TestPooledRunWithoutToolCalling(unittest.TestCase):
         runner = _make_runner()
         with _pooled_run(runner) as run:
             runner._execute_sandbox_script("script.py")
-        run.sandbox_session.assert_called_once_with("/home/codemie/u/conv")
+        run.sandbox_session.assert_called_once_with("/home/codemie/u/conv", None)
 
     def test_execute_code_sandbox_gets_no_kwargs(self):
         runner = _make_runner()
@@ -266,7 +269,7 @@ class TestSharedModeHasNoBridge(unittest.TestCase):
         with _pooled_run(runner) as run:
             runner._execute_sandbox_script("script.py")
 
-        run.sandbox_session.assert_called_once_with("/home/codemie/u/conv")
+        run.sandbox_session.assert_called_once_with("/home/codemie/u/conv", None)
         run.execute_code.assert_called_once_with(run.session, "WRAPPER")
         self.assertIsNone(run.build_guard.call_args.kwargs["sdk_config"])
 
@@ -418,6 +421,36 @@ class TestExecuteToolRunContext(unittest.TestCase):
         self.assertEqual(run_context.user.id, "user-1")
         self.assertEqual(run_context.scope.callable_tools(), ())
 
+    def test_creates_an_observer_and_passes_it_to_the_service(self):
+        tool, service = self._tool(None)
+
+        tool.execute("run.py")
+
+        self.assertIsInstance(service.execute_workspace_script.call_args.kwargs["observer"], ScriptRunObserver)
+
+    def test_each_run_gets_its_own_observer(self):
+        tool, service = self._tool(None)
+
+        tool.execute("run.py")
+        tool.execute("run.py")
+
+        observers = [c.kwargs["observer"] for c in service.execute_workspace_script.call_args_list]
+        self.assertIsNot(observers[0], observers[1])
+
+    def test_the_context_is_built_from_the_tool_metadata(self):
+        registry = ScriptToolRegistry(User(id="user-1", auth_token=None))
+        registry.fill([])
+        tool, service = self._tool(registry)
+        tool.metadata = {"agent_name": "my-assistant", "llm_model": "gpt-x", "project": "proj"}
+
+        tool.execute("run.py")
+
+        run_context = service.execute_workspace_script.call_args.kwargs["run_context"]
+        self.assertEqual(
+            (run_context.assistant_name, run_context.llm_model, run_context.project),
+            ("my-assistant", "gpt-x", "proj"),
+        )
+
     def test_passes_the_settings_the_tool_was_built_with_to_the_service(self):
         settings = ToolCallingSettings(run_timeout_seconds=90.0)
         tool, service = self._tool(None)
@@ -433,3 +466,91 @@ class TestExecuteToolRunContext(unittest.TestCase):
         tool.execute("run.py")
 
         self.assertIsNone(service.execute_workspace_script.call_args.kwargs["tool_calling"])
+
+
+_ARGS_TEXT = json.dumps({"script_path": "run.py", "export_files": None}, ensure_ascii=False)
+_SCRIPT_CODE = "print('hello')"
+
+
+class TestScriptToolTokenEstimate(unittest.TestCase):
+    def _tool(self, registry: ScriptToolRegistry | None):
+        service = MagicMock()
+        service.execute_workspace_script.return_value = {"message": "ok"}
+        service.get_file_content.return_value = MagicMock(content=_SCRIPT_CODE, is_binary=False)
+        tool = ExecuteWorkspaceScriptTool(
+            conversation_id="conv-1",
+            user=User(id="user-1", auth_token=None),
+            workspace_service=service,
+            workspace_id="ws-1",
+            script_registry=registry,
+        )
+        return tool, service
+
+    def _assistant_registry(self) -> ScriptToolRegistry:
+        registry = ScriptToolRegistry(User(id="user-1", auth_token=None))
+        registry.fill([])
+        return registry
+
+    def test_emits_the_script_tool_estimate_for_an_assistant_run(self):
+        tool, service = self._tool(self._assistant_registry())
+
+        def run(**kwargs):
+            kwargs["observer"].on_settled(CallOutcome("c1", "tool.call", "t", None, 0.1, 4, 1, 4, delivered=True))
+            return {"message": "ok"}
+
+        service.execute_workspace_script.side_effect = run
+        with patch(f"{_TOOL}.emit_savings") as emit:
+            result = tool.execute("run.py")
+
+        emit.assert_called_once()
+        snapshot, context = emit.call_args.args
+        self.assertEqual(snapshot.bridge_calls, 1)
+        self.assertTrue(snapshot.bridge_ok)
+        self.assertIs(context.scope_kind, ScriptScopeKind.ASSISTANT)
+        self.assertEqual(
+            emit.call_args.kwargs["written_tokens"], count_tokens(_ARGS_TEXT, None) + count_tokens(_SCRIPT_CODE, None)
+        )
+        self.assertEqual(emit.call_args.kwargs["read_tokens"], count_tokens(result, None))
+        self.assertIs(emit.call_args.kwargs["run_ok"], True)
+
+    def test_emits_what_the_model_wrote_and_no_output_when_the_run_raises(self):
+        tool, service = self._tool(self._assistant_registry())
+        service.execute_workspace_script.side_effect = RuntimeError("boom")
+
+        with patch(f"{_TOOL}.emit_savings") as emit:
+            with self.assertRaises(RuntimeError):
+                tool.execute("run.py")
+
+        emit.assert_called_once()
+        self.assertEqual(emit.call_args.kwargs["read_tokens"], 0)
+        self.assertIs(emit.call_args.kwargs["run_ok"], False)
+        self.assertEqual(
+            emit.call_args.kwargs["written_tokens"], count_tokens(_ARGS_TEXT, None) + count_tokens(_SCRIPT_CODE, None)
+        )
+
+    def test_no_record_for_a_workflow_tool_step_run(self):
+        registry = ScriptToolRegistry(User(id="user-1", auth_token=None), is_tool_step=True)
+        registry.fill([])
+        tool, _ = self._tool(registry)
+
+        with patch(f"{_TOOL}.emit_savings") as emit:
+            tool.execute("run.py")
+
+        emit.assert_not_called()
+
+    def test_no_record_without_a_registry(self):
+        tool, _ = self._tool(None)
+
+        with patch(f"{_TOOL}.emit_savings") as emit:
+            tool.execute("run.py")
+
+        emit.assert_not_called()
+
+    def test_a_broken_script_lookup_never_breaks_the_run(self):
+        tool, service = self._tool(self._assistant_registry())
+        service.get_file_content.side_effect = RuntimeError("gone")
+
+        with patch(f"{_TOOL}.emit_savings") as emit:
+            tool.execute("run.py")
+
+        self.assertEqual(emit.call_args.kwargs["written_tokens"], count_tokens(_ARGS_TEXT, None))

@@ -1,0 +1,50 @@
+{
+ "schema": 1,
+ "branch": "EPMCDME-15566_script-token-savings-analytics",
+ "head": "53bc470399bed271100a8f24e89a7ce528ccfe57",
+ "runner": "poetry",
+ "started_at": "2026-10-11T01:00:00Z",
+ "completed_at": "2026-10-11T01:02:00Z",
+ "status": "PASSED",
+ "drift_detected": false,
+ "gates": [
+  {
+   "id": "lint",
+   "source": "guide",
+   "status": "PASS",
+   "command": "make ruff",
+   "exit_code": 0
+  },
+  {
+   "id": "build",
+   "source": "guide",
+   "status": "PASS",
+   "command": "make build",
+   "exit_code": 0
+  },
+  {
+   "id": "license",
+   "source": "guide",
+   "status": "PASS",
+   "command": "make license-check",
+   "exit_code": 0
+  },
+  {
+   "id": "secrets",
+   "source": "guide",
+   "status": "SKIPPED",
+   "command": "make gitleaks",
+   "exit_code": 2,
+   "notes": "Docker daemon not running (Cannot connect to the Docker daemon); start Docker to run locally. Staged-diff hook codemie-gitleaks also needs a container engine."
+  },
+  {
+   "id": "unit",
+   "source": "guide",
+   "status": "PASS",
+   "command": "poetry run pytest <affected paths>",
+   "exit_code": 0,
+   "notes": "Scoped to changed test files plus monitoring, script_tool_calls, data_management, leaderboard dirs; 822 passed."
+  }
+ ],
+ "failures": {}
+}

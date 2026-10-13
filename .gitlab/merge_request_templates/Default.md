@@ -47,7 +47,9 @@ Command: `make test-harness`
 
 ### Additional tests (optional)
 
-<!-- Tests run beyond the sanity set: what was run (path, marker, command) and the result. Details are optional. -->
+<!-- Only additional tests of the test harness, run beyond the sanity set: what was run (path, marker, command) and the
+     result. Details are optional. Do not list local quality gates here (lint, format, unit tests): they are not harness
+     results. -->
 
 ## Verified locally
 

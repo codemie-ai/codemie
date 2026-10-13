@@ -41,6 +41,30 @@ for _missing_pkg in ("tree_sitter_languages", "python_calamine", "switchyard", "
 load_dotenv(Path(__file__).parent / ".env.test", override=True)
 
 
+@pytest.fixture(autouse=True)
+def isolate_run_reporting_state():
+    """Start every test without reporting sinks and without a request LLM context, and put both back afterwards.
+
+    Importing the application (`codemie.rest_api.main`, which some tests do) registers the metric sinks for the rest of
+    the process, and a test that sets the request LLM context without resetting it leaves a billing project behind.
+    Either would change what a later, unrelated test sees: an extra metric log line in a log assertion, a project that
+    is not the one the test passed in. A test that needs a sink adds it itself.
+    """
+    from codemie.core.dependecies import litellm_context
+    from codemie_tools.base.execution_timing import sandbox_run_sinks, tool_execution_sinks
+
+    saved = (tool_execution_sinks.snapshot(), sandbox_run_sinks.snapshot())
+    tool_execution_sinks.clear()
+    sandbox_run_sinks.clear()
+    token = litellm_context.set(None)
+    try:
+        yield
+    finally:
+        litellm_context.reset(token)
+        tool_execution_sinks.restore(saved[0])
+        sandbox_run_sinks.restore(saved[1])
+
+
 @pytest.fixture(scope="session", autouse=True)
 def mock_database_engine():
     """

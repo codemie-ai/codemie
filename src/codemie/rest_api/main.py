@@ -1390,6 +1390,11 @@ configure_opentelemetry(app)
 # to Prometheus scrape format.  Must run before any metrics are recorded.
 configure_prometheus_metrics()
 
+# Every tool reports how long its own work took (direct calls and calls made by workspace scripts).
+from codemie.service.monitoring.sinks import register_monitoring_sinks  # noqa: E402
+
+register_monitoring_sinks()
+
 if config.PROMETHEUS_ENABLED:
     configure_prometheus_http_metrics(app)
 

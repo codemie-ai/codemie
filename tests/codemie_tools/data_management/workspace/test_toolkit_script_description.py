@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The script tool's description carries the SDK reference only while the tool-calling switch is on."""
+"""The script tool's description always carries the sandbox restrictions, and the SDK reference only while the
+tool-calling switch is on."""
 
 from __future__ import annotations
 
@@ -23,6 +24,7 @@ import pytest
 
 from codemie.rest_api.security.user import User
 from codemie.service.agent_workspace_service import AgentWorkspaceService
+from codemie_tools.data_management.code_executor.sandbox_restrictions import read_sandbox_restrictions
 from codemie_tools.data_management.code_executor.sdk_reference import compose_description, read_sdk_reference
 from codemie_tools.data_management.code_executor.tool_calling_limits import ToolCallingSettings
 from codemie_tools.data_management.workspace.execute_workspace_script_tool import ExecuteWorkspaceScriptTool
@@ -55,20 +57,31 @@ def _script_tool() -> ExecuteWorkspaceScriptTool:
 
 
 class TestScriptToolDescription:
-    def test_switch_on_appends_the_sdk_reference_after_the_base_text(self) -> None:
+    def test_switch_on_appends_the_restrictions_and_the_sdk_reference_after_the_base_text(self) -> None:
         with patch(SWITCH_HELPER, return_value=_ON):
             description = _script_tool().description
 
         base = EXECUTE_WORKSPACE_SCRIPT_TOOL.description
         assert base is not None
         assert description.startswith(base.strip())
+        assert read_sandbox_restrictions() in description
         assert description.endswith(read_sdk_reference(_ON))
 
-    def test_switch_off_leaves_the_description_unchanged(self) -> None:
+    def test_switch_off_keeps_the_restrictions_without_the_sdk_reference(self) -> None:
         with patch(SWITCH_HELPER, return_value=None):
             description = _script_tool().description
 
-        assert description == EXECUTE_WORKSPACE_SCRIPT_TOOL.description
+        base = EXECUTE_WORKSPACE_SCRIPT_TOOL.description
+        assert base is not None
+        assert description == f"{base.strip()}\n\n{read_sandbox_restrictions()}"
+        assert "codemie_runtime_sdk" not in description
+
+    def test_restrictions_name_the_blocked_modules_and_the_allowed_libraries(self) -> None:
+        text = read_sandbox_restrictions()
+
+        assert "Blocked modules and calls:" in text
+        assert "subprocess" in text
+        assert "Pre-installed libraries:" in text
 
     def test_the_switch_is_read_each_time_the_toolkit_is_built(self) -> None:
         with patch(SWITCH_HELPER, return_value=_ON):

@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
+import time
 from collections.abc import Iterator, Mapping
 from unittest.mock import patch
 
@@ -29,10 +31,16 @@ from codemie.rest_api.security.user import User
 from codemie.service.script_tool_calls.concurrency import ToolRunGate
 from codemie.service.script_tool_calls.context import ScriptRunContext, ScriptScopeKind, ToolListScope
 from codemie.service.script_tool_calls.handler import build_tool_call_handlers
+from codemie.service.script_tool_calls.observer import ScriptRunObserver
 from codemie_tools.base.codemie_tool import CodeMieTool
 from codemie_tools.base.http_result import HttpResult
-from codemie_tools.data_management.code_executor.runtime_sdk.codemie_runtime_sdk import TOOL_CALL_OP
-from codemie_tools.data_management.code_executor.tool_call_protocol import ToolCallHandler, ToolCallRefused
+from codemie_tools.data_management.code_executor.runtime_sdk.codemie_runtime_sdk import PROTOCOL_VERSION, TOOL_CALL_OP
+from codemie_tools.data_management.code_executor.tool_call_protocol import (
+    PendingRequest,
+    RequestDispatcher,
+    ToolCallHandler,
+    ToolCallRefused,
+)
 
 SENTINEL = "SENTINEL-SECRET-VALUE"
 _tool_logger = logging.getLogger("codemie.test_handler.tool")
@@ -216,6 +224,9 @@ def _handler(
     handlers = build_tool_call_handlers(context, **options)  # type: ignore[arg-type]
     assert set(handlers) == {TOOL_CALL_OP}
     return handlers[TOOL_CALL_OP]
+
+
+_HANDLER = "codemie.service.script_tool_calls.handler"
 
 
 def _refusal(handler: ToolCallHandler, payload: Mapping[str, object]) -> ToolCallRefused:
@@ -480,3 +491,149 @@ def test_bad_arguments_log_line_never_holds_values(logs: _CapturingHandler) -> N
     _refusal(_handler(_EchoArgsTool()), {"name": "echo_args", "args": {"count": SENTINEL}})
 
     assert all(SENTINEL not in message for message in logs.messages)
+
+
+def _dispatch(observer: ScriptRunObserver, name: str, *tools: BaseTool, seq: int = 7) -> None:
+    context = ScriptRunContext(
+        user=User(id="user-1", username="u1"),
+        scope=ToolListScope(tools),
+        scope_kind=ScriptScopeKind.ASSISTANT,
+    )
+    dispatcher = RequestDispatcher(build_tool_call_handlers(context, gate=ToolRunGate(10), observer=observer))
+    body = json.dumps({"v": PROTOCOL_VERSION, "id": "x", "op": TOOL_CALL_OP, "payload": {"name": name, "args": {}}})
+    dispatcher.handle(PendingRequest(call_id="c1", file_name="req.c1.json", oversize=False, body=body), seq=seq)
+
+
+def test_the_resolved_tool_is_recorded_under_the_call_seq_after_authorization() -> None:
+    observer = ScriptRunObserver()
+
+    _dispatch(observer, "no_args", _NoArgsTool(), seq=7)
+
+    assert observer.detail_for(7).tool_name == "no_args"
+    assert observer.detail_for(7).tool_type == "internal"
+
+
+def test_the_tool_type_comes_from_the_tool_metadata() -> None:
+    observer = ScriptRunObserver()
+    tool = _NoArgsTool()
+    tool.metadata = {"tool_type": "plugin"}
+
+    _dispatch(observer, "no_args", tool, seq=3)
+
+    assert observer.detail_for(3).tool_type == "plugin"
+
+
+def test_a_refused_call_leaves_no_detail_so_it_reads_unknown() -> None:
+    observer = ScriptRunObserver()
+
+    _dispatch(observer, "not_in_scope", _NoArgsTool(), seq=4)
+
+    assert observer.detail_for(4).tool_name == "unknown"
+
+
+def test_a_blocked_call_is_recorded_under_the_name_of_the_script_tool() -> None:
+    observer = ScriptRunObserver()
+
+    _dispatch(observer, "execute_workspace_script", _NoArgsTool(), seq=5)
+
+    assert observer.detail_for(5).tool_name == "execute_workspace_script"
+
+
+def test_a_refused_call_to_an_excluded_tool_is_recorded_under_that_tool() -> None:
+    observer = ScriptRunObserver()
+    tool = _NoArgsTool()
+
+    with patch(f"{_HANDLER}.authorize_tool_call", side_effect=ToolCallRefused("tool_unavailable", "excluded")):
+        _dispatch(observer, "no_args", tool, seq=6)
+
+    assert observer.detail_for(6).tool_name == "no_args"
+
+
+def test_a_failing_tool_refusal_names_the_exception_class() -> None:
+    refused = _refusal(_handler(_RaisingTool()), {"name": "raising", "args": {"text": "hi"}})
+
+    assert refused.code == "tool_failed"
+    assert refused.cause_class == "RuntimeError"
+
+
+def test_invalid_arguments_name_the_validation_error() -> None:
+    refused = _refusal(_handler(_RaisingTool()), {"name": "raising", "args": {"text": 5}})
+
+    assert refused.code == "bad_arguments"
+    assert refused.cause_class == "ValidationError"
+
+
+def test_the_class_of_a_failed_call_is_recorded_under_its_seq() -> None:
+    observer = ScriptRunObserver()
+    context = ScriptRunContext(
+        user=User(id="user-1", username="u1"),
+        scope=ToolListScope([_RaisingTool()]),
+        scope_kind=ScriptScopeKind.ASSISTANT,
+    )
+    dispatcher = RequestDispatcher(build_tool_call_handlers(context, gate=ToolRunGate(10), observer=observer))
+    body = json.dumps(
+        {"v": PROTOCOL_VERSION, "id": "x", "op": TOOL_CALL_OP, "payload": {"name": "raising", "args": {"text": "hi"}}}
+    )
+
+    dispatcher.handle(PendingRequest(call_id="c1", file_name="req.c1.json", oversize=False, body=body), seq=9)
+
+    assert observer.error_class_for(9) == "RuntimeError"
+    assert observer.error_class_for(10) is None
+
+
+def _settle(observer: ScriptRunObserver, seq: int) -> dict[str, tuple[int, int]]:
+    from codemie_tools.data_management.code_executor.tool_call_protocol import CallOutcome
+
+    observer.on_settled(CallOutcome("c1", TOOL_CALL_OP, "no_args", None, 0.1, 1, seq, 1, delivered=True))
+    return observer.close().tool_tokens
+
+
+def test_a_successful_call_records_the_tokens_of_its_request_and_answer() -> None:
+    observer = ScriptRunObserver()
+
+    _dispatch(observer, "no_args", _NoArgsTool(), seq=7)
+
+    request_tokens, response_tokens = _settle(observer, 7)["no_args"]
+    assert request_tokens > 0
+    assert response_tokens > 0
+
+
+def test_a_refused_call_records_no_tokens() -> None:
+    observer = ScriptRunObserver()
+
+    _dispatch(observer, "not_in_scope", _NoArgsTool(), seq=4)
+
+    assert _settle(observer, 4) == {"unknown": (0, 0)}
+
+
+def test_a_call_that_found_the_gate_free_records_no_wait() -> None:
+    observer = ScriptRunObserver()
+
+    _dispatch(observer, "no_args", _NoArgsTool(), seq=7)
+
+    assert observer.close().gate_waited_calls == 0
+
+
+def test_a_call_that_waited_for_the_gate_records_the_wait() -> None:
+    observer = ScriptRunObserver()
+    gate = ToolRunGate(1)
+    context = ScriptRunContext(
+        user=User(id="user-1", username="u1"),
+        scope=ToolListScope([_NoArgsTool()]),
+        scope_kind=ScriptScopeKind.ASSISTANT,
+    )
+    dispatcher = RequestDispatcher(build_tool_call_handlers(context, gate=gate, observer=observer))
+    body = json.dumps(
+        {"v": PROTOCOL_VERSION, "id": "x", "op": TOOL_CALL_OP, "payload": {"name": "no_args", "args": {}}}
+    )
+    request = PendingRequest(call_id="c1", file_name="req.c1.json", oversize=False, body=body)
+
+    with gate.hold():
+        thread = threading.Thread(target=lambda: dispatcher.handle(request, seq=3))
+        thread.start()
+        time.sleep(0.3)
+    thread.join(timeout=5)
+
+    snapshot = observer.close()
+    assert snapshot.gate_waited_calls == 1
+    assert snapshot.gate_wait_seconds >= 0.25
