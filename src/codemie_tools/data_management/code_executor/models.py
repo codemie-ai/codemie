@@ -76,7 +76,7 @@ class CodeExecutorConfig(CodeMieToolConfig):
     )
 
     docker_image: str = Field(
-        default="codemie/codemie-python:2.52.0",
+        default="codemie/codemie-code-executor:2.58.0",
         description="Docker image for Python execution environment",
     )
 
@@ -390,7 +390,7 @@ class CodeExecutorConfig(CodeMieToolConfig):
             namespace=os.getenv("CODE_EXECUTOR_NAMESPACE", "codemie-code-executor"),
             runtime_class_name=os.getenv("CODE_EXECUTOR_RUNTIME_CLASS_NAME", "gvisor"),
             tolerations=os.getenv("CODE_EXECUTOR_TOLERATIONS", ""),
-            docker_image=os.getenv("CODE_EXECUTOR_DOCKER_IMAGE", "codemie/codemie-python:2.52.0"),
+            docker_image=os.getenv("CODE_EXECUTOR_DOCKER_IMAGE", "codemie/codemie-code-executor:2.58.0"),
             execution_timeout=float(os.getenv("CODE_EXECUTOR_EXECUTION_TIMEOUT", "30.0")),
             session_timeout=float(os.getenv("CODE_EXECUTOR_SESSION_TIMEOUT", "300.0")),
             default_timeout=float(os.getenv("CODE_EXECUTOR_DEFAULT_TIMEOUT", "30.0")),

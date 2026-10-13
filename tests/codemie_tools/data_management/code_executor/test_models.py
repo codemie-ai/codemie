@@ -50,7 +50,7 @@ class TestCodeExecutorConfigDefaults(unittest.TestCase):
         assert config.workdir_base == "/home/codemie"
         assert config.namespace == "codemie-code-executor"
         assert config.runtime_class_name == "gvisor"
-        assert config.docker_image == "codemie/codemie-python:2.52.0"
+        assert config.docker_image == "codemie/codemie-code-executor:2.58.0"
         assert config.execution_timeout == 30.0
         assert config.session_timeout == 300.0
         assert config.default_timeout == 30.0
