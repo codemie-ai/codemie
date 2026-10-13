@@ -616,6 +616,39 @@ class TestBatchJobRunnerFiles(unittest.TestCase):
 
         download.assert_called_once_with("sbx-pod-xyz", "/workspace", [".codemie_bridge_other.txt", "a.txt"])
 
+    def test_download_changed_files_skips_the_runtime_sdk_at_the_root_in_any_spelling(self):
+        config = _make_config()
+        snapshot = {
+            "codemie_runtime_sdk.py": "h1",
+            "Codemie_Runtime_SDK.py": "h2",
+            ".CODEMIE_BRIDGE/x.json": "h3",
+            "skills/demo/codemie_runtime_sdk.py": "h4",
+            "a.txt": "h5",
+        }
+
+        with patch("codemie_tools.data_management.code_executor.batch_job_runner.KubernetesClientManager"):
+            runner = BatchJobRunner(config)
+            with (
+                patch.object(runner, "_snapshot_workdir", return_value=snapshot),
+                patch.object(runner, "_download_exports", return_value={}) as download,
+            ):
+                runner._download_changed_files("sbx-pod-xyz", "/workspace", {})
+
+        download.assert_called_once_with("sbx-pod-xyz", "/workspace", ["a.txt", "skills/demo/codemie_runtime_sdk.py"])
+
+    def test_download_exports_never_fetches_a_reserved_path(self):
+        config = _make_config()
+
+        with patch("codemie_tools.data_management.code_executor.batch_job_runner.KubernetesClientManager"):
+            runner = BatchJobRunner(config)
+            with patch.object(runner, "_exec_tar_out", side_effect=lambda pod, wd, p: b"X") as tar_out:
+                result = runner._download_exports(
+                    "sbx-pod-xyz", "/workspace", ["codemie_runtime_sdk.py", ".codemie_bridge/r.json", "out.txt"]
+                )
+
+        assert result == {"out.txt": b"X"}
+        assert [call.args[2] for call in tar_out.call_args_list] == ["out.txt"]
+
 
 class TestBatchJobRunnerExecHelpers(unittest.TestCase):
     """tar pack/unpack round-trips without going through stream()."""

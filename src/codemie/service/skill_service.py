@@ -59,6 +59,8 @@ from codemie.rest_api.models.skill import (
 )
 from codemie.rest_api.security.user import User
 from codemie.service.monitoring.skill_monitoring_service import SkillMonitoringService
+from codemie.service.skill_bundle_seed_policy import compute_bundle_warning, compute_preview_bundle_warning
+from codemie.service.file_service.blob_ref_rules import content_addressed_key
 from codemie.service.skill_file_storage import SkillFileStorage
 
 INVALID_SKILL_BUNDLE_MESSAGE = "Invalid skill bundle"
@@ -165,9 +167,18 @@ class SkillService:
         skill_id: str,
         payloads: list[SkillCompanionFilePayload] | None,
         file_repo: FileRepository,
+        existing_records: list[dict] | None = None,
     ) -> list[dict[str, str | int]]:
-        """Upload companion file payloads to the file repository and return storage reference records."""
+        """Upload companion file payloads to the file repository and return storage reference records.
+
+        Each blob is stored under a content-addressed key, so a changed file never overwrites its previous version:
+        agent workspaces may reference the earlier blob. A file already in ``existing_records`` (the skill's
+        current records) under the same key and full checksum is not uploaded again and its record is reused.
+        """
         storage = SkillFileStorage(skill_id, file_repo)
+        stored_by_key = {
+            record["storage_key"]: record for record in existing_records or [] if record.get("storage_key")
+        }
         records: list[dict[str, str | int]] = []
         seen_paths: set[str] = set()
 
@@ -194,15 +205,21 @@ class SkillService:
 
             seen_paths.add(normalized_path)
             raw_content = SkillFileStorage._decode_companion_file_payload(file_payload)
+            storage_key, checksum = content_addressed_key(normalized_path, raw_content)
+            stored = stored_by_key.get(storage_key)
+            if stored and stored.get("checksum") == checksum:
+                records.append(dict(stored))
+                continue
             mime_type = mimetypes.guess_type(normalized_path)[0] or "application/octet-stream"
-            storage.write_file(name=normalized_path, mime_type=mime_type, content=raw_content)
+            storage.write_file(name=storage_key, mime_type=mime_type, content=raw_content)
             records.append(
                 {
                     "path": normalized_path,
                     "mime_type": mime_type,
                     "encoding": file_payload.encoding,
                     "size_bytes": len(raw_content),
-                    "storage_key": normalized_path,
+                    "storage_key": storage_key,
+                    "checksum": checksum,
                 }
             )
 
@@ -285,6 +302,7 @@ class SkillService:
             description=parsed_skill.description,
             content=parsed_skill.content,
             companion_files=bundle_records,
+            bundle_warning=compute_preview_bundle_warning(parsed_skill.name, bundle_records),
         )
 
     # ============================================================================
@@ -388,6 +406,7 @@ class SkillService:
         return skill.to_detail_response(
             assistants_count=assistants_count,
             user_abilities=user_abilities,
+            bundle_warning=compute_bundle_warning(skill),
         )
 
     @staticmethod
@@ -403,38 +422,17 @@ class SkillService:
         skill = SkillService._get_skill_or_raise(skill_id)
         SkillService._raise_if_no_access(user, skill, Action.READ)
 
-        normalized_path = SkillFileStorage._normalize_companion_file_path(path)
+        # A stored path is read as is: the strict shape rule applies to new uploads, so older files stay readable.
+        stored_paths = {file_data.get("path") for file_data in skill.companion_files or []}
+        normalized_path = path if path in stored_paths else SkillFileStorage._normalize_companion_file_path(path)
         for file_data in skill.companion_files or []:
             if file_data.get("path") != normalized_path:
                 continue
 
-            storage_key = file_data.get("storage_key")
-            if storage_key:
-                file_repo = FileRepositoryFactory.get_current_repository()
-                file_obj = SkillFileStorage(skill_id, file_repo).read_file(
-                    file_name=storage_key, mime_type=file_data.get("mime_type")
-                )
-                raw = file_obj.content
-                if isinstance(raw, bytes):
-                    try:
-                        content = raw.decode("utf-8")
-                        encoding = "text"
-                    except UnicodeDecodeError:
-                        content = base64.b64encode(raw).decode("ascii")
-                        encoding = "base64"
-                else:
-                    content = raw
-                    encoding = file_data.get("encoding", "text")
-                return SkillCompanionFileResponse(
-                    path=normalized_path,
-                    mime_type=file_data.get("mime_type"),
-                    encoding=encoding,
-                    size_bytes=file_data.get("size_bytes"),
-                    content=content,
-                )
-
-            # Legacy fallback: inline content in JSONB
-            return SkillCompanionFileResponse.model_validate(file_data)
+            if not file_data.get("storage_key"):
+                # Legacy fallback: inline content in JSONB
+                return SkillCompanionFileResponse.model_validate(file_data)
+            return SkillService._read_stored_companion_file(skill_id, normalized_path, file_data)
 
         raise ExtendedHTTPException(
             code=status.HTTP_404_NOT_FOUND,
@@ -444,16 +442,49 @@ class SkillService:
         )
 
     @staticmethod
+    def _read_stored_companion_file(skill_id: str, path: str, file_data: dict) -> SkillCompanionFileResponse:
+        """Read a companion file's payload from its stored blob; non-UTF-8 bytes are returned base64 encoded."""
+        file_obj = SkillFileStorage(skill_id, FileRepositoryFactory.get_current_repository()).read_file(
+            file_name=file_data["storage_key"], mime_type=file_data.get("mime_type")
+        )
+        raw = file_obj.content
+        if isinstance(raw, bytes):
+            try:
+                content, encoding = raw.decode("utf-8"), "text"
+            except UnicodeDecodeError:
+                content, encoding = base64.b64encode(raw).decode("ascii"), "base64"
+        else:
+            content, encoding = raw, file_data.get("encoding", "text")
+        return SkillCompanionFileResponse(
+            path=path,
+            mime_type=file_data.get("mime_type"),
+            encoding=encoding,
+            size_bytes=file_data.get("size_bytes"),
+            content=content,
+        )
+
+    @staticmethod
+    def order_skills_by_attachment(skills: list[Skill], skill_ids: list[str]) -> list[Skill]:
+        """
+        Order skills to match the attachment order given by skill_ids.
+        Skills whose id is not present in skill_ids are excluded.
+        """
+        skills_by_id = {skill.id: skill for skill in skills}
+        return [skills_by_id[skill_id] for skill_id in skill_ids if skill_id in skills_by_id]
+
+    @staticmethod
     def get_skills_by_ids(skill_ids: list[str], user: User) -> list[Skill]:
         """
         Get multiple skills by IDs.
         Used by SkillTool to load attached skills.
         Filters out skills user doesn't have access to.
+        Returned list is ordered to match skill_ids (attachment order).
         """
         if not skill_ids:
             return []
 
         skills = SkillRepository.get_by_ids(skill_ids)
+        skills = SkillService.order_skills_by_attachment(skills, skill_ids)
 
         # Filter by access using Ability framework
         ability = Ability(user)
@@ -524,6 +555,7 @@ class SkillService:
         return skill.to_detail_response(
             assistants_count=0,
             user_abilities=["read", "write", "delete"],
+            bundle_warning=compute_bundle_warning(skill),
         )
 
     @staticmethod
@@ -639,9 +671,11 @@ class SkillService:
         updates.update(SkillService._build_skill_updates(request, skill))
 
         if request.companion_files is not None:
+            # Skill blobs are versioned by content and may be referenced by agent workspaces: they must never be
+            # overwritten or deleted without a reference check (the old versions are intentionally left in place).
             file_repo = FileRepositoryFactory.get_current_repository()
             updates["companion_files"] = SkillService._upload_companion_files(
-                skill_id, request.companion_files, file_repo
+                skill_id, request.companion_files, file_repo, existing_records=skill.companion_files
             )
 
         if updates:
@@ -664,6 +698,7 @@ class SkillService:
         return skill.to_detail_response(
             assistants_count=assistants_count,
             user_abilities=user_abilities,
+            bundle_warning=compute_bundle_warning(skill),
         )
 
     @staticmethod
@@ -743,6 +778,9 @@ class SkillService:
             )
 
         SkillService._raise_if_no_access(user, skill, Action.DELETE)
+
+        # Skill blobs are deliberately not deleted here: agent workspaces may reference them.
+        # Add a reference check before ever deleting them.
 
         # Remove skill from all assistants that reference it
         SkillRepository.remove_skill_from_all_assistants(skill_id)

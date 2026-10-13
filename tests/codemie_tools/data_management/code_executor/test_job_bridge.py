@@ -23,7 +23,6 @@ import pytest
 from codemie_tools.data_management.code_executor.job_bridge import (
     JobBridgeOptions,
     JobToolCallBridge,
-    is_bridge_path,
     new_job_bridge_options,
 )
 from codemie_tools.data_management.code_executor.tool_call_protocol import (
@@ -78,26 +77,6 @@ class TestJobBridgeOptions:
 
         assert options.handlers is handlers
         assert options.on_settled is listener
-
-
-class TestIsBridgePath:
-    @pytest.mark.parametrize(
-        "path",
-        [
-            ".codemie_bridge",
-            ".codemie_bridge/x/req.1.json",
-            "./.codemie_bridge/x",
-            "sub/../.codemie_bridge",
-            "/.codemie_bridge/x",
-            ".codemie_bridge\\x",
-        ],
-    )
-    def test_bridge_spellings_are_detected(self, path: str) -> None:
-        assert is_bridge_path(path)
-
-    @pytest.mark.parametrize("path", ["a.txt", ".codemie_bridge_other.txt", "sub/.codemie_bridge/x", ""])
-    def test_other_paths_are_not_bridge_paths(self, path: str) -> None:
-        assert not is_bridge_path(path)
 
 
 class TestJobToolCallBridge:

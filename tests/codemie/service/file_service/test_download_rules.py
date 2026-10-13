@@ -77,3 +77,26 @@ def test_rejects_foreign_owner() -> None:
 
 def test_rejects_unsafe_shape_even_for_own_owner() -> None:
     assert can_download(_file("user-1", "../victim/secret.pdf"), _user(), None, "tok", _repo()) is False
+
+
+def test_accepts_source_blob_referenced_by_the_users_own_workspace() -> None:
+    repo = _repo()
+    repo.user_references_blob.return_value = True
+
+    assert can_download(_file("skill-sk1", "ab12/a.py"), _user(), None, "tok", repo) is True
+    repo.user_references_blob.assert_called_once_with("user-1", "skill-sk1", "ab12/a.py")
+
+
+def test_rejects_source_blob_no_workspace_of_the_user_references() -> None:
+    repo = _repo()
+    repo.user_references_blob.return_value = False
+
+    assert can_download(_file("skill-sk1", "ab12/a.py"), _user(), None, "tok", repo) is False
+
+
+def test_other_owners_never_consult_the_source_blob_rule() -> None:
+    repo = _repo()
+
+    can_download(_file("somebody-else"), _user(), None, "tok", repo)
+
+    repo.user_references_blob.assert_not_called()

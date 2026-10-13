@@ -1,0 +1,289 @@
+{
+  "decision": "request-changes",
+  "rationale": "All three lenses ran against the 2,174-line source diff in full; the 3,389-line test diff was reviewed only by the acceptance lens for coverage, so confidence is low per the oversized-diff rule. Four actionable gaps (CR-001..CR-004: missing log warnings, path order, reserved-path fold order, a missing copy-on-write test). Deferred (5, not emitted): stale download access after a skill is unshared, a pre-existing user file at a target path is skipped without a notice, skip notices appear only on the seeding turn, no index on blob_owner/blob_name for the D2 lookup, and the legacy notice wording is not verbatim. About 15 further concerns were dismissed after checking the code (for example the production unique constraint exists, edits are copy-on-write, the migration was unmerged).",
+  "confidence": "low",
+  "risk_flags": [
+    "security",
+    "migration"
+  ],
+  "business_review": [
+    {
+      "kind": "story-ac",
+      "item": "Availability: skill files appear under skills/<name>/ without copying, waiting or overwriting; SKILL.md excluded",
+      "status": "pass",
+      "notes": "seed_skill_references: one transaction, rows point at skill blobs, ON CONFLICT DO NOTHING; repository and concurrency tests"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Availability: a skill script in the workspace runs like any workspace script",
+      "status": "pass",
+      "notes": "get_workspace_input_files reads referenced blobs through the same file repository"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Availability: no skills or no files changes nothing",
+      "status": "pass",
+      "notes": "prepare_skill_workspace and _seed_one return [] early; tests"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Availability: no script tool, switch off, or no conversation means nothing is seeded",
+      "status": "pass",
+      "notes": "gate cases in test_toolkit_service_prepare_skill_workspace"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Availability: workspace opened before the first request has no skill files",
+      "status": "pass",
+      "notes": "get_tools() is side-effect free; test_agent_workspace_toolkit"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Availability: skill attached later is seeded on the next request, already-seeded ones are not added again",
+      "status": "pass",
+      "notes": "ALREADY_SEEDED outcome from the folder-owner row"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Stability: edits, creates and deletes stay in the conversation; skill file and other conversations unaffected",
+      "status": "partial",
+      "notes": "Behavior is correct in code (_upsert_workspace_file_content writes a workspace-owned blob and repoints the row) but no test proves a user edit leaves the skill blob intact (CR-004)"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Stability: a deleted file is not brought back",
+      "status": "pass",
+      "notes": "owner row recorded once; tombstones untouched; repository test"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Stability: conversation keeps start content; files added later do not appear",
+      "status": "pass",
+      "notes": "rows pin storage_key; file set frozen by the owner record"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Stability: same content gives no new version, changed content a new one, earlier versions intact",
+      "status": "pass",
+      "notes": "SkillFileStorage.versioned_key and _upload_companion_files tests"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Reliability: an interruption never leaves a conversation stuck or half-prepared",
+      "status": "pass",
+      "notes": "single session, one commit; test_a_failure_before_commit_leaves_nothing_behind"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Reliability: concurrent requests seed exactly once",
+      "status": "pass",
+      "notes": "test_concurrent_seeding_leaves_exactly_one_set_of_rows (4 threads)"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Reliability: a missing blob is skipped with a warning and the run continues",
+      "status": "pass",
+      "notes": "WorkspaceInputFiles.warnings -> ExecuteWorkspaceScriptResponse.warnings; grep skips too"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Names: same relative path in two skills lands in separate folders",
+      "status": "pass",
+      "notes": "path = <folder>/<relative path>"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Names: same-name skills, first wins, second reported to log and model",
+      "status": "pass",
+      "notes": "COLLISION branch logs and returns a notice naming skill and folder; hint comes from the owner record"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Names: one rule builds the folder name everywhere",
+      "status": "pass",
+      "notes": "skill_workspace_folder; source-scan test; tool uses the owner record"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Limits: over-ceiling files skipped in path order while they fit, warning logged, model told, numbers match",
+      "status": "partial",
+      "notes": "Plan carries its limits and messages match; but files are processed in stored order, not path order (CR-002), and skipped files are not logged (CR-001)"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Limits: upload warning when an archive exceeds the ceilings; saving still works",
+      "status": "pass",
+      "notes": "compute_bundle_warning added at the three detail-response sites"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Limits: no warning within the ceilings",
+      "status": "pass",
+      "notes": "compute_bundle_warning returns None"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Older skills: inline files skipped, warning logged, model told",
+      "status": "partial",
+      "notes": "Skipped and the model is told, but no log warning is emitted for inline or over-limit skips (CR-001)"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Reserved paths: single write/delete refused, batch write skipped with a warning, case and Unicode variants",
+      "status": "partial",
+      "notes": "Covered for the cases tested; fold-after-normpath leaves compatibility characters that become separators uncollapsed (CR-003)"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Reserved paths: same-named folder deeper in the tree is allowed; reads not restricted",
+      "status": "pass",
+      "notes": "first-segment compare; tests"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Reserved paths: one shared definition",
+      "status": "pass",
+      "notes": "reserved_paths.is_reserved_path; is_bridge_path removed"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Workflows: assistant nodes get skill files like chats; same skill twice seeded once",
+      "status": "pass",
+      "notes": "build_agent_for_workflow calls prepare_skill_workspace; call-order test"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Workflows: notices reach the model",
+      "status": "pass",
+      "notes": "_append_workspace_notices shared by both prompt builders"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Skill author side: export/clone/publish use stored versions",
+      "status": "na",
+      "notes": "No other writer of skill blobs exists (research); get_companion_file reads by storage_key"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Skill author side: stored versions are not removed on update/delete",
+      "status": "pass",
+      "notes": "nothing deletes skill blobs; comments added"
+    },
+    {
+      "kind": "spec",
+      "item": "3.1 Folder-owner table, migration rewritten in place, FK cascade, both unique constraints, seed_entry_id removed",
+      "status": "pass",
+      "notes": "revision id and down_revision kept; single head asserted by the existing alembic head test"
+    },
+    {
+      "kind": "spec",
+      "item": "3.2 seed_skill_references outcomes and removal list",
+      "status": "pass",
+      "notes": "ON CONFLICT without target covers both constraints; FK errors raise, not COLLISION"
+    },
+    {
+      "kind": "spec",
+      "item": "3.3 content-addressed storage_key, checksum, refs, no key leak to clients",
+      "status": "pass",
+      "notes": "SkillCompanionFileRef; list_companion_files unchanged; filesystem round-trip test"
+    },
+    {
+      "kind": "spec",
+      "item": "3.4 policy module, SeedLimits, Protocol, folder function, 952 boundary",
+      "status": "pass",
+      "notes": "all present; boundary test"
+    },
+    {
+      "kind": "spec",
+      "item": "3.5 prepare step never raises, notices as arguments, old plumbing removed, script-step sites do not seed",
+      "status": "pass",
+      "notes": "tests including source scans"
+    },
+    {
+      "kind": "spec",
+      "item": "3.6 skill tool uses skill_location_hint and imports no repository or seeder",
+      "status": "pass",
+      "notes": "module-source test"
+    },
+    {
+      "kind": "spec",
+      "item": "3.7 download rule for skill-owned blobs",
+      "status": "pass",
+      "notes": "user_references_blob joins to AgentWorkspace.user_id with deleted_at IS NULL; no authorization hole found; revoked-skill residual deferred"
+    },
+    {
+      "kind": "spec",
+      "item": "3.8 reserved paths",
+      "status": "partial",
+      "notes": "see CR-003"
+    },
+    {
+      "kind": "spec",
+      "item": "5 Error handling and 6 Testing coverage",
+      "status": "partial",
+      "notes": "all listed areas have tests except the copy-on-write edit of a skill-owned row (CR-004)"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "5 commits, all 'EPMCDME-15558: <description>' with the required attribution lines"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "make ruff clean, make license-check clean (2453 files); layering respected (tool -> service -> repository); tests mirror src"
+    },
+    {
+      "kind": "security",
+      "status": "partial",
+      "notes": "Download rule D2 and path validation reviewed: no authorization hole. Reserved-path fold order raised as CR-003. Residual (deferred): a stale workspace reference keeps a skill blob downloadable after the skill is unshared"
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/skill_workspace_seeder.py",
+      "line": 63,
+      "title": "Skipped and inline skill files are not logged",
+      "problem": "The skip messages built from the plan go only to the model; the only logger.warning calls are the collision and the exception handler.",
+      "impact": "The story and spec require a warning to be logged for older (inline) skills and for files over the limits; operators cannot see them.",
+      "recommendation": "Log a warning naming the skill, the folder and the skip reasons whenever the plan skips anything."
+    },
+    {
+      "id": "CR-002",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/skill_bundle_seed_policy.py",
+      "line": 101,
+      "title": "Over-ceiling cut is not made in path order",
+      "problem": "plan_bundle_seed walks the refs in stored (upload) order; nothing sorts them by path.",
+      "impact": "The story says files are made available in path order while they fit, so which files survive a ceiling depends on upload order.",
+      "recommendation": "Iterate sorted(files, key=lambda ref: ref.path) and add a test with an unsorted bundle that exceeds the count limit."
+    },
+    {
+      "id": "CR-003",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie_tools/data_management/code_executor/reserved_paths.py",
+      "line": 46,
+      "title": "Reserved-path fold runs after normpath",
+      "problem": "is_reserved_path normalizes separators with normpath first and applies NFKC/casefold afterwards, so a compatibility character that folds into a separator or dot (fullwidth slash, fullwidth backslash) is never collapsed.",
+      "impact": "The rule is advertised as Unicode-insensitive; a spelling that folds to a bridge path after normalization can slip past callers that use the function directly, such as the export filter.",
+      "recommendation": "Fold first (NFKC + casefold), then replace backslashes, then normpath and strip the leading slash; add test cases with fullwidth separators."
+    },
+    {
+      "id": "CR-004",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/service/test_agent_workspace_service_reserved_paths.py",
+      "title": "No test proves a user edit leaves the skill's stored file untouched",
+      "problem": "The behavior (copy-on-write in _upsert_workspace_file_content) is correct, but no test seeds a skill-owned row, edits or overwrites it, and asserts the skill blob is not written and the row is repointed to a workspace-owned blob.",
+      "impact": "This is a stated acceptance criterion and the main isolation guarantee of the reference design; a regression would corrupt a skill for every workspace.",
+      "recommendation": "Add a service test: upsert/edit a row with blob_owner 'skill-sk1', assert file_repository.write_file is called with owner 'workspace-<id>' only and the row's blob_owner/blob_name are repointed."
+    }
+  ]
+}

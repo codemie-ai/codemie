@@ -217,3 +217,107 @@ class TestManagePreconfiguredSkills:
 
         mock_load_templates.assert_called_once()
         mock_create_skill.assert_called_once_with(skill_template)
+
+
+_P = 'external.deployment_scripts.preconfigured_skills'
+_INLINE_FILES = [
+    {
+        "path": "references/guide.md",
+        "mime_type": "text/markdown",
+        "encoding": "text",
+        "size_bytes": 5,
+        "content": "hello",
+    },
+    {
+        "path": "assets/logo.bin",
+        "mime_type": "application/octet-stream",
+        "encoding": "base64",
+        "size_bytes": 3,
+        "content": "AAEC",
+    },
+]
+_STORED = [{"path": "references/guide.md", "storage_key": "ab12/references/guide.md", "checksum": "ff"}]
+
+
+class TestCompanionFilesAreStoredAsBlobs:
+    """Preconfigured skills store companion files as versioned blobs, so they can be seeded into workspaces."""
+
+    @patch(f'{_P}.FileRepositoryFactory')
+    @patch(f'{_P}.SkillService._upload_companion_files', return_value=_STORED)
+    @patch(f'{_P}.SkillRepository.update')
+    @patch(f'{_P}.SkillRepository.create')
+    @patch(f'{_P}.SkillRepository.get_by_name_author_project', return_value=None)
+    def test_create_uploads_after_the_skill_has_an_id(
+        self, _get, mock_create, mock_update, mock_upload, mock_factory, mock_skill, skill_template
+    ):
+        mock_skill.id = 'new-id'
+        mock_create.return_value = mock_skill
+        mock_update.return_value = mock_skill
+
+        assert create_or_update_skill({**skill_template, 'companion_files': _INLINE_FILES}) == 'new-id'
+
+        assert mock_create.call_args[0][0]['companion_files'] == []
+        args = mock_upload.call_args[0]
+        assert args[0] == 'new-id'
+        assert [p.path for p in args[1]] == ['references/guide.md', 'assets/logo.bin']
+        assert args[2] is mock_factory.get_current_repository.return_value
+        assert mock_upload.call_args.kwargs.get('existing_records') is None
+        mock_update.assert_called_once_with('new-id', {'companion_files': _STORED})
+
+    @patch(f'{_P}.FileRepositoryFactory')
+    @patch(f'{_P}.SkillService._upload_companion_files', return_value=_STORED)
+    @patch(f'{_P}.SkillRepository.update')
+    @patch(f'{_P}.SkillRepository.get_by_name_author_project')
+    def test_update_stores_blob_references_not_inline_content(
+        self, mock_get, mock_update, mock_upload, _factory, mock_skill, skill_template
+    ):
+        mock_get.return_value = mock_skill
+        mock_update.return_value = mock_skill
+
+        create_or_update_skill({**skill_template, 'companion_files': _INLINE_FILES})
+
+        assert mock_upload.call_args[0][0] == mock_skill.id
+        assert mock_update.call_args[0][1]['companion_files'] == _STORED
+
+    @patch(f'{_P}.FileRepositoryFactory')
+    @patch(f'{_P}.SkillService._upload_companion_files', return_value=_STORED)
+    @patch(f'{_P}.SkillRepository.update')
+    @patch(f'{_P}.SkillRepository.get_by_name_author_project')
+    def test_update_passes_the_stored_records_so_unchanged_files_are_not_rewritten(
+        self, mock_get, mock_update, mock_upload, _factory, mock_skill, skill_template
+    ):
+        mock_skill.companion_files = _STORED
+        mock_get.return_value = mock_skill
+        mock_update.return_value = mock_skill
+
+        create_or_update_skill({**skill_template, 'companion_files': _INLINE_FILES})
+
+        assert mock_upload.call_args.kwargs['existing_records'] is _STORED
+
+    @patch(f'{_P}.FileRepositoryFactory')
+    @patch(f'{_P}.SkillService._upload_companion_files', side_effect=RuntimeError('storage down'))
+    @patch(f'{_P}.SkillRepository.update')
+    @patch(f'{_P}.SkillRepository.get_by_name_author_project')
+    def test_an_upload_failure_keeps_the_existing_files_and_does_not_fail_startup(
+        self, mock_get, mock_update, _upload, _factory, mock_skill, skill_template
+    ):
+        mock_get.return_value = mock_skill
+        mock_update.return_value = mock_skill
+
+        assert create_or_update_skill({**skill_template, 'companion_files': _INLINE_FILES}) == mock_skill.id
+
+        assert 'companion_files' not in mock_update.call_args[0][1]
+
+    @patch(f'{_P}.SkillService._upload_companion_files')
+    @patch(f'{_P}.SkillRepository.update')
+    @patch(f'{_P}.SkillRepository.get_by_name_author_project')
+    def test_a_template_without_files_uploads_nothing_and_clears_stale_files(
+        self, mock_get, mock_update, mock_upload, mock_skill, skill_template
+    ):
+        mock_get.return_value = mock_skill
+        mock_update.return_value = mock_skill
+
+        create_or_update_skill(skill_template)
+
+        mock_upload.assert_not_called()
+        assert mock_update.call_args[0][1]['companion_files'] == []

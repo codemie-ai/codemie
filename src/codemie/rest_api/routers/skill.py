@@ -46,6 +46,7 @@ from codemie.rest_api.models.skill import (
     SkillVisibility,
     get_skill_max_content_length,
 )
+from codemie.service.skill_bundle_seed_policy import SeedLimits
 from codemie.rest_api.models.assistant import AssistantListResponse
 from codemie.rest_api.models.assistant_generator import RefineGeneratorResponse
 from codemie.rest_api.models.skill_generator import SkillGeneratorRequest, SkillGeneratorResponse, SkillRefineRequest
@@ -360,9 +361,13 @@ def get_skill_config(
     user: User = Depends(authenticate),
 ) -> SkillConfigResponse:
     """Return the effective skill content-length limits for the current deployment."""
+    limits = SeedLimits.current()
     return SkillConfigResponse(
         max_content_length=get_skill_max_content_length(),
         min_content_length=MIN_CONTENT_LENGTH,
+        bundle_seed_max_file_count=limits.max_count,
+        bundle_seed_max_file_size_bytes=limits.max_file_size,
+        bundle_seed_max_total_size_bytes=limits.max_total_size,
     )
 
 

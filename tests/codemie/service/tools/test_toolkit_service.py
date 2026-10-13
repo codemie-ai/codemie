@@ -24,11 +24,12 @@ from langchain_core.tools import BaseTool, ToolException
 from codemie.core.constants import CodeIndexType, ToolType
 from codemie.core.exceptions import ModelNotWhitelistedException
 from codemie.core.models import AssistantChatRequest, CodeFields, IdeChatRequest, ToolConfig
-from codemie.rest_api.models.assistant import Assistant, Context, ContextType, ToolKitDetails
+from codemie.rest_api.models.assistant import Assistant, Context, ContextType, ToolDetails, ToolKitDetails
 from codemie.rest_api.models.conversation import Conversation
 from codemie.rest_api.models.index import CodeIndexInfo, KnowledgeBaseIndexInfo, ProviderIndexInfo
 from codemie.rest_api.security.user import User
 from codemie_tools.data_management.workspace.tools_vars import GENERATE_WORKSPACE_IMAGE_TOOL_V2
+from codemie.service.skill_workspace_preparation import _is_tool_selected
 from codemie.service.tools.toolkit_service import ToolkitService
 
 
@@ -2317,3 +2318,43 @@ class TestBuildOcrModelProjectWhitelist:
         tool.ocr_model_factory("vision-x")
 
         mock_build.assert_called_once_with("vision-x", "r", "project-x")
+
+
+class TestAgentWorkspaceScriptToolSelection:
+    """prepare_skill_workspace decides from the merged toolkits whether execute_workspace_script is selected."""
+
+    @staticmethod
+    def _workspace_toolkit(*tool_names: str) -> ToolKitDetails:
+        return ToolKitDetails(toolkit="AgentWorkspace", tools=[ToolDetails(name=name) for name in tool_names])
+
+    def test_script_tool_selected(self):
+        toolkits = [self._workspace_toolkit("read_workspace_file", "execute_workspace_script")]
+
+        assert _is_tool_selected(toolkits, "AgentWorkspace", "execute_workspace_script") is True
+
+    def test_script_tool_not_selected(self):
+        toolkits = [self._workspace_toolkit("read_workspace_file")]
+
+        assert _is_tool_selected(toolkits, "AgentWorkspace", "execute_workspace_script") is False
+
+    def test_toolkit_contributed_by_a_skill_counts(self):
+        # The assistant has no toolkits of its own; the workspace toolkit arrives only through an attached skill.
+        assistant = Mock(project="demo", toolkits=[], skill_ids=["skill-1"])
+        assistant.name = "a"
+        skill = Mock(toolkits=[self._workspace_toolkit("execute_workspace_script")])
+        skill.name = "s"
+        with patch(
+            "codemie.service.tools.toolkit_service.SkillContributionsResolver.resolve_skills_for_assistant",
+            return_value=[skill],
+        ):
+            merged = ToolkitService._merge_skill_toolkits(assistant)
+
+        assert _is_tool_selected(merged, "AgentWorkspace", "execute_workspace_script") is True
+
+    def test_no_selection_means_not_selected(self):
+        assert _is_tool_selected(None, "AgentWorkspace", "execute_workspace_script") is False
+
+    def test_the_toolkit_method_table_no_longer_takes_the_selection(self):
+        import inspect
+
+        assert "selected_toolkits" not in inspect.signature(ToolkitService.get_toolkit_methods).parameters

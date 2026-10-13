@@ -54,6 +54,7 @@ from codemie.service.aws_bedrock.bedrock_orchestration_service import BedrockOrc
 from codemie.service.llm_service.llm_service import llm_service
 from codemie.service.llm_service.utils import set_llm_context
 from codemie.service.tools.tools_info_service import ToolsInfoService
+from codemie.service.skill_workspace_preparation import prepare_skill_workspace
 from codemie.service.tools.toolkit_service import ToolkitService
 from codemie.service.skills.skill_contributions import SkillContributionsResolver
 
@@ -441,8 +442,9 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
         user: User,
         request: AssistantChatRequest,
         thread_generator: MessageQueue = None,
+        workspace_notices: list[str] | None = None,
     ) -> str:
-        """Prepare system prompt with optional IDE decorations and output schema."""
+        """Prepare system prompt with optional IDE decorations, output schema and skill workspace notices."""
         system_prompt = cls.get_system_prompt(assistant, user_id=user.id, current_user=user.username)
 
         if isinstance(request, IdeChatRequest):
@@ -470,7 +472,15 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
             if client_supports_catalog(declared):
                 system_prompt = f"{system_prompt}\n\n{render_prompt_section()}"
 
-        return system_prompt
+        return cls._append_workspace_notices(system_prompt, workspace_notices)
+
+    @staticmethod
+    def _append_workspace_notices(system_prompt: str, notices: list[str] | None) -> str:
+        """Tell the model which skill files could not be made available in its workspace."""
+        if not notices:
+            return system_prompt
+        joined = "\n".join(f"- {notice}" for notice in notices)
+        return f"{system_prompt}\n\n**Workspace setup notices (skill files):**\n{joined}"
 
     @classmethod
     def _configure_langgraph_agent(
@@ -572,6 +582,10 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
         # without threading through params.
         assistant._runtime_skill_contributions = skill_contributions
 
+        # Make the assistant's skill files available in the workspace before the tools are built; the notices
+        # about files that could not be made available reach the model through the system prompt below.
+        workspace_notices = prepare_skill_workspace(assistant, request, user)
+
         # Get tools for the agent. Don't gate per-user OAuth connections per-tool during assembly;
         # the aggregate gate below prompts for all unconnected providers together (MCP-style).
         tools = ToolkitService.get_tools(
@@ -595,7 +609,7 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
         enforce_oauth_connected(tools, user.id)
 
         # Prepare system prompt with decorations and schema
-        system_prompt = cls._prepare_system_prompt(assistant, user, request, thread_generator)
+        system_prompt = cls._prepare_system_prompt(assistant, user, request, thread_generator, workspace_notices)
 
         # Select agent class based on configuration
         agent_class = LangGraphAgent if config.ENABLE_LANGGRAPH_AITOOLS_AGENT and not is_react else AIToolsAgent
@@ -737,6 +751,7 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
         user: User,
         workflow_state: WorkflowState,
         mcp_server_args_preprocessor: Optional[callable],
+        workspace_notices: list[str] | None = None,
     ) -> tuple[str, dict | None]:
         """Prepare system prompt with output schema for workflow execution.
 
@@ -769,7 +784,7 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
             )
             system_prompt = f"{system_prompt}\n{output_schema_prompt}"
 
-        return system_prompt, output_schema
+        return cls._append_workspace_notices(system_prompt, workspace_notices), output_schema
 
     @classmethod
     def _select_agent_class_for_workflow(cls, assistant: Assistant, llm_model: str) -> type:
@@ -851,6 +866,9 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
             file_names=request.file_names, conversation_id=request.conversation_id, history_index=request.history_index
         )
 
+        # Same preparation as the chat path: skill files first, notices go to the prompt below.
+        workspace_notices = prepare_skill_workspace(assistant, request, user)
+
         # Get tools for workflow execution
         try:
             tools = ToolkitService.get_tools(
@@ -882,7 +900,12 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
 
         # Prepare system prompt with output schema
         system_prompt, output_schema = cls._prepare_workflow_system_prompt(
-            workflow_assistant, assistant, user, workflow_state, mcp_server_args_preprocessor
+            workflow_assistant,
+            assistant,
+            user,
+            workflow_state,
+            mcp_server_args_preprocessor,
+            workspace_notices=workspace_notices,
         )
 
         # Select agent class based on configuration

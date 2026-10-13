@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 from codemie.configs import logger
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.security.user import User
+from codemie.service.skill_workspace_hint import skill_location_hint
 from codemie.service.monitoring.skill_monitoring_service import SkillMonitoringService
 
 _DESCRIPTION_TEMPLATE = """Load a skill to get specialized domain knowledge and instructions.
@@ -101,6 +102,8 @@ class SkillBaseTool(CodeMieTool):
         try:
             from codemie.service.skill_service import SkillService
 
+            # get_skills_by_ids already orders results via SkillService.order_skills_by_attachment,
+            # so attachment order (skill_ids) is preserved here.
             skills = SkillService.get_skills_by_ids(skill_ids, self.user)
             self.available_skills = [{"id": s.id, "name": s.name, "description": s.description} for s in skills]
         except Exception as e:
@@ -108,8 +111,18 @@ class SkillBaseTool(CodeMieTool):
             self.available_skills = []
 
     def _find_skill(self, skill_name: str) -> dict[str, str] | None:
-        """Find a skill by name in the available skills list."""
-        return next((s for s in self.available_skills if s["name"] == skill_name), None)
+        """Find a skill by name in the available skills list.
+
+        When two attached skills share a name but different ids, the first
+        match (earliest in attachment order) wins and a warning is logged.
+        """
+        matches = [s for s in self.available_skills if s["name"] == skill_name]
+        if len(matches) > 1:
+            logger.warning(
+                f"Multiple attached skills share the name '{skill_name}' "
+                f"(ids: {[m['id'] for m in matches]}); using the first attached one."
+            )
+        return matches[0] if matches else None
 
 
 class SkillTool(SkillBaseTool):
@@ -125,6 +138,7 @@ class SkillTool(SkillBaseTool):
     name: str = "skill"
     description: str = _DESCRIPTION_TEMPLATE.format(skill_list=_NO_SKILLS_MESSAGE)
     args_schema: Type[BaseModel] = SkillInput
+    conversation_id: str | None = None
 
     class Config:
         arbitrary_types_allowed = True
@@ -186,6 +200,11 @@ class SkillTool(SkillBaseTool):
                 name=skill_obj.name,
                 content=skill_obj.content,
             )
+
+            hint = self._workspace_hint(skill_obj.id)
+            if hint:
+                output += f"\n{hint}"
+
             logger.info(f"Loaded skill '{skill}' for user '{self.user.name}' in assistant '{self.assistant_id}'")
             self._send_metric(skill_id=skill_obj.id, skill_name=skill_obj.name, success=True)
             return output
@@ -195,6 +214,16 @@ class SkillTool(SkillBaseTool):
             if skill:
                 self._send_metric(skill_id="", skill_name=skill, success=False, error=str(e))
             return f"Error loading skill '{skill}': {e}"
+
+    def _workspace_hint(self, skill_id: str) -> str | None:
+        # Looked up at execute time: on the first turn the workspace is created after this tool is built.
+        if not self.conversation_id:
+            return None
+        try:
+            return skill_location_hint(self.conversation_id, self.user, skill_id)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"Could not check workspace location for skill '{skill_id}': {e}")
+            return None
 
     async def _arun(self, skill: str) -> str:
         """Load skill content asynchronously (delegates to sync implementation)."""
@@ -360,16 +389,9 @@ class SkillCompanionFileTool(SkillBaseTool):
 def create_skill_tool_if_needed(
     assistant_config: Any,
     user: User,
+    conversation_id: str | None = None,
 ) -> SkillTool | None:
-    """Create SkillTool only if the assistant has attached skills.
-
-    Args:
-        assistant_config: Assistant configuration object with skill_ids
-        user: The current user
-
-    Returns:
-        SkillTool instance if assistant has skills, None otherwise
-    """
+    """Create SkillTool only if the assistant has attached skills."""
     skill_ids = getattr(assistant_config, "skill_ids", None) or []
     if not skill_ids:
         return None
@@ -382,6 +404,7 @@ def create_skill_tool_if_needed(
         project=project,
         assistant_id=assistant_id,
         available_skills=[{"id": sid, "name": "", "description": ""} for sid in skill_ids],
+        conversation_id=conversation_id,
     )
 
 

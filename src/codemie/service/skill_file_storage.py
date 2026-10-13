@@ -15,17 +15,19 @@
 import base64
 import binascii
 import mimetypes
-import posixpath
-import re
 
 from fastapi import status
 
 from codemie.repository.base_file_repository import FileRepository
 from codemie_tools.base.file_object import FileObject
 from codemie.core.exceptions import ExtendedHTTPException
+from codemie.service.file_service.blob_ref_rules import skill_blob_owner
+from codemie.service.file_service.workspace_path_rules import MAX_SKILL_BUNDLE_PATH_LENGTH, validate_relative_path
 from codemie.rest_api.models.skill import (
     SkillCompanionFilePayload,
 )
+
+_INVALID_COMPANION_PATH_MSG = "Invalid companion file path"
 
 
 class SkillFileStorage:
@@ -35,7 +37,7 @@ class SkillFileStorage:
     """
 
     def __init__(self, skill_id: str, file_repo: FileRepository) -> None:
-        self._owner = f"skill-{skill_id}"
+        self._owner = skill_blob_owner(skill_id)
         self._repo = file_repo
 
     def write_file(self, name: str, mime_type: str, content: bytes) -> FileObject:
@@ -113,20 +115,15 @@ class SkillFileStorage:
     @staticmethod
     def _normalize_companion_file_path(path: str) -> str:
         """Normalize a bundle-relative companion file path."""
-        raw_path = path.strip().replace("\\", "/")
-        normalized_path = posixpath.normpath(raw_path)
-
-        if (
-            not raw_path
-            or raw_path.startswith("/")
-            or normalized_path in {"", ".", ".."}
-            or normalized_path.startswith("../")
-            or re.match(r"^[A-Za-z]:", raw_path)
-        ):
+        try:
+            return validate_relative_path(path, MAX_SKILL_BUNDLE_PATH_LENGTH)
+        except ValueError as exc:
             raise ExtendedHTTPException(
                 code=status.HTTP_400_BAD_REQUEST,
-                message="Invalid companion file path",
-                details=f"Companion file path '{path}' must be a safe relative file path",
-                help="Provide a relative bundle path such as 'references/foo.md'",
-            )
-        return normalized_path
+                message=_INVALID_COMPANION_PATH_MSG,
+                details=f"Companion file path '{path}' is invalid: {exc}",
+                help=(
+                    "Provide a relative bundle path such as 'references/foo.md', "
+                    f"at most {MAX_SKILL_BUNDLE_PATH_LENGTH} characters"
+                ),
+            ) from exc

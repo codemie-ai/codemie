@@ -79,6 +79,7 @@ from codemie.service.tools.toolkit_lookup_service import ToolkitLookupService
 
 # NOTE: Kept as a module attribute for backward compatibility with unit tests
 # that patch `codemie.service.tools.toolkit_service.SkillRepository`.
+
 from codemie.repository.skill_repository import SkillRepository  # noqa: F401
 from codemie.service.tools.toolkit_settings_service import ToolkitSettingService
 from codemie.service.tools.tools_preprocessing import ToolsPreprocessorFactory
@@ -87,7 +88,10 @@ from codemie.agents.tools.skill.skill_tool import (
     create_skill_companion_file_tool_if_needed,
     create_skill_tool_if_needed,
 )
-from codemie_tools.data_management.workspace.tools_vars import AGENT_WORKSPACE_TOOLKIT, GENERATE_WORKSPACE_IMAGE_TOOL_V2
+from codemie_tools.data_management.workspace.tools_vars import (
+    AGENT_WORKSPACE_TOOLKIT,
+    GENERATE_WORKSPACE_IMAGE_TOOL_V2,
+)
 
 MCP_AUTH_WARNINGS_METADATA_KEY = "mcp_auth_warnings"
 
@@ -571,6 +575,7 @@ class ToolkitService:
         skill_tool = create_skill_tool_if_needed(
             assistant_config=assistant,
             user=user,
+            conversation_id=request.conversation_id if request else None,
         )
         if skill_tool:
             tools.append(skill_tool)
@@ -1160,12 +1165,12 @@ class ToolkitService:
             List of credential-based tools
         """
         tools = []
+        # Use augmented toolkits if provided, otherwise use assistant's configured toolkits
+        toolkits_to_process = augmented_toolkits if augmented_toolkits is not None else assistant.toolkits
         toolkit_methods = cls.get_toolkit_methods(
             request_headers=request_headers,
             conversation_id=request.conversation_id if request else None,
         )
-        # Use augmented toolkits if provided, otherwise use assistant's configured toolkits
-        toolkits_to_process = augmented_toolkits if augmented_toolkits is not None else assistant.toolkits
         for toolkit in toolkits_to_process:
             toolkit_method = toolkit_methods.get(
                 toolkit.toolkit if isinstance(toolkit.toolkit, ToolSet) else str(toolkit.toolkit)

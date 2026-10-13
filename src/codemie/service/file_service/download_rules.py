@@ -27,7 +27,7 @@ from codemie.repository.repository_factory import MCP_IMAGES_SUBDIR
 from codemie.rest_api.models.conversation import Conversation
 from codemie.rest_api.models.share.shared_conversation import SharedConversation
 from codemie.rest_api.security.user import User
-from codemie.service.file_service.blob_ref_rules import is_safe_blob_ref
+from codemie.service.file_service.blob_ref_rules import is_safe_blob_ref, is_source_owned_blob_ref
 from codemie.service.share_conversation_service import collect_message_file_tokens
 
 _WORKFLOW_SCHEMA_PREFIX = "workflows/"
@@ -75,6 +75,17 @@ def _owns_workspace_blob(owner: str, user: User, workspace_repo: AgentWorkspaceR
 
     workspace_id = owner.removeprefix(_WORKSPACE_OWNER_PREFIX)
     return workspace_repo.get_by_id_for_user(workspace_id, user.id) is not None
+
+
+def _references_source_blob(file_object: FileObject, user: User, workspace_repo: AgentWorkspaceRepository) -> bool:
+    """Rule D2: a source-owned blob (such as a skill file) that a live file of the requester's own workspace points at.
+
+    Source files appear in a workspace by reference, so the token carries the source's blob owner. Access follows the
+    workspace, not the source: nobody gets a source blob without having it in their own workspace.
+    """
+    if not is_source_owned_blob_ref(file_object):
+        return False
+    return workspace_repo.user_references_blob(user.id, file_object.owner, file_object.name)
 
 
 def _conversation_refers_to_file(conversation: Conversation, file_name_param: str) -> bool:
@@ -160,6 +171,10 @@ def can_download(
     # Rule D: workspace blob the requester owns. A miss falls through to Rule E, which still
     # grants a share recipient viewing the sharer's workspace files.
     if _owns_workspace_blob(owner, user, workspace_repo):
+        return True
+
+    # Rule D2: source blob referenced by a live row of the requester's own workspace (no source lookup is needed).
+    if _references_source_blob(file_object, user, workspace_repo):
         return True
 
     # Rule E: share grant.

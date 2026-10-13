@@ -233,7 +233,8 @@ def test_step_output_stored_under_output_key_is_the_whole_script_tool_json(
     result = _run(_node("scripts/run.py", execution_service))
 
     stored = json.loads(str(result[OUTPUT_KEY]))
-    assert set(stored) == {"message", "output", "workspace_files"}
+    assert set(stored) == {"message", "output", "workspace_files", "warnings"}
+    assert stored["warnings"] == []
     assert stored["message"] == "Workspace script executed successfully"
     assert "done" in stored["output"]
     assert [item["path"] for item in stored["workspace_files"]] == ["out/data.txt"]

@@ -76,3 +76,29 @@ class TestSkillFileStorageReadFile:
         _, kwargs = repo.read_file.call_args
         assert kwargs.get("mime_type") is None
         assert kwargs["owner"] == EXPECTED_OWNER
+
+
+class TestSkillFileStorageCompanionPathBudget:
+    def test_accepts_path_at_bundle_budget(self):
+        from codemie.service.file_service.workspace_path_rules import MAX_SKILL_BUNDLE_PATH_LENGTH
+
+        path = "a" * MAX_SKILL_BUNDLE_PATH_LENGTH
+        assert SkillFileStorage._normalize_companion_file_path(path) == path
+
+    def test_rejects_path_over_bundle_budget(self):
+        import pytest
+
+        from codemie.core.exceptions import ExtendedHTTPException
+        from codemie.service.file_service.workspace_path_rules import MAX_SKILL_BUNDLE_PATH_LENGTH
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            SkillFileStorage._normalize_companion_file_path("a" * (MAX_SKILL_BUNDLE_PATH_LENGTH + 1))
+        assert "too long" in exc_info.value.details
+
+    def test_rejects_unicode_line_separator(self):
+        import pytest
+
+        from codemie.core.exceptions import ExtendedHTTPException
+
+        with pytest.raises(ExtendedHTTPException):
+            SkillFileStorage._normalize_companion_file_path("scripts/a\u2028b.py")

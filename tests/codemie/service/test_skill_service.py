@@ -25,6 +25,7 @@ Tests business logic for skill management including:
 """
 
 import base64
+import hashlib
 from datetime import datetime, UTC
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
@@ -47,6 +48,7 @@ from codemie.rest_api.models.skill import (
     SkillVisibility,
 )
 from codemie.rest_api.security.user import User
+from codemie.service.file_service.blob_ref_rules import CONTENT_KEY_HEX_LENGTH
 from codemie.service.skill_service import SkillService, SkillErrors
 from codemie_tools.base.file_object import FileObject
 
@@ -1144,6 +1146,42 @@ class TestGetSkill:
         # Assert
         assert result == []
 
+    def test_get_skills_by_ids_preserves_attachment_order(
+        self, mock_repository, owner_user, sample_skill, public_skill, project_skill
+    ):
+        # Arrange - repository returns skills in DB-arbitrary order, not attachment order
+        mock_repository.get_by_ids.return_value = [public_skill, sample_skill]
+
+        # Act - request attachment order is sample_skill, then public_skill
+        with patch.object(SkillRepository, "get_by_ids", mock_repository.get_by_ids):
+            result = SkillService.get_skills_by_ids([sample_skill.id, public_skill.id], owner_user)
+
+        # Assert
+        assert [s.id for s in result] == [sample_skill.id, public_skill.id]
+
+
+class TestOrderSkillsByAttachment:
+    """Test the shared deterministic skill-ordering helper."""
+
+    def test_reorders_skills_to_match_attachment_order(self, sample_skill, public_skill):
+        skills = [public_skill, sample_skill]
+
+        result = SkillService.order_skills_by_attachment(skills, [sample_skill.id, public_skill.id])
+
+        assert [s.id for s in result] == [sample_skill.id, public_skill.id]
+
+    def test_excludes_skills_not_present_in_skill_ids(self, sample_skill, public_skill):
+        skills = [sample_skill, public_skill]
+
+        result = SkillService.order_skills_by_attachment(skills, [public_skill.id])
+
+        assert [s.id for s in result] == [public_skill.id]
+
+    def test_empty_skills_returns_empty_list(self):
+        result = SkillService.order_skills_by_attachment([], ["id-1", "id-2"])
+
+        assert result == []
+
 
 # =============================================================================
 # List Skills Tests
@@ -2030,14 +2068,31 @@ class TestUploadCompanionFiles:
         assert "storage_key" in records[0]
         assert "content" not in records[0]
 
-    def test_storage_key_equals_normalized_path(self):
+    def test_storage_key_is_content_addressed_and_path_is_unchanged(self):
         repo = self._make_file_repo()
         payloads = [SkillCompanionFilePayload(path="refs/a.md", content="hello", encoding="text")]
 
         records = SkillService._upload_companion_files("skill-id-1", payloads, repo)
 
-        assert records[0]["storage_key"] == "refs/a.md"
+        digest = hashlib.sha256(b"hello").hexdigest()
+        assert records[0]["storage_key"] == f"{digest[:CONTENT_KEY_HEX_LENGTH]}/refs/a.md"
+        assert records[0]["checksum"] == digest
         assert records[0]["path"] == "refs/a.md"
+        assert repo.write_file.call_args.kwargs["name"] == records[0]["storage_key"]
+
+    def test_same_content_gives_the_same_key_and_changed_content_a_new_one(self):
+        repo = self._make_file_repo()
+
+        def upload(content):
+            payloads = [SkillCompanionFilePayload(path="a.py", content=content, encoding="text")]
+            return SkillService._upload_companion_files("skill-id-1", payloads, repo)[0]["storage_key"]
+
+        first, again, changed = upload("one"), upload("one"), upload("two")
+
+        assert first == again
+        assert changed != first
+        written_names = [call.kwargs["name"] for call in repo.write_file.call_args_list]
+        assert written_names == [first, again, changed]  # the first version is never overwritten
 
     def test_raises_on_reserved_path(self):
         repo = self._make_file_repo()
@@ -2065,6 +2120,84 @@ class TestUploadCompanionFiles:
         records = SkillService._upload_companion_files("skill-id-1", [], repo)
         assert records == []
         repo.write_file.assert_not_called()
+
+    def test_passing_back_the_records_writes_nothing(self):
+        repo = self._make_file_repo()
+        payloads = [SkillCompanionFilePayload(path="refs/a.md", content="hello", encoding="text")]
+        records = SkillService._upload_companion_files("skill-id-1", payloads, repo)
+        repo.write_file.reset_mock()
+
+        again = SkillService._upload_companion_files("skill-id-1", payloads, repo, existing_records=records)
+
+        repo.write_file.assert_not_called()
+        assert again == records
+        assert again[0] is not records[0]
+
+    def test_changed_content_and_new_paths_are_written_under_new_keys(self):
+        repo = self._make_file_repo()
+        first = [SkillCompanionFilePayload(path="refs/a.md", content="hello", encoding="text")]
+        records = SkillService._upload_companion_files("skill-id-1", first, repo)
+        repo.write_file.reset_mock()
+        payloads = [
+            SkillCompanionFilePayload(path="refs/a.md", content="changed", encoding="text"),
+            SkillCompanionFilePayload(path="refs/b.md", content="new", encoding="text"),
+        ]
+
+        result = SkillService._upload_companion_files("skill-id-1", payloads, repo, existing_records=records)
+
+        written = [call.kwargs["name"] for call in repo.write_file.call_args_list]
+        assert written == [record["storage_key"] for record in result]
+        assert result[0]["storage_key"] != records[0]["storage_key"]
+
+    def test_a_recorded_key_with_a_different_checksum_is_written_again(self):
+        repo = self._make_file_repo()
+        payloads = [SkillCompanionFilePayload(path="refs/a.md", content="hello", encoding="text")]
+        records = SkillService._upload_companion_files("skill-id-1", payloads, repo)
+        repo.write_file.reset_mock()
+        tampered = [{**records[0], "checksum": "0" * 64}]
+
+        result = SkillService._upload_companion_files("skill-id-1", payloads, repo, existing_records=tampered)
+
+        repo.write_file.assert_called_once()
+        assert result == records
+
+    def test_records_of_removed_paths_are_not_carried_over(self):
+        repo = self._make_file_repo()
+        old = SkillService._upload_companion_files(
+            "skill-id-1",
+            [
+                SkillCompanionFilePayload(path="refs/a.md", content="a", encoding="text"),
+                SkillCompanionFilePayload(path="refs/gone.md", content="g", encoding="text"),
+            ],
+            repo,
+        )
+        payloads = [SkillCompanionFilePayload(path="refs/a.md", content="a", encoding="text")]
+
+        result = SkillService._upload_companion_files("skill-id-1", payloads, repo, existing_records=old)
+
+        assert [record["path"] for record in result] == ["refs/a.md"]
+
+    def test_legacy_records_without_a_versioned_key_are_rewritten(self):
+        repo = self._make_file_repo()
+        legacy = [{"path": "refs/a.md", "mime_type": "text/markdown", "encoding": "text", "size_bytes": 5}]
+        payloads = [SkillCompanionFilePayload(path="refs/a.md", content="hello", encoding="text")]
+
+        SkillService._upload_companion_files("skill-id-1", payloads, repo, existing_records=legacy)
+
+        repo.write_file.assert_called_once()
+
+    def test_reserved_and_duplicate_paths_are_rejected_even_when_already_recorded(self):
+        repo = self._make_file_repo()
+        payload = SkillCompanionFilePayload(path="refs/a.md", content="x", encoding="text")
+        records = SkillService._upload_companion_files("skill-id-1", [payload], repo)
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            SkillService._upload_companion_files("skill-id-1", [payload, payload], repo, existing_records=records)
+        assert exc_info.value.code == status.HTTP_400_BAD_REQUEST
+
+        reserved = SkillCompanionFilePayload(path="SKILL.md", content="x", encoding="text")
+        with pytest.raises(ExtendedHTTPException):
+            SkillService._upload_companion_files("skill-id-1", [reserved], repo, existing_records=records)
 
 
 # =============================================================================
@@ -2143,6 +2276,22 @@ class TestGetCompanionFileFromRepo:
         assert result.content == "hello from repo"
         assert result.path == "refs/guide.md"
         mock_repo.read_file.assert_called_once()
+
+    def test_a_stored_path_the_strict_rule_would_refuse_is_still_readable(self, owner_user):
+        skill = self._make_skill_with_storage_key("skill-abc", owner_user)
+        skill.companion_files[0]["path"] = " refs/guide.md "
+
+        mock_repo = MagicMock()
+        mock_repo.read_file.return_value = FileObject(
+            name="refs/guide.md", mime_type="text/markdown", owner="skill-skill-abc", content=b"hello"
+        )
+
+        with patch.object(Skill, "find_by_id", return_value=skill):
+            with patch("codemie.service.skill_service.FileRepositoryFactory") as mock_factory:
+                mock_factory.get_current_repository.return_value = mock_repo
+                result = SkillService.get_companion_file("skill-abc", " refs/guide.md ", owner_user)
+
+        assert result.content == "hello"
 
     def test_legacy_fallback_returns_inline_content_when_no_storage_key(self, owner_user):
         skill_id = "skill-legacy"
@@ -2246,7 +2395,9 @@ class TestCreateSkillWithCompanionFiles:
         update_call = mock_update.call_args
         companion_files = update_call[0][1]["companion_files"]
         assert len(companion_files) == 1
-        assert companion_files[0]["storage_key"] == "guide.md"
+        assert (
+            companion_files[0]["storage_key"] == f"{companion_files[0]['checksum'][:CONTENT_KEY_HEX_LENGTH]}/guide.md"
+        )
         assert "content" not in companion_files[0]
 
     def test_create_initial_db_record_has_empty_companion_files(self, owner_user):
@@ -2331,8 +2482,37 @@ class TestUpdateSkillCompanionFiles:
         mock_file_repo.write_file.assert_called_once()
         update_args = mock_update.call_args[0]
         companion_files = update_args[1]["companion_files"]
-        assert companion_files[0]["storage_key"] == "refs/a.md"
+        assert (
+            companion_files[0]["storage_key"] == f"{companion_files[0]['checksum'][:CONTENT_KEY_HEX_LENGTH]}/refs/a.md"
+        )
         assert "content" not in companion_files[0]
+
+    def test_update_does_not_rewrite_files_the_skill_already_stores(self, owner_user):
+        skill_id = "skill-upd-003"
+        digest = hashlib.sha256(b"hello").hexdigest()
+        stored = {
+            "path": "refs/a.md",
+            "mime_type": "text/markdown",
+            "encoding": "text",
+            "size_bytes": 5,
+            "storage_key": f"{digest[:CONTENT_KEY_HEX_LENGTH]}/refs/a.md",
+            "checksum": digest,
+        }
+        existing = self._make_skill(skill_id, owner_user, companion_files=[stored])
+        request = SkillUpdateRequest(
+            companion_files=[SkillCompanionFilePayload(path="refs/a.md", content="hello", encoding="text")]
+        )
+        mock_file_repo = MagicMock()
+
+        with patch.object(SkillRepository, "get_by_id", return_value=existing):
+            with patch.object(SkillRepository, "update", return_value=existing) as mock_update:
+                with patch.object(SkillRepository, "count_assistants_using_skill", return_value=0):
+                    with patch("codemie.service.skill_service.FileRepositoryFactory") as mock_factory:
+                        mock_factory.get_current_repository.return_value = mock_file_repo
+                        SkillService.update_skill(skill_id, request, owner_user)
+
+        mock_file_repo.write_file.assert_not_called()
+        assert mock_update.call_args[0][1]["companion_files"] == [stored]
 
     def test_update_without_companion_files_skips_file_repo(self, owner_user):
         skill_id = "skill-upd-002"
@@ -2362,3 +2542,85 @@ class TestUpdateSkillCompanionFiles:
                         SkillService.update_skill(skill_id, request, owner_user)
 
         mock_file_repo.write_file.assert_not_called()
+
+
+class TestBundleWarningInResponses:
+    """The upload-time advisory about files an assistant workspace would skip reaches every skill response."""
+
+    WARNING = "1 file(s) exceed the 100-file limit (a.md). These files will not be available in an assistant workspace."
+
+    def test_get_create_and_update_carry_the_warning(self, mock_repository, owner_user, sample_skill):
+        mock_repository.count_assistants_using_skill.return_value = 0
+        mock_repository.get_by_name_author_project.return_value = None
+        mock_repository.create.return_value = sample_skill
+        mock_repository.update.return_value = sample_skill
+        create_request = SkillCreateRequest(
+            name="new-skill",
+            description="New skill description",
+            content="New skill content " * 20,
+            project="project-a",
+            visibility=SkillVisibility.PRIVATE,
+            categories=[SkillCategory.DEVELOPMENT],
+        )
+
+        with (
+            patch("codemie.service.skill_service.compute_bundle_warning", return_value=self.WARNING),
+            patch.object(Skill, "find_by_id", return_value=sample_skill),
+            patch.object(SkillRepository, "get_by_id", mock_repository.get_by_id),
+            patch.object(SkillRepository, "get_by_name_author_project", mock_repository.get_by_name_author_project),
+            patch.object(SkillRepository, "create", mock_repository.create),
+            patch.object(SkillRepository, "update", mock_repository.update),
+            patch.object(SkillRepository, "count_assistants_using_skill", mock_repository.count_assistants_using_skill),
+        ):
+            mock_repository.get_by_id.return_value = sample_skill
+            fetched = SkillService.get_skill_by_id(sample_skill.id, owner_user)
+            created = SkillService.create_skill(create_request, owner_user)
+            updated = SkillService.update_skill(
+                sample_skill.id, SkillUpdateRequest(description="Updated description"), owner_user
+            )
+
+        assert fetched.bundle_warning == self.WARNING
+        assert created.bundle_warning == self.WARNING
+        assert updated.bundle_warning == self.WARNING
+
+    def test_no_warning_within_the_limits(self, mock_repository, owner_user, sample_skill):
+        mock_repository.count_assistants_using_skill.return_value = 0
+
+        with (
+            patch.object(Skill, "find_by_id", return_value=sample_skill),
+            patch.object(SkillRepository, "count_assistants_using_skill", mock_repository.count_assistants_using_skill),
+        ):
+            assert SkillService.get_skill_by_id(sample_skill.id, owner_user).bundle_warning is None
+
+    def test_bundle_preview_warns_about_files_over_the_ceiling(self):
+        import io
+        import zipfile
+
+        from codemie.service.skill_bundle_seed_policy import SeedLimits
+
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr(
+                "SKILL.md", "---\nname: my-skill\ndescription: A skill used for the preview test\n---\nbody"
+            )
+            archive.writestr("a.md", "one")
+            archive.writestr("b.md", "two")
+
+        with patch.object(SeedLimits, "current", return_value=SeedLimits(1, 1024, 1024)):
+            preview = SkillService.preview_skill_bundle("bundle.zip", buffer.getvalue())
+
+        assert preview.bundle_warning is not None
+        assert "1 file(s) exceed the 1-file limit (b.md)" in preview.bundle_warning
+
+    def test_bundle_preview_has_no_warning_within_the_ceiling(self):
+        import io
+        import zipfile
+
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr(
+                "SKILL.md", "---\nname: my-skill\ndescription: A skill used for the preview test\n---\nbody"
+            )
+            archive.writestr("a.md", "one")
+
+        assert SkillService.preview_skill_bundle("bundle.zip", buffer.getvalue()).bundle_warning is None

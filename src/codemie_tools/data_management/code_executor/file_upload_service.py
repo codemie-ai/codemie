@@ -95,14 +95,17 @@ class FileUploadService:
 
                 temp_file_path = Path(temp_dir) / relative_path
                 temp_file_path.parent.mkdir(parents=True, exist_ok=True)
+                # A file that already carries its content (a workspace file read through its blob reference) is not
+                # re-read: its name is the sandbox path, which is not always the name of the stored blob.
+                content = file_obj.bytes_content()
+                if content is None:
+                    content = self.file_repository.read_file(
+                        file_name=file_obj.name,
+                        owner=file_obj.owner,
+                        mime_type=file_obj.mime_type,
+                    ).bytes_content()
                 with open(temp_file_path, "wb") as f:
-                    f.write(
-                        self.file_repository.read_file(
-                            file_name=file_obj.name,
-                            owner=file_obj.owner,
-                            mime_type=file_obj.mime_type,
-                        ).bytes_content()
-                    )
+                    f.write(content)
 
             except Exception as e:
                 logger.error(f"Failed to download file {file_obj.name}: {e}")

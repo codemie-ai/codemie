@@ -30,9 +30,11 @@ import yaml
 
 from codemie.configs import config, logger
 from codemie.core.models import SYSTEM_USER
+from codemie.repository.repository_factory import FileRepositoryFactory
 from codemie.repository.skill_repository import SkillRepository
-from codemie.rest_api.models.skill import SkillCategory, SkillVisibility
+from codemie.rest_api.models.skill import SkillCategory, SkillCompanionFilePayload, SkillVisibility
 from codemie.rest_api.utils.default_applications import CODEMIE_PROJECT_NAME
+from codemie.service.skill_service import SkillService
 
 # skill_name -> UUID of skills created/updated from templates (for later use if needed)
 preconfigured_skill_ids: dict[str, str] = {}
@@ -153,6 +155,26 @@ def load_skill_templates() -> list[dict]:
     return skill_templates
 
 
+def _store_companion_files(
+    skill_id: str, template: dict, existing_records: list[dict] | None = None
+) -> list[dict] | None:
+    """Upload the template's companion files as versioned blobs and return their storage records.
+
+    Returns None when the upload fails, so the caller keeps whatever the skill already has: a storage problem at
+    startup must not wipe a skill's files or stop the other skills from loading. Files whose key is already in
+    ``existing_records`` are not uploaded again, so running this on every startup writes nothing for unchanged files.
+    """
+    payloads = [SkillCompanionFilePayload(**file_data) for file_data in template.get("companion_files") or []]
+    if not payloads:
+        return []
+    try:
+        file_repo = FileRepositoryFactory.get_current_repository()
+        return SkillService._upload_companion_files(skill_id, payloads, file_repo, existing_records=existing_records)
+    except Exception as e:
+        logger.error(f"Failed to store companion files of skill '{template.get('name')}': {e}", exc_info=True)
+        return None
+
+
 def create_or_update_skill(template: dict) -> str | None:
     """
     Create a preconfigured skill from template if it doesn't exist, or update if it does.
@@ -185,8 +207,10 @@ def create_or_update_skill(template: dict) -> str | None:
             "content": template.get("content", ""),
             "visibility": SkillVisibility(template.get("visibility", "public")),
             "categories": categories,
-            "companion_files": template.get("companion_files", []),
         }
+        companion_files = _store_companion_files(existing_skill.id, template, existing_skill.companion_files)
+        if companion_files is not None:
+            updates["companion_files"] = companion_files
 
         # Update using repository
         updated_skill = SkillRepository.update(existing_skill.id, updates)
@@ -206,12 +230,16 @@ def create_or_update_skill(template: dict) -> str | None:
         "visibility": SkillVisibility(template.get("visibility", "public")),
         "created_by": SYSTEM_USER,
         "categories": categories,
-        "companion_files": template.get("companion_files", []),
+        "companion_files": [],
     }
 
     try:
         new_skill = SkillRepository.create(skill_data)
         logger.info(f"Skill '{skill_name}' created successfully with ID: {new_skill.id}")
+        # The blob owner is the skill's id, so the files can only be uploaded once the skill exists.
+        companion_files = _store_companion_files(new_skill.id, template)
+        if companion_files:
+            SkillRepository.update(new_skill.id, {"companion_files": companion_files})
         return new_skill.id
     except Exception as e:
         logger.error(f"Failed to create skill '{skill_name}': {e}", exc_info=True)

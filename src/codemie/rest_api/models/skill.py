@@ -37,6 +37,9 @@ from codemie.core.models import CreatedByUser
 from codemie.rest_api.models.base import BaseModelWithSQLSupport, CommonBaseModel, PydanticType, PydanticListType
 from codemie.rest_api.security.user import User
 from codemie.service.dynamic_config_service import DynamicConfigService
+from codemie.service.file_service.workspace_path_rules import (
+    MAX_SKILL_NAME_LENGTH,
+)
 
 # ToolKitDetails and MCPServerDetails are imported here to avoid duplication; assistant.py does not
 # import skill.py so there is no circular dependency.
@@ -191,6 +194,13 @@ class SkillCompanionFileMetadata(BaseModel):
     size_bytes: int = Field(default=0, description="Stored file size in bytes")
 
 
+class SkillCompanionFileRef(SkillCompanionFileMetadata):
+    """Companion file metadata plus where its bytes live; server-side only, never exposed by the API."""
+
+    storage_key: str | None = Field(default=None, description="Blob key; None for legacy inline files")
+    checksum: str = Field(default="", description="sha-256 of the content when known")
+
+
 class SkillCompanionFileResponse(SkillCompanionFileMetadata):
     """Companion file content response."""
 
@@ -212,7 +222,7 @@ class SkillCreateRequest(BaseModel):
     name: str = Field(
         description="Unique skill identifier (kebab-case)",
         min_length=3,
-        max_length=64,
+        max_length=MAX_SKILL_NAME_LENGTH,
     )
     description: str = Field(
         description="Brief description of when to use this skill",
@@ -293,7 +303,7 @@ class SkillCreateRequest(BaseModel):
 class SkillUpdateRequest(BaseModel):
     """Request model for updating a skill"""
 
-    name: str | None = Field(default=None, min_length=3, max_length=64)
+    name: str | None = Field(default=None, min_length=3, max_length=MAX_SKILL_NAME_LENGTH)
     description: str | None = Field(default=None, min_length=10, max_length=1000)
     content: str | None = Field(default=None, min_length=MIN_CONTENT_LENGTH)
     project: str | None = Field(default=None, description="Project this skill belongs to")
@@ -376,6 +386,10 @@ class SkillBundlePreviewResponse(BaseModel):
         default_factory=list,
         description="Bundled files extracted from the uploaded skill archive",
     )
+    bundle_warning: str | None = Field(
+        default=None,
+        description="Advisory naming the files an assistant workspace would not receive, when any would be skipped",
+    )
 
 
 class SkillAttachRequest(BaseModel):
@@ -424,7 +438,7 @@ class SkillInstructionsGenerateRequest(BaseModel):
     skill_name: str | None = Field(
         default=None,
         description="Optional skill name for context",
-        max_length=64,
+        max_length=MAX_SKILL_NAME_LENGTH,
     )
 
     llm_model: str | None = Field(
@@ -475,10 +489,13 @@ class SkillCategoryResponse(BaseModel):
 
 
 class SkillConfigResponse(BaseModel):
-    """Response model exposing the effective skill content-length limits."""
+    """Response model exposing the effective skill content-length and bundle-seed limits."""
 
     max_content_length: int
     min_content_length: int
+    bundle_seed_max_file_count: int
+    bundle_seed_max_file_size_bytes: int
+    bundle_seed_max_total_size_bytes: int
 
 
 class SkillBasicInfo(BaseModel):
@@ -530,6 +547,10 @@ class SkillDetailResponse(BaseModel):
     mcp_servers: list[MCPServerDetails] = Field(default_factory=list)
     companion_files: list[SkillCompanionFileMetadata] = Field(default_factory=list)
     enabled_builtin_subagents: list[BuiltinSubagent] = Field(default_factory=list)
+    bundle_warning: str | None = Field(
+        default=None,
+        description="Advisory warning when the bundle exceeds workspace-seed ceilings.",
+    )
 
 
 class SkillListPaginatedResponse(BaseModel):
@@ -551,7 +572,7 @@ class SkillBase(CommonBaseModel, Owned):
     """Base model for Skill"""
 
     id: str = SQLField(default_factory=lambda: str(uuid4()), primary_key=True)
-    name: str = SQLField(index=True, max_length=64)
+    name: str = SQLField(index=True, max_length=MAX_SKILL_NAME_LENGTH)
     description: str = SQLField(max_length=1000)
     content: str  # Markdown content
 
@@ -700,8 +721,9 @@ class Skill(BaseModelWithSQLSupport, SkillBase, table=True):
         self,
         assistants_count: int = 0,
         user_abilities: list[str] | None = None,
+        bundle_warning: str | None = None,
     ) -> SkillDetailResponse:
-        """Convert to detail response model"""
+        """Convert to detail response model; the caller supplies the policy-derived ``bundle_warning``."""
         return SkillDetailResponse(
             id=self.id,
             name=self.name,
@@ -722,6 +744,7 @@ class Skill(BaseModelWithSQLSupport, SkillBase, table=True):
             mcp_servers=self.mcp_servers or [],
             companion_files=self.get_companion_file_metadata(),
             enabled_builtin_subagents=self.enabled_builtin_subagents or [],
+            bundle_warning=bundle_warning,
         )
 
     def get_companion_file_metadata(self) -> list[SkillCompanionFileMetadata]:
@@ -731,6 +754,13 @@ class Skill(BaseModelWithSQLSupport, SkillBase, table=True):
             metadata = {key: value for key, value in file_data.items() if key != "content"}
             companion_files.append(SkillCompanionFileMetadata.model_validate(metadata))
         return companion_files
+
+    def get_companion_file_refs(self) -> list[SkillCompanionFileRef]:
+        """Return companion file metadata with blob keys, for server-side use such as workspace seeding."""
+        return [
+            SkillCompanionFileRef.model_validate({key: value for key, value in file_data.items() if key != "content"})
+            for file_data in self.companion_files or []
+        ]
 
     def to_basic_info(self) -> SkillBasicInfo:
         """Convert to basic info response model (for assistant responses)"""

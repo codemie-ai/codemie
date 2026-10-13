@@ -867,11 +867,16 @@ class CodeExecutorTool(CodeMieTool):
             relative_path = Path(fo.name)
             if relative_path.is_absolute() or ".." in relative_path.parts:
                 raise ToolException(f"Invalid file path for sandbox upload: {fo.name}")
-            out[relative_path.as_posix()] = self.file_repository.read_file(
-                file_name=fo.name,
-                owner=fo.owner,
-                mime_type=fo.mime_type,
-            ).bytes_content()
+            # A file that already carries its content is not re-read: its name is the sandbox path, which is not
+            # always the name of the stored blob (workspace files that reference a skill's stored file).
+            content = fo.bytes_content()
+            if content is None:
+                content = self.file_repository.read_file(
+                    file_name=fo.name,
+                    owner=fo.owner,
+                    mime_type=fo.mime_type,
+                ).bytes_content()
+            out[relative_path.as_posix()] = content
         return out
 
     def _store_exported_bytes(self, exported: dict[str, bytes]) -> List[str]:

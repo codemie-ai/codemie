@@ -9209,6 +9209,13 @@
             "title": "Output",
             "type": "string"
           },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          },
           "workspaceFiles": {
             "items": {
               "$ref": "#/components/schemas/WorkspaceFileItemResponse"
@@ -23931,6 +23938,18 @@
       "SkillBundlePreviewResponse": {
         "description": "Response returned when a skill bundle zip is unpacked for UI preview.",
         "properties": {
+          "bundle_warning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Advisory naming the files an assistant workspace would not receive, when any would be skipped",
+            "title": "Bundle Warning"
+          },
           "companion_files": {
             "description": "Bundled files extracted from the uploaded skill archive",
             "items": {
@@ -24108,8 +24127,20 @@
         "type": "object"
       },
       "SkillConfigResponse": {
-        "description": "Response model exposing the effective skill content-length limits.",
+        "description": "Response model exposing the effective skill content-length and bundle-seed limits.",
         "properties": {
+          "bundle_seed_max_file_count": {
+            "title": "Bundle Seed Max File Count",
+            "type": "integer"
+          },
+          "bundle_seed_max_file_size_bytes": {
+            "title": "Bundle Seed Max File Size Bytes",
+            "type": "integer"
+          },
+          "bundle_seed_max_total_size_bytes": {
+            "title": "Bundle Seed Max Total Size Bytes",
+            "type": "integer"
+          },
           "max_content_length": {
             "title": "Max Content Length",
             "type": "integer"
@@ -24121,7 +24152,10 @@
         },
         "required": [
           "max_content_length",
-          "min_content_length"
+          "min_content_length",
+          "bundle_seed_max_file_count",
+          "bundle_seed_max_file_size_bytes",
+          "bundle_seed_max_total_size_bytes"
         ],
         "title": "SkillConfigResponse",
         "type": "object"
@@ -24216,6 +24250,18 @@
             "default": 0,
             "title": "Assistants Count",
             "type": "integer"
+          },
+          "bundle_warning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Advisory warning when the bundle exceeds workspace-seed ceilings.",
+            "title": "Bundle Warning"
           },
           "categories": {
             "items": {

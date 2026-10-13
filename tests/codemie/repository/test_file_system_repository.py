@@ -144,3 +144,18 @@ class TestCreateDirectory:
             result = repo.create_directory(name=file_name, owner=owner)
 
         assert result.owner == owner
+
+
+def test_hash_prefixed_skill_blob_name_round_trips(tmp_path: Path) -> None:
+    # Skill companion blobs are stored as '<sha256[:32]>/<path>'; the slash must create a subdirectory.
+    prefix = "ab12cd34ef56ab12" * 2
+    name = f"{prefix}/scripts/run.py"
+    owner = "skill-s1"
+
+    with patch.object(config, "FILES_STORAGE_DIR", str(tmp_path)):
+        repo = FileSystemRepository()
+        repo.write_file(name=name, mime_type="text/x-python", owner=owner, content=b"print(1)")
+        result = repo.read_file(name, owner=owner)
+
+    assert (tmp_path / owner / prefix / "scripts" / "run.py").read_bytes() == b"print(1)"
+    assert result.content in (b"print(1)", "print(1)")

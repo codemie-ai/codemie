@@ -41,12 +41,12 @@ from codemie_tools.data_management.code_executor.run_observer import RunOutcome,
 from codemie_tools.data_management.code_executor.job_bridge import (
     JobBridgeOptions,
     JobToolCallBridge,
-    is_bridge_path,
 )
 from codemie_tools.data_management.code_executor.k8s_client_manager import (
     KubernetesClientManager,
 )
 from codemie_tools.data_management.code_executor.models import CodeExecutorConfig
+from codemie_tools.data_management.code_executor.reserved_paths import is_reserved_path
 from codemie_tools.data_management.code_executor.tool_calling_limits import RunBudget, ToolCallingSettings
 
 logger = logging.getLogger(__name__)
@@ -426,7 +426,7 @@ class BatchJobRunner:
             return {}
         out: Dict[str, bytes] = {}
         for rel_path in paths:
-            if is_bridge_path(rel_path):
+            if is_reserved_path(rel_path):
                 logger.warning(f"Skipping export of tool-call bridge path {rel_path}")
                 continue
             try:
@@ -442,7 +442,7 @@ class BatchJobRunner:
         changed_paths = [
             rel_path
             for rel_path, content_hash in sorted(snapshot.items())
-            if baseline_hashes.get(rel_path) != content_hash and not is_bridge_path(rel_path)
+            if baseline_hashes.get(rel_path) != content_hash and not is_reserved_path(rel_path)
         ]
         return self._download_exports(pod_name, workdir, changed_paths)
 

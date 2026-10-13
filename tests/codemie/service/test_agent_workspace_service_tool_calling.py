@@ -22,7 +22,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from codemie.service import agent_workspace_service as service_module
-from codemie.service.agent_workspace_service import AgentWorkspaceService
+from codemie.service.agent_workspace_service import AgentWorkspaceService, WorkspaceInputFiles
 from codemie.service.script_tool_calls.context import ScriptRunContext, ScriptScopeKind, ToolListScope
 from codemie_tools.data_management.code_executor.job_bridge import JobBridgeOptions
 from codemie_tools.data_management.code_executor.runtime_sdk.codemie_runtime_sdk import TOOL_CALL_OP
@@ -47,7 +47,7 @@ def service() -> AgentWorkspaceService:
     workspace.id = "ws-1"
     workspace.conversation_id = "conv-1"
     svc.get_workspace = MagicMock(return_value=workspace)  # type: ignore[method-assign]
-    svc.get_workspace_input_files = MagicMock(return_value=[])  # type: ignore[method-assign]
+    svc.get_workspace_input_files = MagicMock(return_value=WorkspaceInputFiles([], []))  # type: ignore[method-assign]
     svc._sync_execution_files = MagicMock(return_value=[])  # type: ignore[method-assign]
     return svc
 

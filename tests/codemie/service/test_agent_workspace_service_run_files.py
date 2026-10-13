@@ -240,3 +240,42 @@ def test_sync_uploaded_files_skips_unsafe_token_and_registers_safe_one(
 
     assert [f.blob_name for f in repository.files] == ["ok.pdf"]
     assert len(synced) == 1
+
+
+def test_validate_run_files_rejects_a_source_owned_token(
+    service: AgentWorkspaceService, repository: _FakeRepository
+) -> None:
+    repository.user_references_blob = MagicMock(return_value=True)  # type: ignore[method-assign]
+
+    with pytest.raises(ValidationException, match="not available to this user"):
+        service.validate_run_files([_token("skill-sk1", "ab12/a.py")], _user())
+
+
+def test_register_run_files_rejects_a_source_owned_token(
+    service: AgentWorkspaceService, repository: _FakeRepository
+) -> None:
+    repository.user_references_blob = MagicMock(return_value=True)  # type: ignore[method-assign]
+
+    with pytest.raises(ValidationException):
+        service.register_run_files(EXECUTION_ID, [_token("skill-sk1", "ab12/a.py")], _entity())
+
+    assert repository.workspaces == {}
+    assert repository.files == []
+
+
+def test_workspace_reference_writes_refuse_source_owned_blobs(service: AgentWorkspaceService) -> None:
+    skill_blob = FileObject(name="ab12/a.py", mime_type="text/x-python", owner="skill-sk1")
+
+    with pytest.raises(ValidationException, match="cannot be referenced from a workspace"):
+        service._upsert_workspace_file_reference("ws-1", "a.py", skill_blob)
+
+    service.file_repository.read_file.assert_not_called()
+
+
+def test_workspace_reference_writes_refuse_unsafe_blobs(service: AgentWorkspaceService) -> None:
+    unsafe = FileObject(name="../victim/secret.pdf", mime_type="application/pdf", owner=USER_ID)
+
+    with pytest.raises(ValidationException):
+        service._upsert_workspace_file_reference("ws-1", "secret.pdf", unsafe)
+
+    service.file_repository.read_file.assert_not_called()

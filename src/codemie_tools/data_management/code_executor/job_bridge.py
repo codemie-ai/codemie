@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import contextvars
 import logging
-import posixpath
 from collections.abc import Mapping
 from dataclasses import dataclass
 
@@ -77,12 +76,6 @@ def _run_in_request_context(handler: ToolCallHandler, base: contextvars.Context)
         return context.run(handler, params)
 
     return run
-
-
-def is_bridge_path(rel_path: str) -> bool:
-    """True when the path is the tool-call bridge folder or lives under it, however it is spelled."""
-    normalized = posixpath.normpath(rel_path.replace("\\", "/")).lstrip("/")
-    return normalized.split("/", 1)[0] == BRIDGE_DIR_NAME
 
 
 class JobToolCallBridge:

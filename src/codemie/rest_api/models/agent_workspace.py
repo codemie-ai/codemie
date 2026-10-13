@@ -18,6 +18,7 @@ from datetime import datetime
 from typing import Optional
 
 from pydantic import BaseModel, Field
+from sqlalchemy import Column, ForeignKey, String, UniqueConstraint
 from sqlmodel import Field as SQLField
 
 from codemie.core.models import BaseResponse
@@ -45,6 +46,40 @@ class AgentWorkspaceFile(BaseModelWithSQLSupport, table=True):
     size: int = 0
     version: int = 1
     deleted_at: Optional[datetime] = None
+
+
+SOURCE_KIND_SKILL = "skill"
+
+
+class AgentWorkspaceFolderOwner(BaseModelWithSQLSupport, table=True):
+    """Records which source (a skill) owns a folder of a workspace, so a folder is seeded once and by one source."""
+
+    __tablename__ = "agent_workspace_folder_owners"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id",
+            "source_kind",
+            "source_id",
+            name="uq_agent_workspace_folder_owners_workspace_source",
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "folder",
+            name="uq_agent_workspace_folder_owners_workspace_folder",
+        ),
+    )
+
+    workspace_id: str = SQLField(
+        sa_column=Column(
+            String,
+            ForeignKey("agent_workspaces.id", ondelete="CASCADE"),
+            index=True,
+            nullable=False,
+        )
+    )
+    source_kind: str
+    source_id: str
+    folder: str
 
 
 class CreateAgentWorkspaceRequest(BaseModel):
@@ -147,3 +182,4 @@ class ExecuteWorkspaceScriptRequest(BaseModel):
 class ExecuteWorkspaceScriptResponse(BaseResponse):
     output: str
     workspace_files: list[WorkspaceFileItemResponse] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)

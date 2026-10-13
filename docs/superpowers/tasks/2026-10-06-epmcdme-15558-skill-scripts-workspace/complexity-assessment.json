@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "task": "Seed skill bundle companion files into the workspace once per skill at AgentWorkspaceToolkit.get_tools build time, gated by script-execution tool + workspaceScriptBridge + jobs sandbox mode, with insert-if-absent writes, a seed ledger, size/count ceilings, deterministic ordering shared with SkillTool, and per-workspace concurrency safety.",
+  "generated": "2026-10-06",
+  "dimensions": {
+    "component_scope":      { "score": 6, "label": "XXL" },
+    "requirements_clarity": { "score": 5, "label": "XL" },
+    "technical_risk":       { "score": 6, "label": "XXL" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 5, "label": "XL" }
+  },
+  "total": 28,
+  "size": "XL",
+  "routing": "split-required",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Touches tool layer (AgentWorkspaceToolkit.get_tools), service layer (new seeder service, SkillService ordering fix, workspace_script_bridge gate composition), repository layer (new insert-if-absent write op on AgentWorkspaceFileRepository), and DB/migration layer (new seed-ledger table or JSONB column). Also fixes a shared ordering gap in SkillRepository.get_by_ids that SkillTool itself depends on — core shared utility touched, feeding both chat and workflow execution paths simultaneously." },
+    { "dimension": "technical_risk", "reason": "Two genuinely novel pieces with zero in-repo precedent: (1) insert-if-absent write — the only existing primitive (_upsert_workspace_file_content/_reference) does the opposite (revive-on-upsert) and cannot be parameter-tweaked without risking existing callers; (2) per-workspace serialization/row-locking — no FOR UPDATE pattern exists anywhere in this codebase, only an unrelated LeaderLockContext advisory-lock primitive of unproven fit. Combined with a DB schema change (new table/column + Alembic migration), this is high-risk, hard-to-roll-back territory." },
+    { "dimension": "affected_layers", "reason": "Tool + Service + Repository + DB/migration layers, with a schema/migration requirement (seed ledger) — DB schema changes always bump this per calibration guidance." },
+    { "dimension": "requirements_clarity", "reason": "Most decisions are pre-made (D3/D4/D4a/D7/D24) but no architecture-spec document exists in-repo to cross-check them, and the ticket explicitly leaves the seed-ledger storage shape (new table vs JSON column) as an open 'decide in this story' question — a TBD-style gap on a load-bearing schema decision." },
+    { "dimension": "file_change_estimate", "reason": "New seeder service + tests, new repository method + tests, Alembic migration, SkillRepository/SkillService ordering fix + tests, reserved-path validation reuse, two new DynamicConfig ceiling settings + accessor functions + tests, and a bundle-preview endpoint field — estimated 11-15 files touched across tool/service/repository/migration/config directories." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from XL to XXL: touches core shared utility (SkillRepository.get_by_ids ordering, consumed by both SkillTool and the new seeder) and affects both chat and workflow execution paths via the single toolkit-assembly hook",
+    "Technical Risk bumped from XL to XXL: changes database schema significantly (new seed-ledger table or JSONB column requiring Alembic migration)",
+    "Affected Layers bumped from L to XL: changes database schema significantly (seed ledger persistence requirement)",
+    "Requirements Clarity bumped from L to XL: ticket explicitly leaves the seed-ledger storage shape (new table vs JSON column) as an open TBD decision with no architecture-spec document in-repo to resolve it"
+  ],
+  "split_recommendation": "Score 28/36 (XL) is in the strongly-recommended-split range (27-31). Suggested split by dependency/phase: Story A - new insert-if-absent repository write operation + seed-ledger schema/migration decision + tests (foundational, no behavior change yet); Story B - deterministic ordering fix shared between SkillRepository/SkillService and SkillTool + tests (isolated, testable independently); Story C - the seeder service itself (read companion files via SkillService, apply size/count ceilings, write via the new insert-if-absent op, respect the ordering function) wired into AgentWorkspaceToolkit.get_tools with the three-way gate (script-execution tool + workspaceScriptBridge + SandboxMode.JOBS) and per-workspace concurrency safety; Story D (optional, separate sub-task per ticket) - bundle-preview endpoint file-count-ceiling reporting field. This sequencing lets the risky, precedent-free pieces (insert-if-absent op, locking mechanism, ledger schema) land and get reviewed before the integration wiring that depends on them."
+}

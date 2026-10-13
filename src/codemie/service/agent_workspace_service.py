@@ -20,7 +20,7 @@ import mimetypes
 import time
 from collections.abc import Sequence
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, NamedTuple
 
 from sqlalchemy.exc import IntegrityError
 
@@ -41,8 +41,13 @@ from codemie.rest_api.models.agent_workspace import (
     WorkspaceGrepMatchResponse,
 )
 from codemie.rest_api.security.user import User
-from codemie.service.file_service.blob_ref_rules import is_safe_blob_ref
+from codemie.service.file_service.blob_ref_rules import is_safe_blob_ref, is_source_owned_blob_ref
 from codemie.service.file_service.download_rules import can_download
+from codemie.service.file_service.workspace_path_rules import (
+    MAX_WORKSPACE_PATH_LENGTH,
+    is_reserved_workspace_path,
+    validate_relative_path,
+)
 from codemie.service.script_tool_calls.context import ScriptRunContext
 from codemie.service.script_tool_calls.fanout import fan_out
 from codemie.service.script_tool_calls.handler import build_tool_call_handlers
@@ -62,7 +67,6 @@ MULTIPLE_OLD_STRING_ERROR = (
     "if all such occurences should be replaced"
 )
 SANDBOX_FILE_PREFIX = "sandbox:/v1/files/"
-MAX_WORKSPACE_PATH_LENGTH = 1024
 MAX_GLOB_MATCH_PATH_LENGTH = 1024
 
 
@@ -92,6 +96,13 @@ class WorkspaceFileContent:
         self.version = version
         self.is_binary = is_binary
         self.content = content
+
+
+class WorkspaceInputFiles(NamedTuple):
+    """Files handed to a script run, plus a warning for every workspace file that could not be read."""
+
+    files: list[FileObject]
+    warnings: list[str]
 
 
 class AgentWorkspaceService:
@@ -181,13 +192,17 @@ class AgentWorkspaceService:
             file_object = self._decode_workspace_file_url(file_url)
             if not file_object:
                 continue
-            if not is_safe_blob_ref(file_object):
+            if not self._is_registrable_blob_ref(file_object):
                 logger.warning("Skipping unsafe file reference while syncing uploaded files to workspace")
                 continue
 
             blob_key = self._blob_identity_key(file_object.owner, file_object.name, file_object.mime_type)
-            workspace_path = self._normalize_uploaded_file_path(file_object)
+            workspace_path = self._try_normalize_uploaded_file_path(file_object)
+            if workspace_path is None:
+                continue
             if blob_key in known_blob_keys or workspace_path in known_paths:
+                continue
+            if self._skip_reserved(workspace_path):
                 continue
 
             workspace_file = self._upsert_workspace_file_reference(workspace.id, workspace_path, file_object)
@@ -229,9 +244,14 @@ class AgentWorkspaceService:
         file_object = self._decode_workspace_file_url(file_url)
         if file_object is None:
             raise ValidationException("Invalid file reference")
-        if not is_safe_blob_ref(file_object):
+        if not is_safe_blob_ref(file_object) or is_source_owned_blob_ref(file_object):
             raise ValidationException(f"File '{file_object.name}' is not available to this user")
         return file_object
+
+    @staticmethod
+    def _is_registrable_blob_ref(file_object: FileObject) -> bool:
+        """A ref a workspace row may point at: safe to resolve and not a source's blob (only its seeder links those)."""
+        return is_safe_blob_ref(file_object) and not is_source_owned_blob_ref(file_object)
 
     def _assert_blob_readable(self, file_object: FileObject) -> None:
         try:
@@ -276,7 +296,6 @@ class AgentWorkspaceService:
             )
             for workspace_file in existing_files
         }
-        known_paths = {workspace_file.path for workspace_file in existing_files}
         request_blob_keys = self._extract_blob_keys(request_file_urls or [])
         conversation_blob_keys = {
             self._blob_identity_key(virtual_file.blob_owner, virtual_file.blob_name, virtual_file.mime_type)
@@ -286,24 +305,32 @@ class AgentWorkspaceService:
         registered_files: list[WorkspaceFileItemResponse] = []
         for generated_file_url in generated_file_urls:
             file_object = self._decode_workspace_file_url(generated_file_url)
-            if not file_object:
+            workspace_path = self._generated_file_path(file_object) if file_object else None
+            if file_object is None or workspace_path is None:
                 continue
 
             blob_key = self._blob_identity_key(file_object.owner, file_object.name, file_object.mime_type)
-            workspace_relative_path = file_object.path or file_object.name
-            workspace_path = self._normalize_path(workspace_relative_path)
-
-            if blob_key in request_blob_keys or blob_key in conversation_blob_keys:
+            if blob_key in request_blob_keys or blob_key in conversation_blob_keys or blob_key in known_blob_keys:
                 continue
-            if blob_key in known_blob_keys:
+            if self._skip_reserved(workspace_path):
                 continue
 
             workspace_file = self._upsert_workspace_file_reference(workspace.id, workspace_path, file_object)
             registered_files.append(WorkspaceFileItemResponse.from_model(workspace_file))
             known_blob_keys.add(blob_key)
-            known_paths.add(workspace_path)
 
         return registered_files
+
+    def _generated_file_path(self, file_object: FileObject) -> str | None:
+        """The workspace path for a file the model's reply refers to, or None when it must not be registered."""
+        if not self._is_registrable_blob_ref(file_object):
+            logger.warning("Skipping unsafe file reference while registering generated files")
+            return None
+        try:
+            return self._normalize_path(file_object.path or file_object.name)
+        except ValidationException as exc:
+            logger.warning(f"Skipping generated file with an invalid workspace name: {exc}")
+            return None
 
     def list_workspaces(self, user: User) -> list[AgentWorkspaceResponse]:
         return [AgentWorkspaceResponse.from_model(workspace) for workspace in self.repository.list_for_user(user.id)]
@@ -471,7 +498,7 @@ class AgentWorkspaceService:
 
     def delete_file(self, workspace_id: str, file_path: str, user: User) -> WorkspaceDeleteFileResponse:
         workspace = self.get_workspace(workspace_id, user)
-        normalized_path = self._normalize_path(file_path)
+        normalized_path = self._normalize_write_path(file_path)
         deleted = self.repository.soft_delete_file(workspace.id, normalized_path)
         if not deleted:
             return WorkspaceDeleteFileResponse(message=f"File '{normalized_path}' not found", deleted=False)
@@ -489,80 +516,80 @@ class AgentWorkspaceService:
         matches: list[WorkspaceGrepMatchResponse] = []
 
         db_files = self.repository.list_files(workspace.id)
-        existing_paths: set[str] = set()
-        all_files = []
-        for workspace_file in db_files:
-            existing_paths.add(workspace_file.path)
-            all_files.append(workspace_file)
-        for virtual_file in self._get_conversation_uploaded_files(workspace.conversation_id):
-            if virtual_file.path not in existing_paths:
-                all_files.append(virtual_file)
+        existing_paths = {workspace_file.path for workspace_file in db_files}
+        all_files = db_files + [
+            virtual_file
+            for virtual_file in self._get_conversation_uploaded_files(workspace.conversation_id)
+            if virtual_file.path not in existing_paths
+        ]
 
         for workspace_file in all_files:
-            if not self._path_matches_glob(workspace_file.path, glob):
-                continue
-            if not self._is_text_mime_type(workspace_file.mime_type):
-                continue
+            if self._path_matches_glob(workspace_file.path, glob) and self._is_text_mime_type(workspace_file.mime_type):
+                matches.extend(self._grep_file(workspace_file, query))
 
+        return matches
+
+    def _grep_file(self, workspace_file: AgentWorkspaceFile, query: str) -> list[WorkspaceGrepMatchResponse]:
+        """Matching lines of one file; an unreadable blob is skipped, not raised."""
+        try:
             file_object = self.file_repository.read_file(
                 file_name=workspace_file.blob_name,
                 owner=workspace_file.blob_owner,
                 mime_type=workspace_file.mime_type,
             )
-            content = self._to_text_content(file_object.content)
-            for line_number, line in enumerate(content.splitlines(), start=1):
-                if query.lower() in line.lower():
-                    matches.append(
-                        WorkspaceGrepMatchResponse(
-                            file_path=workspace_file.path,
-                            line_number=line_number,
-                            line=line,
-                        )
-                    )
+        except Exception as exc:  # noqa: BLE001 - one unreadable blob must not abort the search
+            logger.warning(f"Workspace file '{workspace_file.path}' skipped by grep: unreadable blob: {exc}")
+            return []
+        content = self._to_text_content(file_object.content)
+        return [
+            WorkspaceGrepMatchResponse(file_path=workspace_file.path, line_number=line_number, line=line)
+            for line_number, line in enumerate(content.splitlines(), start=1)
+            if query.lower() in line.lower()
+        ]
 
-        return matches
-
-    def get_workspace_input_files(self, workspace_id: str, user: User) -> list[FileObject]:
+    def get_workspace_input_files(self, workspace_id: str, user: User) -> WorkspaceInputFiles:
         workspace = self.get_workspace(workspace_id, user)
         input_files: list[FileObject] = []
+        warnings: list[str] = []
         existing_paths: set[str] = set()
 
         for workspace_file in self.repository.list_files(workspace.id):
             existing_paths.add(workspace_file.path)
+            self._collect_input_file(workspace_file, input_files, warnings)
+
+        for virtual_file in self._get_conversation_uploaded_files(workspace.conversation_id):
+            if virtual_file.path in existing_paths:
+                continue
+            self._collect_input_file(virtual_file, input_files, warnings)
+
+        return WorkspaceInputFiles(input_files, warnings)
+
+    def _collect_input_file(
+        self, workspace_file: AgentWorkspaceFile, input_files: list[FileObject], warnings: list[str]
+    ) -> None:
+        """Read one workspace file's blob; a blob that cannot be read is skipped and reported, not raised."""
+        try:
             file_object = self.file_repository.read_file(
                 file_name=workspace_file.blob_name,
                 owner=workspace_file.blob_owner,
                 mime_type=workspace_file.mime_type,
             )
-            input_files.append(
-                FileObject(
-                    name=workspace_file.path,
-                    mime_type=workspace_file.mime_type,
-                    owner=workspace_file.blob_owner,
-                    path=workspace_file.path,
-                    content=file_object.content,
-                )
+        except Exception as exc:  # noqa: BLE001 - storage backends raise different not-found errors
+            logger.warning(
+                f"Workspace file '{workspace_file.path}' skipped: blob "
+                f"'{workspace_file.blob_owner}/{workspace_file.blob_name}' is unreadable: {exc}"
             )
-
-        for virtual_file in self._get_conversation_uploaded_files(workspace.conversation_id):
-            if virtual_file.path in existing_paths:
-                continue
-            file_object = self.file_repository.read_file(
-                file_name=virtual_file.blob_name,
-                owner=virtual_file.blob_owner,
-                mime_type=virtual_file.mime_type,
+            warnings.append(f"Skipped '{workspace_file.path}': its stored file could not be read.")
+            return
+        input_files.append(
+            FileObject(
+                name=workspace_file.path,
+                mime_type=workspace_file.mime_type,
+                owner=workspace_file.blob_owner,
+                path=workspace_file.path,
+                content=file_object.content,
             )
-            input_files.append(
-                FileObject(
-                    name=virtual_file.path,
-                    mime_type=virtual_file.mime_type,
-                    owner=virtual_file.blob_owner,
-                    path=virtual_file.path,
-                    content=file_object.content,
-                )
-            )
-
-        return input_files
+        )
 
     def execute_workspace_script(
         self,
@@ -606,7 +633,7 @@ class AgentWorkspaceService:
             executor = WorkspaceScriptRunner(
                 file_repository=self.file_repository,
                 user_id=user.id,
-                input_files=input_files,
+                input_files=input_files.files,
                 conversation_id=workspace.conversation_id,
                 bridge=bridge,
                 sandbox_run=sandbox_run,
@@ -635,6 +662,7 @@ class AgentWorkspaceService:
             message="Workspace script executed successfully",
             output=output,
             workspace_files=synced_files,
+            warnings=input_files.warnings,
         )
 
     @staticmethod
@@ -652,6 +680,12 @@ class AgentWorkspaceService:
         synced_files: list[WorkspaceFileItemResponse] = []
 
         for execution_file in execution_files:
+            try:
+                if self._skip_reserved(self._normalize_path(execution_file.name)):
+                    continue
+            except ValidationException as exc:
+                logger.warning(f"Skipping execution file with an invalid workspace name: {exc}")
+                continue
             saved_file = self._upsert_workspace_file_content(
                 workspace_id, execution_file.name, execution_file.content or b""
             )
@@ -662,7 +696,7 @@ class AgentWorkspaceService:
     def _upsert_workspace_file_content(
         self, workspace_id: str, file_path: str, content: str | bytes
     ) -> AgentWorkspaceFile:
-        normalized_path = self._normalize_path(file_path)
+        normalized_path = self._normalize_write_path(file_path)
         binary_content = content.encode("utf-8") if isinstance(content, str) else content
         checksum = hashlib.sha256(binary_content).hexdigest()
         mime_type = self._guess_mime_type(normalized_path)
@@ -700,9 +734,11 @@ class AgentWorkspaceService:
     def _upsert_workspace_file_reference(
         self, workspace_id: str, file_path: str, file_object: FileObject
     ) -> AgentWorkspaceFile:
+        if not self._is_registrable_blob_ref(file_object):
+            raise ValidationException(f"File '{file_object.name}' cannot be referenced from a workspace")
         # Keep uploaded chat files in their original storage location and persist only
         # workspace metadata that points to that blob.
-        normalized_path = self._normalize_path(file_path)
+        normalized_path = self._normalize_write_path(file_path)
         try:
             repository_file = self.file_repository.read_file(
                 file_name=file_object.name,
@@ -767,8 +803,10 @@ class AgentWorkspaceService:
                 file_obj = FileObject.from_encoded_url(encoded_url)
             except Exception:
                 continue
-            path = self._normalize_uploaded_file_path(file_obj)
-            if path in seen_paths:
+            # Hiding, not registration: source blobs and unsafe refs never become virtual workspace files.
+            visible = is_safe_blob_ref(file_obj) and not is_source_owned_blob_ref(file_obj)
+            path = self._try_normalize_uploaded_file_path(file_obj) if visible else None
+            if path is None or path in seen_paths or self._skip_reserved(path):
                 continue
             seen_paths.add(path)
             virtual_files.append(
@@ -847,24 +885,40 @@ class AgentWorkspaceService:
 
     @classmethod
     def _normalize_uploaded_file_path(cls, file_object: FileObject) -> str:
-        return cls._normalize_path(PurePosixPath(file_object.name).name)
+        # Upload names are our own basename derivation, so edge whitespace is trimmed here rather than refused.
+        return cls._normalize_path(PurePosixPath(file_object.name).name.strip())
+
+    @classmethod
+    def _try_normalize_uploaded_file_path(cls, file_object: FileObject) -> str | None:
+        """Batch paths skip an upload whose name is not a valid workspace path instead of failing the whole batch."""
+        try:
+            return cls._normalize_uploaded_file_path(file_object)
+        except ValidationException as exc:
+            logger.warning(f"Skipping uploaded file with an invalid workspace name: {exc}")
+            return None
+
+    @classmethod
+    def _normalize_write_path(cls, file_path: str) -> str:
+        """Normalize a path a file is about to be written or deleted; the script runtime's own paths are refused."""
+        normalized = cls._normalize_path(file_path)
+        if is_reserved_workspace_path(normalized):
+            raise ValidationException(f"file_path is reserved: {normalized!r} is used by the script runtime")
+        return normalized
+
+    @staticmethod
+    def _skip_reserved(normalized_path: str) -> bool:
+        """Batch writes drop a reserved file instead of failing the whole batch."""
+        if is_reserved_workspace_path(normalized_path):
+            logger.warning(f"Skipping reserved workspace path {normalized_path!r}")
+            return True
+        return False
 
     @staticmethod
     def _normalize_path(file_path: str) -> str:
-        candidate = (file_path or "").replace("\\", "/").strip()
-        if not candidate:
-            raise ValidationException("file_path must not be empty")
-
-        normalized_path = PurePosixPath(candidate)
-        if normalized_path.is_absolute() or ".." in normalized_path.parts:
-            raise ValidationException("file_path must be a workspace-relative path")
-
-        normalized = str(normalized_path)
-        if normalized in {"", "."}:
-            raise ValidationException("file_path must be a file path")
-        if len(normalized) > MAX_WORKSPACE_PATH_LENGTH:
-            raise ValidationException(f"file_path is too long (max {MAX_WORKSPACE_PATH_LENGTH} characters)")
-        return normalized
+        try:
+            return validate_relative_path(file_path, MAX_WORKSPACE_PATH_LENGTH)
+        except ValueError as exc:
+            raise ValidationException(f"file_path is invalid: {exc}") from exc
 
     @staticmethod
     def _guess_mime_type(file_path: str) -> str:
