@@ -202,6 +202,16 @@ class ProjectCreateResponse(BaseModel):
     allowed_models: Optional[list[str]] = None
 
 
+class ProjectOwnershipUpdateRequest(BaseModel):
+    user_id: str
+
+
+class ProjectOwnershipUpdateResponse(BaseModel):
+    name: str
+    created_by: str
+    message: str
+
+
 class ProjectUpdateRequest(BaseModel):
     name: Optional[str] = None
     display_name: Optional[str] = None

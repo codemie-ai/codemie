@@ -775,3 +775,37 @@ class TestUpdateProjectClearDescription:
         result = application_repository.update_project(mock_session, app, description=None, clear_description=False)
 
         assert result.description == "keep me"
+
+
+class TestUpdateProjectCreatedBy:
+    """Tests for update_project created_by parameter (EPMCDME-15951)."""
+
+    def _make_app(self, created_by: str = "original-owner") -> Application:
+        return Application(
+            id="proj-x",
+            name="proj-x",
+            created_by=created_by,
+            project_type="shared",
+            date=datetime.now(),
+            update_date=datetime.now(),
+        )
+
+    def test_update_project_created_by_updates_owner(self):
+        """Passing created_by persists the new owner id."""
+        mock_session = MagicMock()
+        app = self._make_app("original-owner")
+        mock_session.refresh.side_effect = lambda obj: None
+
+        result = application_repository.update_project(mock_session, app, created_by="new-owner")
+
+        assert result.created_by == "new-owner"
+
+    def test_update_project_without_created_by_leaves_owner_unchanged(self):
+        """Omitting created_by does not alter the existing owner."""
+        mock_session = MagicMock()
+        app = self._make_app("original-owner")
+        mock_session.refresh.side_effect = lambda obj: None
+
+        result = application_repository.update_project(mock_session, app, description="new description")
+
+        assert result.created_by == "original-owner"

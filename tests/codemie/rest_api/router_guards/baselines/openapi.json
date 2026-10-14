@@ -21139,6 +21139,42 @@
         "title": "ProjectMember",
         "type": "object"
       },
+      "ProjectOwnershipUpdateRequest": {
+        "properties": {
+          "user_id": {
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id"
+        ],
+        "title": "ProjectOwnershipUpdateRequest",
+        "type": "object"
+      },
+      "ProjectOwnershipUpdateResponse": {
+        "properties": {
+          "created_by": {
+            "title": "Created By",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "created_by",
+          "message"
+        ],
+        "title": "ProjectOwnershipUpdateResponse",
+        "type": "object"
+      },
       "ProjectRef": {
         "properties": {
           "id": {
@@ -66974,6 +67010,67 @@
           }
         ],
         "summary": "Validate Users From Csv",
+        "tags": [
+          "Projects"
+        ]
+      }
+    },
+    "/v1/projects/{projectName}/ownership": {
+      "put": {
+        "description": "Reassign ownership of a project to another existing platform user.",
+        "operationId": "update_project_ownership_v1_projects__projectName__ownership_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "projectName",
+            "required": true,
+            "schema": {
+              "title": "Projectname",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectOwnershipUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectOwnershipUpdateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Update Project Ownership",
         "tags": [
           "Projects"
         ]

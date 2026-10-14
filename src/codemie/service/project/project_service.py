@@ -281,6 +281,71 @@ class ProjectService:
             return project
 
     @classmethod
+    def update_project_ownership(cls, user: User, project_name: str, new_owner_id: str) -> Application:
+        """Reassign a project's ownership to another existing platform user."""
+        with get_session() as session:
+            project = application_repository.get_by_name(session, project_name)
+            if not project or project.deleted_at is not None:
+                raise ExtendedHTTPException(code=404, message=cls.ERRORS.PROJECT_NOT_FOUND)
+
+            if project.project_type == Application.ProjectType.PERSONAL:
+                logger.warning(
+                    f"personal_project_ownership_change_blocked: user_id={user.id}, project={project_name!r}"
+                )
+                raise ExtendedHTTPException(code=403, message=cls.ERRORS.PERSONAL_UPDATE)
+
+            new_owner = user_repository.get_active_by_id(session, new_owner_id)
+            if not new_owner:
+                raise ExtendedHTTPException(code=404, message=cls.ERRORS.PROJECT_NOT_FOUND)
+
+            previous_owner_id = project.created_by
+            previous_owner = user_repository.get_by_id(session, previous_owner_id) if previous_owner_id else None
+            previous_owner_username = previous_owner.username if previous_owner else previous_owner_id
+
+            project = application_repository.update_project(
+                session,
+                project,
+                display_name=project.display_name,
+                cost_center_id=project.cost_center_id,
+                created_by=new_owner_id,
+            )
+
+            if not user_project_repository.get_by_user_and_project(session, new_owner_id, project.name):
+                user_project_repository.add_project(
+                    session=session,
+                    user_id=new_owner_id,
+                    project_name=project.name,
+                    is_project_admin=True,
+                )
+
+            activity_event_repository.insert(
+                ActivityEventCreate(
+                    domain=ActivityDomain.PROJECT_MANAGEMENT,
+                    event_type=ProjectManagementEvent.PROJECT_OWNERSHIP_CHANGED,
+                    entity_type=ActivityEntityType.PROJECT,
+                    entity_id=project.name,
+                    actor_id=user.id,
+                    attributes={
+                        "previous_owner_username": previous_owner_username,
+                        "new_owner_username": new_owner.username,
+                    },
+                ),
+                session,
+            )
+            session.commit()
+            session.refresh(project)
+
+            if previous_owner_id:
+                invalidate_user_from_cache(previous_owner_id)
+            invalidate_user_from_cache(new_owner_id)
+
+            logger.info(
+                f"project_ownership_changed: project={project.name!r}, "
+                f"new_owner={new_owner_id}, by={user.id}, domain=project_management"
+            )
+            return project
+
+    @classmethod
     def _get_project_for_update(cls, session: Session, user: User, project_name: str) -> Application:
         project = application_repository.get_by_name(session, project_name)
         if not project or project.deleted_at is not None:

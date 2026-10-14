@@ -25,6 +25,8 @@ from codemie.rest_api.models.project import (
     AllowedModelsUpdateResponse,
     ProjectCreateResponse,
     ProjectDeleteResponse,
+    ProjectOwnershipUpdateRequest,
+    ProjectOwnershipUpdateResponse,
     ProjectUpdateRequest,
 )
 from codemie.rest_api.routers.projects._common import (
@@ -108,6 +110,26 @@ def update_allowed_models(
         cost_center_name=_resolve_cost_center_name(getattr(project, "cost_center_id", None)),
         allowed_models=project.allowed_models,
         default_model=project.default_model,
+    )
+
+
+@router.put("/projects/{projectName}/ownership", response_model=ProjectOwnershipUpdateResponse)
+def update_project_ownership(
+    payload: ProjectOwnershipUpdateRequest,
+    request: Request,
+    project_name: str = Path(alias="projectName"),
+    authorized_project: Application = Depends(_authorize_project_access),
+):
+    """Reassign ownership of a project to another existing platform user."""
+    project = project_service.update_project_ownership(
+        user=request.state.user,
+        project_name=authorized_project.name,
+        new_owner_id=payload.user_id,
+    )
+    return ProjectOwnershipUpdateResponse(
+        name=project.name,
+        created_by=project.created_by,
+        message=f"Ownership of '{project.name}' transferred to '{project.created_by}'",
     )
 
 

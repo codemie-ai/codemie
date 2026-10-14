@@ -1,0 +1,85 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15951-ch-proj-ownership",
+  "head": "cc7255d067dc1d8f8356df8232f1cf6b8e919f66",
+  "runner": "poetry",
+  "started_at": "2026-10-14T11:31:26Z",
+  "completed_at": "2026-10-14T11:42:25Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1944,
+      "command": "poetry run ruff format && poetry run ruff check --fix && poetry run ruff check",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 7769,
+      "command": "poetry build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1944,
+      "command": "poetry run python scripts/license_headers/check_license_headers.py --check --quiet",
+      "exit_code": 0
+    },
+    {
+      "id": "secrets-ci",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 136970,
+      "command": "docker run --rm -v \"./:/workspace\" ghcr.io/gitleaks/gitleaks:v8.30.1 dir --no-banner --verbose --config=/workspace/.gitleaks.toml /workspace",
+      "exit_code": 1,
+      "notes": "All 31 findings are in codemie-storage/dev-codemie-user/Test cases P1.csv, a locally gitignored, untracked runtime-storage path (.gitignore:34 'codemie-storage/') never part of any git history. `gitleaks dir` scans the raw filesystem and ignores .gitignore, so this fails on every run in this checkout regardless of branch/diff. Confirmed unrelated to this change: a scoped `gitleaks git --log-opts=d5c40d672b..HEAD` scan of only this branch's 10 commits reports 'no leaks found' (see secrets-precommit gate). Fix is local-environment cleanup (remove/relocate the stray file), not a code change."
+    },
+    {
+      "id": "secrets-precommit",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1200,
+      "command": "docker run --rm -v \"$(pwd):/workspace\" -w /workspace ghcr.io/gitleaks/gitleaks:v8.30.1 git --no-banner --verbose --config=/workspace/.gitleaks.toml --log-opts=\"d5c40d672b3fc4c074e6fff8a0cc58f6c1f0179c..HEAD\"",
+      "exit_code": 0,
+      "notes": "Ran against the branch's commit range instead of `gitleaks protect --staged` because nothing was staged at run time (feature commits already landed on the branch); this is the closest equivalent proof that none of this feature's 10 commits introduced a secret. 10 commits scanned, no leaks found."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 119030,
+      "command": "poetry run pytest tests/",
+      "exit_code": 1,
+      "notes": "15 failures, all pre-existing/environment-caused, none touch this branch's changed files (application_repository.py, project.py models, projects/management.py, activity_models.py, project_service.py). Root-caused by diffing against a clean worktree at merge_base d5c40d672b: (1) 8 failures (test_assistant.py::TestAssistantMcpGovernance, test_assistant_service_build_agent_deleted_datasource.py, test_toolkit_service.py) are caused solely by this checkout's pre-existing *uncommitted* local edit to config/customer/customer-config.yaml flipping 'features:projectModelOverride enabled' from false to true (visible in git status at session start, unrelated to this branch) -- reverting that single file to HEAD and rerunning the full suite drops these 8 failures to 0. (2) The remaining 7 failures (tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py) are `asyncpg.exceptions.UndefinedTableError: relation \"log_events\" does not exist` -- a reachable local Postgres on localhost:5432 without the codemie_analytics schema migrated; the test module's own docstring says these are 'Skipped (not failed) when the local analytics Postgres is unreachable', but here Postgres is reachable and just unmigrated, which is a missing environment prerequisite rather than a code defect. Net: 20638 passed, 176 skipped. No failure is attributable to this branch's diff."
+    },
+    {
+      "id": "sonar-local",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 52,
+      "command": "SONAR_SKIP_TESTS=1 make sonar-local",
+      "exit_code": 0,
+      "notes": "Self-skip signal in output: '[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.' Would run locally with SONAR_TOKEN exported and reachable access to https://sonar.core.kuberocketci.io (see .sonarlint/connectedMode.json); this is a check CI/the Sonar server would still need to settle, per the quality-gates guide's Static Analysis skip policy."
+    },
+    {
+      "id": "commit-msg",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 10,
+      "command": "git log -1 --format=%s HEAD  # checked against scripts/git-hooks/commit_msg.sh's ^EPMCDME-[0-9]+: rule",
+      "exit_code": 0,
+      "notes": "HEAD subject 'EPMCDME-15951: Preserve display_name and cost_center_id on ownership transfer' matches the enforced prefix. The hook chain's other local link (codemie-pre-commit: ruff check + license check) is already covered by the lint and license-check gates above; its heavy pre-push link (pytest + sonar-local, gated behind CODEMIE_PREPUSH_ENABLED, default off) is covered by the unit and sonar-local gates above."
+    }
+  ],
+  "failures": {
+    "secrets-ci": "Finding:     [1;3;muXHn5WQkfmYStJCocfkwn2+3NWb7YVV57ZJ8nGhV[0m\nRuleID:      generic-api-key\nFile:        /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv\nLine:        1901\n...\nFinding:     ..._id – s3-user\\n * aws_secret_access_key:[1;3;muXHn5WQkfmYStJCocfkwn2+3NWb7YVV57ZJ8nGhV[0m\\nand save\\n\\nRestart ...\nFile:        /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv\nLine:        1905\n...\nFinding:     ...:\\n\\nAccess key ID: [1;3;mAKIAXZT7RRAUQ7LKSR6Y[0m\\nSecret access key:...\nRuleID:      aws-access-token\nFile:        /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv\nLine:        2176\n...\nFinding:     ...IAXZT7RRAUQ7LKSR6Y\\nSecret access key: [1;3;mC/457qHCHERADIM7ft18QIWvmA8q+hwRmZkUxNqU[0m\\nBucket: algtestbucke...\nFile:        /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv\nLine:        2176\n...\nFinding:     nAccount_key: GyajQOaz2mZowDOSn377FtyXj7dNSadFQRFIQsuWJl6TQ2Tt0aguwHI0wYGuPVRCnVQsbJkrLRGmqdInkxG43w==\\n\nFile:        /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv\nLine:        2191\n...\nFinding:     ... s3-user\\n - Insert Secret Key: [1;3;muXHn5WQkfmYStJCocfkwn2+3NWb7YVV57ZJ8nGhV[0m\\n - Insert Bucket Nam...\nFile:        /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv\nLine:        2194\n\n11:34AM INF scanned ~348061418 bytes (348.06 MB) in 2m16s\n11:34AM WRN leaks found: 31\n\nAll 31 findings are confined to the single gitignored path codemie-storage/dev-codemie-user/Test cases P1.csv (never tracked by git). See gates[].notes for the scoped-commit-range re-scan proving this branch introduced no secret.",
+    "unit": "=========================== short test summary info ============================\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py::test_two_parallel_agents_get_their_own_exact_totals_not_an_even_split\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py::test_a_dispatch_without_an_llm_group_has_no_cost_rather_than_a_guess\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py::test_a_dispatch_with_no_agent_id_falls_back_to_its_parent_span_from_its_start_on\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py::test_subagent_run_time_runs_from_its_call_start_to_its_stop_event_and_is_null_without_one\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py::test_a_foreground_agent_runs_from_its_call_start_to_its_stop_even_though_its_stop_precedes_the_result\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py::test_parallel_subagents_have_overlapping_windows\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py::test_sequential_subagents_do_not_overlap\nFAILED tests/codemie/rest_api/routers/test_assistant.py::TestAssistantMcpGovernance::test_create_restricted_mode_rejects_handwritten_server\nFAILED tests/codemie/rest_api/routers/test_assistant.py::TestAssistantMcpGovernance::test_create_admin_user_violating_payload_still_rejected\nFAILED tests/codemie/rest_api/routers/test_assistant.py::TestAssistantMcpGovernance::test_create_open_mode_allows_handwritten_server\nFAILED tests/codemie/service/test_assistant_service_build_agent_deleted_datasource.py::test_build_agent_with_deleted_datasource_builds_with_remaining[one-deleted]\nFAILED tests/codemie/service/test_assistant_service_build_agent_deleted_datasource.py::test_build_agent_with_deleted_datasource_builds_with_remaining[all-deleted]\nFAILED tests/codemie/service/tools/test_toolkit_service.py::TestInitializeToolOcrFactoryIndependentOfChatModel::test_factory_injected_when_chat_model_injection_fails\nFAILED tests/codemie/service/tools/test_toolkit_service.py::TestInitializeToolOcrModelFactory::test_enrich_body_tool_gets_chat_model_and_ocr_factory\nFAILED tests/codemie/service/tools/test_toolkit_service.py::TestInitializeToolOcrFactoryIndependentOfChatModel::test_factory_injected_without_llm_model\n=== 15 failed, 20638 passed, 176 skipped, 262 warnings in 119.03s (0:01:59) ====\n\nKey errors: asyncpg.exceptions.UndefinedTableError: relation \"log_events\" does not exist (x7, postgres schema not migrated locally); codemie.core.exceptions.ModelNotWhitelistedException raised only because the uncommitted local config/customer/customer-config.yaml has features:projectModelOverride.enabled=true (repo default is false) (x8, including a downstream sqlalchemy.exc.InvalidRequestError in Application.get_by_id reached only via that same feature-flag code path). Verified by: isolating these test files against a clean `git worktree add` at merge_base d5c40d672b (0 failures, 8/8 pass), then reverting only the local config files on this checkout and rerunning the full suite (drops to the same 7 postgres-only failures)."
+  }
+}

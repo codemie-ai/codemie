@@ -731,6 +731,7 @@ class ApplicationRepository:
         cost_center_id: UUID | None = None,
         chargeback_enabled: bool | None = None,
         chargeback_attribution: str | None = None,
+        created_by: str | None = None,
     ) -> Application:
         """Update mutable project fields."""
         if name is not None:
@@ -746,6 +747,8 @@ class ApplicationRepository:
             application.chargeback_enabled = chargeback_enabled
         if chargeback_attribution is not None:
             application.chargeback_attribution = chargeback_attribution
+        if created_by is not None:
+            application.created_by = created_by
         application.update_date = datetime.now()
         session.add(application)
         session.flush()

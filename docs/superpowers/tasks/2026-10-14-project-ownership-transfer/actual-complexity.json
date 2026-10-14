@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "generated": "2026-10-14",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 18,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 9,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Router endpoint (management.py), ProjectService.update_project_ownership, ApplicationRepository.update_project (new created_by param), plus coordinated calls into user_repository, user_project_repository, activity_event_repository, and cache invalidation span API, Service, and Persistence layers using existing shared utilities." },
+    { "dimension": "technical_risk", "reason": "Closest precedent is ProjectService.update_project / create_shared_project (membership-grant pattern reused from create_shared_project). No exact precedent exists for an ownership-transfer flow that rejects deactivated target accounts and grants new-owner membership; bumped from M to L because the change affects who holds project-admin rights (ownership/authorization-adjacent), per the auth red flag." },
+    { "dimension": "file_change_estimate", "reason": "9 files touched across 9 distinct directories: 5 modified source files (repository, API model, router, activity model, service), 1 modified API contract baseline (openapi.json), 2 modified test files, 1 new test file (test_project_service_ownership.py) — matches the L band (8-10 modified/new, 3+ directories)." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from M to L: ownership transfer changes project-admin rights, treated as authorization-adjacent per the 'affects authentication or authorization' red flag."
+  ],
+  "split_recommendation": null
+}

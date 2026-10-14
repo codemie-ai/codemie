@@ -33,6 +33,7 @@ from codemie.rest_api.models.project import (
     ProjectCreateResponse,
     ProjectDetailResponse,
     ProjectListItem,
+    ProjectOwnershipUpdateRequest,
     ProjectUpdateRequest,
     PaginatedProjectListResponse,
     PaginatedSpendsResponse,
@@ -40,7 +41,7 @@ from codemie.rest_api.models.project import (
 from codemie.rest_api.routers.projects import router as projects_router
 from codemie.rest_api.routers.projects._common import _authorize_project_access, _raise_project_not_found
 from codemie.service.project.project_spending_service import is_budget_period_open
-from codemie.rest_api.routers.projects.management import delete_project, update_project
+from codemie.rest_api.routers.projects.management import delete_project, update_project, update_project_ownership
 from codemie.rest_api.routers.projects.membership import (
     assign_user_to_project,
     remove_user_from_project,
@@ -1469,6 +1470,95 @@ class TestDeleteProjectEndpoint:
 
         assert exc_info.value.code == 409
         mock_session.commit.assert_not_called()
+
+
+class TestProjectOwnershipEndpoint:
+    """Tests for PUT /v1/projects/{projectName}/ownership."""
+
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.management.project_service")
+    def test_update_project_ownership_success_returns_200(
+        self,
+        mock_project_service,
+        mock_config,
+    ):
+        """Successful ownership transfer returns the new owner in the response."""
+        mock_config.ENABLE_USER_MANAGEMENT = True
+        updated_project = MagicMock()
+        updated_project.name = "my-project"
+        updated_project.created_by = "new-owner"
+        mock_project_service.update_project_ownership.return_value = updated_project
+
+        authorized_project = MagicMock()
+        authorized_project.name = "my-project"
+        caller = MagicMock(id="user-1")
+
+        response = update_project_ownership(
+            payload=ProjectOwnershipUpdateRequest(user_id="new-owner"),
+            request=MagicMock(
+                method="PUT",
+                url=SimpleNamespace(path="/v1/projects/my-project/ownership"),
+                state=SimpleNamespace(user=caller),
+            ),
+            project_name="my-project",
+            authorized_project=authorized_project,
+        )
+
+        assert response.name == "my-project"
+        assert response.created_by == "new-owner"
+        assert "new-owner" in response.message
+        mock_project_service.update_project_ownership.assert_called_once_with(
+            user=caller,
+            project_name="my-project",
+            new_owner_id="new-owner",
+        )
+
+    def test_ownership_route_uses_authorize_project_access_dependency(self):
+        """Only the current owner, maintainers, project admins, or super admins may call this
+        route — enforced by `_authorize_project_access`'s existing 404-on-deny behavior
+        (exercised directly in TestCheckProjectAccess)."""
+        app = FastAPI()
+        app.include_router(projects_router)
+
+        route_dependencies: dict[tuple[str, str], set[str]] = {}
+        for route in app.routes:
+            if isinstance(route, APIRoute):
+                for method in route.methods:
+                    route_dependencies[(method, route.path)] = {
+                        dependency.call.__name__ for dependency in route.dependant.dependencies
+                    }
+
+        assert "_authorize_project_access" in route_dependencies[("PUT", "/v1/projects/{projectName}/ownership")]
+
+    @patch("codemie.rest_api.routers.projects._common.config")
+    @patch("codemie.rest_api.routers.projects.management.project_service")
+    def test_update_project_ownership_propagates_404_for_missing_target_user(
+        self,
+        mock_project_service,
+        mock_config,
+    ):
+        """A nonexistent target user id propagates the service's 404, not a silent success."""
+        mock_config.ENABLE_USER_MANAGEMENT = True
+        mock_project_service.update_project_ownership.side_effect = ExtendedHTTPException(
+            code=404, message="User not found"
+        )
+
+        authorized_project = MagicMock()
+        authorized_project.name = "my-project"
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            update_project_ownership(
+                payload=ProjectOwnershipUpdateRequest(user_id="nonexistent-user"),
+                request=MagicMock(
+                    method="PUT",
+                    url=SimpleNamespace(path="/v1/projects/my-project/ownership"),
+                    state=SimpleNamespace(user=MagicMock(id="user-1")),
+                ),
+                project_name="my-project",
+                authorized_project=authorized_project,
+            )
+
+        assert exc_info.value.code == 404
 
 
 class TestUpdateProjectEndpoint:

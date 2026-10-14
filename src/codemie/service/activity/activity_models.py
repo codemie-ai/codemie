@@ -47,6 +47,7 @@ class ProjectManagementEvent:
     PROJECT_CREATED = "project.created"
     PROJECT_UPDATED = "project.updated"
     PROJECT_DELETED = "project.deleted"
+    PROJECT_OWNERSHIP_CHANGED = "project.ownership_changed"
 
 
 class CustomerConfigEvent:

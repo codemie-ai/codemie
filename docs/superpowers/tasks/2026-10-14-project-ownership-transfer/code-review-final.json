@@ -1,0 +1,86 @@
+{
+  "decision": "request-changes",
+  "rationale": "The verification-gap lens's declared path does not exist on disk despite being listed as ran, so that lens failed for this round and confidence is capped at low; acceptance did not run (no spec/story, so business_review is empty). Five blocking defects survive triage: a user-enumeration info-disclosure via a distinct 404 message, ownership transferable to a deactivated/soft-deleted user, the new owner never gets project membership despite the docstring's claim, the ownership-change activity event omits previous/new owner ids, and a code-quality typing-style violation flagged by the standards audit. One pre-existing concurrency/race finding (no lock on fetch-then-update, matching the same pattern used throughout this file) was deferred to docs/superpowers/tasks/2026-10-14-project-ownership-transfer/code-review-deferred.md. Five other candidates were dismissed as noise: a harmless no-op same-owner transfer, a practically unreachable cache-invalidation-raises-after-commit scenario, a falsy-empty-string previous_owner_id with no live write path producing it, an unused-but-harmless path parameter, and a missing non-empty validation on user_id that only degrades to a generic 404 instead of a 422.",
+  "confidence": "low",
+  "risk_flags": ["security"],
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "All 5 commit subjects in range follow the documented 'EPMCDME-####: Description' format from git-workflow.md"
+    },
+    {
+      "kind": "code-quality",
+      "status": "partial",
+      "notes": "code-quality.md prefers 'X | None' over 'typing.Optional[X]'; new created_by: Optional[str] param at application_repository.py:734 doesn't match sibling params using 'X | None'."
+    },
+    {
+      "kind": "security",
+      "status": "fail",
+      "notes": "Distinct 404 'User not found' vs generic 'Project not found' enables user-id enumeration; new_owner validated via get_by_id (not get_active_by_id), allowing transfer to a deactivated user."
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/repository/application_repository.py",
+      "line": 734,
+      "title": "New param uses Optional[X] not X | None",
+      "problem": "The new `created_by: Optional[str] = None` parameter added to `update_project` uses `typing.Optional[X]`, while the three sibling parameters added immediately above it in the same signature (cost_center_id, chargeback_enabled, chargeback_attribution) already use the `X | None` form the project's code-quality standard requires for new code.",
+      "impact": "Documented, blocking code-quality standard not met for lines this change introduces; inconsistent typing style within the same function signature.",
+      "recommendation": "Change the parameter to `created_by: str | None = None` to match the adjacent new parameters."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/service/project/project_service.py",
+      "line": 306,
+      "title": "New owner not checked for active status",
+      "problem": "`update_project_ownership` resolves `new_owner_id` with `user_repository.get_by_id`, which does not filter on `is_active`/`deleted_at`. The same file already uses `user_repository.get_active_by_id` elsewhere (`_enforce_project_limit`, line 489) specifically to validate a user id is a live account before relying on it.",
+      "impact": "Ownership can be transferred to a deactivated or soft-deleted account, leaving the project without a usable owner and violating the account-deactivation invariant this codebase otherwise enforces.",
+      "recommendation": "Use `user_repository.get_active_by_id` (or an equivalent is_active/deleted_at check) when resolving new_owner_id, and raise USER_NOT_FOUND when the target account is not active."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/service/project/project_service.py",
+      "line": 308,
+      "title": "New-owner 404 enables user-id enumeration",
+      "problem": "When `new_owner_id` does not resolve, the endpoint raises a distinct 'User not found' 404, unlike `_authorize_project_access` (_common.py) which deliberately collapses missing-project and unauthorized cases into the same generic 'Project not found' message specifically to avoid revealing information.",
+      "impact": "Any caller holding WRITE access on some project (owner, maintainer, project admin) can probe arbitrary user_id values and learn from the response message whether that id exists on the platform at all — a user-enumeration channel the codebase otherwise takes care to close.",
+      "recommendation": "Return the same generic 404 message/shape for an unresolved new_owner_id as for other authorization failures on this endpoint, or move the existence check behind a response that does not disclose which case occurred."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/project/project_service.py",
+      "line": 312,
+      "title": "New owner never gets project membership",
+      "problem": "The method's docstring states the new owner needs no prior project membership, and the implementation never adds the new owner to `user_project_repository` after transferring `created_by`. While `is_owned_by` grants the new owner WRITE/READ via `created_by` match, user-facing project listings (`project_names`) are populated from membership records, not from `created_by`.",
+      "impact": "A newly transferred owner can gain API-level write access to the project but may not see it in standard 'my projects' listings or be able to select it as their active project through normal UI flows, leaving them a functional owner in name only.",
+      "recommendation": "Either add the new owner as a project member (e.g. project-admin membership) as part of the transfer, or confirm this gap is intentional and document how a non-member owner is expected to discover/use the project; the ambiguity here needs an explicit decision since no spec/story was available to settle it."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/project/project_service.py",
+      "line": 314,
+      "title": "Ownership-change event omits owner ids",
+      "problem": "The `PROJECT_OWNERSHIP_CHANGED` activity event is inserted with only `entity_id` (project name) and `actor_id` (caller); no `attributes` payload records `previous_owner_id` or `new_owner_id`.",
+      "impact": "The activity/audit log for this security-sensitive action cannot answer 'who was the previous owner' or confirm who the new owner is without joining other application history.",
+      "recommendation": "Add an `attributes={\"previous_owner_id\": previous_owner_id, \"new_owner_id\": new_owner_id}` payload to the inserted ActivityEventCreate."
+    }
+  ]
+}
