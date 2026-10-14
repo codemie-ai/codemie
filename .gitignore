@@ -141,3 +141,6 @@ standalone/external-config/*
 .kube-local/
 /opencode.json.lock
 /skills-lock.json
+
+# Default results folder of codemie-test-harness (junit.xml, results.json)
+codemie-test-reports/
