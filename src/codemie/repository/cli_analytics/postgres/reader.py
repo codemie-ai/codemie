@@ -207,7 +207,8 @@ class PostgresCliAnalyticsReader:
                sum(input_tokens)::bigint           AS total_input_tokens,
                sum(output_tokens)::bigint          AS total_output_tokens,
                sum(cache_read_tokens)::bigint      AS total_cache_read_tokens,
-               sum(cache_creation_tokens)::bigint  AS total_cache_creation_tokens
+               sum(cache_creation_tokens)::bigint  AS total_cache_creation_tokens,
+               sum(api_call_count)::bigint         AS total_api_calls
         FROM cost_daily
         WHERE true{self._scope(f)}""",
             window_params(f),
@@ -509,7 +510,8 @@ class PostgresCliAnalyticsReader:
                sum(c.input_tokens)::bigint                  AS input_tokens,
                sum(c.output_tokens)::bigint                 AS output_tokens,
                sum(c.cache_read_tokens)::bigint             AS cache_read_tokens,
-               sum(c.cache_creation_tokens)::bigint         AS cache_creation_tokens
+               sum(c.cache_creation_tokens)::bigint         AS cache_creation_tokens,
+               sum(c.api_call_count)::bigint                AS api_call_count
         FROM {_cost_rows("c.session_id IN (SELECT session_id FROM sel)")}
              JOIN sel s ON s.session_id = c.session_id
         GROUP BY c.session_id, 2{having_sql}""",

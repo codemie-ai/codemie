@@ -379,6 +379,20 @@ async def test_session_cost_facts_inner_join_sel_without_epoch_defaults():
     assert "JOIN sel" in sql
 
 
+@pytest.mark.asyncio
+async def test_cost_kpis_selects_total_api_calls():
+    sql, _ = await _sql_of("get_cost_kpis")
+    assert "sum(api_call_count)::bigint" in sql
+    assert "AS total_api_calls" in sql
+
+
+@pytest.mark.asyncio
+async def test_session_cost_facts_selects_api_call_count():
+    sql, _ = await _sql_of("get_session_cost_facts")
+    assert "sum(c.api_call_count)::bigint" in sql
+    assert "AS api_call_count" in sql
+
+
 @pytest.mark.parametrize("method", ["get_users", "get_session_cost_facts", "get_session_detail_cost"])
 @pytest.mark.asyncio
 async def test_the_top_model_is_the_largest_row_of_the_original_cost_grain(method: str) -> None:

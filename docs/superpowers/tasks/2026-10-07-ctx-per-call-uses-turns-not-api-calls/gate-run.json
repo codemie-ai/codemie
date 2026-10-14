@@ -1,0 +1,105 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15519-CTX-CALL-fix",
+  "head": "4232cce2361e4d781c25885ed4acf14565a1d2d9",
+  "runner": "poetry",
+  "started_at": "2026-10-07T18:06:48Z",
+  "completed_at": "2026-10-07T18:22:49Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 3516,
+      "command": "poetry run ruff check . && poetry run ruff format --check .",
+      "exit_code": 0,
+      "notes": "Command substituted for `make ruff` per prior approval (make not on PATH); scope/flags matched to the `ruff` Makefile target's final non-mutating `ruff check` step and a non-mutating `ruff format --check` in place of its mutating `ruff format`. With the working tree now clean (prior dirty customer_config.py reverted) and this branch's own total_turns/format fix already committed (4232cce), `ruff check .` reports 'All checks passed!' and `ruff format --check .` reports all 2729 files already formatted."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 19959,
+      "command": "poetry build",
+      "exit_code": 0,
+      "notes": "Command substituted for `make build` per prior approval (make not on PATH); Makefile `build` target is exactly `poetry build`. Built codemie-0.8.0 sdist and wheel successfully."
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 3668,
+      "command": "poetry run python scripts/license_headers/check_license_headers.py --check --quiet",
+      "exit_code": 0,
+      "notes": "Command substituted for `make license-check` per prior approval (make not on PATH); Makefile `license-check` target is exactly this command with an empty $(FILE) (full-repo scope). Checked 2437 files, 0 missing license headers."
+    },
+    {
+      "id": "secrets-ci",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make gitleaks",
+      "exit_code": null,
+      "notes": "Skip if (literal, quality-gates.md Secret Scan / CI-verify gate): 'Docker is unavailable.' Re-checked this run: `docker` is still not found on PATH; only `podman` is present and the Makefile `gitleaks` target hardcodes `docker run` with no engine fallback. To enable locally: install Docker (or add a docker-compatible wrapper) and rerun `make gitleaks`."
+    },
+    {
+      "id": "secrets-precommit",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 191,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": 0,
+      "notes": "Re-checked this run. Self-skip confirmed: script printed 'codemie-gitleaks: skipped (CODEMIE_PRECOMMIT_ENABLED=false)' and exited 0 without scanning. CODEMIE_PRECOMMIT_ENABLED=false is still set in this shell. To enable locally: unset CODEMIE_PRECOMMIT_ENABLED or set it to true (podman is installed; its daemon status was not separately verified this run since the hook self-skips before reaching the engine probe)."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 771238,
+      "command": "poetry run pytest tests/ --ignore=tests/enterprise/",
+      "exit_code": 1,
+      "notes": "Command substituted for `make test` per prior approval (make not on PATH), matching the repo's own pre-push hook scope (`--ignore=tests/enterprise/`) and run via poetry directly rather than through `scripts/git-hooks/pre_push.sh`. Result with the working tree now clean: 117 failed, 18295 passed, 185 skipped, 261 warnings, 4 errors in 761.14s (down from 120 failed in the prior dirty-tree run; the 2 test_customer_config_service.py failures tied to the reverted dirty customer_config.py edit no longer occur). No failing or erroring test in this run names cli_analytics_handler.py, reader.py, models/cli_analytics.py, test_reader.py, or test_cli_analytics_handler.py — i.e. none of this branch's own changed files or their dedicated test files. The 117 failures/4 errors are the same pre-existing families as before and unrelated to this branch's diff: code_executor filesystem-policy/sandbox-guard/tool-call-channel tests, pptx toolkit, file_system command_line_tool, git-hook test scripts (commit_msg/pre_commit_fast/pre_push), migration UnicodeDecodeError-type errors, logout fixture error, and cli_analytics/postgres test_dirty.py and test_settings.py calendar-boundary (year 0001/9999) and dual-user-connection cases in a different file (test_reader.py's own sibling test files, not test_reader.py itself) that look environment/timezone-dependent rather than diff-caused."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make coverage",
+      "exit_code": null,
+      "notes": "Skip if (literal, quality-gates.md Coverage gate): 'The user did not request coverage.' Not requested in this dispatch; not attempted."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make sonar-local",
+      "exit_code": null,
+      "notes": "Skip if (literal, quality-gates.md Static Analysis gate): 'Sonar configuration, network access, or required credentials are unavailable.' No SONAR_TOKEN set in this shell. Not attempted. To enable locally: export SONAR_TOKEN and confirm network access to the SonarQube server, then rerun `make sonar-local`."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "exit_code": null,
+      "notes": "Requires infrastructure not reachable in this environment: docker compose stack up, superadmin fixtures, and ~/.codemie/test-harness.json. This subagent only reports readiness and never opens the MR. Owed to CI / a manual `make test-harness` run before the MR compliance bot checks pass."
+    },
+    {
+      "id": "commit-msg-format",
+      "source": "hook",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "bash scripts/git-hooks/commit_msg.sh <COMMIT_EDITMSG>",
+      "exit_code": null,
+      "notes": "Enforced by the `codemie-commit-msg` pre-commit hook (checks for an 'EPMCDME-<n>: ' subject prefix) but has no guide-defined quality-gates.md entry. Not applicable here: no commit is being created in this gate run, so there is no candidate commit message to validate."
+    }
+  ],
+  "failures": {
+    "unit": "FAILED tests/codemie_tools/data_management/code_executor/test_sandbox_guard.py::test_workspace_wrapper_stdout_carries_only_script_output\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_relative_write_inside_workspace\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_denies_absolute_paths\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_denies_absolute_path_inside_workspace\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_denies_traversal_escape\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_denies_sibling_workspace_prefix_confusion\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_denies_boundary_crossing_rename\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_denies_boundary_crossing_copy\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_denies_symlink_escape\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_denies_proc_fd_magic_link_escape\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_denies_ctypes_dlopen_escape\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_ctypes_dlopen_none_for_installed_libraries\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_lstat_reports_symlink_without_resolving_target\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_readlink_denies_only_actual_symlinks\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_denies_required_inspection_apis[listdir-import os\\nos.listdir('/etc')]\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_denies_required_inspection_apis[scandir-import os\\nlist(os.scandir('/etc'))]\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_denies_required_inspection_apis[stat-import os\\nos.stat('/etc/passwd')]\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_denies_required_inspection_apis[lstat-import os\\nos.lstat('/etc/passwd')]\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_denies_required_inspection_apis[access-import os\\nos.access('/etc/passwd', os.R_OK)]\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_denies_required_inspection_apis[readlink-import os\\nos.readlink('/proc/self/fd/0')]\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_denies_posix_chdir_escape_before_relative_open\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_denies_fchdir\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_resolves_relative_file_operations_against_fixed_workspace\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_supports_bytes_and_custom_pathlike_inputs\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_denies_malformed_or_unsupported_paths[open(b'\\xff', 'w')]\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_denies_malformed_or_unsupported_paths[open('bad\\x00path', 'w')]\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_integer_fd_open\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_os_stat_on_fd\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_nested_directories_and_default_tempfiles\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_workspace_module_imports\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_normal_import_but_denies_direct_open_of_import_file\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_stdlib_imports_when_script_runs_from_file_in_workspace\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_stdlib_imports_via_file_invocation_with_frozen_importlib\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_installed_library_to_read_its_own_package_data\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_denies_customer_open_from_imported_module_body\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_denies_sqlite_file_uri_escapes[file:/tmp/outside.db?mode=rwc]\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_denies_sqlite_file_uri_escapes[file:%2Ftmp%2Foutside.db?mode=rwc]\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_denies_sqlite_file_uri_escapes[file:../outside.db?mode=rwc]\nFAILED tests/codemie_tools/data_management/file_system/test_file_system_tools.py::TestFileSystemTools::test_command_line_tool\nFAILED tests/codemie_tools/file_analysis/pptx/test_pptx_toolkit.py::test_pptx_tool_query_text_with_text\nFAILED tests/scripts/test_commit_msg_hook.py::test_leading_comment_lines_ignored\nFAILED tests/scripts/test_pre_commit_fast_hook.py::test_source_has_no_pytest_or_sonar_invocation\nFAILED tests/codemie_tools/data_management/code_executor/test_tool_call_channel.py::TestWithdrawnCalls::test_a_queued_call_the_script_gave_up_on_never_starts_and_is_settled_as_withdrawn\nFAILED tests/scripts/test_pre_push_hook.py::test_legacy_precommit_enabled_runs_and_warns\nERROR tests/codemie/migrations/test_credentialtypes_enum_migrations.py - UnicodeDecodeError (x3)\nERROR tests/codemie/service/security/test_logout_token_cleanup_mock_tms.py::test_logout_removes_only_the_users_rows_and_pod_fallback\n= 117 failed, 18295 passed, 185 skipped, 261 warnings, 4 errors in 761.14s (0:12:41) =\n\n[also includes, in cli_analytics/postgres area but outside this branch's own changed test_reader.py: tests/codemie/repository/cli_analytics/postgres/test_dirty.py (14 calendar-boundary cases at year 0001-01-01/9999-12-31) and tests/codemie/repository/cli_analytics/postgres/test_settings.py (2 pool/migration-user-connection cases, overrides4/5) — same families observed in the prior dirty-tree run, pre-existing and unrelated to the reader.py/handler.py/models diff.]"
+  }
+}

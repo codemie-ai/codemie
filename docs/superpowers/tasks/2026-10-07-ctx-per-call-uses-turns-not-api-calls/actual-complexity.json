@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "generated": "2026-10-07T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 15,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 5,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Diff touches 3 production components across 3 layers — PostgresCliAnalyticsReader (adds api_call_count to the cost_daily session-fact query), the LocalAnalyticsSessionRow/pydantic response models (new api_call_count and ctx_per_call fields), and LocalAnalyticsHandler, where the module-level _ctx_per_call helper is explicitly documented as 'the single shared computation reused by get_overview, get_sessions and get_efficiency — none of them may reimplement this division inline.' That shared-utility, cross-method reuse is exactly the L criterion (3-4 components, 2-3 layers, shared utilities involved)."
+    }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

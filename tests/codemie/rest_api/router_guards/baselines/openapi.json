@@ -15377,6 +15377,11 @@
             "title": "Agent Count",
             "type": "integer"
           },
+          "api_call_count": {
+            "default": 0,
+            "title": "Api Call Count",
+            "type": "integer"
+          },
           "bloat_pct": {
             "default": 0.0,
             "title": "Bloat Pct",
@@ -15411,6 +15416,11 @@
           },
           "cost_usd": {
             "title": "Cost Usd",
+            "type": "number"
+          },
+          "ctx_per_call": {
+            "default": 0.0,
+            "title": "Ctx Per Call",
             "type": "number"
           },
           "delivery_framework": {
@@ -15647,6 +15657,11 @@
       },
       "LocalAnalyticsSessionRow": {
         "properties": {
+          "api_call_count": {
+            "default": 0,
+            "title": "Api Call Count",
+            "type": "integer"
+          },
           "bloat_pct": {
             "default": 0.0,
             "title": "Bloat Pct",
@@ -15676,6 +15691,11 @@
           },
           "cost_usd": {
             "title": "Cost Usd",
+            "type": "number"
+          },
+          "ctx_per_call": {
+            "default": 0.0,
+            "title": "Ctx Per Call",
             "type": "number"
           },
           "delivery_framework": {

@@ -183,10 +183,12 @@ class LocalAnalyticsSessionRow(BaseModel):
     model_name: str
     turns: int = 0
     tool_call_count: int = 0
+    api_call_count: int = 0
     input_tokens: int
     output_tokens: int
     cache_read_tokens: int = 0
     cache_creation_tokens: int = 0
+    ctx_per_call: float = 0.0
     cost_usd: float
     net_lines: int = 0
     bloat_pct: float = 0.0

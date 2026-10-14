@@ -133,6 +133,14 @@ def _pct(numerator: float, denominator: float) -> float:
     return round(numerator / denominator * 100, 1) if denominator else 0.0
 
 
+def _ctx_per_call(cache_read_tokens: Any, api_call_count: Any) -> float:
+    """Cache-read tokens per model API call, zero-guarded. The single shared
+    computation reused by get_overview, get_sessions and get_efficiency —
+    none of them may reimplement this division inline."""
+    calls = _i(api_call_count)
+    return (_i(cache_read_tokens) / calls) if calls else 0.0
+
+
 def _first(rows: list[dict]) -> dict:
     return rows[0] if rows else {}
 
@@ -317,6 +325,7 @@ class LocalAnalyticsHandler:
         output_tokens = _i(kpi.get("total_output_tokens"))
         cache_read_tokens = _i(kpi.get("total_cache_read_tokens"))
         cache_creation_tokens = _i(kpi.get("total_cache_creation_tokens"))
+        total_api_calls = _i(kpi.get("total_api_calls"))
 
         # D1: the session universe is the priced (cost_daily) one, so every
         # per-session roll-up below is restricted to those sessions.
@@ -359,7 +368,7 @@ class LocalAnalyticsHandler:
             "total_tokens": total_tokens,
             "cache_read_cost_usd": cache_read_cost_usd,
             "bloat_pct": _pct(cache_read_cost_usd, total_cost),
-            "avg_context_per_call": (cache_read_tokens / total_turns) if total_turns else 0.0,
+            "avg_context_per_call": _ctx_per_call(cache_read_tokens, total_api_calls),
         }
 
         daily_buckets = [{"day": _iso(r.get("day")), "net_lines": _i(r.get("net_lines"))} for r in lines_daily]
@@ -627,6 +636,7 @@ class LocalAnalyticsHandler:
                     "model_name": model,
                     "turns": turns,
                     "tool_call_count": _i(success_by_session.get(sid, {}).get("tool_calls")),
+                    "api_call_count": _i(row.get("api_call_count")),
                     "input_tokens": _i(row.get("input_tokens")),
                     "output_tokens": _i(row.get("output_tokens")),
                     "cache_read_tokens": cache_read,
@@ -635,7 +645,7 @@ class LocalAnalyticsHandler:
                     "net_lines": _i(lines.get("lines_added")) - _i(lines.get("lines_removed")),
                     "bloat_pct": _pct(cache_read_cost(model, cache_read), cost),
                     "delivery_framework": classify_delivery_framework(skills_by_session.get(sid, [])),
-                    "_ctx_per_call": (cache_read / turns) if turns else 0.0,
+                    "ctx_per_call": _ctx_per_call(row.get("cache_read_tokens"), row.get("api_call_count")),
                 }
             )
 
@@ -655,7 +665,7 @@ class LocalAnalyticsHandler:
         sort_key = {
             "start_time": lambda s: s["start_time"],
             "cost_usd": lambda s: _float_sort_key(s["cost_usd"]),
-            "ctx_per_call": lambda s: _float_sort_key(s["_ctx_per_call"]),
+            "ctx_per_call": lambda s: _float_sort_key(s["ctx_per_call"]),
         }.get(sort_by, lambda s: s["start_time"])
         # Equal sort values (e.g. sessions without plugin data share one start time) keep
         # a stable trace_id order, so pages neither repeat nor skip sessions.
@@ -665,8 +675,6 @@ class LocalAnalyticsHandler:
         total = len(sessions)
         offset = page * per_page
         page_rows = sessions[offset : offset + per_page]
-        for row in page_rows:
-            row.pop("_ctx_per_call", None)
 
         data_as_of = max((s["start_time"] for s in page_rows), default=None)
         return {"sessions": page_rows, "page": page, "per_page": per_page, "total": total}, unpriced, data_as_of
@@ -911,11 +919,11 @@ class LocalAnalyticsHandler:
         total_sessions = _i(kpi.get("total_sessions"))
         total_cost = _f(kpi.get("total_cost_usd"))
         cache_read_tokens = _i(kpi.get("total_cache_read_tokens"))
+        total_api_calls = _i(kpi.get("total_api_calls"))
 
         turns_by_session = {_s(r.get("session_id")): _i(r.get("turns")) for r in turns_rows}
         files_by_session = {_s(r.get("session_id")): r for r in file_rows}
 
-        total_turns = sum(turns_by_session.get(_s(r.get("session_id")), 0) for r in cost_facts)
         cache_read_cost_usd, unpriced = self._price_cache_reads(model_rows)
 
         worst_ratio: float | None = None
@@ -925,7 +933,7 @@ class LocalAnalyticsHandler:
         for row in cost_facts:
             sid = _s(row.get("session_id"))
             turns = turns_by_session.get(sid, 0)
-            ratio = (_i(row.get("cache_read_tokens")) / turns) if turns else 0.0
+            ratio = _ctx_per_call(row.get("cache_read_tokens"), row.get("api_call_count"))
             # Highest ratio wins; a tie goes to the lowest session id, not to row order.
             if worst_ratio is None or ratio > worst_ratio or (ratio == worst_ratio and sid < worst_trace):
                 worst_ratio = ratio
@@ -947,7 +955,7 @@ class LocalAnalyticsHandler:
 
         data = {
             "kpis": {
-                "avg_context_per_call": (cache_read_tokens / total_turns) if total_turns else 0.0,
+                "avg_context_per_call": _ctx_per_call(cache_read_tokens, total_api_calls),
                 "worst_session_ctx_per_call": worst_ratio,
                 "worst_session_prompt": worst_prompt,
                 "worst_session_trace_id": worst_trace,

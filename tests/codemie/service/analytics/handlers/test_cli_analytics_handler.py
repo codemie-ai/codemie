@@ -514,6 +514,112 @@ async def test_rows_with_developer_name_also_carry_user_email() -> None:
         assert row["user_email"] == email
 
 
+def test_ctx_per_call_helper_divides_and_zero_guards():
+    from codemie.service.analytics.handlers.cli_analytics_handler import _ctx_per_call
+
+    assert _ctx_per_call(1000, 10) == 100.0
+    assert _ctx_per_call(1000, 0) == 0.0  # zero-guard: api_call_count == 0 must not raise
+    assert _ctx_per_call(0, 5) == 0.0
+
+
+@pytest.mark.asyncio
+async def test_overview_avg_context_per_call_divides_by_api_call_count():
+    """One turn can trigger many API calls (tool use); turns must not be the divisor."""
+    repo = MagicMock()
+    repo.get_cost_kpis = AsyncMock(
+        return_value=[
+            {
+                "total_sessions": 1,
+                "total_cost_usd": 1.0,
+                "total_input_tokens": 0,
+                "total_output_tokens": 0,
+                "total_cache_read_tokens": 1000,
+                "total_cache_creation_tokens": 0,
+                "total_api_calls": 10,
+            }
+        ]
+    )
+    repo.get_model_breakdown = AsyncMock(return_value=[])
+    repo.get_lines_totals = AsyncMock(return_value=[])
+    repo.get_lines_daily = AsyncMock(return_value=[])
+    repo.get_turns_by_session = AsyncMock(return_value=[{"session_id": "s1", "turns": 1}])
+    repo.get_file_facts_by_session = AsyncMock(return_value=[])
+    repo.get_tool_success_by_session = AsyncMock(return_value=[])
+    repo.get_session_durations = AsyncMock(return_value=[])
+    repo.get_session_cost_facts = AsyncMock(return_value=[{**BASE_COST_ROW, "session_id": "s1"}])
+    handler = LocalAnalyticsHandler(repo)
+
+    data, _, _ = await handler.get_overview(make_filter())
+
+    # 1000 cache_read_tokens / 10 api calls = 100 — the old formula (/1 turn) would give 1000.
+    assert data["kpis"]["avg_context_per_call"] == 100.0
+
+
+@pytest.mark.asyncio
+async def test_sessions_ctx_per_call_field_uses_api_call_count_and_sorts_by_it():
+    s1 = {**BASE_COST_ROW, "session_id": "s1", "cache_read_tokens": 1000, "api_call_count": 200}
+    s2 = {**BASE_COST_ROW, "session_id": "s2", "cache_read_tokens": 1000, "api_call_count": 20}
+    repo = MagicMock()
+    repo.get_session_cost_facts = AsyncMock(return_value=[s1, s2])
+    # turns-based ratio would rank s1 (1000/10=100) above s2 (1000/100=10) — the opposite order.
+    repo.get_turns_by_session = AsyncMock(
+        return_value=[{"session_id": "s1", "turns": 10}, {"session_id": "s2", "turns": 100}]
+    )
+    repo.get_tool_success_by_session = AsyncMock(return_value=[])
+    repo.get_lines_by_session = AsyncMock(return_value=[])
+    repo.get_model_breakdown = AsyncMock(return_value=[])
+    repo.get_skill_names_by_session = AsyncMock(return_value=[])
+    handler = LocalAnalyticsHandler(repo)
+
+    data, _, _ = await handler.get_sessions(make_filter(), page=0, per_page=20, sort_by="ctx_per_call", search=None)
+
+    rows = data["sessions"]
+    sessions = {r["trace_id"]: r for r in rows}
+    assert sessions["s1"]["ctx_per_call"] == 5.0  # 1000 / 200 api calls
+    assert sessions["s2"]["ctx_per_call"] == 50.0  # 1000 / 20 api calls
+    assert [r["trace_id"] for r in rows] == ["s2", "s1"]  # highest ctx_per_call first
+
+    from codemie.rest_api.models.cli_analytics import LocalAnalyticsSessionRow
+
+    # rows[0] is "s2" (highest ctx_per_call, sorted above) — its source row carries api_call_count=20.
+    dumped = LocalAnalyticsSessionRow(**rows[0]).model_dump(by_alias=True)
+    assert dumped["ctx_per_call"] == rows[0]["ctx_per_call"]
+    assert dumped["api_call_count"] == 20
+
+
+@pytest.mark.asyncio
+async def test_efficiency_worst_session_and_avg_use_api_call_count():
+    """Heavy tool use (many calls per turn) must not look less bloated than few calls."""
+    s1 = {**BASE_COST_ROW, "session_id": "s1", "cache_read_tokens": 1000, "api_call_count": 10}
+    s2 = {**BASE_COST_ROW, "session_id": "s2", "cache_read_tokens": 1000, "api_call_count": 100}
+    repo = MagicMock()
+    repo.get_cost_kpis = AsyncMock(
+        return_value=[
+            {
+                "total_sessions": 2,
+                "total_cost_usd": 2.0,
+                "total_cache_read_tokens": 2000,
+                "total_api_calls": 110,
+            }
+        ]
+    )
+    repo.get_model_breakdown = AsyncMock(return_value=[])
+    repo.get_session_cost_facts = AsyncMock(return_value=[s1, s2])
+    # turns-based ratio would make s2 (1000/5=200) "worse" than s1 (1000/100=10) — reversed.
+    repo.get_turns_by_session = AsyncMock(
+        return_value=[{"session_id": "s1", "turns": 100}, {"session_id": "s2", "turns": 5}]
+    )
+    repo.get_file_facts_by_session = AsyncMock(return_value=[])
+    repo.get_lines_totals = AsyncMock(return_value=[])
+    handler = LocalAnalyticsHandler(repo)
+
+    data, _ = await handler.get_efficiency(make_filter())
+
+    kpis = data["kpis"]
+    assert kpis["worst_session_trace_id"] == "s1"  # 1000/10=100 beats 1000/100=10
+    assert kpis["avg_context_per_call"] == pytest.approx(2000 / 110)
+
+
 def make_detail_handler(meta_row):
     repo = MagicMock()
     repo.get_session_detail_meta = AsyncMock(return_value=[meta_row])
