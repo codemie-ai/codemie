@@ -69,6 +69,15 @@ router = APIRouter(
 # ==================== Helpers ====================
 
 
+def _displayed_member_max_budget(
+    allocation: ProjectMemberBudgetAssignment, budget: Budget, enforce_limit: bool
+) -> float:
+    """Return the member max to display: the stored amount when enforced or overridden, else the project max."""
+    if enforce_limit or allocation.allocation_mode == AllocationMode.FIXED.value:
+        return allocation.allocated_max_budget
+    return budget.max_budget
+
+
 def _build_project_budget_response(
     budget: Budget,
     assignment: ProjectBudgetAssignment | None,
@@ -77,9 +86,7 @@ def _build_project_budget_response(
     provider_meta: dict = budget.provider_metadata or {}
     project_name = assignment.project_name if assignment else ""
     enforce_limit = SettingsService.get_enforce_member_spend_limits(project_name)
-    # When enforcement is disabled each member holds the full budget independently,
-    # so the aggregate can exceed the project cap.
-    allocated_total = sum(a.allocated_max_budget if enforce_limit else budget.max_budget for a in allocations)
+    allocated_total = sum(_displayed_member_max_budget(a, budget, enforce_limit) for a in allocations)
     return ProjectBudgetResponse(
         budget_id=budget.budget_id,
         project_name=project_name,
@@ -106,7 +113,7 @@ def _build_project_budget_response(
                 user_id=a.user_id,
                 allocation_mode=a.allocation_mode,
                 allocated_soft_budget=a.allocated_soft_budget,
-                allocated_max_budget=a.allocated_max_budget if enforce_limit else budget.max_budget,
+                allocated_max_budget=_displayed_member_max_budget(a, budget, enforce_limit),
                 sync_status=a.sync_status,
                 budget_id=_member_budget_id(a),
             )
@@ -352,7 +359,7 @@ async def list_project_budget_members(
                 user_id=a.user_id,
                 allocation_mode=a.allocation_mode,
                 allocated_soft_budget=a.allocated_soft_budget,
-                allocated_max_budget=a.allocated_max_budget if enforce_limit else budget.max_budget,
+                allocated_max_budget=_displayed_member_max_budget(a, budget, enforce_limit),
                 sync_status=a.sync_status,
                 budget_id=_member_budget_id(a),
             )

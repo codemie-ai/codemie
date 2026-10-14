@@ -1,0 +1,87 @@
+{
+  "decision": "request-changes",
+  "rationale": "One decision_needed finding (CR-001): a budget created with allocation_mode=\"fixed\" tags every member row fixed without an override, so with enforcement off those members now display their equal-split share instead of budget.max_budget — the task's \"allocation_mode is fixed\" rule and its \"non-overridden members keep budget.max_budget\" rule conflict there and need human intent. Compact profile: blind and verification-gap lenses and the standards audit were not run by design; AC6b is pending Stage 7. 0 deferred, 0 dismissed; the one candidate was verified reachable against source.",
+  "confidence": "low",
+  "risk_flags": ["breaking-change"],
+  "business_review": [
+    {
+      "kind": "story-ac",
+      "item": "AC1: enforcement off + fixed override returns the stored override (including 0) from the members endpoint and _build_project_budget_response",
+      "status": "pass",
+      "notes": "Helper branches on allocation_mode, not amount; both call sites use it."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC2: enforcement off + member without override returns budget.max_budget",
+      "status": "pass",
+      "notes": "Holds for equal-mode rows. Open for budgets created in fixed mode, whose never-overridden rows are tagged fixed — see CR-001."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC3: enforcement on returns persisted allocated_max_budget for every member",
+      "status": "pass",
+      "notes": "enforce_limit short-circuits to the stored amount."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC4: allocated_member_budget_total equals the sum of per-member values in the same response",
+      "status": "pass",
+      "notes": "Total sums the same helper used for the per-member value."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC5: no diff in src/codemie/enterprise/litellm/ or src/codemie/service/budget/",
+      "status": "pass",
+      "notes": "Diff touches only project_budget_router.py and its test file."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC6a: regression tests cover 1-4 for builder and members endpoint (fixed row, zero-amount fixed row, mixed rows with total)",
+      "status": "pass",
+      "notes": "Parametrized builder and endpoint tests cover fixed, zero-amount fixed and equal rows; builder asserts the total."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC6b: existing enforcement tests in the file pass unmodified",
+      "status": "pending-stage-7",
+      "notes": "Diff only adds tests; passing requires the Stage 7 test run."
+    },
+    {
+      "kind": "spec",
+      "item": "Rule expressed once and reused at all three sites",
+      "status": "pass",
+      "notes": "Single helper _displayed_member_max_budget replaces the inline expressions."
+    },
+    {
+      "kind": "spec",
+      "item": "Stale inline comment at 80-81 corrected or removed",
+      "status": "pass",
+      "notes": "Comment removed."
+    },
+    {
+      "kind": "spec",
+      "item": "allocated_soft_budget, allocation_mode and other fields unchanged; no response model or OpenAPI change",
+      "status": "pass",
+      "notes": "No model files in the diff; soft budget still read straight from the row."
+    }
+  ],
+  "standards_review": [
+    { "kind": "commit-format", "status": "na", "notes": "Not audited: the compact profile omits the standards audit." },
+    { "kind": "code-quality", "status": "na", "notes": "Not audited: the compact profile omits the standards audit." },
+    { "kind": "security", "status": "na", "notes": "Not audited: the compact profile omits the standards audit." }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "decision",
+      "severity": "major",
+      "triage": "decision_needed",
+      "file": "src/codemie/rest_api/routers/project_budget_router.py",
+      "line": 76,
+      "title": "Fixed-mode budgets show split as override",
+      "problem": "_displayed_member_max_budget treats allocation_mode == \"fixed\" as \"this member has a saved override\". That does not hold for a budget created in fixed mode: ProjectBudgetCreateRequest.allocation_mode is a free string, _validate_allocation_mode accepts any AllocationMode value including \"fixed\", and create_project_budget passes it to _allocate_equal (project_budget_service.py:925-932), which stamps every member row with that mode. On such a budget, with enforcement off, never-overridden members now return their equal-split share instead of budget.max_budget, and allocated_member_budget_total falls to the sum of those shares.",
+      "impact": "Reachable from the create endpoint (verified against source). For budgets created in fixed mode the change alters the displayed amount for members who have no override — the population the task says must keep returning budget.max_budget — while the task also states the rule as \"allocation_mode is fixed\". Display only; nothing enforced at the provider changes.",
+      "recommendation": "Human decision required: for a budget created with allocation_mode=\"fixed\", should never-overridden members display their stored share (the task's literal \"allocation_mode is fixed\" rule — no code change) or budget.max_budget (the task's \"non-overridden members keep returning budget.max_budget\")? If the latter, discriminate in the router on the override itself — `allocation.override_budget_id is not None`, set at project_budget_service.py:1472 and cleared at :1542 — instead of on allocation_mode, and add a regression test for a fixed-mode budget with no overrides. Keep the change inside project_budget_router.py: src/codemie/service/budget/ is out of scope for this task. Gating on the assignment's mode instead would hide real overrides on fixed-mode budgets."
+    }
+  ]
+}

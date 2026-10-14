@@ -1,0 +1,148 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15764_show-member-budget-override",
+  "head": "1434dd57c3d8d8b2f2c955374ef82e9fa1ff0d9b",
+  "runner": "poetry",
+  "started_at": "2026-10-13T10:22:39Z",
+  "completed_at": "2026-10-13T10:41:42Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 7062,
+      "command": "make ruff",
+      "exit_code": 0,
+      "notes": "2834 files left unchanged; working tree identical to HEAD after the format/fix steps."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 21084,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2896,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make gitleaks",
+      "exit_code": null,
+      "notes": "Skip-if 'Docker is unavailable' holds: no docker binary on PATH (Podman is installed and running, but the target is docker-only). The full-tree secret scan did not run and is still owed. To run locally: put a Docker CLI on PATH, or use the guide's fallback, a locally installed `gitleaks dir --no-banner .`."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 1094363,
+      "command": "make test",
+      "exit_code": 2,
+      "notes": "Scoped out by the user mid-run ('do not run full unrelated test suites'), so recorded N/A rather than judged. The run had already started; the attempt to stop it was denied by the permission system. The process ended at about 10:41Z with make exit 2 ('make: *** [Makefile:31: test] Error 1') at 93% progress and without a pytest summary, so it did not finish normally and no test names were captured. Its progress output showed about 120 failing tests (F); whether they relate to this change is undetermined. Raw output: gate-logs.local/unit.log. Removed from gate-plan.local.json so a cached plan does not rerun it; the changed test file ran as the 'affected' gate instead."
+    },
+    {
+      "id": "affected",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 50920,
+      "command": "poetry run pytest tests/codemie/rest_api/routers/test_project_budget_router.py",
+      "exit_code": 0,
+      "notes": "77 passed. Not a guide-defined gate: the path is the changed test file from the diff and the command is the one recorded in implementation-notes.local.md, run in place of the full suite after the user's instruction."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make coverage",
+      "exit_code": null,
+      "notes": "Skip-if 'The user did not request coverage' holds; it would also run the full suite."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make sonar-local",
+      "exit_code": null,
+      "notes": "Skip-if 'required credentials are unavailable' holds: SONAR_TOKEN is not set in the environment or .env.local, and sonar-scanner is not on PATH. Not executed. To run locally: set SONAR_TOKEN and install the SonarScanner CLI (or set SONAR_SCANNER_PATH); it also runs the full suite for coverage unless SONAR_SKIP_TESTS is set."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make verify",
+      "exit_code": null,
+      "notes": "Skip-if 'environment prerequisites are missing' holds: its gitleaks step needs Docker. Its ruff and license steps ran as their own gates; its gitleaks and full-test steps did not run."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "exit_code": null,
+      "notes": "Skip-if 'You are not opening a merge request' holds for this run: the gate runner opens no MR. Still owed before an MR: the compliance bot requires the terminal summary in a '## Test harness' section. Needs the backend started from this branch at http://localhost:8080 (~/.codemie/test-harness.json, ENV=local); port 8080 was listening but was not verified to serve the branch code."
+    },
+    {
+      "id": "secrets-staged",
+      "source": "hook",
+      "status": "FAIL",
+      "duration_ms": 3035,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": 125,
+      "notes": "The scan did not start; the script itself reports 'scan failed to run (exit 125) - this is NOT a secret finding'. Podman rejected the extra git-dir volume the script adds: under Git Bash on Windows the git-dir path does not compare equal to '<repo_root>/.git', so the linked-worktree branch fires and passes a Windows path Podman cannot parse. Nothing was staged either (commit 1434dd5 is already made), so a successful run would have scanned nothing. No pre-commit hooks are installed in this checkout (.git/hooks holds only samples, core.hooksPath is unset), so this hook has not run for the commit. With the guide's `make gitleaks` skipped, no secret scan covers this change."
+    },
+    {
+      "id": "ruff-staged",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 383,
+      "command": "bash scripts/git-hooks/_ruff_staged.sh",
+      "exit_code": 0,
+      "notes": "Self-skip: '[pre-commit] No staged Python files - skipping Ruff format/fix check.' Nothing is staged because the change is already committed. The remaining pre-commit steps (`poetry run ruff check`, license header check) are covered by the lint and license gates."
+    },
+    {
+      "id": "commit-msg",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 921,
+      "command": "bash scripts/git-hooks/commit_msg.sh <message of 1434dd57>",
+      "exit_code": 0,
+      "notes": "The only commit in origin/main..HEAD; subject starts with 'EPMCDME-15764:'."
+    },
+    {
+      "id": "pre-push",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 1043,
+      "command": "bash scripts/git-hooks/pre_push.sh",
+      "exit_code": 0,
+      "notes": "Self-skip: '[pre-push] CODEMIE_PREPUSH_ENABLED=false -> skipping heavy checks.' Opt-in hook; with CODEMIE_PREPUSH_ENABLED=true it runs pytest over tests/ excluding tests/enterprise with coverage, then `SONAR_SKIP_TESTS=1 make sonar-local`. Mismatch with the guides: they describe the full suite and sonar as part of the pre-commit hook, while pre_commit.sh runs only ruff and the license check."
+    },
+    {
+      "id": "pre-ci-guard",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": ".gitlab-ci.yml: wait-ci-init (EXPECTED_CONTEXTS: ci-pipeline, compliance-report)",
+      "exit_code": null,
+      "notes": "Needs a GitLab merge request targeting main; the job comes from epm-cdme/codemie-gitlab-templates@0.1.2 and waits for the external 'ci-pipeline' and 'compliance-report' statuses, whose checks are not defined in this checkout. Mismatch with the guide, which says no pipeline in this repository runs these gates: .gitlab-ci.yml exists and blocks MRs to main on those two statuses. Only the MR pipeline can settle them."
+    }
+  ],
+  "failures": {
+    "secrets-staged": "codemie-gitleaks: scanning staged changes with podman (ghcr.io/gitleaks/gitleaks:v8.30.1)\nError: invalid option type \"\\\\Users\\\\kostiantyn_pshenych1\\\\Documents\\\\cdme\\\\codemie\\\\.git\"\n\ncodemie-gitleaks: scan failed to run (exit 125) - this is NOT a secret finding.\nCommon causes: image pull failed (offline), container OOM, or git 'dubious ownership' inside the container.\nFix the environment and retry; do not bypass the secrets gate for scan-run failures."
+  }
+}

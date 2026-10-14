@@ -1,0 +1,63 @@
+{
+  "decision": "approve",
+  "rationale": "CR-001 was the only finding of the final review and was a decision_needed item, not a defect. The human decision is recorded in decisions.jsonl (gate code-review.final, approve): keep the allocation_mode == \"fixed\" rule, because it is the same rule main already uses to mark a member budget as overridden. No code changed after the final review, so no automated check round was run; this file records the outcome of that decision. AC6b, pending in the final review, passed in the quality-gate run (tests/codemie/rest_api/routers/test_project_budget_router.py: 77 passed). Coverage is unchanged from the final review: compact profile, no blind or verification-gap lens, no standards audit.",
+  "confidence": "medium",
+  "risk_flags": ["breaking-change"],
+  "business_review": [
+    {
+      "kind": "story-ac",
+      "item": "AC1: enforcement off + fixed override returns the stored override (including 0) from the members endpoint and _build_project_budget_response",
+      "status": "pass",
+      "notes": "Unchanged from the final review."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC2: enforcement off + member without override returns budget.max_budget",
+      "status": "pass",
+      "notes": "Holds for equal-mode rows. For budgets created in fixed mode every row is fixed and shows its stored share; accepted by human decision (CR-001)."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC3: enforcement on returns persisted allocated_max_budget for every member",
+      "status": "pass",
+      "notes": "Unchanged from the final review."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC4: allocated_member_budget_total equals the sum of per-member values in the same response",
+      "status": "pass",
+      "notes": "Unchanged from the final review."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC5: no diff in src/codemie/enterprise/litellm/ or src/codemie/service/budget/",
+      "status": "pass",
+      "notes": "Unchanged from the final review."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC6a: regression tests cover 1-4 for builder and members endpoint (fixed row, zero-amount fixed row, mixed rows with total)",
+      "status": "pass",
+      "notes": "Unchanged from the final review."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC6b: existing enforcement tests in the file pass unmodified",
+      "status": "pass",
+      "notes": "Quality-gate run: the router test file passed, 77 tests, existing tests not modified."
+    }
+  ],
+  "standards_review": [
+    { "kind": "commit-format", "status": "na", "notes": "Not audited: the compact profile omits the standards audit." },
+    { "kind": "code-quality", "status": "na", "notes": "Not audited: the compact profile omits the standards audit." },
+    { "kind": "security", "status": "na", "notes": "Not audited: the compact profile omits the standards audit." }
+  ],
+  "findings": [],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "resolved",
+      "notes": "Human decision recorded: keep discriminating on allocation_mode == \"fixed\", consistent with how main marks an overridden member budget. No code change."
+    }
+  ]
+}

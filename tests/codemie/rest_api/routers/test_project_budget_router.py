@@ -253,6 +253,107 @@ async def test_list_project_budget_members_returns_effective_budget_when_enforce
     assert result.data[0].allocated_max_budget == 100.0
 
 
+def _fixed_override_budget() -> SimpleNamespace:
+    return SimpleNamespace(
+        budget_id="proj-budget-1",
+        budget_category="cli",
+        budget_type="project",
+        name="CLI Budget",
+        description=None,
+        soft_budget=0.0,
+        max_budget=100.0,
+        budget_duration="30d",
+        budget_reset_at=None,
+        is_active=True,
+        provider_metadata={},
+        created_by="admin-1",
+        created_at=None,
+        updated_at=None,
+    )
+
+
+def _fixed_override_allocations() -> list[SimpleNamespace]:
+    rows = [
+        ("user-1", "fixed", 10.0, 30.0),
+        ("user-2", "fixed", 0.0, 0.0),
+        ("user-3", "equal", 20.0, 70.0),
+    ]
+    return [
+        SimpleNamespace(
+            user_id=user_id,
+            allocation_mode=allocation_mode,
+            allocated_soft_budget=soft_budget,
+            allocated_max_budget=max_budget,
+            sync_status="ok",
+            provider_metadata={},
+        )
+        for user_id, allocation_mode, soft_budget, max_budget in rows
+    ]
+
+
+@pytest.mark.parametrize(
+    ("enforce_limit", "expected_max", "expected_total"),
+    [
+        (False, [30.0, 0.0, 100.0], 130.0),
+        (True, [30.0, 0.0, 70.0], 100.0),
+    ],
+)
+def test_build_project_budget_response_fixed_override(enforce_limit, expected_max, expected_total):
+    assignment = SimpleNamespace(project_name="proj-a", allocation_mode="equal")
+
+    with patch(
+        "codemie.rest_api.routers.project_budget_router.SettingsService.get_enforce_member_spend_limits",
+        return_value=enforce_limit,
+    ):
+        result = _build_project_budget_response(_fixed_override_budget(), assignment, _fixed_override_allocations())
+
+    assert [m.allocated_max_budget for m in result.member_allocations] == expected_max
+    assert result.allocated_member_budget_total == expected_total
+    assert [m.allocated_soft_budget for m in result.member_allocations] == [10.0, 0.0, 20.0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("enforce_limit", "expected_max"),
+    [
+        (False, [30.0, 0.0, 100.0]),
+        (True, [30.0, 0.0, 70.0]),
+    ],
+)
+async def test_list_project_budget_members_fixed_override(enforce_limit, expected_max):
+    session = AsyncMock()
+    assignment = SimpleNamespace(project_name="proj-a")
+
+    with (
+        patch(
+            "codemie.rest_api.routers.project_budget_router.get_async_session",
+            return_value=mock_session_ctx(session),
+        ),
+        patch(
+            "codemie.rest_api.routers.project_budget_router.project_budget_service.get_project_budget",
+            new=AsyncMock(return_value=(_fixed_override_budget(), assignment, _fixed_override_allocations())),
+        ),
+        patch(
+            "codemie.rest_api.routers.project_budget_router.SettingsService.get_enforce_member_spend_limits",
+            return_value=enforce_limit,
+        ),
+    ):
+        result = await list_project_budget_members("proj-budget-1", user=admin_user())
+
+    assert [m.allocated_max_budget for m in result.data] == expected_max
+
+
+def test_build_project_budget_response_fixed_override_without_assignment():
+    with patch(
+        "codemie.rest_api.routers.project_budget_router.SettingsService.get_enforce_member_spend_limits",
+        return_value=False,
+    ):
+        result = _build_project_budget_response(_fixed_override_budget(), None, _fixed_override_allocations())
+
+    assert [m.allocated_max_budget for m in result.member_allocations] == [30.0, 0.0, 100.0]
+    assert result.allocated_member_budget_total == 130.0
+
+
 @pytest.mark.asyncio
 async def test_project_admin_can_list_budgets_for_owned_project():
     session = AsyncMock()

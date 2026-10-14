@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "generated": "2026-10-13T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 1, "label": "XS" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 9,
+  "size": "XS",
+  "band_range": "6-9",
+  "files_changed": 2,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "One new display helper in the project budget router, applied on two response paths (the shared project budget response builder and the member list endpoint). Self-contained in a single component with no layer boundary crossed; scored one step above the bundled XS anchor (epmcdme-10101, single endpoint) because the builder feeds several endpoints."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "Diffstat reports 2 files changed, both pre-existing (the router and its test module), 0 new, 113 insertions and 5 deletions, mostly parameterized test cases for fixed overrides with enforcement on and off."
+    }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "task": "With member spend-limit enforcement off, make the project-budget API read path return a fixed-mode member's stored override amount instead of the full project budget, keep the aggregate total consistent, and add regression tests.",
+  "generated": "2026-10-13T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 1, "label": "XS" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 9,
+  "size": "XS",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "writing-plans",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "One component in one layer: the project-budget router. The rule is inlined three times across two functions (the shared budget-response builder, which feeds eight endpoints, and the members-list endpoint), so it is more than a single-function edit but crosses no layer boundary. Service, repository, response models, provider adapter and runtime sync are untouched."
+    },
+    {
+      "dimension": "requirements_clarity",
+      "reason": "Six concrete acceptance criteria and an explicit display-only scope. Two light points remain for the plan: whether to fold the three copies into one per-member helper, and stating that the displayed override may differ from the cap live at the provider. The stale inline comment about every member holding the full budget needs updating."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "Closest pattern is the existing enforcement-off rule from EPMCDME-12959 in the same router, with matching router tests (namespace fixtures plus a patched settings lookup) that serve as a template for the new fixed and mixed-mode cases, so no test-template bump applies. Scored S rather than XS because it changes a user-visible budget figure, narrows an earlier acceptance criterion, must keep three expressions and the aggregate in agreement, and has a zero-override trap if the branch is written on truthiness instead of allocation mode. No security, performance or schema impact; rollback is a revert. Calibration: the task sits between the bundled XS example epmcdme-10101-add-logging-to-endpoint (6, one file, non-functional) and the S example epmcdme-10102-add-validation-to-form-field (11, three files across API and Service); it is single-layer like the XS example but changes business display logic and adds tests. Total 9 is on the XS/S boundary and stays XS because neither Technical Risk nor Component Scope is XL or above and the existing pattern covers nearly all of the implementation."
+    }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}
