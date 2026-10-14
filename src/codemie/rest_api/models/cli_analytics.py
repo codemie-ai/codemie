@@ -231,7 +231,7 @@ class LocalAnalyticsDispatchRow(BaseModel):
     label: str
     kind: str = Field(..., description="'session' | 'agent' | 'skill' | 'command'")
     start_offset_ms: int
-    duration_ms: int
+    duration_ms: int | None = Field(None, description="null when an agent's stop never arrived")
     cost_usd: float | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None

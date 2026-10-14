@@ -72,6 +72,40 @@ def _i(value: Any) -> int:
         return 0
 
 
+def _clamp_to_session(duration_ms: int | None, start_offset_ms: int, session_duration_ms: int) -> int | None:
+    """Keep start + duration within the session: a subagent that stopped after the session ended is cut at its end."""
+    if duration_ms is None or start_offset_ms >= session_duration_ms:
+        return None
+    return min(duration_ms, session_duration_ms - start_offset_ms)
+
+
+def _duration_for_kind(row: dict, kind: str) -> int | None:
+    """Skills and commands: the interaction span. Agents: the subagent's call-to-stop run time, None if unknown."""
+    if kind in ("skill", "command"):
+        return _i(row.get("real_duration_ms"))
+    if kind == "agent":
+        value = row.get("subagent_duration_ms")
+        return None if value is None else _i(value)
+    return _i(row.get("duration_ms"))
+
+
+def _bar_position(row: dict, kind: str, session_start: datetime, session_duration_ms: int) -> tuple[int, int | None]:
+    """A dispatch bar's start offset and duration in ms from the session start.
+
+    An agent bar with no known start, or a start before the session, cannot be placed: offset 0 and no duration.
+    Otherwise an agent's run is clamped to the session end.
+    """
+    dispatch_start = row.get("dispatch_start")
+    placed = isinstance(dispatch_start, datetime)
+    offset = int((dispatch_start - session_start).total_seconds() * 1000) if placed else 0
+    duration = _duration_for_kind(row, kind)
+    if kind != "agent":
+        return offset, duration
+    if not placed or offset < 0:
+        return 0, None
+    return offset, _clamp_to_session(duration, offset, session_duration_ms)
+
+
 def _f(value: Any) -> float:
     if value is None:
         return 0.0
@@ -778,16 +812,13 @@ class LocalAnalyticsHandler:
             if entry is None:
                 continue
             label, kind = entry
-            span_start = row.get("span_start")
-            offset = int((span_start - session_start).total_seconds() * 1000) if isinstance(span_start, datetime) else 0
+            offset, duration = _bar_position(row, kind, session_start, session_duration_ms)
             dispatches.append(
                 {
                     "label": label,
                     "kind": kind,
                     "start_offset_ms": offset,
-                    "duration_ms": _i(row.get("real_duration_ms"))
-                    if kind in ("skill", "command")
-                    else _i(row.get("duration_ms")),
+                    "duration_ms": duration,
                     **_token_dict(
                         _f(row.get("cost_usd")),
                         _i(row.get("input_tokens")),

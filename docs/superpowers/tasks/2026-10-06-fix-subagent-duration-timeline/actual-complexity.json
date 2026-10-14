@@ -1,0 +1,65 @@
+{
+  "task": "EPMCDME-15512: agent dispatch bars in the CLI analytics session Timeline start at the Agent tool call start (agent.tool.start; the launch ack only as a fallback) and run until SubagentStop, clamped to session end; implemented in reader SQL, handler, response model, and tests.",
+  "generated": "2026-10-06T00:00:00Z",
+  "dimensions": {
+    "component_scope": {
+      "score": 4,
+      "label": "L",
+      "affected": "CLI analytics PostgreSQL reader (session dispatch query), CLI analytics handler (dispatch assembly and clamping), Local Analytics response model (LocalAnalyticsDispatchRow), CLI analytics reader and handler test suites",
+      "layers": "Repository, Service, API (response model), Tests"
+    },
+    "requirements_clarity": {
+      "score": 2,
+      "label": "S",
+      "status": "Clear",
+      "gaps": "None material in code. Edge cases (no launch, launch before session start, stop after session end, missing stop) are explicitly handled in code and documented in docstrings."
+    },
+    "technical_risk": {
+      "score": 3,
+      "label": "M",
+      "risk_factors": "New CTE chain matching the Agent tool call to SubagentStop by agentId, tool_response parsing via regex for agentId, choice of the run-time anchor (the launch ack lags the call start by 1.9-8.3 s), timestamp arithmetic in SQL and Python, null semantics for unfinished subagents, clamping logic; changes the duration meaning of the public dispatch row (duration_ms null when stop never arrived)",
+      "mitigation": "Live dispatch test added (test_reader_live_dispatches.py) covering the subagent stop join and naive UTC start comparison; handler unit tests cover clamp and null paths; response model contract kept field-compatible with the UI"
+    },
+    "file_change_estimate": {
+      "score": 3,
+      "label": "M",
+      "modified_files": 7,
+      "modified_file_list": [
+        "src/codemie/repository/cli_analytics/postgres/reader.py",
+        "src/codemie/rest_api/models/cli_analytics.py",
+        "src/codemie/service/analytics/handlers/cli_analytics_handler.py",
+        "tests/codemie/repository/cli_analytics/postgres/test_reader.py",
+        "tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py",
+        "tests/codemie/rest_api/models/test_cli_analytics_models.py",
+        "tests/codemie/service/analytics/handlers/test_cli_analytics_handler.py"
+      ],
+      "new_files": 0,
+      "new_file_list": [],
+      "affected_dirs": ["src", "tests"]
+    },
+    "dependencies": {
+      "score": 1,
+      "label": "XS",
+      "new_packages": [],
+      "version_changes": []
+    },
+    "affected_layers": {
+      "score": 3,
+      "label": "M",
+      "layers_changed": ["Repository", "Service", "API (response model)"],
+      "schema_migration": false,
+      "cross_system": false
+    }
+  },
+  "total": 16,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 7,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Touches the cli_analytics reader SQL, the Local Analytics handler, and the LocalAnalyticsDispatchRow response model across Repository, Service and API-model layers; all within one subsystem" },
+    { "dimension": "technical_risk", "reason": "Introduces a new call-start-to-SubagentStop join keyed on agentId parsed from the Agent tool response, plus null and clamping semantics for unfinished or late subagents; no exact precedent for this join in the file" }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

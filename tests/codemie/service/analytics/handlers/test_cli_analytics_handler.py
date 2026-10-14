@@ -275,11 +275,15 @@ async def test_a_branch_keeps_a_filter_that_denies_every_session_denying():
         assert (call_filter.deny_all, call_filter.branch) == (True, "main")
 
 
-def _dispatch_row(*, subagent_type="", skill_name="", duration_ms=9, real_duration_ms=152845, offset_s=10):
+def _dispatch_row(
+    *, subagent_type="", skill_name="", duration_ms=9, real_duration_ms=152845, offset_s=10, dispatch_offset_s=None
+):
     return {
         "subagent_type": subagent_type,
         "skill_name": skill_name,
-        "span_start": datetime(2026, 1, 1, 0, 0, offset_s),
+        "span_start": datetime(2026, 1, 1) + timedelta(seconds=offset_s),
+        "dispatch_start": datetime(2026, 1, 1)
+        + timedelta(seconds=offset_s if dispatch_offset_s is None else dispatch_offset_s),
         "duration_ms": duration_ms,
         "real_duration_ms": real_duration_ms,
         "cost_usd": 0.0,
@@ -298,12 +302,29 @@ def test_skill_dispatch_uses_real_duration_ms():
     assert skill["duration_ms"] == 152845
 
 
-def test_agent_dispatch_uses_tool_execution_duration_ms():
-    """Agent duration_ms must come from tool execution time, not real_duration_ms (which overcounts post-agent work)."""
-    rows = [_dispatch_row(subagent_type="Explore", duration_ms=53235, real_duration_ms=130460, offset_s=25)]
+def test_agent_dispatch_uses_subagent_run_duration_ms():
+    """Agent duration_ms is the subagent's real run time (launch to its stop), not the Agent tool-execution span."""
+    rows = [_dispatch_row(subagent_type="Explore", duration_ms=6, offset_s=25) | {"subagent_duration_ms": 64500}]
     result = LocalAnalyticsHandler._build_dispatches(rows, datetime(2026, 1, 1, 0, 0, 0), 160000, 1.0)
     agent = next(d for d in result if d["kind"] == "agent")
-    assert agent["duration_ms"] == 53235
+    assert agent["duration_ms"] == 64500
+
+
+def test_agent_dispatch_without_subagent_stop_has_null_duration():
+    """A subagent with no stop event (session cut off mid-dispatch) reports null, never the tool span or 0."""
+    rows = [_dispatch_row(subagent_type="Explore", duration_ms=6, offset_s=25) | {"subagent_duration_ms": None}]
+    result = LocalAnalyticsHandler._build_dispatches(rows, datetime(2026, 1, 1, 0, 0, 0), 160000, 1.0)
+    agent = next(d for d in result if d["kind"] == "agent")
+    assert agent["duration_ms"] is None
+
+
+def test_skill_dispatch_ignores_subagent_duration_ms():
+    rows = [
+        _dispatch_row(skill_name="codemie:codemie-analytics", real_duration_ms=152845) | {"subagent_duration_ms": 1}
+    ]
+    result = LocalAnalyticsHandler._build_dispatches(rows, datetime(2026, 1, 1, 0, 0, 0), 160000, 1.0)
+    skill = next(d for d in result if d["kind"] == "skill")
+    assert skill["duration_ms"] == 152845
 
 
 def _users_repo(user_rows):
@@ -497,3 +518,78 @@ async def test_session_detail_harness_name_unknown_when_unresolved():
     handler = make_detail_handler({"session_id": "s1", "harness_service_name": None})
     detail, _ = await handler.get_session_detail("s1")
     assert detail["harness_name"] == "Unknown"
+
+
+def test_agent_dispatch_starts_at_dispatch_start_not_span_start():
+    # The bar starts when the subagent launched (dispatch_start), not when the Agent tool span began.
+    rows = [_dispatch_row(subagent_type="Explore", duration_ms=6, offset_s=7, dispatch_offset_s=10)]
+    rows[0] |= {"subagent_duration_ms": 1000}
+    result = LocalAnalyticsHandler._build_dispatches(rows, datetime(2026, 1, 1, 0, 0, 0), 160000, 1.0)
+    agent = next(d for d in result if d["kind"] == "agent")
+    assert agent["start_offset_ms"] == 10000
+
+
+def test_agent_run_is_clamped_to_the_session_end():
+    # A subagent that stopped after the session ended must not extend past it: start + duration <= session.
+    rows = [_dispatch_row(subagent_type="Explore", offset_s=25) | {"subagent_duration_ms": 200000}]
+    result = LocalAnalyticsHandler._build_dispatches(rows, datetime(2026, 1, 1, 0, 0, 0), 160000, 1.0)
+    agent = next(d for d in result if d["kind"] == "agent")
+    assert agent["start_offset_ms"] == 25000
+    assert agent["duration_ms"] == 135000
+    assert agent["start_offset_ms"] + agent["duration_ms"] == 160000
+
+
+def test_agent_launched_after_the_session_end_has_null_duration():
+    rows = [_dispatch_row(subagent_type="Explore", offset_s=200) | {"subagent_duration_ms": 5000}]
+    result = LocalAnalyticsHandler._build_dispatches(rows, datetime(2026, 1, 1, 0, 0, 0), 160000, 1.0)
+    agent = next(d for d in result if d["kind"] == "agent")
+    assert agent["duration_ms"] is None
+
+
+def test_agent_launched_before_the_session_has_null_duration_and_a_zero_offset():
+    # A launch before the session start cannot be placed on the timeline: no bar, and no negative offset.
+    rows = [_dispatch_row(subagent_type="Explore", offset_s=-5) | {"subagent_duration_ms": 9000}]
+    result = LocalAnalyticsHandler._build_dispatches(rows, datetime(2026, 1, 1, 0, 0, 0), 160000, 1.0)
+    agent = next(d for d in result if d["kind"] == "agent")
+    assert agent["start_offset_ms"] == 0
+    assert agent["duration_ms"] is None
+
+
+def test_agent_without_a_dispatch_start_has_null_duration():
+    # With no known launch the bar cannot be placed, so no duration is shown at the session start.
+    rows = [_dispatch_row(subagent_type="Explore") | {"dispatch_start": None, "subagent_duration_ms": 9000}]
+    result = LocalAnalyticsHandler._build_dispatches(rows, datetime(2026, 1, 1, 0, 0, 0), 160000, 1.0)
+    agent = next(d for d in result if d["kind"] == "agent")
+    assert agent["duration_ms"] is None
+
+
+def _agent_bars(rows: list[dict]) -> list[tuple[int, int]]:
+    """Each agent bar as [start, end) in ms from the session start, in start order."""
+    result = LocalAnalyticsHandler._build_dispatches(rows, datetime(2026, 1, 1, 0, 0, 0), 160000, 1.0)
+    agents = [d for d in result if d["kind"] == "agent"]
+    return sorted((d["start_offset_ms"], d["start_offset_ms"] + d["duration_ms"]) for d in agents)
+
+
+def test_parallel_agents_render_as_overlapping_bars():
+    # EPMCDME-15512 AC3: two subagents launched together overlap on the Timeline (session 52d226aa's shape),
+    # so the second bar starts before the first one ends; not dots from the 3-6 ms tool-execution span.
+    rows = [
+        _dispatch_row(subagent_type="Explore", dispatch_offset_s=7.661) | {"subagent_duration_ms": 57102},
+        _dispatch_row(subagent_type="Explore", dispatch_offset_s=8.597) | {"subagent_duration_ms": 27502},
+    ]
+    (first_start, first_end), (second_start, second_end) = _agent_bars(rows)
+    assert (first_start, first_end) == (7661, 64763)
+    assert (second_start, second_end) == (8597, 36099)
+    assert second_start < first_end
+
+
+def test_sequential_agents_render_as_separate_bars():
+    # EPMCDME-15512 AC3: a subagent called after the previous one stopped does not overlap it.
+    rows = [
+        _dispatch_row(subagent_type="Explore", dispatch_offset_s=13.524) | {"subagent_duration_ms": 20600},
+        _dispatch_row(subagent_type="Explore", dispatch_offset_s=40) | {"subagent_duration_ms": 15000},
+    ]
+    (first_start, first_end), (second_start, second_end) = _agent_bars(rows)
+    assert (first_start, first_end) == (13524, 34124)
+    assert (second_start, second_end) == (40000, 55000)
+    assert second_start >= first_end

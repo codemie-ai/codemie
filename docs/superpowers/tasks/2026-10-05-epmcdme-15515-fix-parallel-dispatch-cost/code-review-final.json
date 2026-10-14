@@ -1,0 +1,38 @@
+{
+  "decision": "request-changes",
+  "rationale": "Scope: merge-base(main) vs working tree, reader.py and its tests (3 files, +345/-20). The agent cost chain (Agent hook agentId -> llm_request agent_id -> parent_span_id -> api_request) is correct and verified on real data: the last three agent sessions (4314ad48, aebd51bf, 138b3655) show distinct non-null per-agent values. Two lens reviews ran on the inlined diff. Triage: fixed in this round (cheap, no behavior change for the verified data): docstring that claimed NULL for dispatches without a chain (now describes the owner's parent-span fallback and its known sharing limitation); DISTINCT ON (tool_use_id) dedupe on the launched CTE; agentId regex widened to accept '-' and '_'; a stale test name and a stale _seed_agent docstring; _get_engine now skips only on OSError, so query and schema errors fail. Triaged not blocking (checked against data, not observed): a duplicate agent.tool.end (0 found, now deduped anyway), re-sent api_request rows (0 found; ingest has a dedup ledger), an agent_id reused across dispatches (0 non-null found), agent ids with '-' or '_' (0 found, regex now covers them), jsonb '?' with asyncpg (verified live). One decision remains open and blocks approval: the fallback to the parent span also triggers when a dispatch has a launched agent_id but no api_request group under its llm_request span (the agent_usage join is NULL). In that case the cost of the main thread's span is attributed to the subagent. The owner's decision covered dispatches without the chain, not dispatches whose chain resolves to no events, so this needs an explicit answer. Confidence is low: a standalone round with no story or spec (no-spec mode), and the fallback logic was re-verified by tests only.",
+  "confidence": "low",
+  "risk_flags": ["breaking-change"],
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "na",
+      "notes": "Working-tree scope; changes are staged on top of HEAD 9dacda4eb and not committed."
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "ruff format and ruff check are clean on reader.py and the changed tests. session_id stays a bound parameter; _API_REQUEST and _LLM_REQUEST are int constants interpolated into the f-string, which is safe."
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "No auth, secrets or new untrusted-input path. The tool_response regex runs on telemetry we already store."
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "severity": "major",
+      "triage": "decision_needed",
+      "file": "src/codemie/repository/cli_analytics/postgres/reader.py",
+      "line": 690,
+      "title": "Agent dispatch with a resolved agentId but no api_request group falls back to the main thread's parent-span cost",
+      "problem": "coalesce(au.cost_usd, pu.cost_usd) takes the parent span's total when the agent_usage join is NULL, which includes the case where the agentId resolves but its llm_request group has no api_request rows. The parent span can be the main conversation's span.",
+      "impact": "Main-thread API cost is shown as a subagent's cost for that dispatch, so per-agent figures can overstate subagent spend and the dispatch rows can exceed the true subagent total.",
+      "recommendation": "Owner decision: either restrict the parent-span fallback to dispatches with no launched agentId at all (chain absent), returning NULL when the chain exists but has no events, or keep the fallback for both cases and document it. Then update the orphan/fallback tests to cover the chosen rule."
+    }
+  ],
+  "finding_status": null
+}

@@ -1,0 +1,63 @@
+{
+  "task": "EPMCDME-15515: agent dispatch rows in the CLI analytics session Timeline report only their own subagent's cost and tokens, through an exact agentId chain (Agent hook event -> llm_request agent_id -> api_request group), with the parent-span fallback restricted to dispatches without an agentId.",
+  "generated": "2026-10-06T00:00:00Z",
+  "dimensions": {
+    "component_scope": {
+      "score": 2,
+      "label": "S",
+      "affected": "CLI analytics PostgreSQL reader (session dispatch query) and its SQL-shape and live test suites",
+      "layers": "Repository, Tests"
+    },
+    "requirements_clarity": {
+      "score": 3,
+      "label": "M",
+      "status": "Clear goal, open attribution rule",
+      "gaps": "The ticket fixed the goal but not the attribution source; the fallback rule for a known agentId without api_request events needed an owner decision (CR-001)."
+    },
+    "technical_risk": {
+      "score": 4,
+      "label": "L",
+      "risk_factors": "Three approaches were needed (even split, time windows, ID chain); the chain spans three tables and parses agentId from tool_response; fallback rules can silently leak main-thread cost; live tests skip without a reachable database and one passed by accident",
+      "mitigation": "Live tests seeded like real telemetry and run red first; query verified over all real sessions in the local analytics DB and against the API for session 52d226aa"
+    },
+    "file_change_estimate": {
+      "score": 2,
+      "label": "S",
+      "modified_files": 3,
+      "modified_file_list": [
+        "src/codemie/repository/cli_analytics/postgres/reader.py",
+        "tests/codemie/repository/cli_analytics/postgres/test_reader.py",
+        "tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py"
+      ],
+      "new_files": 1,
+      "new_file_list": [
+        "tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py"
+      ],
+      "affected_dirs": ["src", "tests"]
+    },
+    "dependencies": {
+      "score": 1,
+      "label": "XS",
+      "new_packages": [],
+      "version_changes": []
+    },
+    "affected_layers": {
+      "score": 2,
+      "label": "S",
+      "layers_changed": ["Repository"],
+      "schema_migration": false,
+      "cross_system": false
+    }
+  },
+  "total": 14,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 3,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "technical_risk", "reason": "The attribution source was not obvious: two approaches were tried and replaced before the agentId chain, and the fallback rule needed a review round to stop main-thread cost leaking onto subagents" },
+    { "dimension": "component_scope", "reason": "All production changes are in one SQL query in one repository file; the handler and the response model are unchanged for cost" }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

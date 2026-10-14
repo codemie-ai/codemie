@@ -1,0 +1,59 @@
+{
+  "gate_id": "code-review.check",
+  "decision": "approve",
+  "confidence": "high",
+  "risk_flags": ["breaking-change"],
+  "business_review": [
+    {
+      "id": "AC1",
+      "requirement": "For each subagent, duration_ms equals the real run time from the Agent tool call until the subagent finished (tolerance ~1 s)",
+      "status": "pass",
+      "evidence": "Re-evaluated after the final round. The background-agent anchor was the async launch ack, which arrives 1.9-8.3 s after the Agent call starts in all 32 real background dispatches in the local analytics DB, so durations fell short of the ticket's definition by more than the tolerance (session 52d226aa: 54355 / 24795 ms vs 56923 / 27242 ms). The anchor is now agent.tool.start for background and foreground agents alike (launch ack only as a fallback); it precedes the Agent tool span by 150-300 ms. Session 52d226aa via the API: 57102 / 27502 ms."
+    },
+    {
+      "id": "AC2",
+      "requirement": "start_offset_ms + duration_ms does not exceed the session duration",
+      "status": "pass",
+      "evidence": "Session 52d226aa: 7661 + 57102 = 64763 and 8597 + 27502 = 36099, both below 311547; _clamp_to_session unchanged and covered by unit tests."
+    },
+    {
+      "id": "AC3",
+      "requirement": "Parallel subagents overlap; sequential do not",
+      "status": "pass",
+      "evidence": "Parallel: session 52d226aa [7.7 s, 64.8 s] and [8.6 s, 36.1 s] overlap. Sequential: all 124 sequential agent pairs in the local analytics DB still do not overlap with the new anchor (0 became overlapping, minimum gap 19 s), because a later call can only start after the main thread saw the earlier agent stop. Automated: live tests test_parallel_subagents_have_overlapping_windows and test_sequential_subagents_do_not_overlap (reader through handler) and handler unit tests test_parallel_agents_render_as_overlapping_bars and test_sequential_agents_render_as_separate_bars; all four fail with the original bug (mutation check)."
+    },
+    {
+      "id": "AC4",
+      "requirement": "The details panel shows the same duration as the API",
+      "status": "pass",
+      "evidence": "Carried forward from code-review-final.json (verified in codemie-ui by the user); no response-shape change in this round."
+    }
+  ],
+  "standards_review": [
+    {
+      "standard": "code-quality: ruff",
+      "status": "pass",
+      "notes": "poetry run ruff format and poetry run ruff check clean on reader.py and the two changed test files."
+    },
+    {
+      "standard": "security-patterns",
+      "status": "pass",
+      "notes": "SQL-only change; session_id stays a bound parameter."
+    },
+    {
+      "standard": "git-workflow: EPMCDME-####: Description",
+      "status": "na",
+      "notes": "Not committed yet; the commit must start with EPMCDME-15512:."
+    }
+  ],
+  "finding_status": [
+    {
+      "id": "CHK-001",
+      "status": "resolved",
+      "evidence": "Background agents measured from the launch ack violated AC1 by 1.9-8.3 s. launched.launch_ts is now coalesce(s.ts, e.ts); the async_launched branch is removed. Live test test_subagent_run_time_runs_from_its_call_start_to_its_stop_event_and_is_null_without_one seeds agent.tool.start and a 3 s later ack: red before (27000), green after (30000); SQL-shape test test_agent_run_time_runs_from_its_call_start_to_its_subagent_stop_event updated."
+    }
+  ],
+  "findings": [],
+  "rationale": "Check round for one post-completion change found while validating the API response for session 52d226aa against the raw telemetry: the run-time anchor for background agents. Verification: `TEST_LOCAL_PG_URL=postgresql://postgres:password@localhost:55432/postgres poetry run pytest tests/codemie/repository/cli_analytics/ tests/codemie/service/analytics/handlers/test_cli_analytics_handler.py tests/codemie/rest_api/models/test_cli_analytics_models.py -n0` -> 784 passed, 16 failed (test_dirty.py 14, test_settings.py 2: pre-existing, identical without the change); all live dispatch tests ran. The new query over every real session: cost unchanged, durations from the call start; the API response for 52d226aa matches the raw events to the millisecond. breaking-change is carried forward (duration_ms nullable).",
+  "generated_at": "2026-10-06"
+}

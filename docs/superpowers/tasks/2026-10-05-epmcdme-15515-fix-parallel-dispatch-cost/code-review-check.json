@@ -1,0 +1,58 @@
+{
+  "gate_id": "code-review.check",
+  "decision": "approve",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {
+      "id": "AC1",
+      "requirement": "Each subagent dispatch shows the cost and tokens of that subagent only",
+      "status": "pass",
+      "evidence": "Agent cost comes from the exact agentId chain (Agent hook event -> llm_request agent_id -> api_request group). After CR-001 the parent-span fallback no longer applies to a dispatch with a known agentId, so main-thread cost cannot be attributed to a subagent. Session 52d226aa via the API: Explore #1 $0.1317482 and Explore #2 $0.0631483, each equal to the sum of its own api_request group in the DB. Live tests test_two_parallel_agents_get_their_own_exact_totals_not_an_even_split and test_a_dispatch_without_an_llm_group_has_no_cost_rather_than_a_guess."
+    },
+    {
+      "id": "AC2",
+      "requirement": "Two parallel subagents with different tasks show different values",
+      "status": "pass",
+      "evidence": "Session 52d226aa: $0.1317482 / 1390 in / 2378 out vs $0.0631483 / 219 in / 670 out; together $0.195, below the session total $0.4136593, which equals the sum of all 19 api_request events (no double counting)."
+    },
+    {
+      "id": "AC3",
+      "requirement": "The details panel (click on a bar) shows the same values as the API",
+      "status": "pass",
+      "evidence": "No handler or response-shape change for cost: the panel renders the dispatch row as returned; NULL cost maps to null as before. Values checked in the API response; the UI renders them unchanged."
+    }
+  ],
+  "standards_review": [
+    {
+      "standard": "code-quality: ruff",
+      "status": "pass",
+      "notes": "poetry run ruff format and poetry run ruff check clean on reader.py, test_reader.py and test_reader_live_dispatches.py."
+    },
+    {
+      "standard": "security-patterns",
+      "status": "pass",
+      "notes": "No new input path; session_id stays a bound parameter ($sid); only int enum constants are interpolated."
+    },
+    {
+      "standard": "git-workflow: EPMCDME-####: Description",
+      "status": "na",
+      "notes": "The check-round changes are not committed yet; the commit must start with EPMCDME-15515:."
+    }
+  ],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "resolved",
+      "evidence": "Owner decision: fall back to the parent span only when the dispatch has no agentId at all; a known agentId with no api_request group yields NULL. Implemented as `LEFT JOIN parent_usage pu ON pu.span_id = t.parent_span_id AND la.agent_id IS NULL`. The live orphan test previously passed only by accident (its hook event had no tool_name='Agent' and an empty parent span); it now seeds a real Agent hook event under a main-thread span with its own api_request and failed before the fix (main-thread cost 0.5 leaked onto the orphan), passes after."
+    },
+    {
+      "id": "CR-002",
+      "status": "resolved",
+      "evidence": "Found in this round: the first_start filter of the original `lr` CTE had been dropped, so the fallback (and every skill dispatch row) summed the parent span's whole api_request total instead of counting from the first dispatch on, contradicting the docstring's 'as before'. Restored first_start and the FILTER (WHERE after) sums in parent_usage. New live test test_a_dispatch_with_no_agent_id_falls_back_to_its_parent_span_from_its_start_on failed before (0.37) and passes after (0.07)."
+    }
+  ],
+  "findings": [],
+  "rationale": "Check round over round 1's open decision CR-001 and one regression found in this round (CR-002). Both resolved with failing-first live tests against the local analytics Postgres (reached through a temporary socat proxy, because a host PostgreSQL also listens on 5432). Verification: `TEST_LOCAL_PG_URL=postgresql://postgres:password@localhost:55432/postgres poetry run pytest tests/codemie/repository/cli_analytics/ tests/codemie/service/analytics/handlers/test_cli_analytics_handler.py tests/codemie/rest_api/models/test_cli_analytics_models.py -n0` -> 784 passed, 16 failed; the 16 failures (test_dirty.py 14, test_settings.py 2) fail identically with this round's changes stashed and are outside the delta. All live dispatch tests ran (none skipped). The new query over the 8 real sessions in the local analytics DB: 35 agent dispatches, 0 with NULL cost, so the CR-001 rule does not strip cost from real agents. The EPMCDME-15512 duration anchor change made in the same session is reviewed in docs/superpowers/tasks/2026-10-06-fix-subagent-duration-timeline/code-review-check.json.",
+  "generated_at": "2026-10-06"
+}

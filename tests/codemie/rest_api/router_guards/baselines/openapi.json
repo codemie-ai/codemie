@@ -14829,8 +14829,16 @@
             "title": "Cost Usd"
           },
           "duration_ms": {
-            "title": "Duration Ms",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "null when an agent's stop never arrived",
+            "title": "Duration Ms"
           },
           "input_tokens": {
             "anyOf": [
@@ -14871,8 +14879,7 @@
         "required": [
           "label",
           "kind",
-          "start_offset_ms",
-          "duration_ms"
+          "start_offset_ms"
         ],
         "title": "LocalAnalyticsDispatchRow",
         "type": "object"

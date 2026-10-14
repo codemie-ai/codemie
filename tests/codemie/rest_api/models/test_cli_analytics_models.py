@@ -12,7 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from codemie.rest_api.models.cli_analytics import LocalAnalyticsRepositoryRow, LocalAnalyticsSessionRow
+from codemie.rest_api.models.cli_analytics import (
+    LocalAnalyticsDispatchRow,
+    LocalAnalyticsRepositoryRow,
+    LocalAnalyticsSessionRow,
+)
 
 
 def test_session_row_repository_nullable():
@@ -45,3 +49,9 @@ def test_repository_row_repository_nullable():
         tool_success_rate=0.0,
     )
     assert row.repository is None
+
+
+def test_dispatch_row_keeps_an_unknown_subagent_duration_as_null():
+    # An agent whose stop never arrived has no duration: null, not 0 (the events contract).
+    row = LocalAnalyticsDispatchRow(label="agent · Explore", kind="agent", start_offset_ms=7905, duration_ms=None)
+    assert row.model_dump()["duration_ms"] is None

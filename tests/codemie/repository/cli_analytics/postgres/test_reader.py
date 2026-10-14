@@ -646,3 +646,76 @@ def test_window_params_omit_projects_when_project_unattributed():
 
 def test_window_params_keep_projects_by_default():
     assert window_params(_flt(projects=["p"]))["projects"] == ["p"]
+
+
+# ── get_session_detail_dispatches: exact agent attribution via the agentId chain ──
+
+
+async def _dispatches_sql() -> str:
+    recorder = _SqlRecorder()
+    await PostgresCliAnalyticsReader(recorder).get_session_detail_dispatches("s1")  # type: ignore[arg-type]
+    assert len(recorder.statements) == 1
+    return " ".join(recorder.statements[0].split())
+
+
+@pytest.mark.asyncio
+async def test_agent_id_is_read_from_the_agent_tool_call_hook_event():
+    # The agentId a subagent reports back with is named in its own Agent tool call's hook event.
+    # Matched by identity (the tool_use_id), never by position or timing.
+    sql = await _dispatches_sql()
+
+    assert "FROM hook_events" in sql and "event_type = 'agent.tool.end'" in sql
+    assert "substring(e.tool_response from 'agentId[^a-zA-Z0-9_-]+([a-zA-Z0-9_-]+)')" in sql
+    assert "LEFT JOIN launched la ON la.tool_use_id = t.tool_use_id" in sql
+
+
+@pytest.mark.asyncio
+async def test_agent_cost_is_summed_from_the_api_requests_of_its_llm_request_group():
+    # The subagent's llm_request spans carry its agentId and name, as their parent, the span that
+    # groups its api_request events. Its cost is the plain sum over those events, joined by agentId.
+    sql = await _dispatches_sql()
+
+    assert "span_kind = 4" in sql and "attrs ? 'agent_id'" in sql
+    assert "l.span_id = g.parent_span_id" in sql
+    assert "LEFT JOIN agent_usage au ON au.agent_id = la.agent_id" in sql
+
+
+@pytest.mark.asyncio
+async def test_agent_run_time_runs_from_its_call_start_to_its_subagent_stop_event():
+    # The run time of any agent, background or foreground, is its Agent tool call's start (agent.tool.start) to
+    # its own SubagentStop hook event, matched by agentId. The launch ack is only the fallback when the start is
+    # missing: it arrives seconds after the call. The tool-execution span closes at launch, so it is not used.
+    sql = await _dispatches_sql()
+
+    assert "coalesce(s.ts, e.ts) AS launch_ts" in sql
+    assert "async_launched" not in sql
+    assert "event_type = 'agent.subagent.stop'" in sql
+    assert "LEFT JOIN stopped st ON st.agent_id = la.agent_id" in sql
+    assert "subagent_duration_ms" in sql
+
+
+@pytest.mark.asyncio
+async def test_an_agent_dispatch_falls_back_to_its_parent_span_only_when_it_has_no_agent_id():
+    # The agent_usage join is preferred. Only a dispatch with no agentId at all falls back to its parent
+    # span's api_requests from the first dispatch on (the owner's decision), never divided between
+    # dispatches. A known agentId with no api_request group stays NULL: the parent span is the main
+    # thread, whose cost is not the subagent's (CR-001).
+    sql = await _dispatches_sql()
+
+    assert "coalesce(au.cost_usd, pu.cost_usd)::float8 AS cost_usd" in sql
+    assert "LEFT JOIN parent_usage pu ON pu.span_id = t.parent_span_id AND la.agent_id IS NULL" in sql
+    assert "FILTER (WHERE after) AS cost_usd" in sql
+    assert "JOIN first_start m ON m.parent_span_id = l.span_id" in sql
+    assert "DISTINCT ON (tool_use_id)" in sql
+    for removed in ("windows AS", "matches AS", "active_n", "dispatch_id", "sibling_count", "lead(ts)"):
+        assert removed not in sql
+
+
+@pytest.mark.asyncio
+async def test_agent_dispatch_starts_at_its_launch_and_skills_at_their_tool_span():
+    # An agent's bar starts when it launched (the Agent call's hook ack), the same instant its run time is
+    # measured from. Only agents take that anchor: a skill's Skill call also has a hook ack, which must not move it.
+    sql = await _dispatches_sql()
+
+    assert "coalesce(CASE WHEN t.subagent_type <> '' THEN la.launch_ts END, t.span_start) AS dispatch_start" in sql
+    assert "ORDER BY dispatch_start" in sql
