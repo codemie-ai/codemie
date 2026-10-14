@@ -1,0 +1,38 @@
+{
+  "decision": "request-changes",
+  "rationale": "Blind and edge-case lenses raised 9 concerns total; all 9 were independently verified against the codebase and found to be pre-existing, documented, already-accepted architectural trade-offs that this diff faithfully mirrors (the identical success-join pattern already shipped in production for invocations_hourly, including its documented cross-midnight dirty-marking gap in .ai-run/guides/integration/cli-analytics-storage.md's 'Known limitations' table) rather than new defects introduced by this change — none are blocking. The one genuine open item is the acceptance lens's 'partial' on the Jira ticket's AC5 ('Automated tests cover successful, rejected, and failed Write/Edit operations'): the new tests are SQL-string/substring assertions and a binary files_changed-threshold check, not scenarios that execute three distinct successful/rejected/failed fixtures. This matches the testing approach the user already approved in spec.md ('SQL-string assertions are therefore the established ceiling' — no live-Postgres test harness exists anywhere in this repo), but it is still a literal partial against the raw ticket wording, so it is surfaced here rather than silently waved through. 3 non-blocking observations deferred (see below); 0 dismissed.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "story-ac", "item": "User-rejected Write does not increment Files Written", "status": "pass", "notes": "rollups.py span branch requires e.success='true'; hook-fallback requires e.ended (agent.tool.end), before setting is_written."},
+    {"kind": "story-ac", "item": "User-rejected Edit does not increment Files Edited", "status": "pass", "notes": "Same success/e.ended gating applied symmetrically to is_edited; files_edited FILTER unchanged in reader.py."},
+    {"kind": "story-ac", "item": "Failed/rejected modifications do not increment Files Changed", "status": "pass", "notes": "reader.py: count(*) FILTER (WHERE written OR edited) AS files_changed, combined with upstream success-gated is_written/is_edited."},
+    {"kind": "story-ac", "item": "Only successfully applied modifications affect Dead/Wasted classification", "status": "pass", "notes": "_dead_sessions() keys off files_changed (now success-gated end-to-end); new tests directly confirm files_changed==0 -> dead/wasted and files_changed==1 -> not dead."},
+    {"kind": "story-ac", "item": "Automated tests cover successful, rejected, and failed Write/Edit operations", "status": "partial", "notes": "Only SQL-string/count assertions and a binary files_changed threshold test were added; no test exercises three distinct successful/rejected/failed fixtures end-to-end. Matches the approved spec's explicit testing-ceiling statement, but is a literal partial against the raw ticket AC wording."},
+    {"kind": "spec", "item": "session_files_daily span branch requires matching _EXEC span with success='true' within [-1h,+1d]", "status": "pass", "notes": "Verified in rollups.py diff; mirrors the pre-existing invocations_hourly success-join pattern exactly (same join keys, same window, same coalesce handling)."},
+    {"kind": "spec", "item": "session_files_daily hook-fallback branch requires matching agent.tool.end hook event within [-1h,+1d]", "status": "pass", "notes": "Verified; agent.tool.end is the project's documented success signal for the hook-fallback path per .ai-run/guides/integration/cli-analytics-storage.md:149 ('success is an agent.tool.end with the same tool_use_id')."},
+    {"kind": "spec", "item": "get_file_facts_by_session(): files_changed = count(*) FILTER (WHERE written OR edited); files_written/files_edited unchanged", "status": "pass", "notes": "Exact FILTER expression applied verbatim in reader.py, matching the identical pattern already used elsewhere in rollups.py (~line 1010)."},
+    {"kind": "spec", "item": "Testing: SQL-string assertions in test_rollups.py and test_reader.py, direct unit test in test_cli_analytics_handler.py", "status": "pass", "notes": "All three tests added exactly as specified."},
+    {"kind": "spec", "item": "Out-of-scope files/areas left untouched (EPMCDME-15448, local-dev-env files, client-side telemetry)", "status": "pass", "notes": "Confirmed none appear in the diff."}
+  ],
+  "standards_review": [
+    {"standard": "git-workflow.md commit format (<TICKET-ID>: Description)", "status": "pass", "notes": "All 3 commits: 'EPMCDME-15583: gate session_files_daily...', 'EPMCDME-15583: files_changed only counts...', 'EPMCDME-15583: add direct coverage...' — all match."},
+    {"standard": "code-quality.md Ruff/style gate", "status": "pass", "notes": "ruff check on all 5 changed files: all checks passed."},
+    {"standard": "security-patterns.md (auth, secrets, untrusted input)", "status": "na", "notes": "Diff touches only internal SQL aggregation logic over existing span/hook-event data; no auth, secret, or new untrusted-input surface."}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "triage": "decision_needed",
+      "severity": "major",
+      "problem": "The Jira ticket's acceptance criterion 'Automated tests cover successful, rejected, and failed Write/Edit operations' is only partially met: the new tests assert SQL text/substrings and a binary files_changed threshold, not three distinct successful/rejected/failed fixtures exercised end-to-end.",
+      "impact": "If the success-gating logic has a subtle bug the SQL-string assertions don't catch (e.g. a typo'd value or an inverted condition that still contains the right substrings), no test would fail — real behavioral proof is deferred.",
+      "recommendation": "Accept as-is (matches the approved spec's explicit 'SQL-string assertions are the established ceiling' statement, consistent with 100% of this repo's existing tests for this exact code area, and no live-Postgres harness exists anywhere in the repo to do better without a separate infra investment), or decide a live-DB test harness should be built as follow-up work — this is a scope/investment judgment call, not a code defect to patch inline."
+    }
+  ],
+  "deferred_non_blocking": [
+    "Blind lens: span-branch LATERAL join has no session_id scoping (only tool_use_id) — verified to exactly mirror the pre-existing, production invocations_hourly pattern, which the file's own comment documents as intentional ('any session: the join is on tool_use_id alone').",
+    "Blind + edge-case lenses: the success-join's [-1h,+1d] window and the dirty-marking cross-midnight reach mismatch (1h mark vs 1-day join reach) can leave is_written/is_edited stuck false until a full rebuild — verified as an already-documented 'Known limitation' in .ai-run/guides/integration/cli-analytics-storage.md ('The span path has the same gap'), shared identically by the pre-existing invocations_hourly logic; not newly introduced.",
+    "Blind lens: rows with empty tool_use_id can never be marked written/edited post-fix — verified to match the identical ON tool_use_id <> '' guard already used by invocations_hourly; low-probability given tool_use_id is fundamental to the tool-call protocol."
+  ]
+}

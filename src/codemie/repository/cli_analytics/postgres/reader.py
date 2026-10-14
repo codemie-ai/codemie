@@ -379,7 +379,7 @@ class PostgresCliAnalyticsReader:
         ),
         fl AS (
             SELECT session_id,
-                   count(*)                       AS files_changed,
+                   count(*) FILTER (WHERE written OR edited) AS files_changed,
                    count(*) FILTER (WHERE written) AS files_written,
                    count(*) FILTER (WHERE edited)  AS files_edited
             FROM per_file

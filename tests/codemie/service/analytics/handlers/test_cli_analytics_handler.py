@@ -327,6 +327,49 @@ def test_skill_dispatch_ignores_subagent_duration_ms():
     assert skill["duration_ms"] == 152845
 
 
+def test_dead_sessions_counts_a_session_with_no_successful_file_change_as_dead():
+    """A priced session whose only file touches were rejected/failed (files_changed == 0, once
+    rollups.py/reader.py gate it on success) must be classified dead with its cost wasted
+    (EPMCDME-15583)."""
+    cost_facts = [{"session_id": "s1", "cost_usd": 2.0}]
+    files_by_session = {"s1": {"files_changed": 0}}
+    dead, wasted = LocalAnalyticsHandler._dead_sessions(cost_facts, files_by_session)
+    assert dead == 1
+    assert wasted == 2.0
+
+
+def test_dead_sessions_excludes_a_session_with_a_successful_file_change():
+    """A priced session with at least one genuinely successful Write/Edit (files_changed == 1)
+    must not be classified dead, even though other calls in the session may have been rejected
+    or failed."""
+    cost_facts = [{"session_id": "s1", "cost_usd": 2.0}]
+    files_by_session = {"s1": {"files_changed": 1}}
+    dead, wasted = LocalAnalyticsHandler._dead_sessions(cost_facts, files_by_session)
+    assert dead == 0
+    assert wasted == 0.0
+
+
+def test_dead_sessions_counts_a_prompt_only_session_as_dead():
+    """A priced session with no tool-call rows at all (prompt-only - no entry in files_by_session,
+    not just files_changed == 0) must still be classified dead with its cost wasted (EPMCDME-15448)."""
+    cost_facts = [{"session_id": "s1", "cost_usd": 2.0}]
+    files_by_session: dict[str, dict] = {}
+    dead, wasted = LocalAnalyticsHandler._dead_sessions(cost_facts, files_by_session)
+    assert dead == 1
+    assert wasted == 2.0
+
+
+def test_dead_sessions_counts_a_read_only_session_as_dead():
+    """A priced session that only read files (successfully or not) produces files_changed == 0,
+    same as the rejected/failed-write case - a Read is never written/edited (EPMCDME-15448), so
+    this must be classified dead with its cost wasted."""
+    cost_facts = [{"session_id": "s1", "cost_usd": 0.0426152}]
+    files_by_session = {"s1": {"files_changed": 0}}
+    dead, wasted = LocalAnalyticsHandler._dead_sessions(cost_facts, files_by_session)
+    assert dead == 1
+    assert wasted == 0.0426152
+
+
 def _users_repo(user_rows):
     repo = MagicMock()
     for name in (

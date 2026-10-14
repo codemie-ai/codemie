@@ -59,6 +59,15 @@ def test_dimension_hook_types_exclude_skill_dispatch():
     assert v.SKILL_DISPATCH_EVENT not in v.DIMENSION_HOOK_TYPES
 
 
+def test_write_and_edit_tools_exclude_read_only_tools():
+    """Read must never count as a file write or edit (EPMCDME-15448): session_files_daily's
+    is_written/is_edited gate on tool_name = ANY(WRITE_TOOLS/EDIT_TOOLS), so a Read tool call
+    (successful or failed) is excluded from files_changed purely by not being in either list -
+    its outcome never even needs to be checked."""
+    assert "Read" not in v.WRITE_TOOLS
+    assert "Read" not in v.EDIT_TOOLS
+
+
 def test_known_harness_uses_its_override_label():
     assert v.humanize_harness_name("claude-code") == "Claude Code"
 

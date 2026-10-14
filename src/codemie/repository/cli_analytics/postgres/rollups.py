@@ -1517,18 +1517,33 @@ RECOMPUTE: list[str] = [
     *_replace_daily(
         "session_files_daily",
         _SPANS,
+        # is_written/is_edited require a CONFIRMED successful call, never just the call itself:
+        # a denied or failed Write/Edit must not count as a file touched. The span branch checks
+        # the matching execution span's success; the hook fallback checks for agent.tool.end
+        # (which, unlike agent.tool.denied/agent.tool.error, only fires on a completed call).
         f"""(day, session_id, file_path, is_written, is_edited)
         SELECT k.day, k.session_id, s.file_path,
-               coalesce(bool_or(s.tool_name = ANY({_text_array(WRITE_TOOLS)})), false),
-               coalesce(bool_or(s.tool_name = ANY({_text_array(EDIT_TOOLS)})), false)
+               coalesce(bool_or(s.tool_name = ANY({_text_array(WRITE_TOOLS)}) AND e.success = 'true'), false),
+               coalesce(bool_or(s.tool_name = ANY({_text_array(EDIT_TOOLS)}) AND e.success = 'true'), false)
         {_in_day("s", "spans")}
+        LEFT JOIN LATERAL (
+            SELECT max(x.success) AS success FROM spans x
+            WHERE x.span_kind = {_EXEC} AND x.tool_use_id = s.tool_use_id
+              AND x.ts >= s.ts - interval '1 hour' AND x.ts < s.ts + interval '1 day'
+        ) e ON s.tool_use_id <> ''
         WHERE k.kinds & {_SPANS} <> 0 AND k.session_id <> '' AND s.span_kind = {_TOOL} AND s.file_path <> ''
         GROUP BY 1, 2, 3
         UNION ALL
         SELECT k.day, k.session_id, {_HOOK_FILE_PATH},
-               coalesce(bool_or(h.tool_name = ANY({_text_array(WRITE_TOOLS)})), false),
-               coalesce(bool_or(h.tool_name = ANY({_text_array(EDIT_TOOLS)})), false)
+               coalesce(bool_or(h.tool_name = ANY({_text_array(WRITE_TOOLS)}) AND e.ended), false),
+               coalesce(bool_or(h.tool_name = ANY({_text_array(EDIT_TOOLS)}) AND e.ended), false)
         {_in_day("h", "hook_events")}
+        LEFT JOIN LATERAL (
+            SELECT true AS ended FROM hook_events x
+            WHERE x.session_id = k.session_id AND x.event_type = {_literal(_TOOL_END)} AND x.tool_use_id = h.tool_use_id
+              AND x.ts >= h.ts - interval '1 hour' AND x.ts < h.ts + interval '1 day'
+            LIMIT 1
+        ) e ON h.tool_use_id <> ''
         WHERE k.kinds & {_SPANS} <> 0 AND k.session_id <> '' AND {_IS_TOOL_START}
           AND {_hook_key(_HOOK_FILE_PATH, MAX_PATH_BYTES)} AND {_NO_SPAN_OF_KIND}
         GROUP BY 1, 2, 3""",

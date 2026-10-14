@@ -453,6 +453,15 @@ async def test_file_facts_scope_both_branches_without_a_window():
     assert sql.count("IN (SELECT session_id FROM sel)") == 2
 
 
+@pytest.mark.asyncio
+async def test_file_facts_changed_only_counts_written_or_edited_files():
+    """files_changed must not count a file whose only touches were reads, or a rejected/failed
+    Write/Edit — only a file with at least one successful Write or Edit counts (EPMCDME-15583)."""
+    sql, _ = await _sql_of("get_file_facts_by_session")
+
+    assert "count(*) FILTER (WHERE written OR edited) AS files_changed" in sql
+
+
 # ── invocations and tools ──
 
 

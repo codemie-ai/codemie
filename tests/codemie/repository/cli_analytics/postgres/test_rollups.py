@@ -755,6 +755,39 @@ def test_span_facts_statements_read_hooks_for_pairs_without_tool_or_interaction_
     assert f"AND {hook_skill}" in kind_1
 
 
+def test_session_files_daily_gates_is_written_is_edited_on_success() -> None:
+    """is_written/is_edited require a CONFIRMED successful call, never just the call itself: a
+    denied or failed Write/Edit must not count as a file touched (EPMCDME-15583). Row contents
+    are proven live (Task 17); this locks the generated SQL's success-gating conditions."""
+    inserts = {
+        _target_table(s): s
+        for s in RECOMPUTE
+        if s.lstrip().startswith("INSERT INTO") and _gate_bits(s) & rollups._SPANS
+    }
+    files = inserts["session_files_daily"]
+    # Span branch: only a matching execution span with success = 'true' counts, not a bare call.
+    assert files.count("AND e.success = 'true'") == 2
+    assert f"x.span_kind = {rollups._EXEC} AND x.tool_use_id = s.tool_use_id" in files
+    # Hook-fallback branch: only agent.tool.end (never the bare agent.tool.start) counts.
+    assert files.count("AND e.ended") == 2
+    assert "x.event_type = 'agent.tool.end' AND x.tool_use_id = h.tool_use_id" in files
+
+
+def test_session_files_daily_never_tests_read_tool_name() -> None:
+    """A Read tool call (successful or failed) must not count as a file write or edit
+    (EPMCDME-15448): is_written/is_edited only check tool_name = ANY(WRITE_TOOLS/EDIT_TOOLS), and
+    'Read' is in neither list, so its outcome is never even consulted - unlike Write/Edit, there
+    is no success/failure branch to get wrong here."""
+    inserts = {
+        _target_table(s): s
+        for s in RECOMPUTE
+        if s.lstrip().startswith("INSERT INTO") and _gate_bits(s) & rollups._SPANS
+    }
+    files = inserts["session_files_daily"]
+    assert "'Read'" not in files
+    assert rollups._text_array(("Read",)) not in files
+
+
 def test_mark_range_yields_the_ingest_bits_per_source() -> None:
     sql = rollups._MARK_RANGE
     inner = sql.split("FROM (", 1)[1]

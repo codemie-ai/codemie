@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "task": "Verify the drafted rollups.py success-gating fix for EPMCDME-15583 and apply the companion files_changed FILTER fix in reader.py, with SQL-string and unit test coverage.",
+  "generated": "2026-10-06",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 1, "label": "XS" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 11,
+  "size": "S",
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "file_change_estimate", "reason": "5 files modified (reader.py, rollups.py verification, test_rollups.py, test_reader.py, test_cli_analytics_handler.py), 0 new files, spanning 3 directories (src/codemie/repository/cli_analytics/postgres/, tests/codemie/repository/cli_analytics/postgres/, tests/codemie/service/analytics/handlers/)." },
+    { "dimension": "technical_risk", "reason": "The reader.py fix (count(*) -> count(*) FILTER (WHERE written OR edited)) is an exact transplant of an existing in-repo pattern already used at rollups.py ~line 1010; the rollups.py span/hook success-gating is already drafted and independently verified correct by a prior research pass. No schema/migration, no security/perf-critical path, trivially revertible." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

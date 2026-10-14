@@ -1,0 +1,12 @@
+{"event":"work_item.adapter_warning","intent":"record_complexity_score","assessment_mode":"initial","reason":"codemie-jira-assistant skill not available in this session"}
+{"event":"lifecycle_emission","intent":"record_complexity_score","assessment_mode":"initial","status":"skipped"}
+{"event":"decision.recorded","gate_id":"spec.approved","mode":"hitl","decision":"approve","source":"hitl","escalated":false}
+{"event":"work_item.adapter_warning","intent":"artifact_published","artifact_kind":"spec","reason":"codemie-jira-assistant skill not available in this session"}
+{"event":"lifecycle_emission","intent":"artifact_published","artifact_kind":"spec","status":"skipped"}
+{"event":"decision.recorded","gate_id":"plan.approved","mode":"hitl","decision":"approve","source":"hitl","escalated":false}
+{"event":"work_item.adapter_warning","intent":"artifact_published","artifact_kind":"plan","reason":"codemie-jira-assistant skill not available in this session"}
+{"event":"lifecycle_emission","intent":"artifact_published","artifact_kind":"plan","status":"skipped"}
+{"event":"decision.recorded","gate_id":"code-review.final","mode":"hitl","decision":"approve","source":"hitl","escalated":false}
+{"event":"work_item.adapter_warning","intent":"record_complexity_score","assessment_mode":"actual","reason":"user declined posting to Jira for this run"}
+{"event":"lifecycle_emission","intent":"record_complexity_score","assessment_mode":"actual","status":"skipped"}
+{"event":"decision.recorded","gate_id":"code-review.check","mode":"hitl","decision":"approve","source":"hitl","escalated":false}

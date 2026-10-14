@@ -1,0 +1,31 @@
+{
+  "decision": "approve",
+  "rationale": "The final round's single open item was CR-001 (triage: decision_needed) — whether the SQL-string-assertion test ceiling is acceptable for AC5, given no live-Postgres test harness exists anywhere in this repo. No code fix was requested or made; the ticket owner reviewed the orchestrator's verdict and the finding's own recommendation (accept as-is, matching the already-approved spec.md's explicit testing-ceiling statement) and chose to approve as-is via the HITL gate. That decision resolves the ambiguity that was the sole reason for the final round's low confidence and request-changes decision. No new high-risk issue exists to check (there is no fix-up diff — the implementation is unchanged from the final round).",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "story-ac", "item": "User-rejected Write does not increment Files Written", "status": "pass", "notes": "rollups.py span branch requires e.success='true'; hook-fallback requires e.ended (agent.tool.end), before setting is_written."},
+    {"kind": "story-ac", "item": "User-rejected Edit does not increment Files Edited", "status": "pass", "notes": "Same success/e.ended gating applied symmetrically to is_edited; files_edited FILTER unchanged in reader.py."},
+    {"kind": "story-ac", "item": "Failed/rejected modifications do not increment Files Changed", "status": "pass", "notes": "reader.py: count(*) FILTER (WHERE written OR edited) AS files_changed, combined with upstream success-gated is_written/is_edited."},
+    {"kind": "story-ac", "item": "Only successfully applied modifications affect Dead/Wasted classification", "status": "pass", "notes": "_dead_sessions() keys off files_changed (now success-gated end-to-end); new tests directly confirm files_changed==0 -> dead/wasted and files_changed==1 -> not dead."},
+    {"kind": "story-ac", "item": "Automated tests cover successful, rejected, and failed Write/Edit operations", "status": "partial", "notes": "Only SQL-string/count assertions and a binary files_changed threshold test were added; no test exercises three distinct successful/rejected/failed fixtures end-to-end. Matches the approved spec's explicit testing-ceiling statement. Accepted as-is per the HITL decision recorded in this check round — see rationale and CR-001 finding_status below."},
+    {"kind": "spec", "item": "session_files_daily span branch requires matching _EXEC span with success='true' within [-1h,+1d]", "status": "pass", "notes": "Verified in rollups.py diff; mirrors the pre-existing invocations_hourly success-join pattern exactly (same join keys, same window, same coalesce handling)."},
+    {"kind": "spec", "item": "session_files_daily hook-fallback branch requires matching agent.tool.end hook event within [-1h,+1d]", "status": "pass", "notes": "Verified; agent.tool.end is the project's documented success signal for the hook-fallback path per .ai-run/guides/integration/cli-analytics-storage.md:149 ('success is an agent.tool.end with the same tool_use_id')."},
+    {"kind": "spec", "item": "get_file_facts_by_session(): files_changed = count(*) FILTER (WHERE written OR edited); files_written/files_edited unchanged", "status": "pass", "notes": "Exact FILTER expression applied verbatim in reader.py, matching the identical pattern already used elsewhere in rollups.py (~line 1010)."},
+    {"kind": "spec", "item": "Testing: SQL-string assertions in test_rollups.py and test_reader.py, direct unit test in test_cli_analytics_handler.py", "status": "pass", "notes": "All three tests added exactly as specified."},
+    {"kind": "spec", "item": "Out-of-scope files/areas left untouched (EPMCDME-15448, local-dev-env files, client-side telemetry)", "status": "pass", "notes": "Confirmed none appear in the diff."}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "All 3 commits: 'EPMCDME-15583: gate session_files_daily...', 'EPMCDME-15583: files_changed only counts...', 'EPMCDME-15583: add direct coverage...' — all match .ai-run/guides/standards/git-workflow.md."},
+    {"kind": "code-quality", "status": "pass", "notes": "ruff check on all 5 changed files: all checks passed."},
+    {"kind": "security", "status": "na", "notes": "Diff touches only internal SQL aggregation logic over existing span/hook-event data; no auth, secret, or new untrusted-input surface."}
+  ],
+  "findings": [],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "resolved",
+      "notes": "Resolved by explicit HITL decision, not a code change: the ticket owner reviewed the orchestrator's request-changes verdict (confidence: low, triage: decision_needed) and chose 'Approve as-is' — accepting the SQL-string-assertion ceiling as the repo's established testing limit for this code area, consistent with the already-approved spec.md and with every other existing test in this exact file. Recorded in decisions.jsonl (gate_id: code-review.final, ts: 2026-10-06T10:17:17Z)."
+    }
+  ]
+}

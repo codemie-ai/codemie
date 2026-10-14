@@ -1,0 +1,67 @@
+{
+  "task": "Fix PostgreSQL CLI-analytics rollup logic so a rejected, denied, or failed Write/Edit tool call is no longer counted as a file written or edited in session_files_daily.",
+  "generated": "2026-10-06T00:00:00Z",
+  "dimensions": {
+    "component_scope": {
+      "score": 2,
+      "label": "S",
+      "affected": "PostgresCliAnalyticsReader (reader.py), RollupRefresher session_files_daily recompute (rollups.py)",
+      "layers": "Repository (DB-Persistence)"
+    },
+    "requirements_clarity": {
+      "score": 2,
+      "label": "S",
+      "status": "Clear",
+      "gaps": null
+    },
+    "technical_risk": {
+      "score": 2,
+      "label": "S",
+      "risk_factors": "Rollup recompute logic change affects historically aggregated files_written/files_edited counts in session_files_daily; must preserve idempotent, re-entrant recompute semantics used by RollupRefresher",
+      "mitigation": "Reuses the existing success-check pattern already applied elsewhere in rollups.py (e.g. invocations_hourly tool success via execution-span join / agent.tool.end hook fallback); change is covered by updated unit tests in test_rollups.py, test_reader.py, and test_cli_analytics_handler.py"
+    },
+    "file_change_estimate": {
+      "score": 3,
+      "label": "M",
+      "modified_files": 5,
+      "modified_file_list": [
+        "src/codemie/repository/cli_analytics/postgres/reader.py",
+        "src/codemie/repository/cli_analytics/postgres/rollups.py",
+        "tests/codemie/repository/cli_analytics/postgres/test_reader.py",
+        "tests/codemie/repository/cli_analytics/postgres/test_rollups.py",
+        "tests/codemie/service/analytics/handlers/test_cli_analytics_handler.py"
+      ],
+      "new_files": 0,
+      "new_file_list": [],
+      "affected_dirs": [
+        "src/codemie/repository/cli_analytics/postgres",
+        "tests/codemie/repository/cli_analytics/postgres",
+        "tests/codemie/service/analytics/handlers"
+      ]
+    },
+    "dependencies": {
+      "score": 1,
+      "label": "XS",
+      "new_packages": [],
+      "version_changes": []
+    },
+    "affected_layers": {
+      "score": 1,
+      "label": "XS",
+      "layers_changed": ["Repository (DB-Persistence)"],
+      "schema_migration": false,
+      "cross_system": false
+    }
+  },
+  "total": 11,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 5,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "file_change_estimate", "reason": "5 files touched (diffstat), spanning the postgres repository module and two test directories (repository tests + service handler test), 0 new files" },
+    { "dimension": "component_scope", "reason": "Confined to the CLI analytics PostgreSQL repository: the session_files_daily rollup recompute (rollups.py) and the reader that surfaces file-fact aggregates (reader.py) — a single subsystem, no new abstractions" }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}
