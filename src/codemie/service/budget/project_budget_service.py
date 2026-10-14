@@ -258,8 +258,13 @@ class ProjectBudgetService:
         fixed_soft = sum(Decimal(str(a.allocated_soft_budget)) for a in fixed)
         dec_max = Decimal(str(max_budget))
         dec_soft = Decimal(str(soft_budget))
-        if fixed_max > dec_max or fixed_soft > dec_soft:
-            raise ValidationException("fixed overrides exceed project budget")
+        exceeded_messages = []
+        if fixed_soft > dec_soft:
+            exceeded_messages.append("Personal soft limits of project members cannot exceed the project soft limit.")
+        if fixed_max > dec_max:
+            exceeded_messages.append("Personal hard limits of project members cannot exceed the project hard limit.")
+        if exceeded_messages:
+            raise ValidationException(" ".join(exceeded_messages))
 
         result = {a.user_id: (a.allocated_max_budget, a.allocated_soft_budget) for a in fixed}
         if not equal:

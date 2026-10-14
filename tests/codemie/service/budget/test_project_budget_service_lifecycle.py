@@ -20,10 +20,13 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from codemie.core.exceptions import ExtendedHTTPException
+from codemie.core.exceptions import ExtendedHTTPException, ValidationException
 from codemie.service.budget.budget_enums import AllocationMode, SyncStatus
 from codemie.service.budget.project_budget_service import ProjectBudgetService
 from codemie.service.budget.provider import BudgetProviderMemberState, BudgetProviderState
+
+SOFT_LIMIT_EXCEEDED_MESSAGE = "Personal soft limits of project members cannot exceed the project soft limit."
+HARD_LIMIT_EXCEEDED_MESSAGE = "Personal hard limits of project members cannot exceed the project hard limit."
 
 
 @pytest.mark.asyncio
@@ -533,7 +536,57 @@ async def test_resync_member_allocations_raises_400_when_fixed_overrides_exceed_
             )
 
     assert exc_info.value.code == 400
-    assert exc_info.value.message == "fixed overrides exceed project budget"
+    assert exc_info.value.message == f"{SOFT_LIMIT_EXCEEDED_MESSAGE} {HARD_LIMIT_EXCEEDED_MESSAGE}"
+
+
+def _allocation(user_id: str, mode: AllocationMode, soft: float, max_budget: float) -> SimpleNamespace:
+    return SimpleNamespace(
+        user_id=user_id,
+        allocation_mode=mode.value,
+        allocated_soft_budget=soft,
+        allocated_max_budget=max_budget,
+    )
+
+
+def test_equal_amounts_with_fixed_overrides_raises_soft_message_when_only_soft_exceeded():
+    allocations = [_allocation("user-1", AllocationMode.FIXED, soft=21.0, max_budget=10.0)]
+
+    with pytest.raises(ValidationException) as exc_info:
+        ProjectBudgetService._equal_amounts_with_fixed_overrides(allocations, max_budget=25.0, soft_budget=20.0)
+
+    assert str(exc_info.value) == SOFT_LIMIT_EXCEEDED_MESSAGE
+
+
+def test_equal_amounts_with_fixed_overrides_raises_hard_message_when_only_hard_exceeded():
+    allocations = [_allocation("user-1", AllocationMode.FIXED, soft=10.0, max_budget=26.0)]
+
+    with pytest.raises(ValidationException) as exc_info:
+        ProjectBudgetService._equal_amounts_with_fixed_overrides(allocations, max_budget=25.0, soft_budget=20.0)
+
+    assert str(exc_info.value) == HARD_LIMIT_EXCEEDED_MESSAGE
+
+
+def test_equal_amounts_with_fixed_overrides_raises_joined_message_when_both_exceeded():
+    allocations = [
+        _allocation("user-1", AllocationMode.FIXED, soft=12.0, max_budget=15.0),
+        _allocation("user-2", AllocationMode.FIXED, soft=9.0, max_budget=11.0),
+    ]
+
+    with pytest.raises(ValidationException) as exc_info:
+        ProjectBudgetService._equal_amounts_with_fixed_overrides(allocations, max_budget=25.0, soft_budget=20.0)
+
+    assert str(exc_info.value) == f"{SOFT_LIMIT_EXCEEDED_MESSAGE} {HARD_LIMIT_EXCEEDED_MESSAGE}"
+
+
+def test_equal_amounts_with_fixed_overrides_shares_remainder_when_within_limits():
+    allocations = [
+        _allocation("fixed-user", AllocationMode.FIXED, soft=5.0, max_budget=10.0),
+        _allocation("equal-user", AllocationMode.EQUAL, soft=0.0, max_budget=0.0),
+    ]
+
+    result = ProjectBudgetService._equal_amounts_with_fixed_overrides(allocations, max_budget=25.0, soft_budget=20.0)
+
+    assert result == {"fixed-user": (10.0, 5.0), "equal-user": (15.0, 15.0)}
 
 
 @pytest.mark.asyncio

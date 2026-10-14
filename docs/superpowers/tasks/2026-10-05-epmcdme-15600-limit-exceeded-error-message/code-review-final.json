@@ -1,0 +1,13 @@
+{
+  "decision": "approve",
+  "rationale": "Edge-case lens ran and returned no findings; compact profile omits blind/verification-gap and standards by design. No spec/story artifact existed, so acceptance criteria were not audited (confidence low). 0 deferred, 0 dismissed. code-review-deferred.md not written (nothing deferred).",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "commit-format", "status": "na", "notes": "Standards audit not part of this review profile." },
+    { "kind": "code-quality", "status": "na", "notes": "Standards audit not part of this review profile." },
+    { "kind": "security", "status": "na", "notes": "Standards audit not part of this review profile." }
+  ],
+  "findings": []
+}
