@@ -1,0 +1,139 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15921_fix-msteams-migrated-integrations",
+  "head": "ca3a107e5843eefbb7a70383b3e226f655238277",
+  "runner": "custom",
+  "started_at": "2026-10-15T10:31:05Z",
+  "completed_at": "2026-10-15T10:45:57Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 5245,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 19952,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2453,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make gitleaks",
+      "exit_code": null,
+      "notes": "Skip if: Docker is unavailable -- 'docker' not on PATH (Podman is installed and running). Enable by installing Docker or aliasing docker->podman, then run make gitleaks; the full-tree secret scan is still owed."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make test",
+      "exit_code": null,
+      "notes": "Out of scope: user asked for a faster run without the whole suite; the full run was started, aborted, and its result discarded. The opt-in pre-push hook pytest (tests/ --ignore=tests/enterprise/ --cov) also did not run because CODEMIE_PREPUSH_ENABLED is unset."
+    },
+    {
+      "id": "affected",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 24839,
+      "command": "poetry run pytest tests/codemie/migrations/",
+      "exit_code": 1,
+      "notes": "Scoped test gate per user request. 70 passed, 3 errors, all in tests/codemie/migrations/test_credentialtypes_enum_migrations.py (not touched on this branch): Path.read_text() without encoding raises UnicodeDecodeError 'charmap' (cp1252) on non-ASCII license headers in alembic versions. No errors reference test_c3d4e5f6a7b8 or test_e5f9a1c3b7d2. Re-run with PYTHONUTF8=1 to rule out the Windows locale issue."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make coverage",
+      "exit_code": null,
+      "notes": "Skip if: the user did not request coverage."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 258,
+      "command": "make sonar-local",
+      "exit_code": 0,
+      "notes": "Self-skip, exit 0: '[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.' Enable by setting SONAR_TOKEN (env or .env.local). Also the second step of the opt-in pre-push hook."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make verify",
+      "exit_code": null,
+      "notes": "Skip if: environment prerequisites missing (Docker for its gitleaks step), and the full test suite is out of the user's scope; the ruff and license components ran individually. Note: verify uses the mutating 'license' target (--fix)."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "exit_code": null,
+      "notes": "Needs the live docker stack, superadmin fixtures and ~/.codemie/test-harness.json (absent). Its output is required in the MR description (## Test harness) before opening the MR, so it is still owed."
+    },
+    {
+      "id": "hook-ruff-staged",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 319,
+      "command": "bash scripts/git-hooks/_ruff_staged.sh",
+      "exit_code": 0,
+      "notes": "Self-skip: '[pre-commit] No staged Python files - skipping Ruff format/fix check.' The same work is covered by lint (ruff format left all files unchanged). The other pre-commit chain steps (ruff check, license --check) are covered by lint and license."
+    },
+    {
+      "id": "hook-gitleaks",
+      "source": "hook",
+      "status": "FAIL",
+      "duration_ms": 10568,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": 125,
+      "notes": "Exit 125: the scan did not run, so this is not a secret finding. Podman error: 'invalid option type <Windows path of repo .git>'. Script bug under Git Bash on Windows: repo_root resolves as C:/... but git_dir as /c/.../.git, so the linked-worktree branch adds a -v /c/...:/c/... mount that Podman cannot parse. 0 files are staged, so even a clean run would scan nothing. No hooks are installed in .git/hooks, so the branch commits were never scanned at commit time."
+    },
+    {
+      "id": "hook-commit-msg",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 2515,
+      "command": "bash scripts/git-hooks/commit_msg.sh <msg-file> (per commit in origin/main..HEAD)",
+      "exit_code": 0,
+      "notes": "All 4 branch commits start with EPMCDME-15921:."
+    },
+    {
+      "id": "ci-pre-ci-guard",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "GitLab include epm-cdme/codemie-gitlab-templates@0.1.2 /templates/pre-ci-guard.yml (wait-ci-init: ci-pipeline, compliance-report)",
+      "exit_code": null,
+      "notes": "Remote template waiting on the external ci-pipeline and compliance-report contexts; it cannot run locally, so only CI can settle it."
+    }
+  ],
+  "failures": {
+    "affected": "Timestamp: 2026-10-15 13:44:52 | Level: INFO | UUID: - \nUser ID: - | Conversation ID: -\nTrace ID: - | Span ID: -\nMessage: XrayDatasourceConfig instantiated: chunk_size=1000 chunk_overlap=50 loader_batch_size=50\n\nTimestamp: 2026-10-15 13:44:52 | Level: INFO | UUID: - \nUser ID: - | Conversation ID: -\nTrace ID: - | Span ID: -\nMessage: SharePointDatasourceConfig instantiated: loader_batch_size=20 loader_timeout=300 chunk_size=2000 chunk_overlap=200 max_file_size_mb=50 max_retries=3 graph_api_version='v1.0' graph_base_url='https://graph.microsoft.com'\n\nTimestamp: 2026-10-15 13:44:52 | Level: INFO | UUID: - \nUser ID: - | Conversation ID: -\nTrace ID: - | Span ID: -\nMessage: SVNDatasourceConfig instantiated: loader_batch_size=250 checkout_timeout_seconds=300 max_file_size_kb=5000\n\nTimestamp: 2026-10-15 13:44:52 | Level: INFO | UUID: - \nUser ID: - | Conversation ID: -\nTrace ID: - | Span ID: -\nMessage: XWikiDatasourceConfig instantiated: chunk_size=1000 chunk_overlap=50 loader_batch_size=50 loader_max_pages=5000 request_timeout_seconds=30 max_failed_pages_floor=5 max_failed_pages_ratio=0.1\n\nTimestamp: 2026-10-15 13:44:52 | Level: INFO | UUID: - \nUser ID: - | Conversation ID: -\nTrace ID: - | Span ID: -\nMessage: DatasourceStorageConfig instantiated: embeddings_max_docs_count=20 indexing_bulk_max_chunk_bytes=104857600 indexing_max_retries=2 indexing_error_retry_wait_min_seconds=10 indexing_error_retry_wait_max_seconds=120 indexing_error_retry_wait_multiplier=2 indexing_threads_count=20 processed_documents_threshold=1000 stale_indexing_threshold_seconds=300 stale_indexing_resume_batch_size=5 indexing_heartbeat_interval=10\n\n2026-10-15 13:44 - openhands_aci:DEBUG - Logger initialized\nTimestamp: 2026-10-15 13:44:56 | Level: INFO | UUID: - \nUser ID: - | Conversation ID: -\nTrace ID: - | Span ID: -\nMessage: TokenExchangeService initialized with cache_ttl=600s\n\n============================== warnings summary ===============================\n.venv\\Lib\\site-packages\\langgraph\\cache\\base\\__init__.py:8\n.venv\\Lib\\site-packages\\langgraph\\cache\\base\\__init__.py:8\n.venv\\Lib\\site-packages\\langgraph\\cache\\base\\__init__.py:8\n  C:\\Users\\KostiantynPshenychny\\Documents\\epm-cdme\\repos\\codemie\\.venv\\Lib\\site-packages\\langgraph\\cache\\base\\__init__.py:8: LangChainPendingDeprecationWarning: The default value of `allowed_objects` will change in a future version. Pass an explicit value (e.g., allowed_objects='messages' or allowed_objects='core') to suppress this warning.\n    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer\n\n.venv\\Lib\\site-packages\\google\\auth\\transport\\grpc.py:44\n.venv\\Lib\\site-packages\\google\\auth\\transport\\grpc.py:44\n.venv\\Lib\\site-packages\\google\\auth\\transport\\grpc.py:44\n  C:\\Users\\KostiantynPshenychny\\Documents\\epm-cdme\\repos\\codemie\\.venv\\Lib\\site-packages\\google\\auth\\transport\\grpc.py:44: FutureWarning: grpcio < 1.83.0 does not support Post-Quantum Cryptography (PQC). Support for non-PQC environments is deprecated. In October 2026, google-auth will raise its minimum requirements to enforce grpcio >= 1.83.0. For more details on Google Cloud's post-quantum security migration, visit: https://cloud.google.com/security/resources/post-quantum-cryptography\n    warnings.warn(\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ===========================\nERROR tests/codemie/migrations/test_credentialtypes_enum_migrations.py - Unic...\nERROR tests/codemie/migrations/test_credentialtypes_enum_migrations.py - Unic...\nERROR tests/codemie/migrations/test_credentialtypes_enum_migrations.py - Unic...\n================== 70 passed, 6 warnings, 3 errors in 19.68s ==================\n",
+    "hook-gitleaks": "codemie-gitleaks: scanning staged changes with podman (ghcr.io/gitleaks/gitleaks:v8.30.1)\nTrying to pull ghcr.io/gitleaks/gitleaks:v8.30.1...\nGetting image source signatures\nCopying blob sha256:a43ab0c74cc473a4a21aa8a96c5344aa73eb3f338ddcae076a569121aecb462e\nCopying blob sha256:61fdfd7c017596d0815635bb8ae7dff0221723c481f12f265c9a9c91a3fe03ad\nCopying blob sha256:d49a2dee86fb12766dd648402d010ca105846a41bd58738454e53780d4bb8e97\nCopying blob sha256:d92b655ae8e277d674982248e489a6ecdfaa012c8cf0005f0c1aedd1638e522a\nCopying config sha256:4b81af4c7b4159acfdbbbfede6647bf49b4c9f24dc2a2bbd4581f39d5223fcfa\nWriting manifest to image destination\nError: invalid option type \"\\\\Users\\\\KostiantynPshenychny\\\\Documents\\\\epm-cdme\\\\repos\\\\codemie\\\\.git\"\n\ncodemie-gitleaks: scan failed to run (exit 125) - this is NOT a secret finding.\nCommon causes: image pull failed (offline), container OOM, or git 'dubious ownership' inside the container.\nFix the environment and retry; do not bypass the secrets gate for scan-run failures.\n"
+  }
+}

@@ -1,0 +1,3 @@
+# Deferred from code review — 2026-10-15-epmcdme-15921-fix-msteams-migrated-integrations (2026-10-15)
+
+- **c3d4 existing-row lookup ignores setting_type** — `src/external/alembic/versions/c3d4e5f6a7b8_migrate_assistant_project_mapping_to_settings.py:109` — the merge-target SELECT matches any MS_TEAMS row in the project with `LIMIT 1`, so a project that already had a USER-scope MS_TEAMS row gets its mapped assistant ids merged into that user's setting and no PROJECT integration is created. Pre-existing: lines 109-115 are unchanged by this diff, and the task scopes the repair to the null alias and jsonb-string credential_values defects; fix with `AND setting_type = 'PROJECT'` in a follow-up.

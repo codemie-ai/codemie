@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "generated": "2026-10-15T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 14,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 4,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "technical_risk", "reason": "New Alembic data-repair revision (e5f9a1c3b7d2) rewrites production MS_TEAMS settings rows in place: decodes credential_values stored as a jsonb string, drops deleted/foreign/malformed assistant ids and backfills aliases within the check_alias_unique scope (PROJECT vs USER). Closest pattern is the original c3d4e5f6a7b8 migration, which it mirrors, so base risk is M; bumped to L because it is a data migration whose downgrade is an intentional no-op (dropped ids and generated aliases cannot be reverted). The diff also corrects the already-shipped c3d4e5f6a7b8 revision, which only affects databases that have not yet run it." },
+    { "dimension": "file_change_estimate", "reason": "4 files from the diffstat: 1 modified migration (c3d4e5f6a7b8), 1 new migration (e5f9a1c3b7d2), 1 new and 1 extended unit-test module under tests/codemie/migrations, across 2 directories (src/external/alembic/versions, tests/codemie/migrations). That maps to M (3), bumped to L by the data-migration red flag. Most of the 821 inserted lines are parameterized edge-case tests." },
+    { "dimension": "component_scope", "reason": "Two Alembic migration modules, both in the DB-Persistence layer, with no service, API or UI code touched. Single-component scope." },
+    { "dimension": "requirements_clarity", "reason": "Bug-fix scope is concrete: the corrupted-row shape (jsonb string, NULL or empty alias) and the repair rules (owned or global assistants only, unique msteams-<date> aliases) are explicit in the code and tests. Nearest calibration example s/epmcdme-10102 (total 11) lands in the same S band." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from M to L: requires data migration (repairs existing codemie.settings rows; downgrade is a no-op)",
+    "File Change Estimate bumped from M to L: requires data migration"
+  ],
+  "split_recommendation": null
+}

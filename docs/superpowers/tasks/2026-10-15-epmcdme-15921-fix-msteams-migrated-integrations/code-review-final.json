@@ -1,0 +1,269 @@
+{
+  "decision": "approve",
+  "rationale": "Approved by the user at the code-review.final gate (see decisions.jsonl). Automated reviewer decision was 'request-changes' on a single decision_needed item, CR-001, resolved by the user: keep the stricter decode skip, spec section 1 amended to match. Reviewer rationale: One decision_needed item (CR-001): the e5f9a1c3b7d2 decode step skips arrays with non-object elements, which goes beyond the spec's 'skip only non-arrays' rule. The spec criterion is partial, but no real data reaches the path, because the old c3d4e5f6a7b8 only ever serialized lists of dicts. 0 deferred and 17 filtered as noise: unreachable decode-failure, multi-entry and USER-alias paths, spec-mandated id drops, cosmetic and test-robustness concerns, and the standards typing finding (the code-quality guide says to respect src/external/* ignores); AC8 and the manual DB run are pending-stage-7.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "Fix confined to backend data layer; UI keeps alias lookup",
+      "status": "pass",
+      "notes": "only two alembic revisions and their tests changed"
+    },
+    {
+      "kind": "spec",
+      "item": "Repair revision chained on single head y1z2a3b4c5d6",
+      "status": "pass",
+      "notes": "down_revision y1z2a3b4c5d6; nothing else revises it"
+    },
+    {
+      "kind": "spec",
+      "item": "op.get_bind, pure helpers, per-row writes, DB enum labels in raw SQL",
+      "status": "pass",
+      "notes": "helpers pure; per-row UPDATE by id; MS_TEAMS/USER labels"
+    },
+    {
+      "kind": "spec",
+      "item": "Target only MS_TEAMS rows with jsonb string or NULL/empty alias",
+      "status": "pass",
+      "notes": "_SELECT_TARGETS predicate verified in source"
+    },
+    {
+      "kind": "spec",
+      "item": "Decode string rows; skip with warning only when result is not an array; keep other entries",
+      "status": "partial",
+      "notes": "also skips arrays with non-object elements (CR-001); no live producer of such rows found"
+    },
+    {
+      "kind": "spec",
+      "item": "Drop deleted and foreign (non-owned, non-global) assistant ids on string rows",
+      "status": "pass",
+      "notes": "_filter_assistant_ids reasons deleted/foreign"
+    },
+    {
+      "kind": "spec",
+      "item": "Filter via raw SQL on codemie.assistants, not app services",
+      "status": "pass",
+      "notes": "_SELECT_ASSISTANTS raw SQL"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-string and duplicate ids dropped as invalid",
+      "status": "pass",
+      "notes": "covered by tests"
+    },
+    {
+      "kind": "spec",
+      "item": "Each dropped id logged at info with row, project, reason",
+      "status": "pass",
+      "notes": "logger.info per drop"
+    },
+    {
+      "kind": "spec",
+      "item": "Row with nothing valid keeps assistant_ids = []",
+      "status": "pass",
+      "notes": "tested"
+    },
+    {
+      "kind": "spec",
+      "item": "Alias backfill msteams-YYYY-MM-DD_HH-MM, run time if date NULL, -N on collision",
+      "status": "pass",
+      "notes": "_build_alias; tested"
+    },
+    {
+      "kind": "spec",
+      "item": "Alias uniqueness per check_alias_unique scope incl. in-run assignments",
+      "status": "pass",
+      "notes": "_taken_aliases PROJECT/USER scopes"
+    },
+    {
+      "kind": "spec",
+      "item": "No alias entry added to credential_values",
+      "status": "pass",
+      "notes": "alias column only"
+    },
+    {
+      "kind": "spec",
+      "item": "user_id, created_by, project_name, credential_type, setting_type untouched",
+      "status": "pass",
+      "notes": "only credential_values/alias updated"
+    },
+    {
+      "kind": "spec",
+      "item": "credential_values written as jsonb array with deliberate tested bind",
+      "status": "pass",
+      "notes": "JSONB bindparam; tested"
+    },
+    {
+      "kind": "spec",
+      "item": "One summary log line with counts",
+      "status": "pass",
+      "notes": "tested"
+    },
+    {
+      "kind": "spec",
+      "item": "Downgrade logs and does nothing",
+      "status": "pass",
+      "notes": "log-only"
+    },
+    {
+      "kind": "spec",
+      "item": "c3d4e5f6a7b8 binds list so stored value is jsonb array (insert and merge)",
+      "status": "pass",
+      "notes": "json import removed; no remaining json use"
+    },
+    {
+      "kind": "spec",
+      "item": "c3d4e5f6a7b8 sets alias on inserted rows with same format/uniqueness",
+      "status": "pass",
+      "notes": "_build_alias with project-wide taken set"
+    },
+    {
+      "kind": "spec",
+      "item": "c3d4e5f6a7b8 ownership filter before insert and merge, drops logged",
+      "status": "pass",
+      "notes": "_owned_assistant_ids before existing-row branch"
+    },
+    {
+      "kind": "spec",
+      "item": "Mocked-op unit tests for listed cases; c3d4 test extended",
+      "status": "pass",
+      "notes": "test files cover listed cases"
+    },
+    {
+      "kind": "spec",
+      "item": "Manual run against local podman Postgres with before/after, downgrade+upgrade no-op",
+      "status": "pending-stage-7",
+      "notes": "runtime DB evidence"
+    },
+    {
+      "kind": "spec",
+      "item": "AC1: every MS_TEAMS row jsonb array with non-empty alias",
+      "status": "pass",
+      "notes": "string rows rewritten; aliases backfilled"
+    },
+    {
+      "kind": "spec",
+      "item": "AC2: owned/global ids kept, others dropped and logged",
+      "status": "pass",
+      "notes": "filter + logging"
+    },
+    {
+      "kind": "spec",
+      "item": "AC3: rows with no valid ids keep []; no row deleted",
+      "status": "pass",
+      "notes": "no DELETE"
+    },
+    {
+      "kind": "spec",
+      "item": "AC4: backfilled alias format and uniqueness",
+      "status": "pass",
+      "notes": "_build_alias + _taken_aliases"
+    },
+    {
+      "kind": "spec",
+      "item": "AC5: healthy rows untouched; second pass is a no-op",
+      "status": "pass",
+      "notes": "excluded by predicate"
+    },
+    {
+      "kind": "spec",
+      "item": "AC6: downgrade changes no data",
+      "status": "pass",
+      "notes": "log-only"
+    },
+    {
+      "kind": "spec",
+      "item": "AC7: corrected c3d4e5f6a7b8 array/alias/owned ids; helper tests pass",
+      "status": "pass",
+      "notes": "execution is Stage 7"
+    },
+    {
+      "kind": "spec",
+      "item": "AC8: repaired rows open and save in UI edit page",
+      "status": "pending-stage-7",
+      "notes": "needs running stack"
+    },
+    {
+      "kind": "spec",
+      "item": "AC9: single Alembic head",
+      "status": "pass",
+      "notes": "single-head test"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: no UI change",
+      "status": "pass",
+      "notes": "no UI files"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: no change to settings model, validator, transfer service, Teams bot",
+      "status": "pass",
+      "notes": "migrations and tests only"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: user_id and created_by not filled",
+      "status": "pass",
+      "notes": "never written"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: no dedup of PROJECT rows, no singleton indexes",
+      "status": "pass",
+      "notes": "none in diff"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: no DB-backed migration test harness",
+      "status": "pass",
+      "notes": "mocked op/bind only"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: no re-encoding or restore on downgrade",
+      "status": "pass",
+      "notes": "log-only"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "all 4 commit subjects in 8f7bcda5..HEAD follow EPMCDME-####: Description"
+    },
+    {
+      "kind": "code-quality",
+      "status": "partial",
+      "notes": "new migration uses typing.Union (alembic template), bare dict, no __future__ annotations, unannotated bind; guide says respect src/external/* ignores, so reach is ambiguous"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "bound SQL params, no secrets logged, strict json.loads decode fails closed; no external request input"
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "decision",
+      "severity": "major",
+      "triage": "decision_needed",
+      "file": "src/external/alembic/versions/e5f9a1c3b7d2_repair_ms_teams_migrated_settings.py",
+      "line": 57,
+      "title": "Decode skip broader than spec allows",
+      "problem": "Spec section 1 'Decode' says to skip a string row only when the decoded value is not an array. _decode_credential_values also returns None, which skips the row, for an array that holds any non-object element. A test (test_decode_credential_values_returns_none_for_non_dict_element) locks this in. A skipped row hits `continue` before the alias backfill, so it stays a jsonb string and keeps a NULL alias if it had one.",
+      "impact": "The spec criterion is only partly met. For such a row AC1 (array plus non-empty alias) would fail and the integration would stay uneditable ('Alias is required'). Reachability is unconfirmed and very unlikely: the old c3d4e5f6a7b8 only ever json.dumps'd lists of dicts (its _merge_assistant_ids copies entries with dict(), and insert builds [{key, value}]), so no live producer of such rows was found.",
+      "recommendation": "Get a human decision. Either narrow `_decode_credential_values` so it skips only when the decoded value is not an array, as the spec says (and update `test_decode_credential_values_returns_none_for_non_dict_element` to match), or amend spec section 1 \"Decode\" to accept the stricter non-object-element skip. If the stricter skip stays, consider still backfilling the alias on skipped rows.",
+      "resolution": "accepted by user decision; spec amended"
+    }
+  ],
+  "human_approval": {
+    "decision": "approve",
+    "reviewer_decision": "request-changes",
+    "resolved_findings": {
+      "CR-001": "User decision: keep the stricter skip (no code change); spec.md section 1 'Decode' amended."
+    }
+  }
+}

@@ -20,7 +20,6 @@ Create Date: 2026-08-27 00:00:00.000000
 
 """
 
-import json
 import logging
 from datetime import datetime, timezone
 from typing import Sequence, Union
@@ -71,6 +70,61 @@ def _merge_assistant_ids(existing_credential_values: list[dict], new_ids: list[s
     return merged
 
 
+def _filter_owned_assistant_ids(
+    assistant_ids: list[str],
+    project_name: str,
+    assistants: dict[str, tuple[str | None, bool | None]],
+) -> tuple[list[str], list[tuple[str, str]]]:
+    """Keep only assistant ids that exist and belong to project_name or are global.
+
+    assistants maps assistant id -> (project, is_global). Returns the kept ids, in order, and
+    the dropped ids with their reason: "deleted" or "foreign".
+    """
+    kept: list[str] = []
+    dropped: list[tuple[str, str]] = []
+    for assistant_id in assistant_ids:
+        if assistant_id not in assistants:
+            dropped.append((assistant_id, "deleted"))
+            continue
+        assistant_project, is_global = assistants[assistant_id]
+        if assistant_project == project_name or is_global is True:
+            kept.append(assistant_id)
+        else:
+            dropped.append((assistant_id, "foreign"))
+    return kept, dropped
+
+
+def _owned_assistant_ids(bind, project_name: str, assistant_ids: list[str]) -> list[str]:
+    """Look the ids up in codemie.assistants, log each dropped id and return the kept ones."""
+    rows = bind.execute(
+        sa.text("SELECT id, project, is_global FROM codemie.assistants WHERE id = ANY(:ids)"),
+        {"ids": assistant_ids},
+    ).fetchall()
+    assistants = {assistant_id: (project, is_global) for assistant_id, project, is_global in rows}
+    kept, dropped = _filter_owned_assistant_ids(assistant_ids, project_name, assistants)
+    for assistant_id, reason in dropped:
+        logger.info(
+            "Dropped assistant id %r from ms_teams migration for project %r: %s",
+            assistant_id,
+            project_name,
+            reason,
+        )
+    return kept
+
+
+def _build_alias(row_date: datetime | None, taken: set[str], now: datetime) -> str:
+    """Build an ``msteams-<date>`` alias from row_date (or now when it is NULL), suffixed
+    ``-2``, ``-3``, ... until it is not in taken.
+    """
+    base = f"msteams-{(row_date or now):%Y-%m-%d_%H-%M}"
+    if base not in taken:
+        return base
+    suffix = 2
+    while f"{base}-{suffix}" in taken:
+        suffix += 1
+    return f"{base}-{suffix}"
+
+
 def upgrade() -> None:
     bind = op.get_bind()
 
@@ -86,14 +140,15 @@ def upgrade() -> None:
         "is_global, \"default\", user_id, alias, created_by, credential_values) "
         "VALUES "
         "(:id, :row_date, :row_date, :project_name, 'MS_TEAMS', 'PROJECT', "
-        "false, false, NULL, NULL, NULL, :credential_values)"
+        "false, false, NULL, :alias, NULL, :credential_values)"
     ).bindparams(sa.bindparam("credential_values", type_=JSONB))
 
     update_stmt = sa.text(
         "UPDATE codemie.settings SET credential_values = :credential_values, update_date = :row_date " "WHERE id = :id"
     ).bindparams(sa.bindparam("credential_values", type_=JSONB))
 
-    for project_name, assistant_ids in by_project.items():
+    for project_name, mapped_ids in by_project.items():
+        assistant_ids = _owned_assistant_ids(bind, project_name, mapped_ids)
         existing = bind.execute(
             sa.text(
                 "SELECT id, credential_values FROM codemie.settings "
@@ -116,18 +171,27 @@ def upgrade() -> None:
                 {
                     "id": existing_id,
                     "row_date": datetime.now(timezone.utc),
-                    "credential_values": json.dumps(merged),
+                    "credential_values": merged,
                 },
             )
             continue
 
+        taken = {
+            alias
+            for (alias,) in bind.execute(
+                sa.text("SELECT alias FROM codemie.settings WHERE project_name = :project_name AND alias IS NOT NULL"),
+                {"project_name": project_name},
+            ).fetchall()
+        }
+        now = datetime.now(timezone.utc)
         bind.execute(
             insert_stmt,
             {
                 "id": str(uuid4()),
-                "row_date": datetime.now(timezone.utc),
+                "row_date": now,
                 "project_name": project_name,
-                "credential_values": json.dumps([{"key": "assistant_ids", "value": assistant_ids}]),
+                "alias": _build_alias(None, taken, now),
+                "credential_values": [{"key": "assistant_ids", "value": assistant_ids}],
             },
         )
 

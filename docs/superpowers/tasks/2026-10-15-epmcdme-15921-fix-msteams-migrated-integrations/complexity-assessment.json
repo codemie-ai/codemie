@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "task": "Add an Alembic data-repair migration that decodes double-encoded MS Teams credential_values and backfills unique aliases on rows corrupted by c3d4e5f6a7b8, and correct c3d4e5f6a7b8 itself.",
+  "generated": "2026-10-15T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 15,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "requirements_clarity", "reason": "The root cause is verified and the decode expression is proven locally. Several design decisions are still open: what to do with recovered assistant ids that are stale or not owned by the project (locally all of them would fail validate_ms_teams_request, so AC1 could still fail), the format of a deterministic alias that is unique per check_alias_unique and avoids SUBSYSTEM_MANAGED_PREFIXES, downgrade semantics (no-op versus re-encode), whether user_id/created_by stay NULL, and how to edit an already-published migration." },
+    { "dimension": "technical_risk", "reason": "The closest pattern is the existing raw-SQL data migrations that use op.get_bind() plus logging and are tested with a mocked op (d9e8f7a6b5c4, k5l6m7n8o9p0). That covers the mechanics but not the new parts: generating collision-free aliases across all credential types per project, and making the repair idempotent on healthy and mixed-shape rows. It rewrites data on about 51 production rows with no realistic rollback. It also edits a published migration and changes what the Teams bot receives. There is no DB-backed migration test harness, which is how Defect B shipped. Base M, bumped to L for the data-migration red flag." },
+    { "dimension": "file_change_estimate", "reason": "About 2 modified files (c3d4e5f6a7b8 and its test) and 2 new ones (the repair revision and its test), across src/external/alembic/versions and tests/codemie/migrations. Base S, bumped to M for the data-migration red flag." },
+    { "dimension": "component_scope", "reason": "Confined to the Alembic migration layer: one new revision on the single head y1z2a3b4c5d6 plus a corrective edit to c3d4e5f6a7b8. Settings model, validator, transfer service and Teams bot are only read, not changed." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from M to L: requires data migration (repair of corrupted production settings rows)",
+    "File Change Estimate bumped from S to M: requires data migration"
+  ],
+  "split_recommendation": null
+}
