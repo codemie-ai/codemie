@@ -462,7 +462,7 @@ class TestCreateProjectBudgetActivityEvent:
         data = _make_project_budget_create_request()
 
         with (
-            patch.object(service, "_ensure_project_exists", AsyncMock()),
+            patch.object(service, "_ensure_project_budget_eligible", AsyncMock()),
             patch.object(service, "_get_active_member_user_ids", AsyncMock(return_value=[])),
             patch.object(
                 service,
@@ -521,7 +521,7 @@ class TestCreateProjectBudgetActivityEvent:
         # _sync_created_project_budget is patched directly; the RuntimeError propagates
         # as-is (the wrapping into ExtendedHTTPException lives inside that method).
         with (
-            patch.object(service, "_ensure_project_exists", AsyncMock()),
+            patch.object(service, "_ensure_project_budget_eligible", AsyncMock()),
             patch.object(service, "_get_active_member_user_ids", AsyncMock(return_value=[])),
             patch.object(
                 service,

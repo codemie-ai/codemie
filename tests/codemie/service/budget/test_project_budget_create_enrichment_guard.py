@@ -97,7 +97,7 @@ async def test_create_project_budget_blocked_when_no_enrichment():
         with (
             patch.object(
                 ProjectBudgetService,
-                "_ensure_project_exists",
+                "_ensure_project_budget_eligible",
                 new=AsyncMock(),
             ),
             patch("codemie.service.budget.project_budget_service.project_enrichment_repository") as mock_repo,
@@ -125,7 +125,7 @@ async def test_create_project_budget_blocked_when_project_inactive():
         with (
             patch.object(
                 ProjectBudgetService,
-                "_ensure_project_exists",
+                "_ensure_project_budget_eligible",
                 new=AsyncMock(),
             ),
             patch("codemie.service.budget.project_budget_service.project_enrichment_repository") as mock_repo,
@@ -153,7 +153,7 @@ async def test_create_project_budget_proceeds_past_enrichment_guard_when_active(
         with (
             patch.object(
                 ProjectBudgetService,
-                "_ensure_project_exists",
+                "_ensure_project_budget_eligible",
                 new=AsyncMock(),
             ),
             patch("codemie.service.budget.project_budget_service.project_enrichment_repository") as mock_repo,

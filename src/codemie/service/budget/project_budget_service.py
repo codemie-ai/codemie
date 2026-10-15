@@ -285,16 +285,22 @@ class ProjectBudgetService:
         return result
 
     @staticmethod
-    async def _ensure_project_exists(session: AsyncSession, project_name: str) -> None:
+    async def _ensure_project_budget_eligible(session: AsyncSession, project_name: str) -> None:
         from codemie.core.models import Application
 
         app_stmt = select(Application).where(
             Application.name == project_name,
             Application.deleted_at.is_(None),
         )
+
         app_result = await session.execute(app_stmt)
-        if app_result.scalars().first() is None:
+        app = app_result.scalars().first()
+
+        if app is None:
             raise ExtendedHTTPException(code=404, message=f"Project '{project_name}' not found or has been deleted")
+        if app.project_type == Application.ProjectType.PERSONAL:
+            logger.warning(f"personal_project_budget_create_blocked: project={project_name!r}")
+            raise ExtendedHTTPException(code=403, message="Cannot create a budget for a personal project")
 
     @staticmethod
     async def _ensure_project_is_active(session: AsyncSession, project_name: str) -> None:
@@ -851,7 +857,7 @@ class ProjectBudgetService:
             raise ExtendedHTTPException(code=400, message=str(exc)) from exc
 
         self._validate_allocation_mode(data.allocation_mode)
-        await self._ensure_project_exists(session, data.project_name)
+        await self._ensure_project_budget_eligible(session, data.project_name)
         if config.BUDGET_STOP_ENABLED:
             await self._ensure_project_is_active(session, data.project_name)
 
@@ -1813,8 +1819,6 @@ class ProjectBudgetService:
             )
         return ProjectBudgetGroupFullResult(group=group, categories=categories)
 
-    # ==================== Group-level CRUD ====================
-
     async def create_project_budget_group(
         self,
         session: AsyncSession,
@@ -1832,7 +1836,8 @@ class ProjectBudgetService:
                 message=f"budget_duration must match r'^\\d+[smhd]$', got {data.budget_duration!r}",
             )
         self._validate_group_categories(data.categories, data.total_amount)
-        await self._ensure_project_exists(session, data.project_name)
+
+        await self._ensure_project_budget_eligible(session, data.project_name)
 
         existing = await project_budget_group_repository.get_active_by_project(session, data.project_name)
         if existing is not None:
