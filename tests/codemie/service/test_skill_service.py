@@ -26,6 +26,7 @@ Tests business logic for skill management including:
 
 import base64
 import hashlib
+from contextlib import ExitStack
 from datetime import datetime, UTC
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
@@ -2037,6 +2038,70 @@ class TestSkillToolkits:
 # =============================================================================
 
 
+class TestValidateCompanionPayloads:
+    """Tests for SkillService._validate_companion_payloads"""
+
+    def test_returns_normalized_path_and_decoded_bytes_in_order(self):
+        payloads = [
+            SkillCompanionFilePayload(path="refs/a.md", content="hello", encoding="text"),
+            SkillCompanionFilePayload(
+                path="bin/b.dat", content=base64.b64encode(b"\x00\x01").decode(), encoding="base64"
+            ),
+        ]
+
+        result = SkillService._validate_companion_payloads(payloads)
+
+        assert result == [("refs/a.md", b"hello"), ("bin/b.dat", b"\x00\x01")]
+
+    def test_none_and_empty_return_empty_list(self):
+        assert SkillService._validate_companion_payloads(None) == []
+        assert SkillService._validate_companion_payloads([]) == []
+
+    def test_path_at_limit_is_accepted(self):
+        path = "a" * 943
+        payloads = [SkillCompanionFilePayload(path=path, content="x", encoding="text")]
+
+        assert SkillService._validate_companion_payloads(payloads) == [(path, b"x")]
+
+    def test_path_over_limit_raises_400(self):
+        payloads = [SkillCompanionFilePayload(path="a" * 944, content="x", encoding="text")]
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            SkillService._validate_companion_payloads(payloads)
+
+        assert exc_info.value.code == status.HTTP_400_BAD_REQUEST
+
+    def test_reserved_skill_md_path_raises_400(self):
+        payloads = [SkillCompanionFilePayload(path="skill.md", content="x", encoding="text")]
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            SkillService._validate_companion_payloads(payloads)
+
+        assert exc_info.value.code == status.HTTP_400_BAD_REQUEST
+        assert exc_info.value.message == "Invalid companion file path"
+
+    def test_duplicate_path_raises_400(self):
+        payloads = [
+            SkillCompanionFilePayload(path="refs/a.md", content="1", encoding="text"),
+            SkillCompanionFilePayload(path="refs/a.md", content="2", encoding="text"),
+        ]
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            SkillService._validate_companion_payloads(payloads)
+
+        assert exc_info.value.code == status.HTTP_400_BAD_REQUEST
+        assert exc_info.value.message == "Duplicate companion file path"
+
+    def test_invalid_base64_raises_400(self):
+        payloads = [SkillCompanionFilePayload(path="refs/a.bin", content="!!not-base64!!", encoding="base64")]
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            SkillService._validate_companion_payloads(payloads)
+
+        assert exc_info.value.code == status.HTTP_400_BAD_REQUEST
+        assert exc_info.value.message == "Invalid companion file payload"
+
+
 class TestUploadCompanionFiles:
     """Tests for SkillService._upload_companion_files"""
 
@@ -2421,6 +2486,132 @@ class TestCreateSkillWithCompanionFiles:
 
         create_call_data = mock_create.call_args[0][0]
         assert create_call_data["companion_files"] == []
+
+
+class TestCreateSkillNoOrphan(TestCreateSkillWithCompanionFiles):
+    """create_skill must not leave a skill row behind when companion files are refused or a later step fails."""
+
+    @staticmethod
+    def _payload(path="guide.md", content="x", encoding="text"):
+        return SkillCompanionFilePayload(path=path, content=content, encoding=encoding)
+
+    def _create(self, request, owner_user, created_skill, **patches):
+        """Run create_skill with repositories mocked; return (mocks, raised exception or None)."""
+        with ExitStack() as stack:
+            mocks = {
+                "create": stack.enter_context(patch.object(SkillRepository, "create", return_value=created_skill)),
+                "update": stack.enter_context(
+                    patch.object(SkillRepository, "update", **patches.get("update", {"return_value": created_skill}))
+                ),
+                "delete": stack.enter_context(patch.object(SkillRepository, "delete", **patches.get("delete", {}))),
+                "metric": stack.enter_context(patch("codemie.service.skill_service.SkillMonitoringService")),
+                "logger": stack.enter_context(patch("codemie.service.skill_service.logger")),
+            }
+            stack.enter_context(patch.object(SkillRepository, "get_by_name_author_project", return_value=None))
+            stack.enter_context(patch("codemie.service.skill_service.FileRepositoryFactory"))
+            if "upload" in patches:
+                stack.enter_context(patch.object(SkillService, "_upload_companion_files", **patches["upload"]))
+            try:
+                SkillService.create_skill(request, owner_user)
+            except Exception as exc:
+                return mocks, exc
+        return mocks, None
+
+    @pytest.mark.parametrize(
+        "bad_payload",
+        [
+            SkillCompanionFilePayload(path="a" * 944, content="x", encoding="text"),
+            SkillCompanionFilePayload(path="SKILL.md", content="x", encoding="text"),
+            SkillCompanionFilePayload(path="refs/a.bin", content="!!not-base64!!", encoding="base64"),
+        ],
+        ids=["path-too-long", "reserved-skill-md", "invalid-base64"],
+    )
+    def test_invalid_companion_file_returns_400_and_does_not_create(self, owner_user, bad_payload):
+        request = self._make_create_request(companion_files=[bad_payload])
+
+        mocks, raised = self._create(request, owner_user, self._make_skill("skill-x", owner_user))
+
+        assert isinstance(raised, ExtendedHTTPException)
+        assert raised.code == status.HTTP_400_BAD_REQUEST
+        mocks["create"].assert_not_called()
+        mocks["delete"].assert_not_called()
+        mocks["metric"].send_skill_management_metric.assert_not_called()
+
+    def test_duplicate_companion_paths_return_400_and_do_not_create(self, owner_user):
+        request = self._make_create_request(
+            companion_files=[self._payload("refs/a.md", "1"), self._payload("refs/a.md", "2")]
+        )
+
+        mocks, raised = self._create(request, owner_user, self._make_skill("skill-x", owner_user))
+
+        assert raised.code == status.HTTP_400_BAD_REQUEST
+        assert raised.message == "Duplicate companion file path"
+        mocks["create"].assert_not_called()
+
+    def test_valid_first_file_then_invalid_second_writes_no_blob(self, owner_user):
+        request = self._make_create_request(
+            companion_files=[self._payload("refs/ok.md", "ok"), self._payload("a" * 944)]
+        )
+        file_repo = MagicMock()
+
+        with patch.object(SkillRepository, "get_by_name_author_project", return_value=None):
+            with patch.object(SkillRepository, "create") as mock_create:
+                with patch("codemie.service.skill_service.FileRepositoryFactory") as mock_factory:
+                    mock_factory.get_current_repository.return_value = file_repo
+                    with pytest.raises(ExtendedHTTPException):
+                        SkillService.create_skill(request, owner_user)
+
+        mock_create.assert_not_called()
+        file_repo.write_file.assert_not_called()
+
+    def test_upload_failure_deletes_new_skill_and_reraises_original(self, owner_user):
+        request = self._make_create_request(companion_files=[self._payload()])
+        boom = RuntimeError("blob storage down")
+
+        mocks, raised = self._create(
+            request, owner_user, self._make_skill("skill-up", owner_user), upload={"side_effect": boom}
+        )
+
+        assert raised is boom
+        mocks["delete"].assert_called_once_with("skill-up")
+        mocks["metric"].send_skill_management_metric.assert_not_called()
+
+    def test_update_failure_deletes_new_skill_and_reraises_original(self, owner_user):
+        request = self._make_create_request(companion_files=[self._payload()])
+        boom = RuntimeError("db update failed")
+
+        mocks, raised = self._create(
+            request, owner_user, self._make_skill("skill-upd", owner_user), update={"side_effect": boom}
+        )
+
+        assert raised is boom
+        mocks["delete"].assert_called_once_with("skill-upd")
+        mocks["metric"].send_skill_management_metric.assert_not_called()
+
+    def test_cleanup_failure_is_logged_and_does_not_mask_original_error(self, owner_user):
+        request = self._make_create_request(companion_files=[self._payload()])
+        boom = RuntimeError("blob storage down")
+
+        mocks, raised = self._create(
+            request,
+            owner_user,
+            self._make_skill("skill-cf", owner_user),
+            upload={"side_effect": boom},
+            delete={"side_effect": RuntimeError("delete failed")},
+        )
+
+        assert raised is boom
+        mocks["logger"].error.assert_called_once()
+        assert "skill-cf" in mocks["logger"].error.call_args[0][0]
+
+    def test_success_path_does_not_delete_and_sends_metric(self, owner_user):
+        request = self._make_create_request(companion_files=[self._payload()])
+
+        mocks, raised = self._create(request, owner_user, self._make_skill("skill-ok", owner_user))
+
+        assert raised is None
+        mocks["delete"].assert_not_called()
+        mocks["metric"].send_skill_management_metric.assert_called_once()
 
 
 # =============================================================================

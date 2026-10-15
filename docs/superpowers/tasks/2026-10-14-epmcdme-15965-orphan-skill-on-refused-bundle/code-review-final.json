@@ -1,0 +1,25 @@
+{
+  "decision": "approve",
+  "rationale": "All three lenses ran and every spec requirement and acceptance criterion passes against the diff. No blocking findings; 3 pre-existing or adjacent items deferred (concurrent same-name create race returning an unmapped DB error; case-sensitive duplicate-path check; create_skill steps after the companion block, such as a None return from SkillRepository.update, are not rolled back) and about 14 dismissed as by-design per spec (non-atomic create-then-delete, blobs left in place, no BaseException handling, double decode on the create path, update_skill unchanged) or below the emission floor.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "spec", "item": "Req 1: invalid companion files return the same 400 and create no skill record", "status": "pass", "notes": "create_skill calls _validate_companion_payloads before SkillRepository.create; tests assert create not called and no blob written."},
+    {"kind": "spec", "item": "Req 2: on failure after create, delete the new record, re-raise original, log cleanup failure without masking", "status": "pass", "notes": "try/except Exception around upload+update calls _rollback_created_skill (own try/except with logger.error) then bare raise; upload, update and cleanup-failure tests."},
+    {"kind": "spec", "item": "Req 3: no blob cleanup on failure", "status": "pass", "notes": "Rollback only calls SkillRepository.delete."},
+    {"kind": "spec", "item": "Req 4: success and 409 paths unchanged; metric only on success", "status": "pass", "notes": "409 check precedes validation; metric call remains after the try block; failure tests assert no metric."},
+    {"kind": "spec", "item": "Req 5: error codes and messages for invalid paths identical", "status": "pass", "notes": "Validation body moved verbatim into the helper; tests assert the three messages."},
+    {"kind": "spec", "item": "Design: static _validate_companion_payloads used by _upload_companion_files and create_skill", "status": "pass", "notes": "Helper returns (path, bytes) pairs; update_skill goes through _upload_companion_files unchanged."},
+    {"kind": "spec", "item": "Non-goals respected (no seed-policy, blob GC or frontend changes)", "status": "pass", "notes": "Diff touches only skill_service.py and test_skill_service.py."},
+    {"kind": "story-ac", "item": "944-char companion path returns 400 and SkillRepository.create is not called", "status": "pass", "notes": "Parametrized path-too-long case plus 943/944 boundary tests."},
+    {"kind": "story-ac", "item": "Duplicate or reserved SKILL.md path returns 400 with no record", "status": "pass", "notes": "Reserved and duplicate cases assert 400 and create not called."},
+    {"kind": "story-ac", "item": "Non-validation error after create calls SkillRepository.delete with the new id and propagates the original", "status": "pass", "notes": "delete.assert_called_once_with('skill-up'); raised is boom."},
+    {"kind": "story-ac", "item": "Valid create with companion files still passes existing two-phase tests unchanged", "status": "pass", "notes": "No existing tests modified; they pass."}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "Both commits use 'EPMCDME-15965: Description'."},
+    {"kind": "code-quality", "status": "pass", "notes": "make ruff (format, check --fix, check) passed; code-quality guide lists no blocking rule violated."},
+    {"kind": "security", "status": "pass", "notes": "No secrets, auth or injection surface touched; error messages unchanged from before."}
+  ],
+  "findings": []
+}

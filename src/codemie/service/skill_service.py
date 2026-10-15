@@ -163,23 +163,16 @@ class SkillService:
         return skill
 
     @staticmethod
-    def _upload_companion_files(
-        skill_id: str,
+    def _validate_companion_payloads(
         payloads: list[SkillCompanionFilePayload] | None,
-        file_repo: FileRepository,
-        existing_records: list[dict] | None = None,
-    ) -> list[dict[str, str | int]]:
-        """Upload companion file payloads to the file repository and return storage reference records.
+    ) -> list[tuple[str, bytes]]:
+        """Validate companion file payloads without touching storage.
 
-        Each blob is stored under a content-addressed key, so a changed file never overwrites its previous version:
-        agent workspaces may reference the earlier blob. A file already in ``existing_records`` (the skill's
-        current records) under the same key and full checksum is not uploaded again and its record is reused.
+        Returns ``(normalized_path, raw_content)`` per payload, in input order. Raises a 400
+        ``ExtendedHTTPException`` for an invalid path, the reserved ``SKILL.md`` path, a duplicate path
+        or an undecodable payload, so callers can refuse a bad bundle before persisting anything.
         """
-        storage = SkillFileStorage(skill_id, file_repo)
-        stored_by_key = {
-            record["storage_key"]: record for record in existing_records or [] if record.get("storage_key")
-        }
-        records: list[dict[str, str | int]] = []
+        validated: list[tuple[str, bytes]] = []
         seen_paths: set[str] = set()
 
         for file_payload in payloads or []:
@@ -204,7 +197,32 @@ class SkillService:
                 )
 
             seen_paths.add(normalized_path)
-            raw_content = SkillFileStorage._decode_companion_file_payload(file_payload)
+            validated.append((normalized_path, SkillFileStorage._decode_companion_file_payload(file_payload)))
+
+        return validated
+
+    @staticmethod
+    def _upload_companion_files(
+        skill_id: str,
+        payloads: list[SkillCompanionFilePayload] | None,
+        file_repo: FileRepository,
+        existing_records: list[dict] | None = None,
+    ) -> list[dict[str, str | int]]:
+        """Upload companion file payloads to the file repository and return storage reference records.
+
+        Each blob is stored under a content-addressed key, so a changed file never overwrites its previous version:
+        agent workspaces may reference the earlier blob. A file already in ``existing_records`` (the skill's
+        current records) under the same key and full checksum is not uploaded again and its record is reused.
+        """
+        storage = SkillFileStorage(skill_id, file_repo)
+        stored_by_key = {
+            record["storage_key"]: record for record in existing_records or [] if record.get("storage_key")
+        }
+        records: list[dict[str, str | int]] = []
+
+        validated = SkillService._validate_companion_payloads(payloads)
+
+        for file_payload, (normalized_path, raw_content) in zip(payloads or [], validated, strict=True):
             storage_key, checksum = content_addressed_key(normalized_path, raw_content)
             stored = stored_by_key.get(storage_key)
             if stored and stored.get("checksum") == checksum:
@@ -493,6 +511,19 @@ class SkillService:
         return accessible_skills
 
     @staticmethod
+    def _rollback_created_skill(skill_id: str) -> None:
+        """Delete a just-created skill whose companion files could not be stored.
+
+        Uploaded blobs are intentionally left in place (content-addressed, may be referenced elsewhere).
+        A cleanup failure is logged and never masks the error that triggered the rollback.
+        """
+        try:
+            SkillRepository.delete(skill_id)
+            logger.info(f"Rolled back skill (ID: {skill_id}) after companion file failure")
+        except Exception:
+            logger.error(f"Failed to roll back skill (ID: {skill_id}) after companion file failure", exc_info=True)
+
+    @staticmethod
     def create_skill(request: SkillCreateRequest, user: User) -> SkillDetailResponse:
         """
         Create new skill.
@@ -514,6 +545,9 @@ class SkillService:
                 details=f"A skill named '{request.name}' already exists for this user in project '{request.project}'",
                 help="Choose a different name or update the existing skill",
             )
+
+        # Refuse an invalid bundle before anything is persisted, so a rejected request leaves no skill behind
+        SkillService._validate_companion_payloads(request.companion_files)
 
         # Create skill (companion_files uploaded in a second step after skill ID is known)
         skill_data = {
@@ -540,9 +574,15 @@ class SkillService:
         logger.info(f"Created skill '{skill.name}' (ID: {skill.id}) by user '{user.id}'")
 
         if request.companion_files:
-            file_repo = FileRepositoryFactory.get_current_repository()
-            companion_file_records = SkillService._upload_companion_files(skill.id, request.companion_files, file_repo)
-            skill = SkillRepository.update(skill.id, {"companion_files": companion_file_records})
+            try:
+                file_repo = FileRepositoryFactory.get_current_repository()
+                companion_file_records = SkillService._upload_companion_files(
+                    skill.id, request.companion_files, file_repo
+                )
+                skill = SkillRepository.update(skill.id, {"companion_files": companion_file_records})
+            except Exception:
+                SkillService._rollback_created_skill(skill.id)
+                raise
 
         # Send success metric
         SkillMonitoringService.send_skill_management_metric(
