@@ -1791,6 +1791,12 @@ class ProjectBudgetService:
                     code=400,
                     message=f"Category '{key}' pct must be <= 100, got {spec.pct}",
                 )
+        platform_pct = categories[platform_key].pct
+        if platform_pct <= 0:
+            raise ExtendedHTTPException(
+                code=400,
+                message=f"Category 'platform' hard limit must be greater than 0, got pct {platform_pct}",
+            )
         total_pct = sum(s.pct for s in categories.values())
         if abs(total_pct - 100.0) > PCT_SUM_TOLERANCE:
             raise ExtendedHTTPException(

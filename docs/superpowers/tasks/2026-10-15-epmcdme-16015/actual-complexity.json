@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "generated": "2026-10-15T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 1, "label": "XS" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 9,
+  "size": "XS",
+  "band_range": "6-9",
+  "files_changed": 2,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "A single component, ProjectBudgetService: the platform-hard-limit-zero guard sits in the shared group category validator (_validate_group_categories), and both the create_project_budget_group and update_project_budget_group paths go through it before any persistence. No router, model or repository changes." },
+    { "dimension": "technical_risk", "reason": "The validator already rejects a missing platform category, negative or NaN pct and a wrong pct sum, each with a 400 ExtendedHTTPException. The zero-platform rule copies that pattern, and the existing parameterized invalid-value test template covers the enumerated edge cases (platform 0, a tiny positive value, zero soft budgets, zero secondary pct), so no edge-case bump applies. Easy to roll back." },
+    { "dimension": "file_change_estimate", "reason": "The diffstat shows 2 files: the service module and its existing group-creation test module, both modified. 112 insertions, 3 deletions." },
+    { "dimension": "calibration", "reason": "Total 9 sits on the XS/S boundary. It leans lower because Technical Risk is S and existing validation patterns cover nearly all of the change. This matches bundled XS example epmcdme-10101 more closely than S example epmcdme-10102, which touches API and Service." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

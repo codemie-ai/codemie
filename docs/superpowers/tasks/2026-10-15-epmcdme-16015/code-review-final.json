@@ -1,0 +1,13 @@
+{
+  "decision": "approve",
+  "rationale": "Compact profile: the edge-case lens ran and no spec/story existed, so acceptance was skipped (no-spec, confidence low); standards were not expected. Both edge-case candidates were dismissed after checking reachability: total-only updates of legacy platform-0 groups match the user's decision to validate only when categories are sent, and writes staged before the 400 are rolled back because the router commits only on success. 0 deferred, 2 dismissed.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "commit-format", "status": "na", "notes": "Standards audit not expected for compact profile." },
+    { "kind": "code-quality", "status": "na", "notes": "Standards audit not expected for compact profile." },
+    { "kind": "security", "status": "na", "notes": "Standards audit not expected for compact profile." }
+  ],
+  "findings": []
+}
