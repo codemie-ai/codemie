@@ -194,11 +194,12 @@ def _mock_async_session():
         "/v1/analytics/leaderboard/entries",
     ],
 )
+@patch("codemie.rest_api.routers.analytics.leaderboard.customer_config")
 @patch("codemie.rest_api.routers.analytics.leaderboard.config")
-async def test_leaderboard_503_comes_from_leaderboard_guard_not_metrics_analytics(mock_cfg, path):
-    """Leaderboard routes 503 when LEADERBOARD_ENABLED=False; detail must name the leaderboard guard."""
-    mock_cfg.LEADERBOARD_ENABLED = False
+async def test_leaderboard_503_comes_from_leaderboard_guard_not_metrics_analytics(mock_cfg, mock_customer_config, path):
+    """Leaderboard routes 503 when customer-config disables the feature; detail must name the leaderboard guard."""
     mock_cfg.ANALYTICS_DEFAULT_PAGE_SIZE = 10
+    mock_customer_config.is_component_enabled.return_value = False
 
     with patch("codemie.enterprise.has_enterprise", return_value=False):
         transport = ASGITransport(app=_APP)

@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 
 from codemie.configs.config import config
+from codemie.configs.customer_config import customer_config
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.models.analytics import (
     AnalyticsDetailResponse,
@@ -41,6 +42,7 @@ from codemie.service.analytics.analytics_service import AnalyticsService
 router = APIRouter()
 
 
+LEADERBOARD_COMPONENT_ID = "aiChampionsLeaderboard"
 LEADERBOARD_SNAPSHOT_ID_DESC = "Specific snapshot ID (defaults to latest)"
 LEADERBOARD_VIEW_PATTERN = "^(current|monthly|quarterly)$"
 LEADERBOARD_VIEW_DESC = "Leaderboard view: current, monthly, quarterly"
@@ -51,8 +53,13 @@ LEADERBOARD_SEASON_KEY_DESC = "Optional season key for seasonal views, e.g. 2026
 
 
 def _require_leaderboard_enabled() -> None:
-    """Dependency: raises 503 when LEADERBOARD_ENABLED is False."""
-    if not config.LEADERBOARD_ENABLED:
+    """Dependency: 503 when the aiChampionsLeaderboard customer-config component is disabled.
+
+    Customer-config is what hides the Leaderboard tab in the UI, so the endpoints follow the same switch.
+    LEADERBOARD_ENABLED is deliberately not consulted here: it only says which pod runs the scheduled
+    computation job, and API pods that serve these endpoints do not have it set.
+    """
+    if not customer_config.is_component_enabled(LEADERBOARD_COMPONENT_ID):
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Leaderboard is not enabled")
 
 

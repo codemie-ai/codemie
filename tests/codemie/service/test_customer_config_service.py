@@ -424,39 +424,36 @@ async def test_a_row_missing_a_declared_field_keeps_the_yaml_value(yaml_with_dis
     assert disclaimer.settings.text == "From YAML"
 
 
-# --- T4: aiChampionsLeaderboard ceiling suppression ---
+# --- aiChampionsLeaderboard follows customer-config only, never LEADERBOARD_ENABLED ---
 
 
 @pytest.mark.asyncio
-async def test_leaderboard_ceiling_hides_component_when_disabled(patched_yaml):
-    """aiChampionsLeaderboard must be absent from resolved config when LEADERBOARD_ENABLED=False."""
-    patched_yaml.components = [
-        Component(id="aiChampionsLeaderboard", settings=ComponentSetting(enabled=True)),
-        Component(id="features:webSearch", settings=ComponentSetting(enabled=True)),
-    ]
-
-    with _patch_rows([]):
-        with patch("codemie.service.customer_config_service.config") as mock_cfg:
-            mock_cfg.LEADERBOARD_ENABLED = False
-            components = await resolve_components()
-
-    assert _find(components, "aiChampionsLeaderboard") is None
-    assert _find(components, "features:webSearch") is not None
-
-
-@pytest.mark.asyncio
-async def test_leaderboard_ceiling_allows_component_when_enabled(patched_yaml):
-    """aiChampionsLeaderboard must be present when LEADERBOARD_ENABLED=True and YAML enables it."""
+@pytest.mark.parametrize("flag_enabled", [True, False])
+async def test_leaderboard_component_ignores_leaderboard_enabled_env(patched_yaml, flag_enabled):
+    """The API pool does not run the computation job, so LEADERBOARD_ENABLED must not affect /v1/config."""
     patched_yaml.components = [
         Component(id="aiChampionsLeaderboard", settings=ComponentSetting(enabled=True)),
     ]
 
     with _patch_rows([]):
         with patch("codemie.service.customer_config_service.config") as mock_cfg:
-            mock_cfg.LEADERBOARD_ENABLED = True
+            mock_cfg.LEADERBOARD_ENABLED = flag_enabled
             components = await resolve_components()
 
     assert _find(components, "aiChampionsLeaderboard") is not None
+
+
+@pytest.mark.asyncio
+async def test_leaderboard_component_hidden_when_customer_config_disables_it(patched_yaml):
+    """Customer-config stays the single control: enabled=false hides the component."""
+    patched_yaml.components = [
+        Component(id="aiChampionsLeaderboard", settings=ComponentSetting(enabled=False)),
+    ]
+
+    with _patch_rows([]):
+        components = await resolve_components()
+
+    assert _find(components, "aiChampionsLeaderboard") is None
 
 
 # --- T4: features:metricsAnalytics config projection ---

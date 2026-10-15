@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for leaderboard read endpoint 503 guard when LEADERBOARD_ENABLED=False."""
+"""Tests for the LEADERBOARD_ENABLED gate: only the compute endpoint is gated, reads are not."""
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -60,28 +60,86 @@ def anyio_backend():
     return "asyncio"
 
 
+_CUSTOMER_CONFIG_PATH = "codemie.rest_api.routers.analytics.leaderboard.customer_config"
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize("endpoint", _LEADERBOARD_READ_ENDPOINTS)
+@patch(_CUSTOMER_CONFIG_PATH)
+@patch("codemie.rest_api.routers.analytics.leaderboard.AnalyticsService")
 @patch("codemie.rest_api.routers.analytics.leaderboard.config")
-async def test_leaderboard_read_returns_503_when_disabled(mock_config, endpoint):
-    """Every leaderboard GET endpoint must return 503 when LEADERBOARD_ENABLED=False."""
-    mock_config.LEADERBOARD_ENABLED = False
+async def test_leaderboard_read_returns_503_when_customer_config_disables_it(
+    mock_config, mock_service_class, mock_customer_config, endpoint
+):
+    """Every leaderboard GET endpoint follows the aiChampionsLeaderboard customer-config switch."""
+    mock_config.LEADERBOARD_ENABLED = True
     mock_config.ANALYTICS_DEFAULT_PAGE_SIZE = 10
+    mock_customer_config.is_component_enabled.return_value = False
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
         response = await ac.get(endpoint)
 
     assert response.status_code == 503
+    assert response.json()["detail"] == "Leaderboard is not enabled"
+    mock_customer_config.is_component_enabled.assert_called_with("aiChampionsLeaderboard")
+    mock_service_class.assert_not_called()
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("endpoint", _LEADERBOARD_READ_ENDPOINTS)
+@patch(_CUSTOMER_CONFIG_PATH)
 @patch("codemie.rest_api.routers.analytics.leaderboard.AnalyticsService")
 @patch("codemie.rest_api.routers.analytics.leaderboard.config")
-async def test_leaderboard_compute_returns_503_when_disabled(mock_config, mock_service_class):
-    """POST /leaderboard/compute must return 503 and make no service call when LEADERBOARD_ENABLED=False."""
+async def test_leaderboard_read_not_gated_by_leaderboard_enabled_env(
+    mock_config, mock_service_class, mock_customer_config, endpoint
+):
+    """Reads serve stored snapshots, so LEADERBOARD_ENABLED=False (an API pod that does not run the
+    computation job) must not turn them into 503 while customer-config enables the feature."""
     mock_config.LEADERBOARD_ENABLED = False
     mock_config.ANALYTICS_DEFAULT_PAGE_SIZE = 10
+    mock_customer_config.is_component_enabled.return_value = True
+    mock_service_class.return_value = AsyncMock()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.get(endpoint)
+
+    assert response.status_code != 503
+
+
+@pytest.mark.anyio
+@patch(_CUSTOMER_CONFIG_PATH)
+@patch("codemie.rest_api.routers.analytics.leaderboard.AnalyticsService")
+@patch("codemie.rest_api.routers.analytics.leaderboard.config")
+async def test_leaderboard_compute_not_gated_by_leaderboard_enabled_env(
+    mock_config, mock_service_class, mock_customer_config
+):
+    """API pods run without LEADERBOARD_ENABLED, so compute must follow customer-config only."""
+    mock_config.LEADERBOARD_ENABLED = False
+    mock_config.ANALYTICS_DEFAULT_PAGE_SIZE = 10
+    mock_customer_config.is_component_enabled.return_value = True
+    mock_service_class.return_value = AsyncMock()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.post("/v1/analytics/leaderboard/compute")
+
+    assert response.status_code != 503
+    mock_service_class.assert_called_once()
+
+
+@pytest.mark.anyio
+@patch(_CUSTOMER_CONFIG_PATH)
+@patch("codemie.rest_api.routers.analytics.leaderboard.AnalyticsService")
+@patch("codemie.rest_api.routers.analytics.leaderboard.config")
+async def test_leaderboard_compute_returns_503_when_customer_config_disables_it(
+    mock_config, mock_service_class, mock_customer_config
+):
+    """POST /leaderboard/compute is also off when customer-config disables the feature."""
+    mock_config.LEADERBOARD_ENABLED = True
+    mock_config.ANALYTICS_DEFAULT_PAGE_SIZE = 10
+    mock_customer_config.is_component_enabled.return_value = False
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
@@ -92,13 +150,18 @@ async def test_leaderboard_compute_returns_503_when_disabled(mock_config, mock_s
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("flag_enabled", [True, False])
+@patch(_CUSTOMER_CONFIG_PATH)
 @patch("codemie.rest_api.routers.analytics.leaderboard.AnalyticsService")
 @patch("codemie.rest_api.routers.analytics.leaderboard.config")
-async def test_leaderboard_summary_200_when_enabled(mock_config, mock_service_class):
-    """GET /leaderboard/summary returns 200 when LEADERBOARD_ENABLED=True."""
-    mock_config.LEADERBOARD_ENABLED = True
+async def test_leaderboard_summary_200_regardless_of_env_flag(
+    mock_config, mock_service_class, mock_customer_config, flag_enabled
+):
+    """GET /leaderboard/summary returns 200 when customer-config enables it, whatever LEADERBOARD_ENABLED is."""
+    mock_config.LEADERBOARD_ENABLED = flag_enabled
     mock_config.ANALYTICS_DEFAULT_PAGE_SIZE = 10
     mock_config.ENV = "test"
+    mock_customer_config.is_component_enabled.return_value = True
 
     _meta = {
         "timestamp": "2026-01-01T00:00:00",
