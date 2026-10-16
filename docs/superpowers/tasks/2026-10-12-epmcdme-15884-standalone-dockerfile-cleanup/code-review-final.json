@@ -1,0 +1,25 @@
+{
+  "decision": "request-changes",
+  "rationale": "Acceptance did not run (no spec) and the diff was not oversized; one reachable security regression remains: with the image ENV default removed, a missing ENV falls back to backend ENV=local. 3 candidates dismissed as noise (FRONTEND_URL/RATE_LIMIT_LOGIN moves are intentional and documented in the README; native-toolchain removal is covered by a successful build log and wheel-based install; VITE_IS_ENTERPRISE_EDITION has no remaining frontend consumer). 0 deferred; fix pack written to code-review-fix-pack.local.md.",
+  "confidence": "low",
+  "risk_flags": ["security"],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "commit-format", "status": "pass", "notes": "1 commit in range; subject matches the documented EPMCDME-####: Description format" },
+    { "kind": "code-quality", "status": "pass", "notes": "changed files are standalone/Dockerfile, standalone/.env.standalone.example and standalone/README.md with no Python; no documented code-quality rule is broken" },
+    { "kind": "security", "status": "pass", "notes": "no credentials hardcoded or logged in the changed files; env example warns against ENV=local; pre-existing SUPERADMIN_PASSWORD default and missing USER directive are outside this change" }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "standalone/docker/entrypoint.sh",
+      "title": "Missing ENV now defaults to local auth bypass",
+      "problem": "The Dockerfile no longer sets ENV=development; the value now lives only in .env.standalone(.example), loaded via compose env_file. If the container starts without ENV (stale .env.standalone created before this change, docker run without env_file, or the line deleted), the backend default ENV=local (config.py:52) applies. Nothing in the entrypoint validates ENV, despite its header comment promising env validation.",
+      "impact": "In local mode the backend accepts a user-id header as login and treats every user as admin (security/user.py:93, idp/local.py:84), so an upgrade with an old env file silently yields an auth-bypassed deployment. The README only asks users to copy three lines manually. Reachability confirmed through compose env_file wiring; severity capped at major because the example file and README warn about it.",
+      "recommendation": "Fail fast in the entrypoint before starting uvicorn when ENV is unset or `local` (e.g. [ \"${ENV:-local}\" = \"local\" ] && { echo 'ERROR: ENV must be set and not local; see .env.standalone.example' >&2; exit 1; }), or restore an image-level ENV=development default. No spec exists to settle which the owner prefers; the newly introduced ambiguity is kept blocking."
+    }
+  ]
+}

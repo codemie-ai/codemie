@@ -15,6 +15,14 @@
 
 set -e
 
+# ENV is no longer defaulted in the image (see standalone/.env.standalone.example). The backend's own
+# default is ENV=local, which accepts a user-id header as login and makes every user an admin, so an
+# unset ENV (e.g. an old .env.standalone) must stop the container instead of silently starting that way.
+if [ -z "${ENV:-}" ]; then
+    echo "ERROR: ENV is not set. Add ENV=development to .env.standalone (see standalone/.env.standalone.example)." >&2
+    exit 1
+fi
+
 # Select the customer config source. /app/external-config is an optional directory
 # mount (standalone/docker-compose.standalone.yml, CODEMIE_EXTERNAL_CONFIG_DIR). When it
 # contains customer-config.yaml, that file fully replaces the bundled one — no merge.
@@ -28,6 +36,14 @@ set -e
 EXTERNAL_CUSTOMER_CONFIG=/app/external-config/customer-config.yaml
 BUNDLED_CUSTOMER_CONFIG=/app/backend/config/customer/customer-config.yaml
 BUNDLED_CUSTOMER_CONFIG_PRISTINE=/app/backend/config/customer/.customer-config.bundled.yaml
+# The container runs as the unprivileged codemie user (uid 1001) and cannot fix volume ownership
+# itself; a volume created by an earlier root-running image must be chowned once (standalone/README.md).
+for dir in /app/codemie-storage /app/codemie-repos; do
+    if [ ! -w "$dir" ]; then
+        echo "ERROR: $dir is not writable by uid $(id -u). Chown the volume to 1001:1001 (see standalone/README.md)." >&2
+        exit 1
+    fi
+done
 cp "$BUNDLED_CUSTOMER_CONFIG_PRISTINE" "$BUNDLED_CUSTOMER_CONFIG"
 if [ -f "$EXTERNAL_CUSTOMER_CONFIG" ]; then
     cp "$EXTERNAL_CUSTOMER_CONFIG" "$BUNDLED_CUSTOMER_CONFIG"
@@ -76,10 +92,10 @@ EOF
 # for development. --reload and --workers are mutually exclusive in uvicorn.
 cd /app/backend
 if [ "${UVICORN_RELOAD:-false}" = "true" ]; then
-    .venv/bin/uvicorn codemie.rest_api.main:app \
+    uvicorn codemie.rest_api.main:app \
         --host 0.0.0.0 --port 8000 --reload &
 else
-    .venv/bin/uvicorn codemie.rest_api.main:app \
+    uvicorn codemie.rest_api.main:app \
         --host 0.0.0.0 --port 8000 --workers 1 &
 fi
 UVICORN_PID=$!

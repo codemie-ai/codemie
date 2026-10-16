@@ -56,6 +56,10 @@ standalone/build-image.sh --image-tag localhost/codemie:local --engine podman
 cp standalone/.env.standalone.example standalone/.env.standalone
 ```
 
+Backend runtime defaults (`ENV`, `FRONTEND_URL`, `RATE_LIMIT_LOGIN`) are set in this file, not baked
+into the image. If your `standalone/.env.standalone` predates this, copy those three lines from the
+example: the container refuses to start while `ENV` is unset.
+
 Edit `standalone/.env.standalone` and configure:
 - Local superadmin credentials
 - At least one LLM provider block (Azure OpenAI or AWS Bedrock — see the comments in the example file for both)
@@ -159,6 +163,35 @@ deployments:
 Restart or recreate the `codemie` container after changing either setting. No image rebuild is
 required.
 
+**Disable AI Champions Leaderboard in standalone without Elasticsearch:**
+
+Leaderboard reads stored snapshots from PostgreSQL. Computation combines PostgreSQL data with
+Elasticsearch activity, tool usage, CLI and cost metrics. Elasticsearch is not included in the
+standalone Compose stack. The collector handles Elasticsearch failures and can continue with
+incomplete metrics, so disabling Leaderboard is recommended to avoid presenting an incomplete
+ranking. The bundled customer configuration enables `aiChampionsLeaderboard`; explicitly disable
+it to hide the tab and disable its API endpoints in this deployment.
+
+Use the full external customer configuration described above. In that file, change the existing
+`aiChampionsLeaderboard` entry to `settings.enabled: false`, keeping its other settings and every
+other component intact. The relevant YAML fragment is:
+
+```yaml
+- id: "aiChampionsLeaderboard"
+  settings:
+    enabled: false
+```
+
+`LEADERBOARD_ENABLED=false` only disables the nightly computation scheduler; it does not hide the
+tab or disable the API endpoints. The generic `FEATURE_<ID>` environment override applies only
+to components whose IDs start with `features:`, so it cannot disable `aiChampionsLeaderboard`.
+Even when starting from bundled defaults, mount a full external customer configuration to make
+this change. Restart the `codemie` container after editing the YAML; no image rebuild is required:
+
+```bash
+docker compose -f standalone/docker-compose.standalone.yml restart codemie
+```
+
 ## Starting the stack
 
 ```bash
@@ -197,6 +230,27 @@ docker compose -f standalone/docker-compose.standalone.yml down
 ```
 
 (swap `docker` for `podman` as needed).
+
+### Non-root container and existing volumes
+
+The image is built on the shared `codemie/codemie-base-python` base image and runs both nginx and the
+backend as its unprivileged `codemie` user (uid/gid 1001), not as root. New volumes inherit that
+ownership. A `codemie_storage` / `codemie_repos` volume created by an earlier image that ran as root
+is still owned by root, so the container stops at startup with
+`ERROR: /app/codemie-storage is not writable by uid 1001`. Change the ownership once and start again;
+the data is kept:
+
+```bash
+docker compose -f standalone/docker-compose.standalone.yml down
+for v in codemie-standalone_codemie_storage codemie-standalone_codemie_repos; do
+  docker run --rm --user 0 --entrypoint chown -v "$v":/data "${CODEMIE_IMAGE:-localhost/codemie:local}" -R 1001:1001 /data
+done
+docker compose -f standalone/docker-compose.standalone.yml up -d
+```
+
+Check the volume names with `docker volume ls` (they are prefixed with the Compose project name).
+The external customer configuration directory is mounted read-only, so its
+`customer-config.yaml` only has to be readable by uid 1001.
 
 ## CLI Analytics (optional)
 
@@ -283,11 +337,8 @@ visible to a global/project admin when `features:cliAnalytics` is enabled.
    frontend repo (`--frontend-root`) passed as the named build context `frontend`
    (`--build-context frontend=<path>`). The Dockerfile copies only the specific files needed for
    the production build from each context — never a secret, cache, or `.git` directory from
-   either source repository. This does not guarantee the final image is free of VCS metadata
-   from third-party dependencies: for example, Poetry's install of the `Switchyard` package
-   currently vendors that dependency's own `.git` directory into the virtualenv. That is
-   pre-existing dependency-install behavior, not something introduced by the source-context
-   exclusion described here.
+   either source repository. The final image contains no `.git` directory: the Python
+   dependencies, including `nemo-switchyard`, are installed from prebuilt wheels.
 5. Writes a timestamped log to `standalone/build-<timestamp>.log`.
 6. Exits with the engine's exact build exit code.
 

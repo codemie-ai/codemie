@@ -17,8 +17,12 @@
 # supplied as the named build context "frontend"
 # (docker/podman build --build-context frontend=<path-to-codemie-ui> ...).
 
+# Same tag as the backend Dockerfile (PYTHON_VERSION), so both images get the same base-image fixes.
+ARG PYTHON_VERSION=3.12.12
+
 # ─── Stage 1: Build the React frontend ───────────────────────────────────────
-FROM node:20-alpine AS frontend-builder
+# Same Node/Alpine line as codemie-ui/multistage.Dockerfile.
+FROM node:20-alpine3.23 AS frontend-builder
 
 WORKDIR /app/frontend
 
@@ -33,8 +37,6 @@ WORKDIR /app/frontend
 COPY --from=frontend package.json package-lock.json ./
 RUN npm ci
 
-# VITE_IS_ENTERPRISE_EDITION must be false for the OSS build.
-# It is baked into the JS bundle at build time and cannot be changed at runtime.
 COPY --from=frontend index.html vite.config.ts tsconfig.json tsconfig.node.json \
      postcss.config.js tailwind.config.ts ./
 COPY --from=frontend src    ./src
@@ -45,8 +47,7 @@ COPY --from=frontend public ./public
 # copied into the build context or image. VITE_SUFFIX must be empty so
 # index.html's "%VITE_SUFFIX%/config.js" placeholder resolves to "/config.js",
 # matching where the entrypoint actually writes the runtime config file.
-ENV VITE_IS_ENTERPRISE_EDITION=false \
-    VITE_SUFFIX='' \
+ENV VITE_SUFFIX='' \
     VITE_ONBOARDING_ASSISTANT_SLUG=codemie-onboarding \
     VITE_FEEDBACK_ASSISTANT_SLUG=codemie-feedback \
     VITE_CHATBOT_ASSISTANT_SLUG=ai-run-chatbot \
@@ -61,79 +62,65 @@ RUN if grep -Eq '%VITE_[A-Z_]+%' dist/index.html; then \
     fi
 
 # ─── Stage 2: Install Python production dependencies ─────────────────────────
-FROM python:3.12-slim AS backend-builder
+# The shared builder image already has Poetry, a compiler and the venv at /venv
+# (POETRY_VIRTUALENVS_CREATE=false), so dependencies install straight into it.
+FROM codemie/codemie-base-python:${PYTHON_VERSION}-debian-builder AS backend-builder
 
-WORKDIR /app/backend
-
-# nemo-switchyard builds a native Rust/Python extension during Poetry install.
-# Keep its compiler toolchain in the builder stage so it is not copied into the
-# final runtime image.
-# hadolint ignore=DL3008
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential \
-        cmake \
-        pkg-config \
-    && rm -rf /var/lib/apt/lists/*
-
-# hadolint ignore=DL3013
-RUN pip install --no-cache-dir poetry
+WORKDIR /app
 
 COPY pyproject.toml poetry.lock ./
 
 # --no-root: skip installing the codemie package itself (source-layout).
 # The source is copied into the final stage and PYTHONPATH fills the gap.
-# virtualenvs.in-project produces /app/backend/.venv for easy COPY.
-RUN poetry config virtualenvs.in-project true && \
-    poetry install --without dev --no-root
+RUN poetry install --without dev --no-root
 
 # ─── Stage 3: Final runtime image ────────────────────────────────────────────
-FROM python:3.12-slim AS final
+FROM codemie/codemie-base-python:${PYTHON_VERSION}-debian-runtime AS final
 
-# Install nginx (process manager + static server) and curl (healthcheck probe).
+# The base image runs as the unprivileged "codemie" user; packages are installed as root and the
+# user is restored below. curl (HEALTHCHECK, entrypoint probe) and git (GitPython loaders) are
+# already in the base image. nginx runs as codemie too: the "user" directive is dropped, and the
+# pid file and the log/temp directories are moved to places that user can write.
+USER root
 # hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends \
         nginx \
-        curl \
-        git \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && sed -i -e '/^user /d' -e 's|^pid .*|pid /tmp/nginx.pid;|' /etc/nginx/nginx.conf \
+    && chown -R codemie:codemie /var/log/nginx /var/lib/nginx /usr/share/nginx/html
 
-# Frontend static assets
-COPY --from=frontend-builder /app/frontend/dist /usr/share/nginx/html
+# Frontend static assets (the html directory was chowned above: the entrypoint writes config.js there)
+COPY --from=frontend-builder --chown=codemie:codemie /app/frontend/dist /usr/share/nginx/html
 
 # OSS nginx config (adds /api/ proxy block; does not modify frontend/nginx.conf)
 COPY standalone/docker/nginx.conf /etc/nginx/sites-enabled/default
 
 # Python venv with all production dependencies
-COPY --from=backend-builder /app/backend/.venv /app/backend/.venv
+COPY --from=backend-builder --chown=codemie:codemie /venv /venv
 
 # Backend application source and config directory.
 # config.py resolves paths relative to Path(__file__).parents[3] == /app/backend/,
 # so both src/ and config/ must be present under /app/backend/.
-COPY src    /app/backend/src
-COPY config /app/backend/config
+COPY --chown=codemie:codemie src    /app/backend/src
+COPY --chown=codemie:codemie config /app/backend/config
 
 # Pristine copy of the bundled customer config, kept alongside the live one. The entrypoint
 # restores customer-config.yaml from this pristine image-bundled copy on every start before optionally
 # re-applying an external override, so removing the external file and restarting the same
 # (not recreated) container correctly falls back to the bundled config instead of leaving a
 # stale external copy in place.
-COPY config/customer/customer-config.yaml /app/backend/config/customer/.customer-config.bundled.yaml
+COPY --chown=codemie:codemie config/customer/customer-config.yaml /app/backend/config/customer/.customer-config.bundled.yaml
 
 # Entrypoint: generates config.js, validates env, starts uvicorn, execs nginx.
-COPY standalone/docker/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+COPY --chmod=755 standalone/docker/entrypoint.sh /entrypoint.sh
 
 # PYTHONPATH makes the source-layout codemie package importable from the venv.
 # backend/pyproject.toml: packages = [{ include = "codemie", from = "src" }]
 ENV PYTHONPATH=/app/backend/src
 
-# Backend deployment defaults (all overridable at docker run time via -e).
-ENV FRONTEND_URL=http://localhost:8080
-ENV ENV=development
-ENV IDP_PROVIDER=local
-# Rate-limit for login endpoint — allow enough requests for CI/CD tooling
-# and parallel test workers. Can be overridden at container run time.
-ENV RATE_LIMIT_LOGIN=100/15minutes
+# Pre-create the writable data directories so new named volumes inherit codemie ownership.
+USER codemie
+RUN mkdir -p /app/codemie-storage /app/codemie-repos
 
 EXPOSE 8080
 

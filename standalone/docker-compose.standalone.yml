@@ -56,9 +56,11 @@ services:
 
 # NOTE: These named volumes replace Windows-incompatible bind mounts (./codemie-storage,
 # ./codemie-repos). If you had data in those host directories,
-# migrate it once before running docker compose up:
-#   docker run --rm -v ./codemie-storage:/src -v codemie_storage:/dst docker.io/library/alpine:latest sh -c "cp -a /src/. /dst/"
-#   docker run --rm -v ./codemie-repos:/src -v codemie_repos:/dst docker.io/library/alpine:latest sh -c "cp -a /src/. /dst/"
+# migrate it once before running docker compose up. The container runs as uid 1001 (codemie), so the
+# copied data must be owned by it. Compose prefixes the volume names with the project name, so with
+# the default project the targets are codemie-standalone_codemie_storage and _codemie_repos:
+#   docker run --rm -v ./codemie-storage:/src -v codemie-standalone_codemie_storage:/dst docker.io/library/alpine:latest sh -c "cp -a /src/. /dst/ && chown -R 1001:1001 /dst"
+#   docker run --rm -v ./codemie-repos:/src -v codemie-standalone_codemie_repos:/dst docker.io/library/alpine:latest sh -c "cp -a /src/. /dst/ && chown -R 1001:1001 /dst"
 volumes:
   postgres_data:
   codemie_storage:
