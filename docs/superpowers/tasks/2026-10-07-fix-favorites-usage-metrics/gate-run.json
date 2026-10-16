@@ -1,0 +1,75 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15284_fix-favorites-usage-metrics",
+  "head": "077a51e4995fdd34af4bac0ad4e61543b56a45c9",
+  "runner": "poetry",
+  "started_at": "2026-10-07T12:55:21Z",
+  "completed_at": "2026-10-07T13:06:52Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 3164,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 5591,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2032,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "secrets-ci",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 14019,
+      "command": "make gitleaks",
+      "exit_code": 0,
+      "notes": "Full working-tree dir scan via Docker; no leaks found."
+    },
+    {
+      "id": "secrets-precommit",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 1926,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": 0,
+      "notes": "Self-skip: nothing staged to scan ('0 commits scanned.' / 'scanned ~0 bytes (0) in 107ms'). All branch changes are already committed. To validate for real, stage the branch diff with `git add` (or run during an actual `git commit`) before invoking this hook."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 144699,
+      "command": "make test",
+      "exit_code": 2,
+      "notes": "56 failed / 1 error, all traced to missing environment prerequisites unrelated to this diff's 3 files: (1) ModuleNotFoundError: codemie_enterprise is not installed in this OSS checkout (poetry show confirms codemie-enterprise is '(!)' not installed), which fails every tests/enterprise/* case plus codemie_enterprise-dependent cases in test_toolkit_service_auth_resolver.py and test_provider_adapters.py; (2) OSError: 'Bad CPU type in executable' for the bundled pypandoc/pandoc binary (CPU-arch mismatch on this machine), which fails tests/codemie/service/conversation/test_message_exporter.py docx export cases. Guide/hook mismatch: the repo's own pre-push hook (scripts/git-hooks/pre_push.sh) runs `pytest tests/ --ignore=tests/enterprise/` specifically because tests/enterprise 'need codemie_enterprise', but quality-gates.md's `make test` (= `pytest tests/`) has no such exclusion, so the guide gate surfaces failures the project's own enforced hook scope would not. The 3 files this branch actually touches are verified clean: `pytest tests/codemie/service/test_user_preferences_service.py` (20/20 passed, including the 2 updated favorites tests)."
+    },
+    {
+      "id": "static-analysis",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 263,
+      "command": "make sonar-local",
+      "exit_code": 0,
+      "notes": "Self-skip: '[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.' Enable locally by setting SONAR_TOKEN (and related SONAR_* vars) in .env.local for https://sonar.core.kuberocketci.io / projectKey 'codemie' per .sonarlint/connectedMode.json and scripts/sonar/run-local-sonar.js. CI will still need to run this for real."
+    }
+  ],
+  "failures": {
+    "unit": "FAILED tests/enterprise/mcp_auth/test_discovery_probe_bridge.py::test_discovered_auth_gate_registration_failures_return_config_error_payload[dcr_timeout-attempted_mechanisms1]\nFAILED tests/enterprise/mcp_auth/test_discovery_probe_bridge.py::test_discovered_auth_gate_registration_failures_return_config_error_payload[dcr_unavailable-attempted_mechanisms2]\nFAILED tests/enterprise/mcp_auth/test_oauth2_callback_bridge.py::test_callback_entry_log_state_prefix_joins_to_initiate\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_initiate_route_recovery_attempt_three_returns_auth_required_envelope\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_build_oauth2_initiate_response_passes_canonical_resource_to_enterprise_builder\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_raise_client_error_logs_warning_with_sanitized_details_before_raising\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_static_oauth2_initiate_logs_info_with_state_prefix_and_authorize_fields\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_static_oauth2_initiate_info_log_never_contains_full_state\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_saml_initiate_logs_info_with_state_prefix_and_authorize_fields\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_build_saml_initiate_passes_mcp_config_id_as_required_param\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_static_initiate_survives_malformed_authorize_url\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_returns_retry_header_after_successful_force_refresh\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_retry_401_and_does_not_force_refresh_twice\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-token_not_found]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-reauth_required0]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-tms_unavailable]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-tms_persistence_error0]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-token_refresh_error]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-reauth_required1]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-tms_persistence_error1]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-warning-token_not_found]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-warning-reauth_required0]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-error-tms_unavailable]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-error-tms_persistence_error0]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-error-token_refresh_error]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-warning-reauth_required1]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-error-tms_persistence_error1]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_without_calling_tms_for_no_refresh_decisions[None-missing_www_authenticate]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_without_calling_tms_for_no_refresh_decisions[Bearer error=\"invalid_request\"-unsupported_bearer_error]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_detects_configured_discovered_identity_conflict\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_non_oauth_config_without_oauth_payload\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_normalizes_or_rejects_refreshed_token_type[bearer-Bearer fresh-access-None]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_normalizes_or_rejects_refreshed_token_type[Basic-None-refresh_result_invalid]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_when_oauth2_identity_is_incomplete[execution_context0-missing_user_id]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_when_oauth2_identity_is_incomplete[execution_context1-missing_auth_config_id]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_uses_discovered_oauth2_identity_when_no_configured_id\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_rejects_env_delivered_oauth2_refresh\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_omits_initiate_url_for_workflow_payload\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_uses_live_discovered_snapshot_for_reauth_initiate_url\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_rebuilds_discovered_snapshot_from_exact_flow_config\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_discovered_snapshot_missing_without_exact_config_is_non_resumable\nFAILED tests/enterprise/mcp_auth/test_private_network_allowlist_bridge.py::test_private_network_allowlist_reader_output_passes_to_enterprise_as_discovery\nFAILED tests/enterprise/mcp_auth/test_discovery_probe_bridge.py::test_discovery_probe_bridge_does_not_await_async_db_engine_in_worker_loop\nFAILED tests/enterprise/mcp_auth/test_insufficient_scope_recovery_bridge.py::test_bridge_maps_real_assistant_recovery_payload_snapshot\nFAILED tests/enterprise/mcp_auth/test_mcp_auth_status_bridge.py::test_build_discovered_auth_status_response_uses_flow_store_and_tms[False-authentication_required]\nFAILED tests/enterprise/mcp_auth/test_mcp_auth_status_bridge.py::test_build_discovered_auth_status_response_uses_flow_store_and_tms[True-authenticated]\nFAILED tests/enterprise/mcp_auth/test_mcp_auth_status_bridge.py::test_build_discovered_auth_status_response_returns_config_error_snapshot\nERROR tests/codemie/service/security/test_logout_token_cleanup_mock_tms.py::test_logout_removes_only_the_users_rows_and_pod_fallback\n= 56 failed, 19284 passed, 202 skipped, 257 warnings, 1 error in 140.11s (0:02:20) =\nmake: *** [test] Error 1\n\nRoot causes isolated by targeted re-runs:\n1) ModuleNotFoundError: No module named 'codemie_enterprise' (src/codemie/service/oauth/provider_adapters.py:78, raised from test_gitlab_exchange_maps_enterprise_token_data and the equivalent Atlassian case, plus all tests/enterprise/* and codemie_enterprise-importing cases in test_toolkit_service_auth_resolver.py). `poetry show` confirms codemie-enterprise is not installed in this checkout ('(!)').\n2) OSError: [Errno 86] Bad CPU type in executable: '.../site-packages/pypandoc/files/pandoc' (test_export_to_docx_single_message and sibling docx-export cases) - architecture-mismatched bundled pandoc binary on this machine, unrelated to any source change.\n3) The 3 files this branch touches are unaffected: `pytest tests/codemie/service/test_user_preferences_service.py` -> 20 passed, 0 failed."
+  }
+}

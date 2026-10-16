@@ -71,6 +71,8 @@ class FavoriteItem(BaseModel):
     is_disliked: bool = False
     unique_likes_count: int = 0
     unique_dislikes_count: int = 0
+    unique_users_count: int = 0
+    clone_count: int = 0
     assistants_count: int = 0
     user_abilities: list[str] = Field(default_factory=list)
     categories: list[str] = Field(default_factory=list)

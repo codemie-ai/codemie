@@ -273,6 +273,8 @@ class TestGetFavoriteAssistants:
         mock_a1.created_by = None
         mock_a1.unique_likes_count = 0
         mock_a1.unique_dislikes_count = 0
+        mock_a1.unique_users_count = 5
+        mock_a1.clone_count = 2
         mock_a1.categories = []
 
         mock_a2 = MagicMock()
@@ -288,6 +290,8 @@ class TestGetFavoriteAssistants:
         mock_a2.created_by = None
         mock_a2.unique_likes_count = 0
         mock_a2.unique_dislikes_count = 0
+        mock_a2.unique_users_count = 7
+        mock_a2.clone_count = 3
         mock_a2.categories = []
 
         count_result = MagicMock()
@@ -303,6 +307,10 @@ class TestGetFavoriteAssistants:
         assert result.data[0].id == "a1"
         assert result.data[1].id == "a2"
         assert result.data[1].icon_url == ""
+        assert result.data[0].unique_users_count == 5
+        assert result.data[0].clone_count == 2
+        assert result.data[1].unique_users_count == 7
+        assert result.data[1].clone_count == 3
 
     @patch("codemie.service.user_preferences_service.Ability")
     @patch("codemie.service.user_preferences_service.get_assistant_reactions_by_user")
@@ -333,6 +341,8 @@ class TestGetFavoriteAssistants:
         mock_a1.created_by = None
         mock_a1.unique_likes_count = 0
         mock_a1.unique_dislikes_count = 0
+        mock_a1.unique_users_count = 9
+        mock_a1.clone_count = 4
         mock_a1.categories = ["ai", "dev"]
 
         count_result = MagicMock()
@@ -344,6 +354,8 @@ class TestGetFavoriteAssistants:
         result = UserPreferencesService.get_favorite_assistants("user-123", current_user=_make_user())
 
         assert result.data[0].categories == ["ai", "dev"]
+        assert result.data[0].unique_users_count == 9
+        assert result.data[0].clone_count == 4
 
     @patch("codemie.service.user_preferences_service.Ability")
     @patch("codemie.service.user_preferences_service.get_assistant_reactions_by_user")

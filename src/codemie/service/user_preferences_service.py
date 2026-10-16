@@ -122,27 +122,7 @@ class UserPreferencesService:
 
             ability = Ability(current_user)
             items = [
-                FavoriteItem(
-                    id=a.id,
-                    icon_url=a.icon_url or "",
-                    name=a.name,
-                    description=a.description or "",
-                    slug=a.slug,
-                    project=a.project,
-                    type=a.type.value if a.type else None,
-                    is_global=a.is_global,
-                    shared=a.shared,
-                    created_by=a.created_by.model_dump() if a.created_by else None,
-                    is_favorited=True,
-                    is_pinned=a.id in pinned_set,
-                    is_liked=reaction_map.get(a.id) == "like",
-                    is_disliked=reaction_map.get(a.id) == "dislike",
-                    unique_likes_count=a.unique_likes_count or 0,
-                    unique_dislikes_count=a.unique_dislikes_count or 0,
-                    user_abilities=[action.value for action in ability.list(a)],
-                    categories=a.categories or [],
-                )
-                for a in rows
+                UserPreferencesService._assistant_to_favorite_item(a, pinned_set, reaction_map, ability) for a in rows
             ]
             logger.debug(f"Returning {len(rows)} favorite assistants (total={total}) for user {user_id}")
             return UserPreferencesService._paginated_result(items, page, per_page, total)
@@ -292,6 +272,36 @@ class UserPreferencesService:
         if profile is None or profile.favorites is None:
             return []
         return getattr(profile.favorites, key, []) or []
+
+    @staticmethod
+    def _assistant_to_favorite_item(
+        a: Assistant,
+        pinned_set: set[str],
+        reaction_map: dict[str, str],
+        ability: Ability,
+    ) -> FavoriteItem:
+        return FavoriteItem(
+            id=a.id,
+            icon_url=a.icon_url or "",
+            name=a.name,
+            description=a.description or "",
+            slug=a.slug,
+            project=a.project,
+            type=a.type.value if a.type else None,
+            is_global=a.is_global,
+            shared=a.shared,
+            created_by=a.created_by.model_dump() if a.created_by else None,
+            is_favorited=True,
+            is_pinned=a.id in pinned_set,
+            is_liked=reaction_map.get(a.id) == "like",
+            is_disliked=reaction_map.get(a.id) == "dislike",
+            unique_likes_count=a.unique_likes_count or 0,
+            unique_dislikes_count=a.unique_dislikes_count or 0,
+            unique_users_count=a.unique_users_count or 0,
+            clone_count=a.clone_count or 0,
+            user_abilities=[action.value for action in ability.list(a)],
+            categories=a.categories or [],
+        )
 
     @staticmethod
     def _empty_result(page: int, per_page: int) -> FavoritesListResult:

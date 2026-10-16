@@ -9263,6 +9263,11 @@
             "title": "Categories",
             "type": "array"
           },
+          "clone_count": {
+            "default": 0,
+            "title": "Clone Count",
+            "type": "integer"
+          },
           "created_by": {
             "anyOf": [
               {
@@ -9374,6 +9379,11 @@
           "unique_likes_count": {
             "default": 0,
             "title": "Unique Likes Count",
+            "type": "integer"
+          },
+          "unique_users_count": {
+            "default": 0,
+            "title": "Unique Users Count",
             "type": "integer"
           },
           "user_abilities": {

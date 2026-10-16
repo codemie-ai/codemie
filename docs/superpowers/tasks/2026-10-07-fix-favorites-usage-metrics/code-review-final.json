@@ -1,0 +1,17 @@
+{
+  "decision": "approve",
+  "rationale": "Compact profile: edge-case and acceptance lenses ran, all 3 acceptance criteria pass, no blocking findings; standards audit not expected for this profile. 1 deferred (code-review-deferred.md): get_favorite_workflows does not map WorkflowConfig.unique_users_count, so favorite workflow cards still show 0 uses, which is pre-existing and outside the assistants-only scope set by the task and AC2. 1 dismissed: skill favorites default the new fields to 0, but no UI consumer reads them for skills.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    { "kind": "spec", "item": "GET /v1/preferences/{user_id}/favorites/assistants items include unique_users_count and clone_count with real Assistant values, 0 when null", "status": "pass", "notes": "FavoriteItem gains both int=0 fields; assistant mapping uses `or 0`; OpenAPI baseline updated; unit tests assert distinct nonzero values" },
+    { "kind": "spec", "item": "get_favorite_skills and get_favorite_workflows responses unchanged (new fields default to 0, no code touched)", "status": "pass", "notes": "Neither method modified; new fields default to 0" },
+    { "kind": "spec", "item": "No new DB query, join, projection, or migration introduced", "status": "pass", "notes": "Only DTO fields, a mapping helper, and already-loaded columns; no query or alembic changes" }
+  ],
+  "standards_review": [
+    { "kind": "commit-format", "status": "na", "notes": "Standards audit not expected for compact profile" },
+    { "kind": "code-quality", "status": "na", "notes": "Standards audit not expected for compact profile" },
+    { "kind": "security", "status": "na", "notes": "Standards audit not expected for compact profile" }
+  ],
+  "findings": []
+}
