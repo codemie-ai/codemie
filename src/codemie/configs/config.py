@@ -712,6 +712,8 @@ class Config(BaseSettings):
     LLM_PROXY_TIMEOUT: int = 300
     LLM_PROXY_LANGFUSE_TRACES: bool = False
     LLM_PROXY_TRACK_USAGE: bool = True
+    # Send model max_output_tokens as max_tokens to LiteLLM proxy; False falls back to proxy defaults
+    LLM_PROXY_FORWARD_MAX_OUTPUT_TOKENS: bool = True
     # LiteLLM model tagging configuration
     # The comma-separated list of project names to be used as tags for "x-litellm-tags" HTTP Header
     LITE_LLM_PROJECTS_TO_TAGS_LIST: str = ""

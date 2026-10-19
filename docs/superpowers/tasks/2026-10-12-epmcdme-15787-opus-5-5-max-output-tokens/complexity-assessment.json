@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "task": "Forward the configured max_output_tokens as max_tokens on the LiteLLM-proxy client path (so Bedrock Claude Opus 5.5 is no longer capped at the proxy's 4,096 default), surface text-only max_tokens truncation instead of reporting success, and log the effective output-token limit per request (EPMCDME-15787).",
+  "generated": "2026-10-12T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 18,
+  "size": "M",
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Three components are touched. (1) The LiteLLM client factory (enterprise/litellm/llm_factory.py, in _build_chat_model_base_args and _filter_litellm_params) forwards max_tokens behind a features.max_tokens guard. (2) Agent-runtime truncation detection (langgraph_event_adapter.parse_update_type, the supervisor path and the langgraph_agent truncation helpers) catches text-only finish_reason=length. (3) Telemetry logs the effective limit from the factory or tokens_callback. That is base M. It is bumped to L because the factory is a core shared utility behind get_llm_by_credentials (about 35 callers plus the Switchyard router candidates)." },
+    { "dimension": "file_change_estimate", "reason": "Technical analysis estimates 3-5 source files (llm_factory.py, langgraph_event_adapter.py, langgraph_agent.py, possibly tokens_callback.py and response models in chains/base.py or core/models.py) and 3-4 test files (test_llm_factory.py, test_langgraph_event_adapter.py, test_langgraph_truncation.py, supervisor tests). That is about 7-9 files across 3+ directories (enterprise/litellm, agents, agents/callbacks, tests). New files: 0-1." },
+    { "dimension": "technical_risk", "reason": "Precedents exist: the native factories in core/dependecies.py already forward max_output_tokens, and the truncation helpers (_get_truncation_indicator, _check_for_truncated_response) and the test_langgraph_truncation.py tests can be reused. The risk is in two behavior changes. First, every proxied model will now receive max_tokens, so a stale catalog max_output_tokens could cause 400s; the mitigation is to forward only positive ints when features.max_tokens is not False. Second, plain truncated responses that used to succeed will now be flagged or raise an error. Prod/Preview verification also depends on out-of-repo proxy config. This is M rather than L because each piece has an existing pattern and rollback is straightforward." },
+    { "dimension": "requirements_clarity", "reason": "AC1-AC6 are explicit and the root cause for the 4,096 cap is verified. Two gaps remain. AC5 does not say whether truncation should be a hard error or a soft flag or stop_reason on the response models. The Preview ~8.1k cap (thinking budget + 4096) is only a hypothesis, and AC2-AC4 can only be verified after deployment." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from M to L: touches a core shared utility (LiteLLM client factory used by all proxied LLM calls via get_llm_by_credentials, including assistants, workflows supervisor, conversation service, chains and router candidates)"
+  ],
+  "split_recommendation": null
+}

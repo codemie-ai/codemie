@@ -222,6 +222,9 @@ class LLMModel(BaseModel):
     cost: Optional[CostConfig] = None
     max_input_tokens: Optional[int] = None  # Context window; lets clients (e.g. CodeMie CLI) detect 1M-context models
     max_output_tokens: Optional[int] = None
+    # True when the LiteLLM proxy serves a Claude model under this name, even an alias without "claude".
+    # Internal only: excluded from serialization so the underlying deployment is not exposed via the API.
+    claude_family: bool = Field(default=False, exclude=True)
     features: Optional[LLMFeatures] = LLMFeatures()
     configuration: Optional[ModelConfigurationSection] = None
     switchyard: list[ModelSwitchyard] = Field(default_factory=list)

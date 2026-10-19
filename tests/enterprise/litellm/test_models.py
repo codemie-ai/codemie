@@ -16,6 +16,8 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 class TestMapLiteLLMToLLMModel:
     """Test map_litellm_to_llm_model() function."""
@@ -79,6 +81,94 @@ class TestMapLiteLLMToLLMModel:
         result = map_litellm_to_llm_model(litellm_model)
 
         assert result.max_output_tokens == 32768
+
+    @pytest.mark.parametrize(
+        ("litellm_provider", "underlying_model"),
+        [
+            ("bedrock", "bedrock/us.anthropic.claude-opus-5-5-v1"),
+            ("bedrock_converse", "bedrock/converse/us.anthropic.claude-sonnet-5-v1:0"),
+            ("anthropic", None),
+            ("vertex_ai-anthropic_models", None),
+        ],
+    )
+    def test_flags_claude_family_behind_alias(self, litellm_provider, underlying_model):
+        litellm_model = {
+            "model_name": "opus-latest",
+            "litellm_params": {"model": underlying_model} if underlying_model else {},
+            "model_info": {"litellm_provider": litellm_provider, "id": "opus-latest", "enabled": True},
+        }
+
+        from codemie.enterprise.litellm.models import map_litellm_to_llm_model
+
+        result = map_litellm_to_llm_model(litellm_model)
+
+        assert result.claude_family is True
+
+    @pytest.mark.parametrize(
+        ("litellm_params", "model_info_base_model"),
+        [
+            (
+                {"model": "bedrock/converse/arn:aws:bedrock:us-east-1:123:application-inference-profile/abc"},
+                "us.anthropic.claude-opus-5-5-v1",
+            ),
+            (
+                {
+                    "model": "bedrock/arn:aws:bedrock:us-east-1:123:application-inference-profile/abc",
+                    "base_model": "anthropic.claude-opus-5-5-v1",
+                },
+                None,
+            ),
+        ],
+    )
+    def test_flags_claude_family_from_base_model(self, litellm_params, model_info_base_model):
+        model_info = {"litellm_provider": "bedrock_converse", "id": "opus-arn", "enabled": True}
+        if model_info_base_model:
+            model_info["base_model"] = model_info_base_model
+        litellm_model = {"model_name": "opus-arn", "litellm_params": litellm_params, "model_info": model_info}
+
+        from codemie.enterprise.litellm.models import map_litellm_to_llm_model
+
+        result = map_litellm_to_llm_model(litellm_model)
+
+        assert result.claude_family is True
+
+    @pytest.mark.parametrize(
+        ("litellm_provider", "underlying_model"),
+        [
+            ("bedrock", "bedrock/qwen.qwen3-coder-480b-a35b-v1:0"),
+            ("bedrock", "bedrock/us.xai.grok-4.6"),
+            ("bedrock_converse", "bedrock/converse/moonshotai.kimi-k2.5"),
+            ("azure", "azure/codemie-gpt-4.1-2025-04-14"),
+            ("vertex_ai", "vertex_ai/gemini-3.1-pro-preview"),
+            ("bedrock", None),
+        ],
+    )
+    def test_does_not_flag_other_models_as_claude_family(self, litellm_provider, underlying_model):
+        litellm_model = {
+            "model_name": "some-model",
+            "litellm_params": {"model": underlying_model} if underlying_model else {},
+            "model_info": {"litellm_provider": litellm_provider, "id": "some-model", "enabled": True},
+        }
+
+        from codemie.enterprise.litellm.models import map_litellm_to_llm_model
+
+        result = map_litellm_to_llm_model(litellm_model)
+
+        assert result.claude_family is False
+
+    def test_claude_family_is_not_serialized(self):
+        litellm_model = {
+            "model_name": "opus-latest",
+            "litellm_params": {"model": "bedrock/us.anthropic.claude-opus-5-5-v1"},
+            "model_info": {"litellm_provider": "bedrock", "id": "opus-latest", "enabled": True},
+        }
+
+        from codemie.enterprise.litellm.models import map_litellm_to_llm_model
+
+        result = map_litellm_to_llm_model(litellm_model)
+
+        assert "claude_family" not in result.model_dump()
+        assert "claude_family" not in result.model_dump_json()
 
     def test_maps_max_output_tokens_when_absent(self):
         litellm_model = {

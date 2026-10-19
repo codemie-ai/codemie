@@ -37,6 +37,23 @@ class UserKeysSpending(BaseModel):
     project_keys: list[dict[str, Any]]
 
 
+def _is_claude_family(provider_str: str, litellm_params: dict[str, Any], model_info: dict[str, Any]) -> bool:
+    """Detect Claude from the underlying deployment, not the alias: Bedrock also serves non-Claude models.
+
+    base_model names the model behind opaque ids such as Bedrock application inference profile ARNs.
+    """
+    from codemie.configs.llm_config import LLMProvider
+
+    if provider_str in (LLMProvider.ANTHROPIC.value, LLMProvider.VERTEX_AI_ANTHROPIC.value):
+        return True
+    model_ids = [litellm_params.get("model"), litellm_params.get("base_model"), model_info.get("base_model")]
+    return any(
+        "anthropic" in model_id.lower() or "claude" in model_id.lower()
+        for model_id in model_ids
+        if isinstance(model_id, str)
+    )
+
+
 def map_litellm_to_llm_model(litellm_model: dict[str, Any]) -> "LLMModel":
     """
     Map LiteLLM model info dict to core LLMModel dataclass.
@@ -83,6 +100,8 @@ def map_litellm_to_llm_model(litellm_model: dict[str, Any]) -> "LLMModel":
         LLMProvider.VERTEX_AI_ANTHROPIC.value: LLMProvider.VERTEX_AI_ANTHROPIC,
     }
     provider = provider_map.get(provider_str, LLMProvider.AZURE_OPENAI)
+
+    claude_family = _is_claude_family(provider_str, litellm_params, model_info)
 
     streaming = model_info.get("supports_native_streaming") is not False
     top_p_enabled = model_info.get("top_p") is not False
@@ -179,6 +198,7 @@ def map_litellm_to_llm_model(litellm_model: dict[str, Any]) -> "LLMModel":
         api_version=api_version,
         max_input_tokens=max_input_tokens,
         max_output_tokens=max_output_tokens,
+        claude_family=claude_family,
         switchyard=switchyard,
         litellm_router=litellm_router,
     )

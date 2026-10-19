@@ -1320,3 +1320,162 @@ class TestProjectScopeProbeIgnoresInactiveBudgets:
         assert scopes == set()
         assert executed, "probe did not query the database"
         assert "b.is_active = TRUE" in executed[0]
+
+
+class TestMaxOutputTokensForwarding:
+    """max_output_tokens from model config is forwarded as max_tokens on the LiteLLM path (EPMCDME-15787)."""
+
+    @staticmethod
+    def _model_details(max_output_tokens, max_tokens_feature=True, base_name="claude-opus-5-5", claude_family=False):
+        details = MagicMock()
+        details.base_name = base_name
+        details.claude_family = claude_family
+        details.configuration = None
+        details.api_version = None
+        details.max_output_tokens = max_output_tokens
+        details.features.streaming = True
+        details.features.temperature = True
+        details.features.parallel_tool_calls = True
+        details.features.max_tokens = max_tokens_feature
+        details.features.top_p = True
+        return details
+
+    @staticmethod
+    def _create(details, forward_enabled=True):
+        from codemie.configs.config import config
+        from codemie.rest_api.models.settings import LiteLLMContext, LiteLLMCredentials
+
+        context = LiteLLMContext(
+            credentials=LiteLLMCredentials(api_key="user-key", url="http://test:4000"),
+            current_project="test-project",
+        )
+        with (
+            patch.object(config, "LITE_LLM_URL", "http://test:4000"),
+            patch.object(config, "OPENAI_API_VERSION", "2025-04-01-preview"),
+            patch.object(config, "OPENAI_API_TYPE", "azure"),
+            patch.object(config, "AZURE_OPENAI_MAX_RETRIES", 3),
+            patch.object(config, "LITE_LLM_TAGS_HEADER_VALUE", "default"),
+            patch.object(config, "LITE_LLM_PROJECTS_TO_TAGS_LIST", ""),
+            patch.object(config, "LLM_PROXY_FORWARD_MAX_OUTPUT_TOKENS", forward_enabled, create=False),
+            patch("codemie.enterprise.litellm.dependencies.check_user_budget"),
+            patch("codemie.enterprise.litellm.llm_factory.LiteLLMChatOpenAI") as mock_model_cls,
+        ):
+            from codemie.enterprise.litellm.llm_factory import create_litellm_chat_model
+
+            create_litellm_chat_model(
+                llm_model_details=details,
+                litellm_context=context,
+                user_email="test@example.com",
+            )
+        return mock_model_cls.call_args.kwargs
+
+    def test_forwards_positive_max_output_tokens(self):
+        kwargs = self._create(self._model_details(128000))
+
+        assert kwargs["max_tokens"] == 128000
+
+    @pytest.mark.parametrize("value", [1, 4096, 32000, 64000, 200000, 1000000])
+    def test_forwards_any_configured_value_verbatim(self, value):
+        kwargs = self._create(self._model_details(value))
+
+        assert kwargs["max_tokens"] == value
+
+    @pytest.mark.parametrize("value", [None, 0, -1, True, "128000"])
+    def test_omits_max_tokens_for_unusable_values(self, value):
+        kwargs = self._create(self._model_details(value))
+
+        assert "max_tokens" not in kwargs
+
+    def test_omits_max_tokens_for_mock_attribute(self):
+        details = self._model_details(None)
+        details.max_output_tokens = MagicMock()
+
+        kwargs = self._create(details)
+
+        assert "max_tokens" not in kwargs
+
+    def test_feature_flag_false_sends_none(self):
+        kwargs = self._create(self._model_details(128000, max_tokens_feature=False))
+
+        assert kwargs["max_tokens"] is None
+
+    def test_kill_switch_off_omits_max_tokens(self):
+        kwargs = self._create(self._model_details(128000), forward_enabled=False)
+
+        assert "max_tokens" not in kwargs
+
+    def _create_logged(self, details, forward_enabled=True):
+        with patch("codemie.enterprise.litellm.llm_factory.logger") as mock_logger:
+            self._create(details, forward_enabled=forward_enabled)
+        return [c.args[0] for c in mock_logger.info.call_args_list if c.args and "llm_output_limit" in c.args[0]]
+
+    @pytest.mark.parametrize(
+        ("max_output_tokens", "feature", "forward_enabled", "expected"),
+        [
+            (128000, True, True, "llm_output_limit model=claude-opus-5-5 max_tokens=128000 source=model_config"),
+            (None, True, True, "llm_output_limit model=claude-opus-5-5 max_tokens=unset source=proxy_default"),
+            (128000, False, True, "llm_output_limit model=claude-opus-5-5 max_tokens=unset source=disabled_by_feature"),
+            (128000, True, False, "llm_output_limit model=claude-opus-5-5 max_tokens=unset source=disabled_by_config"),
+        ],
+    )
+    def test_logs_effective_output_limit(self, max_output_tokens, feature, forward_enabled, expected):
+        lines = self._create_logged(
+            self._model_details(max_output_tokens, max_tokens_feature=feature), forward_enabled=forward_enabled
+        )
+
+        assert lines == [expected]
+
+    @pytest.mark.parametrize("base_name", ["gpt-4o-2024-11-20", "gemini-3-flash"])
+    def test_does_not_forward_for_non_claude_models(self, base_name):
+        kwargs = self._create(self._model_details(16384, base_name=base_name))
+
+        assert "max_tokens" not in kwargs
+
+    def test_forwards_for_claude_model_behind_alias(self):
+        kwargs = self._create(self._model_details(128000, base_name="opus-latest", claude_family=True))
+
+        assert kwargs["max_tokens"] == 128000
+
+    def test_does_not_forward_for_alias_without_claude_family(self):
+        kwargs = self._create(self._model_details(128000, base_name="opus-latest", claude_family=False))
+
+        assert "max_tokens" not in kwargs
+
+    @pytest.mark.parametrize(
+        ("underlying_model", "expected"),
+        [
+            ("bedrock/us.anthropic.claude-opus-5-5-v1", 128000),
+            ("bedrock/qwen.qwen3-coder-480b-a35b-v1:0", None),
+        ],
+    )
+    def test_alias_from_proxy_catalog_end_to_end(self, underlying_model, expected):
+        from codemie.enterprise.litellm.models import map_litellm_to_llm_model
+
+        details = map_litellm_to_llm_model(
+            {
+                "model_name": "opus-latest",
+                "litellm_params": {"model": underlying_model},
+                "model_info": {
+                    "litellm_provider": "bedrock",
+                    "max_output_tokens": 128000,
+                    "supported_openai_params": ["max_tokens", "temperature"],
+                },
+            }
+        ).model_copy(update={"default": True})
+
+        kwargs = self._create(details)
+
+        assert kwargs.get("max_tokens") == expected
+
+    def test_ignores_non_bool_claude_family(self):
+        details = self._model_details(128000, base_name="opus-latest")
+        details.claude_family = MagicMock()
+
+        kwargs = self._create(details)
+
+        assert "max_tokens" not in kwargs
+
+    def test_non_claude_model_logs_proxy_default(self):
+        lines = self._create_logged(self._model_details(16384, base_name="gpt-4o-2024-11-20"))
+
+        assert lines == ["llm_output_limit model=gpt-4o-2024-11-20 max_tokens=unset source=proxy_default"]

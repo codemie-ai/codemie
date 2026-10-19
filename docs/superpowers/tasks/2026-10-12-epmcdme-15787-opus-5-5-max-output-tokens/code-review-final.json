@@ -1,0 +1,170 @@
+{
+  "decision": "approve",
+  "rationale": "All three lenses (blind, edge-case, acceptance) ran against the ticket and the approved spec. Round 1 raised 3 blocking findings, fixed in 99faa4582 and confirmed resolved by the code-review.check round (code-review-check.json): CR-001 a truncated tool call parsed into invalid_tool_calls now raises like any truncated tool call; CR-002 max_tokens forwarding limited to Claude models by the product owner's decision, because other providers get no proxy default and would reject long prompts; CR-003 supervisor tests assert the WARNING text. AC2-AC4 are post-deploy checks, and AC5's response-level exposure is deferred to EPMCDME-14145; both are agreed in the approved spec. 4 deferred as pre-existing truncation-detection gaps (native Gemini 'MAX_TOKENS' uppercase, 'model_context_window_exceeded', other non-stop finish reasons leaving the thought open, stop_reason=None masking stopReason); 12 dismissed as guarded elsewhere or noise. Round 2 (alias scope added by the product owner after code-review.check): d24b61650 detects Claude behind an alias via LLMModel.claude_family; a blind and an edge-case lens reviewed it and raised CR-004 (Bedrock application-inference-profile ARN not detected) and CR-005 (no end-to-end mapper->factory test), both fixed in 562eb0ca0. 3 dismissed: serialization round-trip dropping the flag (no dump-and-rebuild path exists; model_copy keeps it), a non-Claude deployment named 'claude' (unrealistic), no clamp on large values (intended, spec §3.1/§4). Round 3 (CI SonarQube quality gate on MR !4519: 1 new critical issue): 0145543ae moves Claude detection into _is_claude_family (provider check via LLMProvider.ANTHROPIC.value) and names the 'max_tokens' request key _MAX_TOKENS_PARAM, clearing the two python:S1192 literal duplicates the branch added ('anthropic' x3 in models.py, 'max_tokens' x3 in llm_factory.py) and returning map_litellm_to_llm_model to its main-branch complexity. An independent blind/edge-case review found it behaviour-equivalent for all inputs; 1 minor deferred (parse_update_type cognitive complexity ~14, under the S3776 limit of 15). Ruff clean; 943 targeted tests passed.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {
+      "kind": "story-ac",
+      "item": "AC1: Opus 5.5 requests use output-token limit consistent with configured max_output_tokens unless documented lower limit",
+      "status": "pass",
+      "notes": "_build_chat_model_base_args forwards _resolve_max_output_tokens; opt-outs: kill switch, features.max_tokens=False, model_info lowering. test_forwards_positive_max_output_tokens"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC2: Personal-assistant repro completes 1..8000 in Production",
+      "status": "na",
+      "notes": "Post-deploy verification per spec §7 step 2"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC3: Same behavior verified in Preview",
+      "status": "na",
+      "notes": "Post-deploy verification per spec §7 step 1"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC4: Opus 5.5 consistent with Opus 4.6 control",
+      "status": "partial",
+      "notes": "Both now send explicit max_tokens from config; comparison is post-deploy (spec §7 step 2)"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC5: Enforced-limit response exposes truncation state / stop_reason max_tokens",
+      "status": "partial",
+      "notes": "WARNING + thought finalization delivered; response-level exposure deferred to EPMCDME-14145 per approved spec §2/§6"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC6: Effective output-token limit diagnosable from logs",
+      "status": "pass",
+      "notes": "_log_output_limit INFO llm_output_limit model/max_tokens/source on each client build; truncation WARNING adds output_tokens"
+    },
+    {
+      "kind": "spec",
+      "item": "G1 forward positive-int max_output_tokens as max_tokens",
+      "status": "pass",
+      "notes": "_resolve_max_output_tokens + conditional assignment"
+    },
+    {
+      "kind": "spec",
+      "item": "G2 log effective limit and source per client build",
+      "status": "pass",
+      "notes": "Called after _filter_litellm_params in create_litellm_chat_model"
+    },
+    {
+      "kind": "spec",
+      "item": "G3 text-only truncation finalizes thought + WARNING, outcome unchanged",
+      "status": "pass",
+      "notes": "_finalize_truncated_text; no status change"
+    },
+    {
+      "kind": "spec",
+      "item": "G4 no dependency on LiteLLM internals",
+      "status": "pass",
+      "notes": "Only max_tokens kwarg on AzureChatOpenAI subclass"
+    },
+    {
+      "kind": "spec",
+      "item": "§3.1 LLM_PROXY_FORWARD_MAX_OUTPUT_TOKENS: bool = True in LiteLLM args block",
+      "status": "pass",
+      "notes": "config.py:715-716"
+    },
+    {
+      "kind": "spec",
+      "item": "§3.1 _resolve_max_output_tokens: Claude model and int (not bool) > 0, else None",
+      "status": "pass",
+      "notes": "Claude model and int (not bool) > 0; any positive value forwarded verbatim (test_forwards_any_configured_value_verbatim 1..1000000); tests cover None/0/-1/True/'128000'/MagicMock and gpt-4o/gemini not forwarded"
+    },
+    {
+      "kind": "spec",
+      "item": "§3.1 Claude detection: 'claude' in base_name or LLMModel.claude_family (alias, ARN via base_model); field excluded from serialization",
+      "status": "pass",
+      "notes": "d24b61650 + 562eb0ca0; test_flags_claude_family_behind_alias, test_flags_claude_family_from_base_model, test_does_not_flag_other_models_as_claude_family, test_claude_family_is_not_serialized, test_alias_from_proxy_catalog_end_to_end; GET /v1/llm_models body checked without the field"
+    },
+    {
+      "kind": "spec",
+      "item": "§3.1 max_tokens key only when kill switch on and value resolved",
+      "status": "pass",
+      "notes": "test_kill_switch_off_omits_max_tokens, test_omits_max_tokens_for_unusable_values"
+    },
+    {
+      "kind": "spec",
+      "item": "§3.1 _filter_litellm_params unchanged; features.max_tokens False -> None",
+      "status": "pass",
+      "notes": "test_feature_flag_false_sends_none"
+    },
+    {
+      "kind": "spec",
+      "item": "§3.2 INFO line exact format, no user content/secrets",
+      "status": "pass",
+      "notes": "Format matches; 4 sources tested"
+    },
+    {
+      "kind": "spec",
+      "item": "§3.3 _finalize_truncated_text contract",
+      "status": "pass",
+      "notes": "Indicator via module-level get_truncation_indicator; agent method delegates"
+    },
+    {
+      "kind": "spec",
+      "item": "§3.3 parse_update_type wiring after tool-call/stop branches",
+      "status": "pass",
+      "notes": "else branch; existing branches untouched"
+    },
+    {
+      "kind": "spec",
+      "item": "§3.3 parse_supervisor_update_type pre-branch finalize without early return",
+      "status": "pass",
+      "notes": "Return ignored; routing still runs"
+    },
+    {
+      "kind": "spec",
+      "item": "§3.3 tool-call truncation still raises",
+      "status": "pass",
+      "notes": "Valid tool_calls path untouched; invalid_tool_calls truncation finalizes then raises (CR-001 fix)"
+    },
+    {
+      "kind": "spec",
+      "item": "§3.4 behavior matrix",
+      "status": "pass",
+      "notes": "Normal stop, tool-call, text-only cases tested"
+    },
+    {
+      "kind": "spec",
+      "item": "§5 factory tests",
+      "status": "pass",
+      "notes": "TestMaxOutputTokensForwarding incl. alias and end-to-end catalog cases; test_models.py claude_family cases"
+    },
+    {
+      "kind": "spec",
+      "item": "§5 adapter tests incl. supervisor final text + sub-assistant finalize AND warn",
+      "status": "pass",
+      "notes": "Supervisor final-text and sub-assistant tests assert exact WARNING text (CR-003 fix, 99faa4582)"
+    },
+    {
+      "kind": "spec",
+      "item": "§7 rollout and verification",
+      "status": "na",
+      "notes": "Operational, post-deploy"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "6 commits, all 'EPMCDME-15787: <Description>'; scripts/git-hooks/commit_msg.sh passes each"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "ruff format/check clean; license-check 0 missing; Optional[int] kept for consistency with the module's existing Optional usage"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "New log lines carry only model base_name, int limit, indicator, token count; claude_family is Field(exclude=True), so the underlying deployment id is not exposed by GET /v1/llm_models; no secrets or user content"
+    }
+  ],
+  "findings": []
+}

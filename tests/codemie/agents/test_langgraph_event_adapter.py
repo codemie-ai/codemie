@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import json
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -250,3 +250,143 @@ class TestLangGraphCallbackBridgeToolAttribution:
         bridge.on_tool_start("search", "{}", run_id=uuid4())
 
         assert callback.on_tool_start.call_args.kwargs["metadata"] == {}
+
+
+class TestTruncatedTextResponses:
+    """Text-only responses cut at max_tokens are finalized and logged (EPMCDME-15787)."""
+
+    @pytest.fixture
+    def agent(self):
+        agent = MagicMock()
+        agent.llm_model = "claude-opus-5-5"
+        agent.is_finish_reason_tool_calls.side_effect = lambda m: bool(getattr(m, "tool_calls", None))
+        agent.is_finish_reason_stop.return_value = False
+        agent._on_llm_end = MagicMock()
+        agent._safe_check_for_truncation = MagicMock()
+        return agent
+
+    @pytest.fixture
+    def mock_logger(self):
+        with patch("codemie.agents.langgraph_event_adapter.logger") as mock_logger:
+            yield mock_logger
+
+    @pytest.mark.parametrize(
+        ("metadata", "indicator"),
+        [
+            ({"finish_reason": "length"}, "finish_reason=length"),
+            ({"stopReason": "max_tokens"}, "stop_reason=max_tokens"),
+        ],
+    )
+    def test_agent_text_truncation_finalizes_and_warns(self, agent, mock_logger, metadata, indicator):
+        message = AIMessage(content="1\n2\n3", id="msg-1", response_metadata=metadata)
+        message.usage_metadata = {"input_tokens": 10, "output_tokens": 4096, "total_tokens": 4106}
+
+        LangGraphEventAdapter(agent).parse_update_type({"agent": {"messages": [message]}})
+
+        agent._on_llm_end.assert_called_once_with(response=message, run_id="msg-1", author=None)
+        agent._safe_check_for_truncation.assert_not_called()
+        mock_logger.warning.assert_called_once_with(
+            f"truncated_response model=claude-opus-5-5 indicator={indicator} output_tokens=4096 action=kept"
+        )
+
+    def test_missing_usage_metadata_logs_unknown(self, agent, mock_logger):
+        message = AIMessage(content="partial", id="msg-2", response_metadata={"finish_reason": "length"})
+
+        LangGraphEventAdapter(agent).parse_update_type({"agent": {"messages": [message]}})
+
+        mock_logger.warning.assert_called_once_with(
+            "truncated_response model=claude-opus-5-5 indicator=finish_reason=length output_tokens=unknown action=kept"
+        )
+
+    def test_normal_stop_not_treated_as_truncated(self, agent, mock_logger):
+        agent.is_finish_reason_stop.return_value = True
+        message = AIMessage(content="done", id="msg-3", response_metadata={"finish_reason": "stop"})
+
+        LangGraphEventAdapter(agent).parse_update_type({"agent": {"messages": [message]}})
+
+        agent._on_llm_end.assert_called_once_with(response=message, run_id="msg-3")
+        mock_logger.warning.assert_not_called()
+
+    def test_tool_call_truncation_still_uses_existing_check(self, agent, mock_logger):
+        message = AIMessage(content="", id="msg-4", response_metadata={"finish_reason": "length"})
+        message.tool_calls = [{"name": "search", "args": {"q": "x"}, "id": "call-1"}]
+        agent._safe_check_for_truncation.side_effect = RuntimeError("token limit")
+
+        with pytest.raises(RuntimeError, match="token limit"):
+            LangGraphEventAdapter(agent).parse_update_type({"agent": {"messages": [message]}})
+
+        mock_logger.warning.assert_not_called()
+
+    def test_supervisor_text_truncation_finalizes_and_warns(self, agent, mock_logger):
+        agent._supervisor_coordinator.binding_for.return_value = None
+        message = AIMessage(content="final", id="msg-5", response_metadata={"finish_reason": "length"})
+
+        LangGraphEventAdapter(agent).parse_supervisor_update_type({"supervisor": {"messages": [message]}})
+
+        agent._on_llm_end.assert_called_once_with(response=message, run_id="msg-5", author=None)
+        mock_logger.warning.assert_called_once_with(
+            "truncated_response model=claude-opus-5-5 indicator=finish_reason=length output_tokens=unknown action=kept"
+        )
+
+    def test_supervisor_subassistant_truncation_finalizes_and_still_reports_result(self, agent, mock_logger):
+        binding = (uuid4(), "supervisor")
+        agent._supervisor_coordinator.binding_for.return_value = binding
+        message = AIMessage(content="partial", id="msg-6", response_metadata={"stop_reason": "max_tokens"})
+
+        LangGraphEventAdapter(agent).parse_supervisor_update_type(
+            {"analyst": {"messages": [message]}}, author="analyst"
+        )
+
+        agent._on_llm_end.assert_called_once_with(response=message, run_id="msg-6", author="analyst")
+        agent._LangGraphAgent__handle_supervisor_subassistant_result.assert_called_once_with(
+            [message], run_id=binding, author="analyst"
+        )
+        mock_logger.warning.assert_called_once_with(
+            "truncated_response model=claude-opus-5-5 indicator=stop_reason=max_tokens output_tokens=unknown action=kept"
+        )
+
+    def test_truncated_invalid_tool_call_finalizes_then_raises(self, agent, mock_logger):
+        message = AIMessage(
+            content="",
+            id="msg-8",
+            response_metadata={"finish_reason": "length"},
+            invalid_tool_calls=[{"name": "search", "args": '{"q": "unterminated', "id": "call-9", "error": None}],
+        )
+        agent._safe_check_for_truncation.side_effect = RuntimeError("token limit")
+
+        with pytest.raises(RuntimeError, match="token limit"):
+            LangGraphEventAdapter(agent).parse_update_type({"agent": {"messages": [message]}})
+
+        agent._on_llm_end.assert_called_once_with(response=message, run_id="msg-8", author=None)
+        agent._safe_check_for_truncation.assert_called_once_with(message)
+        mock_logger.warning.assert_not_called()
+
+    def test_supervisor_handoff_back_not_treated_as_truncated(self, agent, mock_logger):
+        from codemie.agents.supervisor.constants import METADATA_KEY_HANDOFF_BACK
+
+        message = AIMessage(content="back", id="msg-7", response_metadata={METADATA_KEY_HANDOFF_BACK: True})
+
+        LangGraphEventAdapter(agent).parse_supervisor_update_type({"analyst": {"messages": [message]}})
+
+        agent._on_llm_end.assert_not_called()
+        mock_logger.warning.assert_not_called()
+        agent._LangGraphAgent__handle_supervisor_handoff_back.assert_called_once()
+
+
+class TestGetTruncationIndicator:
+    @pytest.mark.parametrize(
+        ("metadata", "expected"),
+        [
+            ({"finish_reason": "length"}, "finish_reason=length"),
+            ({"finish_reason": "max_tokens"}, "finish_reason=max_tokens"),
+            ({"stop_reason": "max_tokens"}, "stop_reason=max_tokens"),
+            ({"stopReason": "max_tokens"}, "stop_reason=max_tokens"),
+            ({"finish_reason": "stop"}, None),
+            ({}, None),
+            (None, None),
+        ],
+    )
+    def test_indicator(self, metadata, expected):
+        from codemie.agents.langgraph_event_adapter import get_truncation_indicator
+
+        assert get_truncation_indicator(metadata) == expected

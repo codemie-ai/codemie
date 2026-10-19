@@ -117,6 +117,9 @@ class LiteLLMAzureOpenAIEmbeddings(AzureOpenAIEmbeddings):
         return self.client.consume_last_usage()
 
 
+# Chat model kwarg that caps output tokens on the LiteLLM proxy request
+_MAX_TOKENS_PARAM = "max_tokens"
+
 _BM = TypeVar("_BM", bound=BaseModel)
 _DictOrPydanticClass = dict[str, Any] | type[_BM]
 _DictOrPydantic = dict | _BM
@@ -297,9 +300,26 @@ def create_litellm_chat_model(
 
     # Filter parameters based on model features
     filtered_args = _filter_litellm_params(base_args, llm_model_details)
+    _log_output_limit(llm_model_details, filtered_args)
 
     # Return LiteLLMChatOpenAI instance (forces function_calling for all structured output)
     return LiteLLMChatOpenAI(llm_model_details=llm_model_details, **filtered_args)
+
+
+def _resolve_max_output_tokens(llm_model_details: "LLMModel") -> Optional[int]:
+    """Return the max_output_tokens to forward for a Claude model when it is a positive integer, otherwise None.
+
+    Only Claude models are covered: the proxy applies a max_tokens default for them (4096 when the Bedrock
+    profile is missing from LiteLLM's model map), while other providers get no limit unless one is sent.
+    A Claude model behind an alias is recognised by `claude_family`, set from the proxy's underlying model.
+    """
+    is_claude = "claude" in (llm_model_details.base_name or "").lower() or llm_model_details.claude_family is True
+    if not is_claude:
+        return None
+    value = getattr(llm_model_details, "max_output_tokens", None)
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
 
 
 def _build_chat_model_base_args(
@@ -312,7 +332,7 @@ def _build_chat_model_base_args(
 ) -> dict[str, Any]:
     from codemie.configs import config
 
-    return {
+    base_args = {
         'azure_endpoint': config.LITE_LLM_URL,
         'openai_api_version': llm_model_details.api_version or config.OPENAI_API_VERSION,
         'openai_api_key': creds.api_key if creds else config.LITE_LLM_APP_KEY,
@@ -325,6 +345,13 @@ def _build_chat_model_base_args(
         'top_p': top_p,
         'include_response_headers': config.LLM_PROXY_TRACK_USAGE,
     }
+
+    # Without an explicit limit the proxy falls back to LiteLLM defaults (4096 for unmapped models)
+    max_output_tokens = _resolve_max_output_tokens(llm_model_details)
+    if config.LLM_PROXY_FORWARD_MAX_OUTPUT_TOKENS and max_output_tokens is not None:
+        base_args[_MAX_TOKENS_PARAM] = max_output_tokens
+
+    return base_args
 
 
 def _build_embedding_model_params(
@@ -1065,12 +1092,30 @@ def _filter_litellm_params(
             filtered.pop('stream_usage')
 
     if llm_model_details.features.max_tokens is False:
-        filtered['max_tokens'] = None
+        filtered[_MAX_TOKENS_PARAM] = None
 
     if llm_model_details.features.top_p is False:
         filtered['top_p'] = None
 
     return filtered
+
+
+def _log_output_limit(llm_model_details: "LLMModel", filtered_args: dict[str, Any]) -> None:
+    """Log the output-token limit sent to the proxy so truncation can be diagnosed per request."""
+    from codemie.configs import config
+
+    max_tokens = filtered_args.get(_MAX_TOKENS_PARAM)
+    if max_tokens:
+        source = "model_config"
+    elif llm_model_details.features.max_tokens is False:
+        source = "disabled_by_feature"
+    elif not config.LLM_PROXY_FORWARD_MAX_OUTPUT_TOKENS:
+        source = "disabled_by_config"
+    else:
+        source = "proxy_default"
+    logger.info(
+        f"llm_output_limit model={llm_model_details.base_name} max_tokens={max_tokens or 'unset'} source={source}"
+    )
 
 
 def get_litellm_chat_model(

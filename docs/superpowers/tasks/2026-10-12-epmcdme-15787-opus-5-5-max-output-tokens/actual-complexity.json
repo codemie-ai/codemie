@@ -1,0 +1,83 @@
+{
+  "task": "Forward the configured max_output_tokens as max_tokens for Claude models on the LiteLLM-proxy path behind a kill switch, log the effective output-token limit per client build, and finalize plus WARN on text-only max_tokens truncation in the agent and supervisor event adapter (EPMCDME-15787).",
+  "generated": "2026-10-12",
+  "dimensions": {
+    "component_scope": {
+      "score": 4,
+      "label": "L",
+      "affected": "LiteLLM chat client factory (enterprise/litellm/llm_factory.py: _resolve_max_output_tokens, _build_chat_model_base_args, _log_output_limit), LangGraph event adapter (agent and supervisor update paths, _finalize_truncated_text, module-level get_truncation_indicator), LangGraphAgent truncation helper (now delegates), Config (LLM_PROXY_FORWARD_MAX_OUTPUT_TOKENS kill switch)",
+      "layers": "Agent-Tool (agent runtime / event adapter), External (LiteLLM proxy client factory), Config"
+    },
+    "requirements_clarity": {
+      "score": 4,
+      "label": "L",
+      "status": "Partially Clear",
+      "gaps": "AC5 did not say whether truncation should be a hard error, a response flag or a log-only signal. The team chose B-lite (finalize the thought and WARN) and deferred response-level exposure to EPMCDME-14145. How widely to forward the limit was not settled up front: code review CR-002 narrowed forwarding to Claude-only, which meant reworking the spec and code. AC2-AC4 can only be checked after deployment."
+    },
+    "technical_risk": {
+      "score": 4,
+      "label": "L",
+      "risk_factors": "Root cause depended on LiteLLM internals (model-map lookup, DEFAULT_ANTHROPIC_CHAT_MAX_TOKENS=4096, thinking budget+4096) and had to be verified on two versions (1.84.0 local, 1.99.2 locked). Every proxied Claude request now sends an explicit max_tokens: a catalog value above the provider cap now returns 400 instead of being silently capped, and Bedrock reserves TPM quota at 128k per request. Forwarding to non-Anthropic providers turned out to be risky (prompt + max_tokens over the context window, Azure TPM), found in review. Edge case found in review: a truncated tool call whose arguments were cut mid-JSON (invalid_tool_calls) must still raise. The adapter changes run on every agent and supervisor stream.",
+      "mitigation": "LLM_PROXY_FORWARD_MAX_OUTPUT_TOKENS kill switch (rollback without redeploy). Positive-int guard that rejects bool and non-int values. Existing features.max_tokens=False opt-out kept. Claude-only scope. Agent outcomes unchanged (finalize plus WARN only). Parameterized tests over values and log sources. Full suite with merge-base failure classification (0 regressions)."
+    },
+    "file_change_estimate": {
+      "score": 3,
+      "label": "M",
+      "modified_files": 6,
+      "modified_file_list": [
+        "src/codemie/agents/langgraph_agent.py",
+        "src/codemie/agents/langgraph_event_adapter.py",
+        "src/codemie/configs/config.py",
+        "src/codemie/enterprise/litellm/llm_factory.py",
+        "tests/codemie/agents/test_langgraph_event_adapter.py",
+        "tests/enterprise/litellm/test_llm_factory.py"
+      ],
+      "new_files": 0,
+      "new_file_list": [],
+      "affected_dirs": [
+        "src/codemie/agents/",
+        "src/codemie/configs/",
+        "src/codemie/enterprise/litellm/",
+        "tests/codemie/agents/",
+        "tests/enterprise/litellm/"
+      ]
+    },
+    "dependencies": {
+      "score": 2,
+      "label": "S",
+      "new_packages": [],
+      "version_changes": []
+    },
+    "affected_layers": {
+      "score": 3,
+      "label": "M",
+      "layers_changed": ["Agent-Tool", "External", "Config"],
+      "schema_migration": false,
+      "cross_system": true
+    }
+  },
+  "total": 20,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 6,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Three components were touched: the LiteLLM chat client factory, the LangGraph event adapter (agent and supervisor branches) with the agent's truncation helper, and Config. On its own that is M (2-3 components, clear pattern). It is bumped to L because the factory is the shared client builder behind every proxied LLM call. Same score as the initial estimate."
+    },
+    {
+      "dimension": "requirements_clarity",
+      "reason": "Up from the initial M. The ACs were explicit, but key decisions were open: how to handle truncation (hard error vs response flag vs B-lite), how far to forward the limit, and what to defer to EPMCDME-14145. A product-owner decision during code review (CR-002, Claude-only) changed both the spec and the code. Two review rounds and four commits reflect that rework."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "Up from the initial M. A native-factory precedent exists, but proving the root cause meant tracing LiteLLM default resolution on two versions. The behavior change hits every proxied Claude request and has provider-specific failure modes (400s, Bedrock TPM reservation). Review found two real risks: forwarding to non-Claude providers, and truncated invalid_tool_calls. The kill switch and a rollback plan were needed, which fits L. Not XL: rollback is a config flip and outcomes are unchanged."
+    }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from M to L: touches a core shared utility (LiteLLM chat client factory used by all proxied LLM calls, including assistants, the workflow supervisor, chains and router candidates)",
+    "Requirements Clarity bumped from M to L: vague acceptance criterion AC5 (truncation 'not an unqualified success' without saying error, flag or log), which needed several scope decisions and partial deferral to EPMCDME-14145"
+  ],
+  "split_recommendation": null
+}

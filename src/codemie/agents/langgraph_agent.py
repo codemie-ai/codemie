@@ -44,7 +44,11 @@ from codemie.agents.supervisor.pre_model_hooks import (
     _compose_pre_model_hooks,
     _image_artifact_pre_model_hook,
 )
-from codemie.agents.langgraph_event_adapter import LangGraphCallbackBridge, LangGraphEventAdapter
+from codemie.agents.langgraph_event_adapter import (
+    LangGraphCallbackBridge,
+    LangGraphEventAdapter,
+    get_truncation_indicator,
+)
 from codemie.agents.tool_confirmation.tool_call_confirmation_mixin import ToolCallConfirmationMixin
 from codemie.agents.tools.agent import WorkspaceAwareAgent
 from codemie.core.models import ToolCallPolicy
@@ -1329,17 +1333,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
         Returns:
             Truncation indicator string if truncated, None otherwise
         """
-        # LiteLLM proxy / OpenAI format
-        finish_reason = response_metadata.get("finish_reason")
-        if finish_reason in ["length", "max_tokens"]:
-            return f"finish_reason={finish_reason}"
-
-        # Native Claude format (Bedrock uses 'stopReason' camelCase)
-        stop_reason = response_metadata.get("stop_reason", response_metadata.get("stopReason"))
-        if stop_reason == "max_tokens":
-            return f"stop_reason={stop_reason}"
-
-        return None
+        return get_truncation_indicator(response_metadata)
 
     def _log_incomplete_tool_calls(self, message: AIMessage) -> str:
         """

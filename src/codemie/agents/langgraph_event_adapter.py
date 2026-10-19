@@ -34,6 +34,21 @@ from codemie.service.monitoring.tool_run_context import IDENTITY_METADATA_KEYS
 _ATTRIBUTION_KEYS = (*IDENTITY_METADATA_KEYS, TOOL_TYPE)
 
 
+def get_truncation_indicator(response_metadata: dict[str, Any] | None) -> str | None:
+    """Return a truncation indicator when the response was cut at the output-token limit."""
+    if not response_metadata:
+        return None
+    # LiteLLM proxy / OpenAI format
+    finish_reason = response_metadata.get("finish_reason")
+    if finish_reason in ("length", "max_tokens"):
+        return f"finish_reason={finish_reason}"
+    # Native Claude format (Bedrock uses 'stopReason' camelCase)
+    stop_reason = response_metadata.get("stop_reason", response_metadata.get("stopReason"))
+    if stop_reason == "max_tokens":
+        return f"stop_reason={stop_reason}"
+    return None
+
+
 class LangGraphCallbackBridge:
     def __init__(self, agent: Any, *, get_logger: Any) -> None:
         self.agent = agent
@@ -197,6 +212,25 @@ class LangGraphEventAdapter:
             self._restore_response_headers(message)
             self.agent._on_llm_end(response=message, run_id=message.id)
 
+    def _finalize_truncated_text(self, message: Any, author: str | None = None) -> bool:
+        """Finalize a text-only response cut at the output-token limit and log it; tool calls keep raising."""
+        if not isinstance(message, AIMessage) or self.agent.is_finish_reason_tool_calls(message):
+            return False
+        indicator = get_truncation_indicator(message.response_metadata)
+        if not indicator:
+            return False
+        self._restore_response_headers(message)
+        self.agent._on_llm_end(response=message, run_id=message.id, author=author)
+        if message.invalid_tool_calls:
+            # Arguments cut mid-JSON land in invalid_tool_calls; fail like a truncated tool call
+            self.agent._safe_check_for_truncation(message)
+        usage = message.usage_metadata or {}
+        logger.warning(
+            f"truncated_response model={self.agent.llm_model} indicator={indicator} "
+            f"output_tokens={usage.get('output_tokens', 'unknown')} action=kept"
+        )
+        return True
+
     def parse_update_type(self, value: dict[str, Any]) -> None:
         if "agent" in value:
             last_message = value["agent"]["messages"][-1]
@@ -219,6 +253,9 @@ class LangGraphEventAdapter:
                 # The "messages" stream may not emit a dedicated stop chunk, so
                 # the "updates" stream is the reliable trigger for this path.
                 self.agent._on_llm_end(response=last_message, run_id=last_message.id)
+            else:
+                # Text-only response cut at max_tokens: no stop reason, so finalize it here.
+                self._finalize_truncated_text(last_message)
         elif "tools" in value:
             for action in value["tools"]["messages"]:
                 if isinstance(action, ToolMessage):
@@ -252,6 +289,9 @@ class LangGraphEventAdapter:
         if not messages:
             return
         last_message = messages[-1]
+
+        # Finalize and log a truncated text-only answer; the branches below still route it.
+        self._finalize_truncated_text(last_message, author=author)
 
         if isinstance(last_message, AIMessage) and self.agent.is_finish_reason_tool_calls(last_message):
             self.handle_supervisor_tool_calls(last_message, author=author)
