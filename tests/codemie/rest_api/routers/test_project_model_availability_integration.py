@@ -302,7 +302,7 @@ class TestPermissionBoundaries:
     ):
         """Test that non-project-admin users cannot modify allowed_models.
 
-        ``check_allowed_models_authorization`` is a sync classmethod on the real
+        ``_check_allowed_models_authorization`` is a sync classmethod on the real
         ProjectService (it manages its own DB session internally), so the mock
         here must be a plain MagicMock, not an AsyncMock.
         """
@@ -319,13 +319,13 @@ class TestPermissionBoundaries:
         )
 
         # Authorization check should fail
-        mock_proj_service.check_allowed_models_authorization.side_effect = ExtendedHTTPException(
+        mock_proj_service._check_allowed_models_authorization.side_effect = ExtendedHTTPException(
             code=403,
             message="You are not authorized to manage models for this project",
         )
 
         with pytest.raises(ExtendedHTTPException) as exc_info:
-            mock_proj_service.check_allowed_models_authorization(
+            mock_proj_service._check_allowed_models_authorization(
                 user=non_admin_user,
                 project_name="test-project",
             )
@@ -349,15 +349,15 @@ class TestPermissionBoundaries:
         )
 
         # Authorization check should pass (no exception); real method returns None.
-        mock_proj_service.check_allowed_models_authorization.return_value = None
+        mock_proj_service._check_allowed_models_authorization.return_value = None
 
         # Should not raise
-        mock_proj_service.check_allowed_models_authorization(
+        mock_proj_service._check_allowed_models_authorization(
             user=project_admin_user,
             project_name="test-project",
         )
 
-        mock_proj_service.check_allowed_models_authorization.assert_called_once()
+        mock_proj_service._check_allowed_models_authorization.assert_called_once()
 
     @patch("codemie.rest_api.routers.projects.management.project_service")
     @pytest.mark.anyio
@@ -376,14 +376,14 @@ class TestPermissionBoundaries:
         )
 
         # System admin authorization should always pass
-        mock_proj_service.check_allowed_models_authorization.return_value = None
+        mock_proj_service._check_allowed_models_authorization.return_value = None
 
-        mock_proj_service.check_allowed_models_authorization(
+        mock_proj_service._check_allowed_models_authorization(
             user=admin_user,
             project_name="any-project",
         )
 
-        mock_proj_service.check_allowed_models_authorization.assert_called_once()
+        mock_proj_service._check_allowed_models_authorization.assert_called_once()
 
 
 class TestDataConsistency:

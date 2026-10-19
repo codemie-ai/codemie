@@ -66563,6 +66563,55 @@
       }
     },
     "/v1/projects/{projectName}/allowed-models": {
+      "delete": {
+        "description": "Reset a project's allowed_models and default_model to the platform defaults (no restriction).\n\nOnly project admins and maintainers can update this field.\nReturns 403 if user lacks admin/maintainer role.\nReturns 404 if project doesn't exist.",
+        "operationId": "reset_allowed_models_v1_projects__projectName__allowed_models_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "projectName",
+            "required": true,
+            "schema": {
+              "title": "Projectname",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AllowedModelsUpdateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Reset Allowed Models",
+        "tags": [
+          "Projects"
+        ]
+      },
       "patch": {
         "description": "Update the allowed_models field for a project.\n\nOnly project admins and maintainers can update this field.\nReturns 400 if allowed_models is empty or contains no chat models.\nReturns 403 if user lacks admin/maintainer role.\nReturns 404 if project doesn't exist.",
         "operationId": "update_allowed_models_v1_projects__projectName__allowed_models_patch",

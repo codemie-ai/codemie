@@ -3446,7 +3446,7 @@ class TestAllowedModelsEndpoint:
                 return_value=["gpt-4", "claude-3-sonnet"],
             ),
             patch("codemie.rest_api.routers.projects.management.project_service.ensure_chat_model_allowed"),
-            patch("codemie.rest_api.routers.projects.management.project_service.check_allowed_models_authorization"),
+            patch("codemie.rest_api.routers.projects.management.project_service._check_allowed_models_authorization"),
         ):
             with pytest.raises(ExtendedHTTPException) as exc_info:
                 update_allowed_models(
@@ -3492,7 +3492,7 @@ class TestAllowedModelsEndpoint:
                 return_value=["gpt-4"],
             ),
             patch("codemie.rest_api.routers.projects.management.project_service.ensure_chat_model_allowed"),
-            patch("codemie.rest_api.routers.projects.management.project_service.check_allowed_models_authorization"),
+            patch("codemie.rest_api.routers.projects.management.project_service._check_allowed_models_authorization"),
         ):
             with pytest.raises(ExtendedHTTPException) as exc_info:
                 update_allowed_models(

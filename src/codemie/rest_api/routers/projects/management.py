@@ -97,7 +97,41 @@ def update_allowed_models(
     """
     _ensure_user_management_enabled()
 
-    project = project_service.update_allowed_models(user, project_name, payload.allowed_models, payload.default_model)
+    project = project_service.update_allowed_models(
+        user,
+        project_name,
+        payload.allowed_models,
+        payload.default_model,
+    )
+
+    return AllowedModelsUpdateResponse(
+        name=project.name,
+        display_name=project.display_name,
+        description=project.description or "",
+        project_type=project.project_type,
+        created_by=project.created_by or user.id,
+        created_at=project.date or datetime.now(UTC),
+        cost_center_id=getattr(project, "cost_center_id", None),
+        cost_center_name=_resolve_cost_center_name(getattr(project, "cost_center_id", None)),
+        allowed_models=project.allowed_models,
+        default_model=project.default_model,
+    )
+
+
+@router.delete("/projects/{projectName}/allowed-models", response_model=AllowedModelsUpdateResponse)
+def reset_allowed_models(
+    project_name: str = Path(alias="projectName"),
+    user: User = Depends(authenticate),
+):
+    """Reset a project's allowed_models and default_model to the platform defaults (no restriction).
+
+    Only project admins and maintainers can update this field.
+    Returns 403 if user lacks admin/maintainer role.
+    Returns 404 if project doesn't exist.
+    """
+    _ensure_user_management_enabled()
+
+    project = project_service.reset_allowed_models(user, project_name)
 
     return AllowedModelsUpdateResponse(
         name=project.name,

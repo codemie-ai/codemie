@@ -247,6 +247,31 @@ class TestProjectLevelModelRestriction:
 
         assert exc_info.value.code == 403
 
+    @patch("codemie.rest_api.routers.projects.management._ensure_user_management_enabled")
+    @patch("codemie.rest_api.routers.projects.management.project_service")
+    def test_reset_allowed_models_clears_both_fields(
+        self,
+        mock_project_service,
+        mock_ensure_user_management_enabled,
+        project_admin_user,
+        mock_project,
+    ):
+        """DELETE resets allowed_models and default_model to the platform defaults (both NULL)."""
+        from codemie.rest_api.routers.projects.management import reset_allowed_models
+
+        mock_project.allowed_models = None
+        mock_project.default_model = None
+        mock_project_service.reset_allowed_models.return_value = mock_project
+
+        response = reset_allowed_models(project_name="test-project", user=project_admin_user)
+
+        assert response.allowed_models is None
+        assert response.default_model is None
+        mock_project_service.reset_allowed_models.assert_called_once_with(
+            project_admin_user,
+            "test-project",
+        )
+
 
 class TestModelFilteringByProject:
     """Tests for filtering LLM models based on project restrictions."""

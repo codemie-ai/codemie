@@ -680,52 +680,43 @@ class TestCheckAllowedModelsAuthorization:
         user.is_admin = is_admin
         return user
 
-    @patch("codemie.service.project.project_service.application_repository")
-    def test_global_admin_is_authorized(self, mock_app_repo):
-        mock_app_repo.get_by_name_case_insensitive.return_value = SimpleNamespace(
-            name="my-project", is_managed_by=lambda user: user.is_admin
-        )
-        ProjectService.check_allowed_models_authorization(MagicMock(), self._user(is_admin=True), "my-project")
+    def test_global_admin_is_authorized(self):
+        project = SimpleNamespace(name="my-project", is_managed_by=lambda user: user.is_admin)
+        ProjectService._check_allowed_models_authorization(project, self._user(is_admin=True))
 
-    @patch("codemie.service.project.project_service.application_repository")
-    def test_platform_maintainer_is_authorized(self, mock_app_repo):
+    def test_platform_maintainer_is_authorized(self):
         """The actual regression: a platform maintainer (not a global admin) must be
         authorized, matching the docstring/error message's promise."""
         from codemie.core.models import Application
 
         project = Application(name="my-project")
-        mock_app_repo.get_by_name_case_insensitive.return_value = project
 
-        ProjectService.check_allowed_models_authorization(MagicMock(), self._user(is_maintainer=True), "my-project")
+        ProjectService._check_allowed_models_authorization(project, self._user(is_maintainer=True))
 
-    @patch("codemie.service.project.project_service.application_repository")
-    def test_per_project_admin_is_authorized(self, mock_app_repo):
+    def test_per_project_admin_is_authorized(self):
         from codemie.core.models import Application
 
         project = Application(name="my-project")
-        mock_app_repo.get_by_name_case_insensitive.return_value = project
 
-        ProjectService.check_allowed_models_authorization(
-            MagicMock(), self._user(admin_project_names=["my-project"]), "my-project"
-        )
+        ProjectService._check_allowed_models_authorization(project, self._user(admin_project_names=["my-project"]))
 
-    @patch("codemie.service.project.project_service.application_repository")
-    def test_regular_user_is_rejected(self, mock_app_repo):
+    def test_regular_user_is_rejected(self):
         from codemie.core.models import Application
 
         project = Application(name="my-project")
-        mock_app_repo.get_by_name_case_insensitive.return_value = project
 
         with pytest.raises(ExtendedHTTPException) as exc_info:
-            ProjectService.check_allowed_models_authorization(MagicMock(), self._user(), "my-project")
+            ProjectService._check_allowed_models_authorization(project, self._user())
 
         assert exc_info.value.code == 403
 
-    @patch("codemie.service.project.project_service.application_repository")
-    def test_missing_project_raises_404(self, mock_app_repo):
-        mock_app_repo.get_by_name_case_insensitive.return_value = None
+
+class TestFindProject:
+    def test_missing_project_raises_404(self):
+        session = MagicMock()
+        session.execute.return_value.scalar_one_or_none.return_value = None
 
         with pytest.raises(ExtendedHTTPException) as exc_info:
-            ProjectService.check_allowed_models_authorization(MagicMock(), self._user(is_admin=True), "ghost-project")
+            ProjectService._find_project(session, "ghost-project")
 
         assert exc_info.value.code == 404

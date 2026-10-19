@@ -19,6 +19,7 @@ from types import SimpleNamespace
 from typing import Final
 from uuid import UUID
 
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
@@ -126,6 +127,7 @@ class ProjectService:
         ALLOWED_MODELS_EMPTY="At least one chat model is required in allowed_models",
         ALLOWED_MODELS_INVALID_MODEL="Invalid model identifier in allowed_models: {model}",
         ALLOWED_MODELS_UNAUTHORIZED="Only project admins and maintainers can update allowed models",
+        DEFAULT_MODEL_REQUIRED_WITH_ALLOWED_MODELS="default_model is required when allowed_models is set",
     )
 
     @classmethod
@@ -748,37 +750,6 @@ class ProjectService:
             )
 
     @classmethod
-    def check_allowed_models_authorization(
-        cls,
-        session: Session,
-        user: User,
-        project_name: str,
-    ) -> None:
-        """Check if user is authorized to update allowed_models (admin or maintainer).
-
-        Args:
-            session: Database session
-            user: User making the request
-            project_name: Name of the project
-
-        Raises:
-            ExtendedHTTPException 403: If user lacks admin/maintainer role
-            ExtendedHTTPException 404: If project not found
-        """
-        project = application_repository.get_by_name_case_insensitive(session, project_name)
-        if not project:
-            raise ExtendedHTTPException(
-                code=404,
-                message=cls.ERRORS.PROJECT_NOT_FOUND,
-            )
-
-        if not project.is_managed_by(user):
-            raise ExtendedHTTPException(
-                code=403,
-                message=cls.ERRORS.ALLOWED_MODELS_UNAUTHORIZED,
-            )
-
-    @classmethod
     def update_allowed_models(
         cls,
         user: User,
@@ -786,56 +757,33 @@ class ProjectService:
         allowed_models: list[str] | None,
         default_model: str | None,
     ) -> Application:
-        """Validate and persist a project's allowed_models/default_model.
-
-        `default_model=None` leaves the project's existing default_model unchanged;
-        pass an explicit value (including an empty string, which validate_default_model
-        rejects) to set it.
-
-        Raises:
-            ExtendedHTTPException 400: allowed_models/default_model fail validation
-            ExtendedHTTPException 403: user lacks admin/maintainer role
-            ExtendedHTTPException 404: project not found
-            ExtendedHTTPException 500: persistence failure
-        """
+        """Validate and persist a project's allowed_models/default_model"""
         validated_models = cls.validate_allowed_models(allowed_models)
         cls.ensure_chat_model_allowed(validated_models)
 
         with get_session() as session:
-            cls.check_allowed_models_authorization(session, user, project_name)
+            project = cls._find_project(session, project_name)
+            cls._check_allowed_models_authorization(project, user)
 
-            project = application_repository.get_by_name_case_insensitive(session, project_name)
-            if not project:
-                raise ExtendedHTTPException(code=404, message=cls.ERRORS.PROJECT_NOT_FOUND)
-
-            # Validate the default_model that will actually be persisted: an explicit
-            # default_model (even an empty string, which validate_default_model correctly
-            # rejects) takes precedence; otherwise re-validate the project's existing default
-            # against the new, possibly-narrower allowed_models list so a stale default can't
-            # survive a whitelist narrowing.
             effective_default_model = default_model if default_model is not None else project.default_model
             cls.validate_default_model(effective_default_model, validated_models)
 
-            project = session.execute(
-                select(Application).where(Application.id == project.id).with_for_update()
-            ).scalar_one_or_none()
-            if not project:
-                raise ExtendedHTTPException(code=404, message=cls.ERRORS.PROJECT_NOT_FOUND)
+            if validated_models is not None and effective_default_model is None:
+                raise ExtendedHTTPException(
+                    code=400,
+                    message=cls.ERRORS.DEFAULT_MODEL_REQUIRED_WITH_ALLOWED_MODELS,
+                )
 
-            project.allowed_models = validated_models
-            if default_model is not None:
-                project.default_model = default_model
-            session.add(project)
-            try:
-                session.commit()
-                session.refresh(project)
-                session.expunge(project)
-            except Exception:
-                logger.exception("Failed to update allowed_models for project %s", project_name)
-                session.rollback()
-                raise ExtendedHTTPException(code=500, message="Failed to update project allowed models")
+            return cls._persist_allowed_models(session, project_name, validated_models, effective_default_model)
 
-            return project
+    @classmethod
+    def reset_allowed_models(cls, user: User, project_name: str) -> Application:
+        """Reset a project's allowed_models and default_model to the platform defaults (no restriction)"""
+        with get_session() as session:
+            project = cls._find_project(session, project_name)
+            cls._check_allowed_models_authorization(project, user)
+
+            return cls._persist_allowed_models(session, project_name, None, None)
 
     @staticmethod
     def _get_available_chat_model_ids(all_models: list) -> set[str]:
@@ -860,6 +808,61 @@ class ProjectService:
         }
 
         return switchyard_router_ids | litellm_auto_router_ids
+
+    @classmethod
+    def _find_project(cls, session: Session, project_name: str) -> Application:
+        """Look up and lock a project row by name (case-insensitive)"""
+        project = session.execute(
+            select(Application).where(func.lower(Application.name) == project_name.lower()).with_for_update()
+        ).scalar_one_or_none()
+
+        if not project:
+            raise ExtendedHTTPException(code=404, message=cls.ERRORS.PROJECT_NOT_FOUND)
+
+        return project
+
+    @classmethod
+    def _check_allowed_models_authorization(cls, project: Application, user: User) -> None:
+        """Check if user is authorized to update allowed_models (admin or maintainer)."""
+        if not project.is_managed_by(user):
+            raise ExtendedHTTPException(
+                code=403,
+                message=cls.ERRORS.ALLOWED_MODELS_UNAUTHORIZED,
+            )
+
+    @classmethod
+    def _persist_allowed_models(
+        cls,
+        session: Session,
+        project_name: str,
+        allowed_models: list[str] | None,
+        default_model: str | None,
+    ) -> Application:
+        """Lock the project row and persist allowed_models/default_model.
+
+        Shared by `update_allowed_models` and `reset_allowed_models` for the
+        lookup-lock-mutate-commit sequence; callers are responsible for validation.
+
+        Raises:
+            ExtendedHTTPException 404: project not found
+            ExtendedHTTPException 500: persistence failure
+        """
+        project = cls._find_project(session, project_name)
+
+        project.allowed_models = allowed_models
+        project.default_model = default_model
+        session.add(project)
+
+        try:
+            session.commit()
+            session.refresh(project)
+            session.expunge(project)
+        except Exception:
+            logger.exception("Failed to persist allowed_models for project %s", project_name)
+            session.rollback()
+            raise ExtendedHTTPException(code=500, message="Failed to update project allowed models")
+
+        return project
 
 
 project_service = ProjectService()
