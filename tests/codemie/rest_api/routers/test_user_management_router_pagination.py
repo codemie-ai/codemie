@@ -60,6 +60,8 @@ class TestPerPageValidation:
             per_page=10,
             search=None,
             filters=None,
+            sort_by=None,
+            sort_order="asc",
             user=mock_user,
         )
 
@@ -81,6 +83,8 @@ class TestPerPageValidation:
             per_page=20,
             search=None,
             filters=None,
+            sort_by=None,
+            sort_order="asc",
             user=mock_user,
         )
 
@@ -101,6 +105,8 @@ class TestPerPageValidation:
             per_page=50,
             search=None,
             filters=None,
+            sort_by=None,
+            sort_order="asc",
             user=mock_user,
         )
 
@@ -121,6 +127,8 @@ class TestPerPageValidation:
             per_page=100,
             search=None,
             filters=None,
+            sort_by=None,
+            sort_order="asc",
             user=mock_user,
         )
 

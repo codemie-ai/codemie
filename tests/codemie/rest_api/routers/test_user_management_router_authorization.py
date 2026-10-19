@@ -115,6 +115,8 @@ class TestUserListEndpoint:
             per_page=20,
             search=None,
             filters=None,
+            sort_by=None,
+            sort_order="asc",
             user=project_admin_user,
         )
 
@@ -147,6 +149,8 @@ class TestUserListEndpoint:
             per_page=20,
             search=None,
             filters=None,
+            sort_by=None,
+            sort_order="asc",
             user=project_admin_user,
         )
 
@@ -171,6 +175,8 @@ class TestUserListEndpoint:
             per_page=20,
             search="john",
             filters=None,
+            sort_by=None,
+            sort_order="asc",
             user=project_admin_user,
         )
 
@@ -197,6 +203,8 @@ class TestUserListEndpoint:
             per_page=10,
             search=None,
             filters='{"projects":["project-x"],"user_type":"regular"}',
+            sort_by=None,
+            sort_order="asc",
             user=project_admin_user,
         )
 
@@ -223,6 +231,8 @@ class TestUserListEndpoint:
             per_page=20,
             search=None,
             filters=None,
+            sort_by=None,
+            sort_order="asc",
             user=super_admin_user,
         )
 

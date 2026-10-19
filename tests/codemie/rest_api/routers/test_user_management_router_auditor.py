@@ -50,7 +50,9 @@ class TestAuditorListUsers:
             "pagination": {"total": 0, "page": 0, "per_page": 20},
         }
 
-        result = list_users(page=0, per_page=20, search=None, filters=None, user=auditor_user)
+        result = list_users(
+            page=0, per_page=20, search=None, filters=None, sort_by=None, sort_order="asc", user=auditor_user
+        )
 
         assert result is not None
         call_kwargs = mock_service.list_users_with_flow.call_args
@@ -71,7 +73,9 @@ class TestAuditorListUsers:
             "pagination": {"total": 3, "page": 0, "per_page": 20},
         }
 
-        result = list_users(page=0, per_page=20, search=None, filters=None, user=auditor_user)
+        result = list_users(
+            page=0, per_page=20, search=None, filters=None, sort_by=None, sort_order="asc", user=auditor_user
+        )
 
         assert len(result["data"]) == 3
 
@@ -94,7 +98,7 @@ class TestAuditorListUsers:
             "data": [],
             "pagination": {"total": 0, "page": 0, "per_page": 20},
         }
-        list_users(page=0, per_page=20, search=None, filters=None, user=regular)
+        list_users(page=0, per_page=20, search=None, filters=None, sort_by=None, sort_order="asc", user=regular)
         call_kwargs = mock_service.list_users_with_flow.call_args
         assert call_kwargs.kwargs.get("is_project_admin") is False or (
             call_kwargs.args and call_kwargs.args[1] is False

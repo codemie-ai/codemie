@@ -779,6 +779,8 @@ class TestListUsers:
             per_page=20,
             search=None,
             filters=None,
+            sort_by=None,
+            sort_order="asc",
             user=admin_user,
         )
 
@@ -802,6 +804,8 @@ class TestListUsers:
                 per_page=20,
                 search=None,
                 filters=None,
+                sort_by=None,
+                sort_order="asc",
                 user=admin_user,
             )
 

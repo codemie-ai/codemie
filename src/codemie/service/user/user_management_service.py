@@ -24,7 +24,7 @@ Handles user management including:
 from __future__ import annotations
 
 from datetime import datetime, UTC
-from typing import Optional
+from typing import Literal, Optional
 from uuid import uuid4
 
 from sqlmodel import Session
@@ -328,6 +328,9 @@ class UserManagementService:
         per_page: int = 20,
         search: Optional[str] = None,
         filters: Optional[UserListFilters] = None,
+        *,
+        sort_by: Literal["name"] | None = None,
+        sort_order: Literal["asc", "desc"] = "asc",
     ) -> PaginatedUserListResponse:
         """List users with pagination and filters
 
@@ -339,6 +342,8 @@ class UserManagementService:
             per_page: Items per page
             search: Search term
             filters: Structured filter object (projects, user_type, platform_role)
+            sort_by: Optional sort field ("name"); default order is newest first
+            sort_order: Direction for sort_by ("asc" or "desc"); ignored without sort_by
 
         Returns:
             PaginatedUserListResponse
@@ -355,7 +360,9 @@ class UserManagementService:
                 raise ExtendedHTTPException(code=403, message="Access denied: only admins can filter by admin role")
 
         total = user_repository.count_users(session, search, resolved_filters)
-        users = user_repository.query_users(session, search, resolved_filters, page, per_page)
+        users = user_repository.query_users(
+            session, search, resolved_filters, page, per_page, sort_by=sort_by, sort_order=sort_order
+        )
 
         if not users:
             return PaginatedUserListResponse(
@@ -508,6 +515,9 @@ class UserManagementService:
         per_page: int = 20,
         search: Optional[str] = None,
         filters: Optional[UserListFilters] = None,
+        *,
+        sort_by: Literal["name"] | None = None,
+        sort_order: Literal["asc", "desc"] = "asc",
     ) -> PaginatedUserListResponse:
         """List users with pagination and filters
 
@@ -522,6 +532,8 @@ class UserManagementService:
             per_page: Items per page
             search: Search term
             filters: Structured filter object (projects, user_type, platform_role)
+            sort_by: Optional sort field ("name"); default order is newest first
+            sort_order: Direction for sort_by ("asc" or "desc"); ignored without sort_by
 
         Returns:
             PaginatedUserListResponse
@@ -537,6 +549,8 @@ class UserManagementService:
                 per_page=per_page,
                 search=search,
                 filters=filters,
+                sort_by=sort_by,
+                sort_order=sort_order,
             )
 
     @staticmethod

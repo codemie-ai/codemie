@@ -37827,6 +37827,41 @@
               "description": "Stringified JSON filter object. Supported keys: projects (list[str]), user_type (str), is_active (bool), platform_role ('user' | 'platform_admin' | 'admin')",
               "title": "Filters"
             }
+          },
+          {
+            "description": "Sort field. 'name' sorts by display name (falls back to username); default is newest first",
+            "in": "query",
+            "name": "sort_by",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "const": "name",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Sort field. 'name' sorts by display name (falls back to username); default is newest first",
+              "title": "Sort By"
+            }
+          },
+          {
+            "description": "Sort direction for sort_by; ignored without it",
+            "in": "query",
+            "name": "sort_order",
+            "required": false,
+            "schema": {
+              "default": "asc",
+              "description": "Sort direction for sort_by; ignored without it",
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "title": "Sort Order",
+              "type": "string"
+            }
           }
         ],
         "responses": {

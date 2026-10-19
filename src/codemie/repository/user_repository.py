@@ -17,10 +17,10 @@ import uuid
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, UTC
-from typing import Iterator, Optional
+from typing import Iterator, Literal, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import Result, Row, and_
+from sqlalchemy import ColumnElement, Result, Row, and_
 from sqlmodel import Session, select, func, or_
 
 from codemie.core.constants import MAX_POSTGRES_QUERY_ARGUMENTS
@@ -45,6 +45,13 @@ class _UserFields:
 
 class UserRepository:
     """Repository for user CRUD operations (sync SQLModel)"""
+
+    # Characters stripped before the empty check: space, tab, newline, carriage return, NBSP.
+    _NAME_WHITESPACE = " \t\n\r\u00a0"
+    # Display name falls back to username when name is NULL, empty or whitespace-only.
+    _SORT_COLUMN_MAP: dict[str, ColumnElement[str]] = {
+        "name": func.lower(func.coalesce(func.nullif(func.btrim(UserDB.name, _NAME_WHITESPACE), ""), UserDB.username)),
+    }
 
     def get_by_id(self, session: Session, user_id: str) -> Optional[UserDB]:
         """Get user by ID
@@ -185,10 +192,23 @@ class UserRepository:
         filters: UserListFilters = UserListFilters(),
         page: int = 0,
         per_page: int = 20,
+        *,
+        sort_by: Literal["name"] | None = None,
+        sort_order: Literal["asc", "desc"] = "asc",
     ) -> list[UserDB]:
-        """Return a paginated page of users matching search + filters."""
+        """Return a paginated page of users matching search + filters.
+
+        With ``sort_by`` the primary key follows ``sort_order``; ``email`` and ``id`` tie-breakers stay ascending.
+        Without it, ``sort_order`` is ignored and users are ordered newest first.
+        """
         query = self._apply_filters(select(UserDB), search, filters)
-        return list(session.exec(query.order_by(UserDB.date.desc()).offset(page * per_page).limit(per_page)).all())
+        if sort_by:
+            sort_column = self._SORT_COLUMN_MAP[sort_by]
+            primary = sort_column.desc() if sort_order == "desc" else sort_column.asc()
+            order_by = (primary, UserDB.email.asc(), UserDB.id.asc())
+        else:
+            order_by = (UserDB.date.desc(), UserDB.id.asc())
+        return list(session.exec(query.order_by(*order_by).offset(page * per_page).limit(per_page)).all())
 
     def fetch_projects_map(self, session: Session, user_ids: list[str]) -> dict[str, list[UserProject]]:
         """Bulk-load project memberships for a set of user IDs via a single LEFT JOIN query."""

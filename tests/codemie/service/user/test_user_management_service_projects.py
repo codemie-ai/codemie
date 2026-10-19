@@ -213,6 +213,44 @@ class TestAdminUserListItemProjects:
         mock_user_proj_repo.filter_visible_projects_from_map.assert_called_once()
 
 
+class TestListUsersSortForwarding:
+    """EPMCDME-16070: sort params flow from list_users_with_flow to query_users as keywords."""
+
+    @patch("codemie.clients.postgres.get_session")
+    @patch("codemie.service.user.user_management_service.user_repository")
+    def test_sort_params_forwarded_keyword_only(self, mock_repo, mock_get_session, mock_session):
+        mock_get_session.return_value.__enter__.return_value = mock_session
+        mock_repo.count_users.return_value = 0
+        mock_repo.query_users.return_value = []
+
+        UserManagementService.list_users_with_flow(
+            requesting_user_id="admin-user",
+            is_project_admin=True,
+            page=1,
+            per_page=10,
+            search="bob",
+            sort_by="name",
+            sort_order="desc",
+        )
+
+        args, kwargs = mock_repo.query_users.call_args
+        assert args[0] is mock_session
+        assert args[1:] == ("bob", args[2], 1, 10)
+        assert kwargs == {"sort_by": "name", "sort_order": "desc"}
+        assert mock_repo.count_users.call_args.kwargs == {}
+
+    @patch("codemie.clients.postgres.get_session")
+    @patch("codemie.service.user.user_management_service.user_repository")
+    def test_sort_defaults_when_omitted(self, mock_repo, mock_get_session, mock_session):
+        mock_get_session.return_value.__enter__.return_value = mock_session
+        mock_repo.count_users.return_value = 0
+        mock_repo.query_users.return_value = []
+
+        UserManagementService.list_users_with_flow(requesting_user_id="admin-user", is_project_admin=True)
+
+        assert mock_repo.query_users.call_args.kwargs == {"sort_by": None, "sort_order": "asc"}
+
+
 class TestProjectInfoModel:
     """Test ProjectInfo response model structure"""
 

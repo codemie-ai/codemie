@@ -1,0 +1,55 @@
+{
+  "decision": "approve",
+  "rationale": "Targeted check of the 3 prior blocking findings against current source at HEAD: all resolved (CR-001 parameterized dict annotation, CR-002 btrim over space/tab/newline/CR/NBSP with updated test, CR-003 Literal[\"name\"] | None at all four sites). business_review and standards_review carried forward from code-review-final.json unchanged; brief written to code-review-brief.md.",
+  "confidence": "high",
+  "risk_flags": ["public-api"],
+  "business_review": [],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "all 3 commit subjects in the range match the documented EPMCDME-####: Description format (git-workflow.md Commit Message Format)"},
+    {"kind": "code-quality", "status": "fail", "notes": "code-quality.md Types And Imports: new sort params use Optional[Literal[\"name\"]] at 4 sites and _SORT_COLUMN_MAP uses a bare dict; license headers and module cohesion fine"},
+    {"kind": "security", "status": "pass", "notes": "list_users auth unchanged; sort_by/sort_order validated as Literal query params and resolved via a fixed column map, so no raw input reaches ORDER BY; nothing new logged or hardcoded"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/repository/user_repository.py",
+      "line": 50,
+      "title": "Bare dict annotation on _SORT_COLUMN_MAP",
+      "problem": "code-quality.md (Types And Imports) says to avoid bare dict annotations and prefer parameterized generics; the new _SORT_COLUMN_MAP class attribute is annotated with a bare dict.",
+      "impact": "The project's documented code-quality standard is blocking for the review gate and no automated lint rule enforces it, so new code lands in violation.",
+      "recommendation": "Parameterize the annotation, e.g. `dict[str, ColumnElement[str]]` (or the matching SQLAlchemy expression type), to conform to code-quality.md Types And Imports."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/repository/user_repository.py",
+      "line": 51,
+      "title": "trim() misses non-space whitespace names",
+      "problem": "The name sort key is lower(coalesce(nullif(trim(name), ''), username)). Postgres trim() with no characters argument removes only spaces, so a name consisting of tabs, newlines or non-breaking spaces is not treated as empty and does not fall back to username, contrary to the requirement and the code comment (NULL, empty or whitespace-only).",
+      "impact": "Users whose name is non-space whitespace sort by a blank-looking key (typically at the start of an asc page) instead of by username, so the Users list appears out of order. Reachability unconfirmed: whether IDP-provisioned names can contain such characters was not established.",
+      "recommendation": "Strip all whitespace before the empty check, e.g. `func.nullif(func.regexp_replace(UserDB.name, r'^\\s+|\\s+$', '', 'g'), '')` (Postgres), or narrow the comment/requirement to space-only; update NAME_EXPR in the sort test and add a case for a tab/newline-only name."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/repository/user_repository.py",
+      "line": 194,
+      "title": "Optional[...] used for new sort_by params",
+      "problem": "code-quality.md (Types And Imports) says to avoid typing.Optional[X] and prefer X | None; the new sort_by parameters are annotated Optional[Literal[\"name\"]] at user_repository.py:194, user_management_router.py:135, user_management_service.py:332 and :519.",
+      "impact": "The project's documented code-quality standard is blocking for the review gate; ruff's selected rules do not include UP, so no gate catches it and the new code lands in violation.",
+      "recommendation": "Annotate sort_by as `Literal[\"name\"] | None` at all four sites: user_repository.py:194, user_management_router.py:135, user_management_service.py:332 and :519."
+    }
+  ],
+  "finding_status": [
+    {"id": "CR-001", "status": "resolved", "notes": "user_repository.py:50 now annotated dict[str, ColumnElement[str]]; ColumnElement imported from sqlalchemy"},
+    {"id": "CR-002", "status": "resolved", "notes": "name key now btrim(name, ' \\t\\n\\r\\u00a0') before nullif; NAME_EXPR and a whitespace-set test updated. Other Unicode spaces (\\v, \\f, U+2000-range) still not stripped"},
+    {"id": "CR-003", "status": "resolved", "notes": "grep finds no Optional[Literal; sort_by is Literal[\"name\"] | None at user_repository.py:196, router:135, service:332 and :519"}
+  ]
+}

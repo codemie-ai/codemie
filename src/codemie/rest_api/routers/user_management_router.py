@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
@@ -132,6 +132,10 @@ def list_users(
             "platform_role ('user' | 'platform_admin' | 'admin')"
         ),
     ),
+    sort_by: Literal["name"] | None = Query(
+        None, description="Sort field. 'name' sorts by display name (falls back to username); default is newest first"
+    ),
+    sort_order: Literal["asc", "desc"] = Query("asc", description="Sort direction for sort_by; ignored without it"),
     user: User = Depends(authenticate),
 ):
     """List all users with pagination and filters
@@ -161,6 +165,8 @@ def list_users(
         per_page=per_page,
         search=search,
         filters=UserListFilters.model_validate(parsed_filters),
+        sort_by=sort_by,
+        sort_order=sort_order,
     )
 
 
