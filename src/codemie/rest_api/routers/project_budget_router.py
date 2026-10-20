@@ -78,6 +78,15 @@ def _displayed_member_max_budget(
     return budget.max_budget
 
 
+def _zero_limit_member_count(allocations: list[ProjectMemberBudgetAssignment], enforce_limit: bool) -> int:
+    """Count equal-share members whose enforced limit is $0.00 or less, so they cannot spend."""
+    if not enforce_limit:
+        return 0
+    return sum(
+        1 for a in allocations if a.allocation_mode != AllocationMode.FIXED.value and a.allocated_max_budget <= 0
+    )
+
+
 def _build_project_budget_response(
     budget: Budget,
     assignment: ProjectBudgetAssignment | None,
@@ -102,6 +111,7 @@ def _build_project_budget_response(
         budget_reset_at=budget.budget_reset_at,
         member_count=len(allocations),
         allocated_member_budget_total=allocated_total,
+        zero_limit_member_count=_zero_limit_member_count(allocations, enforce_limit),
         provider=provider_meta.get("provider"),
         provider_sync_status=provider_meta.get("sync_status"),
         provider_last_synced_at=provider_meta.get("last_synced_at"),
@@ -451,6 +461,7 @@ group_router = APIRouter(
 
 
 def _build_project_budget_group_response(result: ProjectBudgetGroupFullResult) -> ProjectBudgetGroupResponse:
+    enforce_limit = SettingsService.get_enforce_member_spend_limits(result.group.project_name)
     categories = []
     for cat in result.categories:
         provider_meta = cat.budget.provider_metadata or {}
@@ -463,6 +474,7 @@ def _build_project_budget_group_response(result: ProjectBudgetGroupFullResult) -
                 budget_duration=cat.budget.budget_duration,
                 member_count=len(cat.allocations),
                 allocated_member_budget_total=sum(a.allocated_max_budget for a in cat.allocations),
+                zero_limit_member_count=_zero_limit_member_count(cat.allocations, enforce_limit),
                 provider_sync_status=provider_meta.get('sync_status'),
                 budget_reset_at=cat.budget.budget_reset_at,
                 created_at=cat.budget.created_at,

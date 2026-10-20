@@ -272,6 +272,10 @@ async def resync_project_member_allocations(project_name: str, enforce_limit: bo
     """
     provider = get_active_provider()
     async with get_async_session() as session:
+        if enforce_limit:
+            from codemie.service.budget.project_budget_service import project_budget_service  # noqa: PLC0415
+
+            await project_budget_service.recompute_equal_shares(session, project_name)
         allocations = await project_member_budget_assignment_repository.get_active_by_project(
             session, project_name=project_name
         )

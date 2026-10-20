@@ -5058,6 +5058,11 @@
           "soft_budget": {
             "title": "Soft Budget",
             "type": "number"
+          },
+          "zero_limit_member_count": {
+            "default": 0,
+            "title": "Zero Limit Member Count",
+            "type": "integer"
           }
         },
         "required": [
@@ -20431,6 +20436,11 @@
               }
             ],
             "title": "Updated At"
+          },
+          "zero_limit_member_count": {
+            "default": 0,
+            "title": "Zero Limit Member Count",
+            "type": "integer"
           }
         },
         "required": [

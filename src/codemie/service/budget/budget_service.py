@@ -1553,6 +1553,9 @@ class BudgetService:
                 allocation_mode=AllocationMode.EQUAL.value,
                 assigned_by=actor_id,
             )
+            project_budget_service._log_zero_equal_share(
+                project_name, budget_id, (row.allocated_max_budget for row in allocation_rows), enforce_limit
+            )
             shared_budget = await project_budget_service._ensure_shared_child_budget(
                 session,
                 main_budget=budget,

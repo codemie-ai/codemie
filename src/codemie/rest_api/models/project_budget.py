@@ -83,6 +83,7 @@ class ProjectBudgetResponse(BaseModel):
     budget_reset_at: Optional[str]
     member_count: int
     allocated_member_budget_total: float
+    zero_limit_member_count: int = 0
     provider: Optional[str]
     provider_sync_status: Optional[str]
     provider_last_synced_at: Optional[str]
@@ -177,6 +178,7 @@ class CategoryBudgetDetailResponse(BaseModel):
     budget_duration: str
     member_count: int
     allocated_member_budget_total: float
+    zero_limit_member_count: int = 0
     provider_sync_status: Optional[str]
     budget_reset_at: Optional[str]
     created_at: Optional[datetime]

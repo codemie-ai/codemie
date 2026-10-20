@@ -34,6 +34,7 @@ from codemie.rest_api.models.project_budget import (
     ProjectBudgetResponse,
 )
 from codemie.rest_api.routers.project_budget_router import (
+    _build_project_budget_group_response,
     _build_project_budget_response,
     _can_manage_project_budget_members,
     _ensure_can_manage_project_budget_members,
@@ -53,6 +54,91 @@ from tests.codemie.rest_api.routers.project_budget_helpers import (
     project_admin_user,
     regular_user,
 )
+
+
+def _zero_limit_budget() -> SimpleNamespace:
+    return SimpleNamespace(
+        budget_id="proj-budget-1",
+        budget_category="platform",
+        budget_type="project",
+        name="Platform Budget",
+        description=None,
+        soft_budget=0.24,
+        max_budget=0.30,
+        budget_duration="30d",
+        budget_reset_at=None,
+        is_active=True,
+        provider_metadata={},
+        created_by="admin-1",
+        created_at=None,
+        updated_at=None,
+    )
+
+
+def _member_rows(count: int, max_budget: float, mode: str = "equal", start: int = 0) -> list[SimpleNamespace]:
+    return [
+        SimpleNamespace(
+            user_id=f"user-{start + i:03d}",
+            allocation_mode=mode,
+            allocated_soft_budget=max(max_budget, 0.0),
+            allocated_max_budget=max_budget,
+            sync_status="ok",
+            provider_metadata={},
+        )
+        for i in range(count)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("enforce_limit", "allocations", "expected"),
+    [
+        (True, _member_rows(70, 0.0), 70),
+        (False, _member_rows(70, 0.0), 0),
+        (True, _member_rows(1, 0.0, mode="fixed") + _member_rows(2, 0.5, start=1), 0),
+        (True, _member_rows(1, -0.31) + _member_rows(64, 0.02, start=1), 1),
+    ],
+)
+def test_build_project_budget_response_counts_zero_limit_members(enforce_limit, allocations, expected):
+    assignment = SimpleNamespace(project_name="proj-a", allocation_mode="equal")
+
+    with patch(
+        "codemie.rest_api.routers.project_budget_router.SettingsService.get_enforce_member_spend_limits",
+        return_value=enforce_limit,
+    ):
+        result = _build_project_budget_response(_zero_limit_budget(), assignment, allocations)
+
+    assert result.zero_limit_member_count == expected
+
+
+def test_build_project_budget_group_response_counts_zero_limit_members_per_category():
+    group = SimpleNamespace(
+        id="group-1",
+        project_name="proj-a",
+        name="Budget",
+        budget_duration="30d",
+        description=None,
+        created_by="admin-1",
+        created_at=None,
+        updated_at=None,
+        deleted_at=None,
+    )
+    budget = _zero_limit_budget()
+    budget.notification_owner_email = None
+    budget.soft_limit_notify_once = False
+    budget.soft_limit_notification_enabled = False
+    result = SimpleNamespace(
+        group=group,
+        categories=[SimpleNamespace(budget=budget, assignment=None, allocations=_member_rows(3, 0.0))],
+        total_amount=0.30,
+    )
+
+    with patch(
+        "codemie.rest_api.routers.project_budget_router.SettingsService.get_enforce_member_spend_limits",
+        return_value=True,
+    ):
+        response = _build_project_budget_group_response(result)
+
+    assert response.categories[0].zero_limit_member_count == 3
 
 
 def test_build_project_budget_response_includes_member_budget_id():

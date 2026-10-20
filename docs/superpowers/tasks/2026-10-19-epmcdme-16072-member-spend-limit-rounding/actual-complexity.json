@@ -1,0 +1,96 @@
+{
+  "schema": 1,
+  "task": "EPMCDME-16072: equal per-member spend-limit split floors to cents (never exceeding the budget), allows $0 shares with a logged warning, exposes zero_limit_member_count on project budget and group category responses with a UI warning banner, and recomputes persisted equal shares when member spend-limit enforcement is toggled on.",
+  "generated": "2026-10-20T00:00:00Z",
+  "dimensions": {
+    "component_scope": {
+      "score": 4,
+      "label": "L",
+      "affected": "ProjectBudgetService (equal-share allocation, fixed-override split, recompute_equal_shares, zero-share warning), BudgetService (budget/group response data), project budget router (response mapping, zero_limit_member_count), project budget API models, LiteLLM project member runtime sync (resync on enforcement toggle triggers recompute), UI ProjectBudgetsSection (warning banner), UI projectBudget/projectBudgetGroup entity types",
+      "layers": "UI, API, Service, External (LiteLLM enforcement sync)"
+    },
+    "requirements_clarity": {
+      "score": 2,
+      "label": "S",
+      "status": "Clear",
+      "gaps": "Minor: leftover cents stay unallocated by design, and the $0-share case is handled with a warning and a UI banner rather than a block. Both are explicit decisions carried in code and tests; no open gaps visible in the diff."
+    },
+    "technical_risk": {
+      "score": 3,
+      "label": "M",
+      "risk_factors": "Money arithmetic moved to Decimal with cent floor (ROUND_DOWN) on the enforcement path; enforced $0 shares block those members from spending; recompute_equal_shares rewrites persisted allocations and shared child budgets when enforcement is toggled on (runtime data healing of rows saved under older split rules); fixed-override validation now feeds recompute, which skips budgets whose overrides exceed the total; provider re-sync pushes the new limits to LiteLLM",
+      "mitigation": "Follows existing allocation and resync patterns in ProjectBudgetService and project_member_runtime_sync; recompute makes no provider calls and is followed by the existing resync loop; dedicated regression suite for small budgets and large member counts; structured warning logs (member_share_below_minimum, member_share_recompute_skipped); additive response field with default 0; OpenAPI baseline updated"
+    },
+    "file_change_estimate": {
+      "score": 5,
+      "label": "XL",
+      "modified_files": 12,
+      "modified_file_list": [
+        "codemie:src/codemie/enterprise/litellm/project_member_runtime_sync.py",
+        "codemie:src/codemie/rest_api/models/project_budget.py",
+        "codemie:src/codemie/rest_api/routers/project_budget_router.py",
+        "codemie:src/codemie/service/budget/budget_service.py",
+        "codemie:src/codemie/service/budget/project_budget_service.py",
+        "codemie:tests/codemie/rest_api/router_guards/baselines/openapi.json",
+        "codemie:tests/codemie/rest_api/routers/test_project_budget_router.py",
+        "codemie:tests/enterprise/litellm/test_project_member_runtime_sync.py",
+        "codemie-ui:src/pages/settings/administration/projectsManagement/ProjectBudgetsSection.tsx",
+        "codemie-ui:src/pages/settings/administration/projectsManagement/__tests__/ProjectBudgetsSection.test.tsx",
+        "codemie-ui:src/types/entity/projectBudget.ts",
+        "codemie-ui:src/types/entity/projectBudgetGroup.ts"
+      ],
+      "new_files": 1,
+      "new_file_list": [
+        "codemie:tests/codemie/service/budget/test_project_budget_allocation_rounding.py"
+      ],
+      "affected_dirs": [
+        "codemie:src/",
+        "codemie:tests/",
+        "codemie-ui:src/"
+      ]
+    },
+    "dependencies": {
+      "score": 1,
+      "label": "XS",
+      "new_packages": [],
+      "version_changes": []
+    },
+    "affected_layers": {
+      "score": 4,
+      "label": "L",
+      "layers_changed": [
+        "UI",
+        "API",
+        "Service",
+        "External (LiteLLM enforcement sync)"
+      ],
+      "schema_migration": false,
+      "cross_system": true
+    }
+  },
+  "total": 19,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 13,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "file_change_estimate",
+      "reason": "Multi-repo changes with distinct content across 2 repos - scope scored additively. 13 files in total (9 backend, 4 UI): 12 modified and 1 new regression test module, spread over backend src/tests and UI src. Most of the 742+72 inserted lines are tests, so this count overstates the production change."
+    },
+    {
+      "dimension": "component_scope",
+      "reason": "Full-stack change across 4+ components in separate subsystems: ProjectBudgetService allocation math and the new recompute_equal_shares, BudgetService/router response shaping, API response models, LiteLLM member runtime sync (enforcement toggle path), and the UI budgets section and entity types. No new abstractions, so L rather than XL."
+    },
+    {
+      "dimension": "affected_layers",
+      "reason": "UI + API + Service + the LiteLLM enforcement-provider sync path. No DB schema change or migration. The existing provider integration is touched, not a new one, so there is no integration red-flag bump."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "M: spend-limit math on the enforcement path changed (Decimal cent floor, $0 shares allowed). The toggle-on recompute rewrites stored allocations at runtime. Both are contained by existing resync patterns and a dedicated regression suite."
+    }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

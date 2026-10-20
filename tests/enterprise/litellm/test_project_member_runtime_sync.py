@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import ExitStack, asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -48,6 +48,16 @@ def clear_runtime_cache():
     clear_budget_resolution_cache()
     yield
     clear_budget_resolution_cache()
+
+
+@pytest.fixture(autouse=True)
+def mock_recompute_equal_shares():
+    """Keep enforcement toggle tests off the DB-backed equal-share recompute."""
+    with patch(
+        "codemie.service.budget.project_budget_service.project_budget_service.recompute_equal_shares",
+        new=AsyncMock(),
+    ) as mock_recompute:
+        yield mock_recompute
 
 
 @asynccontextmanager
@@ -1195,3 +1205,95 @@ async def test_enforce_limit_stored_in_metadata_after_sync():
 
     persisted_metadata = mock_update.await_args.kwargs["provider_metadata"]
     assert persisted_metadata["raw"]["enforce_limit"] is False
+
+
+def _resync_patches(session, allocation, budget, provider):
+    return (
+        patch(
+            "codemie.enterprise.litellm.project_member_runtime_sync.get_async_session",
+            return_value=_mock_session_ctx(session),
+        ),
+        patch(
+            "codemie.enterprise.litellm.project_member_runtime_sync"
+            ".project_member_budget_assignment_repository.get_active_by_project",
+            new=AsyncMock(return_value=[allocation]),
+        ),
+        patch(
+            "codemie.enterprise.litellm.project_member_runtime_sync.budget_repository.get_by_id",
+            new=AsyncMock(return_value=budget),
+        ),
+        patch(
+            "codemie.enterprise.litellm.project_member_runtime_sync"
+            ".project_member_budget_assignment_repository.update_provider_metadata",
+            new=AsyncMock(),
+        ),
+        patch(
+            "codemie.enterprise.litellm.project_member_runtime_sync.get_active_provider",
+            return_value=provider,
+        ),
+    )
+
+
+def _legacy_remainder_allocation():
+    return SimpleNamespace(
+        id="alloc-1",
+        user_id="user-1",
+        project_budget_id=BUDGET_ID,
+        allocated_max_budget=-0.31,
+        provider_metadata={"raw": {"provider_member_ref": "member-ref-1"}},
+    )
+
+
+def _ok_provider():
+    return SimpleNamespace(
+        sync_member_allocation=AsyncMock(
+            return_value=BudgetProviderMemberState(
+                provider="litellm",
+                provider_member_ref="member-ref-1",
+                provider_budget_id="member-budget-1",
+                budget_reset_at=None,
+                sync_status=SyncStatus.OK,
+                metadata={},
+            )
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_resync_recomputes_equal_shares_before_push_when_enforcement_on(mock_recompute_equal_shares):
+    session = AsyncMock()
+    allocation = _legacy_remainder_allocation()
+    budget = SimpleNamespace(budget_id=BUDGET_ID, max_budget=0.99, budget_reset_at=None)
+    provider = _ok_provider()
+
+    async def _heal(_session, _project_name):
+        allocation.allocated_max_budget = 0.01
+
+    mock_recompute_equal_shares.side_effect = _heal
+    with ExitStack() as stack:
+        for item in _resync_patches(session, allocation, budget, provider):
+            stack.enter_context(item)
+        await resync_project_member_allocations(project_name=PROJECT_NAME, enforce_limit=True)
+
+    mock_recompute_equal_shares.assert_awaited_once_with(session, PROJECT_NAME)
+    provider.sync_member_allocation.assert_awaited_once_with(
+        allocation=allocation, budget=budget, effective_max_budget=0.01
+    )
+
+
+@pytest.mark.asyncio
+async def test_resync_does_not_recompute_equal_shares_when_enforcement_off(mock_recompute_equal_shares):
+    session = AsyncMock()
+    allocation = _legacy_remainder_allocation()
+    budget = SimpleNamespace(budget_id=BUDGET_ID, max_budget=0.99, budget_reset_at=None)
+    provider = _ok_provider()
+
+    with ExitStack() as stack:
+        for item in _resync_patches(session, allocation, budget, provider):
+            stack.enter_context(item)
+        await resync_project_member_allocations(project_name=PROJECT_NAME, enforce_limit=False)
+
+    mock_recompute_equal_shares.assert_not_awaited()
+    provider.sync_member_allocation.assert_awaited_once_with(
+        allocation=allocation, budget=budget, effective_max_budget=0.99
+    )

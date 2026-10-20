@@ -19,9 +19,10 @@ from __future__ import annotations
 import math
 import re
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_DOWN, Decimal
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -193,31 +194,19 @@ class ProjectBudgetService:
     ) -> list[ProjectMemberBudgetAssignment]:
         """Distribute max_budget and soft_budget equally across user_ids.
 
-        Uses Decimal arithmetic, rounds each share to cents, assigns any
-        rounding remainder to the deterministic last member (user_ids must be
-        sorted before calling this method).
+        Every member gets the same share, floored to cents, so the total never
+        exceeds the budget; leftover cents stay unallocated. The soft share is
+        capped at the max share.
         """
         n = len(user_ids)
         if n == 0:
             return []
 
-        dec_max = Decimal(str(max_budget))
-        dec_soft = Decimal(str(soft_budget))
-
-        share_max = (dec_max / n).quantize(_CENT, rounding=ROUND_HALF_UP)
-        share_soft = (dec_soft / n).quantize(_CENT, rounding=ROUND_HALF_UP)
-
-        total_max = share_max * n
-        total_soft = share_soft * n
-
-        remainder_max = (dec_max - total_max).quantize(_CENT, rounding=ROUND_HALF_UP)
-        remainder_soft = (dec_soft - total_soft).quantize(_CENT, rounding=ROUND_HALF_UP)
+        share_max = ProjectBudgetService._equal_share(Decimal(str(max_budget)), n)
+        share_soft = min(ProjectBudgetService._equal_share(Decimal(str(soft_budget)), n), share_max)
 
         rows: list[ProjectMemberBudgetAssignment] = []
-        for i, uid in enumerate(user_ids):
-            is_last = i == n - 1
-            alloc_max = share_max + (remainder_max if is_last else Decimal("0"))
-            alloc_soft = share_soft + (remainder_soft if is_last else Decimal("0"))
+        for uid in user_ids:
             rows.append(
                 ProjectMemberBudgetAssignment(
                     project_name=project_name,
@@ -225,13 +214,34 @@ class ProjectBudgetService:
                     project_budget_id=budget_id,
                     user_id=uid,
                     allocation_mode=allocation_mode,
-                    allocated_soft_budget=float(alloc_soft),
-                    allocated_max_budget=float(alloc_max),
+                    allocated_soft_budget=float(share_soft),
+                    allocated_max_budget=float(share_max),
                     assigned_by=assigned_by,
                     sync_status=SyncStatus.PENDING,
                 )
             )
         return rows
+
+    @staticmethod
+    def _equal_share(amount: Decimal, count: int) -> Decimal:
+        """Return the per-member share of amount floored to cents, never negative."""
+        if count <= 0:
+            return Decimal("0")
+        return max((amount / count).quantize(_CENT, rounding=ROUND_DOWN), Decimal("0"))
+
+    @staticmethod
+    def _log_zero_equal_share(
+        project_name: str, budget_id: str, max_amounts: Iterable[float], enforce_limit: bool
+    ) -> None:
+        """Warn when enforced equal shares floor to zero, so those members cannot spend."""
+        if not enforce_limit:
+            return
+        zero_count = sum(1 for amount in max_amounts if amount <= 0)
+        if zero_count:
+            logger.warning(
+                f"budget_event=member_share_below_minimum component=project_budget_service "
+                f"project_name={project_name!r} budget_id={budget_id!r} zero_limit_member_count={zero_count}"
+            )
 
     @staticmethod
     def _validate_member_amounts(allocated_max_budget: float, allocated_soft_budget: float) -> None:
@@ -270,18 +280,10 @@ class ProjectBudgetService:
         if not equal:
             return result
 
-        remaining_max = dec_max - fixed_max
-        remaining_soft = dec_soft - fixed_soft
-        share_max = (remaining_max / len(equal)).quantize(_CENT, rounding=ROUND_HALF_UP)
-        share_soft = (remaining_soft / len(equal)).quantize(_CENT, rounding=ROUND_HALF_UP)
-        remainder_max = (remaining_max - (share_max * len(equal))).quantize(_CENT, rounding=ROUND_HALF_UP)
-        remainder_soft = (remaining_soft - (share_soft * len(equal))).quantize(_CENT, rounding=ROUND_HALF_UP)
-
-        for index, allocation in enumerate(equal):
-            is_last = index == len(equal) - 1
-            alloc_max = share_max + (remainder_max if is_last else Decimal("0"))
-            alloc_soft = share_soft + (remainder_soft if is_last else Decimal("0"))
-            result[allocation.user_id] = (float(alloc_max), float(alloc_soft))
+        share_max = ProjectBudgetService._equal_share(dec_max - fixed_max, len(equal))
+        share_soft = min(ProjectBudgetService._equal_share(dec_soft - fixed_soft, len(equal)), share_max)
+        for allocation in equal:
+            result[allocation.user_id] = (float(share_max), float(share_soft))
         return result
 
     @staticmethod
@@ -952,6 +954,9 @@ class ProjectBudgetService:
         from codemie.service.settings.settings import SettingsService
 
         enforce_limit = SettingsService.get_enforce_member_spend_limits(data.project_name)
+        self._log_zero_equal_share(
+            data.project_name, budget_id, (row.allocated_max_budget for row in allocation_rows), enforce_limit
+        )
         shared_budget = await self._ensure_shared_child_budget(
             session,
             main_budget=budget,
@@ -1196,6 +1201,16 @@ class ProjectBudgetService:
         from codemie.service.settings.settings import SettingsService
 
         enforce_limit = SettingsService.get_enforce_member_spend_limits(allocations[0].project_name)
+        self._log_zero_equal_share(
+            allocations[0].project_name,
+            budget_id,
+            (
+                new_alloc_map[a.user_id][0]
+                for a in allocations
+                if a.allocation_mode != AllocationMode.FIXED.value and a.user_id in new_alloc_map
+            ),
+            enforce_limit,
+        )
         shared_sample: tuple[float, float] | None = None
         for alloc in allocations:
             sample = await self._resync_member_allocation(
@@ -1214,6 +1229,60 @@ class ProjectBudgetService:
             budget=budget,
             shared_sample=shared_sample,
         )
+
+    async def recompute_equal_shares(self, session: AsyncSession, project_name: str) -> None:
+        """Recompute and persist equal member shares for every project budget, without provider calls.
+
+        Used when member spend limits start being enforced, so rows saved by older split rules
+        are healed before they are pushed to the provider. The caller commits.
+        """
+        allocations = await project_member_budget_assignment_repository.get_active_by_project(
+            session, project_name=project_name
+        )
+        allocations_by_budget: dict[str, list[ProjectMemberBudgetAssignment]] = {}
+        for allocation in allocations:
+            allocations_by_budget.setdefault(allocation.project_budget_id, []).append(allocation)
+
+        for budget_id, budget_allocations in allocations_by_budget.items():
+            budget = await budget_repository.get_by_id(session, budget_id)
+            if budget is None:
+                continue
+            try:
+                new_alloc_map = self._equal_amounts_with_fixed_overrides(
+                    budget_allocations, budget.max_budget, budget.soft_budget
+                )
+            except ValidationException:
+                logger.warning(
+                    f"budget_event=member_share_recompute_skipped component=project_budget_service "
+                    f"project_name={project_name!r} budget_id={budget_id!r} reason=fixed_overrides_exceed_budget"
+                )
+                continue
+
+            equal_allocations = [a for a in budget_allocations if a.allocation_mode != AllocationMode.FIXED.value]
+            for allocation in equal_allocations:
+                new_max, new_soft = new_alloc_map[allocation.user_id]
+                if (allocation.allocated_max_budget, allocation.allocated_soft_budget) != (new_max, new_soft):
+                    await project_member_budget_assignment_repository.update_allocation(
+                        session,
+                        allocation_id=allocation.id,
+                        allocated_max_budget=new_max,
+                        allocated_soft_budget=new_soft,
+                    )
+                    allocation.allocated_max_budget = new_max
+                    allocation.allocated_soft_budget = new_soft
+            if equal_allocations:
+                await self._ensure_shared_child_budget_after_resync(
+                    session,
+                    budget_id=budget_id,
+                    budget=budget,
+                    shared_sample=new_alloc_map[equal_allocations[0].user_id],
+                )
+            self._log_zero_equal_share(
+                project_name,
+                budget_id,
+                (new_alloc_map[a.user_id][0] for a in equal_allocations),
+                enforce_limit=True,
+            )
 
     async def update_project_budget(
         self,
@@ -1916,6 +1985,9 @@ class ProjectBudgetService:
                 allocation_mode=AllocationMode.EQUAL.value,
                 assigned_by=actor_id,
             )
+            self._log_zero_equal_share(
+                data.project_name, budget_id, (row.allocated_max_budget for row in allocation_rows), enforce_limit
+            )
             if allocation_rows:
                 shared_budget = await self._ensure_shared_child_budget(
                     session,
@@ -2298,6 +2370,9 @@ class ProjectBudgetService:
             budget_category=cat_key,
             allocation_mode=AllocationMode.EQUAL.value,
             assigned_by=actor_id,
+        )
+        self._log_zero_equal_share(
+            group.project_name, budget_id, (row.allocated_max_budget for row in allocation_rows), enforce_limit
         )
         if allocation_rows:
             shared_budget = await self._ensure_shared_child_budget(

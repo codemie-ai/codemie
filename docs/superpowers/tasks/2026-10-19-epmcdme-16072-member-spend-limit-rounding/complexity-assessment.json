@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "task": "Fix the equal per-member budget split (EPMCDME-16072) so small budgets or large member counts never produce negative or inconsistent member spend limits and the sum never exceeds the platform budget, with regression tests.",
+  "generated": "2026-10-19",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 11,
+  "size": "S",
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "technical_risk", "reason": "The math change is low novelty: replace the HALF_UP share plus last-member remainder in ProjectBudgetService._allocate_equal and _equal_amounts_with_fixed_overrides with one uniform cent-floored share and keep soft <= max. There are non-obvious constraints. EQUAL members share one LiteLLM budget row, and the last member synced wins, so only a uniform value is enforceable. Group category totals can carry sub-cent amounts. Existing lifecycle tests assert the old remainder behaviour. The base score is S. It is bumped to M because the ACs name boundary cases (small budget, large member count) and no boundary-value tests exist for these helpers today." },
+    { "dimension": "component_scope", "reason": "One component: the static allocation helpers in ProjectBudgetService. They feed the create, group create, category create, resync (update, rebalance, override, clear override) and backfill (BudgetService._create_backfilled_project_budget) paths, plus the shared child budget seeding. The callers pick up the fix without changes. ProjectAssignmentService._get_member_added_allocation_amounts becomes correct once shares are uniform, so at most a test touches it. These are budget-domain helpers, not core shared utilities, so no scope bump applies." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from S to M: the ACs list edge cases (70 members / $1, sum <= budget, small budgets and large member counts) and no boundary-value test template exists. _allocate_equal has zero direct tests."
+  ],
+  "split_recommendation": null
+}
