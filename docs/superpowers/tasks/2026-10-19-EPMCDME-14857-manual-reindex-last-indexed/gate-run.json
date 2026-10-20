@@ -1,0 +1,138 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-14857-manual-reindex-last-indexed",
+  "head": "a8a64439831bf48cc6ae5f6b2b1bdde41f76acf4",
+  "runner": "poetry",
+  "started_at": "2026-10-20T13:37:19Z",
+  "completed_at": "2026-10-20T13:43:54.949619+00:00",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1544,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 6688,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-headers",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 767,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 11409,
+      "command": "make gitleaks",
+      "exit_code": 0
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 149176,
+      "command": "make test",
+      "exit_code": 2,
+      "notes": "58 failed + 1 error; 58 failures in tests/enterprise (enterprise package not installed in this env, excluded by pre-push hook); the 1 error outside it (logout mock tms) is in the pre-push set below; none in files touched by this branch"
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 49,
+      "command": "make sonar-local",
+      "exit_code": 0,
+      "notes": "Self-skip: '[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.' Needs SONAR_TOKEN (and scanner/server access) to run locally; no CI runs it, so only a manual sonar run settles it"
+    },
+    {
+      "id": "codemie-pre-commit",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 1178,
+      "command": "bash scripts/git-hooks/pre_commit.sh",
+      "exit_code": 0,
+      "notes": "Ruff staged format step self-skipped ('[pre-commit] No staged Python files - skipping Ruff format/fix check.'); that step is covered by the lint gate (make ruff). ruff check + license check ran and passed"
+    },
+    {
+      "id": "codemie-gitleaks",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 617,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": 0,
+      "notes": "Self-skip: nothing staged ('0 commits scanned', '~0 bytes'); staged-diff scan only meaningful at commit time. Working tree covered by gitleaks gate"
+    },
+    {
+      "id": "codemie-pre-push",
+      "source": "hook",
+      "status": "FAIL",
+      "duration_ms": 177989,
+      "command": "CODEMIE_PREPUSH_ENABLED=true bash scripts/git-hooks/pre_push.sh",
+      "exit_code": 1,
+      "notes": "7 failed + 1 error outside tests/enterprise (openapi snapshot, mcp auth resolver, oauth adapters, code_executor filesystem_policy, logout mock tms); same set fails on clean origin/main (00b964548) per 2026-10-19 feature.verification; none in files touched by this branch"
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make coverage",
+      "exit_code": null,
+      "notes": "Skip if: coverage not requested"
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make verify",
+      "exit_code": null,
+      "notes": "Composite of ruff, license, gitleaks, test; each run individually above"
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "exit_code": null,
+      "notes": "Skip if: not opening an MR in this run; needs docker stack, superadmin fixtures, ~/.codemie/test-harness.json. Required for MR description ## Test harness section"
+    },
+    {
+      "id": "codemie-commit-msg",
+      "source": "hook",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "bash scripts/git-hooks/commit_msg.sh",
+      "exit_code": null,
+      "notes": "commit-msg stage hook; validates a message being committed, nothing to commit"
+    },
+    {
+      "id": "gitlab-ci-pre-ci-guard",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": ".gitlab-ci.yml wait-ci-init (pre-ci-guard template)",
+      "exit_code": null,
+      "notes": "Mismatch: guide says no pipeline config, but .gitlab-ci.yml exists; it only waits for external ci-pipeline and compliance-report contexts on MRs to main, runs no local-runnable check. Those external contexts are settled only on the MR"
+    }
+  ],
+  "failures": {
+    "unit": "FAILED tests/enterprise/mcp_auth/test_discovery_probe_bridge.py::test_discovered_auth_gate_registration_failures_return_config_error_payload[dcr_timeout-attempted_mechanisms1]\nFAILED tests/enterprise/mcp_auth/test_discovery_probe_bridge.py::test_discovered_auth_gate_registration_failures_return_config_error_payload[dcr_unavailable-attempted_mechanisms2]\nFAILED tests/enterprise/mcp_auth/test_oauth2_callback_bridge.py::test_callback_entry_log_state_prefix_joins_to_initiate\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_initiate_route_recovery_attempt_three_returns_auth_required_envelope\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_build_oauth2_initiate_response_passes_canonical_resource_to_enterprise_builder\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_raise_client_error_logs_warning_with_sanitized_details_before_raising\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_static_oauth2_initiate_logs_info_with_state_prefix_and_authorize_fields\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_static_oauth2_initiate_info_log_never_contains_full_state\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_saml_initiate_logs_info_with_state_prefix_and_authorize_fields\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_build_saml_initiate_passes_mcp_config_id_as_required_param\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_static_initiate_survives_malformed_authorize_url\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_returns_retry_header_after_successful_force_refresh\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_retry_401_and_does_not_force_refresh_twice\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-token_not_found]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-reauth_required0]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-tms_unavailable]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-tms_persistence_error0]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-token_refresh_error]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-reauth_required1]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-tms_persistence_error1]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-warning-token_not_found]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-warning-reauth_required0]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-error-tms_unavailable]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-error-tms_persistence_error0]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-error-token_refresh_error]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-warning-reauth_required1]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-error-tms_persistence_error1]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_without_calling_tms_for_no_refresh_decisions[None-missing_www_authenticate]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_without_calling_tms_for_no_refresh_decisions[Bearer error=\"invalid_request\"-unsupported_bearer_error]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_detects_configured_discovered_identity_conflict\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_non_oauth_config_without_oauth_payload\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_normalizes_or_rejects_refreshed_token_type[bearer-Bearer fresh-access-None]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_normalizes_or_rejects_refreshed_token_type[Basic-None-refresh_result_invalid]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_when_oauth2_identity_is_incomplete[execution_context0-missing_user_id]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_when_oauth2_identity_is_incomplete[execution_context1-missing_auth_config_id]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_uses_discovered_oauth2_identity_when_no_configured_id\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_rejects_env_delivered_oauth2_refresh\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_omits_initiate_url_for_workflow_payload\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_uses_live_discovered_snapshot_for_reauth_initiate_url\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_rebuilds_discovered_snapshot_from_exact_flow_config\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_discovered_snapshot_missing_without_exact_config_is_non_resumable\nFAILED tests/enterprise/mcp_auth/test_private_network_allowlist_bridge.py::test_private_network_allowlist_reader_output_passes_to_enterprise_as_discovery\nFAILED tests/enterprise/mcp_auth/test_discovery_probe_bridge.py::test_discovery_probe_bridge_does_not_await_async_db_engine_in_worker_loop\nFAILED tests/enterprise/mcp_auth/test_insufficient_scope_recovery_bridge.py::test_bridge_maps_real_assistant_recovery_payload_snapshot\nFAILED tests/enterprise/mcp_auth/test_mcp_auth_status_bridge.py::test_build_discovered_auth_status_response_uses_flow_store_and_tms[False-authentication_required]\nFAILED tests/enterprise/mcp_auth/test_mcp_auth_status_bridge.py::test_build_discovered_auth_status_response_uses_flow_store_and_tms[True-authenticated]\nFAILED tests/enterprise/mcp_auth/test_mcp_auth_status_bridge.py::test_build_discovered_auth_status_response_returns_config_error_snapshot\nERROR tests/codemie/service/security/test_logout_token_cleanup_mock_tms.py::test_logout_removes_only_the_users_rows_and_pod_fallback\n= 58 failed, 20775 passed, 198 skipped, 259 warnings, 1 error in 144.31s (0:02:24) =\nmake: *** [Makefile:31: test] Error 1",
+    "codemie-pre-push": "    _ask_assistant(mock_assistant, raw_request, request, mock_user, background_tasks)\n\ntests/codemie/rest_api/routers/test_assistant.py::TestSlugAmbiguityDetection::test_ambiguous_slug_without_project_raises_422\n  /home/aliaksei_chumakou/codemie-dev/codemie/src/codemie/rest_api/routers/assistant/catalog.py:287: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    assistant = _get_assistant_by_slug_or_raise(assistant_slug, project)\n\ntests/codemie/rest_api/routers/test_assistant_marketplace.py::test_publish_assistant_after_quality_validation_reject_and_user_bypasses\n  /home/aliaksei_chumakou/codemie-dev/codemie/src/codemie/rest_api/routers/assistant/marketplace.py:224: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    published_with_bypass = _llm_validate_on_marketplace_publish(raw_request, assistant, user, is_bypassing)\n\ntests/codemie/service/datasource/test_file_datasource_service.py::TestUploadAndPrepareFiles::test_combined_kept_and_new_over_limit_raises\n  /home/aliaksei_chumakou/codemie-dev/codemie/tests/codemie/service/datasource/test_file_datasource_service.py:297: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    FileDatasourceService.upload_and_prepare_files(\n\ntests/codemie/service/datasource/test_file_datasource_service.py::TestUploadAndPrepareFiles::test_raises_422_when_json_file_has_invalid_content\n  /home/aliaksei_chumakou/codemie-dev/codemie/src/codemie/service/datasource/file_datasource_service.py:287: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_json_file(file.filename, content)\n\ntests/codemie/service/datasource/test_file_datasource_service.py::TestValidateJsonFile::test_raises_422_on_missing_content_key\n  /home/aliaksei_chumakou/codemie-dev/codemie/tests/codemie/service/datasource/test_file_datasource_service.py:416: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_json_file(\"file.json\", content)\n\ntests/codemie/service/datasource/test_file_datasource_service.py::TestValidateJsonFile::test_raises_422_on_missing_metadata_key\n  /home/aliaksei_chumakou/codemie-dev/codemie/tests/codemie/service/datasource/test_file_datasource_service.py:422: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_json_file(\"file.json\", content)\n\ntests/codemie/service/datasource/test_file_datasource_service.py::TestValidateJsonFile::test_raises_422_on_invalid_json_bytes\n  /home/aliaksei_chumakou/codemie-dev/codemie/tests/codemie/service/datasource/test_file_datasource_service.py:427: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_json_file(\"file.json\", b\"not-json-content\")\n\ntests/codemie/service/datasource/test_file_datasource_service.py::TestUploadAndPrepareFilesZip::test_upload_and_prepare_files_zip_validates_json_entries\n  /home/aliaksei_chumakou/codemie-dev/codemie/src/codemie/service/datasource/file_datasource_service.py:214: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_json_file(name, content)\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n================================ tests coverage ================================\n_______________ coverage: platform linux, python 3.12.3-final-0 ________________\n\nCoverage XML written to file coverage.xml\n=========================== short test summary info ============================\nFAILED tests/codemie/service/oauth/adapters/test_provider_adapters.py::test_gitlab_exchange_maps_enterprise_token_data\nFAILED tests/codemie/service/oauth/adapters/test_provider_adapters.py::test_atlassian_exchange_maps_enterprise_token_data\nFAILED tests/codemie/rest_api/router_guards/test_openapi_snapshot.py::test_openapi_matches_baseline\nFAILED tests/codemie/service/mcp/test_toolkit_service_auth_resolver.py::test_nfr23_discovered_pipeline_preserves_current_scope_and_invokes_tool_with_token\nFAILED tests/codemie/service/mcp/test_toolkit_service_auth_resolver.py::test_prepare_server_config_falls_back_to_legacy_when_discovered_token_missing\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_matplotlib_png_generation\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_openpyxl_to_save_workbook\nERROR tests/codemie/service/security/test_logout_token_cleanup_mock_tms.py::test_logout_removes_only_the_users_rows_and_pod_fallback\n= 7 failed, 19854 passed, 186 skipped, 257 warnings, 1 error in 172.09s (0:02:52) =\n[pre-push] Tests failed (exit 1). Tip: run 'make test' to reproduce."
+  }
+}

@@ -138,6 +138,38 @@ class TestBuildHealthNotice:
         assert "Error:" not in notice
 
 
+class TestManualReindexStampHealth:
+    """Health states for a datasource whose last_reindex_triggered_at is stamped at trigger time."""
+
+    def test_stamped_and_in_progress_reads_reindexing(self):
+        now = datetime.now()
+        tool = _make_tool(
+            error=False, completed=False, last_reindex_triggered_at=now, update_date=now - timedelta(hours=1)
+        )
+        assert "is currently being re-indexed" in tool._build_health_notice()
+
+    def test_stamped_and_failed_reads_failed(self):
+        now = datetime.now()
+        tool = _make_tool(
+            error=True, completed=False, last_reindex_triggered_at=now, update_date=now - timedelta(hours=1)
+        )
+        assert "last indexing attempt failed" in tool._build_health_notice()
+
+    def test_stamped_and_completed_without_update_reads_stale(self):
+        now = datetime.now()
+        tool = _make_tool(
+            error=False, completed=True, last_reindex_triggered_at=now, update_date=now - timedelta(hours=1)
+        )
+        assert "scheduled reindex that did not complete" in tool._build_health_notice()
+
+    def test_update_after_stamp_on_success_reads_ok(self):
+        now = datetime.now()
+        tool = _make_tool(
+            error=False, completed=True, last_reindex_triggered_at=now - timedelta(minutes=5), update_date=now
+        )
+        assert tool._build_health_notice() == ""
+
+
 class TestBuildDescriptionHealthPrefix:
     def test_healthy_returns_empty(self):
         prefix = SearchCodeRepoTool._build_description_health_prefix(_make_tool(error=False, completed=True).index_info)

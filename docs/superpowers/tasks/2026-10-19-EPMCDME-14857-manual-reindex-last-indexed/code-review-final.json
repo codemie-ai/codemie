@@ -1,0 +1,56 @@
+{
+  "decision": "request-changes",
+  "rationale": "The SVN router reindex closure (PUT /application/{app}/index/svn/{repo}) is a live manual reindex path that still does not stamp last_reindex_triggered_at, and the provider sync path marks any non-Started status complete (reachability unconfirmed). 0 deferred; 4 dismissed as noise (stamp-DB-failure robustness cases). Blind and verification-gap lenses were not part of the balanced profile; AC5 is left to Stage 7.",
+  "confidence": "medium",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "spec", "item": "Goal 1: every manual reindex (full, incremental, resume) of every datasource type persists last_reindex_triggered_at at trigger time without bumping update_date", "status": "partial", "notes": "Stamped in schedule(func), code closure, SVNIndexService.reindex, provider service; SVN router closure in code_repositories.py:277 missed (CR-001)"},
+    {"kind": "spec", "item": "Goal 2: health mixin keeps its meaning (stale/failed/reindexing in flight or after failure, OK after success)", "status": "pass", "notes": "No mixin change; sync provider success calls complete_progress; health tests added. See CR-002 for non-terminal status concern"},
+    {"kind": "spec", "item": "Goal 3: misleading in-memory success-path assignment removed", "status": "pass", "notes": "base_datasource_processor.py:224 assignment deleted; L244/L260 untouched"},
+    {"kind": "spec", "item": "Entry point: schedule() with func stamps; plain schedule() (index creation) does not", "status": "pass", "notes": "base_datasource_processor.py:132-135 guarded by func is not None"},
+    {"kind": "spec", "item": "Entry point: process() closures in update_code_datasource_in_background and SVNIndexService.reindex stamp", "status": "pass", "notes": "code_datasource_processor.py:221, svn_index_service.py:81; separate SVN router closure is not covered (CR-001)"},
+    {"kind": "spec", "item": "Entry point: ProviderDatasourceReindexService.run stamps (also covers webhook path)", "status": "pass", "notes": "provider_datasource_reindex_service.py:66, before adapter call"},
+    {"kind": "spec", "item": "Ordering: stamp after update_index() / full save() in _clear_error / provider update step", "status": "pass", "notes": "Provider stamp follows _clear_error and update service; schedule() stamps after init_index"},
+    {"kind": "spec", "item": "No clobbering: stamped value also set on the in-memory IndexInfo (helper returns timestamp)", "status": "pass", "notes": "Helper returns datetime; assigned in-memory at the stamped entry points"},
+    {"kind": "spec", "item": "Provider: stamp before external call; async Started keeps existing behaviour; sync success persists completion; errors go through _handle_error", "status": "pass", "notes": "Implemented at provider_datasource_reindex_service.py:66,85-94; see CR-002 for non-terminal statuses"},
+    {"kind": "spec", "item": "Remove only the assignment at base_datasource_processor.py:224; leave L244 and L260", "status": "pass", "notes": "Diff removes a single line at 224 only"},
+    {"kind": "spec", "item": "AC1: each entry point calls IndexInfo.stamp_reindex_triggered_at exactly once with the index id", "status": "partial", "notes": "Holds for covered entry points; SVN router closure never calls it (CR-001)"},
+    {"kind": "spec", "item": "AC2: stamping does not change update_date", "status": "pass", "notes": "test_index_info.py asserts update_date absent from UPDATE params"},
+    {"kind": "spec", "item": "AC3: creation through schedule() does not stamp", "status": "pass", "notes": "test_schedule_without_func_does_not_stamp"},
+    {"kind": "spec", "item": "AC4: health mixin reads REINDEXING/FAILED/STALE after stamp with running/failed state and OK after success", "status": "pass", "notes": "TestManualReindexStampHealth in test_search_kb.py and test_code_tools_health.py"},
+    {"kind": "spec", "item": "AC5: TestReindexActorStampsTriggeredAt and other existing actor/processor tests still pass unchanged", "status": "pending-stage-7", "notes": "No existing test edited in diff; confirmation requires full-suite run"},
+    {"kind": "spec", "item": "AC6: new tests for schedule() with/without func, code and SVN closures, provider reindex service, removal of L224", "status": "pass", "notes": "New tests present; no test for the SVN router closure"},
+    {"kind": "spec", "item": "Non-goals respected (no scheduler/actor change, no schema/UI change, no new abstraction)", "status": "pass", "notes": "Changes limited to entry points and stamp helper return type"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "5 subjects in range all match the documented EPMCDME-####: Description format (one subject is truncated with an ellipsis but keeps the prefix)"},
+    {"kind": "code-quality", "status": "pass", "notes": "Small wiring edits to each module's own reindex entry point; no new file, no module-cohesion violation seen; Ruff not run by reviewer"},
+    {"kind": "security", "status": "pass", "notes": "Parameterized SQLAlchemy update with bound id and timestamp; no credentials logged, no auth surface touched"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/index/code_repositories.py",
+      "line": 277,
+      "title": "SVN router reindex closure never stamps",
+      "problem": "PUT /application/{app_name}/index/svn/{repo_name} (update_svn_index_application) defines its own process() closure that loads the index, creates the SVNDatasourceProcessor and runs reprocess()/resume() without calling IndexInfo.stamp_reindex_triggered_at. The stamp was added only to SVNIndexService.reindex (svn_index_service.py:81), which is a different route reached via _repository_support.py:223. Unlike that closure, this one is live whenever skip_reindex is false.",
+      "impact": "A manual SVN reindex through this endpoint still leaves \"Last indexed\" unchanged, so the ticket's requirement that every manual reindex entry point of every datasource type stamps last_reindex_triggered_at is unmet, and SVN health is inconsistent between the two routes.",
+      "recommendation": "In the process() closure, set index.last_reindex_triggered_at = IndexInfo.stamp_reindex_triggered_at(index.id) right after loading index and before SVNDatasourceProcessor.create_processor (mirror svn_index_service.py:81-82 and code_datasource_processor.py:221). Add a test asserting the call."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/provider/datasource/provider_datasource_reindex_service.py",
+      "line": 93,
+      "title": "Non-terminal provider status marked complete",
+      "problem": "After a reindex call returns with no errors, complete_progress() runs for any status other than \"Started\". The provider response enum is Started, InProgress, Completed, Error, so InProgress (or Error with an empty errors list) is treated as a finished, healthy reindex.",
+      "impact": "A reindex that has not finished could read as OK/completed with a fresh stamp, hiding in-flight or failed work. Reachability was unconfirmed: whether a sync invocation can return InProgress was not established, so severity is capped at major.",
+      "recommendation": "Call complete_progress only for a terminal success status, e.g. if response.status == \"Completed\": self.datasource.complete_progress(); leave InProgress and Error without errors to the existing async/error handling."
+    }
+  ]
+}

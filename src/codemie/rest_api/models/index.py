@@ -1122,17 +1122,22 @@ class IndexInfo(BaseModelWithSQLSupport, Owned, table=True):
             return result.rowcount == 1
 
     @classmethod
-    def stamp_reindex_triggered_at(cls, index_id: str) -> None:
+    def stamp_reindex_triggered_at(cls, index_id: str) -> datetime:
         """Persist last_reindex_triggered_at without bumping update_date.
 
         Uses a raw SQL UPDATE so the staleness watermark (update_date) is not
         disturbed — the STALE detection in SearchKBTool relies on
         last_reindex_triggered_at > update_date.
+
+        Returns the written timestamp so callers can set it on their in-memory
+        IndexInfo; a later full update() would otherwise overwrite the stamp.
         """
-        stmt = sa_update(cls).where(cls.id == index_id).values(last_reindex_triggered_at=datetime.now())
+        ts = datetime.now()
+        stmt = sa_update(cls).where(cls.id == index_id).values(last_reindex_triggered_at=ts)
         with Session(cls.get_engine()) as session:
             session.execute(stmt)
             session.commit()
+        return ts
 
     def update_progress(self, update: ProgressUpdate) -> None:
         """Update progress fields only, preserving metadata (description, project_space_visible).

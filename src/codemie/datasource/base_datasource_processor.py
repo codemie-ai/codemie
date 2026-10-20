@@ -129,6 +129,11 @@ class BaseDatasourceProcessor(ABC):
             self._init_index()
             self._pre_scheduled = True
 
+        if func is not None:
+            # Manual reindex entry point. Set in memory too: later full update() calls
+            # on this IndexInfo would otherwise overwrite the stamp with the old value.
+            self.index.last_reindex_triggered_at = IndexInfo.stamp_reindex_triggered_at(self.index.id)
+
         target = func if func is not None else self.process
         background_tasks.add_task(datasource_concurrency_manager.run, target, self.index)
 
@@ -221,7 +226,6 @@ class BaseDatasourceProcessor(ABC):
                     f"ExecutionTimeSeconds={execution_time}"
                 )
                 self._validate_indexing_result()
-                self.index.last_reindex_triggered_at = datetime.now()
                 self.index.complete_progress(self.index.current_state)
 
                 self._notify_callbacks_on_complete(result)

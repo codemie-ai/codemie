@@ -14,7 +14,7 @@
 
 """Tests for SVNIndexService."""
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -73,3 +73,42 @@ class TestValidateCredentials:
                     user_id="u1", project_name="proj", repo_link="http://svn", setting_id="s1"
                 )
         assert "connection refused" in exc_info.value.details
+
+
+# --- reindex ---
+
+
+class TestReindexStamp:
+    @pytest.mark.parametrize("resume_indexing", [True, False])
+    def test_svn_reindex_stamps_trigger_time_once(self, resume_indexing):
+        stamp = object()
+        index = MagicMock()
+        index.id = "idx-1"
+        manager = MagicMock()
+
+        with (
+            patch.object(SVNIndexService, "validate_credentials"),
+            patch("codemie.datasource.code.code_datasource_processor.run_in_background") as mock_run,
+            patch("codemie.datasource.svn.svn_datasource_processor.SVNDatasourceProcessor") as mock_proc_cls,
+            patch("codemie.rest_api.models.index.IndexInfo") as mock_index_cls,
+        ):
+            mock_index_cls.filter_by_project_and_repo.return_value = [index]
+            mock_index_cls.stamp_reindex_triggered_at.return_value = stamp
+            manager.attach_mock(mock_index_cls.stamp_reindex_triggered_at, "stamp")
+            manager.attach_mock(mock_proc_cls.create_processor, "create_processor")
+
+            SVNIndexService.reindex(
+                svn_repo=MagicMock(),
+                index_info=MagicMock(),
+                user=MagicMock(),
+                app_name="app",
+                repo_name="repo",
+                request_uuid="uuid",
+                background_tasks=MagicMock(),
+                resume_indexing=resume_indexing,
+            )
+            mock_run.call_args[0][0]()
+
+        mock_index_cls.stamp_reindex_triggered_at.assert_called_once_with("idx-1")
+        assert [c[0] for c in manager.mock_calls[:2]] == ["stamp", "create_processor"]
+        assert index.last_reindex_triggered_at is stamp

@@ -217,6 +217,8 @@ def update_code_datasource_in_background(
 ):
     def process():
         index = IndexInfo.filter_by_project_and_repo(project_name=app_name, repo_name=repo_name)[0]
+        # Manual reindex entry point: stamp trigger time; set in memory so later full update() keeps it.
+        index.last_reindex_triggered_at = IndexInfo.stamp_reindex_triggered_at(index.id)
         datasource_processor = CodeDatasourceProcessor.create_processor(
             git_repo=git_repo,
             user=user,

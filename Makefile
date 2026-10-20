@@ -53,7 +53,7 @@ license-fix:
 
 gitleaks:
 	docker run --rm -v "./:/workspace" ghcr.io/gitleaks/gitleaks:v8.30.1 \
-	    dir --no-banner --verbose --config=/workspace/.gitleaks.toml /workspace
+	    dir --no-banner --verbose --redact --config=/workspace/.gitleaks.toml /workspace
 
 verify: ruff license gitleaks test
 

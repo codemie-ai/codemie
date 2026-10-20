@@ -752,6 +752,25 @@ def test_schedule_is_persisted_before_fetching_starts(processor):
     assert order.index("schedule") < order.index("process")
 
 
+def test_process_success_does_not_assign_last_reindex_triggered_at(processor):
+    """The stamp is written at trigger time by the entry point; process() must not overwrite it."""
+    sentinel = object()
+    processor._pre_scheduled = True
+    processor.index.last_reindex_triggered_at = sentinel
+    processor._process = MagicMock(return_value=1)
+    processor._create_or_update_scheduler = MagicMock()
+    processor._persist_load_stats = MagicMock(return_value=None)
+    processor._on_process_end = MagicMock()
+    processor._setup_processing_context = MagicMock()
+    processor._validate_indexing_result = MagicMock()
+    processor._notify_callbacks_on_complete = MagicMock()
+    processor.client = MagicMock()
+
+    processor.process()
+
+    assert processor.index.last_reindex_triggered_at is sentinel
+
+
 def test_retry_multiplier_wired_to_storage_config():
     """_process_document's wait_exponential multiplier is wired to STORAGE_CONFIG.indexing_error_retry_wait_multiplier."""
     from codemie.datasource.datasources_config import STORAGE_CONFIG
@@ -772,3 +791,34 @@ def test_base_retry_uses_exception_type_not_status_predicate():
 
     retry_pred = BaseDatasourceProcessor._process_document.retry.retry
     assert isinstance(retry_pred, retry_if_exception_type)
+
+
+# ---------------------------------------------------------------------------
+# EPMCDME-14857 — manual reindex stamps last_reindex_triggered_at at schedule time
+# ---------------------------------------------------------------------------
+
+
+def test_schedule_with_func_stamps_once(processor):
+    from datetime import datetime
+
+    ts = datetime(2026, 10, 19, 12, 0, 0)
+    background_tasks = MagicMock()
+    index = processor.index
+
+    with patch.object(IndexInfo, "stamp_reindex_triggered_at", return_value=ts) as mock_stamp:
+        processor.schedule(background_tasks, func=processor.reprocess)
+
+    mock_stamp.assert_called_once_with(index.id)
+    assert index.last_reindex_triggered_at == ts
+    from codemie.datasource.datasource_concurrency_manager import datasource_concurrency_manager
+
+    background_tasks.add_task.assert_called_once_with(datasource_concurrency_manager.run, processor.reprocess, index)
+
+
+def test_schedule_without_func_does_not_stamp(mock_user):
+    processor = ConcreteDatasourceProcessor(datasource_name="new_ds", user=mock_user, index=None)
+
+    with patch.object(IndexInfo, "stamp_reindex_triggered_at") as mock_stamp:
+        processor.schedule(MagicMock())
+
+    mock_stamp.assert_not_called()

@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "task": "Persist last_reindex_triggered_at at trigger time for manual reindexes of all datasource types via IndexInfo.stamp_reindex_triggered_at, resolve the in-memory-only assignment in base_datasource_processor.py, and cover staleness-health interaction with tests (backend only).",
+  "generated": "2026-10-19T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 18,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Manual reindex entry points are non-uniform and no single choke point covers them: BaseDatasourceProcessor.schedule() (Atlassian/Google/Git FAQ/XWiki/SharePoint/Azure DevOps KB routers), update_code_datasource_in_background and SVNIndexService.reindex (run_in_background closures), and ProviderDatasourceReindexService.run (no processor at all). The in-memory assignments in BaseDatasourceProcessor (L224/244/260) must also be resolved. 3-4 components across router/service/processor layers."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "Approx. 4-5 source files modified (base_datasource_processor.py, code_datasource_processor.py, svn_index_service.py, provider_datasource_reindex_service.py, possibly one router) plus roughly 5-7 test files touched or added (base processor, code background processing, SVN/router, provider reindex service which has no dedicated test, health mixin tests in test_search_kb.py and test_code_tools_health.py) across src/ and tests/ in 3+ directories."
+    }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

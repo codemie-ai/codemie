@@ -279,6 +279,7 @@ def update_svn_index_application(
 
     def process():
         index = IndexInfo.filter_by_project_and_repo(project_name=app_name, repo_name=repo_name)[0]
+        index.last_reindex_triggered_at = IndexInfo.stamp_reindex_triggered_at(index.id)
         processor = SVNDatasourceProcessor.create_processor(
             svn_repo=svn_repo,
             user=user,

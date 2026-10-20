@@ -190,3 +190,35 @@ def test_update_code_datasource_in_background_reprocess(
     )
     processor_instance.reprocess.assert_called_once()
     processor_instance.resume.assert_not_called()
+
+
+@pytest.mark.parametrize("resume_indexing", [True, False])
+@patch("codemie.datasource.code.code_datasource_processor.IndexInfo")
+@patch("codemie.datasource.code.code_datasource_processor.run_in_background")
+@patch("codemie.datasource.code.code_datasource_processor.CodeDatasourceProcessor")
+def test_update_code_datasource_reindex_stamps_trigger_time_once(
+    mock_processor_cls,
+    mock_run_in_background,
+    mock_index_cls,
+    resume_indexing,
+    dummy_git_repo,
+    dummy_user,
+    dummy_index,
+    dummy_background_tasks,
+):
+    stamp = object()
+    dummy_index.id = "idx-1"
+    mock_index_cls.filter_by_project_and_repo.return_value = [dummy_index]
+    mock_index_cls.stamp_reindex_triggered_at.return_value = stamp
+    manager = MagicMock()
+    manager.attach_mock(mock_index_cls.stamp_reindex_triggered_at, "stamp")
+    manager.attach_mock(mock_processor_cls.create_processor, "create_processor")
+
+    code_datasource_processor.update_code_datasource_in_background(
+        "uuid", dummy_git_repo, dummy_user, "app", "repo", dummy_background_tasks, resume_indexing
+    )
+    mock_run_in_background.call_args[0][0]()
+
+    mock_index_cls.stamp_reindex_triggered_at.assert_called_once_with("idx-1")
+    assert [c[0] for c in manager.mock_calls[:2]] == ["stamp", "create_processor"]
+    assert dummy_index.last_reindex_triggered_at is stamp

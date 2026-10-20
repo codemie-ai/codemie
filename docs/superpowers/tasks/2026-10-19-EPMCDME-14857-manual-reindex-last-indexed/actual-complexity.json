@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "generated": "2026-10-19T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 18,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 14,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Stamp logic touches BaseDatasourceProcessor.schedule, CodeDatasourceProcessor, SVN index service, the SVN reindex router, ProviderDatasourceReindexService and the IndexInfo model (shared stamp helper); five-plus components over datasource, router, service and model layers, one repeated pattern." },
+    { "dimension": "file_change_estimate", "reason": "14 files changed (6 source, 8 test files; 452 insertions, 4 deletions) maps to XL by diffstat count, though about 60% is test code and source edits are small and localized." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

@@ -61,6 +61,10 @@ class ProviderDatasourceReindexService(ProviderDatasourceBaseService):
             if not update_result:
                 return
 
+        # Stamp after the saves above (they bump update_date); keep it in memory so a
+        # later full update() on this IndexInfo does not overwrite it.
+        self.datasource.last_reindex_triggered_at = IndexInfo.stamp_reindex_triggered_at(self.datasource.id)
+
         try:
             response = ProviderDatasourceAdapter(
                 user=self.user,
@@ -77,13 +81,17 @@ class ProviderDatasourceReindexService(ProviderDatasourceBaseService):
                 ),
             )
 
-            # Start progress if reindex started in async mode
-            if response.status == "Started":
+            # Start progress if the provider runs the reindex asynchronously (Started/InProgress)
+            if response.status in ("Started", "InProgress"):
                 self.datasource.start_progress(self.datasource.complete_state)
 
             if response.errors:
                 self._handle_error(self.datasource, response.errors)
                 return
+
+            # Synchronous reindex finished: mark complete so the new stamp reads OK, not STALE.
+            if response.status == "Completed":
+                self.datasource.complete_progress()
         except Exception as e:
             self._handle_error(self.datasource, e)
 

@@ -604,3 +604,16 @@ def test_delete_survives_cleanup_failure():
     calls, cleanup = _delete_with_mocks(index, cleanup_side_effect=RuntimeError("db down"))
     cleanup.assert_called_once_with(index)
     assert calls == ["row"]
+
+
+class TestStampReindexTriggeredAt:
+    def test_stamp_reindex_triggered_at_returns_written_timestamp(self):
+        with patch("codemie.rest_api.models.index.Session") as mock_session, patch.object(IndexInfo, "get_engine"):
+            session = mock_session.return_value.__enter__.return_value
+
+            returned = IndexInfo.stamp_reindex_triggered_at("idx-1")
+
+        params = session.execute.call_args[0][0].compile().params
+        assert returned == params["last_reindex_triggered_at"]
+        assert "update_date" not in params
+        session.commit.assert_called_once()
