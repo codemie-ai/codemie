@@ -58,17 +58,25 @@ class RecordingIngestor:
         self.otlp_calls: list[tuple[str, bytes, str]] = []
         self.hook_calls: list[tuple[list[dict[str, Any]], str, int]] = []
         self.error: Exception | None = None
+        self.gates: list[Any] = []  # the gate each call received
+        self.run_gate = False  # call the gate first, as the real ingestor does
 
-    async def ingest_otlp(self, signal: OtlpSignal, body: bytes, content_type: str) -> IngestResult:
+    async def ingest_otlp(self, signal: OtlpSignal, body: bytes, content_type: str, gate: Any = None) -> IngestResult:
         self.otlp_calls.append((signal, body, content_type))
+        self.gates.append(gate)
+        if self.run_gate:
+            await gate(frozenset())
         if self.error is not None:
             raise self.error
         return IngestResult()
 
     async def ingest_hook_events(
-        self, events: list[dict[str, Any]], user_email: str, received_at_ns: int
+        self, events: list[dict[str, Any]], user_email: str, received_at_ns: int, gate: Any = None
     ) -> IngestResult:
         self.hook_calls.append((events, user_email, received_at_ns))
+        self.gates.append(gate)
+        if self.run_gate:
+            await gate(frozenset())
         if self.error is not None:
             raise self.error
         return IngestResult(body=b"{}", media_type="application/json", accepted=len(events))
@@ -459,6 +467,53 @@ class TestIngestStorageErrors:
 # ---------------------------------------------------------------------------
 # Unit tests for helper functions
 # ---------------------------------------------------------------------------
+
+
+_GATE_REQUESTS = [
+    ("/v1/analytics/cli-analytics/logs", b"\x00", "application/x-protobuf"),
+    ("/v1/analytics/cli-analytics/metrics", b"\x00", "application/json"),
+    ("/v1/analytics/cli-analytics/traces", b"\x00", "application/x-protobuf"),
+    ("/v1/analytics/cli-analytics/event-hooks", b'{"type": "agent.tool.end"}\n', "application/x-ndjson"),
+]
+
+
+@pytest.mark.parametrize(("path", "body", "content_type"), _GATE_REQUESTS, ids=["logs", "metrics", "traces", "hooks"])
+class TestProjectGateWiring:
+    """Every ingest path builds a gate from the sender and the X-CodeMie-Project header (EPMCDME-16025)."""
+
+    def test_forwards_a_gate_built_from_the_user_and_the_header(
+        self, client: TestClient, ingestor: RecordingIngestor, path: str, body: bytes, content_type: str
+    ) -> None:
+        sentinel = object()
+        with patch.object(ingest_router, "build_ingest_gate", return_value=sentinel) as build:
+            resp = client.post(
+                path, content=body, headers={"Content-Type": content_type, "X-CodeMie-Project": "proj-a"}
+            )
+
+        assert resp.status_code == 200
+        assert ingestor.gates == [sentinel]
+        user, header = build.call_args.args
+        assert user.id == "test-user" and header == "proj-a"
+
+    def test_missing_header_is_handed_over_as_none(
+        self, client: TestClient, ingestor: RecordingIngestor, path: str, body: bytes, content_type: str
+    ) -> None:
+        with patch.object(ingest_router, "build_ingest_gate") as build:
+            client.post(path, content=body, headers={"Content-Type": content_type})
+
+        assert build.call_args.args[1] is None
+
+    def test_a_gate_that_cannot_decide_answers_503_not_200(
+        self, client: TestClient, ingestor: RecordingIngestor, path: str, body: bytes, content_type: str
+    ) -> None:
+        async def failing_gate(_projects):
+            raise TelemetryStorageUnavailableError("policy lookup failed")
+
+        ingestor.run_gate = True
+        with patch.object(ingest_router, "build_ingest_gate", return_value=failing_gate):
+            resp = client.post(path, content=body, headers={"Content-Type": content_type})
+
+        assert resp.status_code == 503
 
 
 class TestParseNdjson:

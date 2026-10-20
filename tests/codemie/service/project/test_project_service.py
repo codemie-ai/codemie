@@ -97,7 +97,7 @@ class TestProjectServiceCreateSharedProject:
         )
         mock_session.commit.assert_called_once()
         mock_logger.info.assert_called_once()
-        assert "project_created" in mock_logger.info.call_args[0][0]
+        assert mock_logger.info.call_args[0][0].startswith("project_created: project=")
 
     @patch("codemie.service.project.project_service.application_repository")
     @patch("codemie.service.project.project_service.user_repository")

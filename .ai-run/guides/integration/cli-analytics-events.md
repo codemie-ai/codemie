@@ -10,9 +10,39 @@ The server accepts these events. A change to a field name, a type or a rule on t
 |---|---|
 | `POST /v1/analytics/cli-analytics/event-hooks` | NDJSON: one event per line. The sender's email comes from the token |
 | `POST /v1/analytics/cli-analytics/logs` | An OTLP log record with an `event_type` attribute is a hook event: `event_type` holds the event's `type`, every other field is an attribute of the same name (`session.id` and `prompt.id` are read as well as `session_id` and `prompt_id`). The sender's email is the `user.email` attribute |
+| `POST /v1/analytics/cli-analytics/metrics`, `…/traces` | OTLP metrics and spans, protobuf or JSON |
 
-- Both routes store an event the same way; an event sent through both is stored once when it has an `event_id` (see Identity and re-sends).
+All four routes store only for a project that has CLI Analytics enabled (see Project gate).
+
+- `event-hooks` and `logs` store an event the same way; an event sent through both is stored once when it has an `event_id` (see Identity and re-sends).
 - A request body above 5,242,880 bytes (`ANALYTICS_INGEST_MAX_BODY_BYTES`) is refused with 413. A sender that posts a whole spool in one request must split it: about 7,000 unsent `agent.usage.request` events reach the limit, and the same body is refused on every retry.
+
+## Project gate
+
+Every route checks the project before it stores anything. The project is the one named in the `X-CodeMie-Project` header (case-insensitive); the sender must have access to it and the project must have `cli_analytics_enabled` (a global administrator or maintainer sets it; it is `false` for every project until then). A request accepted for a project is stored under that project's stored name, whatever case the header or the events used: the `codemie_project_name` column of the stored hook events (which feeds a session's project, the project filter and the project admin's access) is set to the stored name of the project the request was accepted for, also on hook events that name no project, while the rest of the payload and the identity of each event are stored as sent. Data stored before this behaviour is not rewritten. The instance flag `cliAnalytics`, authentication, the size limit and format validation are unchanged.
+
+Order on every POST: instance flag (404), size (413), content type (415), decode (a malformed body is 400, never a discard), then the gate. A body that decodes is either stored or **discarded as a whole**: nothing is written to the raw tables, resources, the dedup ledger or the rollup queue. A mixed batch is never split.
+
+A discard is HTTP 200, because the CLI treats any 2xx as done and deletes its spool (so a discard is final and is not replayed after the project is enabled), while 403 suspends its forwarding and other errors are retried for ever.
+
+| Reason | When |
+|---|---|
+| `cli_analytics_disabled` | the project exists, the sender has access, and the setting is off |
+| `project_context_required` | the header is missing or blank, or names an unknown or deleted project, or one the sender cannot access. The user's default project is never inferred |
+| `project_context_conflict` | the batch carries an explicit project value that differs (case-insensitive, otherwise exact: no trimming, same rule as the project lookup) from the header, or two different values |
+
+An explicit project value is `codemie_project_name` in: an NDJSON event (a hook or `agent.usage.request`), an OTLP log record, span or metric data-point attribute, and a resource attribute. Data points the server never stores (histogram, exponential histogram, summary, non-finite values) and hook events skipped as too deeply nested are checked as well. A project carried under another key is not detected.
+
+Discard answers:
+
+| Route | Body |
+|---|---|
+| `logs`, `metrics`, `traces` | the OTLP `Export*ServiceResponse` in the request's format (JSON or protobuf) with `partial_success`: `rejected_log_records`, `rejected_data_points` or `rejected_spans` = the records the client sent, and the reason in `error_message`. A request that carried no records gets the plain empty success response |
+| `event-hooks` | `{"accepted": 0, "dropped": N, "reason": "<reason>"}` |
+
+The count is what the client sent, not what would have been stored: every log record, span and metric data point of every kind (a metric without data points adds none), and every NDJSON line that parses as an object. Lines that do not parse are not counted and never were; a body with none that parse is still 400.
+
+If the project policy cannot be read the answer is 503 and nothing is written; the CLI retries the whole spool. Disabling a project takes effect on the next request; stored history is untouched.
 
 ## Conventions
 

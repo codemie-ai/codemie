@@ -448,6 +448,24 @@ class TestApplicationRepositoryAsyncOperations:
         mock_session.execute.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_aget_active_by_name_case_insensitive_skips_deleted_and_prefers_exact_case(self):
+        """Case variants may coexist: deleted ones are excluded and the exact-case name wins the order."""
+        # Arrange
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.first.return_value = None
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(return_value=mock_result)
+
+        # Act
+        await application_repository.aget_active_by_name_case_insensitive(mock_session, "Proj-A")
+
+        # Assert
+        query_text = _compile_sql(mock_session.execute.call_args[0][0])
+        assert "lower(applications.name) = 'proj-a'" in query_text
+        assert "applications.deleted_at is null" in query_text
+        assert "order by case when (applications.name = 'proj-a') then 0 else 1 end" in query_text
+
+    @pytest.mark.asyncio
     async def test_aget_by_name_returns_none_when_not_exists(self):
         """aget_by_name returns None when project doesn't exist (async)."""
         # Arrange
@@ -809,3 +827,43 @@ class TestUpdateProjectCreatedBy:
         result = application_repository.update_project(mock_session, app, description="new description")
 
         assert result.created_by == "original-owner"
+
+
+class TestUpdateProjectCliAnalyticsEnabled:
+    """Tests for update_project cli_analytics_enabled parameter (EPMCDME-16025)."""
+
+    def _make_app(self, enabled: bool = False) -> Application:
+        return Application(
+            id="proj-x",
+            name="proj-x",
+            project_type="shared",
+            cli_analytics_enabled=enabled,
+            date=datetime.now(),
+            update_date=datetime.now(),
+        )
+
+    def test_defaults_to_false(self):
+        assert Application(name="p").cli_analytics_enabled is False
+
+    def test_update_project_persists_true(self):
+        mock_session = MagicMock()
+        app = self._make_app(False)
+
+        result = application_repository.update_project(mock_session, app, cli_analytics_enabled=True)
+
+        assert result.cli_analytics_enabled is True
+
+    def test_update_project_none_leaves_flag_unchanged(self):
+        mock_session = MagicMock()
+        app = self._make_app(True)
+
+        result = application_repository.update_project(mock_session, app, description="d")
+
+        assert result.cli_analytics_enabled is True
+
+    def test_create_passes_flag_to_new_application(self):
+        mock_session = MagicMock()
+
+        result = application_repository.create(mock_session, "proj-y", cli_analytics_enabled=True)
+
+        assert result.cli_analytics_enabled is True

@@ -563,3 +563,250 @@ async def test_a_usage_row_the_database_rejects_is_dropped_and_the_others_are_st
     assert sorted(conn.stored) == ["s1", "s2", "s3"]
     assert result.accepted == 3
     assert "s-bad" in logger.warning.call_args.args[0]
+
+
+# ── project gate (EPMCDME-16025) ──────────────────────────────────────────────
+
+
+def _gate(reason: str | None, canonical_project: str | None = None):
+    seen: list[frozenset[str]] = []
+
+    async def gate(projects: frozenset[str]) -> str | None:
+        seen.append(projects)
+        return reason
+
+    gate.seen = seen  # type: ignore[attr-defined]
+    if canonical_project is not None:
+        gate.canonical_project = canonical_project  # type: ignore[attr-defined]
+    return gate
+
+
+def _discard_requests():
+    """(signal, request, wire records, response type, rejected field)"""
+    points = [b.number_point(T, 1, {}), b.number_point(T, float("nan"), {})]
+    metrics = [
+        b.sum_metric("a", points),
+        b.histogram_metric("h"),
+        b.summary_metric("s"),
+        b.gauge_metric("g", points[:1]),
+    ]
+    sp = b.span("claude_code.tool", trace_id=bytes(16), span_id=bytes(8), start=T, end=T, attrs={})
+    return [
+        (
+            "logs",
+            b.logs_request(RESOURCE, [_api_request("s1", 1), _api_request("s1", 2)]),
+            2,
+            ExportLogsServiceResponse,
+            "rejected_log_records",
+        ),
+        ("traces", b.traces_request(RESOURCE, [sp, sp, sp]), 3, ExportTraceServiceResponse, "rejected_spans"),
+        ("metrics", b.metrics_request(RESOURCE, metrics), 5, ExportMetricsServiceResponse, "rejected_data_points"),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("as_json", [False, True], ids=["protobuf", "json"])
+@pytest.mark.parametrize("case", range(3), ids=["logs", "traces", "metrics"])
+async def test_a_discarding_gate_writes_nothing_and_reports_the_wire_count(case, as_json):
+    signal, request, wire, response_type, field = _discard_requests()[case]
+    engine = FakeEngine()
+    gate = _gate("cli_analytics_disabled")
+    content_type = "application/json" if as_json else "application/x-protobuf"
+    body = json.dumps(json_format.MessageToDict(request)).encode() if as_json else request.SerializeToString()
+
+    result = await _ingestor(engine).ingest_otlp(signal, body, content_type, gate=gate)
+
+    assert engine.conn.statements == []
+    assert engine.acquire_timeouts == []
+    assert result.accepted == 0
+    response = json_format.Parse(result.body, response_type()) if as_json else response_type.FromString(result.body)
+    assert getattr(response.partial_success, field) == wire
+    assert response.partial_success.error_message == "cli_analytics_disabled"
+    assert result.media_type == content_type.split(";")[0]
+
+
+@pytest.mark.asyncio
+async def test_an_empty_otlp_request_that_is_discarded_is_the_plain_success_response():
+    engine = FakeEngine()
+
+    result = await _ingestor(engine).ingest_otlp(
+        "logs", b.logs_request(RESOURCE, []).SerializeToString(), "application/x-protobuf", gate=_gate("x")
+    )
+
+    assert result == IngestResult(body=b"", media_type="application/x-protobuf", accepted=0)
+
+
+@pytest.mark.asyncio
+async def test_a_discarding_gate_answers_hook_events_with_the_ndjson_body():
+    engine = FakeEngine()
+    events = [hb.minimal("agent.tool.end", "s1", "2026-09-29T10:59:41.512Z") for _ in range(3)]
+
+    result = await _ingestor(engine).ingest_hook_events(
+        events, "dev@example.com", 1, gate=_gate("project_context_required")
+    )
+
+    assert engine.conn.statements == []
+    assert json.loads(result.body) == {"accepted": 0, "dropped": 3, "reason": "project_context_required"}
+    assert result.media_type == "application/json"
+    assert result.accepted == 0
+
+
+@pytest.mark.asyncio
+async def test_a_passing_gate_stores_as_before_and_sees_every_explicit_project():
+    engine = FakeEngine()
+    gate = _gate(None)
+    body = b.logs_request(
+        {**RESOURCE, "codemie_project_name": "p1"}, [_api_request("s1", 1, codemie_project_name="p2")]
+    )
+
+    result = await _ingestor(engine).ingest_otlp("logs", body.SerializeToString(), "application/x-protobuf", gate=gate)
+
+    assert result.accepted == 1
+    assert gate.seen == [frozenset({"p1", "p2"})]
+    assert engine.conn.sql("INSERT INTO log_events")
+
+
+@pytest.mark.asyncio
+async def test_hook_events_pass_their_projects_to_the_gate():
+    engine = FakeEngine()
+    gate = _gate(None)
+    events = [{**hb.minimal("agent.tool.end", "s1", "2026-09-29T10:59:41.512Z"), "codemie_project_name": "p1"}]
+
+    result = await _ingestor(engine).ingest_hook_events(events, "dev@example.com", 1, gate=gate)
+
+    assert gate.seen == [frozenset({"p1"})]
+    assert result.accepted == 1
+
+
+@pytest.mark.asyncio
+async def test_a_failing_gate_propagates_and_nothing_is_written():
+    engine = FakeEngine()
+
+    async def gate(_projects):
+        raise TelemetryStorageUnavailableError("policy lookup failed")
+
+    with pytest.raises(TelemetryStorageUnavailableError):
+        await _ingestor(engine).ingest_otlp(
+            "logs", _logs_body(_api_request("s1", 1)), "application/x-protobuf", gate=gate
+        )
+
+    assert engine.conn.statements == []
+
+
+# ── persisted project attribution (EPMCDME-16077) ─────────────────────────────
+
+PROJECT_COLUMN = (
+    6  # hook_events column list (the ledger key excluded): ts, session_id, type, prompt_id, user, dev, project
+)
+
+
+def _project_events(*names: str | None) -> list[dict]:
+    events = []
+    for index, name in enumerate(names):
+        event = hb.minimal("agent.tool.end", f"s{index}", "2026-09-29T10:59:41.512Z")
+        if name is not None:
+            event["codemie_project_name"] = name
+        events.append(event)
+    return events
+
+
+@pytest.mark.asyncio
+async def test_hook_events_are_stored_under_the_project_the_gate_accepted_them_for():
+    engine = FakeEngine()
+    events = _project_events("QA_CASE_CHECK", "qa_case_check", "Qa_Case_Check", None)
+
+    result = await _ingestor(engine).ingest_hook_events(
+        events, "dev@example.com", 1, gate=_gate(None, canonical_project="qa_case_check")
+    )
+
+    (hook_args,) = engine.conn.sql("INSERT INTO hook_events")
+    assert hook_args[PROJECT_COLUMN] == ["qa_case_check"] * 4
+    assert result.accepted == 4
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sent", [None, "", "   "])
+async def test_hook_events_without_a_project_are_stored_under_the_accepted_project(sent):
+    engine = FakeEngine()
+    events = _project_events(None)
+    if sent is not None:
+        events[0]["codemie_project_name"] = sent
+
+    await _ingestor(engine).ingest_hook_events(
+        events, "dev@example.com", 1, gate=_gate(None, canonical_project="qa_case_check")
+    )
+
+    (hook_args,) = engine.conn.sql("INSERT INTO hook_events")
+    assert hook_args[PROJECT_COLUMN] == ["qa_case_check"]
+
+
+@pytest.mark.asyncio
+async def test_hook_events_without_a_project_delivered_as_otlp_logs_get_the_accepted_project():
+    engine = FakeEngine()
+    record = hb.as_otlp_log(_project_events(None)[0], T)
+    body = b.logs_request(RESOURCE, [record]).SerializeToString()
+
+    await _ingestor(engine).ingest_otlp(
+        "logs", body, "application/x-protobuf", gate=_gate(None, canonical_project="qa_case_check")
+    )
+
+    (hook_args,) = engine.conn.sql("INSERT INTO hook_events")
+    assert hook_args[PROJECT_COLUMN] == ["qa_case_check"]
+
+
+@pytest.mark.asyncio
+async def test_the_stored_project_is_the_canonical_name_for_hook_events_delivered_as_otlp_logs():
+    engine = FakeEngine()
+    record = hb.as_otlp_log(_project_events("QA_CASE_CHECK")[0], T)
+    body = b.logs_request(RESOURCE, [record]).SerializeToString()
+
+    result = await _ingestor(engine).ingest_otlp(
+        "logs", body, "application/x-protobuf", gate=_gate(None, canonical_project="qa_case_check")
+    )
+
+    (hook_args,) = engine.conn.sql("INSERT INTO hook_events")
+    assert hook_args[PROJECT_COLUMN] == ["qa_case_check"]
+    assert result.accepted == 1
+
+
+@pytest.mark.asyncio
+async def test_event_identities_do_not_depend_on_the_canonical_name():
+    # No event_id: the identity is a hash of the event as sent, which must not change with the stored name.
+    events = _project_events("QA_CASE_CHECK", "qa_case_check")
+    plain, canonical = FakeEngine(), FakeEngine()
+
+    await _ingestor(plain).ingest_hook_events(events, "dev@example.com", 1, gate=_gate(None))
+    await _ingestor(canonical).ingest_hook_events(
+        events, "dev@example.com", 1, gate=_gate(None, canonical_project="qa_case_check")
+    )
+
+    assert canonical.conn.sql("INSERT INTO ingest_dedup") == plain.conn.sql("INSERT INTO ingest_dedup")
+    assert canonical.conn.sql("INSERT INTO hook_events")[0][PROJECT_COLUMN] == ["qa_case_check"] * 2
+    assert plain.conn.sql("INSERT INTO hook_events")[0][PROJECT_COLUMN] == ["QA_CASE_CHECK", "qa_case_check"]
+
+
+@pytest.mark.asyncio
+async def test_a_gate_without_a_canonical_project_leaves_the_stored_name_as_sent():
+    with_gate, without_gate = FakeEngine(), FakeEngine()
+
+    await _ingestor(with_gate).ingest_hook_events(
+        _project_events("QA_CASE_CHECK"), "dev@example.com", 1, gate=_gate(None)
+    )
+    await _ingestor(without_gate).ingest_hook_events(_project_events("QA_CASE_CHECK"), "dev@example.com", 2)
+
+    for engine in (with_gate, without_gate):
+        (hook_args,) = engine.conn.sql("INSERT INTO hook_events")
+        assert hook_args[PROJECT_COLUMN] == ["QA_CASE_CHECK"]
+
+
+@pytest.mark.asyncio
+async def test_other_log_records_keep_their_sent_attributes_untouched():
+    engine = FakeEngine()
+    body = _logs_body(_api_request("s1", 1, codemie_project_name="QA_CASE_CHECK"))
+
+    await _ingestor(engine).ingest_otlp(
+        "logs", body, "application/x-protobuf", gate=_gate(None, canonical_project="qa_case_check")
+    )
+
+    (log_args,) = engine.conn.sql("INSERT INTO log_events")
+    assert any("QA_CASE_CHECK" in (attrs or "") for attrs in log_args[-1])

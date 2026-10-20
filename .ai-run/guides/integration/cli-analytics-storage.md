@@ -97,6 +97,12 @@ Typed values of `usage_requests` (`log_events` keeps 0 for unparseable, because 
 | Unparseable (`"abc"`, `-1`, `12.5`, `true`, array, object) | NULL, the original in `attrs` |
 | Boolean column: `true`/`false` or the strings in any case; anything else | the boolean; NULL with the original in `attrs` |
 
+### Project policy (per-project ingest gate)
+
+Whether a project's analytics is stored is a flag in the main database, not in the analytics database: `applications.cli_analytics_enabled` (NOT NULL, default `false`). The migration therefore turns ingestion off for every existing project until a global administrator or maintainer enables the pilot projects; enable them only after their CLI versions send `X-CodeMie-Project`. The gate is `codemie.service.analytics.cli_analytics_project_gate.build_ingest_gate`: the router builds it per request and hands it to the ingestor as a callable, because the adapter may not import `codemie.service`. The ingestor decodes once, calls the gate with the explicit project values and the wire count the decoder collected, and on a discard returns before `_store`, so a discarded request writes no raw rows, resources, dedup entries or rollup work. The reasons, answers and counting rules are in [`cli-analytics-events.md`](cli-analytics-events.md#project-gate).
+
+The setting is visible in the project API (`cli_analytics_enabled` on list, detail, create and PATCH) only to global administrators and maintainers and to the Project Admin of that project; for everyone else the key is absent. Only a global administrator or maintainer may write it: any request body that contains the field from someone else, even `null` or an unchanged value, is 403 before anything is applied. Personal projects stay `false`.
+
 ### Deduplication by `event_id`
 
 - With a non-empty `event_id` the record hash is over (type, session key, event_id) on both paths, so a re-send is recognised whatever the sender's email and two sessions sharing an `event_id` are both kept. The first stored version stays: a changed event, a new summary for one, must carry a new `event_id`. Without one, the old content hash applies.

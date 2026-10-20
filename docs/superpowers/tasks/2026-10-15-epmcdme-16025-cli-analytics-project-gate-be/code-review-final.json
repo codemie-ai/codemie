@@ -1,0 +1,62 @@
+{
+  "decision": "request-changes",
+  "rationale": "All lenses and the standards audit ran; acceptance was skipped (no spec), so confidence is low. 4 blocking findings (gate normalization vs lookup, a head-pinned migration test, 2 type-hint standards); 0 deferred, 15 dismissed after reading the code (guarded by router authenticate, by-design header semantics, unstored fields, or below the emission floor). Brief and fix pack written alongside.",
+  "confidence": "low",
+  "risk_flags": ["security", "auth", "migration", "public-api", "data-contract"],
+  "business_review": [],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "7 subjects in diff_base..HEAD all match the documented 'EPMCDME-####: Description' format"},
+    {"kind": "code-quality", "status": "partial", "notes": "Two type-hint rules unmet in new code: bare dict in crud.py _with_visible_cli_analytics; unannotated handler in project.py _omit_cli_analytics_when_hidden."},
+    {"kind": "security", "status": "partial", "notes": "Gate fails closed and write paths are guarded; ingest gate strips and casefolds project values before the conflict decision (security-patterns 'Untrusted Input Handling')."}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/models/project.py",
+      "line": 109,
+      "title": "Annotate serializer handler parameter",
+      "problem": "code-quality.md says not to leave a duck-typed parameter unannotated; _omit_cli_analytics_when_hidden(self, handler) has an unannotated 'handler' and a deliberately omitted return type.",
+      "impact": "Documented Types And Imports standard is not met in newly added code.",
+      "recommendation": "Annotate handler as pydantic.SerializerFunctionWrapHandler; keep (and justify in the comment) the omitted return annotation that preserves the OpenAPI schema."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/projects/crud.py",
+      "line": 343,
+      "title": "Parameterize dict annotations on visibility helper",
+      "problem": "code-quality.md prefers parameterized generics over bare dict annotations; new helper _with_visible_cli_analytics is declared '(user: User, project: dict) -> dict'.",
+      "impact": "Documented Types And Imports standard is not met in newly added code.",
+      "recommendation": "Annotate both the parameter and the return value as dict[str, Any]."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/analytics/cli_analytics_project_gate.py",
+      "line": 42,
+      "title": "Gate normalizes project values before deciding",
+      "problem": "build_ingest_gate strips the header project and strips plus casefolds every explicit body project value before the conflict comparison, and _note_project in postgres/otlp.py strips values before they reach the gate; security-patterns.md 'Untrusted Input Handling' says to parse input exactly as received and avoid stripping or silent coercion before a security decision. The conflict check uses casefold() while the policy lookup (aget_by_name_case_insensitive) compares lower(), so the two disagree for some strings (e.g. 'ss' vs 'ß').",
+      "impact": "A body project value that differs from the header only by whitespace or case is treated as the same project and the request is stored, while the stored attribute stays unnormalized; the conflict decision and the policy lookup can disagree on what counts as the same project. Reachability confirmed: all four ingest endpoints route through this gate.",
+      "recommendation": "Compare header and explicit values exactly as received and look up with that same value, dropping the strip/casefold from the conflict check; if case-insensitive matching is intentional, use the same lower() as the lookup in both places and document the exception. The exact-vs-case-insensitive choice is ambiguous and is the author's to settle."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/migrations/test_add_cli_analytics_enabled_to_applications.py",
+      "line": 56,
+      "title": "Migration test pins itself as the alembic head",
+      "problem": "test_revision_is_the_single_alembic_head asserts script.get_heads() == [module.revision], so it is true only while this migration is the newest one in the alembic directory.",
+      "impact": "The test fails as soon as any later migration lands on top, or on a merge with another branch that adds a migration (the branch already shares files with EPMCDME-14659), producing a red CI unrelated to this migration's correctness.",
+      "recommendation": "Drop the get_heads equality; assert only that module.revision exists in the script directory and that its down_revision is 'y1z2a3b4c5d6'."
+    }
+  ]
+}

@@ -1,0 +1,263 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-16025_cli-analytics-project-gate",
+  "head": "0a9872e37b69122d8f5b3d1cecb4c493b414fae6",
+  "head_verified": "git rev-parse HEAD == 0a9872e37b69122d8f5b3d1cecb4c493b414fae6 before the first gate and again at the end",
+  "merge_base": "1d7e4d3d3f284ec0dc5aaee55d5df1a9b0b20116",
+  "runner": "poetry",
+  "started_at": "2026-10-15T16:29:22Z",
+  "completed_at": "2026-10-15T16:35:26Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "notes": [
+    "Fresh run; the quarantined evidence/gates-interrupted-run-not-evidence logs were not used.",
+    "msgraph modules with full path >260 chars (deepest ~375) cannot be imported on this machine (the app does not import them at startup); pyroscope-io not installed (no C compiler); shared .venv additionally had exchangelib==5.6.0 pip-installed by the coordinator.",
+    "All pytest used C:/codemie-dev/_local/venv-16025/Scripts/python.exe (shared .venv is stale vs poetry.lock) with ENV=local PG_URL=postgresql://pg:pg123@localhost:111/postgres, -o addopts=--import-mode=importlib, no -n.",
+    "Blocking gates unit-targeted and router-guards fail ONLY with environment-caused failures (see per-test causes; absent private codemie-enterprise); all 17 unit-targeted failures and 1 of the 2 guard failures are proven identical on the baseline archive; the enterprise one is proven by an OpenAPI dump diff. Status stays BLOCKED per contract (FAIL is FAIL); caller decides.",
+    "No UI globs touched by the diff (only .py, .md, .json); no UI gate recorded.",
+    "No repo files were modified, staged or committed by this run (git status unchanged)."
+  ],
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "started_at": "2026-10-15T16:29:22Z",
+      "completed_at": "2026-10-15T16:29:23Z",
+      "duration_ms": 1000,
+      "command": "poetry run ruff check",
+      "exit_code": 0,
+      "log": "evidence/gates/lint.log",
+      "meta": "evidence/gates/lint.meta"
+    },
+    {
+      "id": "format",
+      "source": "hook",
+      "status": "PASS",
+      "started_at": "2026-10-15T16:29:31Z",
+      "completed_at": "2026-10-15T16:29:32Z",
+      "duration_ms": 1000,
+      "command": "poetry run ruff format --check src/codemie/core/models.py src/codemie/repository/application_repository.py src/codemie/repository/cli_analytics/ports.py src/codemie/repository/cli_analytics/postgres/ingestor.py src/codemie/repository/cli_analytics/postgres/otlp.py src/codemie/rest_api/models/project.py src/codemie/rest_api/routers/cli_analytics.py src/codemie/rest_api/routers/index/code_repositories.py src/codemie/rest_api/routers/projects/crud.py src/codemie/rest_api/routers/projects/management.py src/codemie/service/analytics/cli_analytics_project_gate.py src/codemie/service/project/cli_analytics_policy.py src/codemie/service/project/personal_project_service.py src/codemie/service/project/project_service.py src/codemie/service/project/project_visibility_service.py src/external/alembic/versions/a9c4e7b2d1f3_add_cli_analytics_enabled_to_applications.py tests/codemie/migrations/test_add_cli_analytics_enabled_to_applications.py tests/codemie/repository/cli_analytics/postgres/test_ingestor.py tests/codemie/repository/cli_analytics/postgres/test_otlp_explicit_projects.py tests/codemie/repository/cli_analytics/support/otlp_builders.py tests/codemie/repository/test_application_repository_extended.py tests/codemie/rest_api/routers/test_cli_analytics_ingest.py tests/codemie/rest_api/routers/test_cli_analytics_project_gate.py tests/codemie/rest_api/routers/test_cli_analytics_storage_wiring.py tests/codemie/rest_api/routers/test_projects_cli_analytics.py tests/codemie/service/analytics/test_cli_analytics_project_gate.py tests/codemie/service/project/test_cli_analytics_policy.py tests/codemie/service/project/test_personal_project_service.py tests/codemie/service/project/test_project_service.py tests/codemie/service/project/test_project_service_cli_analytics.py tests/codemie/service/project/test_project_service_delete_update.py tests/codemie/service/project/test_project_visibility_service.py",
+      "exit_code": 0,
+      "log": "evidence/gates/format.log",
+      "meta": "evidence/gates/format.meta",
+      "notes": "Non-mutating `ruff format --check` over the 32 changed .py files (hook _ruff_staged.sh equivalent). Mutating `make ruff` was NOT run. format.meta command line has a typo (33) corrected by a correction= line there; the literal command had 32 files."
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "started_at": "2026-10-15T16:29:40Z",
+      "completed_at": "2026-10-15T16:29:42Z",
+      "duration_ms": 2000,
+      "command": "make license-check",
+      "exit_code": 0,
+      "log": "evidence/gates/license.log",
+      "meta": "evidence/gates/license.meta"
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "started_at": "2026-10-15T16:29:55Z",
+      "completed_at": "2026-10-15T16:30:13Z",
+      "duration_ms": 18000,
+      "command": "make build",
+      "exit_code": 0,
+      "log": "evidence/gates/build.log",
+      "meta": "evidence/gates/build.meta",
+      "notes": "dist/ (gitignored) backed up to C:/codemie-dev/_local/tmp/dist-backup-16025-fresh before the build and restored with cp -p afterwards; md5s before == restored (build-dist-md5-before.txt, build-dist-md5-after-build.txt, build-dist-md5-restored.txt). The build overwrote the two same-named artifacts only; dist/ left as found."
+    },
+    {
+      "id": "commit-msg",
+      "source": "hook",
+      "status": "PASS",
+      "started_at": "2026-10-15T16:30:26Z",
+      "completed_at": "2026-10-15T16:30:26Z",
+      "duration_ms": 0,
+      "command": "git log --format=%s 1d7e4d3d3f284ec0dc5aaee55d5df1a9b0b20116..HEAD > commit-msg.subjects.txt; grep -vcE \"^EPMCDME-[0-9]+:\" commit-msg.subjects.txt",
+      "exit_code": 0,
+      "log": "evidence/gates/commit-msg.log",
+      "meta": "evidence/gates/commit-msg.meta",
+      "notes": "13 commits in 1d7e4d3d3..HEAD (including the doc/artifact commits); 0 subjects fail ^EPMCDME-[0-9]+: (grep -vc printed 0, exit 1 = no non-matching lines). Subjects in evidence/gates/commit-msg.subjects.txt."
+    },
+    {
+      "id": "unit-targeted",
+      "source": "guide",
+      "status": "FAIL",
+      "started_at": "2026-10-15T16:30:35Z",
+      "completed_at": "2026-10-15T16:32:10Z",
+      "duration_ms": 95000,
+      "command": "ENV=local PG_URL=postgresql://pg:pg123@localhost:111/postgres C:/codemie-dev/_local/venv-16025/Scripts/python.exe -m pytest -o addopts=\"--import-mode=importlib\" -p no:cacheprovider tests/codemie/service/project tests/codemie/repository/cli_analytics tests/codemie/service/analytics tests/codemie/migrations/test_add_cli_analytics_enabled_to_applications.py tests/codemie/rest_api/routers/test_cli_analytics_project_gate.py tests/codemie/rest_api/routers/test_cli_analytics_ingest.py tests/codemie/rest_api/routers/test_cli_analytics_storage_wiring.py tests/codemie/rest_api/routers/test_projects_cli_analytics.py tests/codemie/rest_api/routers/test_projects_router.py tests/codemie/rest_api/routers/test_index.py tests/codemie/rest_api/routers/test_index_git_faq.py tests/codemie/repository/test_application_repository_extended.py tests/codemie/service/user/test_authentication_service.py -q --tb=short",
+      "exit_code": 1,
+      "log": "evidence/gates/unit-targeted.log",
+      "meta": "evidence/gates/unit-targeted.meta",
+      "notes": "17 failed, 2396 passed, 15 skipped in 86.26s. All 17 failures also fail identically on the baseline archive (see baseline_comparison); environment-limited, none involve the branch changes. msgraph modules with full path >260 chars (deepest ~375) cannot be imported on this machine (the app does not import them at startup); pyroscope-io not installed (no C compiler); shared .venv additionally had exchangelib==5.6.0 pip-installed by the coordinator.",
+      "baseline_comparison": {
+        "baseline_ref": "1d7e4d3d3f284ec0dc5aaee55d5df1a9b0b20116",
+        "baseline_dir": "C:/codemie-dev/_local/tmp/base-qa-fresh (fresh git archive; .env copied from the repo; same interpreter and env)",
+        "baseline_command": "ENV=local PG_URL=postgresql://pg:pg123@localhost:111/postgres C:/codemie-dev/_local/venv-16025/Scripts/python.exe -m pytest -o addopts=\"--import-mode=importlib\" -p no:cacheprovider tests/codemie/repository/cli_analytics/postgres/test_dirty.py tests/codemie/repository/cli_analytics/postgres/test_settings.py tests/codemie/service/user/test_authentication_service.py -q --tb=short",
+        "baseline_log": "evidence/gates/unit-targeted.baseline.log",
+        "baseline_meta": "evidence/gates/unit-targeted.baseline.meta",
+        "baseline_started_at": "2026-10-15T16:32:46Z",
+        "baseline_completed_at": "2026-10-15T16:33:18Z",
+        "baseline_exit_code": 1,
+        "baseline_result": "17 failed, 224 passed (the three files that contain all 17 branch failures)",
+        "failed_id_sets_identical": true,
+        "touched_by_branch": "the three test files and the auth service are not in the branch diff; otlp.py is (39 insertions, 2 deletions) but the failing ns_to_datetime call is the same on the baseline archive",
+        "per_test": [
+          {
+            "ids": [
+              "tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_usage_row_at_the_edge_of_the_calendar_marks_only_its_own_day[0001-01-01]",
+              "tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_usage_row_at_the_edge_of_the_calendar_marks_only_its_own_day[9999-12-31]",
+              "tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.tool.start-0001-01-01]",
+              "tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.tool.start-9999-12-31]",
+              "tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.tool.end-0001-01-01]",
+              "tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.tool.end-9999-12-31]",
+              "tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.tool.error-0001-01-01]",
+              "tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.tool.error-9999-12-31]",
+              "tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.prompt.submit-0001-01-01]",
+              "tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.prompt.submit-9999-12-31]",
+              "tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.subagent.start-0001-01-01]",
+              "tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.subagent.start-9999-12-31]",
+              "tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.skill.dispatch-0001-01-01]",
+              "tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.skill.dispatch-9999-12-31]"
+            ],
+            "error_type_message": "OSError: [Errno 22] Invalid argument",
+            "branch_failing_frame": "src/codemie/repository/cli_analytics/postgres/otlp.py:453 ns_to_datetime -> datetime.fromtimestamp(ns // 1_000_000_000, tz=utc)",
+            "baseline_failing_frame": "src/codemie/repository/cli_analytics/postgres/otlp.py:448 ns_to_datetime -> same call (5-line shift is the branch's own otlp.py additions)",
+            "same_error_and_frame": true,
+            "cause": "likely the Windows datetime.fromtimestamp range limit at the calendar edges 0001/9999 (inference; identical on baseline)"
+          },
+          {
+            "ids": [
+              "tests/codemie/repository/cli_analytics/postgres/test_settings.py::test_the_pool_and_the_migrations_connect_as_the_same_user_to_the_same_database[overrides4-expected4]",
+              "tests/codemie/repository/cli_analytics/postgres/test_settings.py::test_the_pool_and_the_migrations_connect_as_the_same_user_to_the_same_database[overrides5-expected5]"
+            ],
+            "error_type_message": "AssertionError: ('u','p','/var/run',6432,'d') != (...,'/var/run/postgresql',...) [overrides4]; ('u','p','',6432,'d') != (...,'/tmp',...) [overrides5]",
+            "branch_failing_frame": "tests/codemie/repository/cli_analytics/postgres/test_settings.py:482",
+            "baseline_failing_frame": "tests/codemie/repository/cli_analytics/postgres/test_settings.py:482",
+            "same_error_and_frame": true,
+            "cause": "likely POSIX unix-socket directory semantics asserted on Windows (inference; identical on baseline)"
+          },
+          {
+            "ids": [
+              "tests/codemie/service/user/test_authentication_service.py::TestLoadUserForAuth::test_load_user_for_auth_found"
+            ],
+            "error_type_message": "AssertionError: assert True is False (result.is_admin)",
+            "branch_failing_frame": "tests/codemie/service/user/test_authentication_service.py:330",
+            "baseline_failing_frame": "tests/codemie/service/user/test_authentication_service.py:330",
+            "same_error_and_frame": true,
+            "cause": "not investigated; identical on the baseline archive"
+          }
+        ]
+      }
+    },
+    {
+      "id": "router-guards",
+      "source": "guide",
+      "status": "FAIL",
+      "started_at": "2026-10-15T16:33:30Z",
+      "completed_at": "2026-10-15T16:34:07Z",
+      "duration_ms": 37000,
+      "command": "ENV=local PG_URL=postgresql://pg:pg123@localhost:111/postgres TMP=C:\\codemie-dev\\_local\\tmp TEMP=C:\\codemie-dev\\_local\\tmp C:/codemie-dev/_local/venv-16025/Scripts/python.exe C:/codemie-dev/_local/cli-analytics-project-gate/run_guards.py pytest",
+      "exit_code": 1,
+      "log": "evidence/gates/router-guards.log",
+      "meta": "evidence/gates/router-guards.meta",
+      "notes": "2 failed, 44 passed. (1) test_openapi_matches_baseline fails only because codemie-enterprise is absent (24 LiteLLM proxy paths missing live; schema sets identical). (2) test_baseline::test_matching_live_object_passes is a Windows line-ending artefact and fails identically on the baseline archive. Both stay FAIL here; they need a machine with the enterprise package / non-Windows line endings to turn green. Wrapper run_guards.py is the audited scratch helper outside the repo (widens the guard child-process inherited env names); guard files in the repo were not edited. msgraph modules with full path >260 chars (deepest ~375) cannot be imported on this machine (the app does not import them at startup); pyroscope-io not installed (no C compiler); shared .venv additionally had exchangelib==5.6.0 pip-installed by the coordinator.",
+      "baseline_comparison": {
+        "baseline_ref": "1d7e4d3d3f284ec0dc5aaee55d5df1a9b0b20116",
+        "per_test": [
+          {
+            "id": "tests/codemie/rest_api/router_guards/test_baseline.py::test_matching_live_object_passes",
+            "error_type_message": "AssertionError: Live output differs from baseline (identical JSON text; every line differs only by line ending, CRLF vs LF)",
+            "branch_failing_frame": "tests/codemie/rest_api/router_guards/baseline.py:72 assert_matches_baseline (called from test_baseline.py:41)",
+            "baseline_failing_frame": "tests/codemie/rest_api/router_guards/baseline.py:72 assert_matches_baseline (called from test_baseline.py:41)",
+            "same_error_and_frame": true,
+            "baseline_command": "ENV=local PG_URL=postgresql://pg:pg123@localhost:111/postgres TMP=C:\\codemie-dev\\_local\\tmp TEMP=C:\\codemie-dev\\_local\\tmp C:/codemie-dev/_local/venv-16025/Scripts/python.exe -m pytest -o addopts=\"--import-mode=importlib\" -p no:cacheprovider tests/codemie/rest_api/router_guards/test_baseline.py::test_matching_live_object_passes -q --tb=short  (cwd C:/codemie-dev/_local/tmp/base-qa-fresh)",
+            "baseline_log": "evidence/gates/router-guards.baseline.log",
+            "baseline_meta": "evidence/gates/router-guards.baseline.meta",
+            "baseline_exit_code": 1,
+            "baseline_started_at": "2026-10-15T16:35:13Z",
+            "baseline_completed_at": "2026-10-15T16:35:21Z",
+            "verdict": "fails identically on baseline (Windows line-ending artefact of the guard's own tmp-file round trip; not caused by the branch)"
+          },
+          {
+            "id": "tests/codemie/rest_api/router_guards/test_openapi_snapshot.py::test_openapi_matches_baseline",
+            "error_type_message": "AssertionError: Live output differs from baseline openapi.json (24 enterprise LiteLLM proxy paths missing in live output)",
+            "branch_failing_frame": "tests/codemie/rest_api/router_guards/test_openapi_snapshot.py:32 -> baseline.py:72",
+            "baseline_run": "not run on the baseline archive; the claim is backed by a fresh OpenAPI dump diff instead (see evidence_files)",
+            "evidence": "evidence/gates/router-guards.openapi-compare.log: baseline file 470 paths vs live 446; the 24 paths exist only in the baseline file (all LiteLLM proxy routes: /chat/completions, /completions, /embeddings, /health, /messages, /models, /responses, /v1/..., /v1beta/...); 0 paths only in live; 0 shared paths with different content; schemas 615 vs 615 with 0 differing; no other top-level or components section differs. So the six cli_analytics_enabled schema additions the branch made to the baseline match the live output exactly.",
+            "enterprise_cause": "evidence/gates/router-guards.enterprise-check.log: codemie_enterprise is not installed in the interpreter (ModuleNotFoundError) and no llm_proxy route exists in src/",
+            "verdict": "FAIL on this machine only because the private codemie-enterprise package is absent; reproduction needs that package (CI/reviewer machine with it installed)"
+          }
+        ]
+      },
+      "evidence_files": [
+        "evidence/gates/router-guards.openapi-dump.log",
+        "evidence/gates/router-guards.openapi-compare.log",
+        "evidence/gates/router-guards.enterprise-check.log",
+        "evidence/gates/router-guards.baseline.log"
+      ]
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "SKIPPED",
+      "started_at": "2026-10-15T16:35:26Z",
+      "completed_at": "2026-10-15T16:35:26Z",
+      "duration_ms": 0,
+      "command": "make gitleaks",
+      "exit_code": 2,
+      "log": "evidence/gates/gitleaks.log",
+      "meta": "evidence/gates/gitleaks.meta",
+      "notes": "Guide: Skip if Docker is unavailable. Literal error: `/usr/bin/sh: line 1: docker: command not found` / `make: *** [Makefile:55: gitleaks] Error 127`; real exit code 2 (make). Nothing scanned; run on a machine with Docker (or Podman via the codemie-gitleaks hook) before the MR."
+    },
+    {
+      "id": "test",
+      "source": "guide",
+      "status": "SKIPPED",
+      "command": "make test",
+      "notes": "Heavy full-suite run (poetry run pytest tests/); user policy: ask before long runs. Substituted by the targeted unit-targeted and router-guards gates. Owed before the MR: the engineer opening the MR (the user / MR author) must run `make test`, `make test-harness` (paste summary into `## Test harness`), `make gitleaks` and `make sonar-local` where Docker/Sonar are available, plus a machine with codemie-enterprise installed to settle test_openapi_matches_baseline; the reviewer posts /sanity."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "SKIPPED",
+      "command": "make coverage",
+      "notes": "Heavy; not requested. Owed before the MR: the engineer opening the MR (the user / MR author) must run `make test`, `make test-harness` (paste summary into `## Test harness`), `make gitleaks` and `make sonar-local` where Docker/Sonar are available, plus a machine with codemie-enterprise installed to settle test_openapi_matches_baseline; the reviewer posts /sanity."
+    },
+    {
+      "id": "sonar-local",
+      "source": "guide",
+      "status": "SKIPPED",
+      "command": "make sonar-local",
+      "notes": "Needs Sonar config/token/network and coverage generation; not available/requested locally. Owed before the MR: the engineer opening the MR (the user / MR author) must run `make test`, `make test-harness` (paste summary into `## Test harness`), `make gitleaks` and `make sonar-local` where Docker/Sonar are available, plus a machine with codemie-enterprise installed to settle test_openapi_matches_baseline; the reviewer posts /sanity."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "SKIPPED",
+      "command": "make test-harness",
+      "notes": "Needs docker stack, superadmin fixtures and ~/.codemie/test-harness.json (docker absent); heavy end-to-end. Owed before the MR: the engineer opening the MR (the user / MR author) must run `make test`, `make test-harness` (paste summary into `## Test harness`), `make gitleaks` and `make sonar-local` where Docker/Sonar are available, plus a machine with codemie-enterprise installed to settle test_openapi_matches_baseline; the reviewer posts /sanity."
+    },
+    {
+      "id": "pre-push-pytest",
+      "source": "hook",
+      "status": "SKIPPED",
+      "command": "bash scripts/git-hooks/pre_push.sh",
+      "notes": "Hook runs full pytest + sonar-local only when CODEMIE_PREPUSH_ENABLED=true (default skips); same heavy gates as test/sonar-local. Owed before the MR: the engineer opening the MR (the user / MR author) must run `make test`, `make test-harness` (paste summary into `## Test harness`), `make gitleaks` and `make sonar-local` where Docker/Sonar are available, plus a machine with codemie-enterprise installed to settle test_openapi_matches_baseline; the reviewer posts /sanity."
+    },
+    {
+      "id": "gitlab-ci-pre-ci-guard",
+      "source": "ci",
+      "status": "N/A",
+      "command": ".gitlab-ci.yml (pre-ci-guard include; wait-ci-init waits for external contexts ci-pipeline, compliance-report)",
+      "notes": "No executable test/lint job in the file, only guards waiting on GitLab contexts, so there is nothing to run locally. Mismatch: quality-gates.md says the repo has no pipeline config, but .gitlab-ci.yml exists (pre-ci-guard only)."
+    }
+  ],
+  "failures": {
+    "unit-targeted": "  C:\\codemie-dev\\codemie\\tests\\codemie\\rest_api\\routers\\test_index.py:571: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    validate_json_file(filename, content)\n\ntests/codemie/rest_api/routers/test_index.py::test_missing_content_key\ntests/codemie/rest_api/routers/test_index.py::test_missing_metadata_key\ntests/codemie/rest_api/routers/test_index.py::test_invalid_json_format\n  C:\\codemie-dev\\_local\\venv-16025\\Lib\\site-packages\\_pytest\\python.py:157: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    result = testfunction(**testargs)\n\ntests/codemie/rest_api/routers/test_index.py::test_missing_metadata_key\n  C:\\codemie-dev\\codemie\\tests\\codemie\\rest_api\\routers\\test_index.py:582: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    validate_json_file(filename, content)\n\ntests/codemie/rest_api/routers/test_index.py::test_invalid_json_format\n  C:\\codemie-dev\\codemie\\tests\\codemie\\rest_api\\routers\\test_index.py:593: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    validate_json_file(filename, content)\n\ntests/codemie/rest_api/routers/test_index.py::test_post_file_datasource_zip_extraction_error_raises_422\ntests/codemie/rest_api/routers/test_index.py::test_update_jira_rejects_unknown_custom_field\ntests/codemie/rest_api/routers/test_index.py::test_get_jira_fields_unreachable_instance_returns_422\ntests/codemie/rest_api/routers/test_index_git_faq.py::test_update_faq_source_fields_require_full_reindex\ntests/codemie/rest_api/routers/test_index_git_faq.py::test_update_faq_project_change_requires_full_reindex\n  C:\\codemie-dev\\_local\\venv-16025\\Lib\\site-packages\\anyio\\_backends\\_asyncio.py:1100: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    result = context.run(func, *args)\n\ntests/codemie/rest_api/routers/test_index.py::test_update_jira_rejects_unknown_custom_field\ntests/codemie/rest_api/routers/test_index.py::test_get_jira_fields_unreachable_instance_returns_422\n  C:\\Users\\IvanKryzhanovskyi\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\unittest\\mock.py:1413: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    return await func(*newargs, **newkeywargs)\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ===========================\nFAILED tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_usage_row_at_the_edge_of_the_calendar_marks_only_its_own_day[0001-01-01]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_usage_row_at_the_edge_of_the_calendar_marks_only_its_own_day[9999-12-31]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.tool.start-0001-01-01]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.tool.start-9999-12-31]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.tool.end-0001-01-01]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.tool.end-9999-12-31]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.tool.error-0001-01-01]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.tool.error-9999-12-31]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.prompt.submit-0001-01-01]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.prompt.submit-9999-12-31]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.subagent.start-0001-01-01]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.subagent.start-9999-12-31]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.skill.dispatch-0001-01-01]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.skill.dispatch-9999-12-31]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_settings.py::test_the_pool_and_the_migrations_connect_as_the_same_user_to_the_same_database[overrides4-expected4]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_settings.py::test_the_pool_and_the_migrations_connect_as_the_same_user_to_the_same_database[overrides5-expected5]\nFAILED tests/codemie/service/user/test_authentication_service.py::TestLoadUserForAuth::test_load_user_for_auth_found\n17 failed, 2396 passed, 15 skipped, 16 warnings in 86.26s (0:01:26)",
+    "router-guards": "E   -          },\nE   -          {\nE   -            \"X-Bind-Key\": []\nE   -          }\nE   -        ],\nE   -        \"summary\": \"Llm Proxy Messages Count Tokens\",\nE   -        \"tags\": [\nE   -          \"LLM Proxy\"\nE   -        ]\nE   -      }\nE   -    },\nE   -    \"/models\": {\nE   -      \"get\": {\nE   -        \"operationId\": \"llm_proxy_models_models_get\",\nE   -        \"responses\": {\nE   -          \"200\": {\nE   -            \"content\": {\nE   -              \"application/json\": {\nE   -                \"schema\": {}\nE   -              }\nE   -            },\nE   -            \"description\": \"Successful Response\"\nE   -          }\nE   -        },\nE   -        \"security\": [\nE   -          {\nE   -            \"user-id\": []\nE   -          },\nE   -          {\nE   -            \"X-Bind-Key\": []\nE   -          }\nE   -        ],\nE   -        \"summary\": \"Llm Proxy Models\",\nE   -        \"tags\": [\nE   -          \"LLM Proxy\"\nE   -        ]\nE   -      }\nE   -    },\nE   -    \"/models/{model_name}:countTokens\": {\nE   -      \"post\": {\nE   -        \"operationId\": \"llm_proxy_models_model_name_countTokens_models__model_name__countTokens_post\",\nE   -        \"parameters\": [\nE   -          {\nE   \nE   ... diff truncated, 681 more line(s)\nE   If the change is intended and reviewed, regenerate the baseline manually with: python -m tests.codemie.rest_api.router_guards.regenerate_baselines\n=========================== short test summary info ===========================\nFAILED tests/codemie/rest_api/router_guards/test_baseline.py::test_matching_live_object_passes\nFAILED tests/codemie/rest_api/router_guards/test_openapi_snapshot.py::test_openapi_matches_baseline\n2 failed, 44 passed in 32.91s"
+  }
+}

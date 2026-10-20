@@ -394,6 +394,7 @@ class Application(BaseModelWithSQLSupport, Owned, table=True):
     cost_center_id: Optional[uuid.UUID] = SQLField(default=None, foreign_key="cost_centers.id", index=True)
     deleted_at: Optional[datetime] = SQLField(default=None)  # Soft-delete timestamp for project lifecycle
     chargeback_enabled: bool = SQLField(default=False, nullable=False)
+    cli_analytics_enabled: bool = SQLField(default=False, nullable=False)
     chargeback_attribution: str = SQLField(default="project", nullable=False)
     allowed_models: Optional[list[str]] = SQLField(default=None, sa_column=Column(ARRAY(SQLString)))
     default_model: Optional[str] = SQLField(default=None, max_length=255)

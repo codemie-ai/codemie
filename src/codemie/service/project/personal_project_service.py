@@ -225,6 +225,7 @@ class PersonalProjectService:
                 existing_app.project_type = Application.ProjectType.PERSONAL
                 existing_app.created_by = user_id
                 existing_app.description = f"Personal Project for {user_email}"
+                existing_app.cli_analytics_enabled = False  # personal projects never enable CLI analytics
                 session.add(existing_app)
                 await session.flush()
                 logger.debug(f"Converted application to personal: user_id={user_id}, project_type=personal")

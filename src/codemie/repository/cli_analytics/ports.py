@@ -73,6 +73,24 @@ class IngestResult:
     accepted: int | None = None
 
 
+# Decides, before anything is stored, whether a request is discarded. It receives every explicit
+# project value the request carries and answers the discard reason, or None to store the request.
+# It lives in the service layer (policy, access), which the adapter never imports; it may raise
+# TelemetryStorageUnavailableError when it cannot decide.
+#
+# A gate that accepts a request may also name the project it accepted it for, as the stored
+# (canonical) name, in a `canonical_project` attribute set when it answers None; read it with
+# `accepted_project`. The request may spell the project in another case than the stored name, and
+# attribution must follow the project that was found, not the spelling that was sent.
+IngestGate = Callable[[frozenset[str]], Awaitable[str | None]]
+
+
+def accepted_project(gate: IngestGate | None) -> str | None:
+    """The stored name of the project the gate accepted the request for, None when it names none."""
+    name = getattr(gate, "canonical_project", None)
+    return name if isinstance(name, str) and name else None
+
+
 class CliAnalyticsStorageConfigError(Exception):
     """The configured storage refuses its configuration; only fixing the configuration helps.
 
@@ -98,15 +116,24 @@ class TelemetryStorageUnavailableError(TelemetryIngestError):
 
 @runtime_checkable
 class CliTelemetryIngestor(Protocol):
-    async def ingest_otlp(self, signal: OtlpSignal, body: bytes, content_type: str) -> IngestResult:
-        """Store one OTLP/HTTP export request (`application/x-protobuf` or `application/json`)."""
+    async def ingest_otlp(
+        self, signal: OtlpSignal, body: bytes, content_type: str, gate: IngestGate | None = None
+    ) -> IngestResult:
+        """Store one OTLP/HTTP export request (`application/x-protobuf` or `application/json`).
+
+        A `gate` that answers a reason discards the request: nothing is stored and the answer is
+        the OTLP success response whose partial_success reports the records sent and the reason.
+        """
         ...
 
-    async def ingest_hook_events(self, events: list[dict], user_email: str, received_at_ns: int) -> IngestResult:
+    async def ingest_hook_events(
+        self, events: list[dict], user_email: str, received_at_ns: int, gate: IngestGate | None = None
+    ) -> IngestResult:
         """Store plugin hook events parsed from `/event-hooks` NDJSON.
 
         `user_email` is the authenticated sender; `received_at_ns` stands in for a missing
-        or unparseable event timestamp.
+        or unparseable event timestamp. A `gate` that answers a reason discards the events and the
+        answer is `{"accepted": 0, "dropped": N, "reason": ...}`.
         """
         ...
 

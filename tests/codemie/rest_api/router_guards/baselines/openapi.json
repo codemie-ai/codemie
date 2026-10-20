@@ -20585,6 +20585,17 @@
       },
       "ProjectCreateRequest": {
         "properties": {
+          "cli_analytics_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cli Analytics Enabled"
+          },
           "cost_center_id": {
             "anyOf": [
               {
@@ -20655,6 +20666,17 @@
             "default": false,
             "title": "Chargeback Enabled",
             "type": "boolean"
+          },
+          "cli_analytics_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cli Analytics Enabled"
           },
           "cost_center_id": {
             "anyOf": [
@@ -20782,6 +20804,17 @@
             "default": false,
             "title": "Chargeback Enabled",
             "type": "boolean"
+          },
+          "cli_analytics_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cli Analytics Enabled"
           },
           "cost_center_id": {
             "anyOf": [
@@ -21017,6 +21050,17 @@
             "default": false,
             "title": "Chargeback Enabled",
             "type": "boolean"
+          },
+          "cli_analytics_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cli Analytics Enabled"
           },
           "cost_center_id": {
             "anyOf": [
@@ -21351,6 +21395,17 @@
             "default": false,
             "title": "Clear Display Name",
             "type": "boolean"
+          },
+          "cli_analytics_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cli Analytics Enabled"
           },
           "cost_center_id": {
             "anyOf": [
@@ -34387,6 +34442,11 @@
           "chargeback_enabled": {
             "default": false,
             "title": "Chargeback Enabled",
+            "type": "boolean"
+          },
+          "cli_analytics_enabled": {
+            "default": false,
+            "title": "Cli Analytics Enabled",
             "type": "boolean"
           },
           "cost_center_id": {

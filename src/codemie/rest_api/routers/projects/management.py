@@ -36,6 +36,7 @@ from codemie.rest_api.routers.projects._common import (
 )
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
+from codemie.service.project import cli_analytics_policy
 from codemie.service.project.project_service import project_service
 from codemie.service.settings.settings import SettingsService
 
@@ -50,6 +51,11 @@ def update_project(
     user: User = Depends(authenticate),
 ):
     _ensure_user_management_enabled()
+    cli_analytics_policy.require_write(user, payload.model_fields_set)
+
+    optional_kwargs = {}
+    if payload.cli_analytics_enabled is not None:
+        optional_kwargs["cli_analytics_enabled"] = payload.cli_analytics_enabled
 
     project = project_service.update_project(
         user=user,
@@ -64,6 +70,7 @@ def update_project(
         enforce_member_spend_limits=payload.enforce_member_spend_limits,
         chargeback_enabled=payload.chargeback_enabled,
         chargeback_attribution=payload.chargeback_attribution,
+        **optional_kwargs,
     )
 
     return ProjectCreateResponse(
@@ -79,6 +86,9 @@ def update_project(
         chargeback_enabled=project.chargeback_enabled,
         chargeback_attribution=project.chargeback_attribution,
         allowed_models=getattr(project, "allowed_models", None),
+        cli_analytics_enabled=cli_analytics_policy.visible_value(
+            user, project.name, getattr(project, "cli_analytics_enabled", False)
+        ),
     )
 
 

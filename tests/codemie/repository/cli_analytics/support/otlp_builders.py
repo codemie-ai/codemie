@@ -139,10 +139,27 @@ def gauge_metric(name: str, points: list[NumberDataPoint]) -> Metric:
     return m
 
 
-def histogram_metric(name: str) -> Metric:
+def histogram_metric(name: str, attrs: dict | None = None) -> Metric:
     m = Metric(name=name)
     dp = m.histogram.data_points.add()
     dp.count = 1
+    dp.attributes.extend(key_values(attrs or {}))
+    return m
+
+
+def exponential_histogram_metric(name: str, attrs: dict | None = None) -> Metric:
+    m = Metric(name=name)
+    dp = m.exponential_histogram.data_points.add()
+    dp.count = 1
+    dp.attributes.extend(key_values(attrs or {}))
+    return m
+
+
+def summary_metric(name: str, attrs: dict | None = None) -> Metric:
+    m = Metric(name=name)
+    dp = m.summary.data_points.add()
+    dp.count = 1
+    dp.attributes.extend(key_values(attrs or {}))
     return m
 
 

@@ -1,0 +1,312 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-16025_cli-analytics-project-gate",
+  "head": "7d1febb016de580188db784f36f1f5dfdce34d07",
+  "merge_base": "1d7e4d3d3f284ec0dc5aaee55d5df1a9b0b20116",
+  "runner": "poetry",
+  "started_at": "2026-10-15T12:38:20Z",
+  "completed_at": "2026-10-15T12:45:07Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "started_at": "2026-10-15T12:38:20Z",
+      "completed_at": "2026-10-15T12:38:22Z",
+      "duration_ms": 1414,
+      "command": "poetry run ruff check",
+      "exit_code": 0,
+      "log": "evidence/gates/lint.log",
+      "notes": "Repo-wide, non-mutating 'ruff check'. Substitutes for the Run field 'make ruff' (ruff format + ruff check --fix + ruff check), which rewrites files; the format step is covered by the 'format' gate (check-only) and --fix was deliberately not run."
+    },
+    {
+      "id": "format",
+      "source": "guide",
+      "status": "PASS",
+      "started_at": "2026-10-15T12:38:22Z",
+      "completed_at": "2026-10-15T12:38:23Z",
+      "duration_ms": 1279,
+      "command": "poetry run ruff format --check src/codemie/core/models.py src/codemie/repository/application_repository.py src/codemie/repository/cli_analytics/ports.py src/codemie/repository/cli_analytics/postgres/ingestor.py src/codemie/repository/cli_analytics/postgres/otlp.py src/codemie/rest_api/models/project.py src/codemie/rest_api/routers/cli_analytics.py src/codemie/rest_api/routers/projects/crud.py src/codemie/rest_api/routers/projects/management.py src/codemie/service/analytics/cli_analytics_project_gate.py src/codemie/service/project/cli_analytics_policy.py src/codemie/service/project/personal_project_service.py src/codemie/service/project/project_service.py src/codemie/service/project/project_visibility_service.py src/external/alembic/versions/a9c4e7b2d1f3_add_cli_analytics_enabled_to_applications.py tests/codemie/migrations/test_add_cli_analytics_enabled_to_applications.py tests/codemie/repository/cli_analytics/postgres/test_ingestor.py tests/codemie/repository/cli_analytics/postgres/test_otlp_explicit_projects.py tests/codemie/repository/cli_analytics/support/otlp_builders.py tests/codemie/repository/test_application_repository_extended.py tests/codemie/rest_api/routers/test_cli_analytics_ingest.py tests/codemie/rest_api/routers/test_cli_analytics_project_gate.py tests/codemie/rest_api/routers/test_cli_analytics_storage_wiring.py tests/codemie/rest_api/routers/test_projects_cli_analytics.py tests/codemie/service/analytics/test_cli_analytics_project_gate.py tests/codemie/service/project/test_cli_analytics_policy.py tests/codemie/service/project/test_personal_project_service.py tests/codemie/service/project/test_project_service_cli_analytics.py tests/codemie/service/project/test_project_service_delete_update.py tests/codemie/service/project/test_project_visibility_service.py",
+      "exit_code": 0,
+      "log": "evidence/gates/format.log",
+      "notes": "Check-only equivalent of the 'ruff format' step of make ruff, limited to the 30 .py files changed since the merge base."
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "started_at": "2026-10-15T12:38:24Z",
+      "completed_at": "2026-10-15T12:38:27Z",
+      "duration_ms": 3662,
+      "command": "make license-check",
+      "exit_code": 0,
+      "log": "evidence/gates/license.log"
+    },
+    {
+      "id": "unit-targeted",
+      "source": "guide",
+      "status": "FAIL",
+      "started_at": "2026-10-15T12:38:36Z",
+      "completed_at": "2026-10-15T12:39:50Z",
+      "duration_ms": 73386,
+      "command": "ENV=local PG_URL=postgresql://pg:pg123@localhost:111/postgres poetry run pytest -o addopts=\"--import-mode=importlib\" tests/codemie/service/project tests/codemie/repository/cli_analytics tests/codemie/service/analytics tests/codemie/migrations/test_add_cli_analytics_enabled_to_applications.py tests/codemie/rest_api/routers/test_cli_analytics_project_gate.py tests/codemie/rest_api/routers/test_cli_analytics_ingest.py tests/codemie/rest_api/routers/test_cli_analytics_storage_wiring.py tests/codemie/rest_api/routers/test_projects_cli_analytics.py tests/codemie/rest_api/routers/test_projects_router.py tests/codemie/repository/test_application_repository_extended.py -q -p no:cacheprovider",
+      "exit_code": 1,
+      "log": "evidence/gates/unit-targeted.log",
+      "notes": "16 failed, 2244 passed, 15 skipped (pytest-reported 67.82s). Narrow path set only, in place of the full 'make test'. The test_authentication_service.py failure is outside this path set. All 16 failures plus test_authentication_service.py::TestLoadUserForAuth::test_load_user_for_auth_found were re-run on baseline 1d7e4d3d3: all 17 fail there with the same error and failing function (see baseline_comparison). Recorded FAIL per the exit code; the failures are not caused by this branch's diff, per that comparison."
+    },
+    {
+      "id": "commit-msg",
+      "source": "hook",
+      "status": "PASS",
+      "started_at": "2026-10-15T12:39:50Z",
+      "completed_at": "2026-10-15T12:39:50Z",
+      "duration_ms": 145,
+      "command": "git log --format=%s 1d7e4d3d3f284ec0dc5aaee55d5df1a9b0b20116..HEAD | grep -vE '^EPMCDME-[0-9]+:'",
+      "exit_code": 1,
+      "log": "evidence/gates/commit-msg.log",
+      "notes": "Expresses the scripts/git-hooks/commit_msg.sh rule (subject must match ^EPMCDME-[0-9]+:) over the branch commits. grep exit 1 with empty output = no commit subject violates the rule, so PASS. Not the hook script itself, which takes a message file."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "started_at": "2026-10-15T12:39:58Z",
+      "completed_at": "2026-10-15T12:40:13Z",
+      "duration_ms": 15225,
+      "command": "make build",
+      "exit_code": 0,
+      "log": "evidence/gates/build.log",
+      "notes": "Built codemie-0.8.0.tar.gz and codemie-0.8.0-py3-none-any.whl. dist/ (gitignored, .gitignore:27) already held same-named files from 2026-09-17, so the build overwrote them rather than adding new ones. Before building, they were copied to the session scratchpad; afterwards the originals were restored with cp -p and md5 verified identical to the pre-build state (wheel aad03a7b4e6e7e1f23c82127c93cfe7d, sdist 06d394a7973835413af690a940a56447; the freshly built files had md5 cbd6f38901423173c500f62b400ef35e and 86161e5fbf75d5a4b1f1c860308630a2). No new file was created in dist/. Listings: evidence/gates/build.dist-before.txt, evidence/gates/build.dist-after.txt (the latter shows the freshly built state, before restore)."
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "SKIPPED",
+      "started_at": "2026-10-15T12:45:06Z",
+      "completed_at": "2026-10-15T12:45:07Z",
+      "duration_ms": 178,
+      "command": "make gitleaks",
+      "exit_code": 2,
+      "log": "evidence/gates/gitleaks.log",
+      "notes": "Could not run: 'docker: command not found' (make exit 2), matching the guide's 'Skip if: Docker is unavailable'. Unverified, not passed. Owed by the MR author on a machine with Docker or Podman: run 'make gitleaks' (and the codemie-gitleaks pre-commit hook will hard-block a commit without a container engine) before the MR."
+    },
+    {
+      "id": "test",
+      "source": "guide",
+      "status": "SKIPPED",
+      "command": "make test",
+      "exit_code": null,
+      "notes": "Not run: full suite excluded by the caller's heavy-check policy (needs explicit user agreement). Replaced by unit-targeted. Owed by the MR author/user if the full suite is wanted before the MR; 'make verify' and the pre-push hook (CODEMIE_PREPUSH_ENABLED=true) also run it."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "SKIPPED",
+      "command": "make coverage",
+      "exit_code": null,
+      "notes": "Not run: not requested (guide: Skip if the user did not request coverage)."
+    },
+    {
+      "id": "sonar",
+      "source": "hook",
+      "status": "SKIPPED",
+      "command": "make sonar-local",
+      "exit_code": null,
+      "notes": "Not run: pre-push hook gate, opt-in via CODEMIE_PREPUSH_ENABLED=true; needs the full pytest coverage run plus Sonar config and credentials, excluded as heavy. Owed by the MR author with Sonar credentials."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "SKIPPED",
+      "command": "make test-harness",
+      "exit_code": null,
+      "notes": "Not run: needs the docker stack up (docker is not installed here) and exceeds the 5-minute budget. Required for the MR compliance bot: the MR author must run it with docker compose up -d, superadmin fixtures and ~/.codemie/test-harness.json, and paste the terminal summary into a '## Test harness' section of the MR description."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "N/A",
+      "command": "make verify",
+      "exit_code": null,
+      "notes": "Aggregate of ruff, license, gitleaks and test; each is reported individually above."
+    }
+  ],
+  "failures": {
+    "unit-targeted": "        # Read by the drivers' own parsers: SQLAlchemy passes a URL's database name on undecoded, and\n        # asyncpg dials the host part's (even an empty one) before a socket given as a parameter.\n        for name in (\"PGHOST\", \"PGPORT\", \"PGUSER\", \"PGPASSWORD\", \"PGDATABASE\", \"PGPASSFILE\"):\n            monkeypatch.delenv(name, raising=False)\n        s = AnalyticsPgSettings.from_config(_config(**overrides))\n    \n>       assert _asyncpg_reads(s.dsn, tmp_path / \"no-pgpass\") == expected\nE       AssertionError: assert ('u', 'p', '', 6432, 'd') == ('u', 'p', '/tmp', 6432, 'd')\nE         \nE         At index 2 diff: '' != '/tmp'\nE         Use -v to get more diff\n\ntests\\codemie\\repository\\cli_analytics\\postgres\\test_settings.py:482: AssertionError\n============================== warnings summary ===============================\n.venv\\Lib\\site-packages\\_pytest\\config\\__init__.py:1441\n  C:\\codemie-dev\\codemie\\.venv\\Lib\\site-packages\\_pytest\\config\\__init__.py:1441: PytestConfigWarning: Unknown config option: asyncio_default_fixture_loop_scope\n  \n    self._warn_or_fail_if_strict(f\"Unknown config option: {key}\\n\")\n\n.venv\\Lib\\site-packages\\google\\auth\\transport\\grpc.py:44\n  C:\\codemie-dev\\codemie\\.venv\\Lib\\site-packages\\google\\auth\\transport\\grpc.py:44: FutureWarning: grpcio < 1.83.0 does not support Post-Quantum Cryptography (PQC). Support for non-PQC environments is deprecated. In October 2026, google-auth will raise its minimum requirements to enforce grpcio >= 1.83.0. For more details on Google Cloud's post-quantum security migration, visit: https://cloud.google.com/security/resources/post-quantum-cryptography\n    warnings.warn(\n\n.venv\\Lib\\site-packages\\langgraph\\cache\\base\\__init__.py:8\n  C:\\codemie-dev\\codemie\\.venv\\Lib\\site-packages\\langgraph\\cache\\base\\__init__.py:8: LangChainPendingDeprecationWarning: The default value of `allowed_objects` will change in a future version. Pass an explicit value (e.g., allowed_objects='messages' or allowed_objects='core') to suppress this warning.\n    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer\n\n.venv\\Lib\\site-packages\\fastapi\\testclient.py:1\n  C:\\codemie-dev\\codemie\\.venv\\Lib\\site-packages\\fastapi\\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.\n    from starlette.testclient import TestClient as TestClient  # noqa\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ===========================\nFAILED tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_usage_row_at_the_edge_of_the_calendar_marks_only_its_own_day[0001-01-01]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_usage_row_at_the_edge_of_the_calendar_marks_only_its_own_day[9999-12-31]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.tool.start-0001-01-01]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.tool.start-9999-12-31]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.tool.end-0001-01-01]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.tool.end-9999-12-31]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.tool.error-0001-01-01]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.tool.error-9999-12-31]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.prompt.submit-0001-01-01]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.prompt.submit-9999-12-31]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.subagent.start-0001-01-01]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.subagent.start-9999-12-31]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.skill.dispatch-0001-01-01]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.skill.dispatch-9999-12-31]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_settings.py::test_the_pool_and_the_migrations_connect_as_the_same_user_to_the_same_database[overrides4-expected4]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_settings.py::test_the_pool_and_the_migrations_connect_as_the_same_user_to_the_same_database[overrides5-expected5]\n16 failed, 2244 passed, 15 skipped, 4 warnings in 67.82s (0:01:07)"
+  },
+  "baseline_comparison": {
+    "unit-targeted": {
+      "baseline_commit": "1d7e4d3d3f284ec0dc5aaee55d5df1a9b0b20116",
+      "baseline_tree": "git archive of the baseline commit extracted to the session scratchpad (no .git); same .venv python (C:/codemie-dev/codemie/.venv/Scripts/python.exe), same .env (md5 da2ab54f858401bc402c993d83838777 on both sides), same ENV/PG_URL, rootdir-relative pythonpath=src so the baseline src is what was imported (src/codemie/service/project/project_service.py verified to differ from the branch copy).",
+      "branch_command": "cd C:/codemie-dev/codemie && export ENV=local PG_URL=postgresql://pg:pg123@localhost:111/postgres && poetry run pytest -o addopts=\"--import-mode=importlib\" \"tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_usage_row_at_the_edge_of_the_calendar_marks_only_its_own_day[0001-01-01]\" \"tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_usage_row_at_the_edge_of_the_calendar_marks_only_its_own_day[9999-12-31]\" \"tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.tool.start-0001-01-01]\" \"tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.tool.start-9999-12-31]\" \"tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.tool.end-0001-01-01]\" \"tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.tool.end-9999-12-31]\" \"tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.tool.error-0001-01-01]\" \"tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.tool.error-9999-12-31]\" \"tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.prompt.submit-0001-01-01]\" \"tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.prompt.submit-9999-12-31]\" \"tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.subagent.start-0001-01-01]\" \"tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.subagent.start-9999-12-31]\" \"tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.skill.dispatch-0001-01-01]\" \"tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.skill.dispatch-9999-12-31]\" \"tests/codemie/repository/cli_analytics/postgres/test_settings.py::test_the_pool_and_the_migrations_connect_as_the_same_user_to_the_same_database[overrides4-expected4]\" \"tests/codemie/repository/cli_analytics/postgres/test_settings.py::test_the_pool_and_the_migrations_connect_as_the_same_user_to_the_same_database[overrides5-expected5]\" \"tests/codemie/service/user/test_authentication_service.py::TestLoadUserForAuth::test_load_user_for_auth_found\" -q --tb=short -p no:cacheprovider",
+      "baseline_command": "export ENV=local PG_URL=postgresql://pg:pg123@localhost:111/postgres && cd C:/Users/IVANKR~1/AppData/Local/Temp/claude/C--codemie-dev-codemie/8ebd0275-0c0a-4f51-aebc-55479d32136f/scratchpad/base && C:/codemie-dev/codemie/.venv/Scripts/python.exe -m pytest -o addopts=\"--import-mode=importlib\" \"tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_usage_row_at_the_edge_of_the_calendar_marks_only_its_own_day[0001-01-01]\" \"tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_usage_row_at_the_edge_of_the_calendar_marks_only_its_own_day[9999-12-31]\" \"tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.tool.start-0001-01-01]\" \"tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.tool.start-9999-12-31]\" \"tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.tool.end-0001-01-01]\" \"tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.tool.end-9999-12-31]\" \"tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.tool.error-0001-01-01]\" \"tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.tool.error-9999-12-31]\" \"tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.prompt.submit-0001-01-01]\" \"tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.prompt.submit-9999-12-31]\" \"tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.subagent.start-0001-01-01]\" \"tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.subagent.start-9999-12-31]\" \"tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.skill.dispatch-0001-01-01]\" \"tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.skill.dispatch-9999-12-31]\" \"tests/codemie/repository/cli_analytics/postgres/test_settings.py::test_the_pool_and_the_migrations_connect_as_the_same_user_to_the_same_database[overrides4-expected4]\" \"tests/codemie/repository/cli_analytics/postgres/test_settings.py::test_the_pool_and_the_migrations_connect_as_the_same_user_to_the_same_database[overrides5-expected5]\" \"tests/codemie/service/user/test_authentication_service.py::TestLoadUserForAuth::test_load_user_for_auth_found\" -q --tb=short -p no:cacheprovider",
+      "branch_result": "17 failed in 11.69s",
+      "baseline_result": "17 failed in 12.81s",
+      "branch_log": "evidence/gates/unit-targeted.branch-failing-ids.log",
+      "baseline_log": "evidence/gates/unit-targeted.baseline.log",
+      "comparison_rule": "identical = same first/all 'E' error lines (UUIDs in object reprs normalised) and same failing module+function (line numbers ignored, since src lines shift on the branch); anything else = different",
+      "tests_passing_on_baseline": 0,
+      "authentication_service_file_on_branch": "whole tests/codemie/service/user/test_authentication_service.py on the branch: 1 failed, 53 passed (log: evidence/gates/test_authentication_service.branch.log); the single failure is the compared test id",
+      "verdict_counts": {
+        "identical": 17
+      },
+      "overall_verdict": "identical",
+      "per_test": [
+        {
+          "id": "tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_usage_row_at_the_edge_of_the_calendar_marks_only_its_own_day[0001-01-01]",
+          "branch_error": "OSError: [Errno 22] Invalid argument",
+          "baseline_error": "OSError: [Errno 22] Invalid argument",
+          "branch_failing_frame": "src\\codemie\\repository\\cli_analytics\\postgres\\otlp.py: in ns_to_datetime",
+          "baseline_failing_frame": "src\\codemie\\repository\\cli_analytics\\postgres\\otlp.py: in ns_to_datetime",
+          "verdict": "identical"
+        },
+        {
+          "id": "tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_usage_row_at_the_edge_of_the_calendar_marks_only_its_own_day[9999-12-31]",
+          "branch_error": "OSError: [Errno 22] Invalid argument",
+          "baseline_error": "OSError: [Errno 22] Invalid argument",
+          "branch_failing_frame": "src\\codemie\\repository\\cli_analytics\\postgres\\otlp.py: in ns_to_datetime",
+          "baseline_failing_frame": "src\\codemie\\repository\\cli_analytics\\postgres\\otlp.py: in ns_to_datetime",
+          "verdict": "identical"
+        },
+        {
+          "id": "tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.tool.start-0001-01-01]",
+          "branch_error": "OSError: [Errno 22] Invalid argument",
+          "baseline_error": "OSError: [Errno 22] Invalid argument",
+          "branch_failing_frame": "src\\codemie\\repository\\cli_analytics\\postgres\\otlp.py: in ns_to_datetime",
+          "baseline_failing_frame": "src\\codemie\\repository\\cli_analytics\\postgres\\otlp.py: in ns_to_datetime",
+          "verdict": "identical"
+        },
+        {
+          "id": "tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.tool.start-9999-12-31]",
+          "branch_error": "OSError: [Errno 22] Invalid argument",
+          "baseline_error": "OSError: [Errno 22] Invalid argument",
+          "branch_failing_frame": "src\\codemie\\repository\\cli_analytics\\postgres\\otlp.py: in ns_to_datetime",
+          "baseline_failing_frame": "src\\codemie\\repository\\cli_analytics\\postgres\\otlp.py: in ns_to_datetime",
+          "verdict": "identical"
+        },
+        {
+          "id": "tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.tool.end-0001-01-01]",
+          "branch_error": "OSError: [Errno 22] Invalid argument",
+          "baseline_error": "OSError: [Errno 22] Invalid argument",
+          "branch_failing_frame": "src\\codemie\\repository\\cli_analytics\\postgres\\otlp.py: in ns_to_datetime",
+          "baseline_failing_frame": "src\\codemie\\repository\\cli_analytics\\postgres\\otlp.py: in ns_to_datetime",
+          "verdict": "identical"
+        },
+        {
+          "id": "tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.tool.end-9999-12-31]",
+          "branch_error": "OSError: [Errno 22] Invalid argument",
+          "baseline_error": "OSError: [Errno 22] Invalid argument",
+          "branch_failing_frame": "src\\codemie\\repository\\cli_analytics\\postgres\\otlp.py: in ns_to_datetime",
+          "baseline_failing_frame": "src\\codemie\\repository\\cli_analytics\\postgres\\otlp.py: in ns_to_datetime",
+          "verdict": "identical"
+        },
+        {
+          "id": "tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.tool.error-0001-01-01]",
+          "branch_error": "OSError: [Errno 22] Invalid argument",
+          "baseline_error": "OSError: [Errno 22] Invalid argument",
+          "branch_failing_frame": "src\\codemie\\repository\\cli_analytics\\postgres\\otlp.py: in ns_to_datetime",
+          "baseline_failing_frame": "src\\codemie\\repository\\cli_analytics\\postgres\\otlp.py: in ns_to_datetime",
+          "verdict": "identical"
+        },
+        {
+          "id": "tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.tool.error-9999-12-31]",
+          "branch_error": "OSError: [Errno 22] Invalid argument",
+          "baseline_error": "OSError: [Errno 22] Invalid argument",
+          "branch_failing_frame": "src\\codemie\\repository\\cli_analytics\\postgres\\otlp.py: in ns_to_datetime",
+          "baseline_failing_frame": "src\\codemie\\repository\\cli_analytics\\postgres\\otlp.py: in ns_to_datetime",
+          "verdict": "identical"
+        },
+        {
+          "id": "tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.prompt.submit-0001-01-01]",
+          "branch_error": "OSError: [Errno 22] Invalid argument",
+          "baseline_error": "OSError: [Errno 22] Invalid argument",
+          "branch_failing_frame": "src\\codemie\\repository\\cli_analytics\\postgres\\otlp.py: in ns_to_datetime",
+          "baseline_failing_frame": "src\\codemie\\repository\\cli_analytics\\postgres\\otlp.py: in ns_to_datetime",
+          "verdict": "identical"
+        },
+        {
+          "id": "tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.prompt.submit-9999-12-31]",
+          "branch_error": "OSError: [Errno 22] Invalid argument",
+          "baseline_error": "OSError: [Errno 22] Invalid argument",
+          "branch_failing_frame": "src\\codemie\\repository\\cli_analytics\\postgres\\otlp.py: in ns_to_datetime",
+          "baseline_failing_frame": "src\\codemie\\repository\\cli_analytics\\postgres\\otlp.py: in ns_to_datetime",
+          "verdict": "identical"
+        },
+        {
+          "id": "tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.subagent.start-0001-01-01]",
+          "branch_error": "OSError: [Errno 22] Invalid argument",
+          "baseline_error": "OSError: [Errno 22] Invalid argument",
+          "branch_failing_frame": "src\\codemie\\repository\\cli_analytics\\postgres\\otlp.py: in ns_to_datetime",
+          "baseline_failing_frame": "src\\codemie\\repository\\cli_analytics\\postgres\\otlp.py: in ns_to_datetime",
+          "verdict": "identical"
+        },
+        {
+          "id": "tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.subagent.start-9999-12-31]",
+          "branch_error": "OSError: [Errno 22] Invalid argument",
+          "baseline_error": "OSError: [Errno 22] Invalid argument",
+          "branch_failing_frame": "src\\codemie\\repository\\cli_analytics\\postgres\\otlp.py: in ns_to_datetime",
+          "baseline_failing_frame": "src\\codemie\\repository\\cli_analytics\\postgres\\otlp.py: in ns_to_datetime",
+          "verdict": "identical"
+        },
+        {
+          "id": "tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.skill.dispatch-0001-01-01]",
+          "branch_error": "OSError: [Errno 22] Invalid argument",
+          "baseline_error": "OSError: [Errno 22] Invalid argument",
+          "branch_failing_frame": "src\\codemie\\repository\\cli_analytics\\postgres\\otlp.py: in ns_to_datetime",
+          "baseline_failing_frame": "src\\codemie\\repository\\cli_analytics\\postgres\\otlp.py: in ns_to_datetime",
+          "verdict": "identical"
+        },
+        {
+          "id": "tests/codemie/repository/cli_analytics/postgres/test_dirty.py::test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day[agent.skill.dispatch-9999-12-31]",
+          "branch_error": "OSError: [Errno 22] Invalid argument",
+          "baseline_error": "OSError: [Errno 22] Invalid argument",
+          "branch_failing_frame": "src\\codemie\\repository\\cli_analytics\\postgres\\otlp.py: in ns_to_datetime",
+          "baseline_failing_frame": "src\\codemie\\repository\\cli_analytics\\postgres\\otlp.py: in ns_to_datetime",
+          "verdict": "identical"
+        },
+        {
+          "id": "tests/codemie/repository/cli_analytics/postgres/test_settings.py::test_the_pool_and_the_migrations_connect_as_the_same_user_to_the_same_database[overrides4-expected4]",
+          "branch_error": "AssertionError: assert ('u', 'p', '/...n', 6432, 'd') == ('u', 'p', '/...l', 6432, 'd')",
+          "baseline_error": "AssertionError: assert ('u', 'p', '/...n', 6432, 'd') == ('u', 'p', '/...l', 6432, 'd')",
+          "branch_failing_frame": "tests\\codemie\\repository\\cli_analytics\\postgres\\test_settings.py: in test_the_pool_and_the_migrations_connect_as_the_same_user_to_the_same_database",
+          "baseline_failing_frame": "tests\\codemie\\repository\\cli_analytics\\postgres\\test_settings.py: in test_the_pool_and_the_migrations_connect_as_the_same_user_to_the_same_database",
+          "verdict": "identical"
+        },
+        {
+          "id": "tests/codemie/repository/cli_analytics/postgres/test_settings.py::test_the_pool_and_the_migrations_connect_as_the_same_user_to_the_same_database[overrides5-expected5]",
+          "branch_error": "AssertionError: assert ('u', 'p', '', 6432, 'd') == ('u', 'p', '/tmp', 6432, 'd')",
+          "baseline_error": "AssertionError: assert ('u', 'p', '', 6432, 'd') == ('u', 'p', '/tmp', 6432, 'd')",
+          "branch_failing_frame": "tests\\codemie\\repository\\cli_analytics\\postgres\\test_settings.py: in test_the_pool_and_the_migrations_connect_as_the_same_user_to_the_same_database",
+          "baseline_failing_frame": "tests\\codemie\\repository\\cli_analytics\\postgres\\test_settings.py: in test_the_pool_and_the_migrations_connect_as_the_same_user_to_the_same_database",
+          "verdict": "identical"
+        },
+        {
+          "id": "tests/codemie/service/user/test_authentication_service.py::TestLoadUserForAuth::test_load_user_for_auth_found",
+          "branch_error": "AssertionError: assert True is False",
+          "baseline_error": "AssertionError: assert True is False",
+          "branch_failing_frame": "tests\\codemie\\service\\user\\test_authentication_service.py: in test_load_user_for_auth_found",
+          "baseline_failing_frame": "tests\\codemie\\service\\user\\test_authentication_service.py: in test_load_user_for_auth_found",
+          "verdict": "identical"
+        }
+      ],
+      "failing_ids_file": "evidence/gates/unit-targeted.failing-ids.txt"
+    }
+  },
+  "evidence": [
+    "evidence/gates/build.dist-after.txt",
+    "evidence/gates/build.dist-before.txt",
+    "evidence/gates/build.log",
+    "evidence/gates/commit-msg.log",
+    "evidence/gates/format.log",
+    "evidence/gates/gate-plan.json",
+    "evidence/gates/gitleaks.log",
+    "evidence/gates/license.log",
+    "evidence/gates/lint.log",
+    "evidence/gates/test_authentication_service.branch.log",
+    "evidence/gates/unit-targeted.baseline.log",
+    "evidence/gates/unit-targeted.branch-failing-ids.log",
+    "evidence/gates/unit-targeted.log"
+  ]
+}

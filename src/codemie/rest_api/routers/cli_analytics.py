@@ -55,11 +55,13 @@ from fastapi.responses import JSONResponse
 
 from codemie.configs.config import config
 from codemie.configs.customer_config import customer_config
+from codemie.core.constants import HEADER_CODEMIE_CLI_PROJECT
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.repository.cli_analytics.factory import get_cli_analytics_storage
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
 from codemie.repository.cli_analytics.hook_events import datetime_to_ns
 from codemie.repository.cli_analytics.ports import (
+    IngestGate,
     IngestResult,
     InvalidTelemetryPayloadError,
     OtlpSignal,
@@ -83,6 +85,7 @@ from codemie.rest_api.models.cli_analytics import (
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
 from codemie.service.analytics.access_filter import AccessFilter
+from codemie.service.analytics.cli_analytics_project_gate import build_ingest_gate
 from codemie.service.analytics.delivery_framework import get_framework_labels
 from codemie.service.analytics.handlers.cli_analytics_handler import LocalAnalyticsHandler, now_iso
 from codemie.service.analytics.handlers.user_identity_resolver import UserIdentityResolver
@@ -144,6 +147,11 @@ def _ensure_enabled() -> None:
         )
 
 
+def _project_gate(request: Request) -> IngestGate:
+    """Discards what the sender's project (X-CodeMie-Project) does not allow to store."""
+    return build_ingest_gate(request.state.user, request.headers.get(HEADER_CODEMIE_CLI_PROJECT))
+
+
 def _ingest_response(result: IngestResult) -> Response:
     return Response(content=result.body, status_code=200, media_type=result.media_type)
 
@@ -159,7 +167,9 @@ async def _ingest_otlp(request: Request, signal: OtlpSignal) -> Response:
         raise HTTPException(status_code=413, detail=_ERR_BODY_TOO_LARGE)
     content_type = request.headers.get("content-type", _PROTOBUF_CONTENT_TYPE)
     try:
-        result = await get_cli_analytics_storage().ingestor.ingest_otlp(signal, body, content_type)
+        result = await get_cli_analytics_storage().ingestor.ingest_otlp(
+            signal, body, content_type, gate=_project_gate(request)
+        )
     except TelemetryIngestError as exc:
         raise _ingest_http_error(exc) from exc
     except CliAnalyticsStorageConfigError as exc:  # retried by the client until the configuration is fixed
@@ -373,7 +383,9 @@ async def ingest_event_hooks(request: Request) -> Response:
     user = getattr(request.state, "user", None)
     user_email = user.email if user and user.email else ""
     try:
-        result = await get_cli_analytics_storage().ingestor.ingest_hook_events(events, user_email, now_ns)
+        result = await get_cli_analytics_storage().ingestor.ingest_hook_events(
+            events, user_email, now_ns, gate=_project_gate(request)
+        )
     except TelemetryIngestError as exc:
         raise _ingest_http_error(exc) from exc
     except CliAnalyticsStorageConfigError as exc:

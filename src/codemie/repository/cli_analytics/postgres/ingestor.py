@@ -44,9 +44,11 @@ from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import ExportM
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceResponse
 
 from codemie.repository.cli_analytics.ports import (
+    IngestGate,
     IngestResult,
     OtlpSignal,
     TelemetryStorageUnavailableError,
+    accepted_project,
 )
 from codemie.repository.cli_analytics.postgres.dirty import dirty_keys
 from codemie.repository.cli_analytics.postgres.engine import AnalyticsPgEngine
@@ -181,18 +183,29 @@ def _columns(rows: Sequence[tuple]) -> list[list[Any]]:
     return [list(column) for column in zip(*(row[2:] for row in rows), strict=True)]
 
 
-def _otlp_message(signal: OtlpSignal, rejected: int) -> Any:
+def _otlp_message(signal: OtlpSignal, rejected: int, message: str = _REJECTED_MESSAGE) -> Any:
     response_type, field_name = _OTLP_RESPONSES[signal]
     response = response_type()
     if rejected:
         setattr(response.partial_success, field_name, rejected)
-        response.partial_success.error_message = _REJECTED_MESSAGE
+        response.partial_success.error_message = message
     return response
 
 
 def otlp_response(signal: OtlpSignal, rejected: int) -> bytes:
     """The Export*ServiceResponse, encoded: no bytes at all unless records were rejected."""
     return _otlp_message(signal, rejected).SerializeToString()
+
+
+def _otlp_result(
+    signal: OtlpSignal, content_type: str, rejected: int, stored: int, message: str = _REJECTED_MESSAGE
+) -> IngestResult:
+    """The OTLP answer, in the media type the request used."""
+    response = _otlp_message(signal, rejected, message)
+    if content_type.split(";", 1)[0].strip().lower() == JSON_MEDIA_TYPE:
+        body = json_format.MessageToJson(response, indent=None).encode()
+        return IngestResult(body=body, media_type=JSON_MEDIA_TYPE, accepted=stored)
+    return IngestResult(body=response.SerializeToString(), media_type=_PROTOBUF_RESPONSE_MEDIA_TYPE, accepted=stored)
 
 
 def _subset(batch: DecodedBatch, records: list[tuple[str, Any]]) -> DecodedBatch:
@@ -228,6 +241,30 @@ def _keep_fresh(batch: DecodedBatch, fresh: set[tuple]) -> DecodedBatch:
     return _subset(batch, records)
 
 
+def _attributed_to(batch: DecodedBatch, project: str | None) -> DecodedBatch:
+    """Store the hook rows' project under the name the gate accepted the request for (EPMCDME-16077).
+
+    The gate matches the project case-insensitively, so an accepted request may spell it in another case
+    than its stored name; the session's project (and with it the project views, the filter and the
+    project admin's access) follows that stored name. A row without a project gets it too: the request's
+    project context (X-CodeMie-Project) is the session's project, and the CLI leaves the field empty when
+    it cannot resolve it. Only the project column of rows that name the accepted project or none is
+    replaced. Nothing else of the batch changes: the identity of a record is computed from the event as
+    sent, and the other attributes are stored as received.
+    """
+    if project is None:
+        return batch
+    wanted = project.lower()
+    batch.hooks = [
+        row._replace(codemie_project_name=project)
+        if row.codemie_project_name != project
+        and (not (row.codemie_project_name or "").strip() or row.codemie_project_name.lower() == wanted)
+        else row
+        for row in batch.hooks
+    ]
+    return batch
+
+
 class PostgresTelemetryIngestor:
     """The PostgreSQL `CliTelemetryIngestor`."""
 
@@ -245,23 +282,27 @@ class PostgresTelemetryIngestor:
         self._today = clock or (lambda: datetime.now(timezone.utc).date())
         self._known_resources: dict[int, date] = {}  # resource id -> the day this process stored it
 
-    async def ingest_otlp(self, signal: OtlpSignal, body: bytes, content_type: str) -> IngestResult:
+    async def ingest_otlp(
+        self, signal: OtlpSignal, body: bytes, content_type: str, gate: IngestGate | None = None
+    ) -> IngestResult:
         batch = await self._decode(lambda: decode_otlp(signal, body, content_type), len(body))
-        stored, rejected = await self._store(batch)
-        if content_type.split(";", 1)[0].strip().lower() == JSON_MEDIA_TYPE:
-            response = json_format.MessageToJson(_otlp_message(signal, rejected), indent=None)
-            return IngestResult(body=response.encode(), media_type=JSON_MEDIA_TYPE, accepted=stored)
-        return IngestResult(
-            body=otlp_response(signal, rejected), media_type=_PROTOBUF_RESPONSE_MEDIA_TYPE, accepted=stored
-        )
+        if gate is not None and (reason := await gate(frozenset(batch.explicit_projects))):
+            return _otlp_result(signal, content_type, batch.wire_count, 0, reason)
+        stored, rejected = await self._store(_attributed_to(batch, accepted_project(gate)))
+        return _otlp_result(signal, content_type, rejected, stored)
 
-    async def ingest_hook_events(self, events: list[dict], user_email: str, received_at_ns: int) -> IngestResult:
+    async def ingest_hook_events(
+        self, events: list[dict], user_email: str, received_at_ns: int, gate: IngestGate | None = None
+    ) -> IngestResult:
         decode = lambda: decode_hook_events(events, user_email, received_at_ns)  # noqa: E731
         if len(events) > self._decode_in_thread_above_events:
             batch = await asyncio.to_thread(decode)
         else:
             batch = decode()
-        stored, _rejected = await self._store(batch)
+        if gate is not None and (reason := await gate(frozenset(batch.explicit_projects))):
+            discarded = {"accepted": 0, "dropped": batch.wire_count, "reason": reason}
+            return IngestResult(body=json_text(discarded).encode(), media_type=JSON_MEDIA_TYPE, accepted=0)
+        stored, _rejected = await self._store(_attributed_to(batch, accepted_project(gate)))
         return IngestResult(body=b"{}", media_type=JSON_MEDIA_TYPE, accepted=stored)
 
     async def _decode(self, decode: Callable[[], DecodedBatch], size: int) -> DecodedBatch:

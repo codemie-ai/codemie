@@ -18,7 +18,7 @@ from datetime import datetime
 from typing import Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, model_serializer, model_validator
 
 from codemie.service.budget.budget_enums import BudgetCategory
 
@@ -96,7 +96,25 @@ class ProjectSpendingWidget(BaseModel):
     data: SpendingWidgetData
 
 
-class ProjectListItem(BaseModel):
+class _CliAnalyticsViewMixin(BaseModel):
+    """cli_analytics_enabled is exposed only to authorized viewers (EPMCDME-16025).
+
+    Routers set a value only for them; for everyone else it stays None and the key is dropped from the
+    serialized response, so a Pydantic default can never leak to a viewer without access.
+    """
+
+    cli_analytics_enabled: Optional[bool] = None
+
+    @model_serializer(mode="wrap")
+    # No return annotation on purpose: a declared one would replace the OpenAPI response schema.
+    def _omit_cli_analytics_when_hidden(self, handler: SerializerFunctionWrapHandler):
+        data = handler(self)
+        if data.get("cli_analytics_enabled") is None:
+            data.pop("cli_analytics_enabled", None)
+        return data
+
+
+class ProjectListItem(_CliAnalyticsViewMixin):
     """Project list response item with member counts (Story 16)"""
 
     name: str
@@ -157,7 +175,7 @@ class ProjectMember(BaseModel):
     date: Optional[datetime] = None
 
 
-class ProjectDetailResponse(BaseModel):
+class ProjectDetailResponse(_CliAnalyticsViewMixin):
     """Project detail response with member list (Story 16)"""
 
     name: str
@@ -185,9 +203,10 @@ class ProjectCreateRequest(BaseModel):
     display_name: Optional[str] = None
     description: Optional[str] = None
     cost_center_id: Optional[UUID] = None
+    cli_analytics_enabled: Optional[bool] = None
 
 
-class ProjectCreateResponse(BaseModel):
+class ProjectCreateResponse(_CliAnalyticsViewMixin):
     name: str
     display_name: Optional[str] = None
     description: Optional[str] = None
@@ -223,11 +242,13 @@ class ProjectUpdateRequest(BaseModel):
     enforce_member_spend_limits: Optional[bool] = None
     chargeback_enabled: Optional[bool] = None
     chargeback_attribution: Optional[str] = None
+    cli_analytics_enabled: Optional[bool] = None
 
     @model_validator(mode="after")
     def validate_non_empty(self):
         if (
-            self.name is None
+            "cli_analytics_enabled" not in self.model_fields_set
+            and self.name is None
             and self.display_name is None
             and self.description is None
             and self.cost_center_id is None

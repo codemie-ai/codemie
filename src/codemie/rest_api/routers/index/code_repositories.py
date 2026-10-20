@@ -18,6 +18,8 @@ from pydantic import StringConstraints
 
 from elasticsearch.exceptions import NotFoundError
 from fastapi import APIRouter, BackgroundTasks, status, Depends
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from starlette.requests import Request
 
 from codemie.core.ability import Ability, Action
@@ -52,6 +54,7 @@ from codemie.rest_api.utils.default_applications import ensure_application_exist
 from codemie.rest_api.routers.utils import (
     raise_forbidden,
 )
+from codemie.service.project import cli_analytics_policy
 from codemie.service.request_summary_manager import request_summary_manager
 
 from codemie.rest_api.routers.index._common import (
@@ -434,4 +437,6 @@ def get_application(app_name: str, request: Request):
 
     application.git_repos = git_repos
 
-    return application
+    if cli_analytics_policy.can_view(request.state.user, application.name):
+        return application
+    return JSONResponse(jsonable_encoder(application, exclude={cli_analytics_policy.FIELD}))

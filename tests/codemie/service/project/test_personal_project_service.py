@@ -530,6 +530,28 @@ class TestPersonalProjectService:
     @pytest.mark.asyncio
     @patch("codemie.service.project.personal_project_service.user_project_repository")
     @patch("codemie.service.project.personal_project_service.application_repository")
+    async def test_conversion_resets_cli_analytics_flag(self, mock_app_repo, mock_user_proj_repo):
+        """EPMCDME-16025: personal projects stay CLI-analytics-disabled after shared->personal conversion"""
+        session = AsyncMock()
+        user_id = "user-123"
+        user_email = "existing@example.com"
+        mock_app = Application(
+            name=user_email, project_type="shared", created_by="old-owner", cli_analytics_enabled=True
+        )
+        mock_app_repo.aget_by_name = AsyncMock(return_value=mock_app)
+        mapping = UserProject(user_id=user_id, project_name=user_email, is_project_admin=False)
+        mock_user_proj_repo.aget_by_project_name = AsyncMock(return_value=[mapping])
+        mock_user_proj_repo.aget_by_user_and_project = AsyncMock(return_value=mapping)
+        mock_user_proj_repo.aadd_project = AsyncMock()
+
+        await PersonalProjectService._create_personal_project(session, user_id, user_email)
+
+        assert mock_app.project_type == "personal"
+        assert mock_app.cli_analytics_enabled is False
+
+    @pytest.mark.asyncio
+    @patch("codemie.service.project.personal_project_service.user_project_repository")
+    @patch("codemie.service.project.personal_project_service.application_repository")
     async def test_unsafe_conversion_rejects_single_other_user(self, mock_app_repo, mock_user_proj_repo):
         """Review Round 2: Validates conversion is rejected when ONE other user has access"""
         # Arrange

@@ -1,0 +1,26 @@
+{
+  "decision": "request-changes",
+  "rationale": "No spec supplied (acceptance n/a), so confidence is low; all other lenses and the standards audit ran. The authorization changes (legacy GET viewer rule, create-response membership sync, six-schema OpenAPI patch) held up against source; one accidental log-format regression blocks. 0 deferred, 10 filtered as noise.",
+  "confidence": "low",
+  "risk_flags": ["security", "auth", "public-api", "data-contract"],
+  "business_review": [],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "3 subjects in diff_base..HEAD all match the documented 'EPMCDME-####: Description' format"},
+    {"kind": "code-quality", "status": "pass", "notes": "changes in code_repositories.py and project_service.py stay within each module's core responsibility (get_application, create_project); no untyped new public functions, no new source files needing license headers; guide has no rule broken"},
+    {"kind": "security", "status": "pass", "notes": "get_application now excludes cli_analytics_enabled for non-viewers via cli_analytics_policy; create_project refreshes the in-request User snapshot after the admin grant; no logged secrets, no lossy input parsing, no new auth bypass observed"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/project/project_service.py",
+      "line": 209,
+      "title": "project_created log line lost its space after the colon",
+      "problem": "The audit log line was edited in the same hunk as the user-snapshot sync and now reads 'project_created:project=...' instead of the documented 'project_created: project=<name>, by=<actor_id>' (spec 2026-08-04-epmcdme-13904; siblings project_updated and project_deleted keep the space). The only test checks the bare substring 'project_created', so the change is unpinned.",
+      "impact": "Log parsers, alerts or dashboards matching 'project_created: project=' silently stop matching the project-creation audit event. Unrelated to the CLI analytics fix, so almost certainly accidental.",
+      "recommendation": "Restore the documented format: logger.info(f\"project_created: project={validated_name!r}, by={user.id}, domain=project_management\"). Optionally tighten the existing test to assert the prefix 'project_created: project='."
+    }
+  ]
+}

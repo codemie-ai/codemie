@@ -117,6 +117,7 @@ class ProjectVisibilityService:
                     "cost_center_id": project.cost_center_id,
                     "cost_center_name": cost_center.name if cost_center else None,
                     "chargeback_enabled": project.chargeback_enabled,
+                    "cli_analytics_enabled": project.cli_analytics_enabled,
                     "chargeback_attribution": project.chargeback_attribution,
                 }
             )
@@ -195,6 +196,7 @@ class ProjectVisibilityService:
             "cost_center_id": project.cost_center_id,
             "cost_center_name": cost_center.name if cost_center else None,
             "chargeback_enabled": project.chargeback_enabled,
+            "cli_analytics_enabled": project.cli_analytics_enabled,
             "chargeback_attribution": project.chargeback_attribution,
             "allowed_models": project.allowed_models,
             "default_model": project.default_model,

@@ -244,6 +244,11 @@ class DecodedBatch:
     resources: dict[int, tuple[str | None, str]] = field(default_factory=dict)
     # session_id -> session-constant attributes (user.id, organization.id, ...)
     session_attrs: dict[str, dict[str, Any]] = field(default_factory=lambda: defaultdict(dict))
+    # Every explicit project value the client sent anywhere in the request (see `_note_project`).
+    explicit_projects: set[str] = field(default_factory=set)
+    # Records the client sent (log records, spans, metric data points of every kind, hook events),
+    # whether or not the decoder keeps them: the count a discard answer reports.
+    wire_count: int = 0
 
     @property
     def record_count(self) -> int:
@@ -462,6 +467,21 @@ def record_hash(*parts: bytes) -> int:
     return int.from_bytes(digest.digest(), "big", signed=True)
 
 
+# ── explicit project context ──────────────────────────────────────────────────
+
+PROJECT_KEY = "codemie_project_name"
+
+
+def _note_project(batch: DecodedBatch, value: Any) -> None:
+    """Record an explicit project value (as received; blank counts as absent) found in a request, kept or not."""
+    try:
+        text = clean(as_str(value)) or ""
+    except RecursionError:  # a nested value is some project that is not the sender's own
+        text = "<unreadable>"
+    if text.strip():
+        batch.explicit_projects.add(text)
+
+
 # ── request parsing ───────────────────────────────────────────────────────────
 
 
@@ -512,6 +532,7 @@ def parse_request(signal: OtlpSignal, body: bytes, content_type: str) -> Message
 
 def _resource(resource_attrs: Any, batch: DecodedBatch) -> tuple[int, dict[str, Any]]:
     attrs = attrs_to_py(resource_attrs)
+    _note_project(batch, attrs.get(PROJECT_KEY))
     resource_id = record_hash(json_text(clean_json(attrs), sort_keys=True).encode())
     if resource_id not in batch.resources:
         batch.resources[resource_id] = (_opt(as_str(attrs.get("service.name"))), _jsonb(attrs) or "{}")
@@ -650,6 +671,7 @@ def _pop_log_numbers(attrs: dict[str, Any]) -> dict[str, float | int]:
 def _log_from_record(record: Any, attrs: dict[str, Any], h: int, resource_id: int, batch: DecodedBatch) -> None:
     record_ns = record.time_unix_nano or record.observed_time_unix_nano
     ts = ns_to_datetime(record_ns)
+    _note_project(batch, attrs.get(PROJECT_KEY))  # before _hook_log pops anything
     if _hook_log(attrs, ts, h, record_ns, batch):
         return
 
@@ -696,6 +718,7 @@ def decode_logs(request: ExportLogsServiceRequest) -> DecodedBatch:
         for scope_logs in resource_logs.scope_logs:
             scope = scope_logs.scope.name.encode()
             for record in scope_logs.log_records:
+                batch.wire_count += 1
                 h = record_hash(resource_key, scope, record.SerializeToString())
                 _log_from_record(record, attrs_to_py(record.attributes), h, resource_id, batch)
     return batch
@@ -717,8 +740,10 @@ def decode_traces(request: ExportTraceServiceRequest) -> DecodedBatch:
         for scope_spans in resource_spans.scope_spans:
             scope = scope_spans.scope.name.encode()
             for span in scope_spans.spans:
+                batch.wire_count += 1
                 ts = ns_to_datetime(span.start_time_unix_nano)
                 attrs = attrs_to_py(span.attributes)
+                _note_project(batch, attrs.get(PROJECT_KEY))
                 session_id = _session_key(as_str(attrs.pop(_SESSION_ID_KEY, None)))
                 _split_session_attrs(attrs, session_id, batch)
                 attrs.pop("span.type", None)
@@ -767,12 +792,21 @@ def _decode_resource_metrics(resource_metrics: Any, batch: DecodedBatch) -> None
             _decode_metric(metric, resource_id, resource_key, batch)
 
 
+_METRIC_DATA_KINDS = ("sum", "gauge", "histogram", "exponential_histogram", "summary")
+
+
 def _decode_metric(metric: Any, resource_id: int, resource_key: bytes, batch: DecodedBatch) -> None:
     data_kind = metric.WhichOneof("data")
-    if data_kind not in ("sum", "gauge"):
-        return
+    if data_kind not in _METRIC_DATA_KINDS:
+        return  # no data points, so nothing was sent
 
     data = getattr(metric, data_kind)
+    batch.wire_count += len(data.data_points)
+    if data_kind not in ("sum", "gauge"):
+        for point in data.data_points:  # never stored, but a project they carry still counts
+            _note_project(batch, attrs_to_py(point.attributes).get(PROJECT_KEY))
+        return
+
     if data_kind == "sum":
         temporality = _smallint(data.aggregation_temporality)
         monotonic = data.is_monotonic
@@ -793,12 +827,13 @@ def _append_metric_point(
     monotonic: bool,
     batch: DecodedBatch,
 ) -> None:
+    attrs = attrs_to_py(point.attributes)
+    _note_project(batch, attrs.get(PROJECT_KEY))
     value = float(point.as_int) if point.WhichOneof("value") == "as_int" else point.as_double
     if not math.isfinite(value):
         return  # NaN or infinity: no counter or gauge reading can use it
 
     ts = ns_to_datetime(point.time_unix_nano)
-    attrs = attrs_to_py(point.attributes)
     session_id = _session_key(as_str(attrs.pop(_SESSION_ID_KEY, None)))
     _split_session_attrs(attrs, session_id, batch)
     batch.metrics.append(
@@ -845,6 +880,8 @@ def decode_hook_events(events: list[Any], user_email: str, received_at_ns: int) 
     for raw in events:
         if not isinstance(raw, dict):
             continue
+        batch.wire_count += 1
+        _note_project(batch, raw.get(PROJECT_KEY))  # also for an event skipped below
         try:
             row = _hook_event_row(raw, user_email, received_at_ns)
             (batch.usage if isinstance(row, UsageRow) else batch.hooks).append(row)

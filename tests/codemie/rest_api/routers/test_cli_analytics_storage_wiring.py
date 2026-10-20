@@ -50,13 +50,13 @@ class FakeIngestor:
         self.result = IngestResult(body=b"\x08\x01", media_type="application/x-protobuf", accepted=3)
         self.error: Exception | None = None
 
-    async def ingest_otlp(self, signal, body, content_type):
+    async def ingest_otlp(self, signal, body, content_type, gate=None):
         self.otlp_calls.append((signal, body, content_type))
         if self.error:
             raise self.error
         return self.result
 
-    async def ingest_hook_events(self, events, user_email, received_at_ns):
+    async def ingest_hook_events(self, events, user_email, received_at_ns, gate=None):
         self.hook_calls.append((events, user_email, received_at_ns))
         if self.error:
             raise self.error

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, Path, Query, Request
 
@@ -42,6 +42,7 @@ from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
 from codemie.service.budget.budget_enums import BudgetCategory
 from codemie.service.budget.provider_registry import get_active_provider
+from codemie.service.project import cli_analytics_policy
 from codemie.service.project.project_service import project_service
 from codemie.service.project.project_spending_service import (
     attach_project_detail_spending,
@@ -171,11 +172,14 @@ async def _attach_assigned_budget_summaries(
 def create_project(payload: ProjectCreateRequest, user: User = Depends(authenticate)):
     """Create a new shared project."""
     _ensure_user_management_enabled()
+    cli_analytics_policy.require_write(user, payload.model_fields_set)
     create_kwargs = {
         "user": user,
         "project_name": payload.name,
         "description": payload.description,
     }
+    if payload.cli_analytics_enabled is not None:
+        create_kwargs["cli_analytics_enabled"] = payload.cli_analytics_enabled
     if payload.display_name is not None:
         create_kwargs["display_name"] = payload.display_name
     if payload.cost_center_id is not None:
@@ -197,6 +201,9 @@ def create_project(payload: ProjectCreateRequest, user: User = Depends(authentic
         enforce_member_spend_limits=SettingsService.get_enforce_member_spend_limits(project.name),
         chargeback_enabled=project.chargeback_enabled,
         chargeback_attribution=project.chargeback_attribution,
+        cli_analytics_enabled=cli_analytics_policy.visible_value(
+            user, project.name, getattr(project, "cli_analytics_enabled", False)
+        ),
     )
 
 
@@ -267,7 +274,7 @@ async def list_projects(
         sort_order=sort_order,
     )
 
-    items = [ProjectListItem(**proj) for proj in enriched_projects]
+    items = [ProjectListItem(**_with_visible_cli_analytics(user, proj)) for proj in enriched_projects]
 
     if include_budgets and _is_budget_provider_active():
         await _attach_assigned_budget_summaries(items, budget_category)
@@ -321,7 +328,7 @@ async def get_project_detail(
         action=f"{request.method} {request.url.path}",
     )
 
-    response = _build_project_detail_response(project_detail, project_name)
+    response = _build_project_detail_response(_with_visible_cli_analytics(user, project_detail), project_name)
 
     if include_spending and can_see_project_spending(user, project_detail):
         await attach_project_detail_spending(
@@ -331,6 +338,16 @@ async def get_project_detail(
         )
 
     return response
+
+
+def _with_visible_cli_analytics(user: User, project: dict[str, Any]) -> dict[str, Any]:
+    """Copy of the project dict whose cli_analytics_enabled is None (omitted) unless the viewer may see it."""
+    return {
+        **project,
+        "cli_analytics_enabled": cli_analytics_policy.visible_value(
+            user, project["name"], project.get("cli_analytics_enabled", False)
+        ),
+    }
 
 
 def _build_project_detail_response(project_detail: dict, project_name: str) -> ProjectDetailResponse:
@@ -350,5 +367,6 @@ def _build_project_detail_response(project_detail: dict, project_name: str) -> P
         chargeback_attribution=project_detail.get("chargeback_attribution", "project"),
         allowed_models=project_detail.get("allowed_models"),
         default_model=project_detail.get("default_model"),
+        cli_analytics_enabled=project_detail.get("cli_analytics_enabled"),
         members=[ProjectMember(**m) for m in project_detail["members"]],
     )

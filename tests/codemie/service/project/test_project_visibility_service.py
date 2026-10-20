@@ -60,6 +60,7 @@ class TestProjectVisibilityService:
             date="2026-04-24T00:00:00Z",
             cost_center_id="cc-1",
             chargeback_enabled=False,
+            cli_analytics_enabled=True,
             chargeback_attribution="project",
         )
         cost_center = SimpleNamespace(name="Cost Center A")
@@ -107,6 +108,7 @@ class TestProjectVisibilityService:
                 "cost_center_id": "cc-1",
                 "cost_center_name": "Cost Center A",
                 "chargeback_enabled": False,
+                "cli_analytics_enabled": True,
                 "chargeback_attribution": "project",
             }
         ]
@@ -170,6 +172,7 @@ class TestProjectVisibilityService:
             date="2026-04-24T00:00:00Z",
             cost_center_id=None,
             chargeback_enabled=False,
+            cli_analytics_enabled=True,
             chargeback_attribution="project",
             allowed_models=["gpt-4"],
             default_model="gpt-4",
@@ -200,6 +203,7 @@ class TestProjectVisibilityService:
         assert result["admin_count"] == 1
         assert result["is_project_admin"] is True
         assert result["chargeback_enabled"] is False
+        assert result["cli_analytics_enabled"] is True
         assert result["chargeback_attribution"] == "project"
         assert result["members"] == [
             {"user_id": "user-1", "is_project_admin": True, "date": "2026-04-24T00:00:00Z"},

@@ -194,6 +194,7 @@ class ApplicationRepository:
         created_by: Optional[str] = None,
         cost_center_id: UUID | None = None,
         display_name: Optional[str] = None,
+        cli_analytics_enabled: bool | None = None,
     ) -> Application:
         """Create new application
 
@@ -222,6 +223,7 @@ class ApplicationRepository:
             created_by=created_by,
             cost_center_id=cost_center_id,
             display_name=display_name,
+            cli_analytics_enabled=bool(cli_analytics_enabled),
             date=now,
             update_date=now,
         )
@@ -732,6 +734,7 @@ class ApplicationRepository:
         chargeback_enabled: bool | None = None,
         chargeback_attribution: str | None = None,
         created_by: str | None = None,
+        cli_analytics_enabled: bool | None = None,
     ) -> Application:
         """Update mutable project fields."""
         if name is not None:
@@ -749,6 +752,8 @@ class ApplicationRepository:
             application.chargeback_attribution = chargeback_attribution
         if created_by is not None:
             application.created_by = created_by
+        if cli_analytics_enabled is not None:
+            application.cli_analytics_enabled = cli_analytics_enabled
         application.update_date = datetime.now()
         session.add(application)
         session.flush()
@@ -787,6 +792,19 @@ class ApplicationRepository:
     async def aget_by_name_case_insensitive(self, session: AsyncSession, name: str) -> Optional[Application]:
         """Get application by name using case-insensitive lookup (async)"""
         statement = select(Application).where(func.lower(Application.name) == name.lower())
+        result = await session.execute(statement)
+        return result.scalars().first()
+
+    async def aget_active_by_name_case_insensitive(self, session: AsyncSession, name: str) -> Optional[Application]:
+        """Non-soft-deleted application by case-insensitive name (async), the exact-case name first.
+
+        Names are not unique case-insensitively in the database, so the order makes the pick deterministic.
+        """
+        statement = (
+            select(Application)
+            .where(func.lower(Application.name) == name.lower(), Application.deleted_at.is_(None))
+            .order_by(case((Application.name == name, 0), else_=1), Application.name)
+        )
         result = await session.execute(statement)
         return result.scalars().first()
 

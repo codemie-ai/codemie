@@ -44,6 +44,7 @@ from codemie.repository.user_repository import user_repository
 from codemie.rest_api.models.settings import Settings
 from codemie.rest_api.security.user import User
 from codemie.service.cost_center_service import cost_center_service
+from codemie.service.project import cli_analytics_policy
 from codemie.service.settings.settings import SettingsService
 from codemie.service.project.project_assignment_service import ProjectAssignmentService
 from codemie.service.user.authentication_service import invalidate_user_from_cache
@@ -120,6 +121,7 @@ class ProjectService:
         ),
         PERSONAL_DELETE="Cannot delete a personal project",
         PERSONAL_UPDATE="Cannot update a personal project",
+        PERSONAL_CLI_ANALYTICS="CLI analytics cannot be enabled for a personal project",
         # Chargeback validation
         CHARGEBACK_ATTRIBUTION_INVALID="chargeback_attribution must be one of: 'project', 'cost_center'",
         CHARGEBACK_ATTRIBUTION_NO_COST_CENTER="Cost center attribution requires a linked, active cost center",
@@ -138,8 +140,10 @@ class ProjectService:
         description: str | None = None,
         display_name: str | None = None,
         cost_center_id: UUID | None = None,
+        cli_analytics_enabled: bool | None = None,
     ) -> Application:
         """Create a shared project and grant creator project-admin membership."""
+        cls._require_cli_analytics_write(user, cli_analytics_enabled)
         validated_name = cls._validate_shared_project_name(project_name)
         validated_description = cls._validate_project_description(description) if description is not None else None
         validated_display_name = cls._validate_display_name(display_name) if display_name is not None else None
@@ -166,6 +170,8 @@ class ProjectService:
                 }
                 if cost_center:
                     create_kwargs["cost_center_id"] = cost_center.id
+                if cli_analytics_enabled is not None:
+                    create_kwargs["cli_analytics_enabled"] = cli_analytics_enabled
                 project = application_repository.create(**create_kwargs)
 
                 # Initialize project-level model availability + default model
@@ -196,6 +202,12 @@ class ProjectService:
                 session.expunge(project)  # Expunge before commit to preserve loaded attributes for the caller
                 session.commit()
                 invalidate_user_from_cache(user.id)
+                # The request User is a snapshot taken before the grant above; reflect it so the
+                # create response applies the viewer rule to the creator's real rights (no global write).
+                if validated_name not in user.admin_project_names:
+                    user.admin_project_names = [*user.admin_project_names, validated_name]
+                if validated_name not in user.project_names:
+                    user.project_names = [*user.project_names, validated_name]
                 logger.info(f"project_created: project={validated_name!r}, by={user.id}, domain=project_management")
                 return project
             except IntegrityError as e:
@@ -223,9 +235,13 @@ class ProjectService:
         enforce_member_spend_limits: bool | None = None,
         chargeback_enabled: bool | None = None,
         chargeback_attribution: str | None = None,
+        cli_analytics_enabled: bool | None = None,
     ) -> Application:
+        cls._require_cli_analytics_write(user, cli_analytics_enabled)
         with get_session() as session:
             project = cls._get_project_for_update(session, user, project_name)
+            if cli_analytics_enabled and project.project_type == Application.ProjectType.PERSONAL:
+                raise ExtendedHTTPException(code=400, message=cls.ERRORS.PERSONAL_CLI_ANALYTICS)
 
             if (
                 chargeback_enabled is not None or chargeback_attribution is not None
@@ -260,6 +276,7 @@ class ProjectService:
                 cost_center_id=resolved_cost_center_id,
                 chargeback_enabled=chargeback_enabled,
                 chargeback_attribution=chargeback_attribution,
+                cli_analytics_enabled=cli_analytics_enabled,
             )
             if enforce_member_spend_limits is not None:
                 SettingsService.set_enforce_member_spend_limits(
@@ -346,6 +363,12 @@ class ProjectService:
                 f"new_owner={new_owner_id}, by={user.id}, domain=project_management"
             )
             return project
+
+    @staticmethod
+    def _require_cli_analytics_write(user: User, cli_analytics_enabled: bool | None) -> None:
+        """Defence in depth behind the router guard: only global admins/maintainers may set the flag."""
+        if cli_analytics_enabled is not None:
+            cli_analytics_policy.require_write(user, {cli_analytics_policy.FIELD})
 
     @classmethod
     def _get_project_for_update(cls, session: Session, user: User, project_name: str) -> Application:
