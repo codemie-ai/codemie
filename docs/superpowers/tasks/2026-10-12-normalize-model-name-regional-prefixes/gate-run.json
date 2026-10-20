@@ -1,0 +1,122 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15523_normalize-model-name-prefixes",
+  "head": "483adfd6f50c1de5bdf7a90715099359fadc72d4",
+  "runner": "poetry",
+  "started_at": "2026-10-12T10:47:45Z",
+  "completed_at": "2026-10-12T11:17:56Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 8999,
+      "command": "poetry run ruff format && poetry run ruff check --fix && poetry run ruff check (direct commands behind `make ruff`; `make` itself is not installed on this host)",
+      "exit_code": 0,
+      "notes": "Re-run with the underlying commands at the user's direction since `make` is absent on this host. `ruff format` reformatted 1 file (left 2754 unchanged); `ruff check --fix` found and auto-fixed 1 error; final `ruff check` reported 'All checks passed!'. The reformat/fix mutated working-tree files (within the already-modified src/codemie/configs/customer_config.py); no new files became dirty."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 35090,
+      "command": "poetry build (direct command behind `make build`)",
+      "exit_code": 0,
+      "notes": "Built codemie-0.8.0 sdist and wheel successfully."
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 4038,
+      "command": "poetry run python scripts/license_headers/check_license_headers.py --check --quiet (direct command behind `make license-check`)",
+      "exit_code": 0,
+      "notes": "Checked 2462 files, 0 missing license headers. Auto-fix (license-fix) was not needed since the check passed."
+    },
+    {
+      "id": "secrets-ci",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 219,
+      "command": "make gitleaks",
+      "exit_code": 127,
+      "notes": "Genuinely not runnable in this environment: `make` is absent, and the target's underlying command is hardcoded to `docker run ... ghcr.io/gitleaks/gitleaks:v8.30.1 dir ...` with no Podman fallback (unlike scripts/git-hooks/validate_secrets.sh, which does support Podman). Docker itself is also down here (`docker info` fails); only Podman is live. Running the equivalent `docker run` command directly would fail the same way for the same reason (no Docker daemon), so this was not forced. Enablement: start Docker Desktop (or add a Podman-equivalent invocation of the same gitleaks image/config), then either install `make` or run the `docker run` line from the Makefile's `gitleaks` target directly."
+    },
+    {
+      "id": "secrets-precommit",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 637,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": 0,
+      "notes": "Self-skip: exact output line was \"codemie-gitleaks: skipped (CODEMIE_PRECOMMIT_ENABLED=false)\". This process environment has CODEMIE_PRECOMMIT_ENABLED=false set, which per the guide's documented Bypass clause skips the gitleaks staged-diff scan entirely. The exit 0 reflects the bypass, not a clean scan. To enable locally: unset CODEMIE_PRECOMMIT_ENABLED (or set it to true/1/on) and ensure a container engine is running — Podman was live and would have been auto-selected (Docker was down)."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 674768,
+      "command": "poetry run pytest tests/ (direct command behind `make test`)",
+      "exit_code": 1,
+      "notes": "172 failed, 19552 passed, 197 skipped, 4 errors (662.39s). Root causes observed, none touching this branch's actual diff (model_name normalization / customer_config.py): (1) ~45 failures/errors under tests/enterprise/** and one under tests/codemie/service/security/test_logout_token_cleanup_mock_tms.py are environment-dependency gaps — the installed `codemie_enterprise` package is missing submodules/attributes it's exercised against (e.g. ModuleNotFoundError: No module named 'codemie_enterprise.mcp_auth.discovery', AttributeError: module 'codemie_enterprise.mcp_auth' has no attribute 'MockTokenManagementSystem'); this matches scripts/git-hooks/pre_push.sh's own comment that tests/enterprise 'need codemie_enterprise' and is normally excluded with --ignore=tests/enterprise/ (the guide's `make test` Run field does not exclude it, so it was included here as directed). (2) 3 collection ERRORs in tests/codemie/migrations/test_credentialtypes_enum_migrations.py are UnicodeDecodeError ('charmap' codec can't decode byte 0x9d) reading a migration file under Windows' default cp1252 encoding. (3) tests/codemie_tools/data_management/file_system/test_file_system_tools.py::test_command_line_tool fails on Windows subprocess/shell quoting for a POSIX-style `echo \"Hello, World!\"` command. (4) tests/scripts/test_commit_msg_hook.py, test_pre_commit_fast_hook.py, test_pre_push_hook.py failures look consistent with this host's missing bash-hook-tooling assumptions (same `make`-absence environment gap). This is reported as a real FAIL per the exit code; the caller should judge whether these are acceptable known-environment gaps or need separate remediation."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 246,
+      "command": "make coverage",
+      "exit_code": 127,
+      "notes": "Skip-if condition applies: coverage was not requested for this run. Not re-run with direct commands (out of the user's requested scope for this correction pass)."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 293,
+      "command": "make sonar-local",
+      "exit_code": 127,
+      "notes": "Left as-is per instruction: make binary not found; node scripts/sonar/run-local-sonar.js never ran. Even if invoked directly, SONAR_TOKEN is not set in this environment, so the underlying script would self-skip with 'Skipping Sonar scan because SONAR_TOKEN is not set.' Enablement: run `node scripts/sonar/run-local-sonar.js` directly and set SONAR_TOKEN."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 294,
+      "command": "make verify",
+      "exit_code": 127,
+      "notes": "Left as-is per instruction (not re-run): make binary not found. This composite target is superseded by the direct-command results above — lint PASS, build PASS, license-check PASS, secrets-ci SKIPPED (genuinely not runnable), unit FAIL — rather than being re-executed as its own command."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 262,
+      "command": "make test-harness",
+      "exit_code": 127,
+      "notes": "Skip-if condition applies: this run is not opening a merge request (local iteration only). Not re-run with direct commands (out of the user's requested scope for this correction pass)."
+    },
+    {
+      "id": "commit-msg",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 680,
+      "command": "bash scripts/git-hooks/commit_msg.sh <msgfile containing HEAD's commit message>",
+      "exit_code": 0,
+      "notes": "Not covered by any guide gate; enforced only via the codemie-commit-msg local pre-commit hook. No new commit is pending in this run, so the hook was exercised against the current HEAD commit message (483adfd6f, subject 'EPMCDME-15523: Fix code-review and live-DB findings in model_name normalization'), which matched the required EPMCDME-<n>: prefix."
+    },
+    {
+      "id": "ci-pre-ci-guard",
+      "source": "ci",
+      "status": "N/A",
+      "notes": "GitLab CI only defines a pre-ci-guard stage (no-op + wait-ci-init) that runs on merge_request_event targeting main and waits on external status contexts (ci-pipeline, compliance-report) posted by other systems; no actual lint/build/test runs in this repo's pipeline (confirmed by the guide's own 'After merge' section). Cannot be executed locally; requires a live GitLab MR event."
+    }
+  ],
+  "failures": {
+    "unit": "FAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_prelude_clamps_soft_limit_when_hard_ceiling_is_lower\nFAILED tests/codemie_tools/file_analysis/pptx/test_pptx_toolkit.py::test_pptx_tool_query_text_with_text\nFAILED tests/codemie_tools/data_management/file_system/test_file_system_tools.py::TestFileSystemTools::test_command_line_tool\nFAILED tests/enterprise/mcp_auth/test_insufficient_scope_recovery_bridge.py::test_bridge_maps_real_assistant_recovery_payload_snapshot\nFAILED tests/enterprise/mcp_auth/test_mcp_auth_status_bridge.py::test_build_discovered_auth_status_response_uses_flow_store_and_tms[False-authentication_required]\nFAILED tests/enterprise/mcp_auth/test_mcp_auth_status_bridge.py::test_build_discovered_auth_status_response_uses_flow_store_and_tms[True-authenticated]\nFAILED tests/enterprise/mcp_auth/test_mcp_auth_status_bridge.py::test_build_discovered_auth_status_response_returns_config_error_snapshot\nFAILED tests/enterprise/mcp_auth/test_oauth2_callback_bridge.py::test_callback_entry_log_state_prefix_joins_to_initiate\n... (33 more tests/enterprise/mcp_auth/** failures omitted; all are ModuleNotFoundError / AttributeError against the installed `codemie_enterprise` stub package, e.g. \"ModuleNotFoundError: No module named 'codemie_enterprise.mcp_auth.discovery'\" and \"AttributeError: module 'codemie_enterprise.mcp_auth' has no attribute 'MockTokenManagementSystem'\") ...\nFAILED tests/enterprise/mcp_auth/test_private_network_allowlist_bridge.py::test_private_network_allowlist_reader_output_passes_to_enterprise_as_discovery\nFAILED tests/scripts/test_commit_msg_hook.py::test_leading_comment_lines_ignored\nFAILED tests/scripts/test_pre_commit_fast_hook.py::test_source_has_no_pytest_or_sonar_invocation\nFAILED tests/scripts/test_pre_push_hook.py::test_legacy_precommit_enabled_runs_and_warns\nFAILED tests/enterprise/mcp_auth/test_client_metadata_bridge.py::test_enabled_cimd_route_returns_public_document_headers_and_does_not_require_auth\nFAILED tests/enterprise/mcp_auth/test_client_metadata_bridge.py::test_enabled_cimd_route_rejects_query_without_echoing_tainted_inputs\nFAILED tests/enterprise/mcp_auth/test_client_metadata_bridge.py::test_enabled_cimd_route_sanitizes_invalid_configured_base_url_without_echoing_tainted_values\nFAILED tests/enterprise/mcp_auth/test_discovery_probe_bridge.py::test_discovered_auth_gate_registration_failures_return_config_error_payload[no_supported_registration_mechanism-attempted_mechanisms0]\nFAILED tests/enterprise/mcp_auth/test_discovery_probe_bridge.py::test_discovered_auth_gate_registration_failures_return_config_error_payload[dcr_timeout-attempted_mechanisms1]\nFAILED tests/enterprise/mcp_auth/test_discovery_probe_bridge.py::test_discovered_auth_gate_registration_failures_return_config_error_payload[dcr_unavailable-attempted_mechanisms2]\nFAILED tests/enterprise/mcp_auth/test_discovery_probe_bridge.py::test_discovery_probe_bridge_does_not_await_async_db_engine_in_worker_loop\nERROR tests/codemie/migrations/test_credentialtypes_enum_migrations.py - UnicodeDecodeError: 'charmap' codec can't decode byte 0x9d in position 46: character maps to <undefined>\nERROR tests/codemie/migrations/test_credentialtypes_enum_migrations.py - UnicodeDecodeError: 'charmap' codec can't decode byte 0x9d in position 46: character maps to <undefined>\nERROR tests/codemie/migrations/test_credentialtypes_enum_migrations.py - UnicodeDecodeError: 'charmap' codec can't decode byte 0x9d in position 46: character maps to <undefined>\nERROR tests/codemie/service/security/test_logout_token_cleanup_mock_tms.py::test_logout_removes_only_the_users_rows_and_pod_fallback - AttributeError: module 'codemie_enterprise.mcp_auth' has no attribute 'MockTokenManagementSystem'\n= 172 failed, 19552 passed, 197 skipped, 261 warnings, 4 errors in 662.39s (0:11:02) =",
+    "sonar": "/usr/bin/bash: line 1: make: command not found",
+    "verify": "/usr/bin/bash: line 1: make: command not found"
+  }
+}

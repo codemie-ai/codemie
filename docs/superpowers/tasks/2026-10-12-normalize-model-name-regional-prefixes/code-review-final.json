@@ -1,0 +1,50 @@
+{
+  "decision": "request-changes",
+  "rationale": "Acceptance did not run (no spec/story) so business criteria are unavailable, forcing confidence to low; edge-case review of the new _normalized_model_name regex surfaced 3 real-but-reachability-uncertain patches (invoke-style routing prefix, hyphenated/digit region tokens, and an unanchored version-suffix strip — all kept at major) plus 1 pre-existing session-view inconsistency deferred as explicitly out of the task's stated 'get_model_breakdown SQL GROUP BY only' scope (0 dismissed); standards review is n/a for the compact profile with no coverage gap.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "commit-format", "status": "na", "notes": "standards review not expected for compact profile" },
+    { "kind": "code-quality", "status": "na", "notes": "standards review not expected for compact profile" },
+    { "kind": "security", "status": "na", "notes": "standards review not expected for compact profile" }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/repository/cli_analytics/postgres/reader.py",
+      "line": 205,
+      "title": "Routing-prefix strip misses non-converse calls",
+      "problem": "_normalized_model_name only strips a leading 'converse/' token. AWS Bedrock requests placed through the InvokeModel API path use a different litellm provider key (bedrock vs bedrock_converse) and may carry a different or absent routing-prefix convention that this hard-coded single-token strip cannot anticipate.",
+      "impact": "Any model_name using a routing-prefix convention other than literal 'converse/' reaches the GROUP BY unnormalized and still fragments into a separate breakdown row, undermining the per-canonical-model aggregation this fix is meant to deliver. Whether such values actually occur in production CLI telemetry could not be fully confirmed from this review, so this is kept at major rather than dismissed.",
+      "recommendation": "Generalize the leading routing-prefix strip to a small known-prefix set (e.g. '^(converse|invoke)/') or to any single lowercase routing tag, instead of hard-coding 'converse/' alone."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/repository/cli_analytics/postgres/reader.py",
+      "line": 206,
+      "title": "Region-prefix strip rejects hyphenated/digit tokens",
+      "problem": "The region+provider strip '^([a-z]+\\\\.)?anthropic\\\\.' only matches a region token made of plain lowercase letters. A compound or GovCloud-style region token containing digits or hyphens (e.g. 'us-gov-west-1.anthropic.') does not match the optional group, so the whole regexp_replace is a no-op and the region token is left in place.",
+      "impact": "Rows using a region token outside the ticket's four documented examples (us/eu/global/jp) would retain their raw, unnormalized model_name and continue to fragment the breakdown report. Plausibility of such values in current production data could not be fully confirmed from this review, so this is kept at major rather than dismissed.",
+      "recommendation": "Broaden the character class to '[a-z0-9-]+' (or validate against the known/allowed region-prefix list) so any region token shape is stripped."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/repository/cli_analytics/postgres/reader.py",
+      "line": 207,
+      "title": "Unanchored version-suffix strip risks model collisions",
+      "problem": "The trailing-suffix strip '-v\\\\d+:\\\\d+$' removes any string ending in that colon-separated shape unconditionally. It is not anchored to a known Bedrock inference-profile tag format or a model allowlist, so a model id whose own identifier legitimately ends in that shape would be stripped too.",
+      "impact": "Two genuinely different model identifiers that happen to share that trailing shape would silently collapse into the same canonical breakdown row, under-reporting one and over-reporting the other. Likelihood in current production data could not be fully confirmed from this review, so this is kept at major rather than dismissed.",
+      "recommendation": "Anchor the suffix strip to a known Bedrock inference-profile tag format or an allowlist of recognized provider/model families, rather than a bare trailing pattern match."
+    }
+  ]
+}

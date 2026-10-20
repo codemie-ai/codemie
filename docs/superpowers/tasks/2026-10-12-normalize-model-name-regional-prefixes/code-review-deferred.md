@@ -1,0 +1,3 @@
+# Deferred from code review — 2026-10-12-normalize-model-name-regional-prefixes (2026-10-12)
+
+- **Session views still report raw model_name while the breakdown report is normalized** — `src/codemie/repository/cli_analytics/postgres/reader.py:518,575` — `get_session_cost_facts` and `get_session_detail_cost` build `top_model` from raw `c.model_name`, while `get_model_breakdown` now dedupes via `_normalized_model_name`, so the same underlying model can show fragmented in session views next to a canonical name in the breakdown report. Pre-existing: the original task explicitly scopes this fix to "get_model_breakdown SQL GROUP BY only", excluding these two session-view queries.

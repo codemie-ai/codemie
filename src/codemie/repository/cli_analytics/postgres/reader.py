@@ -196,6 +196,25 @@ class PostgresCliAnalyticsReader:
         """Restrict a fact query to the sessions in `sel` (started in the window, passing the filters)."""
         return f"\n              AND {column} IN (SELECT session_id FROM sel)"
 
+    @staticmethod
+    def _normalized_model_name(column: str) -> str:
+        """Strip an optional leading LiteLLM Bedrock provider wrapper ('bedrock/'), a routing
+        prefix ('converse/' or 'invoke/'), an optional region token plus 'anthropic.' provider
+        prefix (e.g. 'us.anthropic.', 'us-gov-west-1.anthropic.', 'anthropic.'), and a trailing
+        Bedrock inference-profile version tag ('-v1:0'-style) when it immediately follows an
+        8-digit date stamp, e.g. '-20251001-v1:0'.
+        CR-002: LiteLLM's own Bedrock provider convention nests an API-path marker behind the
+        'bedrock/' provider prefix (e.g. 'bedrock/converse/...'); not yet observed in this
+        telemetry source, but a documented real pattern, so the wrapper is stripped defensively.
+        The routing-prefix and provider-prefix strips are case-insensitive (CR-001: a routing
+        layer that emits a different case for these tokens must still normalize the same way).
+        Never touches a date stamp on its own, a model's own version dash inside the id,
+        or a trailing '-v\\d+:\\d+' shape that is not preceded by that date stamp.
+        """
+        without_routing_prefix = f"regexp_replace({column}, '^(bedrock/)?(converse|invoke)/', '', 'i')"
+        without_prefix = f"regexp_replace({without_routing_prefix}, '^([a-z0-9-]+\\.)?anthropic\\.', '', 'i')"
+        return f"regexp_replace({without_prefix}, '(\\d{{8}})-v\\d+:\\d+$', '\\1')"
+
     # ── cost / token facts (cost_daily) ──────────────────────────────────────
 
     async def get_cost_kpis(self, f: LocalAnalyticsFilter) -> Rows:
@@ -215,10 +234,11 @@ class PostgresCliAnalyticsReader:
         )
 
     async def get_model_breakdown(self, f: LocalAnalyticsFilter) -> Rows:
+        model_name = self._normalized_model_name("d.model_name")
         return await self._q(
             f"""
         WITH {self._sessions_cte(f)}
-        SELECT d.model_name                                   AS model_name,
+        SELECT {model_name}                                   AS model_name,
                count(DISTINCT d.session_id)                   AS session_count,
                sum(d.cost_usd)                                AS cost_usd,
                sum(d.cache_read_tokens)::bigint               AS cache_read_tokens,
@@ -226,9 +246,9 @@ class PostgresCliAnalyticsReader:
                                                               AS total_tokens
         FROM cost_daily d
         WHERE true{self._scope(f, "d.session_id")}
-        GROUP BY d.model_name
-        HAVING d.model_name <> ''
-        ORDER BY session_count DESC, cost_usd DESC, d.model_name {_C}""",
+        GROUP BY {model_name}
+        HAVING {model_name} <> ''
+        ORDER BY session_count DESC, cost_usd DESC, {model_name} {_C}""",
             window_params(f),
         )
 

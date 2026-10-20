@@ -1,0 +1,97 @@
+{
+  "decision": "request-changes",
+  "rationale": "All three lenses ran cleanly against the supplied plan.md spec. 6 real findings survive triage: four unconfirmed-reachability gaps in the new _normalized_model_name regexp_replace chain (no case-insensitive matching, and incomplete coverage for multi-segment region prefixes, nested routing prefixes, and extended version-suffix shapes — kept major per this task's own established precedent of not dismissing unconfirmed-but-plausible variants), a missing test asserting actual row-level cost/session/token aggregation after the GROUP BY key change (existing tests only pin SQL shape and a pure-Python regex mirror), and one commit in the MR range not following the ticket-prefixed commit-message format. The acceptance lens also flagged 3 spec-text deviations (invoke/ prefix stripped beyond the plan's literal 'exactly three things', a date-stamp-anchored suffix strip narrower than the plan's literal pattern, and an ORDER BY expression instead of an alias) — all three are deliberate, already fixed and human-approved in this task's own prior review round (visible in the diff's own embedded code-review-check.json/decisions.jsonl, including a live-DB-verified approval), so they are not re-raised as new blocking findings, though plan.md's Global Constraints/Review Focus text is now stale and should be updated to match the shipped, already-approved behavior. 7 items dismissed as noise, by-design scope limits, or already-resolved; 0 deferred.",
+  "confidence": "high",
+  "risk_flags": ["breaking-change"],
+  "business_review": [
+    {"kind": "story-ac", "item": "model_breakdown/cost_by_model/tokens_by_model dedupe converse/region/provider/suffix variants into one row with correct summed session_count/cost_usd/total_tokens", "status": "pass", "notes": "get_model_breakdown's SELECT/GROUP BY/HAVING/ORDER BY all switched to the normalized expression; single query backs all three endpoints per plan, no handler changes needed."},
+    {"kind": "story-ac", "item": "Distinct non-variant models (claude-sonnet-5 vs claude-sonnet-5-5) remain separate rows", "status": "pass", "notes": "test_normalization_collapses_known_bug_variants_but_not_distinct_models asserts the two stay distinct."},
+    {"kind": "story-ac", "item": "session_count for merged canonical model is COUNT(DISTINCT session_id) computed in SQL, not Python", "status": "pass", "notes": "reader.py: count(DISTINCT d.session_id) AS session_count unchanged, now grouped by the normalized expression."},
+    {"kind": "story-ac", "item": "New test coverage for get_model_breakdown normalization/grouping, including bare + four prefixed/suffixed variants collapsing to one canonical value", "status": "pass", "notes": "test_model_breakdown_groups_by_the_normalized_expression and test_normalization_collapses_known_bug_variants_but_not_distinct_models cover this."},
+    {"kind": "story-ac", "item": "No changes outside repository/cli_analytics/ and service/analytics/handlers/cli_analytics_handler.py (plus tests)", "status": "pass", "notes": "Diff touches only src/codemie/repository/cli_analytics/postgres/reader.py and its test file."},
+    {"kind": "spec", "item": "Global Constraint: strip exactly three things, nothing else — leading converse/ routing prefix specifically", "status": "fail", "notes": "reader.py also strips an invoke/ prefix via '^(converse|invoke)/', a fourth pattern not named in the plan's 'exactly three things' list — a deliberate, already-approved broadening (see rationale)."},
+    {"kind": "spec", "item": "Global Constraint: strip optional region token + anthropic. provider prefix immediately before the routing prefix", "status": "pass", "notes": "'^([a-z0-9-]+\\.)?anthropic\\.' matches region+anthropic or bare anthropic.; tests cover GovCloud-style and bare-anthropic cases."},
+    {"kind": "spec", "item": "Global Constraint: strip trailing -v\\d+:\\d+ Bedrock version/inference-profile tag at the very end of the string, literally", "status": "fail", "notes": "Implementation anchors the strip to '(\\d{8})-v\\d+:\\d+$' (only when immediately preceded by an 8-digit date stamp), narrower than the plan's unconditional pattern — a deliberate, already-approved anti-collision fix (see rationale)."},
+    {"kind": "spec", "item": "Global Constraint: date stamps (-20251001) and genuine version-number dashes left untouched", "status": "pass", "notes": "Date stamp preserved via \\1 backreference; claude-sonnet-5 vs claude-sonnet-5-5 stay distinct per test."},
+    {"kind": "spec", "item": "Global Constraint: normalization lives in SQL GROUP BY/SELECT/HAVING, never a Python/handler post-aggregation merge", "status": "pass", "notes": "All normalization applied via the model_name SQL fragment reused in SELECT/GROUP BY/HAVING/ORDER BY; handler file untouched."},
+    {"kind": "spec", "item": "Global Constraint: do not touch coding_agent_pricing.py, llm_pricing_validator.py, llm_handler.py", "status": "pass", "notes": "None of these files appear in the diff."},
+    {"kind": "spec", "item": "Global Constraint: do not change cost_daily.model_name storage/ingestion/rollups", "status": "pass", "notes": "No ingestion/storage code touched; only the read-side query."},
+    {"kind": "spec", "item": "Review Focus: raw name with no anthropic. substring and no trailing -v\\d+:\\d+ (claude-sonnet-5-5) passes through unchanged", "status": "pass", "notes": "test asserts _apply(\"claude-sonnet-5-5\") == \"claude-sonnet-5-5\"."},
+    {"kind": "spec", "item": "Review Focus: bare anthropic. (no region token) still stripped", "status": "pass", "notes": "anthropic.claude-haiku-4-5-20251001-v1:0 included in the collapsing variant set and matches via the optional group."},
+    {"kind": "spec", "item": "Review Focus: trailing-suffix strip must only match the literal -v<digits>:<digits> shape at the end, no extra conditions", "status": "partial", "notes": "The 'must not touch date stamp / own version dash' half is satisfied, but the implementation adds an unspecified precondition (preceding 8-digit date stamp) narrowing coverage beyond what was specified — deliberate, already approved (see rationale)."},
+    {"kind": "spec", "item": "Review Focus: HAVING <> '' filter applies to the normalized expression", "status": "pass", "notes": "HAVING {model_name} <> '' confirmed by test_model_breakdown_groups_by_the_normalized_expression."},
+    {"kind": "spec", "item": "Review Focus: ORDER BY keeps COLLATE \"C\" tiebreak, now against the output alias rather than d.model_name directly", "status": "fail", "notes": "ORDER BY repeats the full normalized expression rather than the alias; the test's own comment documents this as a required Postgres correctness fix (alias+COLLATE resolves to the FROM-clause column and raises GroupingError), not a code defect — spec wording was imprecise about this Postgres constraint."},
+    {"kind": "spec", "item": "Review Focus: all five literal Haiku examples normalize to the exact same string, verified by direct behavioral assertion", "status": "pass", "notes": "test_normalization_collapses_known_bug_variants_but_not_distinct_models runs a Python mirror of the regex chain against the five variants and checks they collapse to one set."}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "fail", "notes": "Commit 8a76e9b8c ('normalize-model-name-regional-prefixes: add planning artifacts') does not use the EPMCDME-####: Description format documented in .ai-run/guides/standards/git-workflow.md; every other commit in the MR range correctly follows it."},
+    {"kind": "code-quality", "status": "pass", "notes": "_normalized_model_name is a typed @staticmethod placed beside the file's other SQL-fragment helpers (_scope/_sessions_cte), consistent with code-quality.md's module-cohesion guidance; no missing type hints or license-header issues."},
+    {"kind": "security", "status": "na", "notes": "No auth/secret/endpoint surface touched; regexp_replace patterns operate on a hardcoded column reference ('d.model_name'), not externally-supplied SQL text, so there is no injection surface."}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/repository/cli_analytics/postgres/reader.py",
+      "line": 207,
+      "title": "Normalization assumes lowercase routing/region/provider tokens",
+      "problem": "None of the three chained regexp_replace calls pass the 'i' (case-insensitive) flag, so a routing prefix, region token, or provider segment arriving in any case other than lowercase (e.g. 'Converse/US.Anthropic.claude-...') will not match any of the three patterns.",
+      "impact": "A mixed-case model_name variant is left completely unnormalized and fragments into its own breakdown row instead of merging with the canonical lowercase variant; no test exercises a mixed-case input.",
+      "recommendation": "Add the 'i' flag to all three regexp_replace calls, or confirm and test that upstream ingestion guarantees lowercase for these tokens."
+    },
+    {
+      "id": "CR-002",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/repository/cli_analytics/postgres/reader.py",
+      "line": 207,
+      "title": "Routing-prefix strip anchored to string start only",
+      "problem": "'^(converse|invoke)/' only matches when the routing token is literally the first thing in the string; a routing prefix nested behind another wrapper segment (e.g. 'bedrock/converse/us.anthropic...') never matches because of the '^' anchor.",
+      "impact": "Such a variant is left entirely unnormalized, including the region/provider part that would otherwise be reachable, so it continues to fragment the breakdown report. Reachability in current production CLI telemetry could not be confirmed from this review.",
+      "recommendation": "Confirm whether any nested-prefix form is reachable in production data; if so, loosen the anchor or strip the outer wrapper first."
+    },
+    {
+      "id": "CR-003",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/repository/cli_analytics/postgres/reader.py",
+      "line": 208,
+      "title": "Region-prefix strip doesn't handle multi-segment prefixes",
+      "problem": "'^([a-z0-9-]+\\.)?anthropic\\.' matches at most one leading dot-segment before 'anthropic.'; a compound prefix with two or more dot-segments (e.g. 'aws.us-east-1.anthropic.') leaves the outer segment(s) unstripped.",
+      "impact": "Such a variant retains a residual prefix and continues to fragment the breakdown report instead of merging into the canonical row. Reachability in current production data could not be confirmed from this review.",
+      "recommendation": "Repeat the optional group ('(?:[a-z0-9-]+\\.)*anthropic\\.') so any number of leading dot-segments are stripped, or confirm at most one region segment can ever precede 'anthropic.' in production data."
+    },
+    {
+      "id": "CR-004",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/repository/cli_analytics/postgres/reader.py",
+      "line": 209,
+      "title": "Version-suffix strip is end-anchored and brittle to trailing extras",
+      "problem": "'(\\d{8})-v\\d+:\\d+$' requires the inference-profile tag to be the literal end of the string; a variant with extra trailing characters or segments after the version tag (e.g. '-20251001-v1:0:1' or '...-v1:0-prod') does not match.",
+      "impact": "That variant keeps its full suffix and does not collapse with the bare-date canonical form, re-fragmenting the breakdown for that model. Reachability of such suffix shapes in production Bedrock data could not be confirmed from this review.",
+      "recommendation": "Confirm whether extended suffix shapes occur in production; if so, loosen the trailing anchor or add an explicit case for them."
+    },
+    {
+      "id": "CR-005",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/repository/cli_analytics/postgres/test_reader.py",
+      "title": "Missing test for numeric aggregation across merged variants",
+      "problem": "All new tests assert either the generated SQL string shape or a pure-Python mirror of the regex chain; none exercises get_model_breakdown against sample cost_daily rows carrying two raw-name variants of the same model and asserts the merged row's session_count/cost_usd/total_tokens.",
+      "impact": "The actual behavior this fix exists to deliver — correct aggregation after the GROUP BY key changes — has no regression test; a future change could reintroduce incorrect summation (e.g. double-counting sessions across variants) without failing any test.",
+      "recommendation": "Add a test that feeds get_model_breakdown two raw-name variants of one model within the same window/session and asserts the single merged output row's session_count/cost_usd/total_tokens are correctly summed and deduped."
+    },
+    {
+      "id": "CR-006",
+      "severity": "major",
+      "triage": "patch",
+      "file": "unknown",
+      "title": "Commit message doesn't follow ticket-prefixed format",
+      "problem": "Commit 8a76e9b8c ('normalize-model-name-regional-prefixes: add planning artifacts') in this MR's range does not use the documented 'EPMCDME-####: Description' format.",
+      "impact": "Violates the repo's documented commit-message convention (.ai-run/guides/standards/git-workflow.md), which every other commit in this same MR correctly follows.",
+      "recommendation": "Reword via rebase/squash to 'EPMCDME-15523: Add planning artifacts', or squash all commits into one ticket-prefixed commit per the guide's default squash-merge strategy before merging."
+    }
+  ]
+}

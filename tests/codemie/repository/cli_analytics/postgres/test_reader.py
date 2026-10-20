@@ -27,6 +27,7 @@ from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
 from codemie.repository.cli_analytics.ports import CliAnalyticsReader
 from codemie.repository.cli_analytics.postgres.reader import (
     PostgresCliAnalyticsReader,
+    _C,
     normalise,
     positional,
     truncate_to_ms,
@@ -367,6 +368,137 @@ async def test_cost_methods_have_no_day_window_and_are_bound_to_sel(method):
     assert "day BETWEEN" not in sql
     assert "LEFT JOIN sel" not in sql
     assert "JOIN sel" in sql or "IN (SELECT session_id FROM sel)" in sql
+
+
+_NORMALIZED_MODEL_NAME_SQL = (
+    "regexp_replace(regexp_replace(regexp_replace(d.model_name, '^(bedrock/)?(converse|invoke)/', '', 'i'), "
+    "'^([a-z0-9-]+\\.)?anthropic\\.', '', 'i'), '(\\d{8})-v\\d+:\\d+$', '\\1')"
+)
+
+
+def test_normalized_model_name_sql_expression_is_pinned():
+    assert PostgresCliAnalyticsReader._normalized_model_name("d.model_name") == _NORMALIZED_MODEL_NAME_SQL
+
+
+@pytest.mark.asyncio
+async def test_model_breakdown_groups_by_the_normalized_expression():
+    sql, _ = await _sql_of("get_model_breakdown")
+
+    assert f"{_NORMALIZED_MODEL_NAME_SQL} AS model_name" in sql
+    assert f"GROUP BY {_NORMALIZED_MODEL_NAME_SQL}" in sql
+    assert f"HAVING {_NORMALIZED_MODEL_NAME_SQL} <> ''" in sql
+    assert "GROUP BY d.model_name" not in sql
+    assert "HAVING d.model_name <> ''" not in sql
+    assert f"{_NORMALIZED_MODEL_NAME_SQL} {_C}" in sql
+
+
+@pytest.mark.asyncio
+async def test_model_breakdown_order_by_repeats_the_full_normalized_expression():
+    # Regression: ORDER BY ..., model_name COLLATE "C" looks like a reference to the
+    # SELECT list's output alias, but attaching COLLATE makes it a general expression,
+    # so Postgres resolves the bare identifier against the FROM-clause column
+    # (cost_daily.model_name) instead of the alias. That raw column is no longer in
+    # GROUP BY (the normalized expression is), so Postgres raises a GroupingError at
+    # runtime. ORDER BY must repeat the full normalized expression, not the bare alias.
+    sql, _ = await _sql_of("get_model_breakdown")
+
+    assert f"ORDER BY session_count DESC, cost_usd DESC, {_NORMALIZED_MODEL_NAME_SQL} {_C}" in sql
+
+
+def _apply(raw: str) -> str:
+    s = re.sub(r"^(bedrock/)?(converse|invoke)/", "", raw, flags=re.IGNORECASE)
+    s = re.sub(r"^([a-z0-9-]+\.)?anthropic\.", "", s, flags=re.IGNORECASE)
+    return re.sub(r"(\d{8})-v\d+:\d+$", r"\1", s)
+
+
+def test_normalization_collapses_known_bug_variants_but_not_distinct_models():
+    variants = [
+        "converse/us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        "converse/global.anthropic.claude-haiku-4-5-20251001-v1:0",
+        "converse/eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+        "invoke/us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        "us-gov-west-1.anthropic.claude-haiku-4-5-20251001-v1:0",
+        "anthropic.claude-haiku-4-5-20251001-v1:0",
+        "claude-haiku-4-5-20251001",
+    ]
+    assert {_apply(v) for v in variants} == {"claude-haiku-4-5-20251001"}
+    assert _apply("claude-sonnet-5") == "claude-sonnet-5"
+    assert _apply("claude-sonnet-5-5") == "claude-sonnet-5-5"
+    assert _apply("claude-sonnet-5") != _apply("claude-sonnet-5-5")
+
+
+def test_normalization_handles_invoke_routing_prefix_and_hyphenated_digit_region_tokens():
+    # CR-001: the InvokeModel API path routes through 'invoke/', not just 'converse/'.
+    assert _apply("invoke/anthropic.claude-haiku-4-5-20251001-v1:0") == "claude-haiku-4-5-20251001"
+    # CR-002: a GovCloud-style region token has hyphens and digits, not just letters.
+    assert _apply("us-gov-west-1.anthropic.claude-haiku-4-5-20251001-v1:0") == "claude-haiku-4-5-20251001"
+
+
+def test_normalization_does_not_collapse_a_models_own_trailing_version_shape():
+    # CR-003: the trailing-suffix strip must only match a recognized Bedrock
+    # inference-profile tag, i.e. one immediately preceded by an 8-digit date
+    # stamp. A model id that merely happens to end in '-v<digits>:<digits>'
+    # without that date stamp in front keeps its own identifier untouched.
+    assert _apply("my-custom-model-v1:0") == "my-custom-model-v1:0"
+    assert _apply("my-custom-model-v1:0") != _apply("my-custom-model")
+
+
+def test_normalization_is_case_insensitive():
+    # CR-001 (standalone re-review): confirmed on a live PostgreSQL instance that the
+    # prior case-sensitive regexp_replace calls left an uppercase-routed variant
+    # ("CONVERSE/US.ANTHROPIC....") completely unstripped, so it did not merge with its
+    # canonical lowercase sibling. The 'i' flag added to the first two regexp_replace
+    # calls fixes this; the Python mirror must match.
+    assert _apply("CONVERSE/US.ANTHROPIC.claude-haiku-4-5-20251001-v1:0") == "claude-haiku-4-5-20251001"
+
+
+def test_normalization_strips_a_nested_bedrock_provider_wrapper():
+    # CR-002 (standalone re-review): LiteLLM's own Bedrock provider convention nests the
+    # API-path marker behind a 'bedrock/' provider prefix (e.g. 'bedrock/converse/...'),
+    # documented in LiteLLM's model-routing strings even though not yet observed in this
+    # telemetry source. Confirmed on a live PostgreSQL instance that the prior pattern left
+    # 'bedrock/converse/us.anthropic....' completely unstripped; the optional '(bedrock/)?'
+    # wrapper fixes this without affecting the already-supported bare 'converse/'/'invoke/'.
+    assert _apply("bedrock/converse/us.anthropic.claude-haiku-4-5-20251001-v1:0") == "claude-haiku-4-5-20251001"
+    assert _apply("bedrock/invoke/anthropic.claude-haiku-4-5-20251001-v1:0") == "claude-haiku-4-5-20251001"
+    # the bare (non-nested) forms must still work unchanged
+    assert _apply("converse/us.anthropic.claude-haiku-4-5-20251001-v1:0") == "claude-haiku-4-5-20251001"
+    assert _apply("Converse/Us.Anthropic.claude-haiku-4-5-20251001-v1:0") == "claude-haiku-4-5-20251001"
+
+
+def test_aggregation_merges_session_count_and_cost_across_raw_name_variants():
+    # CR-005: no prior test asserted the actual aggregation outcome (session_count/cost_usd/
+    # total_tokens) after grouping by the normalized expression, only the SQL shape and the
+    # regex mirror in isolation. This simulates get_model_breakdown's grouping semantics
+    # (count(DISTINCT session_id), sum(cost_usd)) in Python over cost_daily-shaped rows whose
+    # raw model_name varies per row but denotes the same canonical model, mirroring what was
+    # verified end-to-end against a live PostgreSQL instance (see docs/superpowers/reviews/
+    # 2026-10-20-mr-4489/verify_model_breakdown.py).
+    rows = [
+        {"session_id": "s1", "model_name": "converse/us.anthropic.claude-haiku-4-5-20251001-v1:0", "cost_usd": 1.0},
+        {
+            "session_id": "s2",
+            "model_name": "converse/global.anthropic.claude-haiku-4-5-20251001-v1:0",
+            "cost_usd": 2.0,
+        },
+        {"session_id": "s3", "model_name": "claude-haiku-4-5-20251001", "cost_usd": 3.0},
+        {"session_id": "s4", "model_name": "claude-sonnet-5", "cost_usd": 5.0},
+        {"session_id": "s5", "model_name": "claude-sonnet-5-5", "cost_usd": 7.0},
+    ]
+    by_canonical: dict[str, list[dict]] = {}
+    for row in rows:
+        by_canonical.setdefault(_apply(row["model_name"]), []).append(row)
+
+    assert set(by_canonical) == {"claude-haiku-4-5-20251001", "claude-sonnet-5", "claude-sonnet-5-5"}
+
+    haiku_rows = by_canonical["claude-haiku-4-5-20251001"]
+    assert len({r["session_id"] for r in haiku_rows}) == 3  # COUNT(DISTINCT session_id)
+    assert sum(r["cost_usd"] for r in haiku_rows) == 6.0  # sum(cost_usd)
+
+    assert {r["session_id"] for r in by_canonical["claude-sonnet-5"]} == {"s4"}
+    assert sum(r["cost_usd"] for r in by_canonical["claude-sonnet-5"]) == 5.0
+    assert {r["session_id"] for r in by_canonical["claude-sonnet-5-5"]} == {"s5"}
+    assert sum(r["cost_usd"] for r in by_canonical["claude-sonnet-5-5"]) == 7.0
 
 
 @pytest.mark.asyncio
