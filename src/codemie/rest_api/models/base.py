@@ -25,7 +25,7 @@ from codemie.clients.elasticsearch import ElasticSearchClient
 from codemie.rest_api.models.standard import PostResponse
 
 from sqlmodel import SQLModel, Session, select, Field
-from codemie.clients.postgres import PostgresClient
+from codemie.clients.postgres import PostgresClient, get_session
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.types import TypeDecorator
 from sqlalchemy.ext.mutable import MutableList
@@ -509,7 +509,7 @@ class BaseModelWithSQLSupport(CommonBaseModel):
             if validation_message:
                 raise ValueError(validation_message)
 
-        with Session(self.get_engine()) as session:
+        with get_session(self.get_engine()) as session:
             session.add(self)
             session.commit()
             session.refresh(self)
@@ -523,7 +523,7 @@ class BaseModelWithSQLSupport(CommonBaseModel):
             if validation_message:
                 raise ValueError(validation_message)
 
-        with Session(self.get_engine()) as session:
+        with get_session(self.get_engine()) as session:
             existing = session.get(type(self), self.id)
             if existing is None:
                 raise StaleDataError(f"Record {self.id} has been deleted")

@@ -502,6 +502,7 @@ async def test_update_user_setting_success(
 
 
 @pytest.mark.anyio
+@patch('codemie.rest_api.routers.user_settings.Settings')
 @patch('codemie.core.ability.Ability.can')
 @patch('codemie.rest_api.routers.user_settings.project_access_check')
 @patch('codemie.service.settings.settings.SettingsService.update_settings')
@@ -513,6 +514,7 @@ async def test_update_user_setting_with_project_access_check(
     mock_update_settings,
     mock_project_access_check,
     mock_can,
+    mock_settings,
     mock_user,
 ):
     """Test update_user_setting checks project access when project_name is provided."""
@@ -522,6 +524,8 @@ async def test_update_user_setting_with_project_access_check(
     mock_ability.user_id = "user123"
     mock_get_setting_ability.return_value = mock_ability
     mock_can.return_value = True
+    # Same project as the request below, so the new project-transfer path is not exercised here.
+    mock_settings.get_by_id.return_value.project_name = "test_project"
 
     request_data = {
         "project_name": "test_project",
@@ -538,6 +542,65 @@ async def test_update_user_setting_with_project_access_check(
     # Assert
     assert response.status_code == status.HTTP_200_OK
     mock_project_access_check.assert_called_once_with(mock_user, "test_project")
+
+
+@pytest.mark.anyio
+@patch('codemie.rest_api.routers.user_settings.SettingsTransferService')
+@patch('codemie.rest_api.routers.user_settings.Settings')
+@patch('codemie.core.ability.Ability.can')
+@patch('codemie.rest_api.routers.user_settings.project_access_check')
+@patch('codemie.service.settings.settings.SettingsService.update_settings')
+@patch('codemie.service.settings.settings.SettingsService.get_setting_ability')
+@patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
+async def test_update_user_setting_does_not_move_when_update_settings_fails(
+    mock_authenticate,
+    mock_get_setting_ability,
+    mock_update_settings,
+    mock_project_access_check,
+    mock_can,
+    mock_settings,
+    mock_transfer_service,
+    mock_user,
+):
+    """Field updates are applied before the move, not after: if update_settings fails
+    (e.g. the new alias already exists in the target project), transfer_setting must
+    never run. Otherwise the setting would end up moved without the field updates that
+    were supposed to go with it, and a retry against the original project would 404.
+
+    Uses a locally-scoped app with the real exception handler registered (unlike the
+    module-level `app`) so the assertion below exercises actual HTTP behavior instead of
+    an exception that only propagates because no handler is registered."""
+    # Arrange
+    from codemie.rest_api.main import extended_http_exception_handler
+
+    local_app = FastAPI()
+    local_app.include_router(router)
+    local_app.add_exception_handler(ExtendedHTTPException, extended_http_exception_handler)
+
+    mock_authenticate.return_value = mock_user
+    mock_ability = MagicMock()
+    mock_ability.user_id = "user123"
+    mock_get_setting_ability.return_value = mock_ability
+    mock_can.return_value = True
+    mock_settings.get_by_id.return_value.project_name = "old_project"
+    mock_update_settings.side_effect = ValueError("There are more than one settings with the alias named renamed_alias")
+
+    request_data = {
+        "project_name": "test_project",  # Different project...
+        "alias": "renamed_alias",  # ...and a different alias, at the same time
+        "credential_type": "AWS",
+        "credential_values": [{"key": "key", "value": "value"}],
+    }
+
+    # Act
+    transport = ASGITransport(app=local_app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.put("/v1/settings/user/setting123", headers={"user-id": "user123"}, json=request_data)
+
+    # Assert
+    assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+    mock_update_settings.assert_called_once()
+    mock_transfer_service.transfer_setting.assert_not_called()
 
 
 @pytest.mark.anyio

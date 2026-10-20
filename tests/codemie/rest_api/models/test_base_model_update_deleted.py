@@ -30,12 +30,12 @@ class _UpdateTestModel(BaseModelWithSQLSupport, table=True):
     created_by: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(JSONB))
 
 
-@patch("codemie.rest_api.models.base.Session")
+@patch("codemie.rest_api.models.base.get_session")
 @patch("codemie.clients.postgres.PostgresClient.get_engine")
-def test_update_raises_stale_data_error_when_record_deleted(mock_get_engine, mock_session_class):
+def test_update_raises_stale_data_error_when_record_deleted(mock_get_engine, mock_get_session):
     model = _UpdateTestModel(id="deleted-id", name="x")
     mock_session = MagicMock()
-    mock_session_class.return_value.__enter__.return_value = mock_session
+    mock_get_session.return_value.__enter__.return_value = mock_session
     mock_session.get.return_value = None
 
     with pytest.raises(StaleDataError):
@@ -44,12 +44,12 @@ def test_update_raises_stale_data_error_when_record_deleted(mock_get_engine, moc
     mock_session.merge.assert_not_called()
 
 
-@patch("codemie.rest_api.models.base.Session")
+@patch("codemie.rest_api.models.base.get_session")
 @patch("codemie.clients.postgres.PostgresClient.get_engine")
-def test_update_proceeds_normally_for_existing_record(mock_get_engine, mock_session_class):
+def test_update_proceeds_normally_for_existing_record(mock_get_engine, mock_get_session):
     model = _UpdateTestModel(id="live-id", name="x")
     mock_session = MagicMock()
-    mock_session_class.return_value.__enter__.return_value = mock_session
+    mock_get_session.return_value.__enter__.return_value = mock_session
     mock_session.get.return_value = model
 
     result = model.update()

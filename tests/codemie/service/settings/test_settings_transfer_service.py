@@ -24,7 +24,7 @@ from pydantic import ValidationError
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import CreatedByUser
 from codemie.rest_api.models.settings import CredentialValues, Settings, SettingType
-from codemie.rest_api.models.settings_transfer import TransferMode, TransferSettingsRequest
+from codemie.rest_api.models.settings_transfer import TransferItem, TransferMode, TransferSettingsRequest
 from codemie.service.settings.settings_transfer_service import SettingsTransferService
 from codemie_tools.base.models import CredentialTypes
 
@@ -521,6 +521,19 @@ class TestCollisionMatrix:
         self._run(source, [])
 
 
+def _fake_exec_result(statement, settings_rows):
+    """Route a fake `session.exec(select(...))` by target table.
+
+    `_apply` runs two different `select()`s under one session: the Settings FOR UPDATE
+    re-read, and (for MOVE) the IndexInfo lookup for datasource unlinking. A fake session
+    that always returns the same rows regardless of the statement would hand Settings rows
+    back for the IndexInfo query too, so route on the table name instead.
+    """
+    if "index_info" in str(statement):
+        return SimpleNamespace(all=lambda: [])
+    return SimpleNamespace(all=lambda: list(settings_rows))
+
+
 class _FakeSession:
     """Covers the session surface _apply uses: advisory locks, a FOR UPDATE re-read, writes."""
 
@@ -533,9 +546,9 @@ class _FakeSession:
         """Advisory lock; nothing to simulate."""
         return MagicMock()
 
-    def exec(self, _statement):
+    def exec(self, statement):
         """Stands in for `select(Settings).where(id.in_(...)).with_for_update()`."""
-        return SimpleNamespace(all=lambda: list(self._rows.values()))
+        return _fake_exec_result(statement, self._rows.values())
 
     def add(self, obj):
         self.added.append(obj)
@@ -629,7 +642,7 @@ class TestApplyOrdersLockingBeforeValidation:
         mock_select.return_value = [stale]
 
         session = MagicMock()
-        session.exec.side_effect = lambda _stmt: SimpleNamespace(all=lambda: [fresh])
+        session.exec.side_effect = lambda stmt: _fake_exec_result(stmt, [fresh])
         mock_get_session.return_value.__enter__.return_value = session
 
         calls = []
@@ -648,6 +661,189 @@ class TestApplyOrdersLockingBeforeValidation:
         assert lock_params == {"id": SettingsTransferService.ADVISORY_LOCK_ID}
         assert calls[1:] == ["renamed-by-someone-else"]
         session.commit.assert_called_once()
+
+
+class TestUnlinkOrphanedDatasources:
+    """Unit coverage for the EPMCDME-12586 review fix: clear IndexInfo.setting_id on move."""
+
+    def test_nulls_setting_id_for_datasources_referencing_a_moved_setting(self):
+        # Arrange
+        moved = [_setting("jira-prod", id_="row-1")]
+        affected_ds = SimpleNamespace(id="ds-1", setting_id="row-1")
+        session = MagicMock()
+        session.exec.return_value = SimpleNamespace(all=lambda: [affected_ds])
+
+        # Act
+        SettingsTransferService._unlink_orphaned_datasources(moved, "source", session)
+
+        # Assert
+        assert affected_ds.setting_id is None
+        session.add.assert_called_once_with(affected_ds)
+
+    def test_no_op_when_no_datasource_references_the_moved_settings(self):
+        # Arrange
+        moved = [_setting("jira-prod", id_="row-1")]
+        session = MagicMock()
+        session.exec.return_value = SimpleNamespace(all=lambda: [])
+
+        # Act
+        SettingsTransferService._unlink_orphaned_datasources(moved, "source", session)
+
+        # Assert
+        session.add.assert_not_called()
+
+
+class TestApplyUnlinksDatasourcesOnMoveOnly:
+    """`_apply` must clear datasource links for MOVE, and never touch them for COPY."""
+
+    @patch.object(SettingsTransferService, "_unlink_orphaned_datasources")
+    @patch("codemie.service.settings.settings_transfer_service.get_session")
+    @patch.object(SettingsTransferService, "_validate_no_collisions")
+    def test_move_unlinks_datasources_inside_the_same_transaction(
+        self, _mock_no_collisions, mock_get_session, mock_unlink
+    ):
+        # Arrange
+        row = _setting("jira-prod", id_="row-1")
+        session = _FakeSession({"row-1": row})
+        mock_get_session.return_value.__enter__.return_value = session
+
+        # Act
+        SettingsTransferService._apply([row], "source", "target", TransferMode.MOVE)
+
+        # Assert — unlink runs before commit, against the locked rows and source project
+        mock_unlink.assert_called_once()
+        args = mock_unlink.call_args.args
+        assert [r.id for r in args[0]] == ["row-1"]
+        assert args[1] == "source"
+        assert args[2] is session
+        assert session.commit_calls == 1
+
+    @patch.object(SettingsTransferService, "_unlink_orphaned_datasources")
+    @patch("codemie.service.settings.settings_transfer_service.get_session")
+    @patch.object(SettingsTransferService, "_validate_no_collisions")
+    def test_copy_never_touches_datasource_links(self, _mock_no_collisions, mock_get_session, mock_unlink):
+        # Arrange
+        row = _setting("jira-prod", id_="row-1")
+        session = _FakeSession({"row-1": row})
+        mock_get_session.return_value.__enter__.return_value = session
+
+        # Act
+        SettingsTransferService._apply([row], "source", "target", TransferMode.COPY)
+
+        # Assert — copy leaves the source project, and everything referencing it, untouched
+        mock_unlink.assert_not_called()
+
+
+class TestTransferSetting:
+    """Coverage for the single-setting entrypoint used by the project-setting update path."""
+
+    @patch.object(SettingsTransferService, "_apply")
+    @patch.object(SettingsTransferService, "_validate_aliases_present")
+    @patch.object(SettingsTransferService, "_validate_projects")
+    @patch("codemie.service.settings.settings_transfer_service.Settings.get_by_id")
+    def test_moves_a_single_setting_by_id(
+        self, mock_get_by_id, mock_validate_projects, mock_validate_aliases, mock_apply
+    ):
+        # Arrange
+        row = _setting("jira-prod", id_="row-1")
+        row.project_name = "source"
+        mock_get_by_id.return_value = row
+        mock_apply.return_value = (
+            [TransferItem(id="row-1", alias="jira-prod", credential_type=CredentialTypes.JIRA)],
+            False,
+        )
+
+        # Act
+        result = SettingsTransferService.transfer_setting("row-1", "target")
+
+        # Assert
+        mock_get_by_id.assert_called_once_with("row-1")
+        mock_validate_projects.assert_called_once_with("source", "target")
+        mock_validate_aliases.assert_called_once_with([row])
+        mock_apply.assert_called_once_with([row], "source", "target", TransferMode.MOVE)
+        assert result.id == "row-1"
+        assert result.alias == "jira-prod"
+
+    @patch.object(SettingsTransferService, "_apply")
+    @patch.object(SettingsTransferService, "_validate_aliases_present")
+    @patch.object(SettingsTransferService, "_validate_projects")
+    @patch("codemie.service.settings.settings_transfer_service.Settings.get_by_id")
+    def test_supports_copy_mode(self, mock_get_by_id, _mp, _ma, mock_apply):
+        # Arrange
+        row = _setting("jira-prod", id_="row-1")
+        row.project_name = "source"
+        mock_get_by_id.return_value = row
+        mock_apply.return_value = (
+            [TransferItem(id="row-2", alias="jira-prod", credential_type=CredentialTypes.JIRA)],
+            False,
+        )
+
+        # Act
+        SettingsTransferService.transfer_setting("row-1", "target", mode=TransferMode.COPY)
+
+        # Assert
+        mock_apply.assert_called_once_with([row], "source", "target", TransferMode.COPY)
+
+    @patch("codemie.enterprise.litellm.credentials.clear_litellm_user_credentials_cache")
+    @patch.object(SettingsTransferService, "_apply")
+    @patch.object(SettingsTransferService, "_validate_aliases_present")
+    @patch.object(SettingsTransferService, "_validate_projects")
+    @patch("codemie.service.settings.settings_transfer_service.Settings.get_by_id")
+    def test_clears_litellm_cache_when_moving_a_litellm_setting(self, mock_get_by_id, _mp, _ma, mock_apply, mock_clear):
+        # Arrange
+        row = _setting("llm-key", CredentialTypes.LITE_LLM, id_="row-1")
+        mock_get_by_id.return_value = row
+        mock_apply.return_value = (
+            [TransferItem(id="row-1", alias="llm-key", credential_type=CredentialTypes.LITE_LLM)],
+            True,
+        )
+
+        # Act
+        SettingsTransferService.transfer_setting("row-1", "target")
+
+        # Assert
+        mock_clear.assert_called_once_with(None)
+
+    @patch.object(SettingsTransferService, "_validate_projects")
+    @patch("codemie.service.settings.settings_transfer_service.Settings.get_by_id")
+    def test_propagates_validate_projects_rejection(self, mock_get_by_id, mock_validate_projects):
+        # Arrange — e.g. source and target are the same, or target does not exist
+        row = _setting("jira-prod", id_="row-1")
+        mock_get_by_id.return_value = row
+        mock_validate_projects.side_effect = ExtendedHTTPException(
+            code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            message="Invalid transfer request",
+            details="Source and target projects must be different.",
+            help="Choose a target project other than the source project.",
+        )
+
+        # Act / Assert
+        with pytest.raises(ExtendedHTTPException) as excinfo:
+            SettingsTransferService.transfer_setting("row-1", row.project_name)
+
+        assert excinfo.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY
+
+    @patch.object(SettingsTransferService, "_validate_no_collisions")
+    @patch("codemie.service.settings.settings_transfer_service.get_session")
+    @patch.object(SettingsTransferService, "_validate_projects")
+    @patch("codemie.service.settings.settings_transfer_service.Settings.get_by_id")
+    def test_move_updates_project_name_in_place_end_to_end(
+        self, mock_get_by_id, _mock_validate_projects, mock_get_session, _mock_no_collisions
+    ):
+        # Arrange
+        row = _setting("jira-prod", id_="row-1")
+        row.project_name = "source"
+        mock_get_by_id.return_value = row
+        session = _FakeSession({"row-1": row})
+        mock_get_session.return_value.__enter__.return_value = session
+
+        # Act
+        result = SettingsTransferService.transfer_setting("row-1", "target")
+
+        # Assert — real _apply ran: locked, moved, committed
+        assert row.project_name == "target"
+        assert result.id == "row-1"
+        assert session.commit_calls == 1
 
 
 class TestApplyDoesNotLeakOrmState:
@@ -702,7 +898,7 @@ class TestApplyDoesNotLeakOrmState:
 class TestTransfer:
     def _session_mock(self, rows_by_id):
         session = MagicMock()
-        session.exec.side_effect = lambda _stmt: SimpleNamespace(all=lambda: list(rows_by_id.values()))
+        session.exec.side_effect = lambda stmt: _fake_exec_result(stmt, rows_by_id.values())
         return session
 
     @patch("codemie.service.settings.settings_transfer_service.get_session")

@@ -219,14 +219,14 @@ class TestEnrichCategories:
 class TestCreateCategory:
     """Tests for create_category method."""
 
-    @patch('codemie.rest_api.models.base.Session')
+    @patch('codemie.rest_api.models.base.get_session')
     @patch('codemie.rest_api.models.category.Category.get_engine')
-    def test_create_category_success(self, mock_get_engine, mock_session_cls, category_service):
+    def test_create_category_success(self, mock_get_engine, mock_get_session, category_service):
         """Test successful category creation."""
         # Mock the database session to avoid actual database operations
         mock_session = MagicMock()
-        mock_session_cls.return_value.__enter__.return_value = mock_session
-        mock_session_cls.return_value.__exit__.return_value = None
+        mock_get_session.return_value.__enter__.return_value = mock_session
+        mock_get_session.return_value.__exit__.return_value = None
         mock_get_engine.return_value = MagicMock()
 
         result = category_service.create_category("Engineering", "Test description")

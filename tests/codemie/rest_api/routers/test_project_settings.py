@@ -159,16 +159,19 @@ async def test_create_project_setting_logs_on_success(mock_authenticate, mock_cr
 
 @pytest.mark.anyio
 @patch("codemie.rest_api.routers.project_settings.logger")
+@patch("codemie.rest_api.routers.project_settings.Settings")
 @patch("codemie.rest_api.routers.project_settings.Ability")
 @patch('codemie.service.settings.settings.SettingsService.update_settings')
 @patch('codemie.service.settings.settings.SettingsService.get_setting_ability')
 @patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
 async def test_update_project_setting_logs_on_success(
-    mock_authenticate, mock_get_ability, mock_update_settings, mock_ability, mock_logger
+    mock_authenticate, mock_get_ability, mock_update_settings, mock_ability, mock_settings, mock_logger
 ):
     """update_project_setting emits a logger.info containing 'project_setting_updated'."""
     mock_authenticate.return_value = _admin_user()
     mock_ability.return_value.can.return_value = True
+    # Same project as the request below, so the new project-transfer path is not exercised here.
+    mock_settings.get_by_id.return_value.project_name = "test_project"
     request_data = {
         "project_name": "test_project",
         "alias": "my-git",

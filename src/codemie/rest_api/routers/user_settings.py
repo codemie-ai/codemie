@@ -13,11 +13,13 @@
 # limitations under the License.
 
 import json
+from contextlib import nullcontext
 from typing import List, Optional
 from fastapi import APIRouter, status, Request, Depends
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
 
+from codemie.clients.postgres import transactional_session
 from codemie.configs.customer_config import customer_config
 from codemie.core.ability import Ability, Action
 from codemie.core.exceptions import ExtendedHTTPException
@@ -28,6 +30,7 @@ from codemie.service.aws_bedrock.bedrock_orchestration_service import BedrockOrc
 from codemie.service.settings.settings import SettingsService
 from codemie.service.settings.settings_tester import SettingsTester
 from codemie.service.settings.settings_index_service import SettingsIndexService
+from codemie.service.settings.settings_transfer_service import SettingsTransferService
 from codemie.rest_api.security.authentication import authenticate, User
 from codemie.rest_api.models.settings import (
     SettingRequest,
@@ -37,6 +40,7 @@ from codemie.rest_api.models.settings import (
     UserSetting,
     ProjectSetting,
 )
+from codemie.rest_api.models.settings_transfer import TransferMode
 from codemie_tools.base.models import CredentialTypes
 from codemie.service.settings.settings_request_validator import (
     validate_git_request,
@@ -230,7 +234,18 @@ def update_user_setting(request: SettingRequest, setting_id: str, user: User = D
         if not Ability(user).can(Action.WRITE, setting_ability):
             raise_access_denied("write")
 
-        SettingsService.update_settings(credential_id=setting_id, request=request, user_id=user.id)
+        existing_setting = Settings.get_by_id(setting_id)
+        project_changed = bool(request.project_name and request.project_name != existing_setting.project_name)
+
+        # When the project changes, run the field update and the move in one transaction so they
+        # are atomic — see the matching comment in update_project_setting. Field updates still run
+        # before the move so the row carries the new alias for the transfer's locked collision check.
+        transaction = transactional_session() if project_changed else nullcontext()
+        with transaction:
+            SettingsService.update_settings(credential_id=setting_id, request=request, user_id=user.id)
+
+            if project_changed:
+                SettingsTransferService.transfer_setting(setting_id, request.project_name, mode=TransferMode.MOVE)
     except ExtendedHTTPException:
         raise
     except IntegrityError as e:

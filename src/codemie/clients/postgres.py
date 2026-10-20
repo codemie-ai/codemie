@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 from contextlib import asynccontextmanager, contextmanager
+from contextvars import ContextVar
 
 from pydantic.json import pydantic_encoder
 from sqlalchemy import text
@@ -256,17 +257,90 @@ def alembic_upgrade_enterprise_postgres() -> None:
                 command.upgrade(alembic_cfg, "head")
 
 
+# Ambient session published by `transactional_session()`. When set, nested `get_session()` calls
+# (including the ones inside BaseModelWithSQLSupport.update()/save()) join this session instead of
+# opening their own, so a caller can run several writes in a single transaction. Request-scoped and
+# async-safe, following the same ContextVar pattern as rest_api.security.user_context.
+_current_session: ContextVar[Session | None] = ContextVar("current_db_session", default=None)
+
+
+class _JoinedSession:
+    """Proxy over an ambient session whose finalizers are no-ops.
+
+    Handed out by `get_session()` while a `transactional_session()` is active so nested callers can
+    `commit()`/`rollback()`/`close()` unchanged, while only the owner (`transactional_session`)
+    actually finalizes the shared transaction. Every other attribute delegates to the real session.
+    """
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def commit(self) -> None:
+        """No-op: only the owning transactional_session() commits the shared transaction."""
+
+    def rollback(self) -> None:
+        """No-op: only the owning transactional_session() rolls the shared transaction back."""
+
+    def close(self) -> None:
+        """No-op: the owning transactional_session() closes the underlying session."""
+
+    def __getattr__(self, name):
+        return getattr(self._session, name)
+
+
 @contextmanager
-def get_session():
+def get_session(engine=None):
     """
     Context manager for database sessions.
+
+    If a `transactional_session()` is active in the current context, joins it (as a
+    `_JoinedSession` whose commit/rollback/close are no-ops) so the work participates in that
+    single transaction. Otherwise opens and owns its own session, exactly as before.
+
+    Args:
+        engine: Engine for an owned session; defaults to `PostgresClient.get_engine()`.
 
     Yields:
         Session: SQLModel session for database operations.
     """
+    ambient = _current_session.get()
+    if ambient is not None:
+        yield _JoinedSession(ambient)
+        return
+
+    with Session(engine or PostgresClient.get_engine()) as session:
+        yield session
+
+
+@contextmanager
+def transactional_session():
+    """Run several writes in one transaction: one commit on success, rollback on any exception.
+
+    Publishes an ambient session so nested `get_session()` calls — including those inside
+    `BaseModelWithSQLSupport.update()`/`save()` — transparently join it instead of committing
+    independently. Re-entrant: nesting `transactional_session()` joins the outer transaction and
+    leaves the commit/rollback to the outermost caller.
+
+    Yields:
+        Session: the owning session for the transaction.
+    """
+    ambient = _current_session.get()
+    if ambient is not None:
+        # Already inside a transaction; join it and let the outermost owner finalize.
+        yield ambient
+        return
+
     engine = PostgresClient.get_engine()
     with Session(engine) as session:
-        yield session
+        token = _current_session.set(session)
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            _current_session.reset(token)
 
 
 @asynccontextmanager

@@ -541,6 +541,7 @@ async def test_regular_user_update_litellm_denied_when_personal_feature_disabled
 
 
 @pytest.mark.anyio
+@patch("codemie.rest_api.routers.user_settings.Settings")
 @patch("codemie.rest_api.routers.user_settings.Ability")
 @patch("codemie.rest_api.routers.user_settings.validate_litellm_request")
 @patch("codemie.enterprise.litellm.require_litellm_enabled")
@@ -556,6 +557,7 @@ async def test_regular_user_update_litellm_allowed_when_personal_feature_enabled
     mock_require_litellm_enabled,
     mock_validate_litellm_request,
     mock_ability,
+    mock_settings,
 ):
     user = User(id="user123", username="testuser", project_names=["test_project"])
     user.is_admin = False
@@ -563,6 +565,8 @@ async def test_regular_user_update_litellm_allowed_when_personal_feature_enabled
     mock_is_feature_enabled.return_value = True
     mock_get_setting_ability.return_value = object()
     mock_ability.return_value.can.return_value = True
+    # Same project as the request below, so the new project-transfer path is not exercised here.
+    mock_settings.get_by_id.return_value.project_name = "test_project"
 
     request_data = {
         "project_name": "test_project",
@@ -684,6 +688,10 @@ async def test_create_user_setting_ms_teams_singleton_conflict(
 
 
 @pytest.mark.anyio
+@patch(
+    "codemie.rest_api.models.settings.Settings.get_by_id",
+    return_value=SimpleNamespace(user_id="user123", project_name="test_project"),
+)
 @patch("codemie.rest_api.routers.user_settings.Ability")
 @patch(
     "codemie.configs.customer_config.CustomerConfig.is_feature_enabled",
@@ -707,6 +715,7 @@ async def test_update_user_setting_accepts_ms_teams(
     mock_singleton,
     mock_is_feature_enabled,
     mock_ability,
+    mock_get_by_id,
 ):
     mock_authenticate.return_value = User(id="user123", username="testuser", project_names=["test_project"])
     mock_get_setting_ability.return_value = object()

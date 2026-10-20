@@ -13,22 +13,26 @@
 # limitations under the License.
 
 import json
+from contextlib import nullcontext
 from typing import Optional
 
 from fastapi import APIRouter, status, Request, Depends
 from sqlalchemy.exc import IntegrityError
 
+from codemie.clients.postgres import transactional_session
 from codemie.configs.logger import logger
 from codemie.core.ability import Ability, Action
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import BaseResponse, CreatedByUser
 from codemie.rest_api.models.settings import Settings, SettingRequest, SettingType
+from codemie.rest_api.models.settings_transfer import TransferMode
 from codemie_tools.base.models import CredentialTypes
 from codemie.rest_api.routers.utils import raise_access_denied, raise_forbidden
 from codemie.rest_api.security.authentication import authenticate, User
 from codemie.service.aws_bedrock.bedrock_orchestration_service import BedrockOrchestratorService
 from codemie.service.settings.settings import SettingsService
 from codemie.service.settings.settings_index_service import SettingsIndexService
+from codemie.service.settings.settings_transfer_service import SettingsTransferService
 from codemie.service.settings.settings_request_validator import (
     validate_git_request,
     validate_litellm_request,
@@ -42,6 +46,8 @@ router = APIRouter(
     prefix="/v1",
     dependencies=[],
 )
+
+_ACCESS_DENIED_MESSAGE = "Access denied"
 
 
 @router.get(
@@ -97,7 +103,7 @@ def create_project_setting(request: SettingRequest, user: User = Depends(authent
         if not user.is_admin_or_maintainer:
             raise ExtendedHTTPException(
                 code=status.HTTP_403_FORBIDDEN,
-                message="Access denied",
+                message=_ACCESS_DENIED_MESSAGE,
                 details="LiteLLM integrations can only be created by admin users.",
                 help="Please contact your system administrator to configure LiteLLM integrations.",
             )
@@ -153,31 +159,30 @@ def update_project_setting(request: SettingRequest, setting_id: str, user: User 
         if SettingsService.is_budget_integration_hidden_from(Settings.get_by_id(setting_id), user):
             raise_forbidden("update")
 
-        if request.credential_type == CredentialTypes.SCHEDULER:
-            validate_scheduler_request(request)
-        elif request.credential_type == CredentialTypes.LITE_LLM:
-            if not user.is_admin_or_maintainer:
-                raise ExtendedHTTPException(
-                    code=status.HTTP_403_FORBIDDEN,
-                    message="Access denied",
-                    details="LiteLLM integrations can only be updated by admin users.",
-                    help="Please contact your system administrator to configure LiteLLM integrations.",
-                )
-            # Check if LiteLLM enterprise is available before allowing credential update
-            from codemie.enterprise.litellm import require_litellm_enabled
+        # ms_teams settings cannot change project at all (see validate_ms_teams_request), so the
+        # type-specific validation must run before the generic project-transfer check below.
+        _validate_update_request(request, setting_id, user)
 
-            require_litellm_enabled()
-            validate_litellm_request(request)
-        elif request.credential_type == CredentialTypes.GIT:
-            validate_git_request(request)
-        elif request.credential_type == CredentialTypes.WEBHOOK:
-            validate_webhook_request(request)
-        elif request.credential_type == CredentialTypes.MS_TEAMS:
-            validate_ms_teams_request(request, setting_type=SettingType.PROJECT, setting_id=setting_id)
+        existing_setting = Settings.get_by_id(setting_id)
+        project_changed = bool(request.project_name and request.project_name != existing_setting.project_name)
+        if project_changed:
+            _check_permission(user, request.project_name)
 
-        SettingsService.update_settings(
-            credential_id=setting_id, request=request, settings_type=SettingType.PROJECT, user_id=user.id
-        )
+        # Apply field updates (alias, credentials, ...) and, when the project changes, move the
+        # setting in a single transaction: transactional_session() publishes one session that
+        # update_settings' write and transfer_setting's locked move both join, so the change is
+        # atomic — either both land or neither does. Field updates still run before the move so the
+        # row already carries the new alias when the transfer's locked collision check re-validates
+        # it against the target project. update_settings also runs check_alias_unique against the
+        # target up front, giving an actionable 409/422 before the move is attempted.
+        transaction = transactional_session() if project_changed else nullcontext()
+        with transaction:
+            SettingsService.update_settings(
+                credential_id=setting_id, request=request, settings_type=SettingType.PROJECT, user_id=user.id
+            )
+
+            if project_changed:
+                SettingsTransferService.transfer_setting(setting_id, request.project_name, mode=TransferMode.MOVE)
     except ExtendedHTTPException:
         raise
     except IntegrityError as e:
@@ -234,6 +239,31 @@ def delete_project_setting(setting_id: str, user: User = Depends(authenticate)):
     return BaseResponse(message="Specified credential removed")
 
 
+def _validate_update_request(request: SettingRequest, setting_id: str, user: User) -> None:
+    """Run the credential-type-specific checks for updating a project setting."""
+    if request.credential_type == CredentialTypes.SCHEDULER:
+        validate_scheduler_request(request)
+    elif request.credential_type == CredentialTypes.LITE_LLM:
+        if not user.is_admin_or_maintainer:
+            raise ExtendedHTTPException(
+                code=status.HTTP_403_FORBIDDEN,
+                message=_ACCESS_DENIED_MESSAGE,
+                details="LiteLLM integrations can only be updated by admin users.",
+                help="Please contact your system administrator to configure LiteLLM integrations.",
+            )
+        # Check if LiteLLM enterprise is available before allowing credential update
+        from codemie.enterprise.litellm import require_litellm_enabled
+
+        require_litellm_enabled()
+        validate_litellm_request(request)
+    elif request.credential_type == CredentialTypes.GIT:
+        validate_git_request(request)
+    elif request.credential_type == CredentialTypes.WEBHOOK:
+        validate_webhook_request(request)
+    elif request.credential_type == CredentialTypes.MS_TEAMS:
+        validate_ms_teams_request(request, setting_type=SettingType.PROJECT, setting_id=setting_id)
+
+
 def _map_integrity_error(request: SettingRequest, error: IntegrityError) -> ExtendedHTTPException:
     """Map a persistence-layer IntegrityError to an API error.
 
@@ -265,7 +295,7 @@ def _check_permission(user: User, project_name: str):
     if not user.is_application_admin(project_name):
         raise ExtendedHTTPException(
             code=status.HTTP_403_FORBIDDEN,
-            message="Access denied",
+            message=_ACCESS_DENIED_MESSAGE,
             details=f"You do not have sufficient permissions to access the project '{project_name}'.",
             help="This action requires application admin privileges. If you believe you should have access, "
             "please contact your system administrator or the project owner.",

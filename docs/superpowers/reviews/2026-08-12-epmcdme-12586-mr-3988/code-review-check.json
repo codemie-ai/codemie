@@ -1,0 +1,64 @@
+{
+  "decision": "approved",
+  "version": "1.0",
+  "ticket": "EPMCDME-12586",
+  "merge_request": "!3988",
+  "reviewed_at": "2026-08-12T18:45:00Z",
+  "reviewer": {
+    "name": "Claude Code (mr-code-review skill)",
+    "type": "automated"
+  },
+  "review_summary": {
+    "status": "approved",
+    "critical_issues": 0,
+    "major_issues": 0,
+    "minor_issues": 0,
+    "total_findings": 0
+  },
+  "findings": [],
+  "quality_gates_checked": [
+    {
+      "gate": "security",
+      "status": "passed",
+      "notes": "Proper permission validation via _check_permission before allowing project change. Validates user has admin permission on destination project."
+    },
+    {
+      "gate": "correctness",
+      "status": "passed",
+      "notes": "Logic correctly validates project change and ensures destination project exists via ensure_application_exists."
+    },
+    {
+      "gate": "error_handling",
+      "status": "passed",
+      "notes": "Uses existing error handling patterns with ExtendedHTTPException for permission denial and validation failures."
+    },
+    {
+      "gate": "code_quality",
+      "status": "passed",
+      "notes": "Follows existing patterns in the codebase. Direct model attribute assignment matches established pattern in update_settings method."
+    },
+    {
+      "gate": "database_safety",
+      "status": "passed",
+      "notes": "Direct model attribute assignment is the established pattern in update_settings. SQLModel/SQLAlchemy handles session management automatically."
+    },
+    {
+      "gate": "testing",
+      "status": "passed",
+      "notes": "Comprehensive test coverage added: 8 tests covering API layer (permission validation, authorization) and service layer (project updates, error handling)."
+    }
+  ],
+  "changes_summary": {
+    "files_changed": 4,
+    "lines_added": 469,
+    "lines_removed": 0,
+    "description": "Allows updating project_name on existing project-scoped settings with proper permission validation and project existence checks. Includes comprehensive test coverage for API and service layers."
+  },
+  "recommendation": "Approved for merge. All quality gates passed. The implementation correctly addresses EPMCDME-12586 with proper security checks and comprehensive test coverage.",
+  "notes": [
+    "Test coverage added in test_project_settings_project_change.py (API layer) and test_settings_project_change.py (service layer).",
+    "All security and correctness checks passed.",
+    "Follows existing codebase patterns.",
+    "No regressions or breaking changes."
+  ]
+}

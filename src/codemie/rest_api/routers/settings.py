@@ -46,8 +46,10 @@ def transfer_settings(request: TransferSettingsRequest, user: User = Depends(aut
     ### Modes
 
     **`move`** — reassigns each integration to the target project. Integration IDs are unchanged,
-    so datasources, assistants, and other entities that reference integrations by ID continue to
-    work without reconfiguration.
+    so assistants and other entities that reference integrations by ID continue to work without
+    reconfiguration. Datasources are the exception: any datasource left behind in the source
+    project has its `setting_id` cleared, so it fails visibly instead of silently pulling
+    credentials from another project's integration.
 
     **`copy`** — duplicates each integration into the target project. The source is unchanged.
     Webhook and scheduler integrations are excluded from copy and returned in `skipped`.

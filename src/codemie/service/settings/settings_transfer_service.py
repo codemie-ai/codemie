@@ -28,6 +28,7 @@ from codemie.clients.postgres import get_session
 from codemie.configs.logger import logger
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.repository.application_repository import application_repository
+from codemie.rest_api.models.index import IndexInfo
 from codemie.rest_api.models.settings import PROJECT_NAME_TERM, CredentialValues, Settings, SettingType
 from codemie.rest_api.models.settings_transfer import (
     TransferMode,
@@ -344,9 +345,62 @@ class SettingsTransferService:
                 )
                 has_litellm = has_litellm or written.credential_type == CredentialTypes.LITE_LLM
 
+            if mode is TransferMode.MOVE:
+                cls._unlink_orphaned_datasources(rows, source_project_name, session)
+
             session.commit()
 
         return transferred, has_litellm
+
+    @classmethod
+    def _unlink_orphaned_datasources(cls, moved_rows: list[Settings], source_project_name: str, session) -> None:
+        """Clear IndexInfo.setting_id for datasources left behind that referenced a moved setting.
+
+        Datasources resolve credentials by setting_id, not by (project_name, alias)
+        (BySettingIDSettingsHandler does a plain get-by-id with no project/user check), so
+        without this a datasource left in the source project would silently keep pulling
+        credentials from a setting that now belongs to another project. Clearing the link makes
+        it fail loudly instead, the same way alias-based references (assistants, workflow tool
+        nodes, skills) already do after a move.
+        """
+        affected = session.exec(
+            select(IndexInfo)
+            .where(
+                IndexInfo.setting_id.in_([row.id for row in moved_rows]),
+                IndexInfo.project_name == source_project_name,
+            )
+            .with_for_update()
+        ).all()
+        for datasource in affected:
+            datasource.setting_id = None
+            session.add(datasource)
+
+    @classmethod
+    def transfer_setting(
+        cls, setting_id: str, target_project_name: str, mode: TransferMode = TransferMode.MOVE
+    ) -> TransferItem:
+        """Move (or copy) a single integration by id into `target_project_name`.
+
+        Thin wrapper around `_apply` for the single-setting case: an existing integration's own
+        project field changing during an update, as opposed to `transfer`, which moves every
+        eligible row from one project to another in bulk. Reuses the same locking and
+        collision-check safety `_apply` already provides instead of mutating `project_name`
+        inline outside a transaction.
+        """
+        setting = Settings.get_by_id(setting_id)
+        source_project_name = setting.project_name
+
+        cls._validate_projects(source_project_name, target_project_name)
+        cls._validate_aliases_present([setting])
+
+        transferred, has_litellm = cls._apply([setting], source_project_name, target_project_name, mode)
+
+        if has_litellm:
+            from codemie.enterprise.litellm.credentials import clear_litellm_user_credentials_cache
+
+            clear_litellm_user_credentials_cache(None)
+
+        return transferred[0]
 
     @classmethod
     def transfer(
