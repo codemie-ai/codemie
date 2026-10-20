@@ -31,6 +31,7 @@ import pytest
 from codemie.configs.config import Config
 from codemie.repository.cli_analytics.postgres.engine import AnalyticsPgEngine
 from codemie.repository.cli_analytics.postgres.reader import PostgresCliAnalyticsReader
+from codemie.repository.cli_analytics.postgres.runtime import PostgresAnalyticsRuntime
 from codemie.repository.cli_analytics.postgres.settings import AnalyticsPgSettings
 from codemie.service.analytics.handlers.cli_analytics_handler import LocalAnalyticsHandler
 
@@ -67,6 +68,7 @@ async def _get_engine() -> AnalyticsPgEngine | None:
         engine = AnalyticsPgEngine(settings)
         async with engine.acquire() as conn:
             await conn.fetchval("SELECT 1")
+        await PostgresAnalyticsRuntime(engine, settings).start()
         return engine
     except (OSError, asyncpg.PostgresError) as exc:  # no reachable database (refused, wrong server, bad auth): skip
         pytest.skip(f"local analytics Postgres is not reachable: {exc!r}")

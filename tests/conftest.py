@@ -41,6 +41,33 @@ for _missing_pkg in ("tree_sitter_languages", "python_calamine", "switchyard", "
 load_dotenv(Path(__file__).parent / ".env.test", override=True)
 
 
+_ENTERPRISE_TESTS_DIR = Path(__file__).parent / "enterprise"
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--skip-enterprise",
+        action="store_true",
+        default=False,
+        help="Skip tests marked @pytest.mark.enterprise, including everything under tests/enterprise/ "
+        "(for local runs without the codemie_enterprise optional extra installed).",
+    )
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    # Every test under tests/enterprise/ needs the real package, whether or not it says so itself.
+    for item in items:
+        if Path(item.fspath).is_relative_to(_ENTERPRISE_TESTS_DIR):
+            item.add_marker(pytest.mark.enterprise)
+
+    if not config.getoption("--skip-enterprise"):
+        return
+    skip_enterprise = pytest.mark.skip(reason="--skip-enterprise: codemie_enterprise is not installed")
+    for item in items:
+        if "enterprise" in item.keywords:
+            item.add_marker(skip_enterprise)
+
+
 @pytest.fixture(autouse=True)
 def isolate_run_reporting_state():
     """Start every test without reporting sinks and without a request LLM context, and put both back afterwards.

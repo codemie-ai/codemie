@@ -27,6 +27,8 @@ from codemie.service.security.token_exchange_service import TokenExchangeService
 
 mcp_auth = pytest.importorskip("codemie_enterprise.mcp_auth")
 
+pytestmark = pytest.mark.enterprise
+
 _USER_A = "user-a"
 _USER_B = "user-b"
 _MCP_CONFIG_ID = "mcp-config-1"

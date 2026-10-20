@@ -227,6 +227,11 @@ Troubleshooting:
 poetry run pytest tests/
 ```
 
+Running the open-source version (without the `codemie-enterprise` optional extra installed)? Skip the tests that need it:
+```bash
+poetry run pytest tests/ --skip-enterprise
+```
+
 ### Linting & Formatting 📝
 #### Running Ruff
 

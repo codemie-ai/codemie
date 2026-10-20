@@ -1078,6 +1078,7 @@ def test_get_mcp_server_tools_successful_discovery_becomes_blocking_auth_gate_pa
     assert captured["discovery_results"] == [discovery_result]
 
 
+@pytest.mark.enterprise
 @pytest.mark.asyncio
 async def test_nfr23_discovered_pipeline_preserves_current_scope_and_invokes_tool_with_token(
     monkeypatch: pytest.MonkeyPatch,
@@ -1827,6 +1828,7 @@ def test_prepare_server_config_falls_back_to_legacy_after_registered_resolvers_d
     assert server_config.headers == {"Authorization": "Bearer legacy-token"}
 
 
+@pytest.mark.enterprise
 def test_prepare_server_config_falls_back_to_legacy_when_discovered_token_missing() -> None:
     from codemie_enterprise.mcp_auth.models import DiscoveryMetadataCacheEntry
     from codemie_enterprise.mcp_auth.resolver import MCPAuthResolver

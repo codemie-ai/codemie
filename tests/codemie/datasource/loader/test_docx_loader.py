@@ -97,7 +97,9 @@ def test_normal_docx_uses_markitdown_not_fallback():
 def test_broken_docx_falls_back_to_python_docx():
     path = _build_broken_docx()
     try:
-        docs = list(DocxLoader(path).lazy_load())
+        loader = DocxLoader(path)
+        with patch.object(loader._markitdown_loader, "load", side_effect=AttributeError("_accept1")):
+            docs = list(loader.lazy_load())
         assert len(docs) == 1
         assert docs[0].metadata["conversion_fallback"] == "python-docx"
         assert docs[0].metadata["conversion_success"] is True
@@ -189,16 +191,13 @@ def test_render_table_pipe_in_cell_is_escaped():
 
 def test_fallback_empty_docx_yields_nothing():
     doc = DocxDocument()
-    # force fallback by inserting a row-level bookmark in a table
     table = doc.add_table(rows=1, cols=1)
     table.cell(0, 0).text = ""
-    bm = OxmlElement("w:bookmarkStart")
-    bm.set(qn("w:id"), "0")
-    bm.set(qn("w:name"), "bm")
-    table.rows[0]._tr.insert(0, bm)
     path = _save_tmp(doc)
     try:
-        docs = list(DocxLoader(path).lazy_load())
+        loader = DocxLoader(path)
+        with patch.object(loader._markitdown_loader, "load", side_effect=AttributeError("_accept1")):
+            docs = list(loader.lazy_load())
         assert docs == []
     finally:
         os.unlink(path)

@@ -255,6 +255,7 @@ class _TokenExchangeClient(_RecordingClient):
         return _Resp({"access_token": "AT", "refresh_token": "RT", "expires_in": 3600, "scope": "api read_user"})
 
 
+@pytest.mark.enterprise
 def test_gitlab_exchange_maps_enterprise_token_data(monkeypatch):
     monkeypatch.setattr(provider_adapters.httpx, "Client", _TokenExchangeClient)
     payload = GitLabOAuthProviderAdapter.exchange_code_for_tokens(
@@ -274,6 +275,7 @@ def test_gitlab_exchange_maps_enterprise_token_data(monkeypatch):
     assert "resource" not in _TokenExchangeClient.last_post["data"]
 
 
+@pytest.mark.enterprise
 def test_atlassian_exchange_maps_enterprise_token_data(monkeypatch):
     monkeypatch.setattr(provider_adapters.httpx, "Client", _TokenExchangeClient)
     payload = JiraOAuthProviderAdapter.exchange_code_for_tokens(

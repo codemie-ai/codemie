@@ -24,9 +24,14 @@ manually (see ``regenerate_baselines``).
 
 from __future__ import annotations
 
+import pytest
+
 from tests.codemie.rest_api.router_guards.baseline import OPENAPI_BASELINE, assert_matches_baseline
 from tests.codemie.rest_api.router_guards.guarded_app import load_guarded_app_dump
 
 
+@pytest.mark.enterprise
 def test_openapi_matches_baseline():
+    """The baseline's ``LLM Proxy`` routes exist only when ``codemie_enterprise`` is installed
+    (``HAS_LITELLM`` gates ``register_proxy_endpoints``), so this guard needs the real package."""
     assert_matches_baseline(load_guarded_app_dump()["openapi"], OPENAPI_BASELINE)
