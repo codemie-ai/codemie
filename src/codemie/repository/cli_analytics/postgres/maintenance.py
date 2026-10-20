@@ -34,6 +34,7 @@ from datetime import date, timedelta
 
 import asyncpg
 
+from codemie.repository.cli_analytics.postgres import session_purge
 from codemie.repository.cli_analytics.postgres.engine import CLIENT_TIMEOUT_MARGIN_S, AnalyticsPgEngine
 from codemie.repository.cli_analytics.postgres.settings import AnalyticsPgSettings
 
@@ -96,6 +97,7 @@ class RetentionPolicy:
     dedup_days: int
     premake_weeks: int
     session_days: int = 0  # 0: the session tables are not purged by age
+    session_purge_batch_size: int = 5000
 
     @classmethod
     def from_settings(cls, settings: AnalyticsPgSettings) -> RetentionPolicy:
@@ -105,6 +107,7 @@ class RetentionPolicy:
             dedup_days=settings.dedup_retention_days,
             premake_weeks=settings.partition_premake_weeks,
             session_days=settings.session_retention_days,
+            session_purge_batch_size=settings.session_purge_batch_size,
         )
 
     def retention_days(self, table: str) -> int:
@@ -386,33 +389,36 @@ class PartitionMaintainer:
             # Only raw rows reference a resource, and they are gone after the raw retention.
             ("otel_resources", [f"DELETE FROM otel_resources WHERE last_seen < {utc_midnight}"], raw_cutoff),
         ]
+        for what, sqls, cutoff in statements:
+            await self._purge_group(conn, what, sqls, cutoff, report)
         if self._policy.session_days:
             session_cutoff = today - timedelta(days=self._policy.session_days)
             # The first midnight UTC after today, from the cutoff the statements are given.
             tomorrow = f"(($1::date + {int(self._policy.session_days) + 1})::timestamp AT TIME ZONE 'UTC')"
-            statements += [
-                ("sessions", [self._session_purge(utc_midnight, tomorrow)], session_cutoff),
-                ("session orphans", self._orphan_purge(utc_midnight, tomorrow), session_cutoff),
-            ]
-        for what, sqls, cutoff in statements:
-            deleted = 0
-            try:
-                async with conn.transaction():
-                    await conn.execute(_RAISED_STATEMENT_TIMEOUT, timeout=_RAISED_CLIENT_TIMEOUT_S)
-                    for sql in sqls:
-                        deleted += await self._purge(conn, sql, cutoff)
-            except _ISOLATED_FAILURES as exc:
-                report.failed.append(f"purge {what}")
-                logger.error(f"cli_analytics: purging expired rows of {what} failed: {exc!r}")
-                continue
-            report.purged_rows += deleted
+            await session_purge.purge_idle_sessions(
+                conn, utc_midnight, tomorrow, session_cutoff, self._policy.session_purge_batch_size, report
+            )
+            orphans = self._orphan_purge(utc_midnight, tomorrow)
+            await self._purge_group(conn, "session orphans", orphans, session_cutoff, report)
+
+    async def _purge_group(
+        self, conn: asyncpg.Connection, what: str, sqls: list[str], cutoff: date, report: MaintenanceReport
+    ) -> None:
+        deleted = 0
+        try:
+            async with conn.transaction():
+                await conn.execute(_RAISED_STATEMENT_TIMEOUT, timeout=_RAISED_CLIENT_TIMEOUT_S)
+                for sql in sqls:
+                    deleted += await self._purge(conn, sql, cutoff)
+        except _ISOLATED_FAILURES as exc:
+            report.failed.append(f"purge {what}")
+            logger.error(f"cli_analytics: purging expired rows of {what} failed: {exc!r}")
+            return
+        report.purged_rows += deleted
 
     @staticmethod
     async def _purge(conn: asyncpg.Connection, sql: str, cutoff: date) -> int:
-        """How many rows one purge statement deleted. A statement over several tables (WITH) returns
-        its own count; the status of a plain DELETE carries it."""
-        if sql.startswith("WITH "):
-            return int(await conn.fetchval(sql, cutoff, timeout=_RAISED_CLIENT_TIMEOUT_S))
+        """How many rows one purge statement deleted, from the status of a plain DELETE."""
         status = await conn.execute(sql, cutoff, timeout=_RAISED_CLIENT_TIMEOUT_S)
         return int(status.rsplit(" ", 1)[-1])
 
@@ -421,26 +427,6 @@ class PartitionMaintainer:
         """`column` unless it lies after today: the time comes from the client, and one in the future
         is a clock error, which must not keep a row past its retention."""
         return f"CASE WHEN {column} < {tomorrow} THEN {column} END"
-
-    @classmethod
-    def _session_purge(cls, utc_midnight: str, tomorrow: str) -> str:
-        """Whole idle sessions in one statement, which returns how many rows it deleted.
-
-        The delete from session_dims decides once which sessions are idle: a row another transaction
-        changes meanwhile is tested again on its new version and kept when it is no longer idle. The
-        other tables lose the sessions that delete returned and no other, so a session never keeps
-        its session_dims row without the rest.
-        """
-        last_activity = f"greatest({cls._past('last_event_at', tomorrow)}, {cls._past('ended_at', tomorrow)})"
-        children = [
-            f"{t}_purged AS (DELETE FROM {t} WHERE session_id IN (SELECT session_id FROM idle) RETURNING 1)"
-            for t in _SESSION_CHILDREN
-        ]
-        counts = ["(SELECT count(*) FROM idle)", *(f"(SELECT count(*) FROM {t}_purged)" for t in _SESSION_CHILDREN)]
-        return (
-            f"WITH idle AS (DELETE FROM session_dims WHERE coalesce({last_activity}, updated_at) < {utc_midnight} "
-            f"RETURNING session_id), {', '.join(children)} SELECT {' + '.join(counts)}"
-        )
 
     @classmethod
     def _orphan_purge(cls, utc_midnight: str, tomorrow: str) -> list[str]:

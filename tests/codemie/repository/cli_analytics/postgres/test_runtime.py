@@ -201,6 +201,24 @@ async def test_maintenance_runs_only_on_the_pod_holding_the_lock():
     maintainer.run.assert_not_awaited()
 
 
+@pytest.mark.parametrize(("purged_rows", "logged"), [(10, True), (0, False)])
+@pytest.mark.asyncio
+async def test_a_maintenance_run_that_only_purges_rows_is_logged(purged_rows: int, logged: bool) -> None:
+    runtime, _, maintainer = _runtime(LockingEngine())
+    runtime._schema_ready = True
+    maintainer.run.return_value = MaintenanceReport(purged_rows=purged_rows, defaults_ready=True)
+
+    with patch.object(runtime_module, "logger") as logger:
+        await runtime.run_maintenance()
+
+    lines = [c.args for c in logger.info.call_args_list if c.args[0].startswith("cli_analytics: partitions created")]
+    assert lines == (
+        [("cli_analytics: partitions created=%d dropped=%d moved_rows=%d purged_rows=%d", 0, 0, 0, 10)]
+        if logged
+        else []
+    )
+
+
 @pytest.mark.asyncio
 async def test_a_stale_rollup_queue_is_reported_by_the_refresh_job_within_minutes():
     # The refresh job runs every 30 s, so a frozen queue shows up minutes after it froze, not hours.

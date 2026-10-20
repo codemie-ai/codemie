@@ -529,7 +529,13 @@ def test_the_session_retention_setting_reaches_the_retention_policy() -> None:
     # PostgresAnalyticsRuntime builds its PartitionMaintainer policy from_settings: a lost mapping
     # would leave session_days at 0 and the whole-session purge would never run.
     settings = AnalyticsPgSettings.from_config(
-        _config(CLI_ANALYTICS_RAW_RETENTION_DAYS=90, CLI_ANALYTICS_SESSION_RETENTION_DAYS=180)
+        _config(
+            CLI_ANALYTICS_RAW_RETENTION_DAYS=90,
+            CLI_ANALYTICS_SESSION_RETENTION_DAYS=180,
+            CLI_ANALYTICS_SESSION_PURGE_BATCH_SIZE=1234,
+        )
     )
 
-    assert RetentionPolicy.from_settings(settings).session_days == 180
+    policy = RetentionPolicy.from_settings(settings)
+    assert policy.session_days == 180
+    assert policy.session_purge_batch_size == 1234

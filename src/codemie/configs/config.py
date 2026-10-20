@@ -217,6 +217,8 @@ class Config(BaseSettings):
     # session_dims) as before. Above 0, a whole session is purged once idle for this many days;
     # the value is checked against the raw retention when the storage settings are read.
     CLI_ANALYTICS_SESSION_RETENTION_DAYS: int = Field(default=0, ge=0)
+    # Sessions per statement, beside the row cap.
+    CLI_ANALYTICS_SESSION_PURGE_BATCH_SIZE: int = Field(default=5_000, ge=1)
     # Re-sent records are recognised and dropped for this many days after the record's own day, or
     # after its first delivery when it arrives later than that.
     CLI_ANALYTICS_DEDUP_RETENTION_DAYS: int = Field(default=14, ge=1)

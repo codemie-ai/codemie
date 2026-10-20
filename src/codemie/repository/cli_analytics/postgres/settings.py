@@ -330,6 +330,7 @@ class AnalyticsPgSettings:
     maintenance_interval_minutes: int
     ingest_statement_timeout_ms: int = 10_000
     session_retention_days: int = 0  # 0: the session tables are not purged by age
+    session_purge_batch_size: int = 5000
     migration_dsn: str = field(default="", repr=False)  # libpq's, for the migrations; `dsn` when empty
 
     @classmethod
@@ -376,6 +377,7 @@ class AnalyticsPgSettings:
             maintenance_interval_minutes=cfg.CLI_ANALYTICS_MAINTENANCE_INTERVAL_MINUTES,
             ingest_statement_timeout_ms=cfg.CLI_ANALYTICS_PG_INGEST_STATEMENT_TIMEOUT_MS,
             session_retention_days=session_days,
+            session_purge_batch_size=cfg.CLI_ANALYTICS_SESSION_PURGE_BATCH_SIZE,
         )
 
     @staticmethod

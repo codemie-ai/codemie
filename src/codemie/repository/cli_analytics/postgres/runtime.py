@@ -147,7 +147,7 @@ class PostgresAnalyticsRuntime:
                 return
             report = await self._maintainer.run(conn)
             self._partitions_ready = report.defaults_ready
-            if report.created or report.dropped:
+            if report.created or report.dropped or report.purged_rows:
                 logger.info(
                     "cli_analytics: partitions created=%d dropped=%d moved_rows=%d purged_rows=%d",
                     len(report.created),

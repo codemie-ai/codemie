@@ -59,6 +59,7 @@ def test_postgres_defaults_match_the_design(defaults_only):
     assert c.CLI_ANALYTICS_PARTITION_PREMAKE_WEEKS == 4
     assert c.CLI_ANALYTICS_MAINTENANCE_INTERVAL_MINUTES == 60
     assert c.CLI_ANALYTICS_SESSION_RETENTION_DAYS == 0  # above 0 the maintenance job deletes whole idle sessions
+    assert c.CLI_ANALYTICS_SESSION_PURGE_BATCH_SIZE == 5_000
 
 
 @pytest.mark.parametrize("schema", ["Analytics", "1abc", "a-b", 'x"; drop', "a" * 64, ""])
@@ -93,6 +94,7 @@ def test_work_mem_rejects_anything_else(work_mem):
         "CLI_ANALYTICS_DEDUP_RETENTION_DAYS",
         "CLI_ANALYTICS_ROLLUP_REFRESH_SECONDS",
         "CLI_ANALYTICS_ROLLUP_BATCH_SIZE",
+        "CLI_ANALYTICS_SESSION_PURGE_BATCH_SIZE",
         "CLI_ANALYTICS_PARTITION_PREMAKE_WEEKS",
         "CLI_ANALYTICS_MAINTENANCE_INTERVAL_MINUTES",
     ],
