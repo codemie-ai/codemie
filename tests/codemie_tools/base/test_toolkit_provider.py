@@ -462,6 +462,24 @@ def test_integration_get_available_tools_configs_info():
         assert 'class' in config_data
 
 
+def test_integration_all_tool_configs_produce_info():
+    """Every discovered tool config yields info, including fileanalysisconfig, with no errors.
+
+    The platform logger does not propagate to caplog, so assert on the module logger directly.
+    """
+    with mock.patch("codemie_tools.base.toolkit_provider.logger") as mock_logger:
+        config_classes = get_available_tools_configs()
+        configs_info = get_available_tools_configs_info()
+
+    keys = {next(iter(item)) for item in configs_info}
+    assert "fileanalysisconfig" in keys
+    assert len(configs_info) == len(config_classes)
+    error_messages = [call.args[0] for call in mock_logger.error.call_args_list]
+    assert not [m for m in error_messages if m.startswith("Error getting info from")]
+    info_messages = [call.args[0] for call in mock_logger.info.call_args_list]
+    assert any(m.startswith("Retrieved info for") and m.endswith(", 0 failed") for m in info_messages)
+
+
 def test_scan_recursively_with_seen_module():
     """Test that _scan_recursively skips modules that have already been seen."""
     # Create test data

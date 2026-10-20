@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "task": "Wrap FileAnalysisConfig.chat_model in pydantic SkipJsonSchema so model_json_schema() succeeds and GET /v1/tools/configs returns fileanalysisconfig without an ERROR log, with regression tests for the schema and real config discovery.",
+  "generated": "2026-10-19T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 1, "label": "XS" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 9,
+  "size": "XS",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "technical_risk", "reason": "Fix is a one-field type annotation change using standard pydantic SkipJsonSchema (available in the pinned 2.13.5, already verified on a copy of the class). No exact in-repo precedent (Field(exclude=True) is the existing convention), and runtime callers in the file-analysis toolkit and toolkit service must still accept a BaseChatModel and keep it excluded from model_dump, so S rather than XS. No security surface involved." },
+    { "dimension": "requirements_clarity", "reason": "Acceptance criteria and suggested fix are explicit. One minor point to settle: the ticket's 'filesanalysisconfig' key is a typo; the provider emits 'fileanalysisconfig'." },
+    { "dimension": "file_change_estimate", "reason": "One source file (file_analysis models) plus regression tests in the file-analysis tests and toolkit-provider tests: about 3 files across the source and tests trees." },
+    { "dimension": "component_scope", "reason": "Single field on a single config model; toolkit provider and tools router are verification surfaces only, unchanged. Score 9 sits at the XS/S boundary; leaned lower because Technical Risk is S and the fix is fully specified. Consistent with the bundled XS example (logging on one endpoint), slightly above it on tests and clarity." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

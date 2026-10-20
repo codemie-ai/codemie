@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "generated": "2026-10-19T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 1, "label": "XS" },
+    "requirements_clarity": { "score": 1, "label": "XS" },
+    "technical_risk":       { "score": 1, "label": "XS" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 7,
+  "size": "XS",
+  "band_range": "6-9",
+  "files_changed": 3,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "file_change_estimate", "reason": "3 files changed (diffstat), mapped to S: 1 production file modified (file_analysis/models.py), 1 existing test module extended (base/test_toolkit_provider.py), 1 new test module (file_analysis/test_file_analysis_config_schema.py); 49 insertions, 1 deletion." },
+    { "dimension": "component_scope", "reason": "The only production change is a single field annotation on FileAnalysisConfig: chat_model is wrapped in pydantic SkipJsonSchema so it is left out of model_json_schema(). No layer boundary is crossed." },
+    { "dimension": "technical_risk", "reason": "Standard pydantic idiom with exclude=True kept, trivially reversible, no security or performance surface. Calibration agrees with bundled XS example epmcdme-10101-add-logging-to-endpoint." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

@@ -18,6 +18,7 @@ from typing import Optional
 
 from langchain_core.language_models import BaseChatModel
 from pydantic import Field
+from pydantic.json_schema import SkipJsonSchema
 
 from codemie_tools.base.models import CodeMieToolConfig, FileConfigMixin
 
@@ -38,5 +39,5 @@ class FileAnalysisConfig(CodeMieToolConfig, FileConfigMixin):
         preconverted_content: Pre-computed markitdown output keyed by filename; bypasses markitdown in FileAnalysisTool
     """
 
-    chat_model: Optional[BaseChatModel] = Field(default=None, exclude=True)
+    chat_model: SkipJsonSchema[Optional[BaseChatModel]] = Field(default=None, exclude=True)
     preconverted_content: dict[str, str] = Field(default_factory=dict)
