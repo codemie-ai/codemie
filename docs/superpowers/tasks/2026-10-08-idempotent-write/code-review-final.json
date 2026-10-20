@@ -1,0 +1,57 @@
+{
+  "decision": "request-changes",
+  "rationale": "3 blocking findings: a vacuous skill no-new-version test, an inaccurate datasource keying statement in the guide, and a documented Module Cohesion violation in test_index.py. AC5 literal wording contradicts the approved pinned 409/422 behaviour (treated as approved decision, not a finding; story wording fix is outside this diff). Reachability pass was limited, so the guide-keying claim is unconfirmed; 0 deferred, 12 dismissed as noise or below the emission floor.",
+  "confidence": "medium",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "story-ac", "item": "AC1: unchanged re-PUT leaves stored entity unchanged (assistants, workflows, skills, categories, settings)", "status": "pending-stage-7", "notes": "Covered by test_idempotent_write.py; test run result pending."},
+    {"kind": "story-ac", "item": "AC2: SENSITIVE_VALUE_MASK leaves stored credential untouched", "status": "pass", "notes": "Assistant, LITE_LLM and GIT mask tests present."},
+    {"kind": "story-ac", "item": "AC3: each datasource type re-submitted via type-specific PUT is unchanged", "status": "pending-stage-7", "notes": "IDEM_CASES in test_index.py; test run result pending."},
+    {"kind": "story-ac", "item": "AC4: documented intentional rewrites still happen exactly", "status": "pass", "notes": "TestSilentRewrites in test_contract_baseline.py."},
+    {"kind": "story-ac", "item": "AC5: POST with no id creates a new entity", "status": "partial", "notes": "Holds for assistants/workflows; skills/categories 409 and settings 422 pinned per approved decision."},
+    {"kind": "story-ac", "item": "AC6: no status/schema/validation change; silent drop/restore stays silent", "status": "pass", "notes": "Diff is tests plus one guide; no src change."}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "4 subjects in range all match the documented EPMCDME-####: Description format"},
+    {"kind": "code-quality", "status": "fail", "notes": "Module Cohesion rule: test_index.py (about 2075 lines after change) gains 597 lines of a new concern (idempotency tests with idem_* fixtures, own sqlite/jsonb setup) instead of a new module; test_contract_baseline.py (834 lines) and test_idempotent_write.py (648 lines) are new single files but own one concern each. License headers present on new files checked."},
+    {"kind": "security", "status": "pass", "notes": "Change is tests and a guide doc only; no credentials logged, hardcoded values are test fixtures, no untrusted-input handling changes"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": ".ai-run/guides/api/endpoint-conventions.md",
+      "line": 31,
+      "title": "Datasource keying statement overgeneralised",
+      "problem": "The guide says datasource PUTs are keyed by (project_name, name), not by id, but the provider PUT in the same diff is addressed by id (/v1/index/provider/idx-1, test patches IndexInfo.find_by_id). The doc's headline 're-sending the same body leaves the entity unchanged' is also stronger than its own rows (error reset on google/git_faq/file, ciphertext change on non-deterministic backends).",
+      "impact": "Readers and clients take the guide as contract; it misdescribes pinned behaviour. Provider route finding was not independently confirmed against src (reachability unconfirmed).",
+      "recommendation": "Qualify the row: name the provider route as id-addressed and scope the idempotency guarantee to the exceptions listed in the table."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/rest_api/routers/test_idempotent_write.py",
+      "line": 444,
+      "title": "Skill no-new-version test is vacuous",
+      "problem": "test_reput_without_content_change_adds_no_version filters stored Skill row keys containing 'version' and compares first vs second. The Skill model has no version-like column, so both sides are {} and the assertion can never fail.",
+      "impact": "The test reads as proof that a skill re-PUT creates no version but passes regardless of behaviour; a versioning regression would go undetected.",
+      "recommendation": "Assert against a real signal (e.g. a version table or content/updated state), or drop the test; at minimum assert the filtered dict is non-empty."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/rest_api/routers/test_index.py",
+      "line": 1479,
+      "title": "Idempotency tests violate Module Cohesion",
+      "problem": "A new concern (idempotent PUT tests with idem_* fixtures, IdemCase, sqlite JSONB shim; lines 1479-2075) is appended to an already ~2000-line router test file, breaking the code-quality Module Cohesion standard.",
+      "impact": "Documented code-quality standard is broken and the file grows well past the ~500-line threshold; also duplicates a global JSONB sqlite compile hook and wipes dependency_overrides on teardown.",
+      "recommendation": "Move the block into its own module, e.g. test_index_idempotent_write.py, importing shared helpers from idempotency_helpers.py."
+    }
+  ]
+}

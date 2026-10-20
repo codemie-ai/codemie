@@ -1,0 +1,25 @@
+{
+  "decision": "approve",
+  "rationale": "All 3 prior blocking findings verified against current source: guide now names the provider PUT as id-keyed, the vacuous skill version test was removed, and idempotency tests moved to test_index_idempotency.py (test_index.py down to 1478 lines).",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "story-ac", "item": "AC1: unchanged re-PUT leaves stored entity unchanged (assistants, workflows, skills, categories, settings)", "status": "pending-stage-7", "notes": "Covered by test_idempotent_write.py; test run result pending."},
+    {"kind": "story-ac", "item": "AC2: SENSITIVE_VALUE_MASK leaves stored credential untouched", "status": "pass", "notes": "Assistant, LITE_LLM and GIT mask tests present."},
+    {"kind": "story-ac", "item": "AC3: each datasource type re-submitted via type-specific PUT is unchanged", "status": "pending-stage-7", "notes": "IDEM_CASES in test_index.py; test run result pending."},
+    {"kind": "story-ac", "item": "AC4: documented intentional rewrites still happen exactly", "status": "pass", "notes": "TestSilentRewrites in test_contract_baseline.py."},
+    {"kind": "story-ac", "item": "AC5: POST with no id creates a new entity", "status": "partial", "notes": "Holds for assistants/workflows; skills/categories 409 and settings 422 pinned per approved decision."},
+    {"kind": "story-ac", "item": "AC6: no status/schema/validation change; silent drop/restore stays silent", "status": "pass", "notes": "Diff is tests plus one guide; no src change."}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "4 subjects in range all match the documented EPMCDME-####: Description format"},
+    {"kind": "code-quality", "status": "fail", "notes": "Module Cohesion rule: test_index.py (about 2075 lines after change) gains 597 lines of a new concern (idempotency tests with idem_* fixtures, own sqlite/jsonb setup) instead of a new module; test_contract_baseline.py (834 lines) and test_idempotent_write.py (648 lines) are new single files but own one concern each. License headers present on new files checked."},
+    {"kind": "security", "status": "pass", "notes": "Change is tests and a guide doc only; no credentials logged, hardcoded values are test fixtures, no untrusted-input handling changes"}
+  ],
+  "findings": [],
+  "finding_status": [
+    {"id": "CR-001", "status": "resolved", "notes": "Guide line 31 now states provider PUT is keyed by id; exceptions are listed in the table."},
+    {"id": "CR-002", "status": "resolved", "notes": "Vacuous version assertion removed; comment notes Skill has no version table or column."},
+    {"id": "CR-003", "status": "resolved", "notes": "Idempotency block moved to test_index_idempotency.py; no idem_/IdemCase/JSONB left in test_index.py (1478 lines)."}
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "task": "Audit and fix backend (codemie) server-side rewrite paths (masked-credential restore, invalid-datasource filtering, MCP config sanitize) so a repeated PUT-by-id with unchanged content produces a byte-identical stored entity, across ~15 datasource routes plus assistants/workflows/skills/categories/integrations, with no identity resolution in scope.",
+  "generated": "2026-09-25T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 6, "label": "XXL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 24,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Rewrite audit spans assistant.py, workflow.py, skill.py, category.py, settings.py/project_settings.py, and index.py (~15 datasource-type routes); the mask/filter/sanitize functions being fixed (_restore_existing_encrypted_values, _filter_invalid_datasources, MCPAccessControlService.sanitize_for_save) are shared utilities reused across all of these, which is a strong cross-cutting shared-utility signal" },
+    { "dimension": "technical_risk", "reason": "Closest pattern (existing per-entity masking/restore mechanisms) already covers secret handling, but this work directly touches credential/secret masking and restore logic, which is security-sensitive, and technical-analysis.md's Testing Landscape section confirms no idempotency test template exists today for the 'repeated PUT yields no change' acceptance criterion" },
+    { "dimension": "file_change_estimate", "reason": "Fixes land across ~7 router/service files (assistant, workflow, skill, category, settings/project_settings, index, MCP sanitize/guardrail-sync helpers) plus new idempotency tests per entity domain — no existing test template to reuse, so most tests are net-new across routers/ and service/ test directories" },
+    { "dimension": "affected_layers", "reason": "Touches API (routers), Service (mask/filter/sanitize helpers), DB-Persistence (comparing stored encrypted values across writes), and External (MCP integration sanitize path) without requiring a schema migration" }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from XL to XXL (capped at 6): the rewrite functions under audit (_restore_existing_encrypted_values, _filter_invalid_datasources, MCPAccessControlService.sanitize_for_save) are core shared utilities reused across assistants/workflows/skills/categories/integrations and ~15 datasource routes",
+    "Technical Risk bumped +1: work directly touches credential/secret masking and restoration logic (security-sensitive per Risk Indicators section of technical-analysis.md)",
+    "Technical Risk bumped +1 (additive): acceptance criteria enumerate a specific defensive/idempotency case (byte-identical re-apply) and technical-analysis.md explicitly notes no existing test template covers it"
+  ],
+  "split_recommendation": null
+}

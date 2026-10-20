@@ -18,12 +18,15 @@ from unittest.mock import patch, MagicMock
 import pytest
 from sqlalchemy.exc import IntegrityError
 
+from codemie.core.constants import SENSITIVE_VALUE_MASK
 from codemie.core.exceptions import ExtendedHTTPException, MCPAuthenticationRequiredException
 from codemie.service.security.token_providers.base_provider import BrokerAuthRequiredException
 from codemie.core.models import AssistantChatRequest
 from codemie.rest_api.models.assistant import Assistant
 from codemie.rest_api.models.guardrail import GuardrailEntity, GuardrailSource
+from codemie.rest_api.models.assistant import PromptVariable
 from codemie.rest_api.routers.assistant._ask import _ask_assistant, _ask_virtual_assistant
+from codemie.service.assistant.sensitive_prompt_variables import restore_existing_encrypted_values
 from codemie.rest_api.security.user import User
 
 
@@ -1354,6 +1357,36 @@ class TestResolveModelProjectLookup:
             model = _resolve_chosen_execution_model(assistant, request)
 
         assert model == "gpt-4"
+
+
+class TestRestoreMaskedSensitivePromptVariables:
+    """AC2: a sensitive prompt variable sent back as the mask must never overwrite the stored value."""
+
+    @staticmethod
+    def _request(*variables):
+        return MagicMock(prompt_variables=list(variables))
+
+    @staticmethod
+    def _stored(secret="stored-ciphertext"):
+        return MagicMock(prompt_variables=[PromptVariable(key="token", default_value=secret, is_sensitive=True)])
+
+    def test_masked_value_is_replaced_by_stored_value(self):
+        request = self._request(PromptVariable(key="token", default_value=SENSITIVE_VALUE_MASK, is_sensitive=True))
+
+        restore_existing_encrypted_values(request, self._stored())
+
+        assert request.prompt_variables[0].default_value == "stored-ciphertext"
+
+    def test_double_put_of_masked_document_keeps_stored_value_and_entity(self):
+        stored = self._stored()
+        before = [v.model_dump() for v in stored.prompt_variables]
+
+        for _ in range(2):
+            request = self._request(PromptVariable(key="token", default_value=SENSITIVE_VALUE_MASK, is_sensitive=True))
+            restore_existing_encrypted_values(request, stored)
+            assert request.prompt_variables[0].default_value == "stored-ciphertext"
+
+        assert [v.model_dump() for v in stored.prompt_variables] == before
 
 
 class TestSlugAmbiguityDetection:
