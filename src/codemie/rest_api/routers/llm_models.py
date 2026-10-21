@@ -77,7 +77,7 @@ def get_llm_models(
     models: list[Union[LLMModel, LlmRouterOption]] = list(
         llm_service.get_allowed_chat_models(user, include_all=include_all, project=project)
     )
-    models.extend(llm_service.get_allowed_router_options(include_all=include_all))
+    models.extend(llm_service.get_allowed_router_options(include_all=include_all, project=project))
 
     # Apply project default model to response
     if project and getattr(project, "default_model", None):

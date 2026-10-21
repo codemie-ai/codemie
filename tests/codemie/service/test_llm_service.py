@@ -716,6 +716,49 @@ class TestLiteLLMAutoRouterCatalog:
         assert service.get_allowed_router_options(include_all=False) == []
         assert len(service.get_allowed_router_options(include_all=True)) == 1
 
+    def test_excluded_by_project_allowed_models(self):
+        """Bug repro: a litellm_auto router excluded from project.allowed_models must not
+        appear in get_allowed_router_options — previously the method had no project param
+        at all, so GET /v1/llm_models?project_id=... always returned every router regardless
+        of the project's restriction. Project narrowing is itself gated behind the
+        projectModelOverride feature flag (disabled by default in customer config — see
+        TestModelNarrowingIntegration), so that flag is patched enabled here too."""
+        from unittest.mock import MagicMock, patch
+
+        from codemie.core.models import Application
+
+        model = self._router_model(base_name="smart-router")
+        service = LLMService(self._config([model]))
+        project = Application(name="test-proj", id="proj-1", allowed_models=["some-other-model"])
+
+        with patch(
+            "codemie.service.llm_service.llm_service.customer_config",
+            is_feature_enabled=MagicMock(return_value=True),
+        ):
+            assert service.get_allowed_router_options(project=project) == []
+            # Sanity: without the project restriction, the router is still visible.
+            assert len(service.get_allowed_router_options()) == 1
+
+    def test_included_by_project_allowed_models(self):
+        """A router explicitly named in project.allowed_models (by its own base_name, its
+        only identifier — see LLMRouter's docstring) must still be returned."""
+        from unittest.mock import MagicMock, patch
+
+        from codemie.core.models import Application
+
+        model = self._router_model(base_name="smart-router")
+        service = LLMService(self._config([model]))
+        project = Application(name="test-proj", id="proj-1", allowed_models=["smart-router"])
+
+        with patch(
+            "codemie.service.llm_service.llm_service.customer_config",
+            is_feature_enabled=MagicMock(return_value=True),
+        ):
+            options = service.get_allowed_router_options(project=project)
+
+        assert len(options) == 1
+        assert options[0].base_name == "smart-router"
+
     def test_plain_model_untouched(self):
         """A regular model (no litellm_router) must still appear only in the chat-model
         catalog, never in router options — this test guards against an overbroad filter."""

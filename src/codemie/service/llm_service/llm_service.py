@@ -207,8 +207,14 @@ class LLMService:
             max_input_tokens=LLMService._router_max_input_tokens(litellm_router.tiers, by_name),
         )
 
-    def get_allowed_router_options(self, include_all: bool = False) -> list[LlmRouterOption]:
+    def get_allowed_router_options(
+        self, include_all: bool = False, project: 'Application | None' = None
+    ) -> list[LlmRouterOption]:
         from codemie.enterprise.litellm.dependencies import is_premium_models_enabled
+        from codemie.service.llm.model_availability_service import PROJECT_MODEL_OVERRIDE_FEATURE
+
+        if project and not customer_config.is_feature_enabled(PROJECT_MODEL_OVERRIDE_FEATURE):
+            project = None
 
         all_models = self.get_all_llm_model_info()
         by_name: dict[str, LLMModel] = {m.base_name: m for m in all_models}
@@ -221,7 +227,31 @@ class LLMService:
         litellm_auto_options = (
             self._build_litellm_auto_router_option(model, by_name, include_all, premium_enabled) for model in all_models
         )
-        return [option for option in (*switchyard_options, *litellm_auto_options) if option is not None]
+        options = [option for option in (*switchyard_options, *litellm_auto_options) if option is not None]
+        return self._filter_router_options_by_project(options, project)
+
+    @staticmethod
+    def _filter_router_options_by_project(
+        options: list[LlmRouterOption], project: 'Application | None'
+    ) -> list[LlmRouterOption]:
+        """Filter router options based on project's allowed_models list.
+
+        Mirrors _filter_models_by_project, but keys solely on base_name: a router option
+        has no deployment of its own (see LLMRouter's own docstring), so base_name is its
+        only identifier in allowed_models — matching ProjectService._get_available_router_model_ids.
+        """
+        from codemie.service.llm.model_availability_service import ModelAvailabilityService
+
+        if project is None or project.allowed_models is None:
+            return options
+
+        if not project.allowed_models:
+            return []
+
+        allowed_set = set(project.allowed_models)
+        return [
+            option for option in options if ModelAvailabilityService.is_model_allowed([option.base_name], allowed_set)
+        ]
 
     def is_router_model(self, model_name: str) -> bool:
         """Return True if *model_name* is a configured and enabled Switchyard router."""
@@ -374,11 +404,13 @@ class LLMService:
                 allowed_models whitelist (unless fallback_to_default=True)
             ValueError: If project exists but project.id is None
         """
+        from codemie.service.llm.model_availability_service import PROJECT_MODEL_OVERRIDE_FEATURE
+
         # Validate project.id is not None when project is provided
         if project and not project.id:
             raise ValueError("Project object must have a non-None id for model validation")
 
-        if project and not customer_config.is_feature_enabled("projectModelOverride"):
+        if project and not customer_config.is_feature_enabled(PROJECT_MODEL_OVERRIDE_FEATURE):
             project = None
 
         # Normalize model_name: strip leading/trailing whitespace
@@ -879,7 +911,9 @@ class LLMService:
         Returns:
             List of LLMModel instances accessible to user, filtered by visibility and project rules
         """
-        if project and not customer_config.is_feature_enabled("projectModelOverride"):
+        from codemie.service.llm.model_availability_service import PROJECT_MODEL_OVERRIDE_FEATURE
+
+        if project and not customer_config.is_feature_enabled(PROJECT_MODEL_OVERRIDE_FEATURE):
             project = None
 
         user_models = self.get_allowed_models(user)
