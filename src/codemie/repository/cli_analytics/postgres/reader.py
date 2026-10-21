@@ -40,7 +40,13 @@ from typing import Any
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
 from codemie.repository.cli_analytics.ports import Rows
 from codemie.repository.cli_analytics.postgres.engine import AnalyticsPgEngine
-from codemie.repository.cli_analytics.vocabulary import DIMENSION_HOOK_TYPES, SKILL_DISPATCH_EVENT, EventKind, SpanKind
+from codemie.repository.cli_analytics.vocabulary import (
+    BUILTIN_COMMAND_NAMES,
+    DIMENSION_HOOK_TYPES,
+    SKILL_DISPATCH_EVENT,
+    EventKind,
+    SpanKind,
+)
 
 _NAMED_PARAM = re.compile(r"\$([a-z_][a-z0-9_]*)")
 _EPOCH = "'1970-01-01 00:00:00+00'::timestamptz"
@@ -443,6 +449,8 @@ class PostgresCliAnalyticsReader:
         """Skills and subagent types from the hourly rollup; slash commands from one source per session:
         the summary's `commands` (every non-empty string element counts 1) or, for a session without a
         summary, its OTel user prompts from the rollup. The window is the one of `sel`, as everywhere."""
+        params = window_params(f)
+        params["builtin_commands"] = list(BUILTIN_COMMAND_NAMES)
         return await self._q(
             f"""
         WITH {self._sessions_cte(f)}
@@ -454,14 +462,17 @@ class PostgresCliAnalyticsReader:
             WHERE kind IN (2, 3){self._scope(f)}
             UNION ALL
             SELECT kind, name, calls AS c FROM invocations_hourly
-            WHERE kind = 4 AND {_no_summary("invocations_hourly.session_id")}{self._scope(f)}
+            WHERE
+              kind = 4
+              AND {_no_summary("invocations_hourly.session_id")}
+              AND name <> ALL($builtin_commands::text[]){self._scope(f)}
             UNION ALL
             SELECT 4, e.cmd #>> '{{}}', 1 FROM session_dims, jsonb_array_elements(session_dims.commands) AS e(cmd)
             WHERE session_dims.summary_ts IS NOT NULL AND jsonb_typeof(e.cmd) = 'string'
-              AND e.cmd #>> '{{}}' <> ''{self._scope(f)}
+              AND e.cmd #>> '{{}}' <> '' AND (e.cmd #>> '{{}}') <> ALL($builtin_commands::text[]){self._scope(f)}
         ) u
         GROUP BY 1, 2""",
-            window_params(f),
+            params,
         )
 
     async def get_skill_names_by_session(self, session_ids: list[str]) -> Rows:

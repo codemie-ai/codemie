@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15546_filter-non-slash-commands",
+  "head": "0d6fd86a096599beaa1d43e3c4516b1f1181cc15",
+  "runner": "poetry",
+  "started_at": "2026-10-07T08:40:36Z",
+  "completed_at": "2026-10-07T08:40:53Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "N/A",
+      "notes": "Out of scope for this user-specified affected-tests-only run; not executed."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "N/A",
+      "notes": "Out of scope for this user-specified affected-tests-only run; not executed."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "N/A",
+      "notes": "Out of scope for this user-specified affected-tests-only run; full suite discovery was explicitly excluded."
+    },
+    {
+      "id": "ui",
+      "source": "guide",
+      "status": "N/A",
+      "notes": "Out of scope for this user-specified affected-tests-only run; not executed."
+    },
+    {
+      "id": "affected-tests",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 16802,
+      "command": "poetry run pytest tests/codemie/repository/cli_analytics/test_vocabulary.py tests/codemie/repository/cli_analytics/postgres/test_rollups.py tests/codemie/repository/cli_analytics/postgres/test_reader.py -q",
+      "exit_code": 0,
+      "notes": "230 passed, 4 warnings in 9.00s. No skip-signal wording found in output."
+    }
+  ],
+  "failures": {}
+}

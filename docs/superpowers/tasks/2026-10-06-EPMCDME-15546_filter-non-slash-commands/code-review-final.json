@@ -1,0 +1,35 @@
+{
+  "decision": "request-changes",
+  "rationale": "One blocking finding: the branch's own ebe08c47f commit misplaced test_a_computed_subagent_duration_is_never_negative's final assertion onto an unrelated new test, and the current diff removes the resulting NameError-causing orphan line without restoring the lost duration-in-_SUBAGENT_INVOCATIONS regression check (CR-001, major, patch). The exact-match, lowercase, un-normalized filter scope (model/exit/quit, compact preserved) is implemented correctly in vocabulary.py, rollups.py and reader.py, and the two exact-SQL test updates plus the newly-required get_invocations parameter-binding fix match the human-approved plan; 1 remaining acceptance sub-claim dismissed as noise on that basis. No decision_needed items, no deferrals; standards review not expected for the compact profile.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    { "kind": "spec", "item": "AC1: BUILTIN_COMMAND_NAMES = (model, exit, quit), no slash, compact absent", "status": "pass", "notes": "Confirmed in vocabulary.py:146-149." },
+    { "kind": "spec", "item": "AC2: kind-4 rollup INSERT excludes BUILTIN_COMMAND_NAMES via _text_array predicate", "status": "pass", "notes": "Predicate present in rollups.py kind-4 branch, covered by test_kind_4_rollup_excludes_builtin_commands." },
+    { "kind": "spec", "item": "AC3: test asserts model/exit/quit present and compact absent from the exclusion array", "status": "pass", "notes": "Verified in test_kind_4_rollup_excludes_builtin_commands." },
+    { "kind": "spec", "item": "AC4: invocations_hourly kind=4 branch (reader.py) carries the exclusion via $builtin_commands", "status": "pass", "notes": "Verified via _invocation_branches() in test_reader.py." },
+    { "kind": "spec", "item": "AC5: session_dims.commands summary branch carries the exclusion via $builtin_commands", "status": "pass", "notes": "Verified via _invocation_branches() in test_reader.py." },
+    { "kind": "spec", "item": "AC6: branch tests confirm compact is not in BUILTIN_COMMAND_NAMES", "status": "pass", "notes": "Both branch tests assert this directly." },
+    { "kind": "spec", "item": "AC7: all existing tests in test_rollups.py/test_reader.py pass without modification", "status": "fail", "notes": "4 tests modified: 2 are the pre-approved exact-SQL updates, 1 is a required $3 param-binding fix, 1 lost a regression assert — see CR-001." },
+    { "kind": "spec", "item": "AC8: ports.py/UI unchanged; get_invocations signature and return type unchanged", "status": "pass", "notes": "Diff touches only reader.py, rollups.py, vocabulary.py and their tests." }
+  ],
+  "standards_review": [
+    { "kind": "commit-format", "status": "na", "notes": "standards_expected=false for the compact profile; review-standards agent not dispatched this round." },
+    { "kind": "code-quality", "status": "na", "notes": "standards_expected=false for the compact profile; review-standards agent not dispatched this round." },
+    { "kind": "security", "status": "na", "notes": "standards_expected=false for the compact profile; review-standards agent not dispatched this round." }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/repository/cli_analytics/postgres/test_rollups.py",
+      "line": 1036,
+      "title": "Lost subagent-duration INSERT regression check",
+      "problem": "Commit ebe08c47f on this branch misplaced the trailing assertion of test_a_computed_subagent_duration_is_never_negative (`assert duration in rollups._SUBAGENT_INVOCATIONS`) onto the end of the newly-added test_kind_4_rollup_excludes_builtin_commands, where `duration` is undefined (NameError). This diff removes that orphaned line to fix the NameError but never restores the assertion to its rightful test, so the check is now gone entirely.",
+      "impact": "No test in test_rollups.py verifies that the computed subagent duration expression (rollups._ms_between(...)) is actually wired into the _SUBAGENT_INVOCATIONS INSERT statement; a future refactor could silently drop that column binding with nothing failing.",
+      "recommendation": "Append `assert duration in rollups._SUBAGENT_INVOCATIONS` back onto test_a_computed_subagent_duration_is_never_negative, after its current last line."
+    }
+  ]
+}

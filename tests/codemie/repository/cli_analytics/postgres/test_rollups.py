@@ -1126,3 +1126,37 @@ def test_a_computed_subagent_duration_is_never_negative() -> None:
     assert duration.endswith(f", CASE WHEN tm.ended_at >= tm.started_at THEN {computed} END)")
     assert duration.count(computed) == 1  # the difference is taken only inside the guard
     assert duration in rollups._SUBAGENT_INVOCATIONS
+
+
+def test_kind_4_rollup_excludes_builtin_commands() -> None:
+    """Verify that the kind-4 INSERT statement excludes built-in command names.
+
+    The rollup statement includes the exclusion predicate using _text_array(BUILTIN_COMMAND_NAMES),
+    which expands at import time to the static SQL array literal ARRAY['model', 'exit', 'quit'].
+    """
+    from codemie.repository.cli_analytics.vocabulary import BUILTIN_COMMAND_NAMES
+
+    # The RECOMPUTE statement contains the kind-4 SQL with the exclusion predicate
+    recompute_sql = "\n".join(RECOMPUTE)
+
+    # Verify the exclusion predicate is present for built-in commands
+    # The predicate uses _text_array which expands to ARRAY[...] literal at import time
+    expected_array = rollups._text_array(BUILTIN_COMMAND_NAMES)
+    predicate = f"l.command_name <> ALL({expected_array})"
+
+    assert (
+        predicate in recompute_sql
+    ), f"Kind-4 INSERT WHERE clause must exclude built-in commands with predicate: {predicate}"
+
+    # Also verify it's in the right location (the kind=4 branch for log_events)
+    invocations_sql = next(s for s in RECOMPUTE if s.lstrip().startswith("INSERT INTO invocations_hourly"))
+    (kind_4_section,) = [
+        section for section in invocations_sql.split("UNION ALL") if "k.session_id, 4, l.command_name," in section
+    ]
+    assert predicate in kind_4_section, "Predicate must be in the kind-4 log_events section"
+
+    # Verify the exact built-in names are in the expansion
+    assert "'model'" in expected_array
+    assert "'exit'" in expected_array
+    assert "'quit'" in expected_array
+    assert "'compact'" not in expected_array  # compact is a real command, not built-in

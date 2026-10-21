@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "generated": "2026-10-07T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 1, "label": "XS" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 11,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 6,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Three components touched inside one layer: BUILTIN_COMMAND_NAMES added to the shared vocabulary.py, consumed by reader.py's get_invocations query and by rollups.py's kind-4 INSERT exclusion. All three sit in the existing CLI analytics data-persistence layer; no new abstraction introduced." },
+    { "dimension": "file_change_estimate", "reason": "6 files changed per diffstat (3 production: vocabulary.py, reader.py, rollups.py; 3 matching test files), 0 new files, all modifications localized to src/codemie/repository/cli_analytics/ and its postgres/ subdirectory plus the mirrored tests/ tree." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

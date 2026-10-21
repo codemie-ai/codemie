@@ -79,3 +79,21 @@ def test_unmapped_harness_is_generically_humanized():
 def test_missing_harness_is_unknown():
     assert v.humanize_harness_name(None) == "Unknown"
     assert v.humanize_harness_name("") == "Unknown"
+
+
+def test_builtin_command_names_constant():
+    """Verify BUILTIN_COMMAND_NAMES is a tuple of exactly ("model", "exit", "quit").
+
+    - No leading slashes (OTel stores without slash)
+    - "compact" is absent (it is a real slash command, must be counted)
+    - Tuple is immutable
+    """
+    assert isinstance(v.BUILTIN_COMMAND_NAMES, tuple)
+    assert v.BUILTIN_COMMAND_NAMES == ("model", "exit", "quit")
+    assert "compact" not in v.BUILTIN_COMMAND_NAMES
+    # Verify immutability (attempting to mutate raises TypeError)
+    try:
+        v.BUILTIN_COMMAND_NAMES[0] = "other"  # type: ignore
+        raise AssertionError("Tuple should be immutable")
+    except TypeError:
+        pass

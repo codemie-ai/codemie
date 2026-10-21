@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "task": "Add SQL exclusion predicate to rollups.py kind-4 INSERT filtering built-in CLI lifecycle command names, backed by a new vocabulary constant in vocabulary.py.",
+  "generated": "2026-10-06T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 10,
+  "size": "S",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "writing-plans",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Two closely-related components: vocabulary.py (new built-in command name constant) and rollups.py (SQL predicate consuming that constant). Both live in the same cli_analytics/postgres package. Test files test_rollups.py and test_reader.py are also in scope for covering the identified gap, but no cross-layer orchestration is needed."
+    },
+    {
+      "dimension": "requirements_clarity",
+      "reason": "Task is specific and unambiguous: add a NOT IN exclusion for named built-in command names (model, exit, quit, clear, resume, compact) to the kind-4 rollup INSERT. One minor open question — whether session_dims.commands (summary path) also sends built-in names — is flagged as low-probability and unverifiable from server code alone, but does not block the primary fix."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "Exact pattern already exists: SENTINEL_EXACT + _text_array in rollups.py is the precedent for building a SQL exclusion array from a vocabulary tuple. The vocabulary alignment risk (no leading slash per convention 9, unlike SENTINEL_EXACT which has leading slashes) is documented and straightforward to follow. Trivially reversible."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "Four files modified: vocabulary.py (new constant), rollups.py (SQL predicate addition), test_rollups.py (assert exclusion predicate present), test_reader.py (assert via _invocation_branches that kind-4 OTel branch excludes built-ins). All in one package directory. No new files created."
+    }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

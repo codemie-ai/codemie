@@ -160,3 +160,9 @@ def humanize_harness_name(raw: str | None) -> str:
     if override:
         return override
     return raw.replace("-", " ").replace("_", " ").title()
+
+
+# Built-in CLI command names to filter from slash-command analytics (no leading slashes).
+# Stored without slash to match OTel storage format and SQL queries.
+# "compact" is intentionally absent (it is a real user-invoked slash command).
+BUILTIN_COMMAND_NAMES: tuple[str, ...] = ("model", "exit", "quit")

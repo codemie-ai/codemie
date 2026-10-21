@@ -1,0 +1,87 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15546_filter-non-slash-commands",
+  "head": "0d6fd86a096599beaa1d43e3c4516b1f1181cc15",
+  "runner": "poetry",
+  "started_at": "2026-10-07T08:14:42Z",
+  "completed_at": "2026-10-07T08:37:47Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "N/A",
+      "command": "make ruff",
+      "notes": "Out of scope: this run was scoped to execute only the Test Harness gate."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "N/A",
+      "command": "make build",
+      "notes": "Out of scope: this run was scoped to execute only the Test Harness gate."
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "N/A",
+      "command": "make license-check",
+      "notes": "Out of scope: this run was scoped to execute only the Test Harness gate."
+    },
+    {
+      "id": "secrets",
+      "source": "guide",
+      "status": "N/A",
+      "command": "make gitleaks",
+      "notes": "Out of scope: this run was scoped to execute only the Test Harness gate."
+    },
+    {
+      "id": "secrets-precommit",
+      "source": "hook",
+      "status": "N/A",
+      "command": "scripts/git-hooks/validate_secrets.sh (codemie-gitleaks pre-commit hook)",
+      "notes": "Out of scope: this run was scoped to execute only the Test Harness gate."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "N/A",
+      "command": "make test",
+      "notes": "Out of scope: this run was scoped to execute only the Test Harness gate."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "N/A",
+      "command": "make coverage",
+      "notes": "Out of scope: this run was scoped to execute only the Test Harness gate."
+    },
+    {
+      "id": "static-analysis",
+      "source": "guide",
+      "status": "N/A",
+      "command": "make sonar-local",
+      "notes": "Out of scope: this run was scoped to execute only the Test Harness gate."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "N/A",
+      "command": "make verify",
+      "notes": "Out of scope: this run was scoped to execute only the Test Harness gate."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 1366630,
+      "command": "make test-harness",
+      "exit_code": 1,
+      "notes": "3 failed, 194 passed, 4 skipped, 15 rerun in 1366.63s. Fresh physical execution against live stack (docker compose services up, VPN enabled); not a self-skip -- harness ran its full collected suite."
+    }
+  ],
+  "failures": {
+    "test-harness": "----------------------------- Captured stdout call -----------------------------\n~~~~~~~~~~~~~~~~~~~~~~~ Stack of <unknown> (6187069440) ~~~~~~~~~~~~~~~~~~~~~~~~\n  File \".../execnet/gateway_base.py\", line 411, in _perform_spawn\n    reply.run()\n  File \".../execnet/gateway_base.py\", line 341, in run\n    self._result = func(*args, **kwargs)\n  File \".../execnet/gateway_base.py\", line 1160, in _thread_receiver\n    msg = Message.from_io(io)\n  File \".../execnet/gateway_base.py\", line 567, in from_io\n    header = io.read(9)  # type 1, channel 4, payload 4\n  File \".../execnet/gateway_base.py\", line 534, in read\n    data = self._read(numbytes - len(buf))\n------------------------------ Captured log call -------------------------------\nINFO     codemie_sdk.utils.http:http.py:33 Successfully processed POST request to /v1/assistants\nINFO     codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/assistants\n---------------------------- Captured log teardown -----------------------------\nINFO     codemie_sdk.utils.http:http.py:33 Successfully processed DELETE request to /v1/assistants/d0c0eff6-2e1c-40d0-9a3e-49979f6274e6\nINFO     codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/conversations\n---------------------------- Captured log teardown -----------------------------\nINFO     codemie_sdk.utils.http:http.py:33 Successfully processed DELETE request to /v1/assistants/897d2c3e-14b1-4f65-a98e-4802a8e03f60\nINFO     codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/conversations\n=========================== short test summary info ============================\nFAILED tests/assistant/datasource/test_zip_file_indexing.py::test_create_file_datasource_from_zip_with_mixed_file_types\nFAILED tests/workflow/nodes/test_iterator.py::test_context_merging_after_iteration\nFAILED tests/assistant/marketplace/test_marketplace.py::test_marketplace_validation_fields_recommendation[wrong_name_good_description_good_prompt]\n======= 3 failed, 194 passed, 4 skipped, 15 rerun in 1366.63s (0:22:46) ========\nmake: *** [test-harness] Error 1\n"
+  }
+}

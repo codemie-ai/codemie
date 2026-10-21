@@ -631,7 +631,12 @@ async def test_invocation_methods_bind_only_window_and_filter_parameters(method)
     recorder = _SqlRecorder()
     await getattr(PostgresCliAnalyticsReader(recorder), method)(_flt())  # type: ignore[arg-type]
 
-    assert "$3" not in recorder.statements[0]
+    if method == "get_invocations":
+        # get_invocations binds builtin_commands as $3 parameter
+        assert "$3::text[]" in recorder.statements[0]
+    else:
+        # Tool methods bind only window and filter, no $3 parameter
+        assert "$3" not in recorder.statements[0]
 
 
 # -- audit: the window is decided only in sel --
@@ -759,26 +764,37 @@ async def test_skill_and_agent_invocations_come_from_the_hourly_rollup_alone() -
 @pytest.mark.asyncio
 async def test_otel_slash_commands_count_only_for_sessions_without_a_summary() -> None:
     # Missing, a session with a summary would count its commands twice: OTel and session_dims.commands.
+    # Built-in command names are excluded via parameter binding.
+    from codemie.repository.cli_analytics.vocabulary import BUILTIN_COMMAND_NAMES
+
     branches = await _invocation_branches()
 
     assert (
         "SELECT kind, name, calls AS c FROM invocations_hourly WHERE kind = 4 "
-        f"AND {_no_summary('invocations_hourly.session_id')} {_SCOPED}"
+        f"AND {_no_summary('invocations_hourly.session_id')} AND name <> ALL($builtin_commands::text[]) {_SCOPED}"
     ) in branches
+
+    # Verify that compact is not excluded by the branch predicate
+    assert "compact" not in BUILTIN_COMMAND_NAMES
 
 
 @pytest.mark.asyncio
 async def test_summary_sessions_count_every_string_command_once_by_the_shared_window() -> None:
+    from codemie.repository.cli_analytics.vocabulary import BUILTIN_COMMAND_NAMES
+
     branches = await _invocation_branches()
 
     summary = [b for b in branches if "jsonb_array_elements" in b]
     assert summary == [
         "SELECT 4, e.cmd #>> '{}', 1 FROM session_dims, jsonb_array_elements(session_dims.commands) AS e(cmd) "
-        "WHERE session_dims.summary_ts IS NOT NULL AND jsonb_typeof(e.cmd) = 'string' AND e.cmd #>> '{}' <> '' "
+        "WHERE session_dims.summary_ts IS NOT NULL AND jsonb_typeof(e.cmd) = 'string' AND e.cmd #>> '{}' <> '' AND (e.cmd #>> '{}') <> ALL($builtin_commands::text[]) "
         f"{_SCOPED}"
     ]
     # The window is the one of `sel`: the branch has no time predicate of its own.
     assert "started_at" not in summary[0] and "BETWEEN" not in summary[0]
+
+    # Verify that compact is not excluded by the branch predicate
+    assert "compact" not in BUILTIN_COMMAND_NAMES
 
 
 @pytest.mark.asyncio
@@ -874,3 +890,25 @@ async def test_agent_dispatch_starts_at_its_launch_and_skills_at_their_tool_span
 
     assert "coalesce(CASE WHEN t.subagent_type <> '' THEN la.launch_ts END, t.span_start) AS dispatch_start" in sql
     assert "ORDER BY dispatch_start" in sql
+
+
+@pytest.mark.asyncio
+async def test_invocations_bind_builtin_command_names() -> None:
+    """Verify that the $builtin_commands parameter is bound with the expected values."""
+    from codemie.repository.cli_analytics.vocabulary import BUILTIN_COMMAND_NAMES
+
+    captured_params: dict[str, object] | None = None
+
+    async def capture_params(sql: str, params: dict[str, object]) -> list[dict[str, object]]:
+        nonlocal captured_params
+        captured_params = params
+        return []
+
+    reader = PostgresCliAnalyticsReader(_SqlRecorder())  # type: ignore[arg-type]
+    reader._q = capture_params  # type: ignore[method-assign]
+    await reader.get_invocations(_flt())
+
+    assert captured_params is not None
+    assert "builtin_commands" in captured_params
+    assert captured_params["builtin_commands"] == list(BUILTIN_COMMAND_NAMES)
+    assert captured_params["builtin_commands"] == ["model", "exit", "quit"]

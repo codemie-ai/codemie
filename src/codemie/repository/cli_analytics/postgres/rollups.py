@@ -62,6 +62,7 @@ from codemie.repository.cli_analytics.postgres.session_derived import update_ses
 from codemie.repository.cli_analytics.vocabulary import (
     ACTIVE_TIME_METRICS,
     AUTO_PROMPT_PREFIX,
+    BUILTIN_COMMAND_NAMES,
     DIMENSION_HOOK_TYPES,
     EDIT_TOOLS,
     LINES_METRICS,
@@ -1642,7 +1643,11 @@ RECOMPUTE: list[str] = [
     UNION ALL
     SELECT date_trunc('hour', l.ts, 'UTC'), k.session_id, 4, l.command_name, count(*), 0
     {_in_day("l", "log_events")}
-    WHERE k.kinds & {_LOG} <> 0 AND l.event_kind = {int(EventKind.USER_PROMPT)} AND l.command_name <> ''
+    WHERE
+      k.kinds & {_LOG} <> 0
+      AND l.event_kind = {int(EventKind.USER_PROMPT)}
+      AND l.command_name <> ''
+      AND l.command_name <> ALL({_text_array(BUILTIN_COMMAND_NAMES)})
     GROUP BY 1, 2, 4""",
     # Per session, from all of the session's rows (not only the claimed day). Skills accumulate,
     # so a skill whose raw rows passed retention is kept.
