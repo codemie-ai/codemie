@@ -91,7 +91,7 @@ def test_initialize_database_and_defaults_runs_only_migrations_and_default_apps(
     calls = []
 
     def track(name):
-        return MagicMock(side_effect=lambda: calls.append(name))
+        return MagicMock(side_effect=lambda: calls.append(name) or True)
 
     with patch("codemie.rest_api.main.alembic_upgrade_postgres", track("core_migrations")):
         with patch("codemie.rest_api.main.alembic_upgrade_enterprise_postgres", track("enterprise_migrations")):
@@ -107,7 +107,7 @@ def test_initialize_preconfigured_content_runs_all_content_in_order():
     calls = []
 
     def track(name):
-        return MagicMock(side_effect=lambda: calls.append(name))
+        return MagicMock(side_effect=lambda: calls.append(name) or True)
 
     with patch("codemie.rest_api.main.manage_preconfigured_assistants", track("assistants")):
         with patch("codemie.rest_api.main.manage_preconfigured_skills", track("skills")):
@@ -158,7 +158,7 @@ async def test_preconfigured_content_runs_after_litellm_init_in_lifespan():
     mock_provider = MagicMock()
 
     def track(name):
-        return MagicMock(side_effect=lambda: calls.append(name))
+        return MagicMock(side_effect=lambda: calls.append(name) or True)
 
     startup_patches = [
         patch("codemie.rest_api.main.alembic_upgrade_postgres"),

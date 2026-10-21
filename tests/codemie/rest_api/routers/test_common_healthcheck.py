@@ -57,6 +57,7 @@ async def test_model_healthcheck_reports_configured_provider():
         "status": "configured",
         "provider": "azure_openai",
         "missing": [],
+        "litellm_models": "not_checked",
     }
 
 
@@ -78,6 +79,7 @@ async def test_model_healthcheck_reports_not_configured_with_http_200():
         "status": "not_configured",
         "provider": "azure_openai",
         "missing": ["AZURE_OPENAI_API_KEY", "AZURE_OPENAI_URL"],
+        "litellm_models": "not_checked",
     }
 
 
@@ -95,6 +97,7 @@ async def test_model_healthcheck_reports_provider_not_checked():
         "status": "not_checked",
         "provider": "google_vertexai",
         "missing": [],
+        "litellm_models": "not_checked",
     }
 
 
@@ -108,4 +111,29 @@ async def test_model_healthcheck_never_500s_when_app_state_readiness_is_unset():
         response = await client.get("/v1/healthcheck/model")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "not_checked", "provider": None, "missing": []}
+    assert response.json() == {
+        "status": "not_checked",
+        "provider": None,
+        "missing": [],
+        "litellm_models": "not_checked",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("litellm_status", ["unavailable", "loaded", "not_applicable"])
+async def test_model_healthcheck_reports_litellm_models_status(litellm_status):
+    app = _app_with_readiness(
+        ModelProviderReadiness(status=ModelProviderStatus.CONFIGURED, provider="azure_openai", missing=[])
+    )
+    app.state.litellm_models_status = litellm_status
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/v1/healthcheck/model")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "configured",
+        "provider": "azure_openai",
+        "missing": [],
+        "litellm_models": litellm_status,
+    }

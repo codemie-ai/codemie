@@ -1,0 +1,26 @@
+{
+  "decision": "request-changes",
+  "rationale": "One blocking standards finding (Module Cohesion in main.py); acceptance did not run (no spec) so confidence is low, and blind/verification-gap lenses were not part of the balanced profile. 0 deferred; 4 edge-case candidates dismissed after reading the code (empty mapping result is retried, reference swap is atomic, recovery task is cancelled on shutdown, partial-load is speculative).",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "4 subjects in range all match the documented EPMCDME-####: Description format"},
+    {"kind": "code-quality", "status": "fail", "notes": "Module Cohesion rule: src/codemie/rest_api/main.py (1478 lines) gained a new concern (LiteLLM models status constants, reload, background recovery loop with backoff). Other items checked: type hints modern, new test file has license header."},
+    {"kind": "security", "status": "pass", "notes": "No auth, secret-logging or untrusted-input issues seen in the changed source; logged failure reasons are exception type and message only"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/main.py",
+      "line": 153,
+      "title": "LiteLLM recovery logic bloats main.py",
+      "problem": "LITELLM_MODELS_* constants, _reload_litellm_models, _initialize_litellm_models status handling and _schedule_litellm_models_recovery (about 100 new lines with their own constants, pure logic and tests) were appended to main.py (~1478 lines, app wiring). code-quality.md Module Cohesion lists appending a new concern to a 500+ line module as an avoided pattern.",
+      "impact": "Blocks the workflow per the documented code-quality standard; makes main.py harder to maintain and test.",
+      "recommendation": "Extract the constants, reload function and recovery loop into a new module (e.g. a rest_api litellm_models_recovery module or next to the enterprise litellm code) and import it from main.py."
+    }
+  ]
+}

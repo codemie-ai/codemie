@@ -371,6 +371,47 @@ class TestGetAvailableModels:
             # Verify service was called with correct params
             mock_service.get_available_models.assert_called_once_with(user_id="test-user", api_key=None)
 
+    def test_raise_on_error_reraises_service_failure(self):
+        """Fetch failure propagates when raise_on_error=True."""
+        mock_service = MagicMock()
+        mock_service.get_available_models.side_effect = ConnectionError("down")
+
+        with patch("codemie.enterprise.litellm.dependencies.get_litellm_service_or_none", return_value=mock_service):
+            from codemie.enterprise.litellm.dependencies import get_available_models
+
+            with pytest.raises(ConnectionError):
+                get_available_models(raise_on_error=True)
+
+    def test_raise_on_error_raises_when_service_unavailable(self):
+        with patch("codemie.enterprise.litellm.dependencies.get_litellm_service_or_none", return_value=None):
+            from codemie.enterprise.litellm.dependencies import get_available_models
+
+            with pytest.raises(RuntimeError):
+                get_available_models(raise_on_error=True)
+
+    def test_raise_on_error_returns_empty_for_genuinely_empty_list(self):
+        mock_service = MagicMock()
+        mock_service.get_available_models.return_value = []
+
+        with patch("codemie.enterprise.litellm.dependencies.get_litellm_service_or_none", return_value=mock_service):
+            from codemie.enterprise.litellm.dependencies import get_available_models
+
+            result = get_available_models(raise_on_error=True)
+
+            assert result.chat_models == []
+            assert result.embedding_models == []
+
+    def test_default_swallows_service_failure(self):
+        mock_service = MagicMock()
+        mock_service.get_available_models.side_effect = ConnectionError("down")
+
+        with patch("codemie.enterprise.litellm.dependencies.get_litellm_service_or_none", return_value=mock_service):
+            from codemie.enterprise.litellm.dependencies import get_available_models
+
+            result = get_available_models()
+
+            assert result.chat_models == []
+
 
 class TestInitializeLiteLLMFromConfig:
     """Test initialize_litellm_from_config() function."""

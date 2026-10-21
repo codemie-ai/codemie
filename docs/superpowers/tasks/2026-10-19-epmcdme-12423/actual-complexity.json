@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "generated": "2026-10-19T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 16,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 7,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Touches config settings, LiteLLM dependencies module (load-failure detection and background retry), app startup in main.py, and the healthcheck router; 3 components across config, service and API layers." },
+    { "dimension": "technical_risk", "reason": "Background retry task on startup and exposed health status; async lifecycle but non-critical path, no auth or schema changes." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

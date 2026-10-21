@@ -1,0 +1,65 @@
+{
+  "schema": 1,
+  "branch": "epmcdme-12423",
+  "head": "7dcd76dba0959ec8200d1dcffec96e6ce165fcfd",
+  "runner": "poetry",
+  "started_at": "2026-10-19T00:00:00Z",
+  "completed_at": "2026-10-19T00:50:00Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2000,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2000,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1000,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 11000,
+      "command": "make gitleaks",
+      "exit_code": 0,
+      "notes": "no leaks found"
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 1800000,
+      "command": "make test",
+      "exit_code": 1,
+      "notes": "Full suite hung at ~99%; new test module fails collection with missing exchangelib (stale env, run poetry install)."
+    },
+    {
+      "id": "sonar",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make sonar-local",
+      "notes": "pre-push hook (opt-in via CODEMIE_PREPUSH_ENABLED); needs Sonar credentials/network, not run. No CI test pipeline in repo."
+    }
+  ],
+  "failures": {
+    "unit": "make test: full run reached ~99% then hung (pytest process idle ~30 min, 5s CPU), killed.\nChanged test file tests/codemie/rest_api/test_litellm_model_recovery.py fails collection:\ntests/codemie/rest_api/test_litellm_model_recovery.py:25: from codemie.rest_api import main\nsrc/codemie/rest_api/main.py:62 -> routers/user_settings.py:29 -> settings_tester.py:35 -> codemie_tools/ms_exchange/client_factory.py:20 -> ews_client.py:41\nE   ModuleNotFoundError: No module named 'exchangelib'\nOther changed tests: 34 passed, 12 skipped."
+  }
+}

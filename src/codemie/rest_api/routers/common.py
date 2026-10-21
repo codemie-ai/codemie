@@ -69,10 +69,17 @@ def healthcheck():
 @router.get("/healthcheck/model", include_in_schema=False)
 def model_provider_healthcheck(request: Request):
     readiness = getattr(request.app.state, "model_provider_readiness", None)
+    litellm_models = getattr(request.app.state, "litellm_models_status", ModelProviderStatus.NOT_CHECKED.value)
     if readiness is None:
-        return {"status": ModelProviderStatus.NOT_CHECKED.value, "provider": None, "missing": []}
+        return {
+            "status": ModelProviderStatus.NOT_CHECKED.value,
+            "provider": None,
+            "missing": [],
+            "litellm_models": litellm_models,
+        }
     return {
         "status": readiness.status.value,
         "provider": readiness.provider,
         "missing": readiness.missing,
+        "litellm_models": litellm_models,
     }

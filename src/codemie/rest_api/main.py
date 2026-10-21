@@ -148,29 +148,13 @@ from codemie.service.customer_config_service import override_cache, refresh_over
 from slowapi.middleware import SlowAPIMiddleware
 from slowapi.errors import RateLimitExceeded
 from codemie.rest_api.rate_limit import limiter
-
-
-def _initialize_litellm_models():
-    """
-    Initialize default LiteLLM models from proxy if enabled.
-
-    Fetches models from LiteLLM proxy via enterprise and stores them in llm_service.
-    """
-    from codemie.enterprise.litellm import get_available_models
-    from codemie.service.llm_service.llm_service import llm_service
-
-    try:
-        # Fetch models from LiteLLM via enterprise (already mapped to LLMModel)
-        models = get_available_models()
-
-        # Store in llm_service
-        llm_service.initialize_default_litellm_models(models)
-
-        logger.info(
-            f"Initialized {len(models.chat_models)} chat models, and  {len(models.embedding_models)} embedding models."
-        )
-    except Exception as e:
-        logger.error(f"Failed to initialize LiteLLM models: {e}")
+from codemie.rest_api.litellm_models_recovery import (
+    LITELLM_MODELS_LOADED,
+    LITELLM_MODELS_NOT_APPLICABLE,
+    LITELLM_MODELS_UNAVAILABLE,
+    initialize_litellm_models as _initialize_litellm_models,
+    schedule_litellm_models_recovery as _schedule_litellm_models_recovery,
+)
 
 
 def _setup_litellm_cache_cleanup_scheduler():
@@ -367,12 +351,16 @@ async def _initialize_enterprise_services(app: FastAPI):
         logger.info("LiteLLM budget enforcement provider registered")
 
 
-def _setup_litellm_features():
-    """Initialize LiteLLM features if enabled."""
-    if is_litellm_enabled():
-        _initialize_litellm_models()
-        if config.LLM_PROXY_BUDGET_CHECK_ENABLED:
-            _setup_litellm_cache_cleanup_scheduler()
+def _setup_litellm_features(app: FastAPI):
+    """Initialize LiteLLM features if enabled and record the models status on app state."""
+    if not is_litellm_enabled():
+        app.state.litellm_models_status = LITELLM_MODELS_NOT_APPLICABLE
+        return
+
+    loaded = _initialize_litellm_models()
+    app.state.litellm_models_status = LITELLM_MODELS_LOADED if loaded else LITELLM_MODELS_UNAVAILABLE
+    if config.LLM_PROXY_BUDGET_CHECK_ENABLED:
+        _setup_litellm_cache_cleanup_scheduler()
 
 
 async def ensure_predefined_budgets() -> None:
@@ -858,7 +846,7 @@ async def lifespan(app: FastAPI):
     await _initialize_enterprise_services(app)
 
     # Setup LiteLLM features
-    _setup_litellm_features()
+    _setup_litellm_features(app)
 
     # Create preconfigured content after LiteLLM is initialized so the correct
     # default model is used instead of the YAML fallback.
@@ -926,6 +914,7 @@ async def lifespan(app: FastAPI):
     # Start background tasks
     tasks = []
     _schedule_customer_config_refresh(tasks)
+    _schedule_litellm_models_recovery(app, tasks)
     if config.TRIGGER_ENGINE_ENABLED:
         tasks.append(asyncio.create_task(NodeController().start()))
 

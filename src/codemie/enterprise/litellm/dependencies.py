@@ -855,7 +855,46 @@ def get_user_keys_spending(
     )
 
 
-def get_available_models(user_id: str | None = None, api_key: str | None = None):
+def _map_raw_models(raw_models):
+    """Map raw LiteLLM model dicts to enabled LLMModel objects, deduplicated by base_name."""
+    from codemie.configs import logger
+    from codemie.configs.llm_config import LiteLLMModels, ModelType
+
+    from .models import map_litellm_to_llm_model
+
+    chat_models = {}
+    embedding_models = {}
+
+    for raw_model in raw_models:
+        try:
+            llm_model = map_litellm_to_llm_model(raw_model)
+            if not llm_model.enabled:
+                continue
+
+            mode_str = raw_model.get("model_info", {}).get("mode", ModelType.CHAT.value)
+
+            try:
+                model_type = ModelType(mode_str)
+            except ValueError:
+                logger.warning(f"Unknown model mode '{mode_str}', defaulting to CHAT")
+                model_type = ModelType.CHAT
+
+            if model_type == ModelType.EMBEDDING:
+                embedding_models[llm_model.base_name] = llm_model
+            else:
+                chat_models[llm_model.base_name] = llm_model
+
+        except Exception as e:
+            logger.error(f"Error mapping model {raw_model.get('model_name')}: {e}")
+            continue
+
+    return LiteLLMModels(
+        chat_models=list(chat_models.values()),
+        embedding_models=list(embedding_models.values()),
+    )
+
+
+def get_available_models(user_id: str | None = None, api_key: str | None = None, *, raise_on_error: bool = False):
     """
     Get available models from LiteLLM and map to LLMModel objects.
 
@@ -868,6 +907,7 @@ def get_available_models(user_id: str | None = None, api_key: str | None = None)
     Args:
         user_id: User ID for cache key (optional)
         api_key: API key to use (defaults to master key)
+        raise_on_error: Raise on fetch failure instead of returning empty LiteLLMModels
 
     Returns:
         LiteLLMModels containing chat and embedding models, or empty LiteLLMModels if not available
@@ -880,14 +920,13 @@ def get_available_models(user_id: str | None = None, api_key: str | None = None)
         print(f"Embedding models: {len(models.embedding_models)}")
     """
     from codemie.configs import logger
-    from codemie.configs.llm_config import LiteLLMModels, ModelType
-
-    # Import model mapping function from models module
-    from .models import map_litellm_to_llm_model
+    from codemie.configs.llm_config import LiteLLMModels
 
     litellm = get_litellm_service_or_none()
     if litellm is None:
         logger.debug("LiteLLM not available")
+        if raise_on_error:
+            raise RuntimeError("LiteLLM service is not available")
         return LiteLLMModels()
 
     try:
@@ -897,38 +936,10 @@ def get_available_models(user_id: str | None = None, api_key: str | None = None)
         if not raw_models:
             return LiteLLMModels()
 
-        # Map to LLMModel objects using local mapping function
-        chat_models = {}
-        embedding_models = {}
-
-        for raw_model in raw_models:
-            try:
-                llm_model = map_litellm_to_llm_model(raw_model)
-                if not llm_model.enabled:
-                    continue
-
-                mode_str = raw_model.get("model_info", {}).get("mode", ModelType.CHAT.value)
-
-                try:
-                    model_type = ModelType(mode_str)
-                except ValueError:
-                    logger.warning(f"Unknown model mode '{mode_str}', defaulting to CHAT")
-                    model_type = ModelType.CHAT
-
-                if model_type == ModelType.EMBEDDING:
-                    embedding_models[llm_model.base_name] = llm_model
-                else:
-                    chat_models[llm_model.base_name] = llm_model
-
-            except Exception as e:
-                logger.error(f"Error mapping model {raw_model.get('model_name')}: {e}")
-                continue
-
-        return LiteLLMModels(
-            chat_models=list(chat_models.values()),
-            embedding_models=list(embedding_models.values()),
-        )
+        return _map_raw_models(raw_models)
 
     except Exception as e:
         logger.error(f"Error getting available models: {e}")
+        if raise_on_error:
+            raise
         return LiteLLMModels()
