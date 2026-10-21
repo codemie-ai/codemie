@@ -788,6 +788,50 @@ def test_session_files_daily_never_tests_read_tool_name() -> None:
     assert rollups._text_array(("Read",)) not in files
 
 
+def test_sentinel_exact_is_the_first_prompt_list_only() -> None:
+    from codemie.repository.cli_analytics.vocabulary import SENTINEL_EXACT
+
+    assert SENTINEL_EXACT == ("/clear", "/resume", "/compact", "/exit", "/quit")
+
+
+def test_real_turn_excludes_auto_prompts_and_commands_without_a_model_request() -> None:
+    # The whole fragment, so a changed connective, a dropped filter or a wider window fails here: two NOT EXISTS
+    # lookups (never a JOIN that could count a span twice), every one bounded by session and 1 h of the span's ts.
+    w = "interval '3600 seconds'"
+    expected = (
+        # an auto prompt: the span's user_prompt has the prompt_id of an agent.prompt.submit hook that starts with
+        # <task-notification> after leading whitespace
+        f"NOT EXISTS (SELECT 1 FROM log_events l WHERE l.session_id = s.session_id "
+        f"AND l.ts >= s.ts - {w} AND l.ts <= s.ts + {w} AND l.span_id = s.span_id AND l.event_kind = 2 "
+        f"AND l.prompt_id IS NOT NULL AND EXISTS (SELECT 1 FROM hook_events h WHERE h.session_id = s.session_id "
+        f"AND h.ts >= s.ts - {w} AND h.ts <= s.ts + {w} AND h.event_type = 'agent.prompt.submit' "
+        f"AND h.prompt_id = l.prompt_id AND starts_with(ltrim(h.prompt_body, E' \\t\\r\\n'), '<task-notification>'))) "
+        # a slash command with no api_request (1) or api_error (6) on the same span
+        f"AND NOT EXISTS (SELECT 1 FROM log_events l WHERE l.session_id = s.session_id "
+        f"AND l.ts >= s.ts - {w} AND l.ts <= s.ts + {w} AND l.span_id = s.span_id AND l.event_kind = 2 "
+        f"AND btrim(l.command_name) <> '' AND NOT EXISTS (SELECT 1 FROM log_events r WHERE r.session_id = s.session_id "
+        f"AND r.ts >= s.ts - {w} AND r.ts <= s.ts + {w} AND r.span_id = s.span_id AND r.event_kind IN (1, 6)))"
+    )
+    assert " ".join(rollups._REAL_TURN.split()) == expected
+
+
+def test_turns_daily_branches_apply_the_turn_rule() -> None:
+    inserts = {
+        _target_table(s): s
+        for s in RECOMPUTE
+        if s.lstrip().startswith("INSERT INTO") and _gate_bits(s) & rollups._SPANS
+    }
+    span_branch, hook_branch = inserts["turns_daily"].split("UNION ALL")
+    assert rollups._REAL_TURN in span_branch
+    assert f"s.span_kind = {rollups._INTERACTION}" in span_branch
+    # a hook-only day counts every agent.prompt.submit but an auto prompt; a NULL prompt_body still counts
+    assert rollups._NO_SPAN_OF_KIND in hook_branch
+    assert "AND starts_with(ltrim(h.prompt_body, E' \\t\\r\\n'), '<task-notification>') IS NOT TRUE" in hook_branch
+    assert "/clear" not in hook_branch
+    assert "btrim(h.prompt_body) <> ''" not in hook_branch
+    assert "'1 hour'" not in inserts["turns_daily"]
+
+
 def test_mark_range_yields_the_ingest_bits_per_source() -> None:
     sql = rollups._MARK_RANGE
     inner = sql.split("FROM (", 1)[1]
@@ -837,6 +881,20 @@ def test_mark_range_yields_the_ingest_bits_per_source() -> None:
         f"CASE WHEN ts - {day_start} <= {reach} THEN (ts AT TIME ZONE 'UTC')::date - 1 "
         f"WHEN {day_start} + interval '1 day' - ts <= {reach} THEN (ts AT TIME ZONE 'UTC')::date + 1 END"
     )
+    # turns: api_request, user_prompt and api_error rows mark SPAN_FACTS on their day and on the neighbour day
+    # within 1 h (bounds inclusive); agent.prompt.submit marks both neighbours within 1 h too
+    turn_neighbour = rollups._neighbour_day("interval '3600 seconds'")
+    log_own = " ".join(
+        next(b for b in by_table["log_events"] if "(ts AT TIME ZONE 'UTC')::date, session_id" in b).split()
+    )
+    # session-less rows get no turn bits, at ingest and here alike
+    assert "| CASE WHEN event_kind IN (1, 2, 6) AND session_id <> '' THEN 4 ELSE 0 END" in log_own
+    log_turn = " ".join(next(b for b in by_table["log_events"] if turn_neighbour in b).split())
+    assert "session_id, 4 | CASE WHEN session_id <> '' THEN 32 ELSE 0 END FROM log_events" in log_turn
+    assert "AND session_id <> '' AND event_kind IN (1, 2, 6)" in log_turn
+    hook_turn = " ".join(next(b for b in by_table["hook_events"] if turn_neighbour in b).split())
+    assert "session_id, 4 FROM hook_events" in hook_turn
+    assert "AND session_id <> '' AND event_type = 'agent.prompt.submit'" in hook_turn
     # clamped to raw retention ($4, NULL without it); a row far from midnight queues no neighbour
     assert "WHERE raw.day IS NOT NULL AND ($4::date IS NULL OR raw.day >= $4::date)" in sql
 

@@ -1,0 +1,36 @@
+{
+  "decision": "approve",
+  "rationale": "All four lenses and the standards audit ran clean of blockers; every story AC and in-repo spec requirement passes (per-turn context metrics and ClickHouse parity n/a here, live PG run pending Stage 7). 14 candidates dismissed after reading the code: spec-defined behavior (any api_request makes a command a turn; the real capture shows no background request on a local-command span), indexed session/ts-bounded lookups, unchanged fallback when logs lack span_id, an established live-test pattern, and doc/style nits. 0 deferred.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "story-ac", "item": "Turns excludes non-conversational local slash commands", "status": "pass", "notes": "_REAL_TURN drops an interaction span whose user_prompt has a command_name and no api_request/api_error on the same span; applied to the turns_daily span branch"},
+    {"kind": "story-ac", "item": "/exit does not increment Turns", "status": "pass", "notes": "test_local_commands_without_a_request_are_not_turns expects 0; hooks-only fallback relies on built-ins firing no UserPromptSubmit hook"},
+    {"kind": "story-ac", "item": "/model does not increment Turns", "status": "pass", "notes": "same no-request rule; test_a_model_switch_without_a_request_is_not_a_turn expects 0"},
+    {"kind": "story-ac", "item": "One real user prompt results in TURNS = 1", "status": "pass", "notes": "typed prompt has no command_name; typed and interrupted-typed tests expect 1"},
+    {"kind": "spec", "item": "A typed prompt is always a turn, also when interrupted before any request", "status": "pass", "notes": "request check gated on btrim(command_name) <> ''; test_an_interrupted_typed_prompt_is_still_a_turn"},
+    {"kind": "spec", "item": "A slash command is a turn only if it made a model request (api_request or api_error on its span)", "status": "pass", "notes": "inner NOT EXISTS on api_request/api_error by span_id; test_commands_that_reach_the_model_are_turns"},
+    {"kind": "spec", "item": "An auto prompt (<task-notification>, leading space/tab/CR/LF ignored) is never a turn", "status": "pass", "notes": "_IS_AUTO_PROMPT starts_with(ltrim(...), AUTO_PROMPT_PREFIX) by prompt_id; whitespace test covers it"},
+    {"kind": "spec", "item": "No list of command names decides the rule", "status": "pass", "notes": "_REAL_TURN tests only command_name non-empty plus request presence"},
+    {"kind": "spec", "item": "Rule is one SQL fragment _REAL_TURN reading only already-stored columns; no schema migration", "status": "pass", "notes": "reads existing log_events/hook_events columns; no alembic file in the diff; fragment pinned by test"},
+    {"kind": "spec", "item": "Every lookup is NOT EXISTS, bounded by session_id and +/-1 h of the span ts", "status": "pass", "notes": "_near_span() emits session_id equality and +/-3600s bounds; duplicated user_prompt test"},
+    {"kind": "spec", "item": "Fallback pairs (no spans) count agent.prompt.submit minus auto prompts; empty body still counts", "status": "pass", "notes": "hook branch adds _IS_AUTO_PROMPT IS NOT TRUE; hooks-only and empty-body tests"},
+    {"kind": "spec", "item": "Ingest marking re-queues SPAN_FACTS on own and neighbouring day within 1 h of midnight", "status": "pass", "notes": "dirty.py _TURN_LOG_KINDS + _mark_near_midnight; prompt.submit moved out of _SPAN_HOOK_TYPES; boundary tests"},
+    {"kind": "spec", "item": "Backfill _MARK_RANGE queues the same turn bits as ingest", "status": "pass", "notes": "own-day SPANS bit for kinds 1,2,6 and neighbour-day statements via _neighbour_day(_TURN_WINDOW); pinned by test"},
+    {"kind": "spec", "item": "5 s / 1 h usage request reach unchanged", "status": "pass", "notes": "_API_REQUEST_REACH statement untouched; existing test shows only turn bits added"},
+    {"kind": "spec", "item": "SENTINEL_EXACT stays the first-prompt list only", "status": "pass", "notes": "vocabulary.py does not touch SENTINEL_EXACT; value pinned by test"},
+    {"kind": "spec", "item": "Requests of a command (incl. forked skill) carry the command's interaction span_id; pinned by real capture", "status": "pass", "notes": "claude_code_turns_otlp.json fixture + test_otlp.py asserts every api_request is on an interaction span"},
+    {"kind": "spec", "item": "Session-depth buckets and turn-based averages follow the corrected count", "status": "pass", "notes": "reader.py reads turns_daily, recomputed with _REAL_TURN"},
+    {"kind": "spec", "item": "Per-turn context metrics corrected (ticket Impact)", "status": "na", "notes": "context metrics are per API call; no per-turn counterpart exists to correct"},
+    {"kind": "spec", "item": "ClickHouse mv_turns_daily parity (ticket comment 1)", "status": "na", "notes": "no ClickHouse backend in this code base"},
+    {"kind": "spec", "item": "Storage guide documents the turn rule, fallback, dirty marking, backfill bits and rollout step", "status": "pass", "notes": "cli-analytics-storage.md updated with all listed sections"},
+    {"kind": "spec", "item": "Router D3 docstring reflects the new turn meaning", "status": "pass", "notes": "cli_analytics.py D3 rewritten"},
+    {"kind": "spec", "item": "Value-level test file with 12 cases run against PostgreSQL 17 and 14", "status": "pending-stage-7", "notes": "test_live_turns_daily.py skips when TEST_LOCAL_PG_URL is unreachable; passing runs are execution evidence"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "all 23 subjects in a25dfbdc..HEAD follow the documented EPMCDME-####: Description format (git-workflow.md Commit Message Format); squash-merge strategy is a merge-time concern, not adjudicable on the branch history"},
+    {"kind": "code-quality", "status": "pass", "notes": "new test_live_turns_daily.py carries the Apache 2.0 header, from __future__ import annotations and typed signatures; source changes in rollups.py (turn rule for turns_daily), dirty.py (turn re-marking), vocabulary.py (AUTO_PROMPT_PREFIX constant) and the router docstring are typed and sit in the modules owning those concerns, so the Module Cohesion rule on the ~2000-line rollups.py is not triggered (turns_daily recompute SQL is its core responsibility); Ruff conformance was not executed (no linters run by this reviewer)"},
+    {"kind": "security", "status": "pass", "notes": "no auth, secret-handling or untrusted-input parsing changes; the new SQL fragments in rollups.py interpolate only code constants (AUTO_PROMPT_PREFIX, EventKind ints, _CROSS_MIDNIGHT) via _literal/_text_array with quote escaping, no request input reaches them; router change is docstring-only; no credentials logged"}
+  ],
+  "findings": []
+}

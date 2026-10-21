@@ -57,8 +57,8 @@ def test_cost_prompt_and_skill_logs_invalidate_log_facts():
     )
 
     assert dirty_keys(batch) == {
-        (D, "s1"): 49,  # LOG_FACTS 1 + USAGE_FACTS 16 + SESSION 32
-        (D, "s2"): 33,  # LOG_FACTS 1 + SESSION 32
+        (D, "s1"): 53,  # LOG_FACTS 1 + SPAN_FACTS 4 + USAGE_FACTS 16 + SESSION 32
+        (D, "s2"): 37,  # LOG_FACTS 1 + SPAN_FACTS 4 + SESSION 32
         (D, "s3"): 33,  # LOG_FACTS 1 + SESSION 32
         (D, "s4"): 32,  # tool_result is no log fact; the session id alone gives SESSION 32
     }
@@ -69,6 +69,18 @@ def test_logs_without_a_session_still_count_for_cost():
     batch = _logs(b.log_record(NOON, {"event.name": "api_request"}))
 
     assert dirty_keys(batch) == {(D, ""): 17}  # LOG_FACTS 1 + USAGE_FACTS 16, no SESSION
+
+
+def test_a_user_prompt_without_a_session_marks_only_log_facts() -> None:
+    batch = _logs(b.log_record(NOON, {"event.name": "user_prompt"}))
+
+    assert dirty_keys(batch) == {(D, ""): 1}  # LOG_FACTS 1; no turn mark without a session
+
+
+def test_an_api_error_without_a_session_marks_nothing() -> None:
+    batch = _logs(b.log_record(NOON, {"event.name": "api_error"}))
+
+    assert dirty_keys(batch) == {}
 
 
 def test_hook_events_invalidate_the_session_dimensions():
@@ -151,10 +163,74 @@ def test_a_usage_request_without_a_session_gets_no_session_bit() -> None:
     assert dirty_keys(_usage(NOON, session="")) == {(D, ""): 17}  # LOG_FACTS 1 + USAGE_FACTS 16
 
 
-def test_a_user_prompt_with_a_session_marks_log_and_session_facts() -> None:
+def test_a_user_prompt_with_a_session_marks_log_span_and_session_facts() -> None:
+    # turns_daily reads the user_prompt of an interaction span, so a user_prompt also marks SPAN_FACTS.
     batch = _logs(b.log_record(NOON, {"event.name": "user_prompt", "session.id": "s1"}))
 
-    assert dirty_keys(batch) == {(D, "s1"): 33}  # LOG_FACTS 1 + SESSION 32
+    assert dirty_keys(batch) == {(D, "s1"): 37}  # LOG_FACTS 1 + SPAN_FACTS 4 + SESSION 32
+
+
+def test_a_user_prompt_in_the_first_hour_also_invalidates_the_previous_day() -> None:
+    # The interaction span of a user_prompt 20 min after midnight may lie on the day before.
+    batch = _logs(b.log_record(JUST_AFTER_MIDNIGHT, {"event.name": "user_prompt", "session.id": "s1"}))
+
+    assert dirty_keys(batch) == {
+        (D, "s1"): 37,  # LOG_FACTS 1 + SPAN_FACTS 4 + SESSION 32
+        (PREVIOUS, "s1"): 36,  # SPAN_FACTS 4 + SESSION 32
+    }
+
+
+def _user_prompt(ts: datetime) -> DecodedBatch:
+    return _logs(b.log_record(ts, {"event.name": "user_prompt", "session.id": "s1"}))
+
+
+def test_a_user_prompt_exactly_1_hour_after_midnight_marks_the_previous_day() -> None:
+    # 01:00:00 - 00:00:00 = 1 h, the reach itself (bounds inclusive); 01:00:01 is past it
+    assert dirty_keys(_user_prompt(_at(1, 0, 0))) == {(D, "s1"): 37, (PREVIOUS, "s1"): 36}
+    assert dirty_keys(_user_prompt(_at(1, 0, 1))) == {(D, "s1"): 37}
+
+
+def _api_error(ts: datetime) -> DecodedBatch:
+    return _logs(b.log_record(ts, {"event.name": "api_error", "session.id": "s1"}))
+
+
+def test_an_api_error_marks_span_and_session_facts() -> None:
+    # A failed request still means the interaction talked to the model.
+    assert dirty_keys(_api_error(NOON)) == {(D, "s1"): 36}  # SPAN_FACTS 4 + SESSION 32, no LOG_FACTS
+
+
+def test_an_api_error_30_seconds_after_midnight_also_marks_the_previous_day() -> None:
+    assert dirty_keys(_api_error(_at(0, 0, 30))) == {(D, "s1"): 36, (PREVIOUS, "s1"): 36}
+
+
+def test_an_api_request_30_seconds_before_midnight_marks_span_facts_on_the_next_day() -> None:
+    # 30 s is past the 5 s usage window of a request without request_id, within the 1 h turn reach
+    assert dirty_keys(_api_request(_at(23, 59, 30))) == {(D, "s1"): 53, (NEXT, "s1"): 36}
+
+
+def test_an_api_request_61_minutes_from_midnight_marks_only_its_day() -> None:
+    assert dirty_keys(_api_request(_at(1, 1, 0))) == {(D, "s1"): 53}
+    assert dirty_keys(_api_request(_at(22, 59, 0))) == {(D, "s1"): 53}
+
+
+def test_a_prompt_submit_hook_30_seconds_before_midnight_also_marks_the_next_day() -> None:
+    # A late auto-prompt hook decides the turn of a span that may lie after midnight.
+    batch = _hooks(hb.minimal("agent.prompt.submit", "s1", _at(23, 59, 30).isoformat()))
+
+    assert dirty_keys(batch) == {(D, "s1"): 38, (NEXT, "s1"): 4}  # 2 + 4 + 32; SPAN_FACTS 4 only
+
+
+def test_a_prompt_submit_hook_just_after_midnight_also_marks_the_previous_day() -> None:
+    # The interaction span the hook decides may lie before midnight.
+    batch = _hooks(hb.minimal("agent.prompt.submit", "s1", JUST_AFTER_MIDNIGHT.isoformat()))
+
+    assert dirty_keys(batch) == {(D, "s1"): 38, (PREVIOUS, "s1"): 4}  # 2 + 4 + 32; SPAN_FACTS 4 only
+
+
+def test_a_tool_end_hook_30_seconds_before_midnight_marks_no_next_day() -> None:
+    batch = _hooks(hb.minimal("agent.tool.end", "s1", _at(23, 59, 30).isoformat()))
+
+    assert dirty_keys(batch) == {(D, "s1"): 38}  # DIMENSIONS 2 + SPAN_FACTS 4 + SESSION 32
 
 
 def test_a_subagent_usage_hook_marks_dimensions_usage_and_session() -> None:
@@ -183,7 +259,7 @@ def test_a_tool_end_hook_marks_span_facts_on_its_day_and_the_hour_before() -> No
         "agent.skill.dispatch",
     ],
 )
-def test_the_six_span_hook_types_mark_span_facts(event_type: str) -> None:
+def test_the_span_hook_types_and_the_prompt_submit_hook_mark_span_facts(event_type: str) -> None:
     batch = _hooks(hb.minimal(event_type, "s1", NOON.isoformat()))
 
     assert dirty_keys(batch) == {(D, "s1"): 38}  # DIMENSIONS 2 + SPAN_FACTS 4 + SESSION 32
@@ -223,11 +299,11 @@ def test_a_usage_row_1_hour_and_1_second_before_midnight_marks_only_its_day() ->
 
 
 def test_an_api_request_keeps_the_5_second_midnight_rule() -> None:
-    # the OTel matching window stays 5 s, so an api_request marks its neighbour day only within 5 s
-    assert dirty_keys(_api_request(_at(0, 0, 5))) == {(D, "s1"): 49, (PREVIOUS, "s1"): 49}
-    assert dirty_keys(_api_request(_at(0, 0, 6))) == {(D, "s1"): 49}
-    assert dirty_keys(_api_request(_at(23, 59, 55))) == {(D, "s1"): 49, (NEXT, "s1"): 49}
-    assert dirty_keys(_api_request(_at(23, 59, 54))) == {(D, "s1"): 49}  # each is 1 + 16 + 32
+    # the OTel matching window stays 5 s: past it the neighbour day gets only the turn bits 4 + 32
+    assert dirty_keys(_api_request(_at(0, 0, 5))) == {(D, "s1"): 53, (PREVIOUS, "s1"): 53}
+    assert dirty_keys(_api_request(_at(0, 0, 6))) == {(D, "s1"): 53, (PREVIOUS, "s1"): 36}
+    assert dirty_keys(_api_request(_at(23, 59, 55))) == {(D, "s1"): 53, (NEXT, "s1"): 53}
+    assert dirty_keys(_api_request(_at(23, 59, 54))) == {(D, "s1"): 53, (NEXT, "s1"): 36}  # 53 = 1 + 4 + 16 + 32
 
 
 def _api_request_with_id(ts: datetime, request_id: str) -> DecodedBatch:
@@ -236,27 +312,28 @@ def _api_request_with_id(ts: datetime, request_id: str) -> DecodedBatch:
 
 def test_an_api_request_with_a_request_id_30_seconds_after_midnight_also_marks_the_previous_day() -> None:
     # 00:00:30 - 00:00:00 = 30 s, within the 1 h reach of an identifier pair across midnight
-    assert dirty_keys(_api_request_with_id(_at(0, 0, 30), "req-1")) == {(D, "s1"): 49, (PREVIOUS, "s1"): 49}
-    # each is LOG_FACTS 1 + USAGE_FACTS 16 + SESSION 32 = 49
+    assert dirty_keys(_api_request_with_id(_at(0, 0, 30), "req-1")) == {(D, "s1"): 53, (PREVIOUS, "s1"): 53}
+    # each is LOG_FACTS 1 + SPAN_FACTS 4 + USAGE_FACTS 16 + SESSION 32 = 53
 
 
 def test_an_api_request_with_a_request_id_1_hour_from_midnight_marks_the_neighbour_day() -> None:
     # 01:00:00 - 00:00:00 = 1 h and 24:00:00 - 23:00:00 = 1 h, the reach itself (bounds inclusive)
-    assert dirty_keys(_api_request_with_id(_at(1, 0, 0), "req-1")) == {(D, "s1"): 49, (PREVIOUS, "s1"): 49}
-    assert dirty_keys(_api_request_with_id(_at(23, 0, 0), "req-1")) == {(D, "s1"): 49, (NEXT, "s1"): 49}
+    assert dirty_keys(_api_request_with_id(_at(1, 0, 0), "req-1")) == {(D, "s1"): 53, (PREVIOUS, "s1"): 53}
+    assert dirty_keys(_api_request_with_id(_at(23, 0, 0), "req-1")) == {(D, "s1"): 53, (NEXT, "s1"): 53}
 
 
 def test_an_api_request_with_a_request_id_past_the_1_hour_reach_marks_only_its_day() -> None:
     # 01:00:01 - 00:00:00 = 1 h 1 s and 24:00:00 - 22:59:59 = 1 h 1 s, past the 1 h reach
-    assert dirty_keys(_api_request_with_id(_at(1, 0, 1), "req-1")) == {(D, "s1"): 49}
-    assert dirty_keys(_api_request_with_id(_at(22, 59, 59), "req-1")) == {(D, "s1"): 49}  # 1 + 16 + 32
+    assert dirty_keys(_api_request_with_id(_at(1, 0, 1), "req-1")) == {(D, "s1"): 53}
+    assert dirty_keys(_api_request_with_id(_at(22, 59, 59), "req-1")) == {(D, "s1"): 53}  # 1 + 4 + 16 + 32
 
 
 def test_an_api_request_without_a_request_id_marks_the_neighbour_day_only_within_5_seconds() -> None:
-    # 00:00:30 is 30 s past midnight: past the 5 s window of a record without an identifier
-    assert dirty_keys(_api_request(_at(0, 0, 30))) == {(D, "s1"): 49}  # 1 + 16 + 32
+    # 00:00:30 is 30 s past midnight: past the 5 s window of a record without an identifier, the previous
+    # day gets only the turn bits SPAN_FACTS 4 + SESSION 32
+    assert dirty_keys(_api_request(_at(0, 0, 30))) == {(D, "s1"): 53, (PREVIOUS, "s1"): 36}  # 1 + 4 + 16 + 32
     # an empty request_id is no identifier: the 5 s window as well
-    assert dirty_keys(_api_request_with_id(_at(0, 0, 30), "")) == {(D, "s1"): 49}
+    assert dirty_keys(_api_request_with_id(_at(0, 0, 30), "")) == {(D, "s1"): 53, (PREVIOUS, "s1"): 36}
 
 
 # The first and the last hour a client can date an event in: years 1 to 9999 are accepted as sent.
@@ -290,7 +367,8 @@ def test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day(event_ty
 
 
 def test_the_midnight_rule_does_not_apply_to_other_log_events() -> None:
-    batch = _logs(b.log_record(_at(0, 0, 1), {"event.name": "user_prompt", "session.id": "s1"}))
+    # skill_activated is a log fact with no neighbouring-day mark, unlike user_prompt and api_request.
+    batch = _logs(b.log_record(_at(0, 0, 1), {"event.name": "skill_activated", "session.id": "s1"}))
 
     assert dirty_keys(batch) == {(D, "s1"): 33}  # LOG_FACTS 1 + SESSION 32
 

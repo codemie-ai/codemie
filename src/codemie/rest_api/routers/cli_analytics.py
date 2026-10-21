@@ -34,8 +34,8 @@ Three modelling decisions are invisible in the payload but change every number
       anyLast() would be non-deterministic. `repo_remote` would be authoritative
       but covers only ~59% of sessions, so it is not used as the grouping key.
 
-  D3  turns = claude_code.interaction spans, matching the contract's meaning of a
-      user interaction (not the count of API calls).
+  D3  turns = interactions the user started that talk to the model: a typed prompt, or a
+      slash command that made a model request; auto prompts are not turns.
 """
 
 from __future__ import annotations

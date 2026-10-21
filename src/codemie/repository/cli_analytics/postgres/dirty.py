@@ -37,6 +37,7 @@ class RollupFamily(IntFlag):
 
 
 _LOG_KINDS = frozenset({EventKind.API_REQUEST, EventKind.USER_PROMPT, EventKind.SKILL_ACTIVATED})
+_TURN_LOG_KINDS = frozenset({EventKind.API_REQUEST, EventKind.USER_PROMPT, EventKind.API_ERROR})
 _SPAN_KINDS = frozenset({SpanKind.TOOL, SpanKind.TOOL_EXECUTION, SpanKind.INTERACTION})
 _ROLLUP_METRICS = frozenset(ROLLUP_METRICS)
 # A tool span and its execution span can fall on both sides of midnight; the tool's hourly
@@ -49,11 +50,11 @@ _SPAN_HOOK_TYPES = frozenset(
         "agent.tool.start",
         "agent.tool.end",
         "agent.tool.error",
-        "agent.prompt.submit",
         "agent.subagent.start",
         "agent.skill.dispatch",
     }
 )
+_PROMPT_SUBMIT = "agent.prompt.submit"
 _SUBAGENT_USAGE = "agent.subagent.usage"
 # An api_request without a request_id this close to midnight also marks the neighbouring day (bounds
 # inclusive): the window in which the recompute matches it with a transcript request by fingerprint.
@@ -113,6 +114,11 @@ def _mark_log(keys: DirtyKeys, log: LogRow) -> None:
         _mark_near_midnight(keys, log.day, log.ts, log.session_id, mask, reach)
     else:
         keys[(log.day, log.session_id)] = keys.get((log.day, log.session_id), 0) | mask
+    if log.event_kind in _TURN_LOG_KINDS and log.session_id:
+        # Whether an interaction span is a turn depends on its user_prompt and on a request that may arrive in
+        # a later batch; either re-counts the span's day, which lies on either side of midnight within the reach.
+        turn = RollupFamily.SPAN_FACTS | RollupFamily.SESSION
+        _mark_near_midnight(keys, log.day, log.ts, log.session_id, int(turn), _CROSS_MIDNIGHT)
 
 
 def _mark_usage(keys: DirtyKeys, row: UsageRow) -> None:
@@ -126,7 +132,11 @@ def _mark_hook(keys: DirtyKeys, hook: HookRow) -> None:
     if not hook.session_id:
         return
     _mark(keys, hook.day, hook.session_id, RollupFamily.DIMENSIONS | RollupFamily.SESSION)
-    if hook.event_type in _SPAN_HOOK_TYPES:
+    if hook.event_type == _PROMPT_SUBMIT:
+        # A late auto-prompt hook decides whether the interaction span of its prompt is a turn: it re-counts
+        # the span's day, on either side of midnight within the reach.
+        _mark_near_midnight(keys, hook.day, hook.ts, hook.session_id, int(RollupFamily.SPAN_FACTS), _CROSS_MIDNIGHT)
+    elif hook.event_type in _SPAN_HOOK_TYPES:
         _mark(keys, hook.day, hook.session_id, RollupFamily.SPAN_FACTS)
         if hook.ts - datetime.combine(hook.day, time.min, tzinfo=timezone.utc) < _CROSS_MIDNIGHT:
             previous = _neighbour(hook.day, -1)

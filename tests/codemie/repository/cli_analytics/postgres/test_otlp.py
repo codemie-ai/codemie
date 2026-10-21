@@ -19,6 +19,7 @@ from __future__ import annotations
 import base64
 import json
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 from unittest.mock import MagicMock, patch
 
@@ -455,6 +456,30 @@ def test_empty_body_is_an_empty_batch():
     batch = decode_otlp("metrics", b"", "application/x-protobuf")
 
     assert batch.record_count == 0
+
+
+def test_real_claude_code_requests_carry_the_span_id_of_their_interaction():
+    """A sanitized Claude Code capture: a typed prompt, /context, /probe-skill, the forked /probe-fork, /compact."""
+    capture = json.loads((Path(__file__).parent / "fixtures" / "claude_code_turns_otlp.json").read_text())
+    logs = decode_otlp("logs", json.dumps(capture["logs"]).encode(), "application/json").logs
+    spans = decode_otlp("traces", json.dumps(capture["traces"]).encode(), "application/json").spans
+    session = "00000000-0000-4000-8000-000000000001"
+    typed, context, skill, fork, compact = (bytes.fromhex(f"10000000000000{seq:02d}") for seq in (1, 2, 4, 5, 8))
+
+    interactions = {(s.session_id, s.span_id) for s in spans if s.span_kind == v.SpanKind.INTERACTION}
+    requests = [(r.session_id, r.span_id, r.query_source) for r in logs if r.event_kind == v.EventKind.API_REQUEST]
+    prompts = {r.span_id: r.command_name for r in logs if r.event_kind == v.EventKind.USER_PROMPT}
+
+    assert interactions == {(session, span) for span in (typed, context, skill, fork, compact)}
+    assert requests == [
+        (session, typed, "repl_main_thread"),
+        (session, skill, "repl_main_thread"),
+        (session, skill, "prompt_suggestion"),
+        (session, fork, "agent:custom"),
+        (session, compact, "compact"),
+    ]
+    assert {(s, span) for s, span, _ in requests} <= interactions
+    assert prompts == {typed: None, context: "context", skill: "probe-skill", fork: "probe-fork", compact: "compact"}
 
 
 # ── hook NDJSON ───────────────────────────────────────────────────────────────

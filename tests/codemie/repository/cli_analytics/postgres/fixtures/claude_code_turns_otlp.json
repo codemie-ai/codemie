@@ -1,0 +1,3079 @@
+{
+ "logs": {
+  "resourceLogs": [
+   {
+    "resource": {
+     "attributes": [
+      {
+       "key": "service.name",
+       "value": {
+        "stringValue": "claude-code"
+       }
+      },
+      {
+       "key": "service.version",
+       "value": {
+        "stringValue": "2.1.302"
+       }
+      }
+     ],
+     "droppedAttributesCount": 0
+    },
+    "scopeLogs": [
+     {
+      "scope": {
+       "name": "com.anthropic.claude_code.events",
+       "version": "2.1.302"
+      },
+      "logRecords": [
+       {
+        "timeUnixNano": "1792521968547000000",
+        "observedTimeUnixNano": "1792521968547000000",
+        "body": {
+         "stringValue": "claude_code.user_prompt"
+        },
+        "attributes": [
+         {
+          "key": "session.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-8000-000000000001"
+          }
+         },
+         {
+          "key": "event.name",
+          "value": {
+           "stringValue": "user_prompt"
+          }
+         },
+         {
+          "key": "event.timestamp",
+          "value": {
+           "stringValue": "2026-10-20T18:46:08.547Z"
+          }
+         },
+         {
+          "key": "event.sequence",
+          "value": {
+           "intValue": 21
+          }
+         },
+         {
+          "key": "prompt.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-9000-000000000001"
+          }
+         },
+         {
+          "key": "prompt_length",
+          "value": {
+           "stringValue": "25"
+          }
+         }
+        ],
+        "droppedAttributesCount": 0,
+        "flags": 1,
+        "traceId": "abababababababababababababab0001",
+        "spanId": "1000000000000001"
+       },
+       {
+        "timeUnixNano": "1792521972012000000",
+        "observedTimeUnixNano": "1792521972012000000",
+        "body": {
+         "stringValue": "claude_code.api_request"
+        },
+        "attributes": [
+         {
+          "key": "session.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-8000-000000000001"
+          }
+         },
+         {
+          "key": "event.name",
+          "value": {
+           "stringValue": "api_request"
+          }
+         },
+         {
+          "key": "event.timestamp",
+          "value": {
+           "stringValue": "2026-10-20T18:46:12.012Z"
+          }
+         },
+         {
+          "key": "event.sequence",
+          "value": {
+           "intValue": 24
+          }
+         },
+         {
+          "key": "prompt.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-9000-000000000001"
+          }
+         },
+         {
+          "key": "model",
+          "value": {
+           "stringValue": "claude-haiku-5-5"
+          }
+         },
+         {
+          "key": "input_tokens",
+          "value": {
+           "intValue": 2
+          }
+         },
+         {
+          "key": "output_tokens",
+          "value": {
+           "intValue": 45
+          }
+         },
+         {
+          "key": "cache_read_tokens",
+          "value": {
+           "intValue": 27208
+          }
+         },
+         {
+          "key": "cache_creation_tokens",
+          "value": {
+           "intValue": 25334
+          }
+         },
+         {
+          "key": "cache_creation_5m_tokens",
+          "value": {
+           "intValue": 0
+          }
+         },
+         {
+          "key": "cache_creation_1h_tokens",
+          "value": {
+           "intValue": 25334
+          }
+         },
+         {
+          "key": "cost_usd",
+          "value": {
+           "doubleValue": 0.0053615799999999995
+          }
+         },
+         {
+          "key": "cost_usd_micros",
+          "value": {
+           "intValue": 5362
+          }
+         },
+         {
+          "key": "duration_ms",
+          "value": {
+           "intValue": 3392
+          }
+         },
+         {
+          "key": "ttft_ms",
+          "value": {
+           "intValue": 2989
+          }
+         },
+         {
+          "key": "request_id",
+          "value": {
+           "stringValue": "req_fake000001"
+          }
+         },
+         {
+          "key": "client_request_id",
+          "value": {
+           "stringValue": "00000000-0000-4000-a000-000000000001"
+          }
+         },
+         {
+          "key": "speed",
+          "value": {
+           "stringValue": "normal"
+          }
+         },
+         {
+          "key": "query_source",
+          "value": {
+           "stringValue": "repl_main_thread"
+          }
+         },
+         {
+          "key": "effort",
+          "value": {
+           "stringValue": "medium"
+          }
+         }
+        ],
+        "droppedAttributesCount": 0,
+        "flags": 1,
+        "traceId": "abababababababababababababab0001",
+        "spanId": "1000000000000001"
+       },
+       {
+        "timeUnixNano": "1792521972012000000",
+        "observedTimeUnixNano": "1792521972012000000",
+        "body": {
+         "stringValue": "claude_code.assistant_response"
+        },
+        "attributes": [
+         {
+          "key": "session.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-8000-000000000001"
+          }
+         },
+         {
+          "key": "event.name",
+          "value": {
+           "stringValue": "assistant_response"
+          }
+         },
+         {
+          "key": "event.timestamp",
+          "value": {
+           "stringValue": "2026-10-20T18:46:12.012Z"
+          }
+         },
+         {
+          "key": "event.sequence",
+          "value": {
+           "intValue": 25
+          }
+         },
+         {
+          "key": "prompt.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-9000-000000000001"
+          }
+         },
+         {
+          "key": "response_length",
+          "value": {
+           "intValue": 4
+          }
+         },
+         {
+          "key": "request_id",
+          "value": {
+           "stringValue": "req_fake000001"
+          }
+         },
+         {
+          "key": "model",
+          "value": {
+           "stringValue": "claude-haiku-5-5"
+          }
+         },
+         {
+          "key": "query_source",
+          "value": {
+           "stringValue": "repl_main_thread"
+          }
+         }
+        ],
+        "droppedAttributesCount": 0,
+        "flags": 1,
+        "traceId": "abababababababababababababab0001",
+        "spanId": "1000000000000001"
+       },
+       {
+        "timeUnixNano": "1792521989332000000",
+        "observedTimeUnixNano": "1792521989332000000",
+        "body": {
+         "stringValue": "claude_code.user_prompt"
+        },
+        "attributes": [
+         {
+          "key": "session.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-8000-000000000001"
+          }
+         },
+         {
+          "key": "event.name",
+          "value": {
+           "stringValue": "user_prompt"
+          }
+         },
+         {
+          "key": "event.timestamp",
+          "value": {
+           "stringValue": "2026-10-20T18:46:29.332Z"
+          }
+         },
+         {
+          "key": "event.sequence",
+          "value": {
+           "intValue": 26
+          }
+         },
+         {
+          "key": "prompt.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-9000-000000000002"
+          }
+         },
+         {
+          "key": "prompt_length",
+          "value": {
+           "stringValue": "8"
+          }
+         },
+         {
+          "key": "command_name",
+          "value": {
+           "stringValue": "context"
+          }
+         },
+         {
+          "key": "command_source",
+          "value": {
+           "stringValue": "builtin"
+          }
+         }
+        ],
+        "droppedAttributesCount": 0,
+        "flags": 1,
+        "traceId": "abababababababababababababab0002",
+        "spanId": "1000000000000002"
+       },
+       {
+        "timeUnixNano": "1792522013222000000",
+        "observedTimeUnixNano": "1792522013222000000",
+        "body": {
+         "stringValue": "claude_code.user_prompt"
+        },
+        "attributes": [
+         {
+          "key": "session.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-8000-000000000001"
+          }
+         },
+         {
+          "key": "event.name",
+          "value": {
+           "stringValue": "user_prompt"
+          }
+         },
+         {
+          "key": "event.timestamp",
+          "value": {
+           "stringValue": "2026-10-20T18:46:53.222Z"
+          }
+         },
+         {
+          "key": "event.sequence",
+          "value": {
+           "intValue": 28
+          }
+         },
+         {
+          "key": "prompt.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-9000-000000000003"
+          }
+         },
+         {
+          "key": "prompt_length",
+          "value": {
+           "stringValue": "12"
+          }
+         },
+         {
+          "key": "command_name",
+          "value": {
+           "stringValue": "probe-skill"
+          }
+         },
+         {
+          "key": "command_source",
+          "value": {
+           "stringValue": "custom"
+          }
+         }
+        ],
+        "droppedAttributesCount": 0,
+        "flags": 1,
+        "traceId": "abababababababababababababab0003",
+        "spanId": "1000000000000004"
+       },
+       {
+        "timeUnixNano": "1792522013284000000",
+        "observedTimeUnixNano": "1792522013284000000",
+        "body": {
+         "stringValue": "claude_code.skill_activated"
+        },
+        "attributes": [
+         {
+          "key": "session.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-8000-000000000001"
+          }
+         },
+         {
+          "key": "event.name",
+          "value": {
+           "stringValue": "skill_activated"
+          }
+         },
+         {
+          "key": "event.timestamp",
+          "value": {
+           "stringValue": "2026-10-20T18:46:53.284Z"
+          }
+         },
+         {
+          "key": "event.sequence",
+          "value": {
+           "intValue": 31
+          }
+         },
+         {
+          "key": "prompt.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-9000-000000000003"
+          }
+         },
+         {
+          "key": "skill.name",
+          "value": {
+           "stringValue": "probe-skill"
+          }
+         },
+         {
+          "key": "invocation_trigger",
+          "value": {
+           "stringValue": "user-slash"
+          }
+         },
+         {
+          "key": "skill.source",
+          "value": {
+           "stringValue": "projectSettings"
+          }
+         }
+        ],
+        "droppedAttributesCount": 0,
+        "flags": 1,
+        "traceId": "abababababababababababababab0003",
+        "spanId": "1000000000000004"
+       },
+       {
+        "timeUnixNano": "1792522014973000000",
+        "observedTimeUnixNano": "1792522014973000000",
+        "body": {
+         "stringValue": "claude_code.api_request"
+        },
+        "attributes": [
+         {
+          "key": "session.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-8000-000000000001"
+          }
+         },
+         {
+          "key": "event.name",
+          "value": {
+           "stringValue": "api_request"
+          }
+         },
+         {
+          "key": "event.timestamp",
+          "value": {
+           "stringValue": "2026-10-20T18:46:54.973Z"
+          }
+         },
+         {
+          "key": "event.sequence",
+          "value": {
+           "intValue": 32
+          }
+         },
+         {
+          "key": "prompt.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-9000-000000000003"
+          }
+         },
+         {
+          "key": "model",
+          "value": {
+           "stringValue": "claude-haiku-5-5"
+          }
+         },
+         {
+          "key": "input_tokens",
+          "value": {
+           "intValue": 4
+          }
+         },
+         {
+          "key": "output_tokens",
+          "value": {
+           "intValue": 5
+          }
+         },
+         {
+          "key": "cache_read_tokens",
+          "value": {
+           "intValue": 52542
+          }
+         },
+         {
+          "key": "cache_creation_tokens",
+          "value": {
+           "intValue": 6451
+          }
+         },
+         {
+          "key": "cache_creation_5m_tokens",
+          "value": {
+           "intValue": 0
+          }
+         },
+         {
+          "key": "cache_creation_1h_tokens",
+          "value": {
+           "intValue": 6451
+          }
+         },
+         {
+          "key": "cost_usd",
+          "value": {
+           "doubleValue": 0.0018185200000000001
+          }
+         },
+         {
+          "key": "cost_usd_micros",
+          "value": {
+           "intValue": 1819
+          }
+         },
+         {
+          "key": "duration_ms",
+          "value": {
+           "intValue": 1673
+          }
+         },
+         {
+          "key": "ttft_ms",
+          "value": {
+           "intValue": 1648
+          }
+         },
+         {
+          "key": "request_id",
+          "value": {
+           "stringValue": "req_fake000002"
+          }
+         },
+         {
+          "key": "client_request_id",
+          "value": {
+           "stringValue": "00000000-0000-4000-a000-000000000002"
+          }
+         },
+         {
+          "key": "speed",
+          "value": {
+           "stringValue": "normal"
+          }
+         },
+         {
+          "key": "query_source",
+          "value": {
+           "stringValue": "repl_main_thread"
+          }
+         },
+         {
+          "key": "effort",
+          "value": {
+           "stringValue": "medium"
+          }
+         },
+         {
+          "key": "skill.name",
+          "value": {
+           "stringValue": "probe-skill"
+          }
+         }
+        ],
+        "droppedAttributesCount": 0,
+        "flags": 1,
+        "traceId": "abababababababababababababab0003",
+        "spanId": "1000000000000004"
+       },
+       {
+        "timeUnixNano": "1792522014973000000",
+        "observedTimeUnixNano": "1792522014973000000",
+        "body": {
+         "stringValue": "claude_code.assistant_response"
+        },
+        "attributes": [
+         {
+          "key": "session.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-8000-000000000001"
+          }
+         },
+         {
+          "key": "event.name",
+          "value": {
+           "stringValue": "assistant_response"
+          }
+         },
+         {
+          "key": "event.timestamp",
+          "value": {
+           "stringValue": "2026-10-20T18:46:54.973Z"
+          }
+         },
+         {
+          "key": "event.sequence",
+          "value": {
+           "intValue": 33
+          }
+         },
+         {
+          "key": "prompt.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-9000-000000000003"
+          }
+         },
+         {
+          "key": "response_length",
+          "value": {
+           "intValue": 7
+          }
+         },
+         {
+          "key": "request_id",
+          "value": {
+           "stringValue": "req_fake000002"
+          }
+         },
+         {
+          "key": "model",
+          "value": {
+           "stringValue": "claude-haiku-5-5"
+          }
+         },
+         {
+          "key": "query_source",
+          "value": {
+           "stringValue": "repl_main_thread"
+          }
+         }
+        ],
+        "droppedAttributesCount": 0,
+        "flags": 1,
+        "traceId": "abababababababababababababab0003",
+        "spanId": "1000000000000004"
+       },
+       {
+        "timeUnixNano": "1792522016733000000",
+        "observedTimeUnixNano": "1792522016733000000",
+        "body": {
+         "stringValue": "claude_code.api_request"
+        },
+        "attributes": [
+         {
+          "key": "session.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-8000-000000000001"
+          }
+         },
+         {
+          "key": "event.name",
+          "value": {
+           "stringValue": "api_request"
+          }
+         },
+         {
+          "key": "event.timestamp",
+          "value": {
+           "stringValue": "2026-10-20T18:46:56.733Z"
+          }
+         },
+         {
+          "key": "event.sequence",
+          "value": {
+           "intValue": 34
+          }
+         },
+         {
+          "key": "prompt.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-9000-000000000003"
+          }
+         },
+         {
+          "key": "model",
+          "value": {
+           "stringValue": "claude-haiku-5-5"
+          }
+         },
+         {
+          "key": "input_tokens",
+          "value": {
+           "intValue": 506
+          }
+         },
+         {
+          "key": "output_tokens",
+          "value": {
+           "intValue": 52
+          }
+         },
+         {
+          "key": "cache_read_tokens",
+          "value": {
+           "intValue": 58993
+          }
+         },
+         {
+          "key": "cache_creation_tokens",
+          "value": {
+           "intValue": 7
+          }
+         },
+         {
+          "key": "cache_creation_5m_tokens",
+          "value": {
+           "intValue": 0
+          }
+         },
+         {
+          "key": "cache_creation_1h_tokens",
+          "value": {
+           "intValue": 7
+          }
+         },
+         {
+          "key": "cost_usd",
+          "value": {
+           "doubleValue": 0.0006679300000000001
+          }
+         },
+         {
+          "key": "cost_usd_micros",
+          "value": {
+           "intValue": 668
+          }
+         },
+         {
+          "key": "duration_ms",
+          "value": {
+           "intValue": 1751
+          }
+         },
+         {
+          "key": "ttft_ms",
+          "value": {
+           "intValue": 1381
+          }
+         },
+         {
+          "key": "request_id",
+          "value": {
+           "stringValue": "req_fake000003"
+          }
+         },
+         {
+          "key": "client_request_id",
+          "value": {
+           "stringValue": "00000000-0000-4000-a000-000000000003"
+          }
+         },
+         {
+          "key": "speed",
+          "value": {
+           "stringValue": "normal"
+          }
+         },
+         {
+          "key": "query_source",
+          "value": {
+           "stringValue": "prompt_suggestion"
+          }
+         },
+         {
+          "key": "effort",
+          "value": {
+           "stringValue": "medium"
+          }
+         }
+        ],
+        "droppedAttributesCount": 0,
+        "flags": 1,
+        "traceId": "abababababababababababababab0003",
+        "spanId": "1000000000000004"
+       },
+       {
+        "timeUnixNano": "1792522039199000000",
+        "observedTimeUnixNano": "1792522039199000000",
+        "body": {
+         "stringValue": "claude_code.user_prompt"
+        },
+        "attributes": [
+         {
+          "key": "session.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-8000-000000000001"
+          }
+         },
+         {
+          "key": "event.name",
+          "value": {
+           "stringValue": "user_prompt"
+          }
+         },
+         {
+          "key": "event.timestamp",
+          "value": {
+           "stringValue": "2026-10-20T18:47:19.199Z"
+          }
+         },
+         {
+          "key": "event.sequence",
+          "value": {
+           "intValue": 37
+          }
+         },
+         {
+          "key": "prompt.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-9000-000000000004"
+          }
+         },
+         {
+          "key": "prompt_length",
+          "value": {
+           "stringValue": "11"
+          }
+         },
+         {
+          "key": "command_name",
+          "value": {
+           "stringValue": "probe-fork"
+          }
+         },
+         {
+          "key": "command_source",
+          "value": {
+           "stringValue": "custom"
+          }
+         }
+        ],
+        "droppedAttributesCount": 0,
+        "flags": 1,
+        "traceId": "abababababababababababababab0004",
+        "spanId": "1000000000000005"
+       },
+       {
+        "timeUnixNano": "1792522039199000000",
+        "observedTimeUnixNano": "1792522039199000000",
+        "body": {
+         "stringValue": "claude_code.skill_activated"
+        },
+        "attributes": [
+         {
+          "key": "session.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-8000-000000000001"
+          }
+         },
+         {
+          "key": "event.name",
+          "value": {
+           "stringValue": "skill_activated"
+          }
+         },
+         {
+          "key": "event.timestamp",
+          "value": {
+           "stringValue": "2026-10-20T18:47:19.199Z"
+          }
+         },
+         {
+          "key": "event.sequence",
+          "value": {
+           "intValue": 38
+          }
+         },
+         {
+          "key": "prompt.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-9000-000000000004"
+          }
+         },
+         {
+          "key": "skill.name",
+          "value": {
+           "stringValue": "probe-fork"
+          }
+         },
+         {
+          "key": "invocation_trigger",
+          "value": {
+           "stringValue": "user-slash"
+          }
+         },
+         {
+          "key": "skill.source",
+          "value": {
+           "stringValue": "projectSettings"
+          }
+         }
+        ],
+        "droppedAttributesCount": 0,
+        "flags": 1,
+        "traceId": "abababababababababababababab0004",
+        "spanId": "1000000000000005"
+       },
+       {
+        "timeUnixNano": "1792522041415000000",
+        "observedTimeUnixNano": "1792522041415000000",
+        "body": {
+         "stringValue": "claude_code.api_request"
+        },
+        "attributes": [
+         {
+          "key": "session.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-8000-000000000001"
+          }
+         },
+         {
+          "key": "event.name",
+          "value": {
+           "stringValue": "api_request"
+          }
+         },
+         {
+          "key": "event.timestamp",
+          "value": {
+           "stringValue": "2026-10-20T18:47:21.415Z"
+          }
+         },
+         {
+          "key": "event.sequence",
+          "value": {
+           "intValue": 43
+          }
+         },
+         {
+          "key": "prompt.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-9000-000000000004"
+          }
+         },
+         {
+          "key": "model",
+          "value": {
+           "stringValue": "claude-haiku-5-5"
+          }
+         },
+         {
+          "key": "input_tokens",
+          "value": {
+           "intValue": 2
+          }
+         },
+         {
+          "key": "output_tokens",
+          "value": {
+           "intValue": 90
+          }
+         },
+         {
+          "key": "cache_read_tokens",
+          "value": {
+           "intValue": 0
+          }
+         },
+         {
+          "key": "cache_creation_tokens",
+          "value": {
+           "intValue": 34134
+          }
+         },
+         {
+          "key": "cache_creation_5m_tokens",
+          "value": {
+           "intValue": 34134
+          }
+         },
+         {
+          "key": "cache_creation_1h_tokens",
+          "value": {
+           "intValue": 0
+          }
+         },
+         {
+          "key": "cost_usd",
+          "value": {
+           "doubleValue": 0.004311949999999999
+          }
+         },
+         {
+          "key": "cost_usd_micros",
+          "value": {
+           "intValue": 4312
+          }
+         },
+         {
+          "key": "duration_ms",
+          "value": {
+           "intValue": 2096
+          }
+         },
+         {
+          "key": "ttft_ms",
+          "value": {
+           "intValue": 1577
+          }
+         },
+         {
+          "key": "request_id",
+          "value": {
+           "stringValue": "req_fake000004"
+          }
+         },
+         {
+          "key": "client_request_id",
+          "value": {
+           "stringValue": "00000000-0000-4000-a000-000000000004"
+          }
+         },
+         {
+          "key": "speed",
+          "value": {
+           "stringValue": "normal"
+          }
+         },
+         {
+          "key": "query_source",
+          "value": {
+           "stringValue": "agent:custom"
+          }
+         },
+         {
+          "key": "effort",
+          "value": {
+           "stringValue": "medium"
+          }
+         },
+         {
+          "key": "skill.name",
+          "value": {
+           "stringValue": "probe-fork"
+          }
+         }
+        ],
+        "droppedAttributesCount": 0,
+        "flags": 1,
+        "traceId": "abababababababababababababab0004",
+        "spanId": "1000000000000005"
+       },
+       {
+        "timeUnixNano": "1792522041415000000",
+        "observedTimeUnixNano": "1792522041415000000",
+        "body": {
+         "stringValue": "claude_code.assistant_response"
+        },
+        "attributes": [
+         {
+          "key": "session.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-8000-000000000001"
+          }
+         },
+         {
+          "key": "event.name",
+          "value": {
+           "stringValue": "assistant_response"
+          }
+         },
+         {
+          "key": "event.timestamp",
+          "value": {
+           "stringValue": "2026-10-20T18:47:21.415Z"
+          }
+         },
+         {
+          "key": "event.sequence",
+          "value": {
+           "intValue": 44
+          }
+         },
+         {
+          "key": "prompt.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-9000-000000000004"
+          }
+         },
+         {
+          "key": "response_length",
+          "value": {
+           "intValue": 6
+          }
+         },
+         {
+          "key": "request_id",
+          "value": {
+           "stringValue": "req_fake000004"
+          }
+         },
+         {
+          "key": "model",
+          "value": {
+           "stringValue": "claude-haiku-5-5"
+          }
+         },
+         {
+          "key": "query_source",
+          "value": {
+           "stringValue": "agent:custom"
+          }
+         }
+        ],
+        "droppedAttributesCount": 0,
+        "flags": 1,
+        "traceId": "abababababababababababababab0004",
+        "spanId": "1000000000000005"
+       },
+       {
+        "timeUnixNano": "1792522041444000000",
+        "observedTimeUnixNano": "1792522041444000000",
+        "body": {
+         "stringValue": "claude_code.subagent_completed"
+        },
+        "attributes": [
+         {
+          "key": "session.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-8000-000000000001"
+          }
+         },
+         {
+          "key": "event.name",
+          "value": {
+           "stringValue": "subagent_completed"
+          }
+         },
+         {
+          "key": "event.timestamp",
+          "value": {
+           "stringValue": "2026-10-20T18:47:21.444Z"
+          }
+         },
+         {
+          "key": "event.sequence",
+          "value": {
+           "intValue": 47
+          }
+         },
+         {
+          "key": "prompt.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-9000-000000000004"
+          }
+         },
+         {
+          "key": "agent_type",
+          "value": {
+           "stringValue": "general-purpose"
+          }
+         },
+         {
+          "key": "agent.source",
+          "value": {
+           "stringValue": "built-in"
+          }
+         },
+         {
+          "key": "is_built_in",
+          "value": {
+           "boolValue": true
+          }
+         },
+         {
+          "key": "is_async",
+          "value": {
+           "boolValue": true
+          }
+         },
+         {
+          "key": "total_tokens",
+          "value": {
+           "intValue": 34226
+          }
+         },
+         {
+          "key": "total_tool_uses",
+          "value": {
+           "intValue": 0
+          }
+         },
+         {
+          "key": "duration_ms",
+          "value": {
+           "intValue": 2205
+          }
+         },
+         {
+          "key": "model",
+          "value": {
+           "stringValue": "claude-haiku-5-5"
+          }
+         },
+         {
+          "key": "final_model",
+          "value": {
+           "stringValue": "claude-haiku-5-5"
+          }
+         },
+         {
+          "key": "model_swapped",
+          "value": {
+           "boolValue": false
+          }
+         }
+        ],
+        "droppedAttributesCount": 0,
+        "flags": 1,
+        "traceId": "abababababababababababababab0004",
+        "spanId": "1000000000000005"
+       },
+       {
+        "timeUnixNano": "1792522091236000000",
+        "observedTimeUnixNano": "1792522091236000000",
+        "body": {
+         "stringValue": "claude_code.user_prompt"
+        },
+        "attributes": [
+         {
+          "key": "session.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-8000-000000000001"
+          }
+         },
+         {
+          "key": "event.name",
+          "value": {
+           "stringValue": "user_prompt"
+          }
+         },
+         {
+          "key": "event.timestamp",
+          "value": {
+           "stringValue": "2026-10-20T18:48:11.236Z"
+          }
+         },
+         {
+          "key": "event.sequence",
+          "value": {
+           "intValue": 54
+          }
+         },
+         {
+          "key": "prompt.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-9000-000000000005"
+          }
+         },
+         {
+          "key": "prompt_length",
+          "value": {
+           "stringValue": "8"
+          }
+         },
+         {
+          "key": "command_name",
+          "value": {
+           "stringValue": "compact"
+          }
+         },
+         {
+          "key": "command_source",
+          "value": {
+           "stringValue": "builtin"
+          }
+         }
+        ],
+        "droppedAttributesCount": 0,
+        "flags": 1,
+        "traceId": "abababababababababababababab0005",
+        "spanId": "1000000000000008"
+       },
+       {
+        "timeUnixNano": "1792522101489000000",
+        "observedTimeUnixNano": "1792522101489000000",
+        "body": {
+         "stringValue": "claude_code.api_request"
+        },
+        "attributes": [
+         {
+          "key": "session.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-8000-000000000001"
+          }
+         },
+         {
+          "key": "event.name",
+          "value": {
+           "stringValue": "api_request"
+          }
+         },
+         {
+          "key": "event.timestamp",
+          "value": {
+           "stringValue": "2026-10-20T18:48:21.489Z"
+          }
+         },
+         {
+          "key": "event.sequence",
+          "value": {
+           "intValue": 55
+          }
+         },
+         {
+          "key": "prompt.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-9000-000000000005"
+          }
+         },
+         {
+          "key": "model",
+          "value": {
+           "stringValue": "claude-haiku-5-5"
+          }
+         },
+         {
+          "key": "input_tokens",
+          "value": {
+           "intValue": 2632
+          }
+         },
+         {
+          "key": "output_tokens",
+          "value": {
+           "intValue": 1527
+          }
+         },
+         {
+          "key": "cache_read_tokens",
+          "value": {
+           "intValue": 59000
+          }
+         },
+         {
+          "key": "cache_creation_tokens",
+          "value": {
+           "intValue": 0
+          }
+         },
+         {
+          "key": "cache_creation_5m_tokens",
+          "value": {
+           "intValue": 0
+          }
+         },
+         {
+          "key": "cache_creation_1h_tokens",
+          "value": {
+           "intValue": 0
+          }
+         },
+         {
+          "key": "cost_usd",
+          "value": {
+           "doubleValue": 0.0016167
+          }
+         },
+         {
+          "key": "cost_usd_micros",
+          "value": {
+           "intValue": 1617
+          }
+         },
+         {
+          "key": "duration_ms",
+          "value": {
+           "intValue": 10244
+          }
+         },
+         {
+          "key": "ttft_ms",
+          "value": {
+           "intValue": 2451
+          }
+         },
+         {
+          "key": "request_id",
+          "value": {
+           "stringValue": "req_fake000006"
+          }
+         },
+         {
+          "key": "client_request_id",
+          "value": {
+           "stringValue": "00000000-0000-4000-a000-000000000006"
+          }
+         },
+         {
+          "key": "speed",
+          "value": {
+           "stringValue": "normal"
+          }
+         },
+         {
+          "key": "query_source",
+          "value": {
+           "stringValue": "compact"
+          }
+         },
+         {
+          "key": "effort",
+          "value": {
+           "stringValue": "medium"
+          }
+         }
+        ],
+        "droppedAttributesCount": 0,
+        "flags": 1,
+        "traceId": "abababababababababababababab0005",
+        "spanId": "1000000000000008"
+       },
+       {
+        "timeUnixNano": "1792522101490000000",
+        "observedTimeUnixNano": "1792522101490000000",
+        "body": {
+         "stringValue": "claude_code.assistant_response"
+        },
+        "attributes": [
+         {
+          "key": "session.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-8000-000000000001"
+          }
+         },
+         {
+          "key": "event.name",
+          "value": {
+           "stringValue": "assistant_response"
+          }
+         },
+         {
+          "key": "event.timestamp",
+          "value": {
+           "stringValue": "2026-10-20T18:48:21.490Z"
+          }
+         },
+         {
+          "key": "event.sequence",
+          "value": {
+           "intValue": 56
+          }
+         },
+         {
+          "key": "prompt.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-9000-000000000005"
+          }
+         },
+         {
+          "key": "response_length",
+          "value": {
+           "intValue": 3443
+          }
+         },
+         {
+          "key": "request_id",
+          "value": {
+           "stringValue": "req_fake000006"
+          }
+         },
+         {
+          "key": "model",
+          "value": {
+           "stringValue": "claude-haiku-5-5"
+          }
+         },
+         {
+          "key": "query_source",
+          "value": {
+           "stringValue": "compact"
+          }
+         }
+        ],
+        "droppedAttributesCount": 0,
+        "flags": 1,
+        "traceId": "abababababababababababababab0005",
+        "spanId": "1000000000000008"
+       },
+       {
+        "timeUnixNano": "1792522101604000000",
+        "observedTimeUnixNano": "1792522101604000000",
+        "body": {
+         "stringValue": "claude_code.compaction"
+        },
+        "attributes": [
+         {
+          "key": "session.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-8000-000000000001"
+          }
+         },
+         {
+          "key": "event.name",
+          "value": {
+           "stringValue": "compaction"
+          }
+         },
+         {
+          "key": "event.timestamp",
+          "value": {
+           "stringValue": "2026-10-20T18:48:21.604Z"
+          }
+         },
+         {
+          "key": "event.sequence",
+          "value": {
+           "intValue": 61
+          }
+         },
+         {
+          "key": "prompt.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-9000-000000000005"
+          }
+         },
+         {
+          "key": "trigger",
+          "value": {
+           "stringValue": "manual"
+          }
+         },
+         {
+          "key": "success",
+          "value": {
+           "stringValue": "true"
+          }
+         },
+         {
+          "key": "duration_ms",
+          "value": {
+           "stringValue": "10367"
+          }
+         },
+         {
+          "key": "pre_tokens",
+          "value": {
+           "stringValue": "17535"
+          }
+         },
+         {
+          "key": "post_tokens",
+          "value": {
+           "stringValue": "8524"
+          }
+         },
+         {
+          "key": "precompute_reuse",
+          "value": {
+           "stringValue": "miss_not_ready"
+          }
+         }
+        ],
+        "droppedAttributesCount": 0,
+        "flags": 1,
+        "traceId": "abababababababababababababab0005",
+        "spanId": "1000000000000008"
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ "traces": {
+  "resourceSpans": [
+   {
+    "resource": {
+     "attributes": [
+      {
+       "key": "service.name",
+       "value": {
+        "stringValue": "claude-code"
+       }
+      },
+      {
+       "key": "service.version",
+       "value": {
+        "stringValue": "2.1.302"
+       }
+      }
+     ],
+     "droppedAttributesCount": 0
+    },
+    "scopeSpans": [
+     {
+      "scope": {
+       "name": "com.anthropic.claude_code.tracing",
+       "version": "1.0.0"
+      },
+      "spans": [
+       {
+        "traceId": "abababababababababababababab0001",
+        "spanId": "2000000000000001",
+        "parentSpanId": "1000000000000001",
+        "name": "claude_code.llm_request",
+        "kind": 1,
+        "startTimeUnixNano": "1792521968618000000",
+        "endTimeUnixNano": "1792521972012477042",
+        "attributes": [
+         {
+          "key": "session.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-8000-000000000001"
+          }
+         },
+         {
+          "key": "gen_ai.provider.name",
+          "value": {
+           "stringValue": "anthropic"
+          }
+         },
+         {
+          "key": "span.type",
+          "value": {
+           "stringValue": "llm_request"
+          }
+         },
+         {
+          "key": "model",
+          "value": {
+           "stringValue": "claude-haiku-5-5"
+          }
+         },
+         {
+          "key": "gen_ai.system",
+          "value": {
+           "stringValue": "anthropic"
+          }
+         },
+         {
+          "key": "gen_ai.request.model",
+          "value": {
+           "stringValue": "claude-haiku-5-5"
+          }
+         },
+         {
+          "key": "llm_request.context",
+          "value": {
+           "stringValue": "interaction"
+          }
+         },
+         {
+          "key": "speed",
+          "value": {
+           "stringValue": "normal"
+          }
+         },
+         {
+          "key": "gen_ai.conversation.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-8000-000000000001"
+          }
+         },
+         {
+          "key": "query_source_safe",
+          "value": {
+           "stringValue": "repl_main_thread"
+          }
+         },
+         {
+          "key": "duration_ms",
+          "value": {
+           "intValue": 3394
+          }
+         },
+         {
+          "key": "input_tokens",
+          "value": {
+           "intValue": 2
+          }
+         },
+         {
+          "key": "output_tokens",
+          "value": {
+           "intValue": 45
+          }
+         },
+         {
+          "key": "cache_read_tokens",
+          "value": {
+           "intValue": 27208
+          }
+         },
+         {
+          "key": "cache_creation_tokens",
+          "value": {
+           "intValue": 25334
+          }
+         },
+         {
+          "key": "success",
+          "value": {
+           "boolValue": true
+          }
+         },
+         {
+          "key": "attempt",
+          "value": {
+           "intValue": 1
+          }
+         },
+         {
+          "key": "request_id",
+          "value": {
+           "stringValue": "req_fake000001"
+          }
+         },
+         {
+          "key": "gen_ai.response.id",
+          "value": {
+           "stringValue": "req_fake000001"
+          }
+         },
+         {
+          "key": "client_request_id",
+          "value": {
+           "stringValue": "00000000-0000-4000-a000-000000000001"
+          }
+         },
+         {
+          "key": "ttft_ms",
+          "value": {
+           "intValue": 2989
+          }
+         },
+         {
+          "key": "first_content_ms",
+          "value": {
+           "intValue": 2991
+          }
+         },
+         {
+          "key": "effort",
+          "value": {
+           "stringValue": "medium"
+          }
+         },
+         {
+          "key": "stop_reason",
+          "value": {
+           "stringValue": "end_turn"
+          }
+         },
+         {
+          "key": "gen_ai.response.finish_reasons",
+          "value": {
+           "arrayValue": {
+            "values": [
+             {
+              "stringValue": "end_turn"
+             }
+            ]
+           }
+          }
+         }
+        ],
+        "droppedAttributesCount": 0,
+        "events": [],
+        "droppedEventsCount": 0,
+        "status": {
+         "code": 0
+        },
+        "links": [],
+        "droppedLinksCount": 0,
+        "flags": 257
+       },
+       {
+        "traceId": "abababababababababababababab0001",
+        "spanId": "1000000000000001",
+        "name": "claude_code.interaction",
+        "kind": 1,
+        "startTimeUnixNano": "1792521968536000000",
+        "endTimeUnixNano": "1792521972016677458",
+        "attributes": [
+         {
+          "key": "session.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-8000-000000000001"
+          }
+         },
+         {
+          "key": "gen_ai.provider.name",
+          "value": {
+           "stringValue": "anthropic"
+          }
+         },
+         {
+          "key": "span.type",
+          "value": {
+           "stringValue": "interaction"
+          }
+         },
+         {
+          "key": "gen_ai.operation.name",
+          "value": {
+           "stringValue": "invoke_agent"
+          }
+         },
+         {
+          "key": "gen_ai.conversation.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-8000-000000000001"
+          }
+         },
+         {
+          "key": "user_prompt_length",
+          "value": {
+           "intValue": 25
+          }
+         },
+         {
+          "key": "interaction.sequence",
+          "value": {
+           "intValue": 1
+          }
+         },
+         {
+          "key": "parent.source",
+          "value": {
+           "stringValue": "none"
+          }
+         },
+         {
+          "key": "queued_sends",
+          "value": {
+           "intValue": 0
+          }
+         },
+         {
+          "key": "interaction.duration_ms",
+          "value": {
+           "intValue": 3481
+          }
+         }
+        ],
+        "droppedAttributesCount": 0,
+        "events": [],
+        "droppedEventsCount": 0,
+        "status": {
+         "code": 0
+        },
+        "links": [],
+        "droppedLinksCount": 0,
+        "flags": 257
+       },
+       {
+        "traceId": "abababababababababababababab0002",
+        "spanId": "1000000000000002",
+        "name": "claude_code.interaction",
+        "kind": 1,
+        "startTimeUnixNano": "1792521989330000000",
+        "endTimeUnixNano": "1792521989883483667",
+        "attributes": [
+         {
+          "key": "session.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-8000-000000000001"
+          }
+         },
+         {
+          "key": "gen_ai.provider.name",
+          "value": {
+           "stringValue": "anthropic"
+          }
+         },
+         {
+          "key": "span.type",
+          "value": {
+           "stringValue": "interaction"
+          }
+         },
+         {
+          "key": "gen_ai.operation.name",
+          "value": {
+           "stringValue": "invoke_agent"
+          }
+         },
+         {
+          "key": "gen_ai.conversation.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-8000-000000000001"
+          }
+         },
+         {
+          "key": "user_prompt_length",
+          "value": {
+           "intValue": 8
+          }
+         },
+         {
+          "key": "interaction.sequence",
+          "value": {
+           "intValue": 2
+          }
+         },
+         {
+          "key": "parent.source",
+          "value": {
+           "stringValue": "none"
+          }
+         },
+         {
+          "key": "queued_sends",
+          "value": {
+           "intValue": 0
+          }
+         },
+         {
+          "key": "interaction.duration_ms",
+          "value": {
+           "intValue": 553
+          }
+         }
+        ],
+        "droppedAttributesCount": 0,
+        "events": [],
+        "droppedEventsCount": 0,
+        "status": {
+         "code": 0
+        },
+        "links": [],
+        "droppedLinksCount": 0,
+        "flags": 257
+       },
+       {
+        "traceId": "abababababababababababababab0003",
+        "spanId": "2000000000000002",
+        "parentSpanId": "1000000000000004",
+        "name": "claude_code.llm_request",
+        "kind": 1,
+        "startTimeUnixNano": "1792522013299000000",
+        "endTimeUnixNano": "1792522014973152375",
+        "attributes": [
+         {
+          "key": "session.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-8000-000000000001"
+          }
+         },
+         {
+          "key": "gen_ai.provider.name",
+          "value": {
+           "stringValue": "anthropic"
+          }
+         },
+         {
+          "key": "span.type",
+          "value": {
+           "stringValue": "llm_request"
+          }
+         },
+         {
+          "key": "model",
+          "value": {
+           "stringValue": "claude-haiku-5-5"
+          }
+         },
+         {
+          "key": "gen_ai.system",
+          "value": {
+           "stringValue": "anthropic"
+          }
+         },
+         {
+          "key": "gen_ai.request.model",
+          "value": {
+           "stringValue": "claude-haiku-5-5"
+          }
+         },
+         {
+          "key": "llm_request.context",
+          "value": {
+           "stringValue": "interaction"
+          }
+         },
+         {
+          "key": "speed",
+          "value": {
+           "stringValue": "normal"
+          }
+         },
+         {
+          "key": "gen_ai.conversation.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-8000-000000000001"
+          }
+         },
+         {
+          "key": "query_source_safe",
+          "value": {
+           "stringValue": "repl_main_thread"
+          }
+         },
+         {
+          "key": "duration_ms",
+          "value": {
+           "intValue": 1674
+          }
+         },
+         {
+          "key": "input_tokens",
+          "value": {
+           "intValue": 4
+          }
+         },
+         {
+          "key": "output_tokens",
+          "value": {
+           "intValue": 5
+          }
+         },
+         {
+          "key": "cache_read_tokens",
+          "value": {
+           "intValue": 52542
+          }
+         },
+         {
+          "key": "cache_creation_tokens",
+          "value": {
+           "intValue": 6451
+          }
+         },
+         {
+          "key": "success",
+          "value": {
+           "boolValue": true
+          }
+         },
+         {
+          "key": "attempt",
+          "value": {
+           "intValue": 1
+          }
+         },
+         {
+          "key": "request_id",
+          "value": {
+           "stringValue": "req_fake000002"
+          }
+         },
+         {
+          "key": "gen_ai.response.id",
+          "value": {
+           "stringValue": "req_fake000002"
+          }
+         },
+         {
+          "key": "client_request_id",
+          "value": {
+           "stringValue": "00000000-0000-4000-a000-000000000002"
+          }
+         },
+         {
+          "key": "ttft_ms",
+          "value": {
+           "intValue": 1648
+          }
+         },
+         {
+          "key": "first_content_ms",
+          "value": {
+           "intValue": 1648
+          }
+         },
+         {
+          "key": "effort",
+          "value": {
+           "stringValue": "medium"
+          }
+         },
+         {
+          "key": "stop_reason",
+          "value": {
+           "stringValue": "end_turn"
+          }
+         },
+         {
+          "key": "gen_ai.response.finish_reasons",
+          "value": {
+           "arrayValue": {
+            "values": [
+             {
+              "stringValue": "end_turn"
+             }
+            ]
+           }
+          }
+         }
+        ],
+        "droppedAttributesCount": 0,
+        "events": [],
+        "droppedEventsCount": 0,
+        "status": {
+         "code": 0
+        },
+        "links": [],
+        "droppedLinksCount": 0,
+        "flags": 257
+       },
+       {
+        "traceId": "abababababababababababababab0003",
+        "spanId": "1000000000000004",
+        "name": "claude_code.interaction",
+        "kind": 1,
+        "startTimeUnixNano": "1792522013221000000",
+        "endTimeUnixNano": "1792522014977024208",
+        "attributes": [
+         {
+          "key": "session.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-8000-000000000001"
+          }
+         },
+         {
+          "key": "gen_ai.provider.name",
+          "value": {
+           "stringValue": "anthropic"
+          }
+         },
+         {
+          "key": "span.type",
+          "value": {
+           "stringValue": "interaction"
+          }
+         },
+         {
+          "key": "gen_ai.operation.name",
+          "value": {
+           "stringValue": "invoke_agent"
+          }
+         },
+         {
+          "key": "gen_ai.conversation.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-8000-000000000001"
+          }
+         },
+         {
+          "key": "user_prompt_length",
+          "value": {
+           "intValue": 12
+          }
+         },
+         {
+          "key": "interaction.sequence",
+          "value": {
+           "intValue": 4
+          }
+         },
+         {
+          "key": "parent.source",
+          "value": {
+           "stringValue": "none"
+          }
+         },
+         {
+          "key": "queued_sends",
+          "value": {
+           "intValue": 0
+          }
+         },
+         {
+          "key": "interaction.duration_ms",
+          "value": {
+           "intValue": 1756
+          }
+         }
+        ],
+        "droppedAttributesCount": 0,
+        "events": [],
+        "droppedEventsCount": 0,
+        "status": {
+         "code": 0
+        },
+        "links": [],
+        "droppedLinksCount": 0,
+        "flags": 257
+       },
+       {
+        "traceId": "abababababababababababababab0003",
+        "spanId": "2000000000000003",
+        "parentSpanId": "1000000000000004",
+        "name": "claude_code.llm_request",
+        "kind": 1,
+        "startTimeUnixNano": "1792522014980000000",
+        "endTimeUnixNano": "1792522016732903334",
+        "attributes": [
+         {
+          "key": "session.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-8000-000000000001"
+          }
+         },
+         {
+          "key": "gen_ai.provider.name",
+          "value": {
+           "stringValue": "anthropic"
+          }
+         },
+         {
+          "key": "span.type",
+          "value": {
+           "stringValue": "llm_request"
+          }
+         },
+         {
+          "key": "model",
+          "value": {
+           "stringValue": "claude-haiku-5-5"
+          }
+         },
+         {
+          "key": "gen_ai.system",
+          "value": {
+           "stringValue": "anthropic"
+          }
+         },
+         {
+          "key": "gen_ai.request.model",
+          "value": {
+           "stringValue": "claude-haiku-5-5"
+          }
+         },
+         {
+          "key": "llm_request.context",
+          "value": {
+           "stringValue": "standalone"
+          }
+         },
+         {
+          "key": "speed",
+          "value": {
+           "stringValue": "normal"
+          }
+         },
+         {
+          "key": "gen_ai.conversation.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-8000-000000000001"
+          }
+         },
+         {
+          "key": "query_source_safe",
+          "value": {
+           "stringValue": "prompt_suggestion"
+          }
+         },
+         {
+          "key": "duration_ms",
+          "value": {
+           "intValue": 1753
+          }
+         },
+         {
+          "key": "input_tokens",
+          "value": {
+           "intValue": 506
+          }
+         },
+         {
+          "key": "output_tokens",
+          "value": {
+           "intValue": 52
+          }
+         },
+         {
+          "key": "cache_read_tokens",
+          "value": {
+           "intValue": 58993
+          }
+         },
+         {
+          "key": "cache_creation_tokens",
+          "value": {
+           "intValue": 7
+          }
+         },
+         {
+          "key": "success",
+          "value": {
+           "boolValue": true
+          }
+         },
+         {
+          "key": "attempt",
+          "value": {
+           "intValue": 1
+          }
+         },
+         {
+          "key": "request_id",
+          "value": {
+           "stringValue": "req_fake000003"
+          }
+         },
+         {
+          "key": "gen_ai.response.id",
+          "value": {
+           "stringValue": "req_fake000003"
+          }
+         },
+         {
+          "key": "client_request_id",
+          "value": {
+           "stringValue": "00000000-0000-4000-a000-000000000003"
+          }
+         },
+         {
+          "key": "ttft_ms",
+          "value": {
+           "intValue": 1381
+          }
+         },
+         {
+          "key": "first_content_ms",
+          "value": {
+           "intValue": 1381
+          }
+         },
+         {
+          "key": "effort",
+          "value": {
+           "stringValue": "medium"
+          }
+         },
+         {
+          "key": "stop_reason",
+          "value": {
+           "stringValue": "end_turn"
+          }
+         },
+         {
+          "key": "gen_ai.response.finish_reasons",
+          "value": {
+           "arrayValue": {
+            "values": [
+             {
+              "stringValue": "end_turn"
+             }
+            ]
+           }
+          }
+         }
+        ],
+        "droppedAttributesCount": 0,
+        "events": [],
+        "droppedEventsCount": 0,
+        "status": {
+         "code": 0
+        },
+        "links": [],
+        "droppedLinksCount": 0,
+        "flags": 257
+       },
+       {
+        "traceId": "abababababababababababababab0004",
+        "spanId": "1000000000000005",
+        "name": "claude_code.interaction",
+        "kind": 1,
+        "startTimeUnixNano": "1792522039197000000",
+        "endTimeUnixNano": "1792522039247781000",
+        "attributes": [
+         {
+          "key": "session.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-8000-000000000001"
+          }
+         },
+         {
+          "key": "gen_ai.provider.name",
+          "value": {
+           "stringValue": "anthropic"
+          }
+         },
+         {
+          "key": "span.type",
+          "value": {
+           "stringValue": "interaction"
+          }
+         },
+         {
+          "key": "gen_ai.operation.name",
+          "value": {
+           "stringValue": "invoke_agent"
+          }
+         },
+         {
+          "key": "gen_ai.conversation.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-8000-000000000001"
+          }
+         },
+         {
+          "key": "user_prompt_length",
+          "value": {
+           "intValue": 11
+          }
+         },
+         {
+          "key": "interaction.sequence",
+          "value": {
+           "intValue": 5
+          }
+         },
+         {
+          "key": "parent.source",
+          "value": {
+           "stringValue": "none"
+          }
+         },
+         {
+          "key": "queued_sends",
+          "value": {
+           "intValue": 0
+          }
+         },
+         {
+          "key": "interaction.duration_ms",
+          "value": {
+           "intValue": 51
+          }
+         }
+        ],
+        "droppedAttributesCount": 0,
+        "events": [],
+        "droppedEventsCount": 0,
+        "status": {
+         "code": 0
+        },
+        "links": [],
+        "droppedLinksCount": 0,
+        "flags": 257
+       },
+       {
+        "traceId": "abababababababababababababab0004",
+        "spanId": "2000000000000004",
+        "parentSpanId": "1000000000000005",
+        "name": "claude_code.llm_request",
+        "kind": 1,
+        "startTimeUnixNano": "1792522039318000000",
+        "endTimeUnixNano": "1792522041414962875",
+        "attributes": [
+         {
+          "key": "session.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-8000-000000000001"
+          }
+         },
+         {
+          "key": "gen_ai.provider.name",
+          "value": {
+           "stringValue": "anthropic"
+          }
+         },
+         {
+          "key": "span.type",
+          "value": {
+           "stringValue": "llm_request"
+          }
+         },
+         {
+          "key": "model",
+          "value": {
+           "stringValue": "claude-haiku-5-5"
+          }
+         },
+         {
+          "key": "gen_ai.system",
+          "value": {
+           "stringValue": "anthropic"
+          }
+         },
+         {
+          "key": "gen_ai.request.model",
+          "value": {
+           "stringValue": "claude-haiku-5-5"
+          }
+         },
+         {
+          "key": "llm_request.context",
+          "value": {
+           "stringValue": "standalone"
+          }
+         },
+         {
+          "key": "speed",
+          "value": {
+           "stringValue": "normal"
+          }
+         },
+         {
+          "key": "gen_ai.conversation.id",
+          "value": {
+           "stringValue": "a0000000000000001"
+          }
+         },
+         {
+          "key": "query_source_safe",
+          "value": {
+           "stringValue": "agent.custom"
+          }
+         },
+         {
+          "key": "agent_id",
+          "value": {
+           "stringValue": "a0000000000000001"
+          }
+         },
+         {
+          "key": "duration_ms",
+          "value": {
+           "intValue": 2097
+          }
+         },
+         {
+          "key": "input_tokens",
+          "value": {
+           "intValue": 2
+          }
+         },
+         {
+          "key": "output_tokens",
+          "value": {
+           "intValue": 90
+          }
+         },
+         {
+          "key": "cache_read_tokens",
+          "value": {
+           "intValue": 0
+          }
+         },
+         {
+          "key": "cache_creation_tokens",
+          "value": {
+           "intValue": 34134
+          }
+         },
+         {
+          "key": "success",
+          "value": {
+           "boolValue": true
+          }
+         },
+         {
+          "key": "attempt",
+          "value": {
+           "intValue": 1
+          }
+         },
+         {
+          "key": "request_id",
+          "value": {
+           "stringValue": "req_fake000004"
+          }
+         },
+         {
+          "key": "gen_ai.response.id",
+          "value": {
+           "stringValue": "req_fake000004"
+          }
+         },
+         {
+          "key": "client_request_id",
+          "value": {
+           "stringValue": "00000000-0000-4000-a000-000000000004"
+          }
+         },
+         {
+          "key": "ttft_ms",
+          "value": {
+           "intValue": 1577
+          }
+         },
+         {
+          "key": "first_content_ms",
+          "value": {
+           "intValue": 1577
+          }
+         },
+         {
+          "key": "effort",
+          "value": {
+           "stringValue": "medium"
+          }
+         },
+         {
+          "key": "stop_reason",
+          "value": {
+           "stringValue": "end_turn"
+          }
+         },
+         {
+          "key": "gen_ai.response.finish_reasons",
+          "value": {
+           "arrayValue": {
+            "values": [
+             {
+              "stringValue": "end_turn"
+             }
+            ]
+           }
+          }
+         }
+        ],
+        "droppedAttributesCount": 0,
+        "events": [],
+        "droppedEventsCount": 0,
+        "status": {
+         "code": 0
+        },
+        "links": [],
+        "droppedLinksCount": 0,
+        "flags": 257
+       },
+       {
+        "traceId": "abababababababababababababab0004",
+        "spanId": "2000000000000005",
+        "parentSpanId": "1000000000000005",
+        "name": "claude_code.llm_request",
+        "kind": 1,
+        "startTimeUnixNano": "1792522041462000000",
+        "endTimeUnixNano": "1792522043825551250",
+        "attributes": [
+         {
+          "key": "session.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-8000-000000000001"
+          }
+         },
+         {
+          "key": "gen_ai.provider.name",
+          "value": {
+           "stringValue": "anthropic"
+          }
+         },
+         {
+          "key": "span.type",
+          "value": {
+           "stringValue": "llm_request"
+          }
+         },
+         {
+          "key": "model",
+          "value": {
+           "stringValue": "claude-sonnet-5[1m]"
+          }
+         },
+         {
+          "key": "gen_ai.system",
+          "value": {
+           "stringValue": "anthropic"
+          }
+         },
+         {
+          "key": "gen_ai.request.model",
+          "value": {
+           "stringValue": "claude-sonnet-5[1m]"
+          }
+         },
+         {
+          "key": "llm_request.context",
+          "value": {
+           "stringValue": "standalone"
+          }
+         },
+         {
+          "key": "speed",
+          "value": {
+           "stringValue": "normal"
+          }
+         },
+         {
+          "key": "gen_ai.conversation.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-8000-000000000001"
+          }
+         },
+         {
+          "key": "query_source_safe",
+          "value": {
+           "stringValue": "auto_mode"
+          }
+         },
+         {
+          "key": "duration_ms",
+          "value": {
+           "intValue": 2363
+          }
+         },
+         {
+          "key": "input_tokens",
+          "value": {
+           "intValue": 90
+          }
+         },
+         {
+          "key": "output_tokens",
+          "value": {
+           "intValue": 9
+          }
+         },
+         {
+          "key": "cache_read_tokens",
+          "value": {
+           "intValue": 0
+          }
+         },
+         {
+          "key": "cache_creation_tokens",
+          "value": {
+           "intValue": 46477
+          }
+         },
+         {
+          "key": "success",
+          "value": {
+           "boolValue": true
+          }
+         },
+         {
+          "key": "attempt",
+          "value": {
+           "intValue": 1
+          }
+         },
+         {
+          "key": "request_id",
+          "value": {
+           "stringValue": "req_fake000005"
+          }
+         },
+         {
+          "key": "gen_ai.response.id",
+          "value": {
+           "stringValue": "req_fake000005"
+          }
+         },
+         {
+          "key": "client_request_id",
+          "value": {
+           "stringValue": "00000000-0000-4000-a000-000000000005"
+          }
+         },
+         {
+          "key": "stop_reason",
+          "value": {
+           "stringValue": "stop_sequence"
+          }
+         },
+         {
+          "key": "gen_ai.response.finish_reasons",
+          "value": {
+           "arrayValue": {
+            "values": [
+             {
+              "stringValue": "stop_sequence"
+             }
+            ]
+           }
+          }
+         }
+        ],
+        "droppedAttributesCount": 0,
+        "events": [],
+        "droppedEventsCount": 0,
+        "status": {
+         "code": 0
+        },
+        "links": [],
+        "droppedLinksCount": 0,
+        "flags": 257
+       },
+       {
+        "traceId": "abababababababababababababab0005",
+        "spanId": "2000000000000006",
+        "parentSpanId": "1000000000000008",
+        "name": "claude_code.llm_request",
+        "kind": 1,
+        "startTimeUnixNano": "1792522091244000000",
+        "endTimeUnixNano": "1792522101490207417",
+        "attributes": [
+         {
+          "key": "session.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-8000-000000000001"
+          }
+         },
+         {
+          "key": "gen_ai.provider.name",
+          "value": {
+           "stringValue": "anthropic"
+          }
+         },
+         {
+          "key": "span.type",
+          "value": {
+           "stringValue": "llm_request"
+          }
+         },
+         {
+          "key": "model",
+          "value": {
+           "stringValue": "claude-haiku-5-5"
+          }
+         },
+         {
+          "key": "gen_ai.system",
+          "value": {
+           "stringValue": "anthropic"
+          }
+         },
+         {
+          "key": "gen_ai.request.model",
+          "value": {
+           "stringValue": "claude-haiku-5-5"
+          }
+         },
+         {
+          "key": "llm_request.context",
+          "value": {
+           "stringValue": "interaction"
+          }
+         },
+         {
+          "key": "speed",
+          "value": {
+           "stringValue": "normal"
+          }
+         },
+         {
+          "key": "gen_ai.conversation.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-8000-000000000001"
+          }
+         },
+         {
+          "key": "query_source_safe",
+          "value": {
+           "stringValue": "compact"
+          }
+         },
+         {
+          "key": "duration_ms",
+          "value": {
+           "intValue": 10246
+          }
+         },
+         {
+          "key": "input_tokens",
+          "value": {
+           "intValue": 2632
+          }
+         },
+         {
+          "key": "output_tokens",
+          "value": {
+           "intValue": 1527
+          }
+         },
+         {
+          "key": "cache_read_tokens",
+          "value": {
+           "intValue": 59000
+          }
+         },
+         {
+          "key": "cache_creation_tokens",
+          "value": {
+           "intValue": 0
+          }
+         },
+         {
+          "key": "success",
+          "value": {
+           "boolValue": true
+          }
+         },
+         {
+          "key": "attempt",
+          "value": {
+           "intValue": 1
+          }
+         },
+         {
+          "key": "request_id",
+          "value": {
+           "stringValue": "req_fake000006"
+          }
+         },
+         {
+          "key": "gen_ai.response.id",
+          "value": {
+           "stringValue": "req_fake000006"
+          }
+         },
+         {
+          "key": "client_request_id",
+          "value": {
+           "stringValue": "00000000-0000-4000-a000-000000000006"
+          }
+         },
+         {
+          "key": "ttft_ms",
+          "value": {
+           "intValue": 2451
+          }
+         },
+         {
+          "key": "first_content_ms",
+          "value": {
+           "intValue": 2451
+          }
+         },
+         {
+          "key": "effort",
+          "value": {
+           "stringValue": "medium"
+          }
+         },
+         {
+          "key": "stop_reason",
+          "value": {
+           "stringValue": "end_turn"
+          }
+         },
+         {
+          "key": "gen_ai.response.finish_reasons",
+          "value": {
+           "arrayValue": {
+            "values": [
+             {
+              "stringValue": "end_turn"
+             }
+            ]
+           }
+          }
+         }
+        ],
+        "droppedAttributesCount": 0,
+        "events": [],
+        "droppedEventsCount": 0,
+        "status": {
+         "code": 0
+        },
+        "links": [],
+        "droppedLinksCount": 0,
+        "flags": 257
+       },
+       {
+        "traceId": "abababababababababababababab0005",
+        "spanId": "1000000000000008",
+        "name": "claude_code.interaction",
+        "kind": 1,
+        "startTimeUnixNano": "1792522091234000000",
+        "endTimeUnixNano": "1792522101606437000",
+        "attributes": [
+         {
+          "key": "session.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-8000-000000000001"
+          }
+         },
+         {
+          "key": "gen_ai.provider.name",
+          "value": {
+           "stringValue": "anthropic"
+          }
+         },
+         {
+          "key": "span.type",
+          "value": {
+           "stringValue": "interaction"
+          }
+         },
+         {
+          "key": "gen_ai.operation.name",
+          "value": {
+           "stringValue": "invoke_agent"
+          }
+         },
+         {
+          "key": "gen_ai.conversation.id",
+          "value": {
+           "stringValue": "00000000-0000-4000-8000-000000000001"
+          }
+         },
+         {
+          "key": "user_prompt_length",
+          "value": {
+           "intValue": 8
+          }
+         },
+         {
+          "key": "interaction.sequence",
+          "value": {
+           "intValue": 8
+          }
+         },
+         {
+          "key": "parent.source",
+          "value": {
+           "stringValue": "none"
+          }
+         },
+         {
+          "key": "queued_sends",
+          "value": {
+           "intValue": 0
+          }
+         },
+         {
+          "key": "interaction.duration_ms",
+          "value": {
+           "intValue": 10372
+          }
+         }
+        ],
+        "droppedAttributesCount": 0,
+        "events": [],
+        "droppedEventsCount": 0,
+        "status": {
+         "code": 0
+        },
+        "links": [],
+        "droppedLinksCount": 0,
+        "flags": 257
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ }
+}

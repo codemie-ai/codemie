@@ -48,13 +48,20 @@ from datetime import date, timedelta
 
 import asyncpg
 
-from codemie.repository.cli_analytics.postgres.dirty import USAGE_REQUEST_REACH, RollupFamily
+from codemie.repository.cli_analytics.postgres.dirty import (
+    _CROSS_MIDNIGHT,
+    _PROMPT_SUBMIT,
+    _TURN_LOG_KINDS,
+    USAGE_REQUEST_REACH,
+    RollupFamily,
+)
 from codemie.repository.cli_analytics.postgres.engine import CLIENT_TIMEOUT_MARGIN_S, AnalyticsPgEngine
 from codemie.repository.cli_analytics.postgres.maintenance import TODAY_UTC_SQL
 from codemie.repository.cli_analytics.postgres.otlp import MAX_KEY_BYTES, MAX_PATH_BYTES
 from codemie.repository.cli_analytics.postgres.session_derived import update_session_derived
 from codemie.repository.cli_analytics.vocabulary import (
     ACTIVE_TIME_METRICS,
+    AUTO_PROMPT_PREFIX,
     DIMENSION_HOOK_TYPES,
     EDIT_TOOLS,
     LINES_METRICS,
@@ -1435,7 +1442,37 @@ _NO_SPAN_OF_KIND = (
     f"NOT EXISTS (SELECT 1 FROM spans s WHERE s.session_id = k.session_id AND s.span_kind IN {_ANY_SPAN_KIND} "
     f"AND s.ts >= {_DAY_LO} AND s.ts < {_DAY_HI})"
 )
-_PROMPT_SUBMIT, _TOOL_START = "agent.prompt.submit", "agent.tool.start"
+_TOOL_START = "agent.tool.start"
+# A turn is an interaction the user started that talks to the model. An interaction span is not a turn when
+# its user_prompt is an auto prompt (the agent.prompt.submit hook of the same prompt_id starts with
+# AUTO_PROMPT_PREFIX: the user did not start it), or when it is a slash command with no api_request or
+# api_error on the same span (it never talked to the model). Only commands are tested for a request: an
+# interrupted typed prompt sends none and is still a turn. The rows are paired with the span within
+# _CROSS_MIDNIGHT of its ts, the reach at which ingest marks a row's neighbouring day, and each lookup is
+# bounded by session_id and ts to use the (session_id, ts) indexes. NOT EXISTS, never a JOIN, so a
+# duplicated user_prompt row cannot count a span twice.
+_TURN_WINDOW = f"interval '{int(_CROSS_MIDNIGHT.total_seconds())} seconds'"
+_IS_AUTO_PROMPT = f"starts_with(ltrim(h.prompt_body, E' \\t\\r\\n'), {_literal(AUTO_PROMPT_PREFIX)})"
+
+
+def _near_span(alias: str) -> str:
+    """Rows of the interaction span's session within the turn window of its ts."""
+    return (
+        f"{alias}.session_id = s.session_id "
+        f"AND {alias}.ts >= s.ts - {_TURN_WINDOW} AND {alias}.ts <= s.ts + {_TURN_WINDOW}"
+    )
+
+
+_SPAN_PROMPT = f"AND l.span_id = s.span_id AND l.event_kind = {int(EventKind.USER_PROMPT)}"
+_REAL_TURN = (
+    f"NOT EXISTS (SELECT 1 FROM log_events l WHERE {_near_span('l')} {_SPAN_PROMPT} AND l.prompt_id IS NOT NULL "
+    f"AND EXISTS (SELECT 1 FROM hook_events h WHERE {_near_span('h')} "
+    f"AND h.event_type = {_literal(_PROMPT_SUBMIT)} AND h.prompt_id = l.prompt_id AND {_IS_AUTO_PROMPT})) "
+    f"AND NOT EXISTS (SELECT 1 FROM log_events l WHERE {_near_span('l')} {_SPAN_PROMPT} "
+    "AND btrim(l.command_name) <> '' "
+    f"AND NOT EXISTS (SELECT 1 FROM log_events r WHERE {_near_span('r')} AND r.span_id = s.span_id "
+    f"AND r.event_kind IN ({int(EventKind.API_REQUEST)}, {int(EventKind.API_ERROR)})))"
+)
 _IS_TOOL_START = f"h.event_type = {_literal(_TOOL_START)}"
 _IS_SUBAGENT_START = f"h.event_type = {_literal(_SUBAGENT_START)}"
 _IS_DISPATCH = f"h.event_type = {_literal(SKILL_DISPATCH_EVENT)}"
@@ -1483,13 +1520,14 @@ RECOMPUTE: list[str] = [
         f"""(day, session_id, turns)
         SELECT k.day, k.session_id, count(*)
         {_in_day("s", "spans")}
-        WHERE k.kinds & {_SPANS} <> 0 AND k.session_id <> '' AND s.span_kind = {_INTERACTION}
+        WHERE k.kinds & {_SPANS} <> 0 AND k.session_id <> '' AND s.span_kind = {_INTERACTION} AND {_REAL_TURN}
         GROUP BY 1, 2
         UNION ALL
         SELECT k.day, k.session_id, count(*)
         {_in_day("h", "hook_events")}
         WHERE k.kinds & {_SPANS} <> 0 AND k.session_id <> '' AND h.event_type = {_literal(_PROMPT_SUBMIT)}
           AND {_NO_SPAN_OF_KIND}
+          AND {_IS_AUTO_PROMPT} IS NOT TRUE
         GROUP BY 1, 2""",
     ),
     *_replace_daily(
@@ -1728,6 +1766,8 @@ def _neighbour_day(reach: str) -> str:
 # midnight that far), within 5 s without one (the fingerprint window), as at ingest.
 _API_REQUEST_REACH = f"CASE WHEN request_id <> '' THEN {_GROUP_REACH} ELSE {_MATCH} END"
 _USAGE_ROW_BITS = f"{_LOG} | {_USAGE} | {_SESSION_IF_ANY}"
+# The rows that decide whether an interaction span is a turn mark its day within the turn window, as at ingest.
+_TURN_LOG_KINDS_SQL = f"({', '.join(str(int(k)) for k in sorted(_TURN_LOG_KINDS))})"
 # The neighbouring days are queued with the bits of the row's own day, and no day older than $4
 # (today - raw retention; NULL without raw retention), like the days of the range itself.
 _MARK_RANGE = f"""
@@ -1741,8 +1781,12 @@ SELECT day, session_id, bit_or(kinds) & $3 FROM (
     UNION ALL
     SELECT {_DAY_OF_TS}, session_id,
            {_LOG} | {_SESSION_IF_ANY} | CASE WHEN event_kind = {int(EventKind.API_REQUEST)} THEN {_USAGE} ELSE 0 END
+             | CASE WHEN event_kind IN {_TURN_LOG_KINDS_SQL} AND session_id <> '' THEN {_SPANS} ELSE 0 END
     FROM log_events
     WHERE {_RANGE}
+    UNION ALL
+    SELECT {_neighbour_day(_TURN_WINDOW)}, session_id, {_SPANS} | {_SESSION_IF_ANY} FROM log_events
+    WHERE {_RANGE} AND session_id <> '' AND event_kind IN {_TURN_LOG_KINDS_SQL}
     UNION ALL
     SELECT {_neighbour_day(_API_REQUEST_REACH)}, session_id, {_USAGE_ROW_BITS} FROM log_events
     WHERE {_RANGE} AND event_kind = {int(EventKind.API_REQUEST)}
@@ -1756,6 +1800,9 @@ SELECT day, session_id, bit_or(kinds) & $3 FROM (
     UNION ALL
     SELECT ((ts - interval '1 hour') AT TIME ZONE 'UTC')::date, session_id, {_SPANS} FROM hook_events
     WHERE {_RANGE_SHIFTED} AND session_id <> '' AND event_type IN ({_FALLBACK_HOOKS})
+    UNION ALL
+    SELECT {_neighbour_day(_TURN_WINDOW)}, session_id, {_SPANS} FROM hook_events
+    WHERE {_RANGE} AND session_id <> '' AND event_type = {_literal(_PROMPT_SUBMIT)}
     UNION ALL
     SELECT {_DAY_OF_TS}, session_id, {_SPANS} | {_SESSION_IF_ANY} FROM spans
     WHERE {_RANGE}
