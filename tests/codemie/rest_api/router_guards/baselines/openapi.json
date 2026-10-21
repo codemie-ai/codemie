@@ -1554,6 +1554,11 @@
               }
             ]
           },
+          "hide_tool_outputs": {
+            "default": false,
+            "title": "Hide Tool Outputs",
+            "type": "boolean"
+          },
           "icon_url": {
             "anyOf": [
               {
@@ -2350,6 +2355,11 @@
             },
             "title": "Conversation Starters",
             "type": "array"
+          },
+          "hide_tool_outputs": {
+            "default": false,
+            "title": "Hide Tool Outputs",
+            "type": "boolean"
           },
           "tools": {
             "anyOf": [
@@ -3426,6 +3436,11 @@
                 "type": "null"
               }
             ]
+          },
+          "hide_tool_outputs": {
+            "default": false,
+            "title": "Hide Tool Outputs",
+            "type": "boolean"
           },
           "icon_url": {
             "anyOf": [
@@ -19309,6 +19324,11 @@
                 "type": "null"
               }
             ]
+          },
+          "hide_tool_outputs": {
+            "default": false,
+            "title": "Hide Tool Outputs",
+            "type": "boolean"
           },
           "icon_url": {
             "anyOf": [

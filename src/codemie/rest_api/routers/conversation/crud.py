@@ -30,6 +30,7 @@ from codemie.rest_api.models.conversation import (
 )
 from codemie.rest_api.routers.utils import raise_access_denied
 from codemie.rest_api.security.authentication import authenticate
+from codemie.rest_api.routers.conversation._common import _with_stripped_history
 from codemie.rest_api.security.user import User
 from codemie.service.conversation_service import ConversationService
 from codemie.service.constants import (
@@ -66,8 +67,9 @@ def update_conversation(
 
     if not conversation:
         logger.info("Conversation could not be updated")
+        return conversation
 
-    return conversation
+    return _with_stripped_history(conversation)
 
 
 @router.get(

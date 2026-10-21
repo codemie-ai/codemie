@@ -36,7 +36,9 @@ from codemie.rest_api.routers.feedback import CONVERSATION_NOT_FOUND_MESSAGE, CO
 from codemie.rest_api.routers.utils import raise_access_denied, remove_nulls
 from codemie.utils.datetime_utils import get_timestamp_bounds
 from codemie.rest_api.security.authentication import authenticate
+from codemie.rest_api.routers.conversation._common import _with_stripped_history
 from codemie.rest_api.security.user import User
+from codemie.service.assistant.tool_output_visibility import strip_history_for_conversation
 from codemie.service.conversation import MessageExporter, ExportFormat
 from codemie.service.conversation_service import ConversationService
 from codemie.service.constants import (
@@ -179,7 +181,7 @@ def _get_streaming_response(
     if export_format == "json":
         result = {
             "assistants": assistants,
-            "history": conversation.history,
+            "history": strip_history_for_conversation(conversation),
             "very_first_msg_at": very_first_msg_at,
             "very_last_msg_at": very_last_msg_at,
         }
@@ -195,7 +197,7 @@ def _get_streaming_response(
 
     elif export_format in [ConversationExportFormat.PDF, ConversationExportFormat.DOCX]:
         service = MessageExporter(
-            conversation=conversation,
+            conversation=_with_stripped_history(conversation),
             export_format=ExportFormat(export_format),
             assistant=assistant,
             include_tool_outputs=include_tool_outputs,

@@ -38,6 +38,7 @@ from codemie.service.security.token_providers.base_provider import BrokerAuthReq
 from codemie.service.guardrail.guardrail_service import GuardrailService
 from codemie.service.request_summary_manager import request_summary_manager
 from codemie.service.assistant.assistant_version_service import AssistantVersionService
+from codemie.service.assistant.tool_output_visibility import apply_to_response, is_hidden, strip_response
 
 
 def _apply_skill_ids_to_assistant(assistant: Assistant, request_skill_ids: list[str]) -> None:
@@ -98,6 +99,11 @@ def _resolve_chosen_execution_model(assistant: Assistant, request: AssistantChat
         assistant.project, chosen_model, is_global=assistant.is_global
     )
     return picked
+
+
+def _effective_hide_tool_outputs(master: Assistant, execution_assistant: Assistant) -> bool:
+    """Fail closed: a version-pinned request cannot reveal tool outputs the master assistant hides."""
+    return is_hidden(master) or is_hidden(execution_assistant)
 
 
 def _prepare_assistant_for_execution(assistant: Assistant, request: AssistantChatRequest) -> Assistant:
@@ -227,13 +233,14 @@ def _ask_virtual_assistant(
         )
 
         handler = get_request_handler(assistant, user, request_uuid)
-        return handler.process_request(
+        response = handler.process_request(
             request,
             background_tasks,
             raw_request,
             include_tool_errors=include_tool_errors,
             error_detail_level=error_detail_level,
         )
+        return apply_to_response(assistant, response)
 
     except MCPAuthenticationRequiredException:
         raise
@@ -269,9 +276,12 @@ def _ask_assistant(
     background_tasks: BackgroundTasks,
     include_tool_errors: bool = False,
     error_detail_level: ErrorDetailLevel = ErrorDetailLevel.STANDARD,
+    hide_tool_outputs: bool | None = None,
 ):
     """
     Internal helper for assistant execution.
+
+    hide_tool_outputs: effective hiding decision; when None it is taken from `assistant`.
 
     Error handling parameters:
     - include_tool_errors: Include tool error details in response
@@ -321,13 +331,15 @@ def _ask_assistant(
 
         handler = get_request_handler(assistant, user, request_uuid)
         # Pass error handling options to handler
-        return handler.process_request(
+        response = handler.process_request(
             request,
             background_tasks,
             raw_request,
             include_tool_errors=include_tool_errors,
             error_detail_level=error_detail_level,
         )
+        hidden = is_hidden(assistant) if hide_tool_outputs is None else hide_tool_outputs
+        return strip_response(response) if hidden else response
 
     except MCPAuthenticationRequiredException as exc:
         _try_save_error(

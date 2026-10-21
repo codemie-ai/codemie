@@ -138,12 +138,20 @@ class ShareConversationService:
                 assistant_icon=a.icon_url,
                 context=a.context,
                 conversation_starters=a.conversation_starters,
+                hide_tool_outputs=a.hide_tool_outputs,
                 tools=[Tool(name=tool.name, label=tool.label) for toolkit in a.toolkits for tool in toolkit.tools],
             )
             for a in assistants
         ]
 
         shared_file_urls = cls._build_shared_file_urls(conversation, token)
+
+        # Imported lazily: the codemie.service.assistant package import chain loops back to this module
+        # through file_service.download_rules.
+        from codemie.service.assistant.tool_output_visibility import strip_history_for_conversation
+
+        # Strip on a copy: the loaded object must never be persisted with stripped history.
+        conversation = conversation.model_copy(update={"history": strip_history_for_conversation(conversation)})
 
         # Increment the access counter
         shared.increment_access_count()

@@ -82,6 +82,7 @@ class AssistantVersionMigrationService:
             conversation_starters=assistant.conversation_starters,
             bedrock=assistant.bedrock,
             agent_card=assistant.agent_card,
+            hide_tool_outputs=assistant.hide_tool_outputs,
             created_by=assistant.created_by,
             created_date=assistant.created_date,
             change_notes="Initial version (migrated)",
@@ -117,6 +118,7 @@ class AssistantVersionMigrationService:
             conversation_starters=assistant.conversation_starters,
             bedrock=assistant.bedrock,
             agent_card=assistant.agent_card,
+            hide_tool_outputs=assistant.hide_tool_outputs,
             # Use timestamp and user from history
             created_date=history_entry.date,
             created_by=history_entry.created_by,
@@ -145,6 +147,7 @@ class AssistantVersionMigrationService:
             conversation_starters=assistant.conversation_starters,
             bedrock=assistant.bedrock,
             agent_card=assistant.agent_card,
+            hide_tool_outputs=assistant.hide_tool_outputs,
             created_by=assistant.created_by,
             created_date=assistant.updated_date or assistant.created_date,
             change_notes="Current version (migrated)",

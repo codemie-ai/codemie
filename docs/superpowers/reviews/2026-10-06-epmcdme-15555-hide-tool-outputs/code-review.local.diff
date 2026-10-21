@@ -1,0 +1,1844 @@
+diff --git a/src/codemie/rest_api/models/assistant.py b/src/codemie/rest_api/models/assistant.py
+index 85ccc6a48..20562528d 100644
+--- a/src/codemie/rest_api/models/assistant.py
++++ b/src/codemie/rest_api/models/assistant.py
+@@ -345,6 +345,7 @@ class AssistantRequest(BaseModel):
+     file_attachment_enabled: Optional[bool] = None
+     hedging_config: Optional[HedgingConfig] = None
+     interactive_enabled: bool = False
++    hide_tool_outputs: bool = False
+     mcp_servers: list[MCPServerDetails] = Field(default_factory=list)
+     assistant_ids: list[str] = Field(default_factory=list)
+     enabled_builtin_subagents: list[BuiltinSubagent] = Field(
+@@ -673,6 +674,7 @@ class AssistantBase(CommonBaseModel, Owned):
+     file_attachment_enabled: Optional[bool] = SQLField(default=None)
+     hedging_config: Optional[HedgingConfig] = SQLField(default=None, sa_column=Column(PydanticType(HedgingConfig)))
+     interactive_enabled: bool = SQLField(default=False, sa_column_kwargs={"server_default": "false"})
++    hide_tool_outputs: bool = SQLField(default=False, sa_column_kwargs={"server_default": "false"})
+     context: list[Context] = SQLField(default_factory=list, sa_column=Column(PydanticListType(Context)))
+     user_abilities: Optional[list[Action]] = SQLField(default=None, sa_column=Column(JSONB))
+     mcp_servers: list[MCPServerDetails] = SQLField(
+@@ -1273,6 +1275,7 @@ class AssistantConfiguration(BaseModelWithSQLSupport, table=True):
+     llm_model_type: Optional[str] = None
+     enable_image_generation: Optional[bool] = False
+     file_attachment_enabled: Optional[bool] = SQLField(default=None)
++    hide_tool_outputs: bool = SQLField(default=False, sa_column_kwargs={"server_default": "false"})
+     image_generation_model: Optional[str] = None
+     temperature: Optional[float] = None
+     top_p: Optional[float] = None
+diff --git a/src/codemie/rest_api/models/conversation.py b/src/codemie/rest_api/models/conversation.py
+index ed6e6ae74..e70ffa5a5 100644
+--- a/src/codemie/rest_api/models/conversation.py
++++ b/src/codemie/rest_api/models/conversation.py
+@@ -97,6 +97,7 @@ class AssistantDetails(BaseModel):
+     context: Optional[List[Context | str]] = None
+     tools: Optional[List[Tool]] = None
+     conversation_starters: List[str] = Field(default_factory=list)
++    hide_tool_outputs: bool = False
+ 
+ 
+ class UserMark(BaseModel):
+diff --git a/src/codemie/rest_api/routers/assistant.py b/src/codemie/rest_api/routers/assistant.py
+index 148b179de..a748fe3e9 100644
+--- a/src/codemie/rest_api/routers/assistant.py
++++ b/src/codemie/rest_api/routers/assistant.py
+@@ -104,6 +104,7 @@ from codemie.service.monitoring.metrics_constants import MetricsAttributes, MCP_
+ from codemie.service.guardrail.guardrail_service import GuardrailService
+ from codemie.service.request_summary_manager import request_summary_manager
+ from codemie.service.assistant.assistant_version_service import AssistantVersionService
++from codemie.service.assistant.tool_output_visibility import apply_to_response, is_hidden, strip_response
+ from codemie.service.tools import ToolsInfoService
+ from codemie.service.mcp_config_service import MCPConfigService
+ from codemie.service.mcp.access_control import MCPAccessControlService
+@@ -1082,6 +1083,7 @@ async def ask_assistant_by_id(
+         background_tasks,
+         include_tool_errors,
+         error_detail_level,
++        _effective_hide_tool_outputs(assistant, execution_assistant),
+     )
+     return result
+ 
+@@ -1157,11 +1159,21 @@ def _ask_assistant_resume(
+     user: User,
+     background_tasks: BackgroundTasks,
+ ):
++    """
++    KNOWN GAP: ToolCallResumeRequest carries no `version`, and resume intentionally skips
++    `_prepare_assistant_for_execution` (session context is reused as-is), so there is no pinned
++    execution_assistant here to combine via `_effective_hide_tool_outputs` like the other ask
++    paths. This hides using only the current master assistant's flag. If a turn was paused while
++    running under a pinned version with hide_tool_outputs=True and the master's own flag is later
++    turned off before resume, the resumed output would not be hidden. Fixing this requires
++    persisting the effective hide decision (or pinned version) in the checkpoint when the tool
++    call is first paused — out of scope here.
++    """
+     from codemie.rest_api.handlers.assistant_handlers import get_request_handler
+ 
+     request_uuid = raw_request.state.uuid
+     handler = get_request_handler(assistant, user, request_uuid)
+-    return handler.handle_tool_call_resume(request, raw_request)
++    return apply_to_response(assistant, handler.handle_tool_call_resume(request, raw_request))
+ 
+ 
+ @router.post(
+@@ -1214,6 +1226,7 @@ def ask_assistant_by_slug(
+         background_tasks,
+         include_tool_errors,
+         error_detail_level,
++        _effective_hide_tool_outputs(assistant, execution_assistant),
+     )
+ 
+ 
+@@ -2090,6 +2103,11 @@ def _apply_skill_ids_to_assistant(assistant: Assistant, request_skill_ids: list[
+     )
+ 
+ 
++def _effective_hide_tool_outputs(master: Assistant, execution_assistant: Assistant) -> bool:
++    """Fail closed: a version-pinned request cannot reveal tool outputs the master assistant hides."""
++    return is_hidden(master) or is_hidden(execution_assistant)
++
++
+ def _prepare_assistant_for_execution(assistant: Assistant, request: AssistantChatRequest) -> Assistant:
+     """
+     Prepares an assistant for execution, either using current configuration or a specific version.
+@@ -2333,13 +2351,14 @@ def _ask_virtual_assistant(
+         )
+ 
+         handler = get_request_handler(assistant, user, request_uuid)
+-        return handler.process_request(
++        response = handler.process_request(
+             request,
+             background_tasks,
+             raw_request,
+             include_tool_errors=include_tool_errors,
+             error_detail_level=error_detail_level,
+         )
++        return apply_to_response(assistant, response)
+ 
+     except MissingContextException as mce:
+         error = _create_assistant_error(
+@@ -2387,10 +2406,13 @@ def _ask_assistant(
+     background_tasks: BackgroundTasks,
+     include_tool_errors: bool = False,
+     error_detail_level: ErrorDetailLevel = ErrorDetailLevel.STANDARD,
++    hide_tool_outputs: bool | None = None,
+ ):
+     """
+     Internal helper for assistant execution.
+ 
++    hide_tool_outputs: effective hiding decision; when None it is taken from `assistant`.
++
+     Error handling parameters:
+     - include_tool_errors: Include tool error details in response
+     - error_detail_level: Error verbosity (minimal/standard/full)
+@@ -2439,13 +2461,15 @@ def _ask_assistant(
+ 
+         handler = get_request_handler(assistant, user, request_uuid)
+         # Pass error handling options to handler
+-        return handler.process_request(
++        response = handler.process_request(
+             request,
+             background_tasks,
+             raw_request,
+             include_tool_errors=include_tool_errors,
+             error_detail_level=error_detail_level,
+         )
++        hidden = is_hidden(assistant) if hide_tool_outputs is None else hide_tool_outputs
++        return strip_response(response) if hidden else response
+ 
+     except MissingContextException as mce:
+         error = _create_assistant_error(
+diff --git a/src/codemie/rest_api/routers/conversation.py b/src/codemie/rest_api/routers/conversation.py
+index 3526bea1c..6538b2311 100644
+--- a/src/codemie/rest_api/routers/conversation.py
++++ b/src/codemie/rest_api/routers/conversation.py
+@@ -67,6 +67,11 @@ from codemie.rest_api.security.user import User
+ from codemie.service.conversation import MessageExporter, ExportFormat
+ from codemie.service.conversation_service import ConversationService
+ from codemie.service.generation_manager import GenerationManager
++from codemie.service.assistant.tool_output_visibility import (
++    is_any_hidden,
++    strip_history_for_conversation,
++    strip_stream,
++)
+ from codemie.service.constants import (
+     DEFAULT_CONVERSATIONS_PER_PAGE,
+     DEFAULT_HISTORY_ITEMS_PER_PAGE,
+@@ -266,6 +271,7 @@ def get_conversation_by_id(
+                 assistant_icon=a.icon_url,
+                 context=a.context,
+                 conversation_starters=a.conversation_starters,
++                hide_tool_outputs=a.hide_tool_outputs,
+                 tools=[Tool(name=tool.name, label=tool.label) for toolkit in a.toolkits for tool in toolkit.tools],
+             )
+             for a in assistants
+@@ -274,6 +280,7 @@ def get_conversation_by_id(
+     conversation.conversation_name = conversation.get_conversation_name()
+ 
+     response = ConversationResponse.model_validate(conversation)
++    response.history = strip_history_for_conversation(conversation)
+ 
+     response.pagination = pagination_data
+     response.very_first_msg_at = very_first_msg_at
+@@ -408,8 +415,16 @@ def get_conversation_stream(
+         return StreamingResponse(empty_stream(), media_type=NDJSON_MEDIA_TYPE)
+ 
+     history_snapshot, sub_queue, is_closed = gen.subscribe()
++    body = stream_generator(gen, history_snapshot, sub_queue, is_closed, conversation_id)
++    # Workflow calls are out of scope (see spec); also, initial_assistant_id is a WorkflowConfig id
++    # there, not an assistant id. A single live turn can't be attributed to one assistant from here
++    # (handoffs reorder assistant_ids mid-conversation), so hide if any assistant on this conversation hides.
++    if not conversation.is_workflow_conversation and is_any_hidden(
++        conversation.assistant_ids + [conversation.initial_assistant_id]
++    ):
++        body = strip_stream(body)
+     return StreamingResponse(
+-        stream_generator(gen, history_snapshot, sub_queue, is_closed, conversation_id),
++        body,
+         media_type=NDJSON_MEDIA_TYPE,
+     )
+ 
+@@ -500,7 +515,7 @@ def delete_conversation_history_by_index(
+ 
+     updated_conversation = ConversationService.remove_conversation_history_index(conversation, history_index)
+ 
+-    return updated_conversation
++    return _with_stripped_history(updated_conversation)
+ 
+ 
+ @router.delete(
+@@ -544,7 +559,7 @@ def update_conversation_history_by_index(
+ 
+     updated_conversation = ConversationService.update_conversation_ai_message(conversation, history_index, request)
+ 
+-    return updated_conversation
++    return _with_stripped_history(updated_conversation)
+ 
+ 
+ @router.post(
+@@ -705,7 +720,7 @@ def export_conversation_message(
+ 
+     try:
+         service = MessageExporter(
+-            conversation=conversation,
++            conversation=_with_stripped_history(conversation),
+             export_format=export_format,
+             history_index=history_index,
+             message_index=message_index,
+@@ -747,8 +762,9 @@ def update_conversation(
+ 
+     if not conversation:
+         logger.info("Conversation could not be updated")
++        return conversation
+ 
+-    return conversation
++    return _with_stripped_history(conversation)
+ 
+ 
+ @router.get(
+@@ -1033,6 +1049,13 @@ def export_conversation(
+     )
+ 
+ 
++def _with_stripped_history(conversation: Conversation) -> Conversation:
++    """Copy of the conversation with hidden-assistant thoughts removed. Never persist the copy."""
++    if not conversation:
++        return conversation
++    return conversation.model_copy(update={"history": strip_history_for_conversation(conversation)})
++
++
+ def _get_streaming_response(
+     conversation_id: str,
+     export_format: ConversationExportFormat,
+@@ -1064,7 +1087,7 @@ def _get_streaming_response(
+     if export_format == "json":
+         result = {
+             "assistants": assistants,
+-            "history": conversation.history,
++            "history": strip_history_for_conversation(conversation),
+             "very_first_msg_at": very_first_msg_at,
+             "very_last_msg_at": very_last_msg_at,
+         }
+@@ -1080,7 +1103,7 @@ def _get_streaming_response(
+ 
+     elif export_format in [ConversationExportFormat.PDF, ConversationExportFormat.DOCX]:
+         service = MessageExporter(
+-            conversation=conversation,
++            conversation=_with_stripped_history(conversation),
+             export_format=ExportFormat(export_format),
+             assistant=assistant,
+         )
+diff --git a/src/codemie/service/assistant/assistant_version_compare_service.py b/src/codemie/service/assistant/assistant_version_compare_service.py
+index 25f73aa05..2d5f6ac3a 100644
+--- a/src/codemie/service/assistant/assistant_version_compare_service.py
++++ b/src/codemie/service/assistant/assistant_version_compare_service.py
+@@ -63,6 +63,7 @@ class AssistantVersionCompareService:
+             'system_prompt': request.system_prompt or "",
+             'llm_model_type': request.llm_model_type,
+             'enable_image_generation': request.enable_image_generation,
++            'hide_tool_outputs': request.hide_tool_outputs,
+             'image_generation_model': request.image_generation_model,
+             'temperature': request.temperature,
+             'top_p': request.top_p,
+diff --git a/src/codemie/service/assistant/assistant_version_migration_service.py b/src/codemie/service/assistant/assistant_version_migration_service.py
+index 039362cda..a2a264d17 100644
+--- a/src/codemie/service/assistant/assistant_version_migration_service.py
++++ b/src/codemie/service/assistant/assistant_version_migration_service.py
+@@ -82,6 +82,7 @@ class AssistantVersionMigrationService:
+             conversation_starters=assistant.conversation_starters,
+             bedrock=assistant.bedrock,
+             agent_card=assistant.agent_card,
++            hide_tool_outputs=assistant.hide_tool_outputs,
+             created_by=assistant.created_by,
+             created_date=assistant.created_date,
+             change_notes="Initial version (migrated)",
+@@ -117,6 +118,7 @@ class AssistantVersionMigrationService:
+             conversation_starters=assistant.conversation_starters,
+             bedrock=assistant.bedrock,
+             agent_card=assistant.agent_card,
++            hide_tool_outputs=assistant.hide_tool_outputs,
+             # Use timestamp and user from history
+             created_date=history_entry.date,
+             created_by=history_entry.created_by,
+@@ -145,6 +147,7 @@ class AssistantVersionMigrationService:
+             conversation_starters=assistant.conversation_starters,
+             bedrock=assistant.bedrock,
+             agent_card=assistant.agent_card,
++            hide_tool_outputs=assistant.hide_tool_outputs,
+             created_by=assistant.created_by,
+             created_date=assistant.updated_date or assistant.created_date,
+             change_notes="Current version (migrated)",
+diff --git a/src/codemie/service/assistant/assistant_version_service.py b/src/codemie/service/assistant/assistant_version_service.py
+index e42ccbfe2..d4894f25e 100644
+--- a/src/codemie/service/assistant/assistant_version_service.py
++++ b/src/codemie/service/assistant/assistant_version_service.py
+@@ -58,6 +58,7 @@ class AssistantVersionService:
+             llm_model_type=request.llm_model_type,
+             enable_image_generation=request.enable_image_generation,
+             file_attachment_enabled=request.file_attachment_enabled,
++            hide_tool_outputs=request.hide_tool_outputs,
+             image_generation_model=request.image_generation_model,
+             temperature=request.temperature,
+             top_p=request.top_p,
+@@ -116,6 +117,7 @@ class AssistantVersionService:
+             llm_model_type=versioned('llm_model_type'),
+             enable_image_generation=versioned('enable_image_generation'),
+             file_attachment_enabled=versioned('file_attachment_enabled'),
++            hide_tool_outputs=versioned('hide_tool_outputs'),
+             image_generation_model=versioned('image_generation_model'),
+             temperature=versioned('temperature'),
+             top_p=versioned('top_p'),
+@@ -278,6 +280,7 @@ class AssistantVersionService:
+             llm_model_type=target_config.llm_model_type,
+             enable_image_generation=target_config.enable_image_generation,
+             file_attachment_enabled=target_config.file_attachment_enabled,
++            hide_tool_outputs=target_config.hide_tool_outputs,
+             image_generation_model=target_config.image_generation_model,
+             temperature=target_config.temperature,
+             top_p=target_config.top_p,
+@@ -324,6 +327,7 @@ class AssistantVersionService:
+         assistant.llm_model_type = config.llm_model_type
+         assistant.enable_image_generation = config.enable_image_generation
+         assistant.file_attachment_enabled = config.file_attachment_enabled
++        assistant.hide_tool_outputs = config.hide_tool_outputs
+         assistant.image_generation_model = config.image_generation_model
+         assistant.temperature = config.temperature
+         assistant.top_p = config.top_p
+diff --git a/src/codemie/service/assistant/tool_output_visibility.py b/src/codemie/service/assistant/tool_output_visibility.py
+new file mode 100644
+index 000000000..cbb614ca8
+--- /dev/null
++++ b/src/codemie/service/assistant/tool_output_visibility.py
+@@ -0,0 +1,170 @@
++# Copyright 2026 EPAM Systems, Inc. ("EPAM")
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++"""Single policy point for the assistant-level "hide tool outputs" flag."""
++
++import json
++import re
++from typing import Any, AsyncIterator, Iterable, Iterator
++
++from starlette.responses import StreamingResponse
++
++from codemie.configs import logger
++from codemie.rest_api.models.assistant import Assistant
++
++# A chunk carrying any of these must survive even when its thought is removed.
++_PAYLOAD_KEYS = ("generated", "generated_chunk", "a2ui", "tool_call_pending", "agent_error", "execution_error", "last")
++
++
++def is_hidden(assistant: Any) -> bool:
++    return bool(getattr(assistant, "hide_tool_outputs", False))
++
++
++def _strip_line(line: str) -> str | None:
++    text = line.strip()
++    if not text:
++        return line
++    try:
++        data = json.loads(text)
++    except ValueError:
++        # Unparseable line: cannot verify it is free of hidden thought content, so drop it
++        # rather than let it pass through unfiltered.
++        return None
++    if not isinstance(data, dict):
++        return None
++    thought = data.get("thought")
++    if thought and not any(data.get(k) for k in _PAYLOAD_KEYS):
++        return None
++    # A security error is reported only through a thought; keep its message visible whenever it
++    # appears, not only on the final chunk (on_llm_error can emit it mid-stream with last=False).
++    if isinstance(thought, dict) and thought.get("error") and not data.get("generated") and thought.get("message"):
++        data["generated"] = thought["message"]
++    for key in ("thought", "debug"):
++        if key in data:
++            data[key] = None
++    if data.get("last") and "tool_errors" in data:
++        data["tool_errors"] = None
++    return json.dumps(data) + ("\n" if line.endswith("\n") else "")
++
++
++def strip_chunk(chunk: str | bytes) -> str | bytes | None:
++    """Strip tool details from an NDJSON chunk. Returns None when the whole chunk must be dropped."""
++    is_bytes = isinstance(chunk, bytes)
++    text = chunk.decode() if is_bytes else chunk
++    # Split on "\n" only: str.splitlines() also breaks on U+2028/U+2029/\x85 etc., which may appear raw inside JSON
++    # strings and would split one JSON line into unparseable halves that pass through unstripped.
++    lines = [raw for raw in re.split(r"(?<=\n)", text) if raw]
++    kept = [out for raw in lines if (out := _strip_line(raw)) is not None]
++    if not kept:
++        return None
++    joined = "".join(kept)
++    return joined.encode() if is_bytes else joined
++
++
++def strip_stream(iterator):
++    """Wrap a sync or async iterator of NDJSON chunks, applying strip_chunk to each."""
++    if hasattr(iterator, "__aiter__"):
++
++        async def _agen() -> AsyncIterator:
++            try:
++                async for chunk in iterator:
++                    if (out := strip_chunk(chunk)) is not None:
++                        yield out
++            finally:
++                close = getattr(iterator, "aclose", None)
++                if close:
++                    await close()
++
++        return _agen()
++
++    def _gen() -> Iterator:
++        try:
++            for chunk in iterator:
++                if (out := strip_chunk(chunk)) is not None:
++                    yield out
++        finally:
++            close = getattr(iterator, "close", None)
++            if close:
++                close()
++
++    return _gen()
++
++
++def strip_response(response: Any) -> Any:
++    """Unconditionally strip tool details from a StreamingResponse or BaseModelResponse."""
++    if isinstance(response, StreamingResponse):
++        response.body_iterator = strip_stream(response.body_iterator)
++        return response
++    if not hasattr(type(response), "model_fields"):
++        logger.error(f"Cannot strip tool outputs from unsupported response type {type(response).__name__}")
++        return response
++    fields = type(response).model_fields
++    update = {k: v for k, v in (("thoughts", []), ("tool_errors", None)) if k in fields}
++    return response.model_copy(update=update) if update else response
++
++
++def apply_to_response(assistant: Any, response: Any) -> Any:
++    """Strip tool details from a StreamingResponse or BaseModelResponse; no-op when not hidden."""
++    return strip_response(response) if is_hidden(assistant) else response
++
++
++def _hidden_ids(assistant_ids: Iterable[str | None]) -> set[str]:
++    ids = sorted({i for i in assistant_ids if i})
++    if not ids:
++        return set()
++    resolved = {a.id: is_hidden(a) for a in Assistant.get_by_ids_no_permission_check(ids)}
++    # Fail closed: an id that no longer resolves (e.g. the hiding assistant was deleted) stays
++    # hidden rather than silently re-exposing history it was set to hide.
++    return {i for i in ids if resolved.get(i, True)}
++
++
++def is_hidden_by_id(assistant_id: str | None) -> bool:
++    """Unfiltered lookup; False for None, fail-closed True for unknown/deleted ids."""
++    return bool(_hidden_ids([assistant_id]))
++
++
++def is_any_hidden(assistant_ids: Iterable[str | None]) -> bool:
++    """True if any of the given assistant ids is hidden. Used where a single live stream can't
++    be attributed to one specific message/assistant (e.g. after a mid-conversation handoff)."""
++    return bool(_hidden_ids(assistant_ids))
++
++
++def strip_history_for_conversation(conversation: Any) -> list:
++    """Strip hidden-assistant thoughts from `conversation.history`.
++
++    No-op for workflow conversations: per spec, workflow/sub-assistant orchestration calls are
++    deliberately out of scope for this feature. This also sidesteps a trap — for workflow
++    conversations `initial_assistant_id` holds a WorkflowConfig id, not an assistant id, so using
++    it as strip_history's fallback would make every assistant-less workflow message resolve as an
++    unknown id and (fail-closed) look hidden.
++    """
++    history = getattr(conversation, "history", None) or []
++    if getattr(conversation, "is_workflow_conversation", False):
++        return list(history)
++    return strip_history(history, getattr(conversation, "initial_assistant_id", None))
++
++
++def strip_history(history: list, default_assistant_id: str | None) -> list:
++    """Return a new history with thoughts removed for messages of hidden assistants. Never mutates the input."""
++    if not history:
++        return []
++    hidden = _hidden_ids((m.assistant_id or default_assistant_id) for m in history if m.thoughts)
++    if not hidden:
++        return list(history)
++    return [
++        m.model_copy(update={"thoughts": []})
++        if m.thoughts and (m.assistant_id or default_assistant_id) in hidden
++        else m
++        for m in history
++    ]
+diff --git a/src/codemie/service/share_conversation_service.py b/src/codemie/service/share_conversation_service.py
+index 9a84067f3..a731c74cf 100644
+--- a/src/codemie/service/share_conversation_service.py
++++ b/src/codemie/service/share_conversation_service.py
+@@ -24,6 +24,7 @@ from codemie.rest_api.models.conversation import Conversation, AssistantDetails
+ from codemie.rest_api.models.share.shared_conversation import SharedConversation
+ from codemie.rest_api.security.user import User
+ from codemie.configs import logger
++from codemie.service.assistant.tool_output_visibility import strip_history_for_conversation
+ from codemie.service.monitoring.conversation_monitoring_service import ConversationMonitoringService
+ 
+ 
+@@ -138,6 +139,7 @@ class ShareConversationService:
+                 assistant_icon=a.icon_url,
+                 context=a.context,
+                 conversation_starters=a.conversation_starters,
++                hide_tool_outputs=a.hide_tool_outputs,
+                 tools=[Tool(name=tool.name, label=tool.label) for toolkit in a.toolkits for tool in toolkit.tools],
+             )
+             for a in assistants
+@@ -145,6 +147,9 @@ class ShareConversationService:
+ 
+         shared_file_urls = cls._build_shared_file_urls(conversation, token)
+ 
++        # Strip on a copy: the loaded object must never be persisted with stripped history.
++        conversation = conversation.model_copy(update={"history": strip_history_for_conversation(conversation)})
++
+         # Increment the access counter
+         shared.increment_access_count()
+         ConversationMonitoringService.send_share_conversation_metric(
+diff --git a/src/external/alembic/versions/a4c9e1b7d2f3_add_hide_tool_outputs_to_assistants.py b/src/external/alembic/versions/a4c9e1b7d2f3_add_hide_tool_outputs_to_assistants.py
+new file mode 100644
+index 000000000..461dafcb1
+--- /dev/null
++++ b/src/external/alembic/versions/a4c9e1b7d2f3_add_hide_tool_outputs_to_assistants.py
+@@ -0,0 +1,39 @@
++# Copyright 2026 EPAM Systems, Inc. ("EPAM")
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++"""add hide_tool_outputs to assistants and assistant_configurations
++
++EPMCDME-15555: assistant-level flag that hides tool outputs from end users.
++"""
++
++import sqlalchemy as sa
++from alembic import op
++
++revision = 'a4c9e1b7d2f3'
++down_revision = 'd9e8f7a6b5c4'
++branch_labels = None
++depends_on = None
++
++
++def upgrade() -> None:
++    for table in ('assistants', 'assistant_configurations'):
++        op.add_column(
++            table,
++            sa.Column('hide_tool_outputs', sa.Boolean(), server_default=sa.text('false'), nullable=False),
++        )
++
++
++def downgrade() -> None:
++    for table in ('assistant_configurations', 'assistants'):
++        op.drop_column(table, 'hide_tool_outputs')
+diff --git a/tests/codemie/rest_api/models/test_assistant_hide_tool_outputs.py b/tests/codemie/rest_api/models/test_assistant_hide_tool_outputs.py
+new file mode 100644
+index 000000000..5914bd04d
+--- /dev/null
++++ b/tests/codemie/rest_api/models/test_assistant_hide_tool_outputs.py
+@@ -0,0 +1,41 @@
++# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++from codemie.rest_api.models.assistant import Assistant, AssistantRequest
++
++MINIMAL_REQUEST = {"name": "a", "system_prompt": "p", "llm_model_type": "gpt-4o"}
++
++
++def _make_assistant(**kwargs) -> Assistant:
++    return Assistant(name="a", description="d", system_prompt="p", **kwargs)
++
++
++def test_request_defaults_to_false_and_is_unset():
++    req = AssistantRequest.model_validate(MINIMAL_REQUEST)
++    assert req.hide_tool_outputs is False
++    assert "hide_tool_outputs" not in req.model_fields_set
++
++
++def test_omitted_field_on_update_keeps_stored_value():
++    assistant = _make_assistant(hide_tool_outputs=True)
++    req = AssistantRequest.model_validate(MINIMAL_REQUEST)
++    assistant._map_assistant_request(req)
++    assert assistant.hide_tool_outputs is True
++
++
++def test_explicit_false_on_update_turns_it_off():
++    assistant = _make_assistant(hide_tool_outputs=True)
++    req = AssistantRequest.model_validate({**MINIMAL_REQUEST, "hide_tool_outputs": False})
++    assistant._map_assistant_request(req)
++    assert assistant.hide_tool_outputs is False
+diff --git a/tests/codemie/rest_api/routers/test_assistant_hide_tool_outputs.py b/tests/codemie/rest_api/routers/test_assistant_hide_tool_outputs.py
+new file mode 100644
+index 000000000..a85f32bf0
+--- /dev/null
++++ b/tests/codemie/rest_api/routers/test_assistant_hide_tool_outputs.py
+@@ -0,0 +1,247 @@
++"""Router egress filtering for the assistant-level hide_tool_outputs flag."""
++
++import asyncio
++import json
++from unittest.mock import AsyncMock, MagicMock, patch
++
++import pytest
++from starlette.responses import StreamingResponse
++
++from codemie.core.models import AssistantChatRequest
++from codemie.rest_api.models.assistant import Assistant, AssistantConfiguration
++from codemie.rest_api.routers.assistant import (
++    ToolCallResumeRequest,
++    _ask_assistant,
++    _ask_assistant_resume,
++    _ask_virtual_assistant,
++    ask_assistant_by_id,
++    ask_assistant_by_slug,
++)
++from codemie.rest_api.security.user import User
++from codemie.service.assistant.assistant_version_service import AssistantVersionService
++
++
++def _line(**kwargs) -> str:
++    return json.dumps(kwargs) + "\n"
++
++
++def _stream() -> StreamingResponse:
++    return StreamingResponse(iter([_line(thought={"id": "1"}), _line(generated_chunk="a")]))
++
++
++def _chunks(resp: StreamingResponse) -> list:
++    async def _collect():
++        return [json.loads(c) async for c in resp.body_iterator]
++
++    return asyncio.run(_collect())
++
++
++def _assistant(hide: bool) -> MagicMock:
++    assistant = MagicMock(spec=Assistant)
++    assistant.id = "assistant-123"
++    assistant.project = "test-project"
++    assistant.hide_tool_outputs = hide
++    return assistant
++
++
++@pytest.fixture
++def user():
++    return MagicMock(spec=User)
++
++
++@pytest.fixture
++def raw_request():
++    return MagicMock(state=MagicMock(uuid="req-1"))
++
++
++def _ask(assistant, raw_request, user, handler):
++    with (
++        patch("codemie.rest_api.routers.assistant.assistant_user_interaction_service.record_usage"),
++        patch("codemie.rest_api.routers.assistant.request_summary_manager.create_request_summary"),
++        patch("codemie.rest_api.routers.assistant.Ability") as ability,
++        patch("codemie.rest_api.routers.assistant.GuardrailService.apply_guardrails_for_entity") as guard,
++        patch("codemie.rest_api.routers.assistant.get_request_handler", return_value=handler),
++    ):
++        ability.return_value.can.return_value = True
++        guard.return_value = ("hi", None)
++        return _ask_assistant(assistant, raw_request, AssistantChatRequest(text="hi"), user, MagicMock())
++
++
++def test_ask_strips_stream_when_flag_on(raw_request, user):
++    handler = MagicMock()
++    handler.process_request.return_value = _stream()
++
++    resp = _ask(_assistant(True), raw_request, user, handler)
++
++    assert [c["generated_chunk"] for c in _chunks(resp)] == ["a"]
++
++
++def test_ask_strips_thought_only_chunk_when_flag_on(raw_request, user):
++    handler = MagicMock()
++    handler.process_request.return_value = _stream()
++
++    resp = _ask(_assistant(True), raw_request, user, handler)
++
++    chunks = _chunks(resp)
++    assert chunks == [{"generated_chunk": "a"}]
++
++
++def test_ask_unchanged_when_flag_off(raw_request, user):
++    handler = MagicMock()
++    handler.process_request.return_value = _stream()
++
++    resp = _ask(_assistant(False), raw_request, user, handler)
++
++    chunks = _chunks(resp)
++    assert chunks == [{"thought": {"id": "1"}}, {"generated_chunk": "a"}]
++
++
++def test_resume_strips_when_flag_on(raw_request, user):
++    handler = MagicMock()
++    handler.handle_tool_call_resume.return_value = _stream()
++    request = ToolCallResumeRequest(conversation_id="c1", action="allow")
++
++    with patch("codemie.rest_api.handlers.assistant_handlers.get_request_handler", return_value=handler):
++        resp = _ask_assistant_resume(_assistant(True), raw_request, request, user, MagicMock())
++
++    assert _chunks(resp) == [{"generated_chunk": "a"}]
++
++
++def test_resume_unchanged_when_flag_off(raw_request, user):
++    handler = MagicMock()
++    handler.handle_tool_call_resume.return_value = _stream()
++    request = ToolCallResumeRequest(conversation_id="c1", action="allow")
++
++    with patch("codemie.rest_api.handlers.assistant_handlers.get_request_handler", return_value=handler):
++        resp = _ask_assistant_resume(_assistant(False), raw_request, request, user, MagicMock())
++
++    assert len(_chunks(resp)) == 2
++
++
++@pytest.mark.parametrize("handler_cls", ["A2AAssistantHandler", "HedgedAssistantHandler"])
++def test_a2a_and_hedged_handlers_are_covered(handler_cls, raw_request, user):
++    """Any handler's process_request output is filtered at the router; no handler-level change is needed."""
++    handler = MagicMock(spec=[])
++    handler.__class__.__name__ = handler_cls
++    handler.process_request = MagicMock(return_value=_stream())
++
++    resp = _ask(_assistant(True), raw_request, user, handler)
++
++    assert _chunks(resp) == [{"generated_chunk": "a"}]
++
++
++def test_version_pinned_flag_is_used(raw_request, user):
++    """Called directly (no master override), _ask_assistant uses the given assistant's flag."""
++    on_handler = MagicMock()
++    on_handler.process_request.return_value = _stream()
++    off_handler = MagicMock()
++    off_handler.process_request.return_value = _stream()
++
++    stripped = _ask(_assistant(True), raw_request, user, on_handler)
++    untouched = _ask(_assistant(False), raw_request, user, off_handler)
++
++    assert len(_chunks(stripped)) == 1
++    assert len(_chunks(untouched)) == 2
++
++
++def test_virtual_assistant_is_filtered(raw_request, user):
++    """Virtual/transient assistants have no DB record but must still honor hide_tool_outputs."""
++    handler = MagicMock()
++    stream = _stream()
++    handler.process_request.return_value = stream
++    virtual = _assistant(True)
++    virtual.id = None
++
++    with (
++        patch("codemie.rest_api.routers.assistant.request_summary_manager.create_request_summary"),
++        patch("codemie.rest_api.routers.assistant.Ability") as ability,
++        patch("codemie.rest_api.routers.assistant.get_request_handler", return_value=handler),
++    ):
++        ability.return_value.can.return_value = True
++        resp = _ask_virtual_assistant(virtual, raw_request, AssistantChatRequest(text="hi"), user, MagicMock())
++
++    assert resp is stream
++    assert len(_chunks(resp)) == 1
++
++
++def test_virtual_assistant_not_hidden_passes_through(raw_request, user):
++    handler = MagicMock()
++    stream = _stream()
++    handler.process_request.return_value = stream
++    virtual = _assistant(False)
++    virtual.id = None
++
++    with (
++        patch("codemie.rest_api.routers.assistant.request_summary_manager.create_request_summary"),
++        patch("codemie.rest_api.routers.assistant.Ability") as ability,
++        patch("codemie.rest_api.routers.assistant.get_request_handler", return_value=handler),
++    ):
++        ability.return_value.can.return_value = True
++        resp = _ask_virtual_assistant(virtual, raw_request, AssistantChatRequest(text="hi"), user, MagicMock())
++
++    assert resp is stream
++    assert len(_chunks(resp)) == 2
++
++
++def _real_assistant(hide: bool) -> Assistant:
++    return Assistant(
++        id="assistant-123",
++        name="A",
++        description="d",
++        system_prompt="p",
++        project="test-project",
++        hide_tool_outputs=hide,
++        version_count=2,
++    )
++
++
++def _version(hide: bool) -> AssistantConfiguration:
++    return AssistantConfiguration(
++        assistant_id="assistant-123", version_number=1, description="d", system_prompt="p", hide_tool_outputs=hide
++    )
++
++
++def _ask_pinned(route, master: Assistant, pinned: AssistantConfiguration, raw_request, user):
++    handler = MagicMock()
++    handler.process_request.return_value = _stream()
++    request = AssistantChatRequest(text="hi", version=1)
++    with (
++        patch("codemie.rest_api.routers.assistant.assistant_user_interaction_service.record_usage"),
++        patch("codemie.rest_api.routers.assistant.request_summary_manager.create_request_summary"),
++        patch("codemie.rest_api.routers.assistant.Ability") as ability,
++        patch("codemie.rest_api.routers.assistant.GuardrailService.apply_guardrails_for_entity") as guard,
++        patch("codemie.rest_api.routers.assistant.get_request_handler", return_value=handler),
++        patch("codemie.rest_api.routers.assistant._validate_remote_entities_and_raise"),
++        patch("codemie.rest_api.routers.assistant._get_assistant_by_id_or_raise", return_value=master),
++        patch("codemie.rest_api.routers.assistant._get_assistant_by_slug_or_raise", return_value=master),
++        patch.object(AssistantVersionService, "get_version", return_value=pinned) as get_version,
++    ):
++        ability.return_value.can.return_value = True
++        guard.return_value = ("hi", None)
++        if route == "id":
++            raw_request.state.wait_for_disconnect = AsyncMock()
++
++            async def _call():
++                return await ask_assistant_by_id(raw_request, master.id, MagicMock(), request, user, True)
++
++            resp = asyncio.run(_call())
++        else:
++            resp = ask_assistant_by_slug(raw_request, "slug", MagicMock(), request, user, True)
++    get_version.assert_called_once_with(master.id, 1)
++    return resp
++
++
++@pytest.mark.parametrize("route", ["id", "slug"])
++@pytest.mark.parametrize(("master_hide", "pinned_hide"), [(True, False), (False, True)])
++def test_version_pin_cannot_bypass_hiding(route, master_hide, pinned_hide, raw_request, user):
++    """Fail closed: hidden when either the master assistant or the pinned version hides tool outputs."""
++    resp = _ask_pinned(route, _real_assistant(master_hide), _version(pinned_hide), raw_request, user)
++
++    assert _chunks(resp) == [{"generated_chunk": "a"}]
++
++
++@pytest.mark.parametrize("route", ["id", "slug"])
++def test_version_pin_unhidden_when_both_off(route, raw_request, user):
++    resp = _ask_pinned(route, _real_assistant(False), _version(False), raw_request, user)
++
++    assert len(_chunks(resp)) == 2
+diff --git a/tests/codemie/rest_api/routers/test_conversation_hide_tool_outputs.py b/tests/codemie/rest_api/routers/test_conversation_hide_tool_outputs.py
+new file mode 100644
+index 000000000..9cf795b3e
+--- /dev/null
++++ b/tests/codemie/rest_api/routers/test_conversation_hide_tool_outputs.py
+@@ -0,0 +1,267 @@
++# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++import json
++from types import SimpleNamespace
++from unittest.mock import MagicMock, patch
++
++import pytest
++from fastapi.testclient import TestClient
++
++import codemie.rest_api.routers.conversation as conversation_router
++from codemie.chains.base import Thought
++from codemie.rest_api.main import app
++from codemie.rest_api.models.conversation import Conversation, GeneratedMessage
++from codemie.rest_api.security.user import User
++
++HIDDEN = "assistant-hidden"
++OPEN = "assistant-open"
++VIS = "codemie.service.assistant.tool_output_visibility.Assistant.get_by_ids_no_permission_check"
++R = "codemie.rest_api.routers.conversation"
++H = {"Authorization": "Bearer t"}
++
++
++@pytest.fixture
++def user():
++    return User(id="123", username="testuser", name="Test User")
++
++
++@pytest.fixture(autouse=True)
++def override_dependency(user):
++    app.dependency_overrides[conversation_router.authenticate] = lambda: user
++    yield
++    app.dependency_overrides = {}
++
++
++@pytest.fixture
++def client():
++    return TestClient(app)
++
++
++def _msg(assistant_id, role="Assistant"):
++    return GeneratedMessage(
++        message="answer",
++        role=role,
++        assistant_id=assistant_id,
++        thoughts=[Thought(id="t1", author_name="Tool", message="secret output")],
++    )
++
++
++@pytest.fixture
++def conversation():
++    return Conversation(
++        id="c1",
++        conversation_id="c1",
++        name="Conv",
++        initial_assistant_id=HIDDEN,
++        assistant_ids=[HIDDEN, OPEN],
++        history=[_msg(HIDDEN), _msg(OPEN)],
++    )
++
++
++def _lookup(flagged):
++    """Fake unfiltered assistant lookup: ids in `flagged` have hide_tool_outputs=True."""
++    return lambda ids: [SimpleNamespace(id=i, hide_tool_outputs=i in flagged) for i in ids]
++
++
++def _assistant(aid, hide):
++    a = MagicMock()
++    a.id, a.name, a.icon_url, a.context, a.conversation_starters = aid, aid, None, [], []
++    a.toolkits, a.type, a.hide_tool_outputs = [], None, hide
++    return a
++
++
++def test_detail_strips_thoughts_for_flagged_assistant_and_exposes_flag(client, conversation):
++    with (
++        patch(f"{R}.Conversation.get_by_id", return_value=conversation),
++        patch(f"{R}.Conversation.find_by_id", return_value=conversation),
++        patch(f"{R}.Ability.can", return_value=True),
++        patch(f"{R}.Assistant.get_by_ids", return_value=[_assistant(HIDDEN, True), _assistant(OPEN, False)]),
++        patch(VIS, side_effect=_lookup({HIDDEN})),
++    ):
++        body = client.get("/v1/conversations/c1", headers=H).json()
++
++    assert body["history"][0]["thoughts"] == []
++    assert body["history"][1]["thoughts"][0]["message"] == "secret output"
++    flags = {a["assistant_id"]: a["hide_tool_outputs"] for a in body["assistant_data"]}
++    assert flags == {HIDDEN: True, OPEN: False}
++
++
++def test_detail_does_not_persist_stripped_history(client, conversation):
++    with (
++        patch(f"{R}.Conversation.find_by_id", return_value=conversation),
++        patch(f"{R}.Ability.can", return_value=True),
++        patch(f"{R}.Assistant.get_by_ids", return_value=[]),
++        patch(VIS, side_effect=_lookup({HIDDEN})),
++        patch.object(Conversation, "update") as update,
++    ):
++        client.get("/v1/conversations/c1", headers=H)
++
++    update.assert_not_called()
++    assert conversation.history[0].thoughts  # stored object untouched
++
++
++def test_detail_paginated_branch_also_stripped(client, conversation):
++    with (
++        patch(
++            f"{R}.ConversationService.get_conversation_history_slice",
++            return_value=(conversation, 2, None, None),
++        ),
++        patch(f"{R}.Ability.can", return_value=True),
++        patch(f"{R}.Assistant.get_by_ids", return_value=[]),
++        patch(VIS, side_effect=_lookup({HIDDEN})),
++    ):
++        body = client.get("/v1/conversations/c1?page=0&per_page=10", headers=H).json()
++
++    assert body["history"][0]["thoughts"] == []
++    assert body["history"][1]["thoughts"]
++
++
++def test_flag_off_regression_history_unchanged(client, conversation):
++    with (
++        patch(f"{R}.Conversation.find_by_id", return_value=conversation),
++        patch(f"{R}.Ability.can", return_value=True),
++        patch(f"{R}.Assistant.get_by_ids", return_value=[_assistant(HIDDEN, False)]),
++        patch(VIS, side_effect=_lookup(set())),
++    ):
++        body = client.get("/v1/conversations/c1", headers=H).json()
++
++    assert all(m["thoughts"] for m in body["history"])
++    assert body["assistant_data"][0]["hide_tool_outputs"] is False
++
++
++def test_turning_flag_off_restores_thoughts(client, conversation):
++    flagged = {HIDDEN}
++    with (
++        patch(f"{R}.Conversation.find_by_id", return_value=conversation),
++        patch(f"{R}.Ability.can", return_value=True),
++        patch(f"{R}.Assistant.get_by_ids", return_value=[]),
++        patch(VIS, side_effect=lambda ids: _lookup(flagged)(ids)),
++    ):
++        first = client.get("/v1/conversations/c1", headers=H).json()
++        flagged.clear()
++        second = client.get("/v1/conversations/c1", headers=H).json()
++
++    assert first["history"][0]["thoughts"] == []
++    assert second["history"][0]["thoughts"][0]["message"] == "secret output"
++
++
++def test_stream_replay_stripped_when_initial_assistant_hidden(client, conversation):
++    chunks = [
++        json.dumps({"thought": {"id": "1", "message": "secret"}, "last": False}) + "\n",
++        json.dumps({"generated_chunk": "hi", "thought": {"id": "2"}, "last": False}) + "\n",
++    ]
++    with (
++        patch(f"{R}.Conversation.find_by_id", return_value=conversation),
++        patch(f"{R}.Ability.can", return_value=True),
++        patch(f"{R}.GenerationManager") as gm,
++        patch(f"{R}.stream_generator", return_value=iter(chunks)),
++        patch(VIS, side_effect=_lookup({HIDDEN})),
++    ):
++        gm.return_value.get_generator.return_value.subscribe.return_value = ([], MagicMock(), True)
++        text = client.get("/v1/conversations/c1/stream", headers=H).text
++
++    lines = [json.loads(line) for line in text.splitlines() if line.strip()]
++    assert len(lines) == 1
++    assert lines[0]["generated_chunk"] == "hi" and lines[0]["thought"] is None
++
++
++def _export_patches(conversation):
++    return (
++        patch(f"{R}.Conversation.find_by_id", return_value=conversation),
++        patch(f"{R}.Conversation.get_by_id", return_value=conversation),
++        patch(f"{R}.Ability.can", return_value=True),
++        patch(f"{R}.Assistant.get_by_ids", return_value=[]),
++        patch(VIS, side_effect=_lookup({HIDDEN})),
++    )
++
++
++def test_json_export_strips(client, conversation):
++    p = _export_patches(conversation)
++    with p[0], p[1], p[2], p[3], p[4]:
++        resp = client.get("/v1/conversations/c1/export?export_format=json", headers=H)
++
++    history = json.loads(resp.content)["history"]
++    assert not history[0].get("thoughts")
++    assert history[1]["thoughts"]
++    assert conversation.history[0].thoughts
++
++
++def test_docx_export_and_single_message_export_receive_stripped_conversation(client, conversation):
++    p = _export_patches(conversation)
++    seen = []
++
++    def fake_exporter(**kwargs):
++        seen.append(kwargs["conversation"])
++        svc = MagicMock(content_type="application/octet-stream", filename="f.docx")
++        svc.run.return_value = iter([b"ok"])
++        svc.export_single_message.return_value = iter([b"ok"])
++        return svc
++
++    with p[0], p[1], p[2], p[3], p[4], patch(f"{R}.MessageExporter", side_effect=fake_exporter):
++        client.get("/v1/conversations/c1/export?export_format=docx", headers=H)
++        client.get("/v1/conversations/c1/history/0/0/export?export_format=docx", headers=H)
++
++    assert len(seen) == 2
++    for conv in seen:
++        assert not conv.history[0].thoughts
++        assert conv.history[1].thoughts
++    assert conversation.history[0].thoughts
++
++
++MUTATIONS = [
++    ("delete", "/v1/conversations/c1/history/0", "remove_conversation_history_index", None),
++    (
++        "put",
++        "/v1/conversations/c1/history/1",
++        "update_conversation_ai_message",
++        {"message": "edited", "history_index": 1},
++    ),
++    ("put", "/v1/conversations/c1", "update_conversation", {"name": "renamed"}),
++]
++
++
++def _call_mutation(client, method, url, service_method, payload, conversation):
++    with (
++        patch(f"{R}.Conversation.get_by_id", return_value=conversation),
++        patch(f"{R}.Ability.can", return_value=True),
++        patch(f"{R}.ConversationService.{service_method}", return_value=conversation),
++        patch.object(Conversation, "update") as update,
++    ):
++        resp = client.request(method, url, headers=H, json=payload)
++    return resp, update
++
++
++@pytest.mark.parametrize("method,url,service_method,payload", MUTATIONS)
++def test_mutation_response_strips_thoughts_but_stored_conversation_keeps_them(
++    client, conversation, method, url, service_method, payload
++):
++    with patch(VIS, side_effect=_lookup({HIDDEN})):
++        resp, update = _call_mutation(client, method, url, service_method, payload, conversation)
++
++    assert resp.status_code == 200, resp.text
++    history = resp.json()["history"]
++    assert history[0]["thoughts"] == []
++    assert history[1]["thoughts"][0]["message"] == "secret output"
++    update.assert_not_called()
++    assert conversation.history[0].thoughts[0].message == "secret output"
++
++
++@pytest.mark.parametrize("method,url,service_method,payload", MUTATIONS)
++def test_mutation_response_unchanged_when_flag_off(client, conversation, method, url, service_method, payload):
++    with patch(VIS, side_effect=_lookup(set())):
++        resp, _ = _call_mutation(client, method, url, service_method, payload, conversation)
++
++    assert resp.status_code == 200, resp.text
++    assert all(m["thoughts"] for m in resp.json()["history"])
+diff --git a/tests/codemie/rest_api/routers/test_files.py b/tests/codemie/rest_api/routers/test_files.py
+index ba4ae83fd..48afe2197 100644
+--- a/tests/codemie/rest_api/routers/test_files.py
++++ b/tests/codemie/rest_api/routers/test_files.py
+@@ -1359,6 +1359,9 @@ def test_get_shared_conversation_exposes_share_token(mocker):
+     mock_conv = mocker.Mock()
+     mock_conv.id = "conv-1"
+     mock_conv.assistant_ids = []
++    mock_conv.history = []
++    mock_conv.initial_assistant_id = None
++    mock_conv.model_copy.return_value = mock_conv
+ 
+     mocker.patch(
+         "codemie.service.share_conversation_service.SharedConversation.get_by_fields",
+@@ -1412,6 +1415,8 @@ def _shared_conversation_with_history(mocker, history):
+     mock_conv = mocker.Mock()
+     mock_conv.id = "conv-1"
+     mock_conv.assistant_ids = []
++    mock_conv.initial_assistant_id = None
++    mock_conv.model_copy.return_value = mock_conv
+     mock_conv.history = history
+     return mock_conv
+ 
+diff --git a/tests/codemie/rest_api/routers/test_hide_tool_outputs_e2e.py b/tests/codemie/rest_api/routers/test_hide_tool_outputs_e2e.py
+new file mode 100644
+index 000000000..7181fdd80
+--- /dev/null
++++ b/tests/codemie/rest_api/routers/test_hide_tool_outputs_e2e.py
+@@ -0,0 +1,177 @@
++"""End-to-end acceptance for assistant-level hide_tool_outputs: multi-tool runs, regression, round trip."""
++
++import asyncio
++import json
++from types import SimpleNamespace
++from unittest.mock import MagicMock, patch
++
++import pytest
++from fastapi.testclient import TestClient
++from starlette.responses import StreamingResponse
++
++import codemie.rest_api.routers.conversation as conversation_router
++from codemie.chains.base import Thought
++from codemie.core.models import AssistantChatRequest
++from codemie.rest_api.main import app
++from codemie.rest_api.models.assistant import Assistant
++from codemie.rest_api.models.conversation import Conversation, GeneratedMessage
++from codemie.rest_api.routers.assistant import _ask_assistant
++from codemie.rest_api.security.user import User
++
++R = "codemie.rest_api.routers.conversation"
++VIS = "codemie.service.assistant.tool_output_visibility.Assistant.get_by_ids_no_permission_check"
++ASSISTANT_ID = "assistant-123"
++
++
++def _line(**kwargs) -> str:
++    return json.dumps(kwargs) + "\n"
++
++
++def _run_chunks() -> list[str]:
++    """A multi-toolkit run: tool thoughts, a2ui, agent/execution errors, text, and a final chunk with tool_errors."""
++    return [
++        _line(thought={"id": "t1", "author_name": "Jira", "message": "jira secret"}),
++        _line(thought={"id": "t2", "author_name": "Git", "message": "git secret"}),
++        _line(thought={"id": "t3", "author_name": "Confluence", "message": "wiki secret"}),
++        _line(a2ui={"component": "card"}),
++        _line(generated_chunk="Hello "),
++        _line(thought={"id": "t4"}, agent_error={"message": "agent failed"}),
++        _line(execution_error={"message": "exec failed"}),
++        _line(generated_chunk="world"),
++        _line(
++            last=True,
++            generated="Hello world",
++            thought={"id": "t5", "message": "final tool detail"},
++            debug={"prompt": "secret"},
++            tool_errors=[{"tool": "Jira", "status": 401}],
++        ),
++    ]
++
++
++def _assistant(hide: bool | None, toolkits: int = 2) -> MagicMock:
++    assistant = MagicMock(spec=Assistant)
++    assistant.id = ASSISTANT_ID
++    assistant.project = "test-project"
++    assistant.toolkits = [MagicMock() for _ in range(toolkits)]
++    assistant.hide_tool_outputs = hide
++    return assistant
++
++
++def _ask(assistant, user, chunks, **kwargs):
++    handler = MagicMock()
++    handler.process_request.return_value = StreamingResponse(iter(chunks))
++    raw_request = MagicMock(state=MagicMock(uuid="req-1"))
++    with (
++        patch("codemie.rest_api.routers.assistant.assistant_user_interaction_service.record_usage"),
++        patch("codemie.rest_api.routers.assistant.request_summary_manager.create_request_summary"),
++        patch("codemie.rest_api.routers.assistant.Ability") as ability,
++        patch("codemie.rest_api.routers.assistant.GuardrailService.apply_guardrails_for_entity") as guard,
++        patch("codemie.rest_api.routers.assistant.get_request_handler", return_value=handler),
++    ):
++        ability.return_value.can.return_value = True
++        guard.return_value = ("hi", None)
++        resp = _ask_assistant(assistant, raw_request, AssistantChatRequest(text="hi"), user, MagicMock(), **kwargs)
++
++    async def _collect():
++        return [json.loads(c) async for c in resp.body_iterator]
++
++    return asyncio.run(_collect())
++
++
++@pytest.fixture
++def user():
++    return MagicMock(spec=User)
++
++
++def test_multi_tool_assistant_on_shows_only_final_response(user):
++    out = _ask(_assistant(True, toolkits=3), user, _run_chunks())
++
++    # pure-thought chunks are dropped; the agent_error chunk survives with its thought removed
++    assert out == [
++        {"a2ui": {"component": "card"}},
++        {"generated_chunk": "Hello "},
++        {"thought": None, "agent_error": {"message": "agent failed"}},
++        {"execution_error": {"message": "exec failed"}},
++        {"generated_chunk": "world"},
++        {"last": True, "generated": "Hello world", "thought": None, "debug": None, "tool_errors": None},
++    ]
++    assert "secret" not in json.dumps(out)
++
++
++@pytest.mark.parametrize("flag", [None, False])
++def test_existing_assistant_without_flag_behaves_as_before(user, flag):
++    # None mirrors an assistant whose column defaulted / was never set
++    chunks = _run_chunks()
++    out = _ask(_assistant(flag), user, chunks)
++
++    assert out == [json.loads(c) for c in chunks]
++
++
++def test_creator_also_hidden():
++    creator = MagicMock(spec=User)
++    creator.id = "creator-1"
++    creator.username = "creator"
++    assistant = _assistant(True)
++    assistant.created_by = SimpleNamespace(id="creator-1", username="creator")
++
++    out = _ask(assistant, creator, _run_chunks())
++
++    assert all(c.get("thought") is None for c in out)
++    assert out[-1]["tool_errors"] is None and out[-1]["debug"] is None
++    assert out[-1]["generated"] == "Hello world"
++
++
++def test_conversation_level_setting_cannot_reenable(user):
++    # client explicitly asks for tool errors; the assistant-level flag still wins
++    out = _ask(_assistant(True), user, _run_chunks(), include_tool_errors=True)
++
++    assert all(c.get("thought") is None for c in out)
++    assert out[-1]["tool_errors"] is None
++    assert out[-1]["debug"] is None
++    assert out[-1]["generated"] == "Hello world"
++
++
++def test_on_then_off_round_trip_persists_full_thoughts(user):
++    client = TestClient(app)
++    app.dependency_overrides[conversation_router.authenticate] = lambda: user
++    try:
++        # 1) ask with ON: live egress is stripped while the source of truth (what gets persisted) is untouched
++        source = _run_chunks()
++        live = _ask(_assistant(True), user, source)
++        assert all(c.get("thought") is None for c in live)
++        stored_thoughts = [
++            Thought(**json.loads(c)["thought"])
++            for c in source
++            if json.loads(c).get("thought", {}) and "message" in json.loads(c)["thought"]
++        ]
++        assert len(stored_thoughts) == 4  # full thoughts remain in the stored stream
++
++        conversation = Conversation(
++            id="c1",
++            conversation_id="c1",
++            name="Conv",
++            initial_assistant_id=ASSISTANT_ID,
++            assistant_ids=[ASSISTANT_ID],
++            history=[
++                GeneratedMessage(
++                    message="Hello world", role="Assistant", assistant_id=ASSISTANT_ID, thoughts=stored_thoughts
++                )
++            ],
++        )
++
++        def _read(flagged: bool):
++            lookup = lambda ids: [SimpleNamespace(id=i, hide_tool_outputs=flagged) for i in ids]  # noqa: E731
++            with (
++                patch(f"{R}.Conversation.find_by_id", return_value=conversation),
++                patch(f"{R}.Ability.can", return_value=True),
++                patch(f"{R}.Assistant.get_by_ids", return_value=[]),
++                patch(VIS, side_effect=lookup),
++            ):
++                return client.get("/v1/conversations/c1", headers={"Authorization": "Bearer t"}).json()
++
++        # 2) flag ON: read path strips; 3) flip OFF: same stored history now returns full thoughts
++        assert _read(True)["history"][0]["thoughts"] == []
++        restored = _read(False)["history"][0]["thoughts"]
++        assert [t["message"] for t in restored] == ["jira secret", "git secret", "wiki secret", "final tool detail"]
++    finally:
++        app.dependency_overrides = {}
+diff --git a/tests/codemie/service/assistant/test_assistant_version_hide_tool_outputs.py b/tests/codemie/service/assistant/test_assistant_version_hide_tool_outputs.py
+new file mode 100644
+index 000000000..5a78e9b4d
+--- /dev/null
++++ b/tests/codemie/service/assistant/test_assistant_version_hide_tool_outputs.py
+@@ -0,0 +1,102 @@
++# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++"""Versioning of the assistant-level hide_tool_outputs flag."""
++
++from unittest.mock import patch
++
++from codemie.rest_api.models.assistant import Assistant, AssistantConfiguration, AssistantRequest
++from codemie.rest_api.security.user import User
++from codemie.service.assistant.assistant_version_compare_service import AssistantVersionCompareService
++from codemie.service.assistant.assistant_version_service import AssistantVersionService
++
++VERSION_SERVICE = 'codemie.service.assistant.assistant_version_service'
++COMPARE_SERVICE = 'codemie.service.assistant.assistant_version_compare_service'
++
++
++def _config(hide: bool, version: int = 1) -> AssistantConfiguration:
++    return AssistantConfiguration(
++        assistant_id="assistant-123",
++        version_number=version,
++        description="d",
++        system_prompt="p",
++        llm_model_type="gpt-4o",
++        hide_tool_outputs=hide,
++    )
++
++
++def _user() -> User:
++    return User(id="u", username="u", name="U", project_names=["demo"])
++
++
++def test_flag_only_edit_counts_as_configuration_change():
++    request = AssistantRequest(name="a", system_prompt="p", llm_model_type="gpt-4o", hide_tool_outputs=True)
++    with patch(f'{COMPARE_SERVICE}.AssistantConfiguration') as config_cls:
++        config_cls.get_current_version.return_value = _config(hide=False)
++        assert AssistantVersionCompareService.has_configuration_changes("assistant-123", request) is True
++
++
++def test_unchanged_flag_is_not_a_configuration_change():
++    request = AssistantRequest(name="a", system_prompt="p", llm_model_type="gpt-4o", hide_tool_outputs=True)
++    with patch(f'{COMPARE_SERVICE}.AssistantConfiguration') as config_cls:
++        config_cls.get_current_version.return_value = _config(hide=True)
++        assert AssistantVersionCompareService.has_configuration_changes("assistant-123", request) is False
++
++
++def _create_new_version(assistant: Assistant, request: AssistantRequest) -> AssistantConfiguration:
++    with (
++        patch.object(AssistantConfiguration, 'get_latest_version_number', return_value=1),
++        patch.object(AssistantConfiguration, 'save'),
++        patch.object(Assistant, 'update'),
++    ):
++        return AssistantVersionService.create_new_version(assistant=assistant, request=request, user=_user())
++
++
++def test_new_version_carries_flag_and_partial_update_keeps_it():
++    assistant = Assistant(id="assistant-123", name="a", description="d", system_prompt="p", hide_tool_outputs=True)
++
++    omitted = AssistantRequest(name="a", system_prompt="p", llm_model_type="gpt-4o")
++    assert "hide_tool_outputs" not in omitted.model_fields_set
++    assert _create_new_version(assistant, omitted).hide_tool_outputs is True
++
++    explicit_off = AssistantRequest(name="a", system_prompt="p", llm_model_type="gpt-4o", hide_tool_outputs=False)
++    assert _create_new_version(assistant, explicit_off).hide_tool_outputs is False
++
++    assistant.hide_tool_outputs = False
++    explicit_on = AssistantRequest(name="a", system_prompt="p", llm_model_type="gpt-4o", hide_tool_outputs=True)
++    assert _create_new_version(assistant, explicit_on).hide_tool_outputs is True
++
++
++def test_initial_version_carries_flag():
++    assistant = Assistant(id="assistant-123", name="a", description="d", system_prompt="p")
++    request = AssistantRequest(name="a", system_prompt="p", llm_model_type="gpt-4o", hide_tool_outputs=True)
++    with patch.object(AssistantConfiguration, 'save'):
++        config = AssistantVersionService.create_initial_version(assistant=assistant, request=request, user=_user())
++    assert config.hide_tool_outputs is True
++
++
++def test_rollback_restores_flag_from_target_config():
++    assistant = Assistant(id="assistant-123", name="a", description="d", system_prompt="p", hide_tool_outputs=False)
++    assistant.version_count = 3
++    target = _config(hide=True, version=1)
++    with (
++        patch.object(AssistantVersionService, 'get_version', return_value=target),
++        patch.object(AssistantConfiguration, 'save'),
++        patch.object(Assistant, 'update'),
++    ):
++        new_config = AssistantVersionService.rollback_to_version(
++            assistant=assistant, target_version_number=1, user=_user()
++        )
++    assert new_config.hide_tool_outputs is True
++    assert assistant.hide_tool_outputs is True
+diff --git a/tests/codemie/service/assistant/test_assistant_version_migration_service.py b/tests/codemie/service/assistant/test_assistant_version_migration_service.py
+index 834080f6f..5ae265712 100644
+--- a/tests/codemie/service/assistant/test_assistant_version_migration_service.py
++++ b/tests/codemie/service/assistant/test_assistant_version_migration_service.py
+@@ -512,3 +512,20 @@ class TestIntegration:
+         assert calls[0][1]['version_number'] == 1
+         assert calls[1][1]['version_number'] == 2
+         assert calls[2][1]['version_number'] == 3
++
++
++class TestHideToolOutputsMigration:
++    """hide_tool_outputs must survive migration of a legacy unversioned assistant."""
++
++    @pytest.mark.parametrize("hide", [True, False])
++    @patch('codemie.service.assistant.assistant_version_migration_service.AssistantConfiguration')
++    def test_all_migration_paths_copy_hide_tool_outputs(self, mock_config_class, hide, mock_assistant_with_history):
++        mock_assistant_with_history.hide_tool_outputs = hide
++        history_entry = mock_assistant_with_history.system_prompt_history[0]
++
++        AssistantVersionMigrationService._create_single_version_from_current(mock_assistant_with_history)
++        AssistantVersionMigrationService._create_version_from_history(mock_assistant_with_history, 1, history_entry)
++        AssistantVersionMigrationService._create_version_from_current(mock_assistant_with_history, 2)
++
++        assert mock_config_class.call_count == 3
++        assert [c.kwargs['hide_tool_outputs'] for c in mock_config_class.call_args_list] == [hide] * 3
+diff --git a/tests/codemie/service/assistant/test_tool_output_visibility.py b/tests/codemie/service/assistant/test_tool_output_visibility.py
+new file mode 100644
+index 000000000..066510127
+--- /dev/null
++++ b/tests/codemie/service/assistant/test_tool_output_visibility.py
+@@ -0,0 +1,210 @@
++import asyncio
++import json
++from types import SimpleNamespace
++from unittest.mock import patch
++
++import pytest
++from starlette.responses import StreamingResponse
++
++from codemie.chains.base import Thought
++from codemie.core.errors import ErrorCode, ToolErrorDetails
++from codemie.core.models import BaseModelResponse, ChatRole
++from codemie.rest_api.models.conversation import GeneratedMessage
++from codemie.service.assistant import tool_output_visibility as tov
++
++A = "codemie.service.assistant.tool_output_visibility.Assistant.get_by_ids_no_permission_check"
++
++
++def line(**kw):
++    return json.dumps(kw) + "\n"
++
++
++def test_is_hidden():
++    assert tov.is_hidden(SimpleNamespace(hide_tool_outputs=True)) is True
++    assert tov.is_hidden(SimpleNamespace(hide_tool_outputs=False)) is False
++    assert tov.is_hidden(SimpleNamespace()) is False
++
++
++def test_thought_only_chunk_is_dropped():
++    assert tov.strip_chunk(line(thought={"id": "1", "message": "x"}, generated_chunk=None, last=False)) is None
++
++
++def test_text_chunk_loses_thought_and_debug_but_keeps_text():
++    out = json.loads(tov.strip_chunk(line(generated_chunk="hi", thought={"id": "1"}, debug={"a": 1})))
++    assert out["generated_chunk"] == "hi" and out["thought"] is None and out["debug"] is None
++
++
++def test_final_chunk_nulls_tool_errors_keeps_agent_and_execution_error():
++    out = json.loads(
++        tov.strip_chunk(
++            line(
++                last=True,
++                generated="done",
++                tool_errors=[{"e": 1}],
++                agent_error={"m": "boom"},
++                execution_error="E",
++            )
++        )
++    )
++    assert out["tool_errors"] is None and out["agent_error"] == {"m": "boom"} and out["execution_error"] == "E"
++
++
++@pytest.mark.parametrize("key,val", [("a2ui", {"v": 1}), ("tool_call_pending", {"id": "t"})])
++def test_a2ui_and_tool_call_pending_chunks_survive_even_with_thought(key, val):
++    out = json.loads(tov.strip_chunk(line(**{key: val}, thought={"id": "1"})))
++    assert out[key] == val and out["thought"] is None
++
++
++def test_security_error_message_moves_to_generated():
++    chunk = line(last=True, generated="", thought={"id": "s", "message": "Blocked by policy", "error": True})
++    out = json.loads(tov.strip_chunk(chunk))
++    assert out["generated"] == "Blocked by policy" and out["thought"] is None
++
++
++def test_security_error_on_non_final_chunk_is_also_moved_to_generated():
++    # on_llm_error can emit the error thought mid-stream with last=False; it must still surface.
++    chunk = line(
++        last=False,
++        generated_chunk="partial",
++        thought={"id": "s", "message": "Blocked by policy", "error": True},
++    )
++    out = json.loads(tov.strip_chunk(chunk))
++    assert out["generated"] == "Blocked by policy" and out["thought"] is None and out["generated_chunk"] == "partial"
++
++
++def test_unicode_line_separator_inside_json_string_does_not_split_line():
++    raw = '{"thought": {"id": "1", "message": "a\u2028b\u0085c"}, "generated_chunk": "hi"}\n'
++    raw = raw.replace("\\u2028", "\u2028").replace("\\u0085", "\u0085")
++    assert "\u2028" in raw
++    out = json.loads(tov.strip_chunk(raw))
++    assert out["thought"] is None and out["generated_chunk"] == "hi"
++    assert tov.strip_chunk(raw.replace('"generated_chunk": "hi"', '"generated_chunk": null')) is None
++
++
++def test_non_json_line_is_dropped_and_bytes_handled():
++    # Unparseable lines can't be verified free of hidden content, so they must not pass through.
++    assert tov.strip_chunk("not json\n") is None
++    out = tov.strip_chunk(line(generated_chunk="x", thought={"id": "1"}).encode())
++    assert isinstance(out, bytes)
++
++
++def test_multiple_lines_in_one_chunk():
++    chunk = line(thought={"id": "1"}) + line(generated_chunk="a")
++    out = tov.strip_chunk(chunk)
++    assert out.count("\n") == 1 and json.loads(out)["generated_chunk"] == "a"
++
++
++def test_strip_stream_sync_and_async():
++    chunks = [line(thought={"id": "1"}), line(generated_chunk="a")]
++    assert len(list(tov.strip_stream(iter(chunks)))) == 1
++
++    async def agen():
++        for c in chunks:
++            yield c
++
++    async def collect():
++        return [c async for c in tov.strip_stream(agen())]
++
++    assert len(asyncio.run(collect())) == 1
++
++
++def _msg(assistant_id, thoughts=("t",)):
++    return GeneratedMessage(
++        role=ChatRole.ASSISTANT,
++        message="m",
++        assistant_id=assistant_id,
++        thoughts=[Thought(id=t) for t in thoughts],
++    )
++
++
++def test_strip_history_checks_each_message_assistant_and_does_not_mutate():
++    history = [_msg("hidden"), _msg("open"), _msg(None)]
++    with patch(
++        A,
++        return_value=[
++            SimpleNamespace(id="hidden", hide_tool_outputs=True),
++            SimpleNamespace(id="open", hide_tool_outputs=False),
++        ],
++    ) as lookup:
++        out = tov.strip_history(history, default_assistant_id="hidden")
++    assert [bool(m.thoughts) for m in out] == [False, True, False]  # None falls back to default
++    assert all(m.thoughts for m in history)  # input untouched
++    lookup.assert_called_once()  # one query for the whole history
++
++
++def test_strip_history_returns_new_list_when_nothing_hidden():
++    history = [_msg("open")]
++    with patch(A, return_value=[SimpleNamespace(id="open", hide_tool_outputs=False)]):
++        assert tov.strip_history(history, None) is not history
++    assert tov.strip_history([], None) is not None
++
++
++def test_strip_history_none_does_not_raise():
++    assert tov.strip_history(None, None) == []
++
++
++def test_strip_history_deleted_assistant_hides_thoughts():
++    # Fail closed: an id that no longer resolves (e.g. deleted) stays hidden rather than
++    # silently re-exposing history it was set to hide.
++    with patch(A, return_value=[]):
++        out = tov.strip_history([_msg("gone")], default_assistant_id=None)
++    assert out[0].thoughts == []
++
++
++def test_strip_history_uses_unfiltered_lookup_not_permission_filtered():
++    with (
++        patch(A, return_value=[]) as unfiltered,
++        patch("codemie.service.assistant.tool_output_visibility.Assistant.get_by_ids") as filtered,
++    ):
++        tov.strip_history([_msg("x")], None)
++    unfiltered.assert_called_once()
++    filtered.assert_not_called()
++
++
++def test_is_hidden_by_id_none_does_not_query():
++    with patch(A) as lookup:
++        assert tov.is_hidden_by_id(None) is False
++    lookup.assert_not_called()
++
++
++def test_is_hidden_by_id_unknown_hidden_and_open():
++    # Fail closed: an id that doesn't resolve (e.g. deleted) is treated as hidden.
++    with patch(A, return_value=[]):
++        assert tov.is_hidden_by_id("missing") is True
++    with patch(A, return_value=[SimpleNamespace(id="h", hide_tool_outputs=True)]):
++        assert tov.is_hidden_by_id("h") is True
++    with patch(A, return_value=[SimpleNamespace(id="o", hide_tool_outputs=False)]):
++        assert tov.is_hidden_by_id("o") is False
++
++
++def test_apply_to_response_noop_when_not_hidden():
++    sentinel = object()
++    assert tov.apply_to_response(SimpleNamespace(hide_tool_outputs=False), sentinel) is sentinel
++
++
++def test_apply_to_response_sync_base_model_response():
++    resp = BaseModelResponse(
++        generated="answer",
++        thoughts=[Thought(id="1")],
++        tool_errors=[ToolErrorDetails(error_code=ErrorCode.TOOL_NOT_FOUND, message="bad", tool_name="t")],
++    )
++    out = tov.apply_to_response(SimpleNamespace(hide_tool_outputs=True), resp)
++    assert out.thoughts == [] and not out.tool_errors and out.generated == resp.generated
++    assert resp.thoughts and resp.tool_errors  # original untouched
++
++
++def test_apply_to_response_streaming_wraps_iterator():
++    resp = StreamingResponse(iter([line(thought={"id": "1"}), line(generated_chunk="a")]))
++    out = tov.apply_to_response(SimpleNamespace(hide_tool_outputs=True), resp)
++
++    async def collect():
++        return [c async for c in out.body_iterator]  # Starlette wraps sync iterators as async
++
++    assert len(asyncio.run(collect())) == 1
++
++
++def test_apply_to_response_unknown_type_logs_error_and_passes_through():
++    sentinel = object()
++    with patch.object(tov, "logger") as log:
++        assert tov.apply_to_response(SimpleNamespace(hide_tool_outputs=True), sentinel) is sentinel
++    log.error.assert_called_once()
+diff --git a/tests/codemie/service/test_share_conversation_hide_tool_outputs.py b/tests/codemie/service/test_share_conversation_hide_tool_outputs.py
+new file mode 100644
+index 000000000..4ebaaf61c
+--- /dev/null
++++ b/tests/codemie/service/test_share_conversation_hide_tool_outputs.py
+@@ -0,0 +1,91 @@
++# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++from datetime import datetime
++from types import SimpleNamespace
++from unittest.mock import MagicMock, patch
++
++from codemie.chains.base import Thought
++from codemie.rest_api.models.conversation import Conversation, GeneratedMessage
++from codemie.rest_api.models.share.shared_conversation import SharedConversation
++from codemie.rest_api.security.user import User
++from codemie.service.share_conversation_service import ShareConversationService
++
++HIDDEN = "assistant-hidden"
++VIS = "codemie.service.assistant.tool_output_visibility.Assistant.get_by_ids_no_permission_check"
++SVC = "codemie.service.share_conversation_service"
++
++
++def test_shared_conversation_strips_for_viewer_without_read_access():
++    viewer = User(id="viewer", username="v", name="V")
++    conversation = Conversation(
++        id="c1",
++        conversation_id="c1",
++        name="Conv",
++        initial_assistant_id=HIDDEN,
++        assistant_ids=[HIDDEN],
++        history=[
++            GeneratedMessage(
++                message="answer",
++                role="Assistant",
++                assistant_id=HIDDEN,
++                thoughts=[Thought(id="t1", author_name="Tool", message="secret")],
++            )
++        ],
++    )
++    shared = MagicMock(
++        spec=SharedConversation,
++        conversation_id="c1",
++        shared_by_user_name="Owner",
++        created_at=datetime(2026, 1, 1),
++        access_count=0,
++    )
++    # Viewer has no READ on the assistant -> permission-filtered lookup returns nothing,
++    # but the unfiltered policy lookup still sees the flag.
++    with (
++        patch(f"{SVC}.SharedConversation.get_by_fields", return_value=shared),
++        patch(f"{SVC}.Conversation.find_by_id", return_value=conversation),
++        patch(f"{SVC}.Assistant.get_by_ids", return_value=[]),
++        patch(VIS, return_value=[SimpleNamespace(id=HIDDEN, hide_tool_outputs=True)]),
++        patch(f"{SVC}.ConversationMonitoringService.send_share_conversation_metric"),
++    ):
++        result = ShareConversationService.get_shared_conversation("tok", viewer)
++
++    assert not result["conversation"].history[0].thoughts
++    assert conversation.history[0].thoughts  # loaded object not mutated
++
++
++def test_shared_conversation_exposes_flag_in_assistant_data():
++    viewer = User(id="viewer", username="v", name="V")
++    conversation = Conversation(id="c1", conversation_id="c1", name="Conv", assistant_ids=[HIDDEN], history=[])
++    shared = MagicMock(
++        spec=SharedConversation,
++        conversation_id="c1",
++        shared_by_user_name="Owner",
++        created_at=datetime(2026, 1, 1),
++        access_count=0,
++    )
++    assistant = MagicMock(
++        id=HIDDEN, icon_url=None, context=[], conversation_starters=[], toolkits=[], hide_tool_outputs=True
++    )
++    assistant.name = "A"
++    with (
++        patch(f"{SVC}.SharedConversation.get_by_fields", return_value=shared),
++        patch(f"{SVC}.Conversation.find_by_id", return_value=conversation),
++        patch(f"{SVC}.Assistant.get_by_ids", return_value=[assistant]),
++        patch(f"{SVC}.ConversationMonitoringService.send_share_conversation_metric"),
++    ):
++        result = ShareConversationService.get_shared_conversation("tok", viewer)
++
++    assert result["conversation"].assistant_data[0].hide_tool_outputs is True
+diff --git a/tests/codemie/service/test_share_conversation_service.py b/tests/codemie/service/test_share_conversation_service.py
+index a7b1feaf4..abe3dce8e 100644
+--- a/tests/codemie/service/test_share_conversation_service.py
++++ b/tests/codemie/service/test_share_conversation_service.py
+@@ -51,6 +51,9 @@ class TestShareConversationService:
+         mock_conv.id = "test_conversation_id"
+         mock_conv.user_id = "test_user_id"
+         mock_conv.assistant_ids = ["test_assistant_id"]
++        mock_conv.history = []
++        mock_conv.initial_assistant_id = "test_assistant_id"
++        mock_conv.model_copy.return_value = mock_conv
+         return mock_conv
+ 
+     @pytest.fixture
+@@ -62,6 +65,7 @@ class TestShareConversationService:
+         mock_assistant.icon_url = "test_icon_url"
+         mock_assistant.context = ["Test context"]  # Context should be a list, not a string
+         mock_assistant.conversation_starters = ["Test starter"]
++        mock_assistant.hide_tool_outputs = False
+ 
+         mock_toolkit = MagicMock()
+         mock_tool = MagicMock()

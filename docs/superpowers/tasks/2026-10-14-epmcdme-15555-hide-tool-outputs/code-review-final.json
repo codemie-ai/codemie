@@ -1,0 +1,80 @@
+{
+  "decision": "approve",
+  "rationale": "Re-review after fixes. CR-002 (null assistant_ids guarded with `or []` in streaming.py), CR-003 (test_strip_response_keeps_only_reduced_interrupted_thoughts) and CR-004 (workflow-exemption tests in test_tool_output_visibility.py and routers/test_conversation.py) are resolved in f83d60a41. 2fcb76f0a stops tool error text leaking through hidden-output streams and 5f8eade8f leaves a single Alembic head. CR-001 (resume ignores a version-pinned hide decision) is an accepted, documented gap: it is stated as KNOWN GAP in the _ask_assistant_resume docstring and needs a pinned version with hide ON and the master flag OFF. It is not fixed by this MR.",
+  "confidence": "medium",
+  "risk_flags": [
+    "security"
+  ],
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "All authored commit subjects in the range use the EPMCDME-15555: Description format; the only exceptions are auto-generated 'Merge branch' commits, which the squash-merge default replaces"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "New concern placed in its own module tool_output_visibility.py (210 lines) rather than appended to large files; additions to the 1000+ line models are 1-3 lines; license headers present on all new .py files"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "No credential logging, auth bypass or lossy input parsing seen; the only logger call logs the response type name; changes strip tool outputs fail-closed on egress paths"
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/assistant/execution.py",
+      "line": 269,
+      "title": "Resume ignores version-pinned hide decision",
+      "problem": "_ask_assistant_resume applies only the master assistant's hide_tool_outputs flag. ToolCallResumeRequest has no version and resume skips _prepare_assistant_for_execution, so a turn paused under a pinned version that hides outputs is resumed unhidden if the master flag is off. The docstring calls this a KNOWN GAP and marks it out of scope with no ticket.",
+      "impact": "Resumed turn streams full tool outputs that the pinned version was configured to hide, the same bypass _effective_hide_tool_outputs closes on the other ask paths. Reachability not fully confirmed (needs pinned version with hide on and master off).",
+      "recommendation": "Persist the effective hide decision (or pinned version) in the checkpoint when the tool call is paused and apply it on resume; otherwise link a tracked ticket and add a test pinning the current behavior.",
+      "resolution": "accepted-gap: documented as KNOWN GAP in execution.py:269; not fixed in this MR"
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/conversation/streaming.py",
+      "line": 150,
+      "title": "Null assistant_ids breaks live stream",
+      "problem": "conversation.assistant_ids + [conversation.initial_assistant_id] raises TypeError when assistant_ids is None; the column is Optional[List[str]] (models/conversation.py:263).",
+      "impact": "The live conversation stream endpoint returns 500 for a non-workflow conversation with a NULL assistant_ids. Reachability unconfirmed: the default is an empty list, so only legacy or null rows are affected.",
+      "recommendation": "Use (conversation.assistant_ids or []) + [conversation.initial_assistant_id].",
+      "resolution": "fixed in f83d60a41"
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/assistant/tool_output_visibility.py",
+      "line": 141,
+      "title": "No test for strip_response interrupted thoughts",
+      "problem": "The non-stream path (strip_response / apply_to_response on BaseModelResponse) with an interrupted thought is untested. test_apply_to_response_sync_base_model_response uses a non-interrupted Thought; interrupted tests cover only strip_chunk and strip_history.",
+      "impact": "Reverting thoughts to [] (dropping the Allow/Deny approval thought) or leaking metadata/children on ask and resume responses would pass every test.",
+      "recommendation": "Add a test calling strip_response with BaseModelResponse(thoughts=[Thought(id='p', interrupted=True, input_text='{}', metadata={'x':1}), Thought(id='plain')]) asserting only the reduced interrupted thought remains.",
+      "resolution": "fixed in f83d60a41"
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/assistant/tool_output_visibility.py",
+      "line": 193,
+      "title": "Workflow exemption guard untested",
+      "problem": "The is_workflow_conversation exemption in strip_history_for_conversation and in get_conversation_stream has no test; all hide_tool_outputs fixtures use plain non-workflow Conversations.",
+      "impact": "Removing either guard (which would feed WorkflowConfig ids into the assistant lookup or strip workflow output) passes every test.",
+      "recommendation": "Add tests with Conversation(is_workflow_conversation=True) and a lookup flagging its ids hidden, asserting history is untouched and the stream is not wrapped by strip_stream.",
+      "resolution": "fixed in f83d60a41"
+    }
+  ]
+}

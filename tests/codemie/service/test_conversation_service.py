@@ -718,6 +718,7 @@ def test_build_new_conversation_with_assistant(
     mock_assistant.enable_image_generation = True
     mock_assistant.image_generation_model = "gpt-image-1"
     mock_assistant.project = "test-project"
+    mock_assistant.hide_tool_outputs = False
 
     mock_get_by_ids.return_value = [mock_assistant]
 
@@ -746,6 +747,29 @@ def test_build_new_conversation_with_assistant(
     assert detail.tools[1].label == "Jira"
     assert result.enable_image_generation is True
     assert result.image_generation_model == "gpt-image-1"
+    assert detail.hide_tool_outputs is False
+
+
+@patch("codemie.rest_api.models.assistant.Assistant.get_by_ids")
+def test_build_new_conversation_propagates_hide_tool_outputs(mock_get_by_ids, mock_user):
+    mock_assistant = MagicMock()
+    mock_assistant.id = "asst-1"
+    mock_assistant.name = "Flagged"
+    mock_assistant.type = None
+    mock_assistant.icon_url = None
+    mock_assistant.context = []
+    mock_assistant.conversation_starters = []
+    mock_assistant.toolkits = []
+    mock_assistant.enable_image_generation = None
+    mock_assistant.image_generation_model = None
+    mock_assistant.project = "test-project"
+    mock_assistant.hide_tool_outputs = True
+
+    mock_get_by_ids.return_value = [mock_assistant]
+
+    result = ConversationService.build_new_conversation(user=mock_user, initial_assistant_id="asst-1")
+
+    assert result.assistant_data[0].hide_tool_outputs is True
 
 
 @patch(

@@ -51,6 +51,9 @@ class TestShareConversationService:
         mock_conv.id = "test_conversation_id"
         mock_conv.user_id = "test_user_id"
         mock_conv.assistant_ids = ["test_assistant_id"]
+        mock_conv.history = []
+        mock_conv.initial_assistant_id = "test_assistant_id"
+        mock_conv.model_copy.return_value = mock_conv
         return mock_conv
 
     @pytest.fixture
@@ -62,6 +65,7 @@ class TestShareConversationService:
         mock_assistant.icon_url = "test_icon_url"
         mock_assistant.context = ["Test context"]  # Context should be a list, not a string
         mock_assistant.conversation_starters = ["Test starter"]
+        mock_assistant.hide_tool_outputs = False
 
         mock_toolkit = MagicMock()
         mock_tool = MagicMock()

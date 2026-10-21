@@ -42,6 +42,7 @@ from codemie.rest_api.models.conversation import (
 from codemie.rest_api.routers.assistant._ask import (
     _ask_assistant,
     _ask_virtual_assistant,
+    _effective_hide_tool_outputs,
     _prepare_assistant_for_execution,
 )
 from codemie.rest_api.routers.assistant._shared import (
@@ -50,6 +51,7 @@ from codemie.rest_api.routers.assistant._shared import (
 from codemie.rest_api.routers.utils import check_user_can_access_assistant, get_assistant_by_id_or_raise
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
+from codemie.service.assistant.tool_output_visibility import apply_to_response
 from codemie.service.assistant_service import AssistantService
 from codemie.service.mcp.access_control import MCPAccessControlService
 from codemie.service.llm_service.llm_service import llm_service
@@ -193,6 +195,7 @@ async def ask_assistant_by_id(
         background_tasks,
         include_tool_errors,
         error_detail_level,
+        _effective_hide_tool_outputs(assistant, execution_assistant),
     )
     return result
 
@@ -262,11 +265,21 @@ def _ask_assistant_resume(
     user: User,
     background_tasks: BackgroundTasks,
 ):
+    """
+    KNOWN GAP: ToolCallResumeRequest carries no `version`, and resume intentionally skips
+    `_prepare_assistant_for_execution` (session context is reused as-is), so there is no pinned
+    execution_assistant here to combine via `_effective_hide_tool_outputs` like the other ask
+    paths. This hides using only the current master assistant's flag. If a turn was paused while
+    running under a pinned version with hide_tool_outputs=True and the master's own flag is later
+    turned off before resume, the resumed output would not be hidden. Fixing this requires
+    persisting the effective hide decision (or pinned version) in the checkpoint when the tool
+    call is first paused — out of scope here.
+    """
     from codemie.rest_api.handlers.assistant_handlers import get_request_handler
 
     request_uuid = raw_request.state.uuid
     handler = get_request_handler(assistant, user, request_uuid)
-    return handler.handle_tool_call_resume(request, raw_request)
+    return apply_to_response(assistant, handler.handle_tool_call_resume(request, raw_request))
 
 
 @router.post(
@@ -319,6 +332,7 @@ def ask_assistant_by_slug(
         background_tasks,
         include_tool_errors,
         error_detail_level,
+        _effective_hide_tool_outputs(assistant, execution_assistant),
     )
 
 

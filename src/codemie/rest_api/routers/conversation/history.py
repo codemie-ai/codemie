@@ -34,7 +34,7 @@ from codemie.rest_api.models.conversation import (
     UpsertHistoryRequest,
     UpsertHistoryResponse,
 )
-from codemie.rest_api.routers.conversation._common import CONVERSATION_NOT_FOUND_MSG
+from codemie.rest_api.routers.conversation._common import CONVERSATION_NOT_FOUND_MSG, _with_stripped_history
 from codemie.rest_api.routers.feedback import CONVERSATION_NOT_FOUND_MESSAGE, CONVERSATION_NOT_FOUND_HELP
 from codemie.rest_api.routers.utils import raise_access_denied, raise_forbidden
 from codemie.rest_api.security.authentication import admin_access_only, authenticate
@@ -72,7 +72,7 @@ def delete_conversation_history_by_index(
 
     updated_conversation = ConversationService.remove_conversation_history_index(conversation, history_index)
 
-    return updated_conversation
+    return _with_stripped_history(updated_conversation)
 
 
 @router.delete(
@@ -93,7 +93,7 @@ def delete_conversation_history(conversation_id: str, user: User = Depends(authe
 
     updated_conversation = ConversationService.clear_conversation_history(conversation)
 
-    return updated_conversation
+    return _with_stripped_history(updated_conversation)
 
 
 @router.put(
@@ -116,7 +116,7 @@ def update_conversation_history_by_index(
 
     updated_conversation = ConversationService.update_conversation_ai_message(conversation, history_index, request)
 
-    return updated_conversation
+    return _with_stripped_history(updated_conversation)
 
 
 @router.post(
@@ -289,7 +289,7 @@ def export_conversation_message(
 
     try:
         service = MessageExporter(
-            conversation=conversation,
+            conversation=_with_stripped_history(conversation),
             export_format=export_format,
             history_index=history_index,
             message_index=message_index,

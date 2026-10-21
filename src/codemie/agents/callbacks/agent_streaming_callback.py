@@ -402,7 +402,7 @@ class AgentStreamingCallback(StreamingStdOutCallbackHandler):
         if thought is None:
             return
         message = self._escape_message(str(error))
-        execution_error = _classify_execution_error(error)
+        execution_error = _classify_execution_error(error, from_tool=True)
         thought = storage.update_thought(
             run_id,
             message=message,

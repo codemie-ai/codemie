@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "generated": "2026-10-06T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 6, "label": "XXL" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 6, "label": "XXL" }
+  },
+  "total": 26,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 51,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Multi-repo changes with distinct content across 3 repos (codemie backend, codemie-ui, codemie-sdk). Backend adds a tool_output_visibility policy module, touches assistant/conversation models, routers, version/compare/migration services and share-conversation service. UI changes the assistant form, chat configuration, store and types. SDK changes cover Python SDK, Node SDK and the IaC converters/checksums, so the flag crosses shared contracts." },
+    { "dimension": "technical_risk", "reason": "The new policy module strips thought/debug/tool_errors from NDJSON streams, sync and async iterators, and from history, so it is security-sensitive. It has several edge cases: payload-bearing chunks must survive, a security error message must stay visible, and U+2028 line splitting must not leak. No exact precedent exists. An Alembic migration adds a non-null column to two tables with a server default, which can be rolled back. Extensive edge-case tests are included." },
+    { "dimension": "file_change_estimate", "reason": "51 files changed (1989 insertions, 11 deletions) across 3 repos, which is 16 or more. About 17 of the files are tests, and the rest are source files." },
+    { "dimension": "affected_layers", "reason": "Covers UI, API (routers), Service, DB (Alembic migration and models), and External/client contracts (Python and Node SDKs, IaC), across multiple codebases." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped: security-sensitive output filtering, with enumerated edge and error cases handled by the stream-stripping logic",
+    "Changes database schema: migration adds hide_tool_outputs to assistants and assistant_configurations",
+    "Multi-repo changes with distinct content across 3 repos - scope scored additively."
+  ],
+  "split_recommendation": null
+}

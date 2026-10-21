@@ -131,6 +131,32 @@ async def test_get_new_conversation_within_assistant_chat(user):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("hide_tool_outputs", [True, False])
+async def test_get_new_conversation_exposes_assistant_hide_tool_outputs(user, hide_tool_outputs):
+    assistant = Assistant(
+        id="asst-1",
+        name="Assistant One",
+        description="",
+        system_prompt="",
+        project="demo",
+        toolkits=[],
+        shared=True,
+        hide_tool_outputs=hide_tool_outputs,
+    )
+
+    with patch("codemie.rest_api.models.assistant.Assistant.get_by_ids", return_value=[assistant]):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.get(
+                "/v1/conversations/new?initial_assistant_id=asst-1",
+                headers={"Authorization": "Bearer testtoken"},
+            )
+
+    assert response.status_code == 200
+    assert response.json()["assistant_data"][0]["hide_tool_outputs"] is hide_tool_outputs
+
+
+@pytest.mark.asyncio
 async def test_get_conversation_by_id_includes_finished_at(user):
     conversation = Conversation(
         id="456",

@@ -35,6 +35,7 @@ from codemie.rest_api.routers.utils import raise_access_denied
 from codemie.utils.datetime_utils import get_timestamp_bounds
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
+from codemie.service.assistant.tool_output_visibility import strip_history_for_conversation
 from codemie.service.conversation_service import ConversationService
 from codemie.service.constants import (
     DEFAULT_HISTORY_ITEMS_PER_PAGE,
@@ -216,6 +217,7 @@ def _enrich_conversation_with_assistant_or_workflow_data(
             assistant_icon=a.icon_url,
             context=a.context,
             conversation_starters=a.conversation_starters,
+            hide_tool_outputs=a.hide_tool_outputs,
             tools=[Tool(name=tool.name, label=tool.label) for toolkit in a.toolkits for tool in toolkit.tools],
         )
         for a in assistants
@@ -271,6 +273,7 @@ def get_conversation_by_id(
         is_global = _use_global_models_for_conversation(conversation, user)
     if is_global:
         response.project = None
+    response.history = strip_history_for_conversation(conversation)
 
     response.pagination = pagination_data
     response.very_first_msg_at = very_first_msg_at

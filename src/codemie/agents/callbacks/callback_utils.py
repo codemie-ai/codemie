@@ -94,9 +94,18 @@ def _escape_callback_message(message: str) -> str:
     return text.replace("}{", "}_{")
 
 
-def _classify_execution_error(error: BaseException | str) -> str:
+def _classify_execution_error(error: BaseException | str, *, from_tool: bool = False) -> str:
+    """Label an error "guardrails" (a policy block raised by the LLM proxy) or "stacktrace".
+
+    Guardrail blocks are raised on LLM calls, never by tools. A tool error's free text is untrusted
+    (it can echo remote content), so it is never labelled "guardrails" - that label makes the stream
+    stripper surface the raw message for assistants that hide tool outputs.
+    """
+    if from_tool:
+        return "stacktrace"
     error_text = str(error).lower()
-    return "guardrails" if "content blocked" in error_text else "stacktrace"
+    is_guardrail_payload = '"error_type"' in error_text and '"guardrail"' in error_text
+    return "guardrails" if "content blocked" in error_text or is_guardrail_payload else "stacktrace"
 
 
 def _build_tool_message(output: Any) -> str:

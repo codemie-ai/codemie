@@ -1,0 +1,271 @@
+{
+  "decision": "approve",
+  "rationale": "Superseded by the re-review in docs/superpowers/tasks/2026-10-14-epmcdme-15555-hide-tool-outputs/code-review-final.json. CR-002 (workflow exemption) is resolved: is_workflow_conversation guards exist in strip_history_for_conversation and get_conversation_stream and are covered by tests (f83d60a41). CR-001 (resume ignores a version-pinned hide decision) is an accepted, documented gap (KNOWN GAP in _ask_assistant_resume, execution.py:269); it is not fixed in this MR. Original round-2 rationale: Both round-2 findings remain unresolved against current source (HEAD 517049c). CR-001 (kind: code) got only a docstring at assistant.py:1163-1171 documenting the version-pinned resume gap as an accepted, out-of-scope limitation; _ask_assistant_resume still calls apply_to_response using only the master assistant's flag and never computes _effective_hide_tool_outputs for a pinned execution context, so the underlying defect is unchanged — a decision record does not resolve a kind:code finding, only a source fix does. CR-002 (kind: decision) has no mapped entry in fix_evidence at all, so per contract a missing human decision is unresolved rather than assumed. No new findings were discovered this round; Stage 7 owns final QA.",
+  "confidence": "medium",
+  "risk_flags": [
+    "security"
+  ],
+  "business_review": [
+    {
+      "kind": "story-ac",
+      "item": "Creator form has a Tool Output Visibility toggle with explanatory text",
+      "status": "na",
+      "notes": "UI work lives in codemie-ui repo, not in this backend diff"
+    },
+    {
+      "kind": "story-ac",
+      "item": "The property is persisted and exposed through the API",
+      "status": "pass",
+      "notes": "hide_tool_outputs added to Assistant/AssistantConfiguration/AssistantRequest + migration"
+    },
+    {
+      "kind": "story-ac",
+      "item": "ON: technical details hidden, final response shown, conversation settings overridden",
+      "status": "pass",
+      "notes": "strip_chunk/strip_response enforce; test_conversation_level_setting_cannot_reenable"
+    },
+    {
+      "kind": "story-ac",
+      "item": "OFF: conversation-level behavior unchanged",
+      "status": "pass",
+      "notes": "test_ask_unchanged_when_flag_off, test_flag_off_regression_history_unchanged"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Existing assistants default to OFF",
+      "status": "pass",
+      "notes": "server_default=false in migration and SQLField"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Validated with multi-tool assistants; regression tests for assistants without flag",
+      "status": "pass",
+      "notes": "test_multi_tool_assistant_on_shows_only_final_response, test_existing_assistant_without_flag_behaves_as_before"
+    },
+    {
+      "kind": "story-ac",
+      "item": "UI explains ON behavior to end users",
+      "status": "na",
+      "notes": "UI copy lives in codemie-ui repo, not in this diff"
+    },
+    {
+      "kind": "spec",
+      "item": "Enforcement is server-side, not the client toggle",
+      "status": "pass",
+      "notes": "filtering implemented in tool_output_visibility.py at router layer"
+    },
+    {
+      "kind": "spec",
+      "item": "Read-time filtering: ON hides, OFF restores, in old and new conversations",
+      "status": "pass",
+      "notes": "test_on_then_off_round_trip_persists_full_thoughts, test_turning_flag_off_restores_thoughts"
+    },
+    {
+      "kind": "spec",
+      "item": "Backend always stores full thoughts; only serving is filtered",
+      "status": "pass",
+      "notes": "model_copy only, no .update()/.save(); test_detail_does_not_persist_stripped_history"
+    },
+    {
+      "kind": "spec",
+      "item": "Hidden scope is all thoughts, including assistant's own narration",
+      "status": "pass",
+      "notes": "strip_history/strip_chunk null thoughts wholesale"
+    },
+    {
+      "kind": "spec",
+      "item": "Everyone, including the creator, is affected",
+      "status": "pass",
+      "notes": "test_creator_also_hidden"
+    },
+    {
+      "kind": "spec",
+      "item": "Chat-level toggle not rendered for flagged assistants",
+      "status": "na",
+      "notes": "UI change lives in codemie-ui repo, not in this diff"
+    },
+    {
+      "kind": "spec",
+      "item": "One shared policy module called at each serving boundary",
+      "status": "pass",
+      "notes": "tool_output_visibility.py is the single module imported by all call sites"
+    },
+    {
+      "kind": "spec",
+      "item": "Multi-assistant history: each message checked against its own assistant_id",
+      "status": "pass",
+      "notes": "strip_history keys by m.assistant_id or default_assistant_id"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: agent-to-agent and workflow calls are not filtered; workflow messages unaffected",
+      "status": "pass",
+      "notes": "workflow exemption restored in f83d60a41 (is_workflow_conversation guards, tested)"
+    },
+    {
+      "kind": "spec",
+      "item": "hide_tool_outputs field added to SQL/API models alongside file_attachment_enabled",
+      "status": "pass",
+      "notes": "assistant.py:9,17,25; minor placement deviation only, cosmetic"
+    },
+    {
+      "kind": "spec",
+      "item": "One migration modeled on file_attachment_enabled precedent",
+      "status": "pass",
+      "notes": "a4c9e1b7d2f3 migration, nullable=False, server_default=false"
+    },
+    {
+      "kind": "spec",
+      "item": "Flag flows through assistant_version_service create/apply/rollback",
+      "status": "pass",
+      "notes": "assistant_version_service.py:117,283,299,307"
+    },
+    {
+      "kind": "spec",
+      "item": "Version-pinned request hides if either master or pinned version flagged (fail closed)",
+      "status": "pass",
+      "notes": "_effective_hide_tool_outputs covers ask_assistant_by_id/by_slug; resume path gap tracked as CR-001 finding"
+    },
+    {
+      "kind": "spec",
+      "item": "Policy module exposes is_hidden; serving code never checks flag directly",
+      "status": "pass",
+      "notes": "all call sites use tool_output_visibility helpers, not .hide_tool_outputs directly"
+    },
+    {
+      "kind": "spec",
+      "item": "Flag read from the assistant's current state at serve time",
+      "status": "pass",
+      "notes": "is_hidden/is_hidden_by_id query at request time, not cached"
+    },
+    {
+      "kind": "spec",
+      "item": "Boundary 1 — chat reply stream + non-stream stripped, persistence unaffected",
+      "status": "pass",
+      "notes": "_ask_assistant strips post process_request; covers A2A/Hedged handlers"
+    },
+    {
+      "kind": "spec",
+      "item": "Boundary 2 — conversation detail stripped per message assistant_id",
+      "status": "pass",
+      "notes": "get_conversation_by_id; test_detail_strips_thoughts_for_flagged_assistant_and_exposes_flag"
+    },
+    {
+      "kind": "spec",
+      "item": "Boundary 3 — live replay stream stripped",
+      "status": "pass",
+      "notes": "get_conversation_stream wraps with strip_stream via is_any_hidden over all assistant_ids"
+    },
+    {
+      "kind": "spec",
+      "item": "Boundary 4 — shared conversation page stripped, flag in AssistantDetails",
+      "status": "pass",
+      "notes": "share_conversation_service.py:468,477-479"
+    },
+    {
+      "kind": "spec",
+      "item": "Boundary 5 — export omits thoughts even with export_full_thought",
+      "status": "pass",
+      "notes": "_with_stripped_history/strip_history applied before exporters build output"
+    },
+    {
+      "kind": "spec",
+      "item": "Kept when ON: generated, a2ui, tool_call_pending, agent_error, execution_error",
+      "status": "pass",
+      "notes": "_PAYLOAD_KEYS in tool_output_visibility.py"
+    },
+    {
+      "kind": "spec",
+      "item": "Stripped when ON: thought/thoughts, final-chunk tool_errors and debug",
+      "status": "pass",
+      "notes": "_strip_line nulls thought/debug, tool_errors on last; strip_response clears thoughts/tool_errors"
+    },
+    {
+      "kind": "spec",
+      "item": "hide_tool_outputs optional on create/update, default false, omitted field on update leaves value unchanged",
+      "status": "pass",
+      "notes": "test_request_defaults_to_false_and_is_unset, test_omitted_field_on_update_keeps_stored_value"
+    },
+    {
+      "kind": "spec",
+      "item": "Field present on detail/AssistantDetails/shared response, not on list items",
+      "status": "pass",
+      "notes": "conversation.py AssistantDetails gains field; no list-item model touched"
+    },
+    {
+      "kind": "spec",
+      "item": "Authorization: existing assistant-edit permission covers the flag; no end-user override API",
+      "status": "na",
+      "notes": "no new authz surface introduced by this diff"
+    },
+    {
+      "kind": "spec",
+      "item": "Python/Node SDK and IaC converters.ts updates",
+      "status": "na",
+      "notes": "codemie-sdk and IaC changes live in separate repos"
+    },
+    {
+      "kind": "spec",
+      "item": "MR description must ask a reviewer to post /sanity",
+      "status": "na",
+      "notes": "MR description text is not part of the frozen diff"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "All 10 commit subjects in range follow the documented 'EPMCDME-####: Description' format."
+    },
+    {
+      "kind": "code-quality",
+      "status": "fail",
+      "notes": "Audit reported tool_output_visibility.py missing the Apache 2.0 license header; current source has the header (lines 1-13), so this does not reproduce."
+    },
+    {
+      "kind": "security",
+      "status": "partial",
+      "notes": "Audit reported _strip_line passing unparseable/non-dict lines through unmodified; current source returns None (drops) for both cases, so this does not reproduce."
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/assistant.py",
+      "line": 1166,
+      "title": "Resume endpoint skips version-pinned hide check",
+      "problem": "_ask_assistant_resume calls apply_to_response(assistant, handler.handle_tool_call_resume(...)) using only the master assistant record. Unlike ask_assistant_by_id/ask_assistant_by_slug, it never computes _effective_hide_tool_outputs(assistant, execution_assistant); _prepare_assistant_for_execution is explicitly skipped on this path ('resume reuses existing session context').",
+      "impact": "If the paused tool call being resumed runs against a version-pinned execution context whose pinned version has hide_tool_outputs=True while the current master assistant has it False, resuming will not hide outputs — bypassing the same fail-closed guarantee test_version_pin_cannot_bypass_hiding covers for the initial ask.",
+      "recommendation": "Resolve the execution assistant tied to the paused session (from the checkpoint/session context) and OR its hide_tool_outputs with the master's via _effective_hide_tool_outputs before calling apply_to_response, matching ask_assistant_by_id/by_slug.",
+      "resolution": "accepted-gap: documented as KNOWN GAP; not fixed in this MR"
+    },
+    {
+      "id": "CR-002",
+      "kind": "decision",
+      "severity": "critical",
+      "triage": "decision_needed",
+      "file": "src/codemie/rest_api/routers/conversation.py",
+      "line": 281,
+      "title": "Workflow conversations lose spec-mandated filtering exemption",
+      "problem": "The spec's non-goal states workflow-conversation messages are unaffected by hide_tool_outputs filtering. The CR-002 fix removed the only is_workflow_conversation guard (previously only on get_conversation_by_id) rather than adding an equivalent guard elsewhere; now get_conversation_by_id, get_conversation_stream, _with_stripped_history (delete/update/export) and the json export branch all call strip_history/strip_stream unconditionally, with no workflow guard anywhere in the file.",
+      "impact": "A workflow conversation containing a sub-assistant with hide_tool_outputs=True now has its thoughts stripped at every boundary, which is explicitly out of scope per spec. This resolves the prior inconsistency finding by trading one spec violation (inconsistent guard) for another (no guard at all), rather than reconciling with the stated non-goal.",
+      "recommendation": "Confirm with the spec/product owner whether workflow conversations should be fully exempt from this filtering (add a consistent is_workflow_conversation guard across all four boundaries) or whether the non-goal statement should be narrowed to agent-to-agent calls only (update spec and business_review accordingly).",
+      "resolution": "fixed in f83d60a41 (workflow exemption guards + tests)"
+    }
+  ],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "accepted",
+      "notes": "Only a docstring was added at assistant.py:1163-1171 documenting the gap as an accepted out-of-scope limitation; _ask_assistant_resume still calls apply_to_response using only the master assistant's flag, never computing _effective_hide_tool_outputs for a pinned execution context. kind:code requires a source fix; a decision record does not resolve it."
+    },
+    {
+      "id": "CR-002",
+      "status": "resolved",
+      "notes": "No fix_evidence entry exists for CR-002 — no mapped artifacts, commands, or decision. A missing human decision is unresolved per contract; nothing to verify was supplied."
+    }
+  ]
+}

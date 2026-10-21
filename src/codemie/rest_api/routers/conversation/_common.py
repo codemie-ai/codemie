@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from codemie.rest_api.models.conversation import Conversation
+from codemie.service.assistant.tool_output_visibility import strip_history_for_conversation
 from codemie.service.monitoring.conversation_monitoring_service import ConversationMonitoringService
 
 
@@ -19,3 +21,10 @@ conversation_monitoring_service = ConversationMonitoringService()
 
 
 CONVERSATION_NOT_FOUND_MSG = "Conversation not found"
+
+
+def _with_stripped_history(conversation: Conversation) -> Conversation:
+    """Copy of the conversation with hidden-assistant thoughts removed. Never persist the copy."""
+    if not conversation:
+        return conversation
+    return conversation.model_copy(update={"history": strip_history_for_conversation(conversation)})

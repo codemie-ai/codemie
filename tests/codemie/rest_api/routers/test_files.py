@@ -1365,6 +1365,9 @@ def test_get_shared_conversation_exposes_share_token(mocker):
     mock_conv = mocker.Mock()
     mock_conv.id = "conv-1"
     mock_conv.assistant_ids = []
+    mock_conv.history = []
+    mock_conv.initial_assistant_id = None
+    mock_conv.model_copy.return_value = mock_conv
 
     mocker.patch(
         "codemie.service.share_conversation_service.SharedConversation.get_by_fields",
@@ -1418,6 +1421,8 @@ def _shared_conversation_with_history(mocker, history):
     mock_conv = mocker.Mock()
     mock_conv.id = "conv-1"
     mock_conv.assistant_ids = []
+    mock_conv.initial_assistant_id = None
+    mock_conv.model_copy.return_value = mock_conv
     mock_conv.history = history
     return mock_conv
 

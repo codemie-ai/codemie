@@ -97,6 +97,7 @@ class AssistantDetails(BaseModel):
     context: Optional[List[Context | str]] = None
     tools: Optional[List[Tool]] = None
     conversation_starters: List[str] = Field(default_factory=list)
+    hide_tool_outputs: bool = False
 
 
 class UserMark(BaseModel):

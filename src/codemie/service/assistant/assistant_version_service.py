@@ -59,6 +59,7 @@ class AssistantVersionService:
             llm_model_type=request.llm_model_type,
             enable_image_generation=request.enable_image_generation,
             file_attachment_enabled=request.file_attachment_enabled,
+            hide_tool_outputs=request.hide_tool_outputs,
             image_generation_model=request.image_generation_model,
             temperature=request.temperature,
             top_p=request.top_p,
@@ -117,6 +118,7 @@ class AssistantVersionService:
             llm_model_type=versioned('llm_model_type'),
             enable_image_generation=versioned('enable_image_generation'),
             file_attachment_enabled=versioned('file_attachment_enabled'),
+            hide_tool_outputs=versioned('hide_tool_outputs'),
             image_generation_model=versioned('image_generation_model'),
             temperature=versioned('temperature'),
             top_p=versioned('top_p'),
@@ -282,6 +284,7 @@ class AssistantVersionService:
             llm_model_type=target_config.llm_model_type,
             enable_image_generation=target_config.enable_image_generation,
             file_attachment_enabled=target_config.file_attachment_enabled,
+            hide_tool_outputs=target_config.hide_tool_outputs,
             image_generation_model=target_config.image_generation_model,
             temperature=target_config.temperature,
             top_p=target_config.top_p,
@@ -328,6 +331,7 @@ class AssistantVersionService:
         assistant.llm_model_type = config.llm_model_type
         assistant.enable_image_generation = config.enable_image_generation
         assistant.file_attachment_enabled = config.file_attachment_enabled
+        assistant.hide_tool_outputs = config.hide_tool_outputs
         assistant.image_generation_model = config.image_generation_model
         assistant.temperature = config.temperature
         assistant.top_p = config.top_p

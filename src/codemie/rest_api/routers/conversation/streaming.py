@@ -30,6 +30,7 @@ from codemie.rest_api.routers.conversation._common import CONVERSATION_NOT_FOUND
 from codemie.rest_api.routers.utils import raise_access_denied, NDJSON_MEDIA_TYPE
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
+from codemie.service.assistant.tool_output_visibility import is_any_hidden, strip_stream
 from codemie.service.generation_manager import GenerationManager
 
 
@@ -142,7 +143,15 @@ def get_conversation_stream(
         return StreamingResponse(empty_stream(), media_type=NDJSON_MEDIA_TYPE)
 
     history_snapshot, sub_queue, is_closed = gen.subscribe()
+    body = stream_generator(gen, history_snapshot, sub_queue, is_closed, conversation_id)
+    # Workflow calls are out of scope (see spec); also, initial_assistant_id is a WorkflowConfig id
+    # there, not an assistant id. A single live turn can't be attributed to one assistant from here
+    # (handoffs reorder assistant_ids mid-conversation), so hide if any assistant on this conversation hides.
+    if not conversation.is_workflow_conversation and is_any_hidden(
+        (conversation.assistant_ids or []) + [conversation.initial_assistant_id]
+    ):
+        body = strip_stream(body)
     return StreamingResponse(
-        stream_generator(gen, history_snapshot, sub_queue, is_closed, conversation_id),
+        body,
         media_type=NDJSON_MEDIA_TYPE,
     )

@@ -512,3 +512,20 @@ class TestIntegration:
         assert calls[0][1]['version_number'] == 1
         assert calls[1][1]['version_number'] == 2
         assert calls[2][1]['version_number'] == 3
+
+
+class TestHideToolOutputsMigration:
+    """hide_tool_outputs must survive migration of a legacy unversioned assistant."""
+
+    @pytest.mark.parametrize("hide", [True, False])
+    @patch('codemie.service.assistant.assistant_version_migration_service.AssistantConfiguration')
+    def test_all_migration_paths_copy_hide_tool_outputs(self, mock_config_class, hide, mock_assistant_with_history):
+        mock_assistant_with_history.hide_tool_outputs = hide
+        history_entry = mock_assistant_with_history.system_prompt_history[0]
+
+        AssistantVersionMigrationService._create_single_version_from_current(mock_assistant_with_history)
+        AssistantVersionMigrationService._create_version_from_history(mock_assistant_with_history, 1, history_entry)
+        AssistantVersionMigrationService._create_version_from_current(mock_assistant_with_history, 2)
+
+        assert mock_config_class.call_count == 3
+        assert [c.kwargs['hide_tool_outputs'] for c in mock_config_class.call_args_list] == [hide] * 3

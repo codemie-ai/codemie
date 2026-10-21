@@ -344,6 +344,7 @@ class AssistantRequest(BaseModel):
     file_attachment_enabled: Optional[bool] = None
     hedging_config: Optional[HedgingConfig] = None
     interactive_enabled: bool = False
+    hide_tool_outputs: bool = False
     mcp_servers: list[MCPServerDetails] = Field(default_factory=list)
     assistant_ids: list[str] = Field(default_factory=list)
     enabled_builtin_subagents: list[BuiltinSubagent] = Field(
@@ -672,6 +673,7 @@ class AssistantBase(CommonBaseModel, Owned):
     file_attachment_enabled: Optional[bool] = SQLField(default=None)
     hedging_config: Optional[HedgingConfig] = SQLField(default=None, sa_column=Column(PydanticType(HedgingConfig)))
     interactive_enabled: bool = SQLField(default=False, sa_column_kwargs={"server_default": "false"})
+    hide_tool_outputs: bool = SQLField(default=False, sa_column_kwargs={"server_default": "false"})
     context: list[Context] = SQLField(default_factory=list, sa_column=Column(PydanticListType(Context)))
     user_abilities: Optional[list[Action]] = SQLField(default=None, sa_column=Column(JSONB))
     mcp_servers: list[MCPServerDetails] = SQLField(
@@ -1267,6 +1269,7 @@ class AssistantConfiguration(BaseModelWithSQLSupport, table=True):
     llm_model_type: Optional[str] = None
     enable_image_generation: Optional[bool] = False
     file_attachment_enabled: Optional[bool] = SQLField(default=None)
+    hide_tool_outputs: bool = SQLField(default=False, sa_column_kwargs={"server_default": "false"})
     image_generation_model: Optional[str] = None
     temperature: Optional[float] = None
     top_p: Optional[float] = None
