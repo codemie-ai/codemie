@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from codemie.rest_api.security.user import User
-from codemie.rest_api.models.provider import ProviderBase
+from codemie.rest_api.models.provider import ProviderBase, ProviderDataSourceTypeSchema
 from codemie.rest_api.models.index import IndexInfo
 
 from codemie.rest_api.utils.default_applications import ensure_application_exists
@@ -28,6 +28,7 @@ class ProviderDatasourceUpdateService(ProviderDatasourceBaseService):
 
     UPDATED_MESSAGE_TEMPLATE = "Datasource {} has been updated"
     NEW_PROJECT_NAME_FIELD = "new_project_name"
+    BASE_PARAMS_IDENTITY_FIELDS = frozenset({"datasource_id"})
 
     def __init__(self, datasource: IndexInfo, provider: ProviderBase, values: dict, user: User):
         self.datasource = datasource
@@ -64,18 +65,19 @@ class ProviderDatasourceUpdateService(ProviderDatasourceBaseService):
                 self.datasource.project_name = new_project_name
 
             encrypted_base_params = encrypt_datasource_provider_fields(base_params, schema=self.schema.base_schema)
-            self.datasource.provider_fields.base_params = {
-                **self.datasource.provider_fields.base_params,
-                **encrypted_base_params,
-            }
+            self.datasource.provider_fields.base_params = self._keep_schema_fields(
+                {**self.datasource.provider_fields.base_params, **encrypted_base_params},
+                schema=self.schema.base_schema,
+                extra_fields=self.BASE_PARAMS_IDENTITY_FIELDS,
+            )
 
             encrypted_create_params = encrypt_datasource_provider_fields(
                 create_params, schema=self.schema.create_schema
             )
-            self.datasource.provider_fields.create_params = {
-                **self.datasource.provider_fields.create_params,
-                **encrypted_create_params,
-            }
+            self.datasource.provider_fields.create_params = self._keep_schema_fields(
+                {**self.datasource.provider_fields.create_params, **encrypted_create_params},
+                schema=self.schema.create_schema,
+            )
 
             self.datasource.update()
         except Exception as e:
@@ -83,6 +85,20 @@ class ProviderDatasourceUpdateService(ProviderDatasourceBaseService):
             return False
 
         return True
+
+    @staticmethod
+    def _keep_schema_fields(
+        params: dict, schema: ProviderDataSourceTypeSchema | None, extra_fields: frozenset[str] = frozenset()
+    ) -> dict:
+        """
+        Drops params the provider no longer declares in its schema.
+        Without a schema or schema parameters, params are returned unchanged.
+        """
+        if not schema or not schema.parameters:
+            return params
+
+        allowed_fields = {param.name for param in schema.parameters} | extra_fields
+        return {key: value for key, value in params.items() if key in allowed_fields}
 
     @property
     def updated_message(self) -> str:
