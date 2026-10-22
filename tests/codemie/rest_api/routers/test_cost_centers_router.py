@@ -14,7 +14,7 @@
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 from codemie.rest_api.models.cost_center import CostCenterCreateRequest
@@ -24,6 +24,11 @@ from codemie.rest_api.routers.cost_centers import (
     list_cost_centers,
 )
 from codemie.rest_api.security.user import User
+from codemie.service.budget.budget_enums import BudgetCategory
+from codemie.service.budget.cost_center_budget_summary import (
+    CostCenterAssignedBudgetSummary,
+    CostCenterBudgetSummary,
+)
 
 
 def _super_admin() -> User:
@@ -135,3 +140,97 @@ class TestCostCenterRouter:
         assert response.id == cost_center_id
         assert response.project_count == 1
         assert response.projects[0].cost_center_name == "epm-cdme"
+
+
+class TestCostCenterBudgetRollup:
+    @patch("codemie.rest_api.routers.cost_centers.config")
+    @patch("codemie.rest_api.routers.cost_centers.get_cost_center_budget_summary")
+    @patch("codemie.rest_api.routers.cost_centers.get_async_session")
+    @patch("codemie.rest_api.routers.cost_centers.application_repository")
+    @patch("codemie.rest_api.routers.cost_centers.get_session")
+    @patch("codemie.rest_api.routers.cost_centers.cost_center_service")
+    def test_get_cost_center_budget_rollup_sums_linked_projects(
+        self,
+        mock_cost_center_service,
+        mock_get_session,
+        mock_application_repository,
+        mock_get_async_session,
+        mock_get_cost_center_budget_summary,
+        mock_config,
+    ):
+        import asyncio
+
+        from codemie.rest_api.routers.cost_centers import get_cost_center_budget_rollup
+
+        mock_config.ENABLE_USER_MANAGEMENT = True
+        cost_center_id = uuid4()
+        mock_get_session.return_value.__enter__.return_value = MagicMock()
+        mock_cost_center_service.get_or_404.return_value = SimpleNamespace(id=cost_center_id, name="epm-cdme")
+        mock_get_async_session.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_get_async_session.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_application_repository.aget_project_names_by_cost_center_name = AsyncMock(
+            return_value=["proj-a", "proj-b"]
+        )
+        expected = CostCenterBudgetSummary(
+            current_spending=15.0,
+            budget_limit=60.0,
+            total_percent=25.0,
+            budgets=[
+                CostCenterAssignedBudgetSummary(
+                    budget_category=BudgetCategory.PLATFORM,
+                    soft_budget=25.0,
+                    max_budget=50.0,
+                    member_count=3,
+                    allocated_member_budget_total=25.0,
+                    current_spending=15.0,
+                )
+            ],
+        )
+        mock_get_cost_center_budget_summary.return_value = expected
+
+        response = asyncio.run(
+            get_cost_center_budget_rollup(cost_center_id=cost_center_id, user=_super_admin(), _=None)
+        )
+
+        mock_application_repository.aget_project_names_by_cost_center_name.assert_awaited_once_with(
+            mock_get_async_session.return_value.__aenter__.return_value, "epm-cdme"
+        )
+        mock_get_cost_center_budget_summary.assert_called_once()
+        assert response.budget_limit == 60.0
+        assert response.budgets[0].budget_category == BudgetCategory.PLATFORM
+
+    @patch("codemie.rest_api.routers.cost_centers.config")
+    @patch("codemie.rest_api.routers.cost_centers.get_cost_center_budget_summary")
+    @patch("codemie.rest_api.routers.cost_centers.get_async_session")
+    @patch("codemie.rest_api.routers.cost_centers.application_repository")
+    @patch("codemie.rest_api.routers.cost_centers.get_session")
+    @patch("codemie.rest_api.routers.cost_centers.cost_center_service")
+    def test_get_cost_center_budget_rollup_zero_for_no_linked_projects(
+        self,
+        mock_cost_center_service,
+        mock_get_session,
+        mock_application_repository,
+        mock_get_async_session,
+        mock_get_cost_center_budget_summary,
+        mock_config,
+    ):
+        import asyncio
+
+        from codemie.rest_api.routers.cost_centers import get_cost_center_budget_rollup
+
+        mock_config.ENABLE_USER_MANAGEMENT = True
+        cost_center_id = uuid4()
+        mock_get_session.return_value.__enter__.return_value = MagicMock()
+        mock_cost_center_service.get_or_404.return_value = SimpleNamespace(id=cost_center_id, name="epm-cdme")
+        mock_get_async_session.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_get_async_session.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_application_repository.aget_project_names_by_cost_center_name = AsyncMock(return_value=[])
+        zero_summary = CostCenterBudgetSummary(current_spending=0.0, budget_limit=None, total_percent=0.0, budgets=[])
+        mock_get_cost_center_budget_summary.return_value = zero_summary
+
+        response = asyncio.run(
+            get_cost_center_budget_rollup(cost_center_id=cost_center_id, user=_super_admin(), _=None)
+        )
+
+        assert response.budgets == []
+        assert response.budget_limit is None

@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "generated": "2026-10-07T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 18,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 9,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Four distinct components touched: ApplicationRepository (new aget_project_names_by_cost_center_id), ProjectBudgetAssignmentRepository (new get_assigned_budget_summaries_for_projects + get_distinct_member_counts_by_category), new cost_center_budget_summary service module, and a new router endpoint in cost_centers.py — spanning API, Service, and DB-Persistence layers." },
+    { "dimension": "file_change_estimate", "reason": "6 modified files (application_repository.py, project_budget_repository.py, cost_centers.py, and 3 matching test files) + 3 new files (cost_center_budget_summary.py, its test module, tests/codemie/service/budget/__init__.py) across repository/, rest_api/routers/, and service/budget/ (plus mirrored test dirs). Nearest M-band calibration anchor (epmcdme-10203-add-rest-endpoint-with-business-logic, 6 files/3 dirs) scored this dimension M(3); this change has 9 files and a new module, so it was scored one band higher at L(4) — noting the disagreement rather than silently resolving it." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

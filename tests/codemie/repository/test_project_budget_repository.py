@@ -194,6 +194,62 @@ async def test_get_assigned_budget_summaries_for_projects_groups_rows_by_project
 
 
 @pytest.mark.asyncio
+async def test_get_distinct_member_counts_by_category_returns_empty_for_empty_input():
+    repo = ProjectBudgetAssignmentRepository()
+    session = AsyncMock()
+
+    result = await repo.get_distinct_member_counts_by_category(session, [])
+
+    assert result == {}
+    session.execute.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_distinct_member_counts_by_category_returns_counts_by_category():
+    repo = ProjectBudgetAssignmentRepository()
+    session = AsyncMock()
+    result_mock = MagicMock()
+    result_mock.all.return_value = [("platform", 2), ("cli", 1)]
+    session.execute = AsyncMock(return_value=result_mock)
+
+    result = await repo.get_distinct_member_counts_by_category(session, ["proj-a", "proj-b"])
+
+    assert result == {"platform": 2, "cli": 1}
+
+
+@pytest.mark.asyncio
+async def test_get_distinct_member_counts_by_category_returns_empty_for_empty_budget_ids():
+    """An explicit empty budget_ids list means "scope to nothing" — short-circuit, don't query."""
+    repo = ProjectBudgetAssignmentRepository()
+    session = AsyncMock()
+
+    result = await repo.get_distinct_member_counts_by_category(session, ["proj-a"], budget_ids=[])
+
+    assert result == {}
+    session.execute.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_distinct_member_counts_by_category_filters_by_budget_ids_when_given():
+    """When budget_ids is given, the query scopes to exactly those rows instead of every
+    active assignment for the projects — needed so the cost-center rollup's member count
+    describes the same accepted row set as its money totals."""
+    repo = ProjectBudgetAssignmentRepository()
+    session = AsyncMock()
+    result_mock = MagicMock()
+    result_mock.all.return_value = [("platform", 1)]
+    session.execute = AsyncMock(return_value=result_mock)
+
+    result = await repo.get_distinct_member_counts_by_category(session, ["proj-a"], budget_ids=["b1"])
+
+    assert result == {"platform": 1}
+    stmt = session.execute.call_args.args[0]
+    sql_text = str(stmt.compile(compile_kwargs={"literal_binds": True})).lower()
+    assert "budget_id in" in sql_text
+    assert "project_name in" not in sql_text
+
+
+@pytest.mark.asyncio
 async def test_insert_returns_inserted_assignment():
     repo = ProjectBudgetAssignmentRepository()
     session = AsyncMock()

@@ -324,6 +324,59 @@ class ProjectBudgetAssignmentRepository:
             summaries.setdefault(summary.project_name, []).append(summary)
         return summaries
 
+    async def get_distinct_member_counts_by_category(
+        self,
+        session: AsyncSession,
+        project_names: list[str],
+        budget_ids: list[str] | None = None,
+    ) -> dict[str, int]:
+        """Return the distinct member count per budget category across the given projects.
+
+        Counts each member once even when they hold active allocations on more than one of
+        the given projects, unlike the per-project ``member_count`` on
+        ``ProjectAssignedBudgetSummaryRow``, which only reflects a single project's rows and
+        double-counts a shared member when summed across projects.
+
+        When ``budget_ids`` is given, the count is scoped to exactly those assignment rows
+        instead of every active assignment for ``project_names`` — used by the cost-center
+        rollup so the member count describes the same accepted row set as the money totals
+        (an assignment whose row was excluded for a sync-status or budget_duration mismatch
+        no longer contributes members that the spend totals don't reflect).
+        """
+        if budget_ids is not None:
+            if not budget_ids:
+                return {}
+        elif not project_names:
+            return {}
+
+        from sqlalchemy import and_, func
+
+        conditions = [ProjectBudgetAssignment.deleted_at.is_(None)]
+        if budget_ids is not None:
+            conditions.append(ProjectBudgetAssignment.budget_id.in_(budget_ids))
+        else:
+            conditions.append(ProjectBudgetAssignment.project_name.in_(project_names))
+
+        stmt = (
+            select(
+                ProjectBudgetAssignment.budget_category,
+                func.count(func.distinct(ProjectMemberBudgetAssignment.user_id)),
+            )
+            .join(
+                ProjectMemberBudgetAssignment,
+                and_(
+                    ProjectMemberBudgetAssignment.project_name == ProjectBudgetAssignment.project_name,
+                    ProjectMemberBudgetAssignment.budget_category == ProjectBudgetAssignment.budget_category,
+                    ProjectMemberBudgetAssignment.project_budget_id == ProjectBudgetAssignment.budget_id,
+                    ProjectMemberBudgetAssignment.deleted_at.is_(None),
+                ),
+            )
+            .where(*conditions)
+            .group_by(ProjectBudgetAssignment.budget_category)
+        )
+        result = await session.execute(stmt)
+        return dict(result.all())
+
     async def get_project_budget_context(
         self,
         session: AsyncSession,

@@ -7140,6 +7140,103 @@
         "title": "ConversationSearchResponse",
         "type": "object"
       },
+      "CostCenterAssignedBudgetSummary": {
+        "description": "Per-category budget summary aggregated across a cost center's linked projects.",
+        "properties": {
+          "allocated_member_budget_total": {
+            "title": "Allocated Member Budget Total",
+            "type": "number"
+          },
+          "budget_category": {
+            "$ref": "#/components/schemas/BudgetCategory"
+          },
+          "budget_duration": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Budget Duration"
+          },
+          "current_spending": {
+            "title": "Current Spending",
+            "type": "number"
+          },
+          "excluded_count": {
+            "default": 0,
+            "title": "Excluded Count",
+            "type": "integer"
+          },
+          "max_budget": {
+            "title": "Max Budget",
+            "type": "number"
+          },
+          "member_count": {
+            "title": "Member Count",
+            "type": "integer"
+          },
+          "soft_budget": {
+            "title": "Soft Budget",
+            "type": "number"
+          },
+          "unsynced_count": {
+            "default": 0,
+            "title": "Unsynced Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "budget_category",
+          "soft_budget",
+          "max_budget",
+          "member_count",
+          "allocated_member_budget_total",
+          "current_spending"
+        ],
+        "title": "CostCenterAssignedBudgetSummary",
+        "type": "object"
+      },
+      "CostCenterBudgetSummary": {
+        "description": "Combined budget summary aggregated across a cost center's linked projects.\n\nMirrors ProjectSpendingSummary (current_spending, budget_limit, total_percent)\nplus a per-category breakdown list, for data-contract parity with the existing\nproject-level pattern in rest_api/models/project.py and\nservice/project/project_spending_service.py.",
+        "properties": {
+          "budget_limit": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Budget Limit"
+          },
+          "budgets": {
+            "items": {
+              "$ref": "#/components/schemas/CostCenterAssignedBudgetSummary"
+            },
+            "title": "Budgets",
+            "type": "array"
+          },
+          "current_spending": {
+            "title": "Current Spending",
+            "type": "number"
+          },
+          "total_percent": {
+            "title": "Total Percent",
+            "type": "number"
+          }
+        },
+        "required": [
+          "current_spending",
+          "total_percent",
+          "budgets"
+        ],
+        "title": "CostCenterBudgetSummary",
+        "type": "object"
+      },
       "CostCenterCreateRequest": {
         "properties": {
           "description": {
@@ -36805,6 +36902,57 @@
           }
         ],
         "summary": "Update Cost Center",
+        "tags": [
+          "Cost Centers"
+        ]
+      }
+    },
+    "/v1/admin/cost-centers/{costCenterId}/budget-rollup": {
+      "get": {
+        "operationId": "get_cost_center_budget_rollup_v1_admin_cost_centers__costCenterId__budget_rollup_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "costCenterId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Costcenterid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CostCenterBudgetSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Get Cost Center Budget Rollup",
         "tags": [
           "Cost Centers"
         ]

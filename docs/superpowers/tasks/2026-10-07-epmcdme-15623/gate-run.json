@@ -1,0 +1,111 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15623_cost-center-rollup-card",
+  "head": "23eb88ae7664d821ec667004fc7cb2d7bc4e63a3",
+  "runner": "poetry",
+  "started_at": "2026-10-07T11:30:39Z",
+  "completed_at": "2026-10-07T11:42:00Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 3599,
+      "command": "poetry run ruff format && poetry run ruff check --fix && poetry run ruff check",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 9036,
+      "command": "poetry build",
+      "exit_code": 0
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 3575,
+      "command": "poetry run python scripts/license_headers/check_license_headers.py --check --quiet",
+      "exit_code": 1,
+      "notes": "Initial run failed: missing header in tests/codemie/repository/test_application_repository.py. Auto-fix 'make license-fix' applied, then gate re-ran and passed (see 'license-rerun')."
+    },
+    {
+      "id": "license-rerun",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 3117,
+      "command": "poetry run python scripts/license_headers/check_license_headers.py --check --quiet",
+      "exit_code": 0,
+      "notes": "Re-run after auto-fix 'make license-fix' (which added the missing header and modified tests/codemie/repository/test_application_repository.py in the working tree)."
+    },
+    {
+      "id": "secrets",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 47084,
+      "command": "docker run --rm -v \"./:/workspace\" ghcr.io/gitleaks/gitleaks:v8.30.1 dir --no-banner --verbose --config=/workspace/.gitleaks.toml /workspace",
+      "exit_code": 0
+    },
+    {
+      "id": "test",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 503885,
+      "command": "poetry run pytest tests/",
+      "exit_code": 1,
+      "notes": "3 failed, 19379 passed, 175 skipped. All 3 failing tests are in files outside this change's diff (test_filesystem_policy.py, test_hedged_handler.py) — not touched by any commit on this branch; likely pre-existing/environment-dependent failures, but reported as FAIL per literal pass/fail criteria."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "SKIPPED",
+      "command": "poetry run pytest tests/ -W ignore::DeprecationWarning --cov --cov-report=html",
+      "notes": "Skip if: user did not request coverage. Not requested in this dispatch."
+    },
+    {
+      "id": "static-analysis",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 136,
+      "command": "node scripts/sonar/run-local-sonar.js",
+      "exit_code": 0,
+      "notes": "Self-skip: ran and exited 0, but output was '[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.' No SONAR_TOKEN env var and no .env.local present. To enable locally: create .env.local with SONAR_TOKEN=<token> (and SONAR host config), per sonar-local script. CI runs its own Sonar check — this remains an owed check only CI can settle."
+    },
+    {
+      "id": "secrets-precommit",
+      "source": "guide",
+      "status": "SKIPPED",
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "notes": "Not re-run: identical gitleaks image/config to the 'secrets' gate above, which scanned the full working tree (gitleaks dir, a superset of this hook's 'protect --staged' scope) and found no leaks. Nothing is currently staged for commit in this run."
+    },
+    {
+      "id": "full-verification",
+      "source": "guide",
+      "status": "SKIPPED",
+      "command": "make verify",
+      "notes": "make verify = ruff + license + gitleaks + test, each already run individually above in this same pass (lint, license, secrets, test). Re-running the aggregate target would only redo ~8.5 minutes of pytest with no new signal."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "SKIPPED",
+      "command": "uvx codemie-test-harness --sanity-api",
+      "notes": "Skip if: not opening a merge request (local iteration only) — this dispatch did not indicate an MR is being opened. Also unverified locally: ~/.codemie/test-harness.json is absent, so the harness could not run even if attempted."
+    },
+    {
+      "id": "commit-msg",
+      "source": "hook",
+      "status": "N/A",
+      "command": "bash scripts/git-hooks/commit_msg.sh <COMMIT_EDITMSG>",
+      "notes": "Hook only fires during 'git commit' against the new commit message file; no commit is being created in this run, so there is nothing to validate."
+    }
+  ],
+  "failures": {
+    "license": "Missing license header: tests/codemie/repository/test_application_repository.py\n\nChecked 2440 files, 1 missing license headers\n\nTo fix, run: make license-fix",
+    "test": "FAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_matplotlib_png_generation - assert -2 == 0\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_openpyxl_to_save_workbook - assert -2 == 0\nFAILED tests/codemie/rest_api/handlers/test_hedged_handler.py::TestHandleStreamFastPathWins::test_yields_exactly_one_chunk - assert 0 == 3\n==== 3 failed, 19379 passed, 175 skipped, 260 warnings in 485.72s (0:08:05) ===="
+  }
+}

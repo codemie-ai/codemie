@@ -1,0 +1,86 @@
+{
+  "decision": "request-changes",
+  "rationale": "No story/spec artifact existed, so acceptance did not run (no-spec); 3 ambiguous rollup-semantics findings (provider_sync_status ignored, cross-duration summation, cross-project member double-counting) stay blocking under no-spec routing, which forces confidence: low. Standards review failed code-quality (missing license headers on both new files; typing.Optional and an unparameterized dict generic in the new module), adding 2 more blocking findings, while commit-format and security both passed with no coverage gap. 6 candidates were dismissed as noise: invalid-category rows are dropped exactly as the spec'd zero-without-blocking behavior requires, the sync/async two-session read and the unbounded project-name query mirror existing unguarded patterns elsewhere in this router/repository, duplicate project names are impossible since Application.id equals Application.name (unique by schema), the enum-disambiguation comment and the uncaught-repository-error path are speculative/consistent-with-sibling-routes concerns with no documented standard making them blocking; 0 findings were deferred.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "All 4 commit subjects in range follow the documented 'EPMCDME-####: Description' format from git-workflow.md"
+    },
+    {
+      "kind": "code-quality",
+      "status": "fail",
+      "notes": "New files cost_center_budget_summary.py and its test lack Apache headers; module uses typing.Optional and an unparameterized dict[str, list] instead of X | None / parameterized generics."
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "Endpoint reuses authenticate+admin_access_only consistent with siblings; UUID path param validated; new logging call emits only identifiers, no secrets."
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/budget/cost_center_budget_summary.py",
+      "line": 1,
+      "title": "Missing Apache license header",
+      "problem": "The new module src/codemie/service/budget/cost_center_budget_summary.py and its test file tests/codemie/service/budget/test_cost_center_budget_summary.py both start directly with imports/code and carry no Apache 2.0 license header, which code-quality.md requires on new source files.",
+      "impact": "Fails the repo's license-check gate (make license-check / license-fix, Makefile:48), which scans src/, scripts/ and tests/ for this header.",
+      "recommendation": "Run `make license-fix`, or copy the standard header block from an adjacent file such as src/codemie/rest_api/routers/cost_centers.py:1-13, onto both new files."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/budget/cost_center_budget_summary.py",
+      "line": 4,
+      "title": "typing.Optional/bare generic in new module",
+      "problem": "This brand-new module imports `typing.Optional` and declares `budget_limit: Optional[float] = None` (line 38) plus an unparameterized `rows_by_project: dict[str, list]` (line 53), where code-quality.md's new-code standard requires `X | None` unions and parameterized generics.",
+      "impact": "Violates the documented new-code type-hint standard; the standards audit marks this as a blocking violation since the file is wholly new, not pre-existing code being touched incidentally.",
+      "recommendation": "Replace `Optional[float]` with `float | None` and drop the `typing` import; parameterize the dict as `dict[str, list[ProjectAssignedBudgetSummaryRow]]`."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/budget/cost_center_budget_summary.py",
+      "line": 61,
+      "title": "Rollup ignores provider_sync_status",
+      "problem": "The per-row summation loop in get_cost_center_budget_summary (lines 61-78) adds every assigned-budget row's soft_budget/max_budget/current_spending into its category bucket regardless of row.provider_sync_status, so a row whose provider-side sync failed or is still pending is summed exactly like a healthy one.",
+      "impact": "Whether an unsynced-provider budget should count toward the combined rollup total is unresolved; if it shouldn't, the total silently overstates provider-enforced coverage. No spec/story exists to settle this, and the behavior is new (the existing per-project listing in projects.py never aggregates, it only displays provider_sync_status per budget row).",
+      "recommendation": "Decide and document the intended behavior for unsynced rows; if they should be excluded, skip or flag them (e.g. `if row.provider_sync_status not in (None, \"ok\"): continue`) before adding to the bucket."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/budget/cost_center_budget_summary.py",
+      "line": 70,
+      "title": "Category totals mix differing budget_duration windows",
+      "problem": "`totals.setdefault(category, ...)` (line 70) buckets rows only by `budget_category`, so soft_budget/max_budget from two linked projects whose same-category budgets use different `budget_duration` (e.g. 7d vs 30d) are summed into one number.",
+      "impact": "The combined soft_budget/max_budget for a category can mix incompatible time windows with no indication of the mismatch in the response; whether that is acceptable is ambiguous without a spec, and this aggregation is new behavior this change introduces (the existing per-project listing never sums across budgets).",
+      "recommendation": "State the intended behavior; if durations must be comparable, bucket by (category, budget_duration) or surface a mismatch flag/warning when an incoming row's duration differs from the bucket's existing one."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/budget/cost_center_budget_summary.py",
+      "line": 76,
+      "title": "member_count double-counts shared members",
+      "problem": "`bucket[\"member_count\"] += int(row.member_count)` (line 76) sums the per-project member count across every linked project's budget rows in the cost center.",
+      "impact": "A user allocated budget on two linked projects within the same cost center is counted twice; whether the rollup card means 'distinct headcount' or 'total allocation slots' is ambiguous without a spec, and this cross-project summation is new behavior introduced by this change.",
+      "recommendation": "Clarify the intended semantics; if distinct headcount is wanted, dedupe by member id across projects (e.g. accumulate member ids in a set) instead of summing per-project counts."
+    }
+  ]
+}

@@ -17,8 +17,9 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Path, Query
+from fastapi.concurrency import run_in_threadpool
 
-from codemie.clients.postgres import get_session
+from codemie.clients.postgres import get_async_session, get_session
 from codemie.configs import config
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.repository.application_repository import application_repository
@@ -33,6 +34,10 @@ from codemie.rest_api.models.cost_center import (
 )
 from codemie.rest_api.security.authentication import admin_access_only, authenticate
 from codemie.rest_api.security.user import User
+from codemie.service.budget.cost_center_budget_summary import (
+    CostCenterBudgetSummary,
+    get_cost_center_budget_summary,
+)
 from codemie.service.cost_center_service import cost_center_service
 
 
@@ -138,6 +143,27 @@ def get_cost_center_detail(
         ]
         response = _serialize_cost_centers(session, [cost_center])[0]
         return CostCenterDetailResponse(**response.model_dump(), projects=linked_projects)
+
+
+@router.get("/{costCenterId}/budget-rollup", response_model=CostCenterBudgetSummary)
+async def get_cost_center_budget_rollup(
+    cost_center_id: UUID = Path(alias="costCenterId"),
+    user: User = Depends(authenticate),
+    _: None = Depends(admin_access_only),
+):
+    _ensure_user_management_enabled()
+
+    def _resolve_cost_center_name() -> str:
+        with get_session() as session:
+            return cost_center_service.get_or_404(session, user=user, cost_center_id=cost_center_id).name
+
+    cost_center_name = await run_in_threadpool(_resolve_cost_center_name)
+
+    async with get_async_session() as async_session:
+        project_names = await application_repository.aget_project_names_by_cost_center_name(
+            async_session, cost_center_name
+        )
+        return await get_cost_center_budget_summary(async_session, project_names)
 
 
 @router.patch("/{costCenterId}", response_model=CostCenterResponse)
