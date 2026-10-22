@@ -61,6 +61,46 @@ def lookup():
 MEMBER = {"project_names": ["Proj-A"]}
 
 
+@pytest.fixture(autouse=True)
+def membership():
+    with (
+        patch.object(config, "ENABLE_USER_MANAGEMENT", True),
+        patch(f"{MODULE}.user_project_repository.aget_by_user_and_project", new_callable=AsyncMock) as mock,
+    ):
+        mock.return_value = object()
+        yield mock
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("project_admin", [False, True])
+async def test_removed_member_is_rejected_despite_stale_auth_context(lookup, membership, project_admin):
+    user = make_user(**MEMBER, admin_project_names=["Proj-A"] if project_admin else [])
+    gate = build_ingest_gate(user, "proj-a")
+    assert await gate(frozenset()) is None
+
+    membership.return_value = None
+
+    assert await gate(frozenset()) == "project_context_required"
+    assert accepted_project(gate) is None
+    assert user.has_access_to_application("Proj-A")
+    assert membership.await_args.args[1:] == (user.id, "Proj-A")
+
+
+@pytest.mark.asyncio
+async def test_membership_lookup_failure_is_unavailable(lookup, membership):
+    membership.side_effect = RuntimeError("db down")
+    with pytest.raises(TelemetryStorageUnavailableError):
+        await build_ingest_gate(make_user(**MEMBER), "Proj-A")(frozenset())
+
+
+@pytest.mark.asyncio
+async def test_legacy_idp_access_does_not_require_database_membership(lookup, membership):
+    user = make_user(**MEMBER)
+    with patch.object(config, "ENABLE_USER_MANAGEMENT", False):
+        assert await build_ingest_gate(user, "Proj-A")(frozenset()) is None
+    membership.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("header", [None, "", "   "])
 async def test_missing_or_blank_header_is_project_context_required(lookup, header):
@@ -128,8 +168,9 @@ async def test_sender_without_access_is_context_required_even_if_enabled(lookup)
 
 
 @pytest.mark.asyncio
-async def test_global_admin_needs_no_membership(lookup):
+async def test_global_admin_needs_no_membership(lookup, membership):
     assert await build_ingest_gate(make_user(is_admin=True, project_names=[]), "Proj-A")(frozenset()) is None
+    membership.assert_not_awaited()
 
 
 @pytest.mark.asyncio

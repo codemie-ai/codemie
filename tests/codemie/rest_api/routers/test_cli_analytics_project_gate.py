@@ -102,6 +102,8 @@ def env():
         patch.object(ingest_router, "_ensure_enabled", return_value=None),
         patch(f"{GATE}.get_async_session", session),
         patch(f"{GATE}.application_repository.aget_active_by_name_case_insensitive", lookup),
+        patch(f"{GATE}.user_project_repository.aget_by_user_and_project", new_callable=AsyncMock),
+        patch.object(config, "ENABLE_USER_MANAGEMENT", True),
     ):
         yield Env(TestClient(app), engine, apps, lookup, users)
 
@@ -238,6 +240,15 @@ def test_enabled_project_is_stored_normally(env, make):
     assert stored_tables(env), "an enabled project's data must reach the storage"
     if sent.signal == "hooks":
         assert response.json() == {}
+
+
+@pytest.mark.parametrize("make", FORMATS)
+def test_removed_member_with_cached_access_cannot_write_analytics(env, make):
+    assert env.users["user"].has_access_to_application(ENABLED)
+    sent = make()
+    with patch(f"{GATE}.user_project_repository.aget_by_user_and_project", new_callable=AsyncMock, return_value=None):
+        assert_discard(sent.post(env, ENABLED), sent, "project_context_required")
+    assert_nothing_written(env)
 
 
 @pytest.mark.parametrize("make", FORMATS)

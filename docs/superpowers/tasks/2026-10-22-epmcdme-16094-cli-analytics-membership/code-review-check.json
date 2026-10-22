@@ -1,0 +1,31 @@
+{
+  "decision": "approve",
+  "review_type": "self-review",
+  "reviewed_head": "9ddf825219767bf95c5ae1c51c8c72574ae55490",
+  "reviewed_base": "dfffcbe6f53e9369332ab4fdd810647ab953f1bf",
+  "ticket": "EPMCDME-16094",
+  "merge_request": "https://gitbud.epam.com/epm-cdme/codemie/-/merge_requests/4589",
+  "review_scope": [
+    "src/codemie/service/analytics/cli_analytics_project_gate.py",
+    "tests/codemie/service/analytics/test_cli_analytics_project_gate.py",
+    "tests/codemie/rest_api/routers/test_cli_analytics_project_gate.py"
+  ],
+  "rationale": "The current three-file diff was inspected together with the membership repository, User access helpers, router wiring and PostgreSQL ingestion gate call sites. Database-managed non-admin senders must have a current user/project row before any analytics persistence. The lookup uses the canonical stored project name and the authenticated user id, and database errors retain the existing unavailable/retry path. Global administrator and legacy IDP behavior remain unchanged. No blocking findings were identified in this bounded change.",
+  "checks": [
+    "Current membership is queried in the existing async project-lookup session; no shared authentication-cache changes are introduced.",
+    "A removed member or project administrator is rejected despite a stale positive User access snapshot.",
+    "The ingest gate runs before persistence for both OTel signals and hook events; rejection leaves canonical_project unset.",
+    "Regression tests observe rejection and absence of storage writes for all supported endpoint/wire formats, and cover membership-lookup failure, legacy mode and global administrator access."
+  ],
+  "findings": [],
+  "evidence": {
+    "targeted_backend_tests": "145 passed, 2 warnings in 9.40s; existing run, not rerun for this review artifact.",
+    "live_standalone": "Four revocations and sixteen immediate ingest requests were verified with the same cached token; rejected sessions were absent and positive controls remained readable.",
+    "baseline": "The original acceptance bug and the two unrelated sanity outcomes were reproduced on exact main baseline 9beb32e9a7e7e562738f2d7c0a4e424c601d844b.",
+    "rebase": "git range-diff confirmed the functional patch was unchanged when rebased from e9cb3cc51 to 9ddf82521."
+  },
+  "limitations": [
+    "This is a scoped self-review, not a GitLab human approval or a fresh full test run.",
+    "Requests authorized before membership removal commits are not cancelled; global-role revocation and legacy IDP token lifetime are outside this fix."
+  ]
+}

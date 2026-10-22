@@ -26,8 +26,10 @@ from __future__ import annotations
 import logging
 
 from codemie.clients.postgres import get_async_session
+from codemie.configs import config
 from codemie.repository.application_repository import application_repository
 from codemie.repository.cli_analytics.ports import IngestGate, TelemetryStorageUnavailableError
+from codemie.repository.user_project_repository import user_project_repository
 from codemie.rest_api.security.user import User
 
 logger = logging.getLogger(__name__)
@@ -58,13 +60,21 @@ class _ProjectIngestGate:
         try:
             async with get_async_session() as session:
                 application = await application_repository.aget_active_by_name_case_insensitive(session, project)
+                if application is None or application.deleted_at is not None:
+                    return REASON_CONTEXT_REQUIRED
+                if not self._user.has_access_to_application(application.name):
+                    return REASON_CONTEXT_REQUIRED
+                if config.ENABLE_USER_MANAGEMENT and not self._user.is_admin_or_maintainer:
+                    # Auth caches project lists for 30s. Check current membership so removal
+                    # takes effect on every worker as soon as the change is committed.
+                    membership = await user_project_repository.aget_by_user_and_project(
+                        session, self._user.id, application.name
+                    )
+                    if membership is None:
+                        return REASON_CONTEXT_REQUIRED
         except Exception as exc:
             logger.warning("cli_analytics: project policy lookup failed: %s", type(exc).__name__)
             raise TelemetryStorageUnavailableError("Cannot read the project's CLI analytics setting") from exc
-        if application is None or application.deleted_at is not None:
-            return REASON_CONTEXT_REQUIRED
-        if not self._user.has_access_to_application(application.name):
-            return REASON_CONTEXT_REQUIRED
         if not application.cli_analytics_enabled:
             return REASON_DISABLED
         self.canonical_project = application.name
