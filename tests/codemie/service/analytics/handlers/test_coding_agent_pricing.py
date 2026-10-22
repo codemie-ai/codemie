@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from codemie.configs.llm_config import CostConfig
 
 _MODULE = "codemie.service.analytics.handlers.coding_agent_pricing"
@@ -123,3 +125,17 @@ class TestCacheReadCost:
         model.cost = CostConfig(input=0.001, output=0.002)  # cache_read_input_token_cost defaults to None
         with _patch_config([model]):
             assert cache_read_cost("some-model", 1_000_000) == 0.0
+
+
+@pytest.mark.parametrize("model", ["claude-opus-5", "claude-sonnet-5"])
+def test_cache_read_cost_resolves_for_verification_session_models(model):
+    """Live-verified models from session c9b8c2a5-268b-42de-adbd-92b17f1ec5f0 (2026-10-07).
+
+    If this fails for a model, Tasks 4/5's per-model sum for that model silently
+    contributes 0.0 — not a Task 4/5 bug, but a pricing-config gap. claude-opus-5 and
+    claude-sonnet-5 resolve today via the litellm fallback in lookup_cost_config even
+    though neither appears in config/llms/llm-dial-config.yaml.
+    """
+    from codemie.service.analytics.handlers.coding_agent_pricing import cache_read_cost
+
+    assert cache_read_cost(model, 1000) > 0.0

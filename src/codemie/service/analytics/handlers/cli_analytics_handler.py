@@ -371,6 +371,41 @@ class LocalAnalyticsHandler:
             )
         return total, sorted(set(unpriced))
 
+    @staticmethod
+    def _display_models(model_cost_rows: list[dict], fallback: str) -> str:
+        """All of a session's models, comma-separated, in alphabetical order.
+
+        Falls back to `fallback` (the session's most-called model) when there are
+        no per-model rows, keeping single-model sessions unchanged.
+        """
+        names = sorted(_s(row.get("model_name")) for row in model_cost_rows if _s(row.get("model_name")))
+        if not names:
+            return fallback
+        return ", ".join(names)
+
+    @classmethod
+    def _session_cache_read_cost(
+        cls, model_cost_rows: list[dict], model: str, cache_read: int
+    ) -> tuple[float, list[str]]:
+        """Cache-read cost + unpriced models for one session.
+
+        Per-model rows (when available) price each model's own cache-read tokens at its own
+        rate; otherwise falls back to pricing the whole total at the single most-called model,
+        keeping single-model sessions byte-identical to the pre-per-model calculation.
+        """
+        if model_cost_rows:
+            return cls._price_cache_reads(model_cost_rows)
+        unpriced = [model] if (cache_read > 0 and model and lookup_cost_config(model) is None) else []
+        return cache_read_cost(model, cache_read), unpriced
+
+    @staticmethod
+    def _group_by_session(rows: list[dict]) -> dict[str, list[dict]]:
+        """Group per-model cost rows (one row per session+model) by session_id."""
+        grouped: dict[str, list[dict]] = {}
+        for row in rows:
+            grouped.setdefault(_s(row.get("session_id")), []).append(row)
+        return grouped
+
     # ── Overview ─────────────────────────────────────────────────────────────
 
     async def get_overview(self, f: LocalAnalyticsFilter) -> tuple[dict, list[str], str | None]:
@@ -669,12 +704,13 @@ class LocalAnalyticsHandler:
         branch: str | None = None,
     ) -> tuple[dict, list[str], str | None]:
         f.branch = branch or None
-        cost_facts, turns_rows, success_rows, lines_rows, model_rows = await asyncio.gather(
+        cost_facts, turns_rows, success_rows, lines_rows, model_rows, session_model_rows = await asyncio.gather(
             self._repo.get_session_cost_facts(f, is_unattributed=is_unattributed),
             self._repo.get_turns_by_session(f),
             self._repo.get_tool_success_by_session(f),
             self._repo.get_lines_by_session(f),
             self._repo.get_model_breakdown(f),
+            self._repo.get_session_model_costs(f),
         )
 
         session_ids = [_s(r.get("session_id")) for r in cost_facts]
@@ -685,6 +721,8 @@ class LocalAnalyticsHandler:
         success_by_session = {_s(r.get("session_id")): r for r in success_rows}
         lines_by_session = {_s(r.get("session_id")): r for r in lines_rows}
         _cost, unpriced = self._price_cache_reads(model_rows)
+
+        model_rows_by_session = self._group_by_session(session_model_rows)
 
         sessions: list[dict] = []
         for row in cost_facts:
@@ -699,6 +737,8 @@ class LocalAnalyticsHandler:
             duration_ms = 0
             if isinstance(started_at, datetime) and isinstance(last_event, datetime):
                 duration_ms = max(0, int((last_event - started_at).total_seconds() * 1000))
+            model_cost_rows = model_rows_by_session.get(sid, [])
+            crc = self._session_cache_read_cost(model_cost_rows, model, cache_read)[0]
             sessions.append(
                 {
                     "trace_id": sid,
@@ -709,7 +749,7 @@ class LocalAnalyticsHandler:
                     "prompt": _s(row.get("prompt")),
                     "start_time": _iso(started_at),
                     "duration_ms": duration_ms,
-                    "model_name": model,
+                    "model_name": self._display_models(model_cost_rows, model),
                     "turns": turns,
                     "tool_call_count": _i(success_by_session.get(sid, {}).get("tool_calls")),
                     "api_call_count": _i(row.get("api_call_count")),
@@ -719,7 +759,7 @@ class LocalAnalyticsHandler:
                     "cache_creation_tokens": _i(row.get("cache_creation_tokens")),
                     "cost_usd": cost,
                     "net_lines": _i(lines.get("lines_added")) - _i(lines.get("lines_removed")),
-                    "bloat_pct": _pct(cache_read_cost(model, cache_read), cost),
+                    "bloat_pct": _pct(crc, cost),
                     "delivery_framework": classify_delivery_framework(skills_by_session.get(sid, [])),
                     "ctx_per_call": _ctx_per_call(row.get("cache_read_tokens"), row.get("api_call_count")),
                 }
@@ -758,7 +798,16 @@ class LocalAnalyticsHandler:
     # ── Session detail ───────────────────────────────────────────────────────
 
     async def get_session_detail(self, session_id: str) -> tuple[dict | None, list[str]]:
-        meta_rows, cost_rows, scalar_rows, tool_rows, event_rows, dispatch_rows, skill_rows = await asyncio.gather(
+        (
+            meta_rows,
+            cost_rows,
+            scalar_rows,
+            tool_rows,
+            event_rows,
+            dispatch_rows,
+            skill_rows,
+            model_cost_rows,
+        ) = await asyncio.gather(
             self._repo.get_session_detail_meta(session_id),
             self._repo.get_session_detail_cost(session_id),
             self._repo.get_session_detail_scalars(session_id),
@@ -766,6 +815,7 @@ class LocalAnalyticsHandler:
             self._repo.get_session_detail_events(session_id),
             self._repo.get_session_detail_dispatches(session_id),
             self._repo.get_skill_names_by_session([session_id]),
+            self._repo.get_session_detail_model_costs(session_id),
         )
         meta = _first(meta_rows)
         if not meta or not _s(meta.get("session_id")):
@@ -776,8 +826,8 @@ class LocalAnalyticsHandler:
         model = _s(cost.get("model_name"))
         cache_read = _i(cost.get("cache_read_tokens"))
         cost_usd = _f(cost.get("cost_usd"))
-        crc = cache_read_cost(model, cache_read)
-        unpriced = [model] if (cache_read > 0 and model and lookup_cost_config(model) is None) else []
+        crc, unpriced = self._session_cache_read_cost(model_cost_rows, model, cache_read)
+        display_model = self._display_models(model_cost_rows, model)
 
         tools = []
         tool_ok_total = 0
@@ -835,7 +885,7 @@ class LocalAnalyticsHandler:
             "prompt": _s(meta.get("prompt")),
             "start_time": _iso(started_at),
             "duration_ms": duration_ms,
-            "model_name": model,
+            "model_name": display_model,
             "turns": _i(scalars.get("turns")),
             "tool_call_count": _i(scalars.get("tool_call_count")),
             "input_tokens": _i(cost.get("input_tokens")),

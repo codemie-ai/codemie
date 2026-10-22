@@ -1,0 +1,111 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15387_cache-read-cost-per-model",
+  "head": "b4b9c7505dc33a306d33630a0a94286c03df33e1",
+  "runner": "poetry",
+  "started_at": "2026-10-07T15:37:00Z",
+  "completed_at": "2026-10-07T15:46:28Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 6183,
+      "command": "poetry run ruff format && poetry run ruff check --fix && poetry run ruff check",
+      "exit_code": 0,
+      "notes": "make binary is not installed on this host; ran the exact recipe lines from the Makefile 'ruff' target instead of 'make ruff'."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 10213,
+      "command": "poetry build",
+      "exit_code": 0,
+      "notes": "make binary unavailable; ran the Makefile 'build' target recipe directly ('poetry build')."
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2076,
+      "command": "poetry run python scripts/license_headers/check_license_headers.py --check --quiet",
+      "exit_code": 0,
+      "notes": "make binary unavailable; ran the Makefile 'license-check' target recipe directly. Checked 2437 files, 0 missing license headers."
+    },
+    {
+      "id": "gitleaks-full",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 31972,
+      "command": "docker run --rm -v \"C:/Projects/codemie-dev/codemie:/workspace\" ghcr.io/gitleaks/gitleaks:v8.30.1 dir --no-banner --verbose --config=/workspace/.gitleaks.toml /workspace",
+      "exit_code": 0,
+      "notes": "make binary unavailable; ran the Makefile 'gitleaks' target recipe directly. First attempt with the literal './:/workspace' mount failed because Git Bash's MSYS path conversion mangled the container-side path (not a secret finding); retried with an explicit Windows host path and MSYS_NO_PATHCONV=1. Scanned ~47.78 MB, no leaks found."
+    },
+    {
+      "id": "gitleaks-staged",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 2239,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": 0,
+      "notes": "Self-skip: working tree had nothing staged, so the hook scanned an empty diff - output showed \"0 commits scanned.\" and \"scanned ~0 bytes (0) in 260ms\". To exercise this gate for real, stage the branch's changes ('git add') before running it. The full-tree 'gitleaks-full' gate above already scanned this diff's actual content and passed."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 413351,
+      "command": "poetry run pytest tests/",
+      "exit_code": 1,
+      "notes": "194 failed, 19149 passed, 197 skipped, 1 xfailed, 4 errors. None of the failures are in the diff's own touched test files (tests/codemie/repository/cli_analytics/postgres/test_reader.py, tests/codemie/service/analytics/handlers/test_cli_analytics_handler.py, test_cli_analytics_handler_ordering.py, test_coding_agent_pricing.py - all passed). Failures cluster in tests/enterprise/mcp_auth/, tests/scripts/test_commit_msg_hook.py, test_pre_commit_fast_hook.py, test_pre_push_hook.py, test_ruff_staged_hook.py, tests/codemie/migrations/test_credentialtypes_enum_migrations.py (UnicodeDecodeError), tests/codemie/service/security/test_logout_token_cleanup_mock_tms.py, and some tests/codemie/repository/cli_analytics/postgres/test_dirty.py and test_settings.py date-edge-case cases - none of these are files this branch touched. Caller should determine whether these are pre-existing baseline failures."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "SKIPPED",
+      "command": "poetry run pytest tests/ -W ignore::DeprecationWarning --cov --cov-report=html",
+      "notes": "Skip if: the user did not request coverage. Not requested in this run."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 258,
+      "command": "node scripts/sonar/run-local-sonar.js",
+      "exit_code": 0,
+      "notes": "Self-skip: output was \"[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.\" No SONAR_TOKEN and no .env.local present in this checkout. Set SONAR_TOKEN (or populate .env.local with SONAR_* vars) to run this gate for real locally."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 0,
+      "command": "make verify (= ruff && license-check && gitleaks && test)",
+      "exit_code": 1,
+      "notes": "Not independently re-executed: make binary is unavailable on this host, and 'verify' is defined as exactly the lint, license-check, gitleaks-full, and unit gates already run above in this pass. Status mirrors those results (unit failed) rather than a fresh invocation; re-running the full chain (including the ~7-minute test suite) would have produced no new information."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "SKIPPED",
+      "command": "uvx codemie-test-harness --sanity-api",
+      "notes": "Skip if: not opening a merge request (local iteration only). This run is a quality-gate check, not an MR submission. Requires docker stack up (docker compose up -d), superadmin fixtures, and ~/.codemie/test-harness.json to run for real."
+    },
+    {
+      "id": "commit-msg",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 4755,
+      "command": "bash scripts/git-hooks/commit_msg.sh <per-commit message file>, run once per commit in 1d91ef34f0c22e460bb9d61efc2508c360e25179..HEAD",
+      "exit_code": 0,
+      "notes": "Covers the .pre-commit-config.yaml 'codemie-commit-msg' hook, not listed in quality-gates.md. Checked all 8 commits on this branch (EPMCDME-15387: ... prefix); every subject line passed."
+    }
+  ],
+  "failures": {
+    "unit": "FAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-error-token_refresh_error]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-warning-reauth_required1]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-error-tms_persistence_error1]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_without_calling_tms_for_no_refresh_decisions[None-missing_www_authenticate]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_without_calling_tms_for_no_refresh_decisions[Bearer error=\"invalid_request\"-unsupported_bearer_error]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_detects_configured_discovered_identity_conflict\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_non_oauth_config_without_oauth_payload\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_normalizes_or_rejects_refreshed_token_type[bearer-Bearer fresh-access-None]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_normalizes_or_rejects_refreshed_token_type[Basic-None-refresh_result_invalid]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_when_oauth2_identity_is_incomplete[execution_context0-missing_user_id]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_when_oauth2_identity_is_incomplete[execution_context1-missing_auth_config_id]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_uses_discovered_oauth2_identity_when_no_configured_id\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_rejects_env_delivered_oauth2_refresh\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_omits_initiate_url_for_workflow_payload\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_uses_live_discovered_snapshot_for_reauth_initiate_url\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_rebuilds_discovered_snapshot_from_exact_flow_config\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_discovered_snapshot_missing_without_exact_config_is_non_resumable\nFAILED tests/enterprise/mcp_auth/test_private_network_allowlist_bridge.py::test_private_network_allowlist_reader_output_passes_to_enterprise_as_discovery\nFAILED tests/scripts/test_commit_msg_hook.py::test_valid_prefix_accepted\nFAILED tests/scripts/test_commit_msg_hook.py::test_missing_prefix_rejected\nFAILED tests/scripts/test_commit_msg_hook.py::test_prefix_without_colon_rejected\nFAILED tests/scripts/test_commit_msg_hook.py::test_merge_commit_message_bypassed\nFAILED tests/scripts/test_commit_msg_hook.py::test_fixup_message_bypassed\nFAILED tests/scripts/test_commit_msg_hook.py::test_squash_message_bypassed\nFAILED tests/scripts/test_commit_msg_hook.py::test_amend_message_bypassed\nFAILED tests/scripts/test_commit_msg_hook.py::test_revert_message_bypassed\nFAILED tests/scripts/test_commit_msg_hook.py::test_merge_head_present_bypasses_validation\nFAILED tests/scripts/test_commit_msg_hook.py::test_rebase_head_present_bypasses_validation\nFAILED tests/scripts/test_commit_msg_hook.py::test_cherry_pick_head_present_bypasses_validation\nFAILED tests/scripts/test_commit_msg_hook.py::test_leading_comment_lines_ignored\nFAILED tests/scripts/test_pre_commit_fast_hook.py::test_fast_path_passes_without_heavy_steps\nFAILED tests/scripts/test_pre_commit_fast_hook.py::test_source_has_no_pytest_or_sonar_invocation\nFAILED tests/scripts/test_pre_push_hook.py::test_passes_when_pytest_and_sonar_pass\nFAILED tests/scripts/test_pre_push_hook.py::test_pytest_receives_enterprise_ignore\nFAILED tests/scripts/test_pre_push_hook.py::test_pytest_failure_blocks_and_skips_sonar\nFAILED tests/scripts/test_pre_push_hook.py::test_skipped_when_not_enabled\nFAILED tests/scripts/test_pre_push_hook.py::test_numeric_one_enabled_runs\nFAILED tests/scripts/test_pre_push_hook.py::test_on_enabled_runs\nFAILED tests/scripts/test_pre_push_hook.py::test_legacy_precommit_enabled_runs_and_warns\nFAILED tests/scripts/test_ruff_staged_hook.py::test_no_staged_py_files_exits_zero\nFAILED tests/scripts/test_ruff_staged_hook.py::test_clean_staged_plus_unstaged_garbage_exits_zero\nFAILED tests/scripts/test_ruff_staged_hook.py::test_ruff_reformats_staged_file_exits_one\nFAILED tests/scripts/test_ruff_staged_hook.py::test_missing_trailing_newline_exits_one\nFAILED tests/scripts/test_ruff_staged_hook.py::test_syntax_error_in_staged_file_reports_clearly\nFAILED tests/scripts/test_ruff_staged_hook.py::test_partial_staging_clean_hunk_dirty_unstaged_exits_zero\nERROR tests/codemie/migrations/test_credentialtypes_enum_migrations.py - UnicodeDecodeError (x3)\nERROR tests/codemie/service/security/test_logout_token_cleanup_mock_tms.py::test_logout_removes_only_the_users_rows_and_pod_fallback\n= 194 failed, 19149 passed, 197 skipped, 1 xfailed, 257 warnings, 4 errors in 407.91s (0:06:47) =",
+    "verify": "Derived, not independently executed. 'make verify' = ruff + license-check + gitleaks + test, all of which already ran individually in this pass (lint PASS, license-check PASS, gitleaks-full PASS, unit FAIL). The chain would stop at the first failing step in dependency order, i.e. the 'unit' failure above; see failures.unit for the actual pytest output."
+  }
+}

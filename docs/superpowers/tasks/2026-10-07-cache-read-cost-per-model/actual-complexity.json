@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "generated": "2026-10-07T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 17,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 8,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "The diff adds two new methods (get_session_model_costs, get_session_detail_model_costs) to CliAnalyticsReader in ports.py, which the module's own docstring describes as the shared row contract 'identical for every adapter' — a core shared contract, not a single-adapter change. Implementation then spans the Protocol (ports.py), the PostgresCliAnalyticsReader implementation (reader.py), and LocalAnalyticsHandler (cli_analytics_handler.py), which consumes the new per-model rows in get_sessions, get_session_detail, and a new _display_model tie-break helper."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "diffstat reports 8 files changed (275 insertions, 9 deletions), mapping to the L band (7-10 files) per the File Change Estimate rule; changes land across at least 5 distinct src/test directories (repository/cli_analytics, repository/cli_analytics/postgres, service/analytics/handlers, and their mirrored tests/ paths)."
+    }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from M to L: ports.py defines the CliAnalyticsReader Protocol shared by every storage adapter (per its own docstring), and this diff adds two new methods to that shared contract rather than touching one adapter in isolation."
+  ],
+  "split_recommendation": null
+}

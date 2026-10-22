@@ -1,0 +1,46 @@
+{
+  "decision": "approve",
+  "rationale": "Edge-case lens's four candidates resolved to one dismissed log-noise nit (per-session unpriced-model warning can repeat across a page) and three deferred pre-existing gaps (resolved-but-no-rate silent-zero in the shared _price_cache_reads/cache_read_cost helper; lack of snapshot isolation across the already-non-atomic asyncio.gather reads in get_sessions and get_session_detail) that this change exposes at new call sites but did not introduce. Acceptance lens's one partial criterion (get_session_detail's per-model unpriced detection is wired correctly but untested) was the sole blocking finding, CR-001. Standards audit passed cleanly with coverage_gap false; no lens failures or truncation, diff not oversized, spec/story present throughout.",
+  "resolution": "CR-001 fixed in commit e419854c8 (added test_get_session_detail_unpriced_model_contributes_zero_without_breaking_total; no production code change needed — the mechanism was already correctly wired, only coverage was missing). User re-approved at gate code-review.final, recorded in decisions.jsonl at 2026-10-07T15:31:54Z.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    { "kind": "story-ac", "item": "Per-model cache-read cost sum exceeds today's single-cheapest-model total, verified for live session c9b8c2a5-268b-42de-adbd-92b17f1ec5f0 (haiku, claude-opus-5, claude-sonnet-5)", "status": "pending-stage-7", "notes": "Mechanism implemented (handler.py:581-601,690-695); live numeric comparison is runtime evidence; Task 6 diagnostic xfails the haiku model id, which could zero that model's contribution." },
+    { "kind": "story-ac", "item": "Per-model pricing applies to both get_session_detail (session dialog) and get_sessions (bloat_pct)", "status": "pass", "notes": "get_sessions wires get_session_model_costs + _price_cache_reads at handler.py:565-621; get_session_detail at :679-767." },
+    { "kind": "story-ac", "item": "Session dialog header shows most-expensive model when session used >1 model; single-model sessions unaffected", "status": "pass", "notes": "_display_model (handler.py:255-266) used at :612 and :695/753; both branches covered by tests." },
+    { "kind": "story-ac", "item": "No change to _TOP_MODEL's most-called-model selection or its other consumers (leaderboards, dead-session detection, user top_model stats)", "status": "pass", "notes": "Diff only adds new reader methods and additive handler wiring; _TOP_MODEL, _GRAIN_CALLS, _cost_rows, get_users untouched." },
+    { "kind": "story-ac", "item": "_build_dispatches / dispatch Timeline tab untouched", "status": "pass", "notes": "handler.py:730-739 call site unchanged; _build_dispatches body not present in the diff." },
+    { "kind": "story-ac", "item": "New test coverage for a multi-model session at both reader and handler level, including most-expensive differing from most-called", "status": "pass", "notes": "Reader- and handler-level tests added using a session whose top-called model differs from its costliest per-model row." },
+    { "kind": "story-ac", "item": "Test-first honored for every behavior-changing task", "status": "na", "notes": "Process criterion about commit order; the frozen diff is a single squashed snapshot, ordering not observable." },
+    { "kind": "spec", "item": "Do not modify _TOP_MODEL, _GRAIN_CALLS, _cost_rows, get_users, get_session_cost_facts, or get_session_detail_cost", "status": "pass", "notes": "Confirmed by diff: only additions beside these in ports.py/reader.py." },
+    { "kind": "spec", "item": "Do not touch _build_dispatches or get_session_detail_dispatches", "status": "pass", "notes": "Neither appears edited; call site positionally unchanged." },
+    { "kind": "spec", "item": "Pinned test test_the_top_model_is_the_largest_row_of_the_original_cost_grain must keep passing unchanged", "status": "pass", "notes": "Test body untouched; new tests inserted around it without altering its content." },
+    { "kind": "spec", "item": "No frontend changes", "status": "pass", "notes": "Diff and changed-files list contain only Python source/tests." },
+    { "kind": "spec", "item": "Single-model session shows byte-identical bloat_pct/cache_read_cost_usd/model_name before and after the change", "status": "pass", "notes": "Falls back to pre-existing single-row cache_read_cost()/model path when model_cost_rows is empty; _display_model on one row is identity." },
+    { "kind": "spec", "item": "A model absent from pricing config must still be reported via unpriced, now per-model-rows-aware (Task 5 / get_session_detail)", "status": "pass", "notes": "Mechanism correct (handler.py:690-694 runs _price_cache_reads across all model_cost_rows); test_get_session_detail_unpriced_model_contributes_zero_without_breaking_total (commit e419854c8) now asserts an unpriced multi-model get_session_detail scenario." },
+    { "kind": "spec", "item": "Two models tied on cost_usd must pick the display model deterministically (alphabetical)", "status": "pass", "notes": "_display_model's min() key is (-cost, model_name); covered by a dedicated tie-break test." },
+    { "kind": "spec", "item": "get_sessions' sort/paging and get_session_detail's unpriced return shape must stay unchanged for callers", "status": "pass", "notes": "Return shapes and sort/paging block (handler.py:627-657) untouched by the diff." },
+    { "kind": "spec", "item": "get_session_model_costs returns one row per (session_id, model_name) shaped {session_id, model_name, cost_usd, cache_read_tokens}", "status": "pass", "notes": "reader.py:233-246 SELECT/GROUP BY matches; HAVING excludes blank models." },
+    { "kind": "spec", "item": "get_session_detail_model_costs returns one row per model in one session shaped {model_name, cost_usd, cache_read_tokens}", "status": "pass", "notes": "reader.py:590-601 SELECT/GROUP BY matches the specified contract." }
+  ],
+  "standards_review": [
+    { "kind": "commit-format", "status": "pass", "notes": "All 7 commit subjects in range use the documented EPMCDME-####: Description format (git-workflow.md)." },
+    { "kind": "code-quality", "status": "pass", "notes": "Modern type hints used; new helpers added to existing modules (handler, reader/ports) extend each file's existing responsibility per Module Cohesion guide; no new files, so license-header rule n/a." },
+    { "kind": "security", "status": "pass", "notes": "New reader queries use parameterized $sid::text/window_params, no string-built SQL; no credentials/tokens touched or logged (warning logs model names only); no auth paths touched." }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/service/analytics/handlers/test_cli_analytics_handler.py",
+      "title": "No test for session-detail unpriced detection",
+      "problem": "get_session_detail's per-model unpriced detection (cli_analytics_handler.py:690-694) runs _price_cache_reads across every model_cost_rows entry, which is correctly wired, but no new or pre-existing test exercises a get_session_detail call where one of several models is absent from pricing config.",
+      "impact": "A regression that silently breaks per-model unpriced detection for get_session_detail would ship undetected, understating cache_read_cost_usd/bloat_pct for multi-model sessions with no warning surfaced to the caller.",
+      "recommendation": "Add a get_session_detail handler test with model_cost_rows containing one model absent from pricing config (lookup_cost_config returns None) among several, and assert that model appears in the returned unpriced list, mirroring the existing per-model handler test pattern used for get_sessions.",
+      "status": "resolved",
+      "resolution": "Fixed in commit e419854c8 — added test_get_session_detail_unpriced_model_contributes_zero_without_breaking_total. No production code change needed."
+    }
+  ]
+}

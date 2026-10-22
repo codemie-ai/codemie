@@ -258,6 +258,23 @@ class PostgresCliAnalyticsReader:
             window_params(f),
         )
 
+    async def get_session_model_costs(self, f: LocalAnalyticsFilter) -> Rows:
+        """Per-(session, model) cache cost rows, so a session's cache reads can be priced at each
+        model's own rate instead of one top model's (mirrors get_model_breakdown, scoped per session)."""
+        return await self._q(
+            f"""
+        WITH {self._sessions_cte(f)}
+        SELECT c.session_id,
+               c.model_name                      AS model_name,
+               sum(c.cost_usd)                   AS cost_usd,
+               sum(c.cache_read_tokens)::bigint   AS cache_read_tokens
+        FROM cost_daily c
+        WHERE true{self._scope(f, "c.session_id")}
+        GROUP BY c.session_id, c.model_name
+        HAVING c.model_name <> ''""",
+            window_params(f),
+        )
+
     async def get_cost_by_user(self, f: LocalAnalyticsFilter) -> Rows:
         return await self._q(
             f"""
@@ -612,6 +629,21 @@ class PostgresCliAnalyticsReader:
                sum(c.cache_read_tokens)::bigint     AS cache_read_tokens,
                sum(c.cache_creation_tokens)::bigint AS cache_creation_tokens
         FROM {_cost_rows("c.session_id = $sid::text")}""",
+            {"sid": session_id},
+        )
+
+    async def get_session_detail_model_costs(self, session_id: str) -> Rows:
+        """Per-model cache cost rows for one session (same table as get_session_detail_cost,
+        grouped by model instead of collapsed to the top one by _TOP_MODEL)."""
+        return await self._q(
+            """
+        SELECT c.model_name                      AS model_name,
+               sum(c.cost_usd)                    AS cost_usd,
+               sum(c.cache_read_tokens)::bigint    AS cache_read_tokens
+        FROM cost_daily c
+        WHERE c.session_id = $sid::text
+        GROUP BY c.model_name
+        HAVING c.model_name <> ''""",
             {"sid": session_id},
         )
 

@@ -14,10 +14,11 @@
 
 import pytest
 from datetime import date, datetime, timedelta, timezone
-from unittest.mock import ANY, AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
-from codemie.service.analytics.handlers.cli_analytics_handler import LocalAnalyticsHandler, _iso
+from codemie.service.analytics.handlers.cli_analytics_handler import LocalAnalyticsHandler, _iso, _pct
+from codemie.service.analytics.handlers.coding_agent_pricing import cache_read_cost
 
 
 def make_handler(cost_facts=None):
@@ -27,6 +28,7 @@ def make_handler(cost_facts=None):
     repo.get_tool_success_by_session = AsyncMock(return_value=[])
     repo.get_lines_by_session = AsyncMock(return_value=[])
     repo.get_model_breakdown = AsyncMock(return_value=[])
+    repo.get_session_model_costs = AsyncMock(return_value=[])
     repo.get_skill_names_by_session = AsyncMock(return_value=[])
     return LocalAnalyticsHandler(repo)
 
@@ -234,6 +236,7 @@ async def test_is_unattributed_filter_delegates_to_repository():
     repo.get_tool_success_by_session = AsyncMock(return_value=[])
     repo.get_lines_by_session = AsyncMock(return_value=[])
     repo.get_model_breakdown = AsyncMock(return_value=[])
+    repo.get_session_model_costs = AsyncMock(return_value=[])
     repo.get_skill_names_by_session = AsyncMock(return_value=[])
     handler = LocalAnalyticsHandler(repo)
 
@@ -256,6 +259,7 @@ async def test_is_unattributed_false_delegates_to_repository():
     repo.get_tool_success_by_session = AsyncMock(return_value=[])
     repo.get_lines_by_session = AsyncMock(return_value=[])
     repo.get_model_breakdown = AsyncMock(return_value=[])
+    repo.get_session_model_costs = AsyncMock(return_value=[])
     repo.get_skill_names_by_session = AsyncMock(return_value=[])
     handler = LocalAnalyticsHandler(repo)
 
@@ -311,6 +315,7 @@ async def test_branch_filter_forwarded_to_get_session_cost_facts():
     repo.get_tool_success_by_session = AsyncMock(return_value=[])
     repo.get_lines_by_session = AsyncMock(return_value=[])
     repo.get_model_breakdown = AsyncMock(return_value=[])
+    repo.get_session_model_costs = AsyncMock(return_value=[])
     repo.get_skill_names_by_session = AsyncMock(return_value=[])
     handler = LocalAnalyticsHandler(repo)
 
@@ -329,6 +334,7 @@ async def test_branch_none_when_not_provided():
     repo.get_tool_success_by_session = AsyncMock(return_value=[])
     repo.get_lines_by_session = AsyncMock(return_value=[])
     repo.get_model_breakdown = AsyncMock(return_value=[])
+    repo.get_session_model_costs = AsyncMock(return_value=[])
     repo.get_skill_names_by_session = AsyncMock(return_value=[])
     handler = LocalAnalyticsHandler(repo)
 
@@ -356,6 +362,159 @@ async def test_a_branch_keeps_a_filter_that_denies_every_session_denying():
     ):
         call_filter = query.call_args.args[0]
         assert (call_filter.deny_all, call_filter.branch) == (True, "main")
+
+
+@pytest.mark.parametrize(
+    "rows, expected",
+    [
+        (
+            [
+                {"model_name": "claude-sonnet-5", "cost_usd": 0.12},
+                {"model_name": "claude-opus-5", "cost_usd": 0.62},
+                {"model_name": "claude-haiku", "cost_usd": 0.05},
+            ],
+            "claude-haiku, claude-opus-5, claude-sonnet-5",
+        ),
+        (
+            [
+                {"model_name": "claude-opus-5-5", "cost_usd": 0.7},
+                {"model_name": "claude-haiku-4-5-20251001", "cost_usd": 0.1},
+            ],
+            "claude-haiku-4-5-20251001, claude-opus-5-5",
+        ),
+    ],
+)
+def test_display_models_lists_all_models_alphabetically(rows, expected):
+    assert LocalAnalyticsHandler._display_models(rows, "claude-haiku") == expected
+
+
+def test_display_models_sorts_equal_cost_models_alphabetically():
+    rows = [{"model_name": "zeta", "cost_usd": 1.0}, {"model_name": "alpha", "cost_usd": 1.0}]
+    assert LocalAnalyticsHandler._display_models(rows, "zeta") == "alpha, zeta"
+
+
+def test_display_models_returns_the_only_model_unchanged():
+    assert LocalAnalyticsHandler._display_models([{"model_name": "claude", "cost_usd": 0.3}], "claude") == "claude"
+
+
+def test_display_models_falls_back_when_no_per_model_rows():
+    assert LocalAnalyticsHandler._display_models([], "claude-sonnet-5") == "claude-sonnet-5"
+
+
+@pytest.mark.asyncio
+async def test_get_sessions_prices_cache_reads_per_model_and_lists_all_models():
+    cost_facts = [{**BASE_COST_ROW, "model_name": "claude-haiku", "cache_read_tokens": 100_000, "cost_usd": 0.8}]
+    model_costs = [
+        {"session_id": "s1", "model_name": "claude-haiku", "cost_usd": 0.1, "cache_read_tokens": 70_000},
+        {"session_id": "s1", "model_name": "claude-opus-5", "cost_usd": 0.7, "cache_read_tokens": 30_000},
+    ]
+    repo = MagicMock()
+    repo.get_session_cost_facts = AsyncMock(return_value=cost_facts)
+    repo.get_turns_by_session = AsyncMock(return_value=[])
+    repo.get_tool_success_by_session = AsyncMock(return_value=[])
+    repo.get_lines_by_session = AsyncMock(return_value=[])
+    repo.get_model_breakdown = AsyncMock(return_value=[])
+    repo.get_session_model_costs = AsyncMock(return_value=model_costs)
+    repo.get_skill_names_by_session = AsyncMock(return_value=[])
+    handler = LocalAnalyticsHandler(repo)
+
+    data, _, _ = await handler.get_sessions(make_filter(), page=0, per_page=20, sort_by="start_time", search=None)
+    session = data["sessions"][0]
+
+    old_bloat = _pct(cache_read_cost("claude-haiku", 100_000), 0.8)
+    assert session["bloat_pct"] != old_bloat
+    assert session["model_name"] == "claude-haiku, claude-opus-5"
+
+
+@pytest.mark.asyncio
+async def test_get_session_detail_prices_cache_reads_per_model_and_lists_all_models():
+    repo = MagicMock()
+    repo.get_session_detail_meta = AsyncMock(return_value=[{"session_id": "s1"}])
+    repo.get_session_detail_cost = AsyncMock(
+        return_value=[
+            {
+                "model_name": "claude-haiku",
+                "cache_read_tokens": 100_000,
+                "cost_usd": 0.8,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_creation_tokens": 0,
+            }
+        ]
+    )
+    repo.get_session_detail_model_costs = AsyncMock(
+        return_value=[
+            {"model_name": "claude-haiku", "cost_usd": 0.1, "cache_read_tokens": 70_000},
+            {"model_name": "claude-opus-5", "cost_usd": 0.7, "cache_read_tokens": 30_000},
+        ]
+    )
+    repo.get_session_detail_scalars = AsyncMock(return_value=[{}])
+    repo.get_session_detail_tools = AsyncMock(return_value=[])
+    repo.get_session_detail_events = AsyncMock(return_value=[])
+    repo.get_session_detail_dispatches = AsyncMock(return_value=[])
+    repo.get_skill_names_by_session = AsyncMock(return_value=[{"skill_names": []}])
+    handler = LocalAnalyticsHandler(repo)
+
+    detail, _ = await handler.get_session_detail("s1")
+
+    old_crc = cache_read_cost("claude-haiku", 100_000)
+    assert detail["cache_read_cost_usd"] != old_crc
+    assert detail["model_name"] == "claude-haiku, claude-opus-5"
+
+
+@pytest.mark.asyncio
+async def test_get_session_detail_unpriced_model_contributes_zero_without_breaking_total():
+    """A model absent from pricing config among several model_cost_rows must contribute $0.0
+    to the summed cache-read cost, be reported in the unpriced list, and not raise."""
+    repo = MagicMock()
+    repo.get_session_detail_meta = AsyncMock(return_value=[{"session_id": "s1"}])
+    repo.get_session_detail_cost = AsyncMock(
+        return_value=[
+            {
+                "model_name": "claude-opus-5",
+                "cache_read_tokens": 130_000,
+                "cost_usd": 0.9,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_creation_tokens": 0,
+            }
+        ]
+    )
+    repo.get_session_detail_model_costs = AsyncMock(
+        return_value=[
+            {"model_name": "claude-opus-5", "cost_usd": 0.7, "cache_read_tokens": 30_000},
+            {"model_name": "definitely-not-a-real-model-xyz-9999", "cost_usd": 0.2, "cache_read_tokens": 100_000},
+        ]
+    )
+    repo.get_session_detail_scalars = AsyncMock(return_value=[{}])
+    repo.get_session_detail_tools = AsyncMock(return_value=[])
+    repo.get_session_detail_events = AsyncMock(return_value=[])
+    repo.get_session_detail_dispatches = AsyncMock(return_value=[])
+    repo.get_skill_names_by_session = AsyncMock(return_value=[{"skill_names": []}])
+    handler = LocalAnalyticsHandler(repo)
+
+    priced_rate = 0.000001
+
+    def fake_lookup(model):
+        return None if model == "definitely-not-a-real-model-xyz-9999" else MagicMock()
+
+    def fake_cache_read_cost(model, tokens):
+        return 0.0 if model == "definitely-not-a-real-model-xyz-9999" else tokens * priced_rate
+
+    with (
+        patch(
+            "codemie.service.analytics.handlers.cli_analytics_handler.lookup_cost_config",
+            side_effect=fake_lookup,
+        ),
+        patch(
+            "codemie.service.analytics.handlers.cli_analytics_handler.cache_read_cost",
+            side_effect=fake_cache_read_cost,
+        ),
+    ):
+        detail, unpriced = await handler.get_session_detail("s1")
+
+    assert unpriced == ["definitely-not-a-real-model-xyz-9999"]
+    assert detail["cache_read_cost_usd"] == pytest.approx(30_000 * priced_rate)
 
 
 def _dispatch_row(
@@ -558,7 +717,9 @@ async def test_rows_with_developer_name_also_carry_user_email() -> None:
         "get_session_durations",
         "get_cost_kpis",
         "get_model_breakdown",
+        "get_session_model_costs",
         "get_session_detail_cost",
+        "get_session_detail_model_costs",
         "get_session_detail_scalars",
         "get_session_detail_tools",
         "get_session_detail_events",
@@ -652,6 +813,7 @@ async def test_sessions_ctx_per_call_field_uses_api_call_count_and_sorts_by_it()
     repo.get_lines_by_session = AsyncMock(return_value=[])
     repo.get_model_breakdown = AsyncMock(return_value=[])
     repo.get_skill_names_by_session = AsyncMock(return_value=[])
+    repo.get_session_model_costs = AsyncMock(return_value=[])
     handler = LocalAnalyticsHandler(repo)
 
     data, _, _ = await handler.get_sessions(make_filter(), page=0, per_page=20, sort_by="ctx_per_call", search=None)
@@ -734,6 +896,7 @@ def make_detail_handler(meta_row):
     repo.get_session_detail_tools = AsyncMock(return_value=[])
     repo.get_session_detail_events = AsyncMock(return_value=[])
     repo.get_session_detail_dispatches = AsyncMock(return_value=[])
+    repo.get_session_detail_model_costs = AsyncMock(return_value=[])
     repo.get_skill_names_by_session = AsyncMock(return_value=[{"skill_names": []}])
     return LocalAnalyticsHandler(repo)
 

@@ -502,6 +502,13 @@ def test_aggregation_merges_session_count_and_cost_across_raw_name_variants():
 
 
 @pytest.mark.asyncio
+async def test_session_model_costs_groups_by_session_and_model():
+    sql, _ = await _sql_of("get_session_model_costs")
+    assert "GROUP BY c.session_id, c.model_name" in sql
+    assert "c.model_name <> ''" in sql
+
+
+@pytest.mark.asyncio
 async def test_session_cost_facts_inner_join_sel_without_epoch_defaults():
     sql, _ = await _sql_of("get_session_cost_facts")
 
@@ -549,6 +556,17 @@ async def test_the_top_model_is_the_largest_row_of_the_original_cost_grain(metho
         sql.count("cost_daily") == 1
         and "(SELECT c.*, sum(c.api_call_count) OVER w AS grain_calls FROM cost_daily c" in sql
     )
+
+
+@pytest.mark.asyncio
+async def test_session_detail_model_costs_groups_by_model_for_one_session():
+    recorder = _SqlRecorder()
+    reader = PostgresCliAnalyticsReader(recorder)  # type: ignore[arg-type]
+    await reader.get_session_detail_model_costs("s1")
+    (statement,) = recorder.statements
+    sql = " ".join(statement.split())
+    assert "GROUP BY c.model_name" in sql
+    assert "c.session_id = $1" in sql.replace("$sid", "$1") or "session_id =" in sql
 
 
 @pytest.mark.asyncio
