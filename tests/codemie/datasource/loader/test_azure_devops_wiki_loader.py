@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import pytest
+import requests
 from unittest.mock import MagicMock, patch
 from langchain_core.documents import Document
 
@@ -1418,3 +1419,58 @@ class TestXlsbWikiAttachment:
 
     def test_engine_defaults_to_xlsx_for_generic_name_and_xlsx_mime(self, loader):
         assert self._load_ext(loader, self._XLSX_MIME, "attachment") == ".xlsx"
+
+
+@pytest.fixture
+def request_timeout():
+    with patch("codemie.datasource.loader.azure_devops_wiki_loader.config") as mock_config:
+        mock_config.DATASOURCE_REQUEST_TIMEOUT_SECONDS = 123
+        yield 123
+
+
+def test_get_page_comments_passes_configured_request_timeout(loader_with_session, request_timeout):
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"comments": []}
+    loader_with_session._session.get.return_value = mock_response
+
+    loader_with_session._get_page_comments("wiki-123", 456)
+
+    assert loader_with_session._session.get.call_args.kwargs["timeout"] == request_timeout
+
+
+def test_get_wiki_attachments_index_passes_configured_request_timeout(loader_with_session, request_timeout):
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"value": []}
+    loader_with_session._session.get.return_value = mock_response
+
+    loader_with_session._get_wiki_attachments_index("wiki-123", "repo-456")
+
+    assert loader_with_session._session.get.call_args.kwargs["timeout"] == request_timeout
+
+
+def test_download_wiki_attachment_passes_configured_request_timeout(loader_with_session, request_timeout):
+    mock_response = MagicMock()
+    mock_response.content = b"data"
+    loader_with_session._session.get.return_value = mock_response
+
+    loader_with_session._download_wiki_attachment("repo-456", "obj-123")
+
+    assert loader_with_session._session.get.call_args.kwargs["timeout"] == request_timeout
+
+
+def test_get_page_comments_returns_empty_list_on_request_timeout(loader_with_session):
+    loader_with_session._session.get.side_effect = requests.exceptions.Timeout("timed out")
+
+    assert loader_with_session._get_page_comments("wiki-123", 456) == []
+
+
+def test_get_wiki_attachments_index_returns_empty_index_on_request_timeout(loader_with_session):
+    loader_with_session._session.get.side_effect = requests.exceptions.Timeout("timed out")
+
+    assert loader_with_session._get_wiki_attachments_index("wiki-123", "repo-456") == {}
+
+
+def test_download_wiki_attachment_returns_none_on_request_timeout(loader_with_session):
+    loader_with_session._session.get.side_effect = requests.exceptions.Timeout("timed out")
+
+    assert loader_with_session._download_wiki_attachment("repo-456", "obj-123") is None

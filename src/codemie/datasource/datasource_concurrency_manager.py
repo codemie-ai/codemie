@@ -12,8 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import contextlib
 import logging
 import threading
+import uuid
 from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
@@ -83,7 +85,21 @@ class DatasourceConcurrencyManager:
                 exc_info=True,
             )
 
-    def run(self, process_func: Callable, index_info: Optional[object] = None) -> None:
+    @staticmethod
+    def _resolve_datasource_name(index_info: Optional[object], datasource_name: Optional[str]) -> str:
+        return str(datasource_name or getattr(index_info, 'repo_name', None) or 'unknown')
+
+    @staticmethod
+    def _slot_context(slot: str, datasource_id: str, datasource: str, operation: str) -> str:
+        return f"slot={slot} datasource_id={datasource_id} datasource={datasource} operation={operation}"
+
+    def run(
+        self,
+        process_func: Callable,
+        index_info: Optional[object] = None,
+        *,
+        datasource_name: Optional[str] = None,
+    ) -> None:
         """
         Execute process_func with concurrency control.
 
@@ -97,11 +113,14 @@ class DatasourceConcurrencyManager:
             process_func: The callable to execute (typically BaseDatasourceProcessor.process).
             index_info: Optional IndexInfo instance. When provided and concurrency is at
                         capacity, the record is marked as queued in the DB until a slot opens.
+            datasource_name: Optional display name used in slot logs. Falls back to
+                        index_info.repo_name when omitted.
         """
         if not self._enabled:
             process_func()
             return
 
+        resolved_name = self._resolve_datasource_name(index_info, datasource_name)
         acquired = self._semaphore.acquire(blocking=False)
         queued_set = False
         if not acquired:
@@ -110,19 +129,35 @@ class DatasourceConcurrencyManager:
             if not acquired:
                 logger.error(
                     f"DatasourceConcurrencyManager. Queue timeout exceeded for "
-                    f"datasource={getattr(index_info, 'repo_name', 'unknown')} "
+                    f"datasource={resolved_name} "
                     f"id={getattr(index_info, 'id', 'unknown')} "
                     f"after {self._queue_timeout}s"
                 )
                 self._try_set_error(index_info, _QUEUE_TIMEOUT_ERROR)
                 return
 
+        slot_context: Optional[str] = None
         try:
+            slot_context = self._slot_context(
+                slot=uuid.uuid4().hex[:8],
+                datasource_id=str(getattr(index_info, 'id', None) or 'unknown'),
+                datasource=resolved_name,
+                operation=str(getattr(process_func, '__name__', None) or type(process_func).__name__),
+            )
+            logger.info(f"DatasourceConcurrencyManager. SlotAcquired. {slot_context}")
             if queued_set:
                 self._try_clear_queued(index_info)
             process_func()
         finally:
             self._semaphore.release()
+            self._log_slot_released(slot_context)
+
+    @staticmethod
+    def _log_slot_released(slot_context: Optional[str]) -> None:
+        if slot_context is None:
+            return
+        with contextlib.suppress(Exception):
+            logger.info(f"DatasourceConcurrencyManager. SlotReleased. {slot_context}")
 
 
 def _create_manager() -> DatasourceConcurrencyManager:

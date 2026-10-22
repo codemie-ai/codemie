@@ -190,6 +190,7 @@ class Config(BaseSettings):
     DATASOURCE_CONCURRENCY_LIMIT_ENABLED: bool = False
     MAX_CONCURRENT_DATASOURCE_INDEXING: int = 5
     DATASOURCE_QUEUE_TIMEOUT: int = 3600  # seconds; 0 disables the timeout
+    DATASOURCE_REQUEST_TIMEOUT_SECONDS: int = 600
 
     # Analytics dashboard configuration
     ANALYTICS_DEFAULT_PAGE_SIZE: int = 20  # Default number of rows for analytics endpoints

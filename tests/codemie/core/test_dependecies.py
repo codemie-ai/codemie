@@ -272,3 +272,28 @@ class TestEnforceAllowedModel:
         project.default_model = "gpt-4"
         with self._enabled():
             assert enforce_allowed_model("", project) == "gpt-4"
+
+
+class TestNativeEmbeddingsRequestTimeout:
+    def test_native_azure_embeddings_receive_configured_request_timeout(self):
+        from codemie.configs.llm_config import LLMProvider
+        from codemie.core.dependecies import get_embeddings_model
+
+        model_details = MagicMock()
+        model_details.provider = LLMProvider.AZURE_OPENAI
+        model_details.api_version = None
+
+        with (
+            patch("codemie.core.dependecies.llm_service.get_model_details", return_value=model_details),
+            patch("codemie.enterprise.litellm.get_litellm_embedding_model", return_value=None),
+            patch("codemie.core.dependecies.AzureOpenAIEmbeddings") as azure_embeddings,
+            patch("codemie.core.dependecies.config") as mock_config,
+        ):
+            mock_config.DATASOURCE_REQUEST_TIMEOUT_SECONDS = 321
+
+            get_embeddings_model("text-embedding-ada-002")
+
+        azure_embeddings.assert_called_once()
+        kwargs = azure_embeddings.call_args.kwargs
+        assert kwargs["request_timeout"] == 321
+        assert kwargs["max_retries"] == 10

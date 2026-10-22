@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "generated": "2026-10-21T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 19,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 12,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Five small, independent touch points: DatasourceConcurrencyManager (slot acquire/release logging, datasource_name kwarg), code_datasource_processor (passes name to the manager), azure_devops_wiki_loader (bounded REST calls), llm_factory and dependecies (embedding request timeouts), plus the new config setting. No new abstractions, but several subsystems are involved." },
+    { "dimension": "file_change_estimate", "reason": "12 files per diffstat (437 insertions, 7 deletions) maps to XL by the file-count rule. 6 of the 12 are test files, and the source edits are small and additive, so the score reflects count rather than depth." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

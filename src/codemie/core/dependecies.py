@@ -100,6 +100,7 @@ def get_embeddings_model(embedding_model: str = llm_service.default_embedding_mo
             openai_api_type=config.OPENAI_API_TYPE,
             openai_api_version=llm_model_details.api_version or config.OPENAI_API_VERSION,
             max_retries=10,
+            request_timeout=config.DATASOURCE_REQUEST_TIMEOUT_SECONDS,
             show_progress_bar=True,
             check_embedding_ctx_length=False,
         )

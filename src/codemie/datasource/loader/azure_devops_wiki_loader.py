@@ -29,7 +29,7 @@ from langchain_core.language_models import BaseChatModel
 from msrest.authentication import BasicAuthentication
 from pydantic import AnyHttpUrl
 
-from codemie.configs import logger
+from codemie.configs import config, logger
 from codemie.datasource.exceptions import (
     MissingIntegrationException,
     UnauthorizedException,
@@ -426,7 +426,7 @@ class AzureDevOpsWikiLoader(BaseLoader, BaseDatasourceLoader):
         url = f"{self._get_rest_api_base_url()}/wiki/wikis/{wiki_id}/pages/{page_id}/comments"
         params = {"api-version": self.API_VERSION}
         try:
-            response = self._session.get(url, params=params)
+            response = self._session.get(url, params=params, timeout=config.DATASOURCE_REQUEST_TIMEOUT_SECONDS)
             response.raise_for_status()
             comment_data = response.json().get("comments", [])
             comments: list[dict[str, Any]] = []
@@ -522,7 +522,7 @@ class AzureDevOpsWikiLoader(BaseLoader, BaseDatasourceLoader):
         }
         attachments_index: dict[str, dict[str, Any]] = {}
         try:
-            response = self._session.get(url, params=params)
+            response = self._session.get(url, params=params, timeout=config.DATASOURCE_REQUEST_TIMEOUT_SECONDS)
             response.raise_for_status()
             items = response.json().get("value", [])
             for item in items:
@@ -561,7 +561,7 @@ class AzureDevOpsWikiLoader(BaseLoader, BaseDatasourceLoader):
         url = f"{self._get_rest_api_base_url()}/git/repositories/{repository_id}/blobs/{object_id}"
         params = {"api-version": self.API_VERSION}
         try:
-            response = self._session.get(url, params=params)
+            response = self._session.get(url, params=params, timeout=config.DATASOURCE_REQUEST_TIMEOUT_SECONDS)
             response.raise_for_status()
             if not response.content:
                 logger.warning(f"Empty content received for wiki attachment {object_id}")

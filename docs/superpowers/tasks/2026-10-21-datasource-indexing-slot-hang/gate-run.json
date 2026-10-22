@@ -1,0 +1,80 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-16237_datasource-indexing-slot-hang",
+  "head": "45c1d461b91adf8fd07bd25fb8885b46cbf5bc57",
+  "runner": "poetry",
+  "started_at": "2026-10-21T12:22:03Z",
+  "completed_at": "2026-10-21T12:27:00Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1548,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 9294,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1226,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "secrets",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 27000,
+      "command": "make gitleaks",
+      "exit_code": 0,
+      "notes": "Covers hook codemie-gitleaks (staged scan) via full-tree scan; pre-commit ruff/license and pre-push pytest/sonar hooks map to the lint/license/unit/sonar gates."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 124000,
+      "command": "make test",
+      "exit_code": 2,
+      "notes": "24 failed, 23 errors, 21554 passed. Failures in vsdx loader, git tools/github app auth, permission models, oauth redis lazy init, research toolkit, vertex tagging headers (ModuleNotFoundError: validators). None in files changed on this branch; all tests of changed files passed. Appear environment-related; not verified against merge base."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 500,
+      "command": "make sonar-local",
+      "exit_code": 0,
+      "notes": "[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set. Set SONAR_TOKEN to run locally; CI/server-side check still owed."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "N/A",
+      "command": "make coverage",
+      "notes": "Not requested."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "command": "make test-harness",
+      "notes": "Not opening an MR in this run."
+    }
+  ],
+  "failures": {
+    "unit": "=========================== short test summary info ============================\nFAILED tests/codemie/datasource/loader/test_vsdx_loader.py::test_extracts_shape_text_from_real_vsdx\nFAILED tests/codemie/datasource/loader/test_vsdx_loader.py::test_real_vsdx_metadata\nFAILED tests/codemie/datasource/loader/test_vsdx_loader.py::test_yields_one_document_per_page_with_text\nFAILED tests/codemie/datasource/loader/test_vsdx_loader.py::test_page_text_and_name_in_content\nFAILED tests/codemie/datasource/loader/test_vsdx_loader.py::test_skips_pages_without_text\nFAILED tests/codemie/datasource/loader/test_vsdx_loader.py::test_no_documents_when_diagram_has_no_text\nFAILED tests/codemie/datasource/loader/test_vsdx_loader.py::test_yields_nothing_when_visiofile_raises\nFAILED tests/codemie/rest_api/models/test_permission_models.py::TestResourceType::test_resource_class\nFAILED tests/codemie/rest_api/models/test_permission_models.py::TestResourceType::test_for_instance\nFAILED tests/codemie/rest_api/models/test_permission_models.py::TestResourceType::test_for_instance_not_found\nFAILED tests/codemie/core/test_dependencies_tagging_headers.py::TestVertexTaggingHeaders::test_tags_injected_into_client_options\nFAILED tests/codemie/rest_api/routers/test_oauth_redis_lazy_init.py::test_app_starts_without_redis_package_when_pkce_disabled\nFAILED tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_validate_environment_success\nFAILED tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_validate_environment_success\nFAILED tests/codemie_tools/git/test_github_app_auth.py::test_custom_github_api_wrapper_pat_auth\nFAILED tests/codemie_tools/git/test_github_app_auth.py::test_custom_github_api_wrapper_github_app_auth\nFAILED tests/codemie_tools/git/test_github_app_auth.py::test_custom_github_api_wrapper_pat_auth_with_ghe_base_url\nFAILED tests/codemie_tools/git/test_github_app_auth.py::test_custom_github_api_wrapper_pat_auth_github_com_no_base_url\nFAILED tests/codemie_tools/git/test_github_app_auth.py::test_custom_github_api_wrapper_github_app_auth_with_ghe_base_url\nFAILED tests/codemie_tools/git/test_github_app_auth.py::test_custom_github_api_wrapper_github_app_auth_github_com_no_base_url\nFAILED tests/codemie_tools/git/test_github_app_auth.py::test_custom_github_api_wrapper_github_app_auto_detect_installation\nFAILED tests/codemie_tools/git/test_github_app_auth.py::test_custom_github_api_wrapper_github_app_no_installations\nFAILED tests/codemie_tools/research/test_toolkit.py::TestResearchToolkit::test_get_tools\nFAILED tests/codemie_tools/research/test_toolkit.py::TestResearchToolkit::test_get_wikipedia_tool\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_branch_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_branch_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_set_active_branch_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_set_active_branch_failur\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_list_branches_in_repo_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_list_branches_in_repo_exception\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_replace_file_content_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_replace_file_content_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_file_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_delete_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_delete_file_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_issue_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_update_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_update_issue_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_find_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_comment_on_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_comment_on_issue_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_file_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_delete_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_delete_file_failure\n= 24 failed, 21554 passed, 175 skipped, 299 warnings, 23 errors in 118.97s (0:01:58) =\nmake: *** [test] Error 1"
+  }
+}

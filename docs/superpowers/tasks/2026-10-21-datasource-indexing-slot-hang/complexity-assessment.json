@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "task": "Add slot acquire/release logging with datasource name to DatasourceConcurrencyManager and bound Azure DevOps wiki HTTP calls and embedding requests with one configurable DATASOURCE_REQUEST_TIMEOUT_SECONDS (EPMCDME-16237).",
+  "generated": "2026-10-21T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 18,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Five small but distinct components: DatasourceConcurrencyManager (hot path, 15 callers), code_datasource_processor run_in_background, AzureDevOpsWikiLoader (three session.get calls), llm_factory embedding params plus native embeddings in core/dependecies, and the central Config field. Each diff is tiny, but they sit in separate subsystems." },
+    { "dimension": "file_change_estimate", "reason": "About 6 production files (manager, code processor, wiki loader, llm_factory, dependecies, config) plus updates to existing wiki, llm_factory, dependecies and background-processing tests and a new unit test file for the manager (none exists today); roughly 8-11 files across src and tests." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

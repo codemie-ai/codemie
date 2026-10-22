@@ -172,7 +172,7 @@ def run_in_background(process_func, git_repo_name, background_tasks):
     def task():
         # index_info=None: code processors create IndexInfo lazily, so queued DB status
         # is not surfaced for this type; throttling still applies.
-        datasource_concurrency_manager.run(do_work)
+        datasource_concurrency_manager.run(do_work, datasource_name=git_repo_name)
 
     background_tasks.add_task(task)
 

@@ -83,6 +83,26 @@ def test_run_in_background_no_multiprocessing(mock_logger, mock_code_config, dum
     dummy_func.assert_called_once()
 
 
+@patch("codemie.datasource.code.code_datasource_processor.CODE_CONFIG")
+@patch("codemie.datasource.datasource_concurrency_manager.datasource_concurrency_manager")
+def test_run_in_background_passes_datasource_name_to_concurrency_manager(
+    mock_manager, mock_code_config, dummy_background_tasks
+):
+    mock_code_config.enable_multiprocessing = False
+    dummy_func = MagicMock()
+
+    code_datasource_processor.run_in_background(dummy_func, "backend-repo", dummy_background_tasks)
+
+    task = dummy_background_tasks.add_task.call_args[0][0]
+    task()
+
+    mock_manager.run.assert_called_once()
+    assert mock_manager.run.call_args.kwargs == {"datasource_name": "backend-repo"}
+    do_work = mock_manager.run.call_args.args[0]
+    do_work()
+    dummy_func.assert_called_once()
+
+
 @patch("codemie.datasource.code.code_datasource_processor.run_in_background")
 @patch("codemie.datasource.code.code_datasource_processor.CodeDatasourceProcessor")
 def test_index_code_datasource_in_background(

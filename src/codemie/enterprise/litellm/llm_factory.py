@@ -372,6 +372,7 @@ def _build_embedding_model_params(
         "openai_api_type": config.OPENAI_API_TYPE,
         "api_version": config.OPENAI_API_VERSION,
         "max_retries": 10,
+        "request_timeout": config.DATASOURCE_REQUEST_TIMEOUT_SECONDS,
         "show_progress_bar": True,
         "check_embedding_ctx_length": False,
     }

@@ -383,6 +383,33 @@ class TestCreateLiteLLMEmbeddingModel:
         assert call_kwargs["default_headers"]["x-litellm-customer-id"] == "test@example.com"
 
 
+class TestEmbeddingRequestTimeout:
+    """Embedding requests through the LiteLLM proxy are bounded by DATASOURCE_REQUEST_TIMEOUT_SECONDS."""
+
+    def test_embedding_params_carry_configured_request_timeout(self):
+        from codemie.configs.config import config
+        from codemie.enterprise.litellm.llm_factory import _build_embedding_model_params
+
+        with patch.object(config, "DATASOURCE_REQUEST_TIMEOUT_SECONDS", 321):
+            params = _build_embedding_model_params(embedding_model="text-embedding-ada-002", creds=None)
+
+        assert params["request_timeout"] == 321
+        assert params["max_retries"] == 10
+
+    def test_built_embeddings_client_uses_configured_request_timeout(self):
+        from codemie.configs.config import config
+        from codemie.enterprise.litellm.llm_factory import (
+            LiteLLMAzureOpenAIEmbeddings,
+            _build_embedding_model_params,
+        )
+
+        with patch.object(config, "DATASOURCE_REQUEST_TIMEOUT_SECONDS", 321):
+            params = _build_embedding_model_params(embedding_model="text-embedding-ada-002", creds=None)
+            embeddings = LiteLLMAzureOpenAIEmbeddings(**params)
+
+        assert embeddings.client._real._client.timeout == 321
+
+
 class TestResolveDirectProjectBudgetRuntime:
     """Test _resolve_direct_project_budget_runtime() direct budget path behavior."""
 
