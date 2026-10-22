@@ -99,10 +99,7 @@ class LocalAnalyticsOverviewResponse(BaseModel):
 # ── Repositories ──────────────────────────────────────────────────────────────
 
 
-class LocalAnalyticsRepositoryRow(BaseModel):
-    repository: str | None = Field(
-        None, description="Repository name. None for the unattributed bucket (plugin was not active)."
-    )
+class LocalAnalyticsRepositoryBranchRow(BaseModel):
     branch: str | None = None
     session_count: int
     turns: int
@@ -111,8 +108,35 @@ class LocalAnalyticsRepositoryRow(BaseModel):
     lines_added: int
     lines_removed: int
     net_lines: int
-    tool_success_rate: float
+    tool_calls: int
+    tool_calls_success: int
+    tool_success_rate: float = Field(
+        ..., description="Percent, one decimal (0.0-100.0). Σsuccess / Σcalls, never averaged."
+    )
+
+
+class LocalAnalyticsRepositoryRow(BaseModel):
+    repository: str | None = Field(
+        None, description="Repository name. None for the unattributed bucket (plugin was not active)."
+    )
+    session_count: int
+    turns: int
+    cost_usd: float
+    files_changed: int
+    lines_added: int
+    lines_removed: int
+    net_lines: int
+    tool_calls: int
+    tool_calls_success: int
+    tool_success_rate: float = Field(
+        ..., description="Percent, one decimal (0.0-100.0). Σsuccess / Σcalls, never averaged."
+    )
     project_name: str | None = None
+    branches: list[LocalAnalyticsRepositoryBranchRow] | None = Field(
+        None,
+        description="Present only when include_branches=True: this repository's branches, each with its own "
+        "tool_success_rate.",
+    )
 
 
 class LocalAnalyticsRepositoriesData(BaseModel):
@@ -248,6 +272,9 @@ class LocalAnalyticsSessionDetail(LocalAnalyticsSessionRow):
     skill_count: int = 0
     cache_read_cost_usd: float = 0.0
     tool_calls_success: int = 0
+    tool_success_rate: float = Field(
+        0.0, description="Percent, one decimal (0.0-100.0). _pct(tool_calls_success, tool_call_count)."
+    )
     tools: list[LocalAnalyticsToolWithSuccessRow] = Field(default_factory=list)
     dispatches: list[LocalAnalyticsDispatchRow] = Field(default_factory=list)
     harness_name: str = Field(

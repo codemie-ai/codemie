@@ -111,6 +111,8 @@ async def test_sessions_with_equal_cost_are_ordered_by_trace_id():
 
 @pytest.mark.asyncio
 async def test_repositories_with_equal_sessions_and_cost_are_ordered_by_name_then_branch():
+    """repo-a has 2 sessions (dev + main) so it outranks repo-b's 1 session; its nested
+    branches are alphabetical regardless of storage row order."""
     rows = [
         _cost_row("s1", repository="repo-b", branch="main"),
         _cost_row("s2", repository="repo-a", branch="main"),
@@ -119,9 +121,9 @@ async def test_repositories_with_equal_sessions_and_cost_are_ordered_by_name_the
     orders = set()
     for perm in permutations(rows):
         data = await _handler(cost_facts=perm).get_repositories(_flt(), 0, 20, True)
-        orders.add(tuple((r["repository"], r["branch"]) for r in data["rows"]))
+        orders.add(tuple((r["repository"], tuple(b["branch"] for b in r["branches"])) for r in data["rows"]))
 
-    assert orders == {(("repo-a", "dev"), ("repo-a", "main"), ("repo-b", "main"))}
+    assert orders == {(("repo-a", ("dev", "main")), ("repo-b", ("main",)))}
 
 
 @pytest.mark.asyncio

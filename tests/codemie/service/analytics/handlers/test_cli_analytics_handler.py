@@ -139,6 +139,89 @@ async def test_repositories_unattributed_bucket_when_plugin_absent():
 
 
 @pytest.mark.asyncio
+async def test_repositories_backend_rolls_up_branches_with_nested_tool_success_rate():
+    """EPMCDME-15585 repro: 1 call/0 success + 3 calls/3 success across two branches
+    of one repo. The backend sums raw counts and calls _pct once per level (repository
+    and each branch) -- a percentage is never averaged, so the ticket's bug can't come
+    back regardless of which side (backend or UI) renders it."""
+    cost_facts = [
+        {**BASE_COST_FACT, "session_id": "s1", "repository": "repo-x", "branch": "sweep-cd", "project_name": "proj"},
+        {**BASE_COST_FACT, "session_id": "s2", "repository": "repo-x", "branch": "sweep-cd-b", "project_name": "proj"},
+    ]
+    handler = make_repo_handler(cost_facts)
+    handler._repo.get_tool_success_by_session = AsyncMock(
+        return_value=[
+            {"session_id": "s1", "tool_calls": 1, "tool_calls_success": 0},
+            {"session_id": "s2", "tool_calls": 3, "tool_calls_success": 3},
+        ]
+    )
+
+    nested_rows = (await handler.get_repositories(make_filter(), page=0, per_page=50, include_branches=True))["rows"]
+    repo_x = next(r for r in nested_rows if r["repository"] == "repo-x")
+    assert (repo_x["tool_calls"], repo_x["tool_calls_success"]) == (4, 3)
+    assert repo_x["tool_success_rate"] == 75.0
+
+    branches = {b["branch"]: b for b in repo_x["branches"]}
+    assert (branches["sweep-cd"]["tool_calls"], branches["sweep-cd"]["tool_calls_success"]) == (1, 0)
+    assert branches["sweep-cd"]["tool_success_rate"] == 0.0
+    assert (branches["sweep-cd-b"]["tool_calls"], branches["sweep-cd-b"]["tool_calls_success"]) == (3, 3)
+    assert branches["sweep-cd-b"]["tool_success_rate"] == 100.0
+
+    flat_rows = (await handler.get_repositories(make_filter(), page=0, per_page=50, include_branches=False))["rows"]
+    repo_x_flat = next(r for r in flat_rows if r["repository"] == "repo-x")
+    assert (repo_x_flat["tool_calls"], repo_x_flat["tool_calls_success"]) == (4, 3)
+    assert repo_x_flat["tool_success_rate"] == 75.0
+
+
+@pytest.mark.asyncio
+async def test_repositories_zero_call_branch_does_not_drag_rate_down():
+    """EPMCDME-15585 AC3: a branch with zero tool calls must not pull the repository's
+    rate toward 0%. It contributes 0/0 to the sums, which changes neither side."""
+    cost_facts = [
+        {**BASE_COST_FACT, "session_id": "s1", "repository": "repo-y", "branch": "has-calls", "project_name": "proj"},
+        {**BASE_COST_FACT, "session_id": "s2", "repository": "repo-y", "branch": "no-calls", "project_name": "proj"},
+    ]
+    handler = make_repo_handler(cost_facts)
+    handler._repo.get_tool_success_by_session = AsyncMock(
+        return_value=[
+            {"session_id": "s1", "tool_calls": 2, "tool_calls_success": 2},
+            {"session_id": "s2", "tool_calls": 0, "tool_calls_success": 0},
+        ]
+    )
+
+    rows = (await handler.get_repositories(make_filter(), page=0, per_page=50, include_branches=True))["rows"]
+    repo_y = next(r for r in rows if r["repository"] == "repo-y")
+    assert repo_y["tool_success_rate"] == 100.0
+    branches = {b["branch"]: b for b in repo_y["branches"]}
+    assert branches["no-calls"]["tool_success_rate"] == 0.0  # denominator-guarded display, not a vote
+
+
+@pytest.mark.parametrize(
+    ("calls", "success", "expected_pct"),
+    [
+        (16, 1, 6.3),  # exact .5 tie: 6.25 -> 6.3, half away from zero
+        (80, 23, 28.8),  # float-error near-tie: 23/80*100 = 28.749999999999996 in IEEE754
+        (80, 41, 51.3),
+        (80, 51, 63.8),
+    ],
+)
+@pytest.mark.asyncio
+async def test_pct_tie_and_float_error_values(calls, success, expected_pct):
+    """EPMCDME-15585 review: these exact values disagreed between the backend's _pct and the
+    UI's independent calc (23/80 gave 28.8 here vs 28.7 in JS, from float-arithmetic order,
+    not a rounding-rule difference). Locks _pct's output for them now that it is the only
+    producer of this percentage."""
+    cost_facts = [{**BASE_COST_FACT, "session_id": "s1", "repository": "repo-z", "branch": "main"}]
+    handler = make_repo_handler(cost_facts)
+    handler._repo.get_tool_success_by_session = AsyncMock(
+        return_value=[{"session_id": "s1", "tool_calls": calls, "tool_calls_success": success}]
+    )
+    rows = (await handler.get_repositories(make_filter(), page=0, per_page=50, include_branches=False))["rows"]
+    repo_z = next(r for r in rows if r["repository"] == "repo-z")
+    assert repo_z["tool_success_rate"] == expected_pct
+
+
+@pytest.mark.asyncio
 async def test_is_unattributed_filter_delegates_to_repository():
     """is_unattributed=True must be forwarded to get_session_cost_facts; handler does not filter in-memory."""
     unattributed_rows = [

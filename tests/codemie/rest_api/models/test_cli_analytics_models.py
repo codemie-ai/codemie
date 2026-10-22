@@ -46,6 +46,8 @@ def test_repository_row_repository_nullable():
         lines_added=0,
         lines_removed=0,
         net_lines=0,
+        tool_calls=0,
+        tool_calls_success=0,
         tool_success_rate=0.0,
     )
     assert row.repository is None

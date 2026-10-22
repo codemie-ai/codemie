@@ -1,0 +1,25 @@
+{
+  "decision": "approve",
+  "rationale": "Blind lens failed twice (file never materialized despite SubagentHandback claims) and is treated as a failed-but-applicable lens under review_profile full, forcing confidence to low; acceptance was skipped as no-spec with no business_review rows. Edge-case and verification-gap lenses ran clean with zero findings, and the standards audit passed all three rows (commit-format, code-quality, security) with no coverage gap and no blocking findings. Zero findings dismissed or deferred.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "Single commit subject 'EPMCDME-15585: Expose raw tool-call counts instead of a precomputed repository tool_success_rate' matches the documented ticket-prefix commit format."
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "Replaces tool_success_rate (float) with tool_calls/tool_calls_success (int) raw counts, mirrored in handler and tests; types consistent with sibling fields; tests assert tool_success_rate absence."
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "Change only alters which pre-aggregated analytics fields are exposed; no auth, secrets, or new input-parsing paths touched; no concrete security issue found."
+    }
+  ],
+  "findings": []
+}

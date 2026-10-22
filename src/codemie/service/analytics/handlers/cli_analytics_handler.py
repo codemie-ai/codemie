@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from datetime import date, datetime, timezone
 from typing import Any
 
@@ -130,7 +131,14 @@ def _iso(value: Any) -> str:
 
 
 def _pct(numerator: float, denominator: float) -> float:
-    return round(numerator / denominator * 100, 1) if denominator else 0.0
+    """Percent to one decimal using half-up rounding for nonnegative counts.
+
+    Keep one backend rounding rule for analytics percentages, including repository
+    and branch rollups: 1/16 is 6.3%, not 6.2%. Clients display the server value.
+    """
+    if not denominator:
+        return 0.0
+    return math.floor(numerator / denominator * 1000 + 0.5) / 10
 
 
 def _ctx_per_call(cache_read_tokens: Any, api_call_count: Any) -> float:
@@ -174,16 +182,79 @@ def _new_repository_bucket(repository: str | None, branch: str | None, project: 
 
 
 def _finalize_repository_bucket(bucket: dict, include_branches: bool) -> dict:
-    tool_calls = bucket.pop("_tool_calls")
-    tool_ok = bucket.pop("_tool_ok")
+    bucket["tool_calls"] = bucket.pop("_tool_calls")
+    bucket["tool_calls_success"] = bucket.pop("_tool_ok")
+    bucket["tool_success_rate"] = _pct(bucket["tool_calls_success"], bucket["tool_calls"])
     projects = bucket.pop("_projects")
     if not include_branches:
         # A repository can be worked on from several projects: label it with the one
         # most of its sessions belong to, not whichever session came first.
         bucket["project_name"] = _most_frequent(projects)
-    bucket["tool_success_rate"] = _pct(tool_ok, tool_calls)
     bucket["net_lines"] = bucket["lines_added"] - bucket["lines_removed"]
     return bucket
+
+
+_BRANCH_ROW_FIELDS = (
+    "branch",
+    "session_count",
+    "turns",
+    "cost_usd",
+    "files_changed",
+    "lines_added",
+    "lines_removed",
+    "net_lines",
+    "tool_calls",
+    "tool_calls_success",
+    "tool_success_rate",
+)
+_REPO_SUM_FIELDS = (
+    "session_count",
+    "turns",
+    "cost_usd",
+    "files_changed",
+    "lines_added",
+    "lines_removed",
+    "tool_calls",
+    "tool_calls_success",
+)
+
+
+def _group_branches_into_repositories(branch_rows: list[dict]) -> list[dict]:
+    """Rolls finalized per-branch rows up into (project, repository) groups: sums raw counts
+    first and calls _pct once per group, so a branch's percentage is never averaged into the
+    repository's (EPMCDME-15585) -- a zero-call branch contributes 0/0 to the sums, not a 0%
+    vote weighted by session count."""
+    repos: dict[tuple, dict] = {}
+    for row in branch_rows:
+        key = (row["project_name"], row["repository"])
+        repo = repos.setdefault(
+            key,
+            {
+                "repository": row["repository"],
+                "project_name": row["project_name"],
+                "session_count": 0,
+                "turns": 0,
+                "cost_usd": 0.0,
+                "files_changed": 0,
+                "lines_added": 0,
+                "lines_removed": 0,
+                "tool_calls": 0,
+                "tool_calls_success": 0,
+                "branches": [],
+            },
+        )
+        for field in _REPO_SUM_FIELDS:
+            repo[field] += row[field]
+        repo["branches"].append({field: row[field] for field in _BRANCH_ROW_FIELDS})
+
+    out = list(repos.values())
+    for repo in out:
+        repo["net_lines"] = repo["lines_added"] - repo["lines_removed"]
+        repo["tool_success_rate"] = _pct(repo["tool_calls_success"], repo["tool_calls"])
+        repo["branches"].sort(key=lambda b: b["branch"] or "")
+    out.sort(key=lambda r: (r["repository"] or "", r["project_name"] or ""))
+    out.sort(key=lambda r: (r["session_count"], _float_sort_key(r["cost_usd"])), reverse=True)
+    return out
 
 
 def _build_repository_rows(
@@ -194,7 +265,10 @@ def _build_repository_rows(
     lines_by_session: dict[str, dict],
     include_branches: bool,
 ) -> list[dict]:
-    """Bucket sessions by (project, repository, branch) with branches, else by repository only."""
+    """Bucket sessions by (project, repository, branch) with branches, else by repository only.
+    include_branches=True rolls the branch buckets up into (project, repository) groups, each
+    carrying its own backend-computed tool_success_rate and its branches nested underneath, so
+    the UI never recomputes or re-averages the percentage (EPMCDME-15585)."""
     buckets: dict[tuple, dict] = {}
     for row in cost_facts:
         sid = _s(row.get("session_id"))
@@ -218,7 +292,9 @@ def _build_repository_rows(
             bucket["_projects"][project] = bucket["_projects"].get(project, 0) + 1
 
     rows = [_finalize_repository_bucket(bucket, include_branches) for bucket in buckets.values()]
-    rows.sort(key=lambda r: (r["repository"] or "", r["branch"] or "", r["project_name"] or ""))
+    if include_branches:
+        return _group_branches_into_repositories(rows)
+    rows.sort(key=lambda r: (r["repository"] or "", r["project_name"] or ""))
     rows.sort(key=lambda r: (r["session_count"], _float_sort_key(r["cost_usd"])), reverse=True)
     return rows
 
@@ -775,6 +851,7 @@ class LocalAnalyticsHandler:
             "skill_count": _i(scalars.get("skill_count")),
             "cache_read_cost_usd": crc,
             "tool_calls_success": tool_ok_total,
+            "tool_success_rate": _pct(tool_ok_total, _i(scalars.get("tool_call_count"))),
             "tools": tools,
             "dispatches": dispatches,
         }

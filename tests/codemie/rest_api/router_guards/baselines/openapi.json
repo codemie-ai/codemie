@@ -15261,7 +15261,7 @@
         "title": "LocalAnalyticsRepositoriesResponse",
         "type": "object"
       },
-      "LocalAnalyticsRepositoryRow": {
+      "LocalAnalyticsRepositoryBranchRow": {
         "properties": {
           "branch": {
             "anyOf": [
@@ -15273,6 +15273,80 @@
               }
             ],
             "title": "Branch"
+          },
+          "cost_usd": {
+            "title": "Cost Usd",
+            "type": "number"
+          },
+          "files_changed": {
+            "title": "Files Changed",
+            "type": "integer"
+          },
+          "lines_added": {
+            "title": "Lines Added",
+            "type": "integer"
+          },
+          "lines_removed": {
+            "title": "Lines Removed",
+            "type": "integer"
+          },
+          "net_lines": {
+            "title": "Net Lines",
+            "type": "integer"
+          },
+          "session_count": {
+            "title": "Session Count",
+            "type": "integer"
+          },
+          "tool_calls": {
+            "title": "Tool Calls",
+            "type": "integer"
+          },
+          "tool_calls_success": {
+            "title": "Tool Calls Success",
+            "type": "integer"
+          },
+          "tool_success_rate": {
+            "description": "Percent, one decimal (0.0-100.0). \u03a3success / \u03a3calls, never averaged.",
+            "title": "Tool Success Rate",
+            "type": "number"
+          },
+          "turns": {
+            "title": "Turns",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "session_count",
+          "turns",
+          "cost_usd",
+          "files_changed",
+          "lines_added",
+          "lines_removed",
+          "net_lines",
+          "tool_calls",
+          "tool_calls_success",
+          "tool_success_rate"
+        ],
+        "title": "LocalAnalyticsRepositoryBranchRow",
+        "type": "object"
+      },
+      "LocalAnalyticsRepositoryRow": {
+        "properties": {
+          "branches": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/LocalAnalyticsRepositoryBranchRow"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Present only when include_branches=True: this repository's branches, each with its own tool_success_rate.",
+            "title": "Branches"
           },
           "cost_usd": {
             "title": "Cost Usd",
@@ -15321,7 +15395,16 @@
             "title": "Session Count",
             "type": "integer"
           },
+          "tool_calls": {
+            "title": "Tool Calls",
+            "type": "integer"
+          },
+          "tool_calls_success": {
+            "title": "Tool Calls Success",
+            "type": "integer"
+          },
           "tool_success_rate": {
+            "description": "Percent, one decimal (0.0-100.0). \u03a3success / \u03a3calls, never averaged.",
             "title": "Tool Success Rate",
             "type": "number"
           },
@@ -15338,6 +15421,8 @@
           "lines_added",
           "lines_removed",
           "net_lines",
+          "tool_calls",
+          "tool_calls_success",
           "tool_success_rate"
         ],
         "title": "LocalAnalyticsRepositoryRow",
@@ -15545,6 +15630,12 @@
             "default": 0,
             "title": "Tool Calls Success",
             "type": "integer"
+          },
+          "tool_success_rate": {
+            "default": 0.0,
+            "description": "Percent, one decimal (0.0-100.0). _pct(tool_calls_success, tool_call_count).",
+            "title": "Tool Success Rate",
+            "type": "number"
           },
           "tools": {
             "items": {
@@ -40664,13 +40755,13 @@
             }
           },
           {
-            "description": "Return per-branch rows instead of per-repo rows",
+            "description": "Include nested branch rows within each repository row",
             "in": "query",
             "name": "include_branches",
             "required": false,
             "schema": {
               "default": false,
-              "description": "Return per-branch rows instead of per-repo rows",
+              "description": "Include nested branch rows within each repository row",
               "title": "Include Branches",
               "type": "boolean"
             }

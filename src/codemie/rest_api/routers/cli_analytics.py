@@ -508,13 +508,13 @@ async def get_repositories(
     filters: FilterParams = Depends(FilterParams),
     page: int | None = Query(None, ge=0),
     per_page: int | None = Query(None, ge=1, le=MAX_PER_PAGE),
-    include_branches: bool = Query(False, description="Return per-branch rows instead of per-repo rows"),
+    include_branches: bool = Query(False, description="Include nested branch rows within each repository row"),
     search: str | None = Query(None, description="Filter by repository name"),
 ) -> JSONResponse:
     _ensure_enabled()
     start_ns = time.monotonic_ns()
     f = await filters.resolve(user)
-    # Omitting both page and per_page means "all repositories, per-branch rows".
+    # Omitting both page and per_page means "all repositories with nested branches".
     fetch_all = page is None and per_page is None
     if fetch_all:
         include_branches = True
