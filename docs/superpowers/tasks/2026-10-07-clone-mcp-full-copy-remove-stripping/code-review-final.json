@@ -1,0 +1,13 @@
+{
+  "decision": "approve",
+  "rationale": "Only the edge-case lens ran (compact profile, no spec so acceptance skipped as no-spec), hence low confidence. 2 candidates dismissed: concurrent duplicate 'Copy N' names is an accepted risk (application-level uniqueness), and non-dict auth_config is excluded by the model type (dict | None). No deferred items.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "commit-format", "status": "na", "notes": "Standards audit not expected for this profile." },
+    { "kind": "code-quality", "status": "na", "notes": "Standards audit not expected for this profile." },
+    { "kind": "security", "status": "na", "notes": "Standards audit not expected for this profile." }
+  ],
+  "findings": []
+}

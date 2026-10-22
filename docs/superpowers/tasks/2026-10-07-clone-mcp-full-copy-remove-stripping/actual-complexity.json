@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "generated": "2026-10-07T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 17,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 12,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "technical_risk", "reason": "Removes the clone sanitizer and copy_values/clone policy so cloned MCP configs now carry secrets and credentials verbatim; this is a security-sensitive behaviour change, although it is mostly deletion of an existing code path." },
+    { "dimension": "file_change_estimate", "reason": "12 files changed (90 insertions, 1134 deletions): the mcp_config model, the router, the service, two deleted clone modules (clone_constants and clone_sanitizer), and 7 test files removed or trimmed. The count scores XL, but the change is mostly deletion and fairly localized." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk raised to L: security-relevant behaviour change (secret stripping removed from MCP clone)"
+  ],
+  "split_recommendation": null
+}

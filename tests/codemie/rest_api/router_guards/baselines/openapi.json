@@ -16480,6 +16480,94 @@
         "title": "MCPAuthDisabledResponse",
         "type": "object"
       },
+      "MCPConfigCloneRequest": {
+        "description": "Request model for cloning an MCP configuration from a submitted form payload.\n\nField-identical to ``MCPConfigCreateRequest`` minus ``is_public`` \u2014 the clone's\n``is_public``/``is_system`` are always copied from the source, never taken from the request.",
+        "properties": {
+          "categories": {
+            "description": "Categories (max 3)",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 3,
+            "title": "Categories",
+            "type": "array"
+          },
+          "config": {
+            "$ref": "#/components/schemas/MCPServerConfigData",
+            "description": "MCP server configuration"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Description of the MCP server",
+            "title": "Description"
+          },
+          "logo_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "URL to server logo",
+            "title": "Logo Url"
+          },
+          "name": {
+            "description": "Name of the MCP server",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "required_env_vars": {
+            "description": "Required environment variables",
+            "items": {
+              "$ref": "#/components/schemas/MCPVariableDefinition"
+            },
+            "title": "Required Env Vars",
+            "type": "array"
+          },
+          "server_home_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Link to MCP documentation",
+            "title": "Server Home Url"
+          },
+          "source_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Link to source code",
+            "title": "Source Url"
+          }
+        },
+        "required": [
+          "name",
+          "config"
+        ],
+        "title": "MCPConfigCloneRequest",
+        "type": "object"
+      },
       "MCPConfigCreateRequest": {
         "description": "Request model for creating a new MCP configuration",
         "properties": {
@@ -65591,6 +65679,67 @@
           }
         ],
         "summary": "Update MCP Configuration",
+        "tags": [
+          "MCP Configuration"
+        ]
+      }
+    },
+    "/v1/mcp-configs/{config_id}/clone": {
+      "post": {
+        "description": "Create an MCP configuration from a submitted clone form payload (Admin only)",
+        "operationId": "clone_mcp_config_v1_mcp_configs__config_id__clone_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "config_id",
+            "required": true,
+            "schema": {
+              "title": "Config Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MCPConfigCloneRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MCPConfigResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Clone MCP Configuration",
         "tags": [
           "MCP Configuration"
         ]

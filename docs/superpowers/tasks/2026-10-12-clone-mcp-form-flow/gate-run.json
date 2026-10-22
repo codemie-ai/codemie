@@ -1,0 +1,86 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15538-Add-clone-mcp-capability",
+  "head": "7a862b9af7ea2f109da5a30020b3a0aff9ced21f",
+  "runner": "poetry",
+  "started_at": "2026-10-12T10:33:44Z",
+  "completed_at": "2026-10-12T10:40:29Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2021,
+      "command": "make ruff",
+      "exit_code": 0,
+      "notes": "The previously-uncommitted ruff-format change in src/codemie/rest_api/models/mcp_config.py (left over from a prior lint run) is already correctly formatted; ruff format reported '2739 files left unchanged' and both ruff check --fix and the final ruff check passed clean."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 8274,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1477,
+      "command": "make license-check",
+      "exit_code": 0,
+      "notes": "Checked 2447 files, 0 missing license headers"
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 111390,
+      "command": "make test",
+      "exit_code": 0,
+      "notes": "19470 passed, 175 skipped, 262 warnings in 107.34s"
+    },
+    {
+      "id": "static-analysis",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 100044,
+      "command": "SONAR_SKIP_TESTS=1 make sonar-local",
+      "exit_code": 0,
+      "notes": "QUALITY GATE STATUS: PASSED (dashboard?id=codemie&branch=EPMCDME-15538-Add-clone-mcp-capability). The 7 CRITICAL Sonar S1192 duplicate-literal findings from the prior run are confirmed resolved."
+    },
+    {
+      "id": "secrets-ci",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 32404,
+      "command": "make gitleaks",
+      "exit_code": 0,
+      "notes": "Docker (colima context) is live this run; gitleaks scanned ~52.95 MB in 31.8s and found no leaks. Previously SKIPPED because no container engine was reachable."
+    },
+    {
+      "id": "secrets-precommit",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 1155,
+      "command": "scripts/git-hooks/validate_secrets.sh (codemie-gitleaks pre-commit hook)",
+      "exit_code": 0,
+      "notes": "Staged src/codemie/rest_api/models/mcp_config.py to exercise the hook's 'protect --staged' scan against real staged content, ran the hook script directly (no leaks found), then unstaged the file back to its original working-tree-only state. Previously SKIPPED for the same no-container-engine reason as secrets-ci."
+    },
+    {
+      "id": "commit-msg",
+      "source": "hook",
+      "status": "FAIL",
+      "duration_ms": 0,
+      "command": "scripts/git-hooks/commit_msg.sh (codemie-commit-msg hook)",
+      "exit_code": 1,
+      "notes": "HEAD commit 7a862b9af7ea2f109da5a30020b3a0aff9ced21f ('clone-mcp-form-flow: add planning artifacts') does not match the required ^EPMCDME-[0-9]+: prefix; confirmed by feeding the exact subject to the hook script, which exited 1. This commit was added after the prior gate-run's by-inspection check (which found all 26 then-current commits compliant); it is now commit 1 of 26 failing out of origin/main..HEAD. Mismatch vs the guide: quality-gates.md does not list a commit-msg gate explicitly, but .pre-commit-config.yaml wires codemie-commit-msg as an always_run commit-msg hook, so it is enforced per the Hook- and CI-enforced Gates rule."
+    }
+  ],
+  "failures": {
+    "commit-msg": "[commit-msg] Commit message must start with 'EPMCDME-<number>:'.\n[commit-msg] Got: 'clone-mcp-form-flow: add planning artifacts'\n[commit-msg] Example: 'EPMCDME-13747: Move heavy checks to pre-push'\n(exit 1, from: bash scripts/git-hooks/commit_msg.sh /tmp/msg.txt where msg.txt contained the HEAD commit's subject line 'clone-mcp-form-flow: add planning artifacts', reproducing the hook's commit-msg stage check against commit 7a862b9af7ea2f109da5a30020b3a0aff9ced21f)"
+  }
+}

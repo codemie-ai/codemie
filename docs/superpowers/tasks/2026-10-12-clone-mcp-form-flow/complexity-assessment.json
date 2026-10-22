@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "task": "Replace the no-body MCP server clone with a backend form-based clone flow (clone_from_form service method, suggested-name endpoint, is_system copy-from-source fix, secret carry-over without double-encryption).",
+  "generated": "2026-10-12T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 18,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Router (mcp_config.py), service (mcp_config_service.py new clone_from_form + request model), and clone_naming.py reuse span 2 layers; bumped because the new method reuses core shared helpers (_prepare_auth_config_for_persistence, _validate_auth_config_for_save, _ensure_auth_config_id) used by create/update, so a mistake here risks regressing those paths." },
+    { "dimension": "requirements_clarity", "reason": "Task framing of today's is_system/is_public behavior is factually wrong per the analysis (is_system is hardcoded False, not forced True), the shape of the clone-request model (new field on create vs separate model) is an open design decision, and the non-oauth2/SAML carry-over question is an unresolved external verification gap (codemie-enterprise not inspectable)." },
+    { "dimension": "technical_risk", "reason": "The mask-and-carry-over mechanism (_prepare_auth_config_for_persistence with existing_encrypted_secret) is an established pattern from update, but applying it cross-record (source secret -> new row) is new ground with no existing test coverage, and getting it wrong double-encrypts a confidential client_secret, which is a security-sensitive, hard-to-detect regression." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from M to L: reuses core shared utilities (_prepare_auth_config_for_persistence, _validate_auth_config_for_save, _ensure_auth_config_id) shared with create/update",
+    "Technical Risk bumped from M to L: client_secret carry-over is security-sensitive secret-handling logic with no existing cross-record test coverage"
+  ],
+  "split_recommendation": null
+}

@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "generated": "2026-10-05T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 20,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 14,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Router, MCPConfigService, MCPConfig model plus three new helper modules (clone_constants, clone_naming, clone_sanitizer) with a lazy import cycle back to the service." },
+    { "dimension": "technical_risk", "reason": "Secret stripping is security-sensitive: regex heuristics over args/headers/env/URL userinfo and query, confidential OAuth2 auth_config removal, and copy_values allowlist validation. No exact precedent; defensive edge-case tables are tested across several sanitizer test files." },
+    { "dimension": "file_change_estimate", "reason": "14 files per diffstat (6 source, 8 test), 1668 insertions, mostly new helper and test files across src/ and tests/ subtrees." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk at XL: security/secret-handling work with no exact reusable precedent and enumerated edge cases"
+  ],
+  "split_recommendation": null
+}

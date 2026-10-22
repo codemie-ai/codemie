@@ -19,10 +19,11 @@ Provides CRUD endpoints for managing shareable MCP server configurations.
 """
 
 from typing import Optional
-from fastapi import APIRouter, status, Depends, Query
+from fastapi import APIRouter, Depends, Query, status
 
 from codemie.configs.logger import logger
 from codemie.rest_api.models.mcp_config import (
+    MCPConfigCloneRequest,
     MCPConfigCreateRequest,
     MCPConfigUpdateRequest,
     MCPConfigResponse,
@@ -83,6 +84,35 @@ def create_mcp_config(
     """
     logger.info(f"Creating MCP config: {request.name} by user: {user.id}")
     return MCPConfigService.create(request, user)
+
+
+@router.post(
+    "/mcp-configs/{config_id}/clone",
+    status_code=status.HTTP_201_CREATED,
+    response_model=MCPConfigResponse,
+    summary="Clone MCP Configuration",
+    description="Create an MCP configuration from a submitted clone form payload (Admin only)",
+    dependencies=[Depends(authenticate), Depends(admin_access_only)],
+)
+def clone_mcp_config(
+    config_id: str,
+    request: MCPConfigCloneRequest,
+    user: User = Depends(authenticate),
+) -> MCPConfigResponse:
+    """
+    Clone an MCP server configuration from a submitted form payload.
+
+    `is_system`/`is_public` are always copied from the source config, never from the request body.
+    An unchanged `client_secret` is carried over from the source without double-encrypting it.
+
+    **Path Parameters:**
+    - **config_id**: ID of the configuration to clone (system-provided configurations are allowed)
+
+    **Returns:**
+    - The new configuration
+    """
+    logger.info(f"Cloning MCP config: {config_id} by user: {user.id}")
+    return MCPConfigService.clone_from_form(config_id, request, user)
 
 
 @router.get(

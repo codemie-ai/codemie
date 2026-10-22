@@ -39,6 +39,7 @@ from codemie.enterprise.mcp_auth.dependencies import (
 from codemie.rest_api.models.mcp_config import (
     ConfigWarning,
     MCPConfig,
+    MCPConfigCloneRequest,
     MCPConfigCreateRequest,
     MCPConfigListResponse,
     MCPConfigResponse,
@@ -60,6 +61,8 @@ _HAS_CLIENT_SECRET_FIELD = "has_client_secret"
 _CLIENT_SECRET_FIELD = "client_secret"
 _AUTH_CONFIG_ID_FIELD = "id"
 _AUTH_CONFIG_ID_IMMUTABLE_MESSAGE = "auth_config.id cannot be changed after credentials have been stored"
+_AUTH_CONFIG_ID_IN_USE_MESSAGE = "auth_config.id already in use"
+_AUTH_CONFIG_ID_IN_USE_DETAILS = "Another MCP configuration already uses this auth_config.id value"
 _TOKEN_INVALIDATION_FAILED_MESSAGE = "Token invalidation failed. Configuration not saved. Please retry."
 
 
@@ -312,14 +315,111 @@ class MCPConfigService:
             if _is_auth_config_id_conflict(e):
                 raise ExtendedHTTPException(
                     code=status.HTTP_409_CONFLICT,
-                    message="auth_config.id already in use",
-                    details="Another MCP configuration already uses this auth_config.id value",
+                    message=_AUTH_CONFIG_ID_IN_USE_MESSAGE,
+                    details=_AUTH_CONFIG_ID_IN_USE_DETAILS,
                     help="Use a unique auth_config.id for this MCP server",
                 ) from e
             raise
         logger.info(f"MCP config created: {save_response}")
 
         # Return response
+        return cls._to_response(mcp_config)
+
+    @classmethod
+    def clone_from_form(cls, config_id: str, request: MCPConfigCloneRequest, user: User) -> MCPConfigResponse:
+        """
+        Create an MCP configuration from a submitted clone form payload.
+
+        Mirrors ``create``'s validation/persistence pipeline, but copies ``is_system``/``is_public``
+        from the source (never from the request) and carries over the source's encrypted
+        ``client_secret`` the same way ``update`` does when the request leaves it unchanged.
+
+        Args:
+            config_id: ID of the configuration being cloned (system-provided sources are allowed)
+            request: Submitted clone form payload
+            user: Cloning user; becomes owner and creator of the copy
+
+        Returns:
+            The persisted clone
+
+        Raises:
+            ExtendedHTTPException: 404 unknown source, 400 duplicate name, 422 invalid auth_config,
+                409 auth_config.id conflict
+        """
+        logger.info(f"Cloning MCP config: source_id={config_id} user_id={user.id}")
+
+        source = MCPConfig.find_by_id(config_id)
+        if not source:
+            raise ExtendedHTTPException(
+                code=status.HTTP_404_NOT_FOUND,
+                message=MCP_CONFIG_NOT_FOUND_MESSAGE,
+                details=f"No MCP configuration found with id: {config_id}",
+                help=VERIFY_CONFIG_ID_HELP,
+            )
+
+        existing = MCPConfig.get_by_fields(
+            {
+                "name": request.name,
+                "user_id": user.id,
+            }
+        )
+        if existing:
+            raise ExtendedHTTPException(
+                code=status.HTTP_400_BAD_REQUEST,
+                message="Name already exists",
+                details=f"An MCP configuration with name '{request.name}' already exists",
+                help="Use a different name",
+            )
+
+        auth_config = _get_raw_auth_config(request.config)
+        _strip_response_only_auth_metadata(auth_config)
+        if isinstance(auth_config, dict):
+            auth_config[_AUTH_CONFIG_ID_FIELD] = str(uuid.uuid4())
+        _validate_auth_config_for_save(request.config)
+        # Intentionally mutate the request config in place before persistence so
+        # the stored raw auth_config dict matches the validated/encrypted payload.
+        cls._prepare_auth_config_for_persistence(
+            auth_config,
+            existing_encrypted_secret=_get_stored_encrypted_secret(source.config),
+            incoming_auth_config=auth_config,
+        )
+
+        mcp_config = MCPConfig(
+            id=str(uuid.uuid4()),
+            name=request.name,
+            description=request.description,
+            server_home_url=request.server_home_url,
+            source_url=request.source_url,
+            logo_url=request.logo_url,
+            categories=request.categories,
+            config=request.config,
+            required_env_vars=request.required_env_vars,
+            user_id=user.id,
+            is_public=source.is_public,
+            is_system=source.is_system,
+            created_by=CreatedByUser(
+                id=user.id,
+                name=user.name,
+                username=user.username,
+            ),
+            usage_count=0,
+            is_active=True,
+        )
+
+        # Save to database — catch unique-index violations for auth_config.id
+        try:
+            save_response = mcp_config.save()
+        except IntegrityError as e:
+            if _is_auth_config_id_conflict(e):
+                raise ExtendedHTTPException(
+                    code=status.HTTP_409_CONFLICT,
+                    message=_AUTH_CONFIG_ID_IN_USE_MESSAGE,
+                    details=_AUTH_CONFIG_ID_IN_USE_DETAILS,
+                    help="Retry the clone; a new auth_config.id is generated on every attempt",
+                ) from e
+            raise
+        logger.info(f"MCP config cloned: source_id={config_id} clone_id={mcp_config.id} save_response={save_response}")
+
         return cls._to_response(mcp_config)
 
     @classmethod
@@ -419,8 +519,8 @@ class MCPConfigService:
             if _is_auth_config_id_conflict(e):
                 raise ExtendedHTTPException(
                     code=status.HTTP_409_CONFLICT,
-                    message="auth_config.id already in use",
-                    details="Another MCP configuration already uses this auth_config.id value",
+                    message=_AUTH_CONFIG_ID_IN_USE_MESSAGE,
+                    details=_AUTH_CONFIG_ID_IN_USE_DETAILS,
                     help="Use a unique auth_config.id for this MCP server",
                 ) from e
             raise

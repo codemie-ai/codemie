@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "generated": "2026-10-12T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 18,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 9,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "4 components touched (MCPConfigCloneRequest model, 2 new router endpoints, 2 new service methods, and a new shared clone_naming.py utility module) across API/Service/DB-persistence layers" },
+    { "dimension": "technical_risk", "reason": "Clone flow mirrors the existing create/update pipeline for most logic (reduces risk), but introduces new OAuth client_secret carry-over and auth_config.id regeneration/conflict handling plus a sequential 'Copy N of <name>' allocation algorithm with its own race/conflict path — security-sensitive secret handling bumps this from M to L" },
+    { "dimension": "file_change_estimate", "reason": "9 files changed total (diffstat): 4 modified (mcp_config.py model, mcp_config.py router, mcp_config_service.py, test_mcp_config.py router test) and 5 new (clone_naming.py plus 4 new test files) spanning src/codemie/rest_api/models, src/codemie/rest_api/routers, src/codemie/service, src/codemie/service/mcp and corresponding tests/ directories" }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from M to L: clone flow handles OAuth client_secret carry-over and auth_config.id cloning/conflict detection (security-sensitive secret handling)"
+  ],
+  "split_recommendation": null
+}

@@ -53,6 +53,13 @@ class MCPCategory(str, Enum):
 # Constants for field descriptions
 MCP_SERVER_NAME_DESCRIPTION = "Name of the MCP server"
 MCP_SERVER_CONFIG_DESCRIPTION = "MCP server configuration"
+MCP_SERVER_DESCRIPTION_DESCRIPTION = "Description of the MCP server"
+MCP_SERVER_HOME_URL_DESCRIPTION = "Link to MCP documentation"
+MCP_SOURCE_URL_DESCRIPTION = "Link to source code"
+MCP_LOGO_URL_DESCRIPTION = "URL to server logo"
+MCP_CATEGORIES_DESCRIPTION = "Categories (max 3)"
+MCP_REQUIRED_ENV_VARS_DESCRIPTION = "Required environment variables"
+MCP_CATEGORIES_MAX_ERROR = "Maximum 3 categories allowed"
 
 _ALLOWED_MCP_COMMANDS: frozenset[str] = frozenset(
     {
@@ -253,14 +260,14 @@ class MCPConfigCreateRequest(BaseModel):
     """Request model for creating a new MCP configuration"""
 
     name: str = Field(min_length=1, max_length=255, description=MCP_SERVER_NAME_DESCRIPTION)
-    description: str | None = Field(None, max_length=2000, description="Description of the MCP server")
-    server_home_url: str | None = Field(None, description="Link to MCP documentation")
-    source_url: str | None = Field(None, description="Link to source code")
-    logo_url: str | None = Field(None, description="URL to server logo")
-    categories: list[str] = Field(default_factory=list, max_length=3, description="Categories (max 3)")
+    description: str | None = Field(None, max_length=2000, description=MCP_SERVER_DESCRIPTION_DESCRIPTION)
+    server_home_url: str | None = Field(None, description=MCP_SERVER_HOME_URL_DESCRIPTION)
+    source_url: str | None = Field(None, description=MCP_SOURCE_URL_DESCRIPTION)
+    logo_url: str | None = Field(None, description=MCP_LOGO_URL_DESCRIPTION)
+    categories: list[str] = Field(default_factory=list, max_length=3, description=MCP_CATEGORIES_DESCRIPTION)
     config: MCPServerConfigData = Field(description=MCP_SERVER_CONFIG_DESCRIPTION)
     required_env_vars: list[MCPVariableDefinition] = Field(
-        default_factory=list, description="Required environment variables"
+        default_factory=list, description=MCP_REQUIRED_ENV_VARS_DESCRIPTION
     )
     is_public: bool = Field(default=False, description="Make this config public")
 
@@ -269,7 +276,34 @@ class MCPConfigCreateRequest(BaseModel):
     def validate_categories(cls, v: list[str]) -> list[str]:
         """Validate categories"""
         if len(v) > 3:
-            raise ValueError("Maximum 3 categories allowed")
+            raise ValueError(MCP_CATEGORIES_MAX_ERROR)
+        return v
+
+
+class MCPConfigCloneRequest(BaseModel):
+    """Request model for cloning an MCP configuration from a submitted form payload.
+
+    Field-identical to ``MCPConfigCreateRequest`` minus ``is_public`` — the clone's
+    ``is_public``/``is_system`` are always copied from the source, never taken from the request.
+    """
+
+    name: str = Field(min_length=1, max_length=255, description=MCP_SERVER_NAME_DESCRIPTION)
+    description: str | None = Field(None, max_length=2000, description=MCP_SERVER_DESCRIPTION_DESCRIPTION)
+    server_home_url: str | None = Field(None, description=MCP_SERVER_HOME_URL_DESCRIPTION)
+    source_url: str | None = Field(None, description=MCP_SOURCE_URL_DESCRIPTION)
+    logo_url: str | None = Field(None, description=MCP_LOGO_URL_DESCRIPTION)
+    categories: list[str] = Field(default_factory=list, max_length=3, description=MCP_CATEGORIES_DESCRIPTION)
+    config: MCPServerConfigData = Field(description=MCP_SERVER_CONFIG_DESCRIPTION)
+    required_env_vars: list[MCPVariableDefinition] = Field(
+        default_factory=list, description=MCP_REQUIRED_ENV_VARS_DESCRIPTION
+    )
+
+    @field_validator('categories')
+    @classmethod
+    def validate_categories(cls, v: list[str]) -> list[str]:
+        """Validate categories"""
+        if len(v) > 3:
+            raise ValueError(MCP_CATEGORIES_MAX_ERROR)
         return v
 
 
@@ -277,13 +311,13 @@ class MCPConfigUpdateRequest(BaseModel):
     """Request model for updating an existing MCP configuration"""
 
     name: str | None = Field(None, min_length=1, max_length=255, description=MCP_SERVER_NAME_DESCRIPTION)
-    description: str | None = Field(None, max_length=2000, description="Description of the MCP server")
-    server_home_url: str | None = Field(None, description="Link to MCP documentation")
-    source_url: str | None = Field(None, description="Link to source code")
-    logo_url: str | None = Field(None, description="URL to server logo")
-    categories: list[str] | None = Field(None, max_length=3, description="Categories (max 3)")
+    description: str | None = Field(None, max_length=2000, description=MCP_SERVER_DESCRIPTION_DESCRIPTION)
+    server_home_url: str | None = Field(None, description=MCP_SERVER_HOME_URL_DESCRIPTION)
+    source_url: str | None = Field(None, description=MCP_SOURCE_URL_DESCRIPTION)
+    logo_url: str | None = Field(None, description=MCP_LOGO_URL_DESCRIPTION)
+    categories: list[str] | None = Field(None, max_length=3, description=MCP_CATEGORIES_DESCRIPTION)
     config: MCPServerConfigData | None = Field(None, description=MCP_SERVER_CONFIG_DESCRIPTION)
-    required_env_vars: list[MCPVariableDefinition] | None = Field(None, description="Required environment variables")
+    required_env_vars: list[MCPVariableDefinition] | None = Field(None, description=MCP_REQUIRED_ENV_VARS_DESCRIPTION)
     is_public: bool | None = Field(None, description="Make this config public")
     is_active: bool | None = Field(None, description="Activate/deactivate this config")
 
@@ -292,7 +326,7 @@ class MCPConfigUpdateRequest(BaseModel):
     def validate_categories(cls, v: list[str] | None) -> list[str] | None:
         """Validate categories"""
         if v is not None and len(v) > 3:
-            raise ValueError("Maximum 3 categories allowed")
+            raise ValueError(MCP_CATEGORIES_MAX_ERROR)
         return v
 
 

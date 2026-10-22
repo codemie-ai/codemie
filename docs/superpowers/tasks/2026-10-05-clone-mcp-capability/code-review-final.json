@@ -1,0 +1,52 @@
+{
+  "decision": "request-changes",
+  "rationale": "One real defect: sanitize_args strips only args matching a secret-flag regex, so other secret-bearing args (positional tokens, -H Authorization, --auth/--bearer/--credential) are cloned verbatim and unreported. No defers; 23 candidates dismissed as noise or accepted by design (name race, no locking) or unreachable (None headers/env/args are non-nullable fields). Not every dismissed candidate was individually traced to source, so confidence is medium.",
+  "confidence": "medium",
+  "risk_flags": ["security", "public-api", "data-contract"],
+  "business_review": [
+    {"kind": "story-ac", "item": "AC1 Admin clone creates persisted config, fields copied, plain MCPConfigCloneResponse", "status": "pass", "notes": "service clone and router response_model covered by tests"},
+    {"kind": "story-ac", "item": "AC2 Name is Copy N of <base>, lowest free N, within 255 chars", "status": "pass", "notes": "clone_naming.py; test_clone_naming.py"},
+    {"kind": "story-ac", "item": "AC3 Edits to clone and original are independent", "status": "pass", "notes": "deep copy in sanitize_config"},
+    {"kind": "story-ac", "item": "AC4 Clear error on failure, no row created, original unchanged", "status": "pass", "notes": "404/422/409 paths tested"},
+    {"kind": "story-ac", "item": "AC5 Non-admin receives 403", "status": "pass", "notes": "admin_access_only on route; router test"},
+    {"kind": "story-ac", "item": "AC6 Clone has is_system=False, usage_count=0, is_active=True, cloner as owner", "status": "pass", "notes": "service clone row construction tested"},
+    {"kind": "story-ac", "item": "AC7 No secrets with missing/empty copy_values; placeholders, keys preserved", "status": "pass", "notes": "see CR-001 for args heuristic gap"},
+    {"kind": "story-ac", "item": "AC8 stripped_fields top-level dotted paths, excludes copied paths", "status": "pass", "notes": "router and service tests"},
+    {"kind": "story-ac", "item": "AC9 URL handling: userinfo, query values, fragment, still parses", "status": "pass", "notes": "sanitize_url; test_clone_sanitizer_url_args.py"},
+    {"kind": "story-ac", "item": "AC10 placeholder_value_present warning on create, update, clone", "status": "pass", "notes": "_add_placeholder_warnings; placeholder warning tests"},
+    {"kind": "story-ac", "item": "AC11 Drift-guard test fails for unannotated new field", "status": "pass", "notes": "CLONE_POLICY and get_clone_policy tests"},
+    {"kind": "story-ac", "item": "AC12 Confidential OAuth2 clone has auth_config None; others copied, new id", "status": "pass", "notes": "sanitize_config auth branch; tests"},
+    {"kind": "story-ac", "item": "AC13 Name allocation: wildcard escaping, truncation, gaps", "status": "pass", "notes": "test_clone_naming.py"},
+    {"kind": "story-ac", "item": "AC14 Name scan selects only the name column", "status": "pass", "notes": "select(MCPConfig.name) tested"},
+    {"kind": "story-ac", "item": "AC15 Selected values copied, others blanked, keys preserved", "status": "pass", "notes": "sanitizer tests"},
+    {"kind": "story-ac", "item": "AC16 Non-copyable path returns 422 naming it", "status": "pass", "notes": "validate_copy_values tests"},
+    {"kind": "story-ac", "item": "AC17 Unknown or non-existent path returns 422 naming it", "status": "pass", "notes": "validate_copy_values tests"},
+    {"kind": "story-ac", "item": "AC18 Duplicate copy_values tolerated", "status": "pass", "notes": "dict.fromkeys dedupe"},
+    {"kind": "story-ac", "item": "AC19 Info audit log contains copied paths and no values", "status": "pass", "notes": "audit log test"},
+    {"kind": "story-ac", "item": "AC20 Copied value with JSON-special characters survives round trip", "status": "pass", "notes": "round-trip test"},
+    {"kind": "story-ac", "item": "AC21 Permission checked before copy_values validation; validation before write", "status": "pass", "notes": "router dependencies; ordering test"},
+    {"kind": "spec", "item": "Clone does not call create; naming scan and insert in one transaction, no lock", "status": "pass", "notes": "matches spec"},
+    {"kind": "spec", "item": "Shared constants module with text placeholder and URL token", "status": "pass", "notes": "clone_constants.py"},
+    {"kind": "spec", "item": "Document and test OAuth2 auto-discovery behavior of clone", "status": "pass", "notes": "test_clone_auto_discovery_behavior.py"},
+    {"kind": "spec", "item": "Router-level tests for permission check, optional body, response shape", "status": "pass", "notes": "tests/codemie/rest_api/routers/test_mcp_config.py"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "all 11 subjects in diff_base..HEAD match the documented EPMCDME-####: Description format"},
+    {"kind": "code-quality", "status": "pass", "notes": "new modules carry the Apache license header; no typing.Optional or bare generics found. Ruff/license gates were not run (read-only)."},
+    {"kind": "security", "status": "pass", "notes": "endpoint uses Depends(authenticate) and admin_access_only; logs contain ids and copied paths, not values"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/mcp/clone_sanitizer.py",
+      "line": 66,
+      "title": "Args secrets stripped only by flag-name regex",
+      "problem": "sanitize_args blanks a value only when the arg matches _FLAG_WITH_VALUE_RE or follows a flag-only arg whose name contains token/api-key/password/passwd/secret/key. Positional tokens, '-H Authorization: ...' header args, connection strings or URLs with credentials in args, and flags such as --auth, --bearer, --credential are copied verbatim into the clone and are not reported in stripped_fields. The route docstring and the task decision state that secrets in args are replaced with placeholders by default.",
+      "impact": "A clone created without copy_values can carry secrets from args in plaintext, and the clone may be public because is_public is copied. The caller is also not told via stripped_fields that these values were left in place. Reachability confirmed by reading sanitize_args and sanitize_config: no other path touches args.",
+      "recommendation": "Widen the secret-word set (auth, bearer, credential, pwd, authorization), run arg values containing '://' through sanitize_url, blank values of '-H'/'--header' args, and report every blanked index in stripped_fields. Alternatively blank all args by default, keeping flag names, and let copy_values opt back in by args[<i>]."
+    }
+  ]
+}
