@@ -1,0 +1,77 @@
+{
+  "schema": 1,
+  "task": "Upgrade or migrate CodeMie's A2A protocol client/server to the latest published version (or the official a2a-sdk), preserving auth, credentials, assistant execution, and chat history, and resolving the A2UI a2a-sdk pin conflict if the SDK path is chosen.",
+  "generated": "2026-09-28T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 6, "label": "XXL" },
+    "requirements_clarity": { "score": 5, "label": "XL" },
+    "technical_risk":       { "score": 6, "label": "XXL" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 5, "label": "XL" },
+    "affected_layers":      { "score": 6, "label": "XXL" }
+  },
+  "total": 34,
+  "size": "XXL",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "split-required",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Spans the API/router layer, an entirely in-house protocol/domain layer (~8 files: types, utils, client/*, server/*), the security layer (auth/Ability preserved), and the persistence layer (Task SQLModel) — plus the ticket's own framing as an 'upgrade or migrate' of this subsystem, which is the explicit Component Scope red-flag trigger." },
+    { "dimension": "requirements_clarity", "reason": "AC1 leaves the target protocol version and implementation approach (in-house upgrade vs a2a-sdk migration) as an open decision to be made and documented as part of the work; AC6's backward-compatibility mechanism for previously connected agents has no existing design to point to. This is an architectural decision left unmade, not a minor gap." },
+    { "dimension": "technical_risk", "reason": "Current wire shapes trace to a pre-1.0 A2A draft while the target ('latest published') version is confirmed structurally different (kind- vs type-discriminated parts, message/stream vs tasks/sendSubscribe); server-side streaming is a stub with zero regression coverage; the A2UI a2a-sdk pin is an unresolved, real dependency conflict; and every auth-header branch (Basic/API-key/Bearer/SigV4) plus the recently-fixed public/private discovery split must be reproduced rather than inherited — a security-sensitive, largely irreversible public-contract change." },
+    { "dimension": "file_change_estimate", "reason": "~10 core source files (types.py, utils.py, 4 client files, 3 server files, router) plus ~2,400 lines across 6 existing test files needing rework, plus likely new files for version negotiation/compatibility, a version-constants module, and new streaming tests — pushes past the 16-modified/6-new XXL threshold, especially if Task/Message/Artifact persistence fields also need to change shape." },
+    { "dimension": "dependencies", "reason": "If the SDK path is chosen, a2a-sdk becomes a direct, heavyweight dependency with a real, currently-unresolved version conflict against a2ui-agent-sdk's transitive pin (>=0.3.0,<0.4.0, resolved 0.3.26) — matching 'one heavyweight dependency, conflicts possible.'" },
+    { "dimension": "affected_layers", "reason": "Touches API, Service (assistant execution), Security (auth/Ability), DB-Persistence (a2a_tasks / Task SQLModel), and External (remote agents, AWS Bedrock AgentCore seam, and a possible new a2a-sdk external dependency) — a cross-cutting, potential-schema-change span across five layers." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from XL to XXL: the ticket explicitly frames the work as an 'upgrade' or 'migration' of the A2A protocol subsystem spanning router, types, client, and server.",
+    "Technical Risk bumped from XL to XXL: authentication/authorization behavior (AC5) and stored credentials must be preserved across a public wire-protocol change — an explicit security requirement on a largely irreversible external contract.",
+    "Affected Layers bumped from XL to XXL: a protocol-shape change to Task/Message/Artifact fields is flagged in the research as a persistence-layer/migration concern — a potentially significant database schema change.",
+    "File Change Estimate bumped from XL to XXL: the same schema/migration concern, combined with ~2,400 lines of existing tests needing rework plus new streaming/compatibility test coverage, pushes the modified+new file count past the 16/6 threshold."
+  ],
+  "split_recommendation": {
+    "strategy": "by-phase",
+    "secondary_strategy": "by-component",
+    "ordering_note": "The version/approach decision (AC1) must land first since it determines the shape of every later slice. Server-side and client-side protocol upgrades can then proceed as independent, parallelizable slices within the same repo. Backward-compatibility and the A2UI dependency-conflict resolution land last because they depend on both the server and client slices reaching their target protocol shape.",
+    "slices": [
+      {
+        "title": "A2A protocol version & approach decision",
+        "slice_slug": "a2a-version-decision",
+        "component": "codemie",
+        "feature": "a2a-upgrade",
+        "scope": "Evaluate upgrading the in-house A2A implementation versus migrating to the official a2a-sdk; pick the target A2A protocol version; document the rationale covering effort, maintenance, and the A2UI a2a-sdk pin conflict (AC1). Produce the version-constants/config scaffolding the later slices build against.",
+        "depends_on": null
+      },
+      {
+        "title": "Upgrade A2A server (task manager, router, agent card) to target version",
+        "slice_slug": "a2a-server-protocol",
+        "component": "codemie",
+        "feature": "a2a-upgrade",
+        "scope": "Update AgentCard/types, the JSON-RPC dispatch in the router, and CodemieTaskManager to speak the chosen target protocol version, including turning on server-side streaming; preserve the discovery-endpoint auth/Ability split and assistant execution path (AC2 server side, AC4, AC5 server side, AC7 server tests).",
+        "depends_on": "A2A protocol version & approach decision"
+      },
+      {
+        "title": "Upgrade A2A client (A2AClient, card resolver, remote agent connection) to target version",
+        "slice_slug": "a2a-client-protocol",
+        "component": "codemie",
+        "feature": "a2a-upgrade",
+        "scope": "Update A2AClient, A2ACardResolver, and RemoteAgentConnections to speak the chosen target protocol version with and without streaming, preserving the four outbound auth-header branches and the existing BedrockAdapter seam (AC2 client side, AC5 client side, AC7 client tests).",
+        "depends_on": "A2A protocol version & approach decision"
+      },
+      {
+        "title": "Backward compatibility and A2UI dependency conflict resolution",
+        "slice_slug": "a2a-backward-compat",
+        "component": "codemie",
+        "feature": "a2a-upgrade",
+        "scope": "Define and implement the compatibility path (or explicit, well-formed incompatibility error) for previously connected remote agents (AC6); resolve the a2a-sdk vs a2ui-agent-sdk version pin conflict if the SDK path was chosen; apply any Task/Message/Artifact persistence schema migration the target shape requires.",
+        "depends_on": "Upgrade A2A server (task manager, router, agent card) to target version"
+      }
+    ]
+  }
+}

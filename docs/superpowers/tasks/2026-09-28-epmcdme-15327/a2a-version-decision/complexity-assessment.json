@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "task": "Decide between upgrading CodeMie's in-house A2A implementation or migrating to the official a2a-sdk, pick the target protocol version, document the rationale (effort, maintenance, A2UI a2a-sdk pin conflict), and scaffold version-constants/config for later implementation slices.",
+  "generated": "2026-09-28T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 11,
+  "size": "S",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Deliverable is a decision document plus a version-constants/config scaffolding module — one self-contained addition (a named-version module akin to A2UI's config.py pattern), not the protocol client/server rework itself, which is explicitly deferred to a later slice." },
+    { "dimension": "requirements_clarity", "reason": "AC1 for this slice (document target version, chosen approach, rationale covering effort/maintenance/A2UI conflict) is explicit; the technical-analysis.md already surfaces the concrete facts needed (A2UI pins a2a-sdk >=0.3.0,<0.4.0 resolved to 0.3.26, no direct SDK usage today, BedrockAdapter shows the newer wire shape) so the decision has a clear evidentiary basis, leaving only the judgment call on which option to recommend." },
+    { "dimension": "technical_risk", "reason": "No behavior change ships in this slice — no router, client, server, or persistence code is touched; risk is limited to a documentation/analysis error, which is trivially reversible." },
+    { "dimension": "file_change_estimate", "reason": "Expected output: one decision/rationale doc plus one new version-constants module (following the a2ui/config.py precedent), possibly a small config.py touch — 1 new file, 0-1 modified, fully localized." },
+    { "dimension": "dependencies", "reason": "No new packages are added; scaffolding may introduce minor config/version constants but not a package or version bump — the SDK-vs-in-house dependency question is analyzed, not acted on, in this slice." },
+    { "dimension": "affected_layers", "reason": "Touches only the config/constants surface (a single layer); the API, service, security, and persistence layers documented in technical-analysis.md are in scope for later implementation slices, not this decision-and-scaffolding slice." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

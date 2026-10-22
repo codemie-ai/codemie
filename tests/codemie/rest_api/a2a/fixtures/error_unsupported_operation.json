@@ -1,0 +1,15 @@
+{
+  "jsonrpc": "2.0",
+  "id": "req-5",
+  "error": {
+    "code": -32004,
+    "message": "This operation is not supported",
+    "data": [
+      {
+        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+        "reason": "UNSUPPORTED_OPERATION",
+        "domain": "a2a-protocol.org"
+      }
+    ]
+  }
+}

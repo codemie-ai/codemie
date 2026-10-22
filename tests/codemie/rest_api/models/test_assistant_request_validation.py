@@ -15,7 +15,7 @@
 import pytest
 from pydantic import ValidationError
 
-from codemie.rest_api.a2a.types import AgentCard, AgentCapabilities, AgentSkill
+from codemie.rest_api.a2a.types import AgentCard, AgentCapabilities, AgentInterface, AgentSkill
 from codemie.rest_api.models.assistant import AssistantRequest, AssistantType
 
 
@@ -56,7 +56,7 @@ def test_a2a_type_validation():
     agent_card = AgentCard(
         name="Test Agent",
         description="Test Agent Description",
-        url="https://example.com/agent",
+        supportedInterfaces=[AgentInterface(url="https://example.com/agent", protocolBinding="JSONRPC")],
         version="1.0",
         capabilities=AgentCapabilities(streaming=True),
         skills=[
@@ -85,7 +85,7 @@ def test_auto_set_type_from_agent_card():
     agent_card = AgentCard(
         name="Test Agent",
         description="Test Agent Description",
-        url="https://example.com/agent",
+        supportedInterfaces=[AgentInterface(url="https://example.com/agent", protocolBinding="JSONRPC")],
         version="1.0",
         capabilities=AgentCapabilities(streaming=True),
         skills=[

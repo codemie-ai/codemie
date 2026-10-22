@@ -1,0 +1,69 @@
+{
+  "decision": "request-changes",
+  "rationale": "CR-001..005 and CR-007 are resolved in source at 30d4623a8; CR-006 and CR-008 stay unresolved only because the user decisions relayed in the dispatch text are not mapped in fix_evidence (router change matches the relayed CR-006 decision; CR-008 relayed as skipped). New blocker CR-009: the added Alembic migration reuses revision id a2b3c4d5e6f7, already taken by another migration, and is also out of spec scope.",
+  "confidence": "medium",
+  "risk_flags": ["security", "breaking-change", "public-api", "data-contract"],
+  "business_review": [
+    {"kind": "spec", "item": "Design: keep/stub ListTasks, SubscribeToTask and push-notification request classes without adding to dispatch union", "status": "partial", "notes": "no ListTasks/SubscribeToTask classes or stubs added"},
+    {"kind": "spec", "item": "Design: Task id->taskId + contextId; events; statusUpdate/artifactUpdate envelope", "status": "partial", "notes": "taskId alias only; contextId on Task only, never populated; events lack contextId; no envelope"},
+    {"kind": "spec", "item": "Design: router dispatch table incl. SendStreamingMessage; unmapped methods -> MethodNotFound", "status": "partial", "notes": "table omits SendStreamingMessage; MethodNotFound branch unreachable"},
+    {"kind": "spec", "item": "Design: on_send_task_subscribe real via _handle_a2a_stream yielding status/artifact events", "status": "partial", "notes": "only TaskStatusUpdateEvent, no artifact events"},
+    {"kind": "spec", "item": "AC: POST dispatches five v1.0 methods; other well-formed methods return MethodNotFound, not 500", "status": "fail", "notes": "ListTasks returns 400 / -32600; known Task 10 gap"},
+    {"kind": "spec", "item": "AC: SendStreamingMessage returns SSE of JSON-RPC-wrapped status/artifact events ending in terminal state", "status": "partial", "notes": "status-only frames; no artifact events, no content"},
+    {"kind": "spec", "item": "AC: no discriminator retained; camelCase taskId, contextId", "status": "partial", "notes": "discriminators removed; events lack contextId"},
+    {"kind": "spec", "item": "AC: router-level tests for all methods incl. one non-goal method returning MethodNotFound", "status": "partial", "notes": "GetTask/CancelTask only unknown-id path; non-goal test asserts -32600"},
+    {"kind": "spec", "item": "Testing: lint/build/full suite execution", "status": "pending-stage-7", "notes": "execution evidence remains"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "fail", "notes": "17 of 18 subjects match 'EPMCDME-####: Description'; 'a2a-version-decision: add planning artifacts' has no ticket prefix"},
+    {"kind": "code-quality", "status": "partial", "notes": "code-quality.md prefers 'X | None' over typing.Optional; types.py adds 'id: Optional[str]' with taskId alias."},
+    {"kind": "security", "status": "pass", "notes": "A2A router endpoint uses Depends(authenticate); no credential logging or hardcoded secrets found in a targeted scan"}
+  ],
+  "findings": [
+    {
+      "id": "CR-006",
+      "kind": "decision",
+      "severity": "critical",
+      "triage": "decision_needed",
+      "file": "src/codemie/rest_api/routers/a2a.py",
+      "line": 131,
+      "title": "Out-of-scope methods return -32600, not -32601",
+      "problem": "Known Task 10 gap: A2ARequest covers only the 5 in-scope methods, so ListTasks/SubscribeToTask/push-config fail validation and return 400/-32600 instead of the AC's MethodNotFound (-32601); the MethodNotFoundError dispatch branch is now dead code, SendStreamingMessage is handled ahead of the table, and the router test pins 400/-32600.",
+      "impact": "Spec AC for unmapped methods is unmet; dead fallback code remains.",
+      "recommendation": "User decides: pre-check the method name and return -32601, add stub request classes to the union, or amend the AC to accept -32600 and remove the dead branch."
+    },
+    {
+      "id": "CR-008",
+      "kind": "evidence",
+      "severity": "major",
+      "triage": "patch",
+      "file": "unknown",
+      "title": "Commit subject lacks EPMCDME ticket prefix",
+      "problem": "Commit 'a2a-version-decision: add planning artifacts' violates the git-workflow EPMCDME-####: Description format.",
+      "impact": "Blocking commit-format standard fails; ticket traceability lost.",
+      "recommendation": "Reword to 'EPMCDME-15327: Add A2A version decision planning artifacts' or ensure the squash commit carries the prefix."
+    },
+    {
+      "id": "CR-009",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/external/alembic/versions/a2b3c4d5e6f7_add_owner_and_context_to_a2a_tasks.py",
+      "line": 15,
+      "title": "Alembic revision id duplicates existing migration",
+      "problem": "The new migration declares revision 'a2b3c4d5e6f7', already used by a2b3c4d5e6f7_add_conversation_id_to_workflow_executions.py (which 3197b8d53564 merges). Duplicate revision ids make the Alembic graph ambiguous/broken (upgrade heads fails or one migration is shadowed), and this one also revises u2v3w4x5y6a7. The migration is additionally outside spec scope (spec lists no Alembic migration for a2a_tasks as out of scope).",
+      "impact": "Database migration may fail or skip, leaving a2a_tasks without assistant_id/user_id/contextId, so ownership checks and task saves error at runtime.",
+      "recommendation": "Generate a unique revision id and set down_revision to the actual current head (verify with alembic heads); record the scope exception for the migration in the spec/decisions."
+    }
+  ],
+  "finding_status": [
+    {"id": "CR-001", "status": "resolved", "notes": "_find_owned_task/_is_owner gate get, cancel, and send paths; foreign tasks return TaskNotFound. Running invocation is not interrupted (recommendation marked optional)."},
+    {"id": "CR-002", "status": "resolved", "notes": "Streaming now runs _validate_request and _check_existing_task, uses upsert_task, and rejects terminal tasks."},
+    {"id": "CR-003", "status": "resolved", "notes": "update_store ignores writes to a differing terminal state; streaming emits CANCELED final when cancel wins. Still not atomic at DB level."},
+    {"id": "CR-004", "status": "resolved", "notes": "Final status event carries the message, artifact event is yielded, events carry contextId."},
+    {"id": "CR-005", "status": "resolved", "notes": "GetExtendedAgentCardRequest.params is dict[str, Any] | None; tests cover empty and omitted params."},
+    {"id": "CR-006", "status": "unresolved", "notes": "No fix_evidence decision record mapped for this id. Source matches the relayed accept -32600 decision (dead branch removed), but the decision is not recorded in a mapped form."},
+    {"id": "CR-007", "status": "resolved", "notes": "Router tests added for GetTask success, CancelTask success, foreign-owner, and SSE error frame; misnamed test renamed."},
+    {"id": "CR-008", "status": "unresolved", "notes": "Commit history not rewritten; no mapped fix_evidence decision for this id. Relayed as deliberately skipped."}
+  ]
+}

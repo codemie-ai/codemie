@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "task": "Upgrade the CodeMie A2A client (adapter, client, card_resolver, remote_agent_connection) and its consumer A2AAssistantHandler to A2A protocol v1.0, rewriting the client tests, with the BedrockAdapter v0.3 design decision open.",
+  "generated": "2026-09-30T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 20,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Four client modules (adapter, client, card_resolver, remote_agent_connection) plus the A2AAssistantHandler consumer, the shared types alias block and the card-resolver router path. Mostly renames and shape alignment, so it stays at L rather than XL." },
+    { "dimension": "requirements_clarity", "reason": "The BedrockAdapter fate (keep v0.3, drop, or dual-mode) is an open design decision. The SSE envelope shape, request-side alias naming (id/sessionId vs taskId/contextId) and push-notification method handling are also unpinned, so design decisions are open with rework risk." },
+    { "dimension": "technical_risk", "reason": "Closest existing pattern is the in-house adapter strategy plus the slice-2 server implementation. It does not cover the Bedrock v0.3 remotes (a live feature; cards fail the new AgentCard validation) or SigV4 raw-body signing. Remote A2A calls are currently broken on this branch and stored old-shape agent_card rows are affected, so a rollback plan is needed." },
+    { "dimension": "file_change_estimate", "reason": "Roughly 4 client files, assistant_handlers.py, types.py and possibly version.py, plus 3 rewritten test files (~1,390 lines) and new adapter tests. About 9 modified and 1-2 new files across src and tests directories." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk held at L: no exact precedent for the Bedrock v0.3 adapter under the v1.0 AgentCard; the SigV4 signing surface is unchanged but must be preserved",
+    "Requirements Clarity at L: open design decisions (Bedrock adapter fate, SSE envelope, alias naming)"
+  ],
+  "split_recommendation": null
+}

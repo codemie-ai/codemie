@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "task": "Update CodeMie's A2A AgentCard/types, JSON-RPC router dispatch, and CodemieTaskManager to speak A2A protocol spec v1.0 (negotiated value \"1.0\"), including implementing server-side streaming (currently a dead-code stub), while preserving the discovery-endpoint auth/Ability split and the assistant execution path (server-side only, slice 2 of 4 of EPMCDME-15327).",
+  "generated": "2026-09-29T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 6, "label": "XXL" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 23,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Five tightly-coupled components across three layers — wire types (types.py: AgentCard, Task/Message/Part, JSON-RPC envelopes), router dispatch (routers/a2a.py), the TaskManager ABC plus CodemieTaskManager, and the AgentCard-conversion layer (a2a/utils.py) — none of which can change in isolation (Part discriminator removal and method-name renames cascade through all of them), plus a new streaming-transport abstraction and a new dispatch mechanism that don't exist today." },
+    { "dimension": "technical_risk", "reason": "Streaming is genuinely novel (on_send_task_subscribe is a one-line stub; the sibling _handle_a2a_stream is dead, untested code with a latent type mismatch, and no HTTP-streaming transport exists in the router today); the JSON-RPC POST endpoint has zero router-level test coverage and the one existing streaming unit test self-mocks the method under test, so there is no regression baseline for AC7; and the wire-shape rename reshapes what's stored in the JSONB-backed a2a_tasks columns with no read-compat path (PydanticType does a direct model_validate), making previously-persisted rows unreadable post-deploy with no formal migration to fall back on." },
+    { "dimension": "file_change_estimate", "reason": "Core changes span types.py, routers/a2a.py, server/task_manager.py, server/codemie_task_manager.py, and a2a/utils.py, plus updates to three existing test files (test_a2a_router.py, test_codemie_task_manager.py, test_utils.py) and likely new test coverage for the previously-untested POST dispatch endpoint and streaming path — landing at roughly 8-10 modified files plus 1-2 new across routers/, a2a/, a2a/server/, and their mirrored tests/ directories." },
+    { "dimension": "affected_layers", "reason": "Touches API (router dispatch, discovery path, new streaming response), Service (TaskManager/CodemieTaskManager, AgentCard conversion), and DB-Persistence (Task SQLModel JSONB columns whose stored shape changes significantly) — three layers including a persistence-shape change, matching the persistence-with-schema-change tier even without a formal Alembic migration." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped via streaming/real-time red flag: implementing server-side streaming from a dead-code stub with no existing HTTP-streaming transport pattern in the router.",
+    "Technical Risk reinforced via zero-test-coverage red flag: the JSON-RPC POST endpoint has no router-level tests and the existing streaming unit test self-mocks the method under test, so no defensive/edge-case test template covers the new dispatch or streaming work.",
+    "Affected Layers/Technical Risk reinforced via database-schema-significant-change red flag: JSONB-persisted Task columns change wire shape with no read-compat path and no migration, creating an irreversible-once-deployed risk for rows written under the old shape."
+  ],
+  "split_recommendation": null
+}

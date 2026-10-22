@@ -12,48 +12,57 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import threading
 import uuid
-from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from codemie.core.models import AssistantChatRequest
 from codemie.rest_api.a2a.server.codemie_task_manager import CodemieTaskManager
-from codemie.rest_api.a2a.server.utils import new_incompatible_types_error
 from codemie.rest_api.a2a.types import (
-    GetTaskRequest,
-    GetTaskResponse,
-    SendTaskRequest,
-    SendTaskResponse,
-    TaskStatus,
-    TaskState,
-    Message,
-    TextPart,
-    TaskQueryParams,
-    TaskNotFoundError,
-    Task,
     Artifact,
-    TaskSendParams,
-    SendTaskStreamingRequest,
-    JSONRPCResponse,
-    UnsupportedOperationError,
+    CancelTaskRPCRequest,
+    CancelTaskRequest,
     ContentTypeNotSupportedError,
-    DataPart,
+    GetTaskRPCRequest,
+    GetTaskRequest,
+    InvalidParamsError,
+    Message,
+    Part,
+    Role,
+    SendMessageConfiguration,
+    SendMessageRequest,
+    SendMessageRPCRequest,
+    SendStreamingMessageRPCRequest,
+    Task,
+    TaskArtifactUpdateEvent,
+    TaskNotCancelableError,
+    TaskNotFoundError,
+    TaskState,
+    TaskStatus,
+    TaskStatusUpdateEvent,
+    UnsupportedOperationError,
 )
 from codemie.rest_api.models.assistant import Assistant
 from codemie.rest_api.security.user import User
 from codemie.service.assistant_service import AssistantService
 
+_DUMP = {"by_alias": True, "exclude_none": True}
+
 
 @pytest.fixture
 def mock_user():
-    return MagicMock(spec=User)
+    user = MagicMock(spec=User)
+    user.id = "user-1"
+    return user
 
 
 @pytest.fixture
 def mock_assistant():
-    return MagicMock(spec=Assistant)
+    assistant = MagicMock(spec=Assistant)
+    assistant.id = "assistant-1"
+    return assistant
 
 
 @pytest.fixture
@@ -62,405 +71,533 @@ def task_manager(mock_assistant, mock_user):
 
 
 @pytest.fixture
-def mock_task():
-    task = MagicMock(spec=Task)
-    task.id = "test-task-id"
-    task.sessionId = "test-session-id"
-    task.history = []
-    task.artifacts = []
-    task.status = TaskStatus(state=TaskState.SUBMITTED)
+def store():
+    """In-memory stand-in for the a2a_tasks table."""
+    tasks: dict[str, Task] = {}
+
+    def find(task_id):
+        return tasks.get(task_id)
+
+    def save(self, refresh=False):
+        tasks[self.id] = self
+        return self
+
+    with (
+        patch.object(Task, "find_by_id", side_effect=find),
+        patch.object(Task, "save", save),
+        patch.object(Task, "update", save),
+    ):
+        yield tasks
+
+
+def _seed(store, task_id="t-1", state=TaskState.WORKING, assistant_id="assistant-1", user_id="user-1", ctx="ctx-1"):
+    message = Message(role=Role.USER, parts=[Part(text="earlier")], contextId=ctx, taskId=task_id)
+    task = Task(
+        id=task_id,
+        contextId=ctx,
+        assistant_id=assistant_id,
+        user_id=user_id,
+        status=TaskStatus(state=state),
+        history=[
+            message,
+            Message(role=Role.AGENT, parts=[Part(text="reply")]),
+            Message(role=Role.USER, parts=[Part(text="q3")]),
+        ],
+    )
+    store[task_id] = task
     return task
 
 
-@pytest.fixture
-def text_message():
-    return Message(role="user", parts=[TextPart(text="Hello, this is a test message")])
+def _agent(response=None, error=None):
+    agent = MagicMock()
+    if error is not None:
+        agent.invoke_with_a2a_output.side_effect = error
+    else:
+        agent.invoke_with_a2a_output.return_value = response or {"content": "the answer"}
+    return agent
 
 
-@pytest.fixture
-def task_send_params(text_message):
-    return TaskSendParams(
-        id="test-task-id",
-        sessionId="test-session-id",
-        message=text_message,
-        acceptedOutputModes=["text"],
-        historyLength=10,
-    )
+def _send(
+    text="hello",
+    task_id=None,
+    context_id=None,
+    modes=None,
+    history_length=None,
+    immediate=None,
+    parts=None,
+    cls=SendMessageRPCRequest,
+):
+    message = Message(role=Role.USER, parts=parts or [Part(text=text)], taskId=task_id, contextId=context_id)
+    configuration = None
+    if modes is not None or history_length is not None or immediate is not None:
+        configuration = SendMessageConfiguration(
+            acceptedOutputModes=modes, historyLength=history_length, returnImmediately=immediate
+        )
+    return cls(id="request-123", params=SendMessageRequest(message=message, configuration=configuration))
 
 
-@pytest.fixture
-def send_task_request(task_send_params):
-    return SendTaskRequest(id="request-123", method="tasks/send", params=task_send_params)
+async def _collect(manager, request):
+    return [frame async for frame in manager.on_send_streaming_message(request)]
 
 
-@pytest.fixture
-def get_task_request():
-    return GetTaskRequest(id="request-123", method="tasks/get", params=TaskQueryParams(id="test-task-id"))
-
-
-@pytest.fixture
-def send_task_streaming_request(task_send_params):
-    return SendTaskStreamingRequest(id="request-123", method="tasks/sendSubscribe", params=task_send_params)
-
-
-class TestCodemieTaskManager:
+class TestInit:
     def test_initialization(self, mock_assistant, mock_user):
-        """Test that the CodemieTaskManager initializes correctly."""
-        task_manager = CodemieTaskManager(assistant=mock_assistant, user=mock_user)
+        manager = CodemieTaskManager(assistant=mock_assistant, user=mock_user)
+        assert manager.assistant == mock_assistant and manager.user == mock_user
 
-        assert task_manager.assistant == mock_assistant
-        assert task_manager.user == mock_user
+
+# ---- GetTask ----
+
+
+class TestGetTask:
+    @pytest.mark.asyncio
+    async def test_not_found(self, task_manager, store):
+        response = await task_manager.on_get_task(GetTaskRPCRequest(id="r1", params=GetTaskRequest(id="missing")))
+        assert isinstance(response.error, TaskNotFoundError) and response.result is None and response.id == "r1"
+        assert response.error.data[0]["metadata"] == {"taskId": "missing"}
 
     @pytest.mark.asyncio
-    async def test_on_get_task_not_found(self, task_manager, get_task_request):
-        """Test on_get_task when task is not found."""
-        with patch.object(Task, 'find_by_id', return_value=None):
-            response = await task_manager.on_get_task(get_task_request)
+    @pytest.mark.parametrize(
+        "attr,value", [("user_id", "someone-else"), ("assistant_id", "assistant-2"), ("user_id", None)]
+    )
+    async def test_non_owner_and_legacy_unowned_are_not_found(self, task_manager, store, attr, value):
+        task = _seed(store)
+        setattr(task, attr, value)
+        if value is None:
+            task.assistant_id = None
+        response = await task_manager.on_get_task(GetTaskRPCRequest(id="r1", params=GetTaskRequest(id="t-1")))
+        assert isinstance(response.error, TaskNotFoundError)
 
-            assert isinstance(response, GetTaskResponse)
-            assert response.id == get_task_request.id
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("history_length,expected", [(None, 3), (0, None), (2, 2), (10, 3)])
+    async def test_history_length(self, task_manager, store, history_length, expected):
+        _seed(store)
+        request = GetTaskRPCRequest(id="r1", params=GetTaskRequest(id="t-1", historyLength=history_length))
+        response = await task_manager.on_get_task(request)
+        assert response.error is None
+        assert response.result.id == "t-1"
+        assert (len(response.result.history) if response.result.history is not None else None) == expected
+        if history_length == 2:
+            assert response.result.history[-1].parts[0].text == "q3"
+        # the stored task is not truncated
+        assert len(store["t-1"].history) == 3
+
+    @pytest.mark.asyncio
+    async def test_result_dump_uses_task_id_field_and_no_removed_keys(self, task_manager, store):
+        _seed(store)
+        response = await task_manager.on_get_task(GetTaskRPCRequest(id="r1", params=GetTaskRequest(id="t-1")))
+        dumped = response.model_dump(**_DUMP)["result"]
+        assert dumped["id"] == "t-1" and dumped["contextId"] == "ctx-1"
+        assert dumped["status"]["state"] == "TASK_STATE_WORKING"
+        assert not {"taskId", "sessionId", "assistant_id", "user_id", "date", "update_date"} & set(dumped)
+
+
+# ---- CancelTask ----
+
+
+class TestCancelTask:
+    @pytest.mark.asyncio
+    async def test_transitions_working_to_canceled(self, task_manager, store):
+        _seed(store)
+        response = await task_manager.on_cancel_task(CancelTaskRPCRequest(id="r1", params=CancelTaskRequest(id="t-1")))
+        assert response.error is None
+        assert response.result.status.state == TaskState.CANCELED
+        assert store["t-1"].status.state == TaskState.CANCELED
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("state", [TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELED, TaskState.REJECTED])
+    async def test_rejects_terminal_task(self, task_manager, store, state):
+        _seed(store, state=state)
+        response = await task_manager.on_cancel_task(CancelTaskRPCRequest(id="r1", params=CancelTaskRequest(id="t-1")))
+        assert isinstance(response.error, TaskNotCancelableError)
+        assert store["t-1"].status.state == state
+
+    @pytest.mark.asyncio
+    async def test_unknown_and_foreign_are_not_found(self, task_manager, store):
+        _seed(store, user_id="someone-else")
+        for task_id in ("missing", "t-1"):
+            response = await task_manager.on_cancel_task(
+                CancelTaskRPCRequest(id="r1", params=CancelTaskRequest(id=task_id))
+            )
             assert isinstance(response.error, TaskNotFoundError)
-            assert response.result is None
+        assert store["t-1"].status.state == TaskState.WORKING
 
     @pytest.mark.asyncio
-    async def test_on_get_task_found(self, task_manager, get_task_request, mock_task):
-        """Test on_get_task when task is found."""
-        # Mock the find_by_id method to return our mock task
-        with patch.object(Task, 'find_by_id', return_value=mock_task):
-            # Mock the _append_task_history method
-            with patch.object(task_manager, '_append_task_history', return_value=mock_task):
-                response = await task_manager.on_get_task(get_task_request)
+    async def test_cancel_wins_over_late_agent_result(self, task_manager, store):
+        _seed(store)
+        await task_manager.on_cancel_task(CancelTaskRPCRequest(id="r1", params=CancelTaskRequest(id="t-1")))
+        result = CodemieTaskManager.update_store(
+            "t-1", TaskStatus(state=TaskState.COMPLETED), [Artifact(parts=[Part(text="late")])]
+        )
+        assert result.status.state == TaskState.CANCELED
+        assert not store["t-1"].artifacts
 
-                assert isinstance(response, GetTaskResponse)
-                assert response.id == get_task_request.id
-                assert response.error is None
-                assert response.result == mock_task
+
+# ---- SendMessage ----
+
+
+class TestSendMessage:
+    @pytest.mark.asyncio
+    async def test_new_task_server_generates_ids_and_completes_with_artifact(self, task_manager, store):
+        with patch.object(AssistantService, "build_agent", return_value=_agent()):
+            response = await task_manager.on_send_task(_send("hi"))
+        assert response.error is None and response.id == "request-123"
+        task = response.result.task
+        assert task.id and task.contextId
+        assert task.status.state == TaskState.COMPLETED
+        assert len(task.artifacts) == 1
+        assert task.artifacts[0].artifactId and task.artifacts[0].parts[0].text == "the answer"
+        assert store[task.id].assistant_id == "assistant-1" and store[task.id].user_id == "user-1"
+        stamped = task.history[0]
+        assert stamped.taskId == task.id and stamped.contextId == task.contextId and stamped.parts[0].text == "hi"
 
     @pytest.mark.asyncio
-    async def test_on_send_task_validation_error(self, task_manager, send_task_request):
-        """Test on_send_task when validation fails."""
-        # Create a proper JSONRPCResponse with a ContentTypeNotSupportedError
-        error_response = new_incompatible_types_error(send_task_request.id)
-
-        with patch.object(task_manager, '_validate_request', return_value=error_response):
-            response = await task_manager.on_send_task(send_task_request)
-
-            assert response.id == send_task_request.id
-            assert isinstance(response.error, ContentTypeNotSupportedError)
+    async def test_supplied_context_id_is_kept_and_used_as_conversation_id(self, task_manager, store):
+        with patch.object(AssistantService, "build_agent", return_value=_agent()) as build:
+            response = await task_manager.on_send_task(_send("hi", context_id="conv-9"))
+        assert response.result.task.contextId == "conv-9"
+        assert build.call_args.kwargs["request"].conversation_id == "conv-9"
+        assert build.call_args.kwargs["request"].text == "hi"
 
     @pytest.mark.asyncio
-    async def test_on_send_task_success(self, task_manager, send_task_request, mock_task):
-        """Test on_send_task when validation passes."""
-        with patch.object(task_manager, '_validate_request', return_value=None):
-            with patch.object(task_manager, 'upsert_task', return_value=mock_task):
-                with patch.object(
-                    task_manager,
-                    '_invoke_agent',
-                    return_value=SendTaskResponse(id=send_task_request.id, result=mock_task),
-                ):
-                    response = await task_manager.on_send_task(send_task_request)
-
-                    assert isinstance(response, SendTaskResponse)
-                    assert response.id == send_task_request.id
-                    assert response.result == mock_task
+    async def test_result_dump_is_v1_shape(self, task_manager, store):
+        with patch.object(AssistantService, "build_agent", return_value=_agent()):
+            response = await task_manager.on_send_task(_send("hi"))
+        dumped = response.model_dump(**_DUMP)["result"]["task"]
+        assert set(dumped) <= {"id", "contextId", "status", "artifacts", "history"}
+        assert dumped["status"]["state"] == "TASK_STATE_COMPLETED"
+        assert set(dumped["artifacts"][0]) <= {"artifactId", "name", "description", "parts"}
+        assert dumped["artifacts"][0]["parts"] == [{"text": "the answer"}]
 
     @pytest.mark.asyncio
-    async def test_on_send_task_subscribe(self, task_manager, send_task_streaming_request):
-        """Test on_send_task_subscribe method."""
-        # Mock the implementation to avoid raising an exception
-        error = UnsupportedOperationError()
-        response = JSONRPCResponse(id=send_task_streaming_request.id, error=error)
+    async def test_input_required_carries_status_message(self, task_manager, store):
+        agent = _agent({"content": "which city?", "require_user_input": True})
+        with patch.object(AssistantService, "build_agent", return_value=agent):
+            response = await task_manager.on_send_task(_send("weather"))
+        task = response.result.task
+        assert task.status.state == TaskState.INPUT_REQUIRED
+        assert task.status.message.role == Role.AGENT and task.status.message.parts[0].text == "which city?"
+        assert not task.artifacts
 
-        with patch.object(CodemieTaskManager, 'on_send_task_subscribe', new_callable=AsyncMock, return_value=response):
-            result = await task_manager.on_send_task_subscribe(send_task_streaming_request)
+    @pytest.mark.asyncio
+    async def test_continue_input_required_task_reuses_ids_and_appends_history(self, task_manager, store):
+        _seed(store, state=TaskState.INPUT_REQUIRED)
+        with patch.object(AssistantService, "build_agent", return_value=_agent()):
+            response = await task_manager.on_send_task(_send("Paris", task_id="t-1"))
+        task = response.result.task
+        assert task.id == "t-1" and task.contextId == "ctx-1"
+        assert task.status.state == TaskState.COMPLETED
+        assert [m.parts[0].text for m in task.history][-1] == "Paris"
+        assert len(store) == 1
 
-            assert isinstance(result, JSONRPCResponse)
-            assert result.id == send_task_streaming_request.id
-            assert isinstance(result.error, UnsupportedOperationError)
+    @pytest.mark.asyncio
+    async def test_continuation_with_matching_context_id_is_accepted(self, task_manager, store):
+        _seed(store, state=TaskState.INPUT_REQUIRED)
+        with patch.object(AssistantService, "build_agent", return_value=_agent()):
+            response = await task_manager.on_send_task(_send("Paris", task_id="t-1", context_id="ctx-1"))
+        assert response.error is None
 
-    def test_upsert_task_new_task(self, task_send_params):
-        """Test upsert_task when task doesn't exist."""
-        with patch.object(Task, 'find_by_id', return_value=None):
-            with patch.object(Task, 'save'):
-                task = CodemieTaskManager.upsert_task(task_send_params)
+    @pytest.mark.asyncio
+    async def test_context_id_mismatch_is_invalid_params(self, task_manager, store):
+        _seed(store, state=TaskState.INPUT_REQUIRED)
+        response = await task_manager.on_send_task(_send("Paris", task_id="t-1", context_id="other"))
+        assert isinstance(response.error, InvalidParamsError)
+        assert response.error.data[0]["@type"].endswith("google.rpc.BadRequest")
+        assert response.error.data[0]["fieldViolations"][0]["field"] == "message.contextId"
 
-                assert task.id == task_send_params.id
-                assert task.sessionId == task_send_params.sessionId
-                assert task.status.state == TaskState.SUBMITTED
-                assert task.history == [task_send_params.message]
+    @pytest.mark.asyncio
+    async def test_foreign_and_unknown_task_ids_are_not_found(self, task_manager, store):
+        _seed(store, user_id="someone-else")
+        for task_id in ("t-1", "missing"):
+            response = await task_manager.on_send_task(_send("x", task_id=task_id))
+            assert isinstance(response.error, TaskNotFoundError)
+        assert len(store) == 1 and len(store["t-1"].history) == 3
 
-    def test_upsert_task_existing_task(self, task_send_params, mock_task):
-        """Test upsert_task when task already exists."""
-        mock_task.history = []
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("state", [TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELED])
+    async def test_terminal_task_is_unsupported_operation(self, task_manager, store, state):
+        _seed(store, state=state)
+        response = await task_manager.on_send_task(_send("x", task_id="t-1"))
+        assert isinstance(response.error, UnsupportedOperationError)
+        assert len(store["t-1"].history) == 3
 
-        with patch.object(Task, 'find_by_id', return_value=mock_task):
-            with patch.object(mock_task, 'update'):
-                task = CodemieTaskManager.upsert_task(task_send_params)
+    @pytest.mark.asyncio
+    async def test_return_immediately_is_unsupported(self, task_manager, store):
+        with patch.object(AssistantService, "build_agent") as build:
+            response = await task_manager.on_send_task(_send("x", immediate=True))
+        assert isinstance(response.error, UnsupportedOperationError)
+        build.assert_not_called()
+        assert not store
 
-                assert len(mock_task.history) == 1
-                assert mock_task.history[0] == task_send_params.message
-                mock_task.update.assert_called_once_with(refresh=True)
-                assert task == mock_task
+    @pytest.mark.asyncio
+    async def test_return_immediately_false_is_accepted(self, task_manager, store):
+        with patch.object(AssistantService, "build_agent", return_value=_agent()):
+            response = await task_manager.on_send_task(_send("x", immediate=False))
+        assert response.error is None
 
-    def test_validate_request_incompatible_modes(self, send_task_request):
-        """Test _validate_request with incompatible output modes."""
-        # Modify the request to have incompatible output modes
-        send_task_request.params.acceptedOutputModes = ["image/png"]
+    @pytest.mark.asyncio
+    async def test_disjoint_accepted_output_modes_is_content_type_error(self, task_manager, store):
+        with patch.object(AssistantService, "build_agent") as build:
+            response = await task_manager.on_send_task(_send("x", modes=["image/png"]))
+        assert isinstance(response.error, ContentTypeNotSupportedError) and response.error.code == -32005
+        build.assert_not_called()
+        assert not store
 
-        response = CodemieTaskManager._validate_request(send_task_request)
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("modes", [["text/plain"], ["image/png", "text/plain"], [], None])
+    async def test_compatible_accepted_output_modes(self, task_manager, store, modes):
+        with patch.object(AssistantService, "build_agent", return_value=_agent()):
+            response = await task_manager.on_send_task(_send("x", modes=modes, history_length=5))
+        assert response.error is None
 
-        assert isinstance(response, JSONRPCResponse)
-        assert response.id == send_task_request.id
-        assert isinstance(response.error, ContentTypeNotSupportedError)
-        assert response.error.code == -32005  # ContentTypeNotSupportedError code
+    @pytest.mark.asyncio
+    async def test_non_text_parts_are_invalid_params(self, task_manager, store):
+        with patch.object(AssistantService, "build_agent") as build:
+            response = await task_manager.on_send_task(_send(parts=[Part(raw="aGk=", filename="a.txt")]))
+        assert isinstance(response.error, InvalidParamsError)
+        assert "Only text parts are supported" in response.error.data[0]["fieldViolations"][0]["description"]
+        build.assert_not_called()
 
-    def test_validate_request_compatible_modes(self, send_task_request):
-        """Test _validate_request with compatible output modes."""
-        send_task_request.params.acceptedOutputModes = ["text"]
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("history_length,expected", [(None, 3), (0, None), (1, 1)])
+    async def test_history_length_shapes_returned_history(self, task_manager, store, history_length, expected):
+        _seed(store, state=TaskState.INPUT_REQUIRED)
+        with patch.object(AssistantService, "build_agent", return_value=_agent()):
+            response = await task_manager.on_send_task(_send("x", task_id="t-1", history_length=history_length))
+        history = response.result.task.history
+        assert (len(history) if history is not None else None) == (expected + 1 if expected == 3 else expected)
 
-        response = CodemieTaskManager._validate_request(send_task_request)
+    @pytest.mark.asyncio
+    async def test_agent_failure_ends_failed_with_error_message(self, task_manager, store):
+        with patch.object(AssistantService, "build_agent", return_value=_agent(error=Exception("boom"))):
+            response = await task_manager.on_send_task(_send("x"))
+        task = response.result.task
+        assert task.status.state == TaskState.FAILED
+        assert "boom" in task.status.message.parts[0].text
 
-        assert response is None
+    @pytest.mark.asyncio
+    async def test_submitted_then_working_are_persisted_before_agent_setup(self, task_manager, store):
+        seen = []
 
-    def test_update_store_task_not_found(self):
-        """Test update_store when task is not found."""
-        with patch.object(Task, 'find_by_id', return_value=None):
-            with pytest.raises(ValueError, match="Task test-task-id not found"):
-                CodemieTaskManager.update_store(
-                    task_id="test-task-id", status=TaskStatus(state=TaskState.WORKING), artifacts=[]
-                )
+        def build_agent(**kwargs):
+            (only,) = store.values()
+            seen.append(only.status.state)
+            return _agent()
 
-    def test_update_store_success(self, mock_task):
-        """Test update_store when task is found."""
-        status = TaskStatus(state=TaskState.WORKING)
-        artifacts = [Artifact(parts=[TextPart(text="Test artifact")])]
+        with patch.object(AssistantService, "build_agent", side_effect=build_agent):
+            await task_manager.on_send_task(_send("x"))
+        assert seen == [TaskState.WORKING]
 
-        # Configure the mock_task properly
-        mock_task.artifacts = None
+    @pytest.mark.asyncio
+    async def test_setup_failure_ends_failed(self, task_manager, store):
+        with patch.object(AssistantService, "build_agent", side_effect=RuntimeError("no agent")):
+            response = await task_manager.on_send_task(_send("x"))
+        assert response.result.task.status.state == TaskState.FAILED
+        assert "no agent" in response.result.task.status.message.parts[0].text
 
-        with patch.object(Task, 'find_by_id', return_value=mock_task):
-            with patch.object(mock_task, 'update'):
-                task = CodemieTaskManager.update_store(task_id="test-task-id", status=status, artifacts=artifacts)
 
-                assert task.status == status
-                assert task.artifacts == artifacts
-                mock_task.update.assert_called_once_with(refresh=True)
-                assert isinstance(task.update_date, datetime)
+# ---- SendStreamingMessage ----
 
-    def test_update_store_with_status_message(self, mock_task):
-        """Test update_store with status message."""
-        message = Message(role="agent", parts=[TextPart(text="Test message")])
-        status = TaskStatus(state=TaskState.WORKING, message=message)
 
-        # Configure the mock_task properly
-        mock_task.artifacts = None
-        mock_task.history = []
+def _results(frames):
+    return [f.result for f in frames]
 
-        with patch.object(Task, 'find_by_id', return_value=mock_task):
-            with patch.object(mock_task, 'update'):
-                CodemieTaskManager.update_store(task_id="test-task-id", status=status, artifacts=[])
 
-                assert len(mock_task.history) == 1
-                assert mock_task.history[0] == message
+class TestStreaming:
+    @pytest.mark.asyncio
+    async def test_completed_order_task_working_artifact_terminal(self, task_manager, store):
+        with patch.object(AssistantService, "build_agent", return_value=_agent()):
+            frames = await _collect(task_manager, _send("hi", cls=SendStreamingMessageRPCRequest))
+        results = _results(frames)
+        assert all(f.error is None and f.id == "request-123" for f in frames)
+        assert results[0].task is not None and results[0].task.status.state == TaskState.SUBMITTED
+        assert results[1].statusUpdate.status.state == TaskState.WORKING
+        assert results[2].artifactUpdate.artifact.parts[0].text == "the answer"
+        assert results[2].artifactUpdate.artifact.artifactId
+        assert results[3].statusUpdate.status.state == TaskState.COMPLETED
+        assert len(results) == 4
+        task_id = results[0].task.id
+        assert all((r.task.id if r.task else (r.statusUpdate or r.artifactUpdate).taskId) == task_id for r in results)
+        assert results[1].statusUpdate.contextId == results[0].task.contextId
 
-    def test_append_task_history_with_limit(self, mock_task):
-        """Test _append_task_history with history length limit."""
-        mock_task.history = [f"message-{i}" for i in range(5)]
-        history_length = 2
+    @pytest.mark.asyncio
+    async def test_frames_carry_no_final_flag(self, task_manager, store):
+        with patch.object(AssistantService, "build_agent", return_value=_agent()):
+            frames = await _collect(task_manager, _send("hi", cls=SendStreamingMessageRPCRequest))
+        for frame in frames:
+            assert "final" not in str(frame.model_dump(**_DUMP))
 
-        result_task = MagicMock(spec=Task)
-        result_task.history = mock_task.history.copy()
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("request_cls", [SendMessageRPCRequest, SendStreamingMessageRPCRequest])
+    async def test_agent_runs_off_the_event_loop_thread(self, task_manager, store, request_cls):
+        loop_thread = threading.get_ident()
+        agent_threads = []
+        agent = _agent()
 
-        with patch.object(mock_task, 'model_copy', return_value=result_task):
-            result = CodemieTaskManager._append_task_history(mock_task, history_length)
+        def invoke(text):
+            agent_threads.append(threading.get_ident())
+            return {"content": "the answer"}
 
-            assert result.history == mock_task.history[-history_length:]
-            assert len(result.history) == history_length
+        agent.invoke_with_a2a_output.side_effect = invoke
+        request = _send("hi", cls=request_cls)
+        with patch.object(AssistantService, "build_agent", return_value=agent):
+            if request_cls is SendMessageRPCRequest:
+                await task_manager.on_send_task(request)
+            else:
+                await _collect(task_manager, request)
 
-    def test_append_task_history_no_limit(self, mock_task):
-        """Test _append_task_history with no history length limit."""
-        mock_task.history = [f"message-{i}" for i in range(5)]
+        assert agent_threads and agent_threads[0] != loop_thread
 
-        result_task = MagicMock(spec=Task)
-        result_task.history = mock_task.history.copy()
+    @pytest.mark.asyncio
+    async def test_input_required_ends_stream_with_status_message_and_no_artifact(self, task_manager, store):
+        agent = _agent({"content": "which city?", "require_user_input": True})
+        with patch.object(AssistantService, "build_agent", return_value=agent):
+            frames = await _collect(task_manager, _send("w", cls=SendStreamingMessageRPCRequest))
+        results = _results(frames)
+        assert not any(r.artifactUpdate for r in results)
+        last = results[-1].statusUpdate
+        assert last.status.state == TaskState.INPUT_REQUIRED and last.status.message.parts[0].text == "which city?"
 
-        with patch.object(mock_task, 'model_copy', return_value=result_task):
-            result = CodemieTaskManager._append_task_history(mock_task, None)
+    @pytest.mark.asyncio
+    async def test_agent_failure_ends_with_failed_frame(self, task_manager, store):
+        with patch.object(AssistantService, "build_agent", return_value=_agent(error=Exception("boom"))):
+            frames = await _collect(task_manager, _send("x", cls=SendStreamingMessageRPCRequest))
+        last = _results(frames)[-1].statusUpdate
+        assert last.status.state == TaskState.FAILED and "boom" in last.status.message.parts[0].text
 
-            assert result.history == []
+    @pytest.mark.asyncio
+    async def test_setup_failure_ends_with_failed_frame(self, task_manager, store):
+        with patch.object(AssistantService, "build_agent", side_effect=RuntimeError("no agent")):
+            frames = await _collect(task_manager, _send("x", cls=SendStreamingMessageRPCRequest))
+        results = _results(frames)
+        assert results[1].statusUpdate.status.state == TaskState.WORKING
+        assert results[-1].statusUpdate.status.state == TaskState.FAILED
+        (only,) = store.values()
+        assert only.status.state == TaskState.FAILED
 
-    def test_invoke_agent_success(self, task_manager, send_task_request, mock_task):
-        """Test _invoke_agent when agent invocation succeeds."""
-        agent_mock = MagicMock()
-        agent_mock.invoke_with_a2a_output.return_value = {"content": "Test response"}
-        assistant_request = MagicMock(spec=AssistantChatRequest)
-        assistant_request.text = "Test request"
+    @pytest.mark.asyncio
+    async def test_cancel_wins_race_yields_canceled_and_no_artifact(self, task_manager, store):
+        def build_agent(**kwargs):
+            agent = MagicMock()
 
-        # Create a real Task object for the response
-        response_task = Task(
-            id="test-task-id", sessionId="test-session-id", status=TaskStatus(state=TaskState.COMPLETED), history=[]
+            def invoke(_text):
+                (only,) = store.values()
+                only.status = TaskStatus(state=TaskState.CANCELED)
+                return {"content": "late"}
+
+            agent.invoke_with_a2a_output.side_effect = invoke
+            return agent
+
+        with patch.object(AssistantService, "build_agent", side_effect=build_agent):
+            frames = await _collect(task_manager, _send("x", cls=SendStreamingMessageRPCRequest))
+        results = _results(frames)
+        assert results[-1].statusUpdate.status.state == TaskState.CANCELED
+        assert not any(r.artifactUpdate for r in results)
+
+    @pytest.mark.asyncio
+    async def test_continuation_appends_message_to_existing_task(self, task_manager, store):
+        _seed(store, state=TaskState.INPUT_REQUIRED)
+        with patch.object(AssistantService, "build_agent", return_value=_agent()):
+            frames = await _collect(task_manager, _send("Paris", task_id="t-1", cls=SendStreamingMessageRPCRequest))
+        assert _results(frames)[0].task.id == "t-1"
+        assert store["t-1"].history[3].parts[0].text == "Paris"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "kwargs,error_type",
+        [
+            ({"modes": ["image/png"]}, ContentTypeNotSupportedError),
+            ({"immediate": True}, UnsupportedOperationError),
+            ({"task_id": "missing"}, TaskNotFoundError),
+            ({"parts": [Part(url="https://x/f.png")]}, InvalidParamsError),
+        ],
+    )
+    async def test_pre_stream_errors_are_a_single_error_frame(self, task_manager, store, kwargs, error_type):
+        with patch.object(AssistantService, "build_agent") as build:
+            frames = await _collect(task_manager, _send("x", cls=SendStreamingMessageRPCRequest, **kwargs))
+        build.assert_not_called()
+        assert len(frames) == 1 and isinstance(frames[0].error, error_type) and frames[0].result is None
+
+    @pytest.mark.asyncio
+    async def test_terminal_and_foreign_tasks_are_single_error_frames(self, task_manager, store):
+        _seed(store, task_id="done", state=TaskState.COMPLETED)
+        _seed(store, task_id="theirs", user_id="someone-else")
+        done = await _collect(task_manager, _send("x", task_id="done", cls=SendStreamingMessageRPCRequest))
+        theirs = await _collect(task_manager, _send("x", task_id="theirs", cls=SendStreamingMessageRPCRequest))
+        assert isinstance(done[0].error, UnsupportedOperationError) and len(done) == 1
+        assert isinstance(theirs[0].error, TaskNotFoundError) and len(theirs) == 1
+
+
+# ---- helpers ----
+
+
+class TestHelpers:
+    def test_update_store_task_not_found(self, store):
+        with pytest.raises(ValueError, match="Task test-task-id not found"):
+            CodemieTaskManager.update_store("test-task-id", TaskStatus(state=TaskState.WORKING), [])
+
+    def test_update_store_appends_artifacts_and_status_message(self, store):
+        _seed(store)
+        message = Message(role=Role.AGENT, parts=[Part(text="Test message")])
+        artifact = Artifact(parts=[Part(text="Test artifact")])
+        task = CodemieTaskManager.update_store("t-1", TaskStatus(state=TaskState.WORKING, message=message), [artifact])
+        assert task.artifacts == [artifact] and task.history[-1] == message
+        assert task.update_date is not None
+
+    def test_update_store_does_not_overwrite_terminal_task(self, store):
+        _seed(store, state=TaskState.CANCELED)
+        result = CodemieTaskManager.update_store(
+            "t-1", TaskStatus(state=TaskState.COMPLETED), [Artifact(parts=[Part(text="late")])]
         )
+        assert result.status.state == TaskState.CANCELED and not result.artifacts
 
-        with patch.object(task_manager, '_setup_agent', return_value=(agent_mock, assistant_request)):
-            with patch.object(task_manager, 'update_store', return_value=mock_task):
-                with patch.object(
-                    task_manager,
-                    '_process_agent_response',
-                    return_value=SendTaskResponse(id=send_task_request.id, result=response_task),
-                ):
-                    response = task_manager._invoke_agent(send_task_request, mock_task)
+    @pytest.mark.parametrize("length,expected", [(None, 3), (0, None), (-1, None), (2, 2), (99, 3)])
+    def test_append_task_history(self, store, length, expected):
+        task = _seed(store)
+        shaped = CodemieTaskManager._append_task_history(task, length)
+        assert (len(shaped.history) if shaped.history is not None else None) == expected
+        assert len(task.history) == 3
 
-                    task_manager.update_store.assert_called_once()
-                    agent_mock.invoke_with_a2a_output.assert_called_once_with(assistant_request.text)
-                    task_manager._process_agent_response.assert_called_once()
-                    assert response.id == send_task_request.id
-                    assert response.result == response_task
+    def test_get_user_query_joins_text_parts(self):
+        message = Message(role=Role.USER, parts=[Part(text="a"), Part(text="b")])
+        assert CodemieTaskManager._get_user_query(message) == "a\nb"
 
-    def test_invoke_agent_exception(self, task_manager, send_task_request, mock_task):
-        """Test _invoke_agent when agent invocation raises an exception."""
-        agent_mock = MagicMock()
-        agent_mock.invoke_with_a2a_output.side_effect = Exception("Test error")
-        assistant_request = MagicMock(spec=AssistantChatRequest)
-        assistant_request.text = "Test request"
-
-        # Create a real Task object for the response
-        response_task = Task(
-            id="test-task-id", sessionId="test-session-id", status=TaskStatus(state=TaskState.FAILED), history=[]
-        )
-
-        with patch.object(task_manager, '_setup_agent', return_value=(agent_mock, assistant_request)):
-            with patch.object(task_manager, 'update_store', return_value=mock_task):
-                with patch.object(
-                    task_manager,
-                    '_process_error_response',
-                    return_value=SendTaskResponse(id=send_task_request.id, result=response_task),
-                ):
-                    response = task_manager._invoke_agent(send_task_request, mock_task)
-
-                    task_manager.update_store.assert_called_once()
-                    agent_mock.invoke_with_a2a_output.assert_called_once_with(assistant_request.text)
-                    task_manager._process_error_response.assert_called_once()
-                    assert response.id == send_task_request.id
-                    assert response.result == response_task
-
-    def test_setup_agent(self, task_manager, send_task_request, mock_task, text_message):
-        """Test _setup_agent method."""
-        mock_task.history = [text_message]
-        agent_mock = MagicMock()
-
-        with patch(
-            'codemie.rest_api.a2a.server.codemie_task_manager.convert_messages_to_chat_messages', return_value=[]
-        ):
-            with patch.object(AssistantService, 'build_agent', return_value=agent_mock):
-                with patch(
-                    'codemie.rest_api.a2a.server.codemie_task_manager.uuid4',
-                    return_value=MagicMock(spec=uuid.UUID, __str__=lambda _: "test-uuid"),
-                ):
-                    agent, assistant_request = task_manager._setup_agent(send_task_request, mock_task)
-
-                    assert agent == agent_mock
-                    assert assistant_request.text == "Hello, this is a test message"
-                    assert assistant_request.conversation_id == mock_task.sessionId
-                    AssistantService.build_agent.assert_called_once_with(
-                        assistant=task_manager.assistant,
-                        request=assistant_request,
-                        user=task_manager.user,
-                        request_uuid="test-uuid",
-                    )
-
-    def test_process_agent_response_input_required(self, task_manager, send_task_request, mock_task):
-        """Test _process_agent_response when input is required."""
-        agent_response = {"content": "Test response", "require_user_input": True}
-
-        # Create a real Task object for the response
-        response_task = Task(
-            id="test-task-id",
-            sessionId="test-session-id",
-            status=TaskStatus(state=TaskState.INPUT_REQUIRED),
-            history=[],
-        )
-
-        with patch.object(
-            task_manager, '_create_response_parts', return_value=[{"type": "text", "text": "Test response"}]
-        ):
-            with patch.object(task_manager, 'update_store', return_value=mock_task):
-                with patch.object(task_manager, '_append_task_history', return_value=response_task):
-                    response = task_manager._process_agent_response(send_task_request, agent_response)
-
-                    task_manager.update_store.assert_called_once()
-                    assert response.id == send_task_request.id
-                    assert response.result == response_task
-                    # Verify the status is INPUT_REQUIRED
-                    args, kwargs = task_manager.update_store.call_args
-                    assert args[1].state == TaskState.INPUT_REQUIRED
-
-    def test_process_agent_response_completed(self, task_manager, send_task_request, mock_task):
-        """Test _process_agent_response when task is completed."""
-        agent_response = {"content": "Test response", "require_user_input": False}
-
-        # Create a real Task object for the response
-        response_task = Task(
-            id="test-task-id", sessionId="test-session-id", status=TaskStatus(state=TaskState.COMPLETED), history=[]
-        )
-
-        with patch.object(
-            task_manager, '_create_response_parts', return_value=[{"type": "text", "text": "Test response"}]
-        ):
-            with patch.object(task_manager, 'update_store', return_value=mock_task):
-                with patch.object(task_manager, '_append_task_history', return_value=response_task):
-                    response = task_manager._process_agent_response(send_task_request, agent_response)
-
-                    task_manager.update_store.assert_called_once()
-                    assert response.id == send_task_request.id
-                    assert response.result == response_task
-                    # Verify the status is COMPLETED
-                    args, kwargs = task_manager.update_store.call_args
-                    assert args[1].state == TaskState.COMPLETED
-
-    def test_process_error_response(self, task_manager, send_task_request, mock_task):
-        """Test _process_error_response method."""
-        exception = Exception("Test error")
-
-        # Create a real Task object for the response
-        response_task = Task(
-            id="test-task-id", sessionId="test-session-id", status=TaskStatus(state=TaskState.FAILED), history=[]
-        )
-
-        with patch.object(
-            task_manager, '_create_response_parts', return_value=[{"type": "text", "text": "Error: Test error"}]
-        ):
-            with patch.object(task_manager, 'update_store', return_value=mock_task):
-                with patch.object(task_manager, '_append_task_history', return_value=response_task):
-                    response = task_manager._process_error_response(send_task_request, exception)
-
-                    task_manager.update_store.assert_called_once()
-                    assert response.id == send_task_request.id
-                    assert response.result == response_task
-                    # Verify the status is FAILED
-                    args, kwargs = task_manager.update_store.call_args
-                    assert args[1].state == TaskState.FAILED
-
-    def test_get_user_query_valid(self, task_send_params):
-        """Test _get_user_query with valid text part."""
-        query = CodemieTaskManager._get_user_query(task_send_params)
-
-        assert query == "Hello, this is a test message"
-
-    def test_get_user_query_invalid(self):
-        """Test _get_user_query with invalid part type."""
-        # Create a message with a non-TextPart (using DataPart which is a valid part type but not a TextPart)
-        message = Message(role="user", parts=[DataPart(data={"key": "value"})])
-
-        task_params = TaskSendParams(id="test-task-id", sessionId="test-session-id", message=message)
-
+    def test_get_user_query_rejects_non_text_parts(self):
+        message = Message(role=Role.USER, parts=[Part(data={"k": "v"})])
         with pytest.raises(ValueError, match="Only text parts are supported"):
-            CodemieTaskManager._get_user_query(task_params)
+            CodemieTaskManager._get_user_query(message)
 
-    def test_create_response_parts(self, task_manager):
-        """Test _create_response_parts method."""
-        content = "Test content"
-        parts = task_manager._create_response_parts(content)
+    def test_create_response_parts_returns_text_part(self, task_manager):
+        assert task_manager._create_response_parts("hi") == [Part(text="hi")]
+        assert task_manager._create_response_parts(None) == [Part(text="")]
 
-        assert len(parts) == 1
-        assert parts[0]["type"] == "text"
-        assert parts[0]["text"] == content
+    def test_setup_agent_builds_request_from_task_context(self, task_manager, store):
+        task = _seed(store)
+        request = _send("Hello there")
+        agent_mock = MagicMock()
+        with (
+            patch.object(AssistantService, "build_agent", return_value=agent_mock) as build,
+            patch(
+                "codemie.rest_api.a2a.server.codemie_task_manager.uuid4",
+                return_value=MagicMock(spec=uuid.UUID, __str__=lambda _: "test-uuid"),
+            ),
+        ):
+            agent, assistant_request = task_manager._setup_agent(request, task)
+        assert agent is agent_mock
+        assert isinstance(assistant_request, AssistantChatRequest)
+        assert assistant_request.text == "Hello there" and assistant_request.conversation_id == "ctx-1"
+        build.assert_called_once_with(
+            assistant=task_manager.assistant,
+            request=assistant_request,
+            user=task_manager.user,
+            request_uuid="test-uuid",
+        )
+
+    def test_status_update_event_type(self, task_manager, store):
+        task = _seed(store)
+        frame = task_manager._status_frame("r", task, TaskState.WORKING)
+        assert isinstance(frame.result.statusUpdate, TaskStatusUpdateEvent)
+        assert isinstance(
+            task_manager._artifact_frame("r", task, Artifact(parts=[Part(text="x")])).result.artifactUpdate,
+            TaskArtifactUpdateEvent,
+        )

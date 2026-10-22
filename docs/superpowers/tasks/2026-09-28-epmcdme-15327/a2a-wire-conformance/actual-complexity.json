@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "generated": "2026-09-30T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 23,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 42,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Whole in-house A2A layer touched: client (card resolver, client, remote connection), server (task managers), shared types/utils/version module, router, assistant handler, plus the integration guide. Shared wire contracts rewritten across client and server." },
+    { "dimension": "technical_risk", "reason": "Protocol wire-shape rewrite to A2A v1.0 (method names, enums, Part shapes, version negotiation via A2A-Version header, JSON-RPC error codes). Wire-contract tests with 20 JSON fixtures were needed. Verification found a serialization bug on DB-loaded tasks and an HTTP status bug for JSON-RPC errors; one review round produced 8 findings. Mitigated by e2e verification against official a2a-sdk demo agents and Postgres." },
+    { "dimension": "file_change_estimate", "reason": "42 files changed (about 21 listed source/test/doc files plus 20 JSON fixtures), 4124 insertions and 2296 deletions. The XXL mapping is driven by the file count, but roughly half are test fixtures and tests." },
+    { "dimension": "affected_layers", "reason": "API (router), Service (task managers, handler), Persistence (task serialization from DB), External (remote A2A agents). No UI or infrastructure changes." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk at XL: protocol wire-contract change with version negotiation and cross-system interop",
+    "Component Scope at XL: touches shared contracts (types, utils) used by both client and server"
+  ],
+  "split_recommendation": null
+}

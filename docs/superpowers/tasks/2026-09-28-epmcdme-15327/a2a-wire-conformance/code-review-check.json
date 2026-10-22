@@ -1,0 +1,29 @@
+{
+  "decision": "approve",
+  "rationale": "CR-001..CR-007 verified resolved against current source (guide references removed, sync responses wrapped to A2AClientJSONError, empty stream frame skipped, Task metadata/contextId fallback in serializer, handler catches ValueError, verify tests parametrized, non-streaming -32603 test added). CR-008 (earlier slices' commit subjects) was explicitly excluded by the user and not re-verified.",
+  "confidence": "high",
+  "risk_flags": ["public-api", "data-contract", "breaking-change"],
+  "business_review": [
+    {"kind": "spec", "item": "FR-T5 Task serializes {id, contextId, status, artifacts, history, metadata}; sessionId read as contextId", "status": "partial", "notes": "Task has no metadata field; legacy sessionId-only row serializes without contextId"},
+    {"kind": "spec", "item": "FR-D1 Guide and version.py corrected", "status": "partial", "notes": "Guide still cites deleted adapter.py / BedrockAdapter"},
+    {"kind": "spec", "item": "AC1 Serialized shapes equal v1.0 fixtures, no removed keys", "status": "partial", "notes": "Same gap as FR-T5"},
+    {"kind": "spec", "item": "AC7 Guide and version.py match implementation", "status": "partial", "notes": "Guide references deleted BedrockAdapter/adapter.py"},
+    {"kind": "spec", "item": "AC8 Ruff and scoped A2A pytest pass", "status": "pending-stage-7", "notes": "Owned by Stage 7"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "fail", "notes": "4 subjects lack the EPMCDME-#### prefix: a2a-backward-compat, a2a-client-protocol, a2a-server-protocol, a2a-version-decision planning artifacts commits."},
+    {"kind": "code-quality", "status": "pass", "notes": "No Optional[]/bare generics found in changed a2a modules; license headers present."},
+    {"kind": "security", "status": "pass", "notes": "Router authenticates and checks READ before parsing body; strict JSON parsing; no credential logging."}
+  ],
+  "findings": [],
+  "finding_status": [
+    {"id": "CR-001", "status": "resolved", "notes": "No adapter.py/BedrockAdapter references remain in the guide."},
+    {"id": "CR-002", "status": "resolved", "notes": "client.py validates bodies via helper mapping TypeError/ValidationError to A2AClientJSONError."},
+    {"id": "CR-003", "status": "resolved", "notes": "remote_agent_connection.py checks stream_response is None before dereference."},
+    {"id": "CR-004", "status": "resolved", "notes": "types.py Task captures wire metadata via private attr and serializer fills contextId from sessionId and emits metadata."},
+    {"id": "CR-005", "status": "resolved", "notes": "Handler now catches (AgentCardInterfaceError, ValueError); resolver and client both use urlparse hostname."},
+    {"id": "CR-006", "status": "resolved", "notes": "Parametrized tests assert kwargs['verify'] is configured HTTPS_VERIFY_SSL for post and stream."},
+    {"id": "CR-007", "status": "resolved", "notes": "Router test covers non-streaming dispatch failure: 400, -32603, request id, no leaked text."},
+    {"id": "CR-008", "status": "superseded", "notes": "Out of scope: explicitly excluded by the user; not re-verified."}
+  ]
+}

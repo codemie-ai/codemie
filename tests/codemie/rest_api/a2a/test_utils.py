@@ -15,136 +15,46 @@
 """Unit tests for the A2A utilities module."""
 
 import base64
+import json
 import unittest
 from unittest.mock import MagicMock, patch
 
+import pytest
 from fastapi import Request
 
-from codemie.core.models import AssistantChatRequest, BaseModelResponse, ChatMessage, ChatRole, AuthenticationType
+from codemie.core.models import AssistantChatRequest, BaseModelResponse, ChatRole, AuthenticationType
 from codemie.rest_api.a2a.types import (
-    AgentCard,
-    AgentProvider,
-    AgentCapabilities,
-    AgentAuthentication,
+    INTERNAL_CARD_FIELDS,
     AgentSkill,
-    Message,
-    SendTaskRequest,
-    SendTaskStreamingRequest,
-    TextPart,
-    Task,
     Artifact,
+    Message,
+    Part,
+    Role,
+    SendMessageRPCRequest,
+    SendStreamingMessageRPCRequest,
+    Task,
+    TaskState,
+    TaskStatus,
 )
 from codemie.rest_api.a2a.utils import (
-    convert_to_task_request,
-    convert_to_base_model_response,
+    assistant_to_agent_card,
     convert_messages_to_chat_messages,
+    convert_to_base_model_response,
+    convert_to_task_request,
+    get_auth_header,
+    public_agent_card_dict,
     to_kebab_case,
     tool_to_agent_skill,
     tools_from_toolkits_to_agent_skills,
-    assistant_to_agent_card,
-    get_auth_header,
 )
 from codemie.rest_api.models.assistant import Assistant, ToolKitDetails, ToolDetails
+from tests.codemie.rest_api.a2a.fixtures import load_fixture
+
+INTERNAL_CARD_FIELDS_SET = set(INTERNAL_CARD_FIELDS)
 
 
 class TestA2AUtils(unittest.TestCase):
     """Test cases for A2A utilities."""
-
-    def test_convert_to_task_request_non_streaming(self):
-        """Test converting AssistantChatRequest to SendTaskRequest (non-streaming)."""
-        # Arrange
-        chat_request = AssistantChatRequest(
-            conversation_id="test-conversation", text="Hello, assistant!", stream=False, history_index=5
-        )
-
-        mock_request = MagicMock(spec=Request)
-        mock_request.state.uuid = "test-uuid"
-
-        # Act
-        result = convert_to_task_request(chat_request, mock_request)
-
-        # Assert
-        self.assertIsInstance(result, SendTaskRequest)
-        self.assertEqual(result.params.id, "test-uuid")
-        self.assertEqual(result.params.sessionId, "test-conversation")
-        self.assertEqual(result.params.message.parts[0].text, "Hello, assistant!")
-        self.assertEqual(result.params.historyLength, 5)
-        self.assertEqual(result.method, "tasks/send")
-
-    def test_convert_to_task_request_streaming(self):
-        """Test converting AssistantChatRequest to SendTaskStreamingRequest."""
-        # Arrange
-        chat_request = AssistantChatRequest(
-            conversation_id="test-conversation", text="Hello, assistant!", stream=True, history_index=5
-        )
-
-        mock_request = MagicMock(spec=Request)
-        mock_request.state.uuid = "test-uuid"
-
-        # Act
-        result = convert_to_task_request(chat_request, mock_request)
-
-        # Assert
-        self.assertIsInstance(result, SendTaskStreamingRequest)
-        self.assertEqual(result.params.id, "test-uuid")
-        self.assertEqual(result.params.sessionId, "test-conversation")
-        self.assertEqual(result.params.message.parts[0].text, "Hello, assistant!")
-        self.assertEqual(result.params.historyLength, 5)
-        self.assertEqual(result.method, "tasks/sendSubscribe")
-
-    def test_convert_to_base_model_response(self):
-        """Test converting Task to BaseModelResponse."""
-        # Arrange
-        task = MagicMock(spec=Task)
-        task.id = "test-task-id"
-        task.artifacts = [MagicMock(spec=Artifact)]
-        task.artifacts[0].parts = [MagicMock(spec=TextPart)]
-        task.artifacts[0].parts[0].text = "Generated response text"
-
-        # Act
-        result = convert_to_base_model_response(task)
-
-        # Assert
-        self.assertIsInstance(result, BaseModelResponse)
-        self.assertEqual(result.generated, "Generated response text")
-        self.assertEqual(result.task_id, "test-task-id")
-        self.assertEqual(result.time_elapsed, 0)
-        self.assertEqual(result.thoughts, [])
-
-    def test_convert_messages_to_chat_messages(self):
-        """Test converting A2A Message objects to ChatMessage objects."""
-        # Arrange
-        # Create proper Message objects with mocked parts for complex scenarios
-        message1 = Message(role="user", parts=[TextPart(text="Hello, assistant!")])
-        message2 = Message(role="agent", parts=[TextPart(text="Hello, user!")])
-
-        # For the third message with complex parts, we'll mock the convert_messages_to_chat_messages function
-        # to handle the specific part of the test that deals with file and data parts
-        message3 = MagicMock(spec=Message)
-        message3.role = "user"
-
-        # Mock the function that processes parts to return our expected combined text
-        with patch(
-            'codemie.rest_api.a2a.utils.convert_messages_to_chat_messages',
-            side_effect=[
-                [ChatMessage(role=ChatRole.USER, message="Hello, assistant!")],
-                [ChatMessage(role=ChatRole.ASSISTANT, message="Hello, user!")],
-                [ChatMessage(role=ChatRole.USER, message="Look at this [File: test.txt] and this [Data object]")],
-            ],
-        ):
-            # We'll test each message individually
-            result1 = convert_messages_to_chat_messages([message1])
-            result2 = convert_messages_to_chat_messages([message2])
-            # The third result is mocked
-
-        # Assert each result individually
-        self.assertEqual(len(result1), 1)
-        self.assertEqual(result1[0].role, ChatRole.USER)
-        self.assertEqual(result1[0].message, "Hello, assistant!")
-
-        self.assertEqual(len(result2), 1)
-        self.assertEqual(result2[0].role, ChatRole.ASSISTANT)
-        self.assertEqual(result2[0].message, "Hello, user!")
 
     def test_to_kebab_case(self):
         """Test converting strings to kebab-case format."""
@@ -190,8 +100,8 @@ class TestA2AUtils(unittest.TestCase):
         # In the implementation, examples is set to None if empty
         # This matches the actual behavior of the function
         self.assertIsNone(result.examples)
-        self.assertEqual(result.inputModes, ["text"])
-        self.assertEqual(result.outputModes, ["text"])
+        self.assertEqual(result.inputModes, ["text/plain"])
+        self.assertEqual(result.outputModes, ["text/plain"])
 
         # Test with no label
         tool.label = None
@@ -248,64 +158,6 @@ class TestA2AUtils(unittest.TestCase):
         self.assertEqual(result[2].id, "tool3")
         self.assertEqual(result[2].name, "Tool Three")
         self.assertIn("toolkit-two", result[2].tags)
-
-    @patch('codemie.configs.config')
-    def test_assistant_to_agent_card(self, mock_config):
-        """Test converting Assistant to AgentCard."""
-        # Arrange
-        mock_config.API_ROOT_PATH = "/api"
-        mock_config.is_local = True
-
-        assistant = MagicMock(spec=Assistant)
-        assistant.name = "Test Assistant"
-        assistant.description = "A test assistant"
-        assistant.toolkits = [
-            ToolKitDetails(
-                toolkit="toolkit1",
-                label="Toolkit One",
-                tools=[ToolDetails(name="tool1", label="Tool One", user_description="Tool 1 description")],
-            )
-        ]
-        assistant.id = "test-assistant-id"
-
-        mock_request = MagicMock(spec=Request)
-        mock_request.base_url.scheme = "https"
-        mock_request.base_url.netloc = "example.com"
-
-        # Act
-        result = assistant_to_agent_card(assistant, mock_request)
-
-        # Assert
-        self.assertIsInstance(result, AgentCard)
-        self.assertEqual(result.name, "Test Assistant")
-        self.assertEqual(result.description, "A test assistant")
-        self.assertEqual(result.url, "https://example.com/v1/a2a/assistants/test-assistant-id")
-        self.assertEqual(result.version, "1.0.0")
-        self.assertIsInstance(result.provider, AgentProvider)
-        self.assertEqual(result.provider.organization, "")
-        self.assertIsInstance(result.capabilities, AgentCapabilities)
-        self.assertFalse(result.capabilities.streaming)
-        self.assertFalse(result.capabilities.pushNotifications)
-        self.assertTrue(result.capabilities.stateTransitionHistory)
-        self.assertIsInstance(result.authentication, AgentAuthentication)
-        self.assertEqual(result.authentication.schemes, ['Bearer'])
-        self.assertEqual(len(result.skills), 1)
-        self.assertEqual(result.skills[0].id, "tool1")
-
-        # Test with no toolkits
-        assistant.toolkits = []
-        result = assistant_to_agent_card(assistant, mock_request)
-        self.assertEqual(len(result.skills), 1)
-        self.assertEqual(result.skills[0].id, "conversation")
-        self.assertEqual(result.skills[0].name, "Conversation")
-
-        # Test with production environment
-        mock_config.is_local = False
-        # We need to patch the _get_agent_authentication function directly
-        with patch('codemie.rest_api.a2a.utils._get_agent_authentication') as mock_auth:
-            mock_auth.return_value = AgentAuthentication(schemes=[], credentials=None)
-            result = assistant_to_agent_card(assistant, mock_request)
-            self.assertIsNone(result.authentication.credentials)
 
     def test_get_auth_header(self):
         """Test generating authentication headers based on A2A credentials."""
@@ -368,5 +220,193 @@ class TestA2AUtils(unittest.TestCase):
         self.assertEqual(str(context.exception), "Unknown authentication type: None")
 
 
-if __name__ == '__main__':
-    unittest.main()
+# ---- v1.0 converters and card builder (pytest style) ----
+
+_DUMP = {"by_alias": True, "exclude_none": True}
+
+
+def _chat_request(stream, conversation_id="test-conversation"):
+    return AssistantChatRequest(
+        conversation_id=conversation_id, text="Hello, assistant!", stream=stream, history_index=5
+    )
+
+
+@pytest.mark.parametrize(
+    "stream,request_cls,method",
+    [
+        (False, SendMessageRPCRequest, "SendMessage"),
+        (True, SendStreamingMessageRPCRequest, "SendStreamingMessage"),
+    ],
+)
+def test_convert_to_task_request_builds_v1_request(stream, request_cls, method):
+    raw_request = MagicMock(spec=Request)
+    result = convert_to_task_request(_chat_request(stream), raw_request)
+
+    assert isinstance(result, request_cls) and result.method == method
+    message = result.params.message
+    assert message.role == Role.USER and message.parts[0].text == "Hello, assistant!"
+    assert message.contextId == "test-conversation"
+    assert message.taskId is None and message.messageId
+    dumped = result.model_dump(**_DUMP)["params"]
+    assert "id" not in dumped and "sessionId" not in dumped and "taskId" not in dumped["message"]
+    assert dumped["message"]["role"] == "ROLE_USER"
+
+
+def test_convert_to_task_request_does_not_use_request_uuid_as_task_id():
+    raw_request = MagicMock(spec=Request)
+    raw_request.state.uuid = "request-uuid"
+    result = convert_to_task_request(_chat_request(False), raw_request)
+    assert "request-uuid" not in result.model_dump_json()
+
+
+def _task(**kwargs):
+    return Task(id="test-task-id", contextId="ctx", status=TaskStatus(state=TaskState.COMPLETED), **kwargs)
+
+
+def test_convert_to_base_model_response_from_task_artifact():
+    task = _task(artifacts=[Artifact(parts=[Part(text="Generated response text")])])
+    result = convert_to_base_model_response(task)
+    assert isinstance(result, BaseModelResponse)
+    assert (result.generated, result.task_id, result.time_elapsed, result.thoughts) == (
+        "Generated response text",
+        "test-task-id",
+        0,
+        [],
+    )
+
+
+def test_convert_to_base_model_response_falls_back_to_status_message():
+    message = Message(role=Role.AGENT, parts=[Part(text="which city?")])
+    task = Task(id="t", status=TaskStatus(state=TaskState.INPUT_REQUIRED, message=message))
+    assert convert_to_base_model_response(task).generated == "which city?"
+
+
+def test_convert_to_base_model_response_from_message_result():
+    message = Message(role=Role.AGENT, parts=[Part(text="direct "), Part(text="answer")], taskId="t9")
+    result = convert_to_base_model_response(message)
+    assert result.generated == "direct answer" and result.task_id == "t9"
+
+
+def test_convert_to_base_model_response_without_text_does_not_raise():
+    empty_task = Task(id="t", status=TaskStatus(state=TaskState.FAILED))
+    assert convert_to_base_model_response(empty_task).generated == ""
+    only_file = Message(role=Role.AGENT, parts=[Part(raw="aGk=", filename="a.png"), Part(url="https://x/y")])
+    assert convert_to_base_model_response(only_file).generated == "[File: a.png][File: unnamed]"
+
+
+def test_convert_messages_maps_roles_and_placeholders():
+    messages = [
+        Message(role=Role.USER, parts=[Part(text="Hello, assistant!")]),
+        Message(role=Role.AGENT, parts=[Part(text="Hello, user!")]),
+        Message(
+            role=Role.USER,
+            parts=[Part(text="Look "), Part(raw="aGk=", filename="test.txt"), Part(data={"k": 1})],
+        ),
+    ]
+    chat = convert_messages_to_chat_messages(messages)
+    assert [(m.role, m.message) for m in chat] == [
+        (ChatRole.USER, "Hello, assistant!"),
+        (ChatRole.ASSISTANT, "Hello, user!"),
+        (ChatRole.USER, "Look [File: test.txt][Data object]"),
+    ]
+
+
+def _assistant(toolkits=None):
+    assistant = MagicMock(spec=Assistant)
+    assistant.name = "Test Assistant"
+    assistant.description = "A test assistant"
+    assistant.toolkits = toolkits or []
+    assistant.id = "test-assistant-id"
+    return assistant
+
+
+def _http_request():
+    request = MagicMock(spec=Request)
+    request.base_url.scheme = "https"
+    request.base_url.netloc = "example.com"
+    return request
+
+
+def _card_for(idp_provider, toolkits=None):
+    with patch("codemie.rest_api.a2a.utils.config") as cfg:
+        cfg.API_ROOT_PATH = "/api"
+        cfg.IDP_PROVIDER = idp_provider
+        cfg.A2A_PROVIDER_ORGANIZATION = "Example Org"
+        cfg.A2A_PROVIDER_URL = "https://example.com"
+        return assistant_to_agent_card(_assistant(toolkits), _http_request())
+
+
+def test_assistant_card_matches_fixture_shape():
+    card = _card_for("keycloak")
+    dumped = public_agent_card_dict(card)
+    fixture = load_fixture("agent_card")
+    assert set(dumped) == set(fixture) - {"documentationUrl"}
+    assert dumped["supportedInterfaces"] == [
+        {
+            "url": "https://example.com/api/v1/a2a/assistants/test-assistant-id",
+            "protocolBinding": "JSONRPC",
+            "protocolVersion": "1.0",
+        }
+    ]
+    assert dumped["capabilities"] == fixture["capabilities"]
+    assert dumped["defaultInputModes"] == ["text/plain"] and dumped["defaultOutputModes"] == ["text/plain"]
+    assert set(dumped["skills"][0]) == set(fixture["skills"][0]) - {"examples"}
+    assert dumped["provider"] == {"organization": "Example Org", "url": "https://example.com"}
+    assert not {"authentication", "stateTransitionHistory", "preferredTransport", "transport"} & set(_walk_keys(dumped))
+    assert "url" not in dumped
+    assert not INTERNAL_CARD_FIELDS_SET & set(dumped)
+
+
+def test_assistant_card_public_dict_drops_internal_fields_but_model_keeps_them():
+    card = _card_for("keycloak")
+    assert "bedrock_agentcore" in card.model_dump()
+    assert not INTERNAL_CARD_FIELDS_SET & set(public_agent_card_dict(card))
+
+
+def test_assistant_card_security_is_bearer_only_outside_local_idp():
+    dumped = public_agent_card_dict(_card_for("keycloak"))
+    assert dumped["securitySchemes"] == {
+        "bearer": {"httpAuthSecurityScheme": {"scheme": "bearer", "bearerFormat": "JWT"}}
+    }
+    assert dumped["securityRequirements"] == [{"schemes": {"bearer": {"list": []}}}]
+    assert "dev-codemie-user" not in json.dumps(dumped)
+
+
+def test_assistant_card_security_adds_user_id_header_for_local_idp():
+    dumped = public_agent_card_dict(_card_for("local"))
+    assert dumped["securitySchemes"] == {
+        "bearer": {"httpAuthSecurityScheme": {"scheme": "bearer", "bearerFormat": "JWT"}},
+        "user-id": {"apiKeySecurityScheme": {"location": "header", "name": "user-id"}},
+    }
+    assert dumped["securityRequirements"] == [
+        {"schemes": {"bearer": {"list": []}}},
+        {"schemes": {"user-id": {"list": []}}},
+    ]
+    assert "dev-codemie-user" not in json.dumps(dumped)
+
+
+def test_assistant_card_skills_from_toolkits_and_default_conversation_skill():
+    toolkits = [
+        ToolKitDetails(
+            toolkit="toolkit1",
+            label="Toolkit One",
+            tools=[ToolDetails(name="tool1", label="Tool One", user_description="Tool 1 description")],
+        )
+    ]
+    with_tools = _card_for("keycloak", toolkits)
+    assert [s.id for s in with_tools.skills] == ["tool1"]
+    assert with_tools.skills[0].tags and with_tools.skills[0].description == "Tool 1 description"
+
+    default = _card_for("keycloak")
+    assert [(s.id, s.name) for s in default.skills] == [("conversation", "Conversation")]
+    assert default.skills[0].tags == [] and default.skills[0].inputModes == ["text/plain"]
+
+
+def _walk_keys(value):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            yield key
+            yield from _walk_keys(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _walk_keys(item)

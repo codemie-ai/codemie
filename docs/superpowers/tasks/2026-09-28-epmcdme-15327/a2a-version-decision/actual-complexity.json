@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "generated": "2026-09-29T00:00:00Z",
+  "dimensions": {
+    "component_scope": { "score": 1, "label": "XS" },
+    "requirements_clarity": { "score": 1, "label": "XS" },
+    "technical_risk": { "score": 1, "label": "XS" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies": { "score": 1, "label": "XS" },
+    "affected_layers": { "score": 1, "label": "XS" }
+  },
+  "total": 8,
+  "size": "XS",
+  "band_range": "6-9",
+  "files_changed": 4,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "file_change_estimate", "reason": "Diffstat reports 4 files changed (0 deletions): 3 new (a2a-integration.md guide, version.py constants module, test_version.py) plus one modified table row in AGENTS.md — mapped per the N-file rule to M even though the qualitative content of each file is trivial." },
+    { "dimension": "technical_risk", "reason": "version.py is a leaf module with zero imports (enforced by its own test), holding a single str constant explicitly labeled 'UNCONFIRMED-placeholder'; the deferral to name a version literal later is a deliberate, rationale-documented decision (three named consuming slices in the guide) rather than an unresolved requirements gap, so no TBD red flag was applied." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

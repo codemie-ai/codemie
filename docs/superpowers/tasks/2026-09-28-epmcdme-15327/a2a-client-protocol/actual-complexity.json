@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "generated": "2026-09-30T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 19,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 12,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "A2A client package (client, card_resolver, remote_agent_connection, adapter), shared a2a types/version modules and A2AAssistantHandler were all changed; one subsystem, established pattern." },
+    { "dimension": "technical_risk", "reason": "Wire-protocol change to A2A v1.0 on an outbound integration with external agents; explicit rejection of Bedrock AgentCore (v0.3) and tolerant streaming-envelope parsing add compatibility risk; a review fix-up commit followed. No new auth or secret handling." },
+    { "dimension": "file_change_estimate", "reason": "12 files changed per diffstat (7 source, 5 test), all under src/codemie/rest_api and tests/codemie/rest_api; 453 insertions and 378 deletions." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

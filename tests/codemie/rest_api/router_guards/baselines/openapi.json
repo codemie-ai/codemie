@@ -1,51 +1,6 @@
 {
   "components": {
     "schemas": {
-      "A2ARequestBody": {
-        "description": "A2A JSON-RPC request body",
-        "properties": {
-          "id": {
-            "default": "request-123",
-            "description": "Request identifier",
-            "title": "Id",
-            "type": "string"
-          },
-          "jsonrpc": {
-            "default": "2.0",
-            "description": "JSON-RPC version",
-            "title": "Jsonrpc",
-            "type": "string"
-          },
-          "method": {
-            "default": "tasks/send",
-            "description": "Method name (e.g., tasks/send)",
-            "title": "Method",
-            "type": "string"
-          },
-          "params": {
-            "additionalProperties": true,
-            "default": {
-              "historyLength": 10,
-              "id": "task-123",
-              "message": {
-                "parts": [
-                  {
-                    "text": "Hello, can you help me with this question?",
-                    "type": "text"
-                  }
-                ],
-                "role": "user"
-              },
-              "sessionId": "session-123"
-            },
-            "description": "Method parameters",
-            "title": "Params",
-            "type": "object"
-          }
-        },
-        "title": "A2ARequestBody",
-        "type": "object"
-      },
       "AIKataListResponse": {
         "properties": {
           "creator_name": {
@@ -717,43 +672,30 @@
         "title": "AdminUserListItem",
         "type": "object"
       },
-      "AgentAuthentication": {
+      "AgentCapabilities": {
         "properties": {
-          "credentials": {
+          "extendedAgentCard": {
+            "default": false,
+            "title": "Extendedagentcard",
+            "type": "boolean"
+          },
+          "extensions": {
             "anyOf": [
               {
-                "type": "string"
+                "items": {
+                  "$ref": "#/components/schemas/AgentExtension"
+                },
+                "type": "array"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Credentials"
+            "title": "Extensions"
           },
-          "schemes": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Schemes",
-            "type": "array"
-          }
-        },
-        "required": [
-          "schemes"
-        ],
-        "title": "AgentAuthentication",
-        "type": "object"
-      },
-      "AgentCapabilities": {
-        "properties": {
           "pushNotifications": {
             "default": false,
             "title": "Pushnotifications",
-            "type": "boolean"
-          },
-          "stateTransitionHistory": {
-            "default": false,
-            "title": "Statetransitionhistory",
             "type": "boolean"
           },
           "streaming": {
@@ -767,16 +709,6 @@
       },
       "AgentCard": {
         "properties": {
-          "authentication": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/AgentAuthentication"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "bedrock_agentcore": {
             "default": false,
             "title": "Bedrock Agentcore",
@@ -786,9 +718,6 @@
             "$ref": "#/components/schemas/AgentCapabilities"
           },
           "defaultInputModes": {
-            "default": [
-              "text"
-            ],
             "items": {
               "type": "string"
             },
@@ -796,9 +725,6 @@
             "type": "array"
           },
           "defaultOutputModes": {
-            "default": [
-              "text"
-            ],
             "items": {
               "type": "string"
             },
@@ -806,15 +732,9 @@
             "type": "array"
           },
           "description": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Description"
+            "default": "",
+            "title": "Description",
+            "type": "string"
           },
           "documentationUrl": {
             "anyOf": [
@@ -826,6 +746,17 @@
               }
             ],
             "title": "Documentationurl"
+          },
+          "iconUrl": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Iconurl"
           },
           "integration_id": {
             "anyOf": [
@@ -863,6 +794,48 @@
               }
             ]
           },
+          "securityRequirements": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/SecurityRequirement"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Securityrequirements"
+          },
+          "securitySchemes": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/SecurityScheme"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Securityschemes"
+          },
+          "signatures": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/AgentCardSignature"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Signatures"
+          },
           "skills": {
             "items": {
               "$ref": "#/components/schemas/AgentSkill"
@@ -870,9 +843,23 @@
             "title": "Skills",
             "type": "array"
           },
+          "supportedInterfaces": {
+            "items": {
+              "$ref": "#/components/schemas/AgentInterface"
+            },
+            "title": "Supportedinterfaces",
+            "type": "array"
+          },
           "url": {
-            "title": "Url",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
           },
           "user_id": {
             "anyOf": [
@@ -892,12 +879,42 @@
         },
         "required": [
           "name",
-          "url",
+          "supportedInterfaces",
           "version",
           "capabilities",
           "skills"
         ],
         "title": "AgentCard",
+        "type": "object"
+      },
+      "AgentCardSignature": {
+        "properties": {
+          "header": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Header"
+          },
+          "protected": {
+            "title": "Protected",
+            "type": "string"
+          },
+          "signature": {
+            "title": "Signature",
+            "type": "string"
+          }
+        },
+        "required": [
+          "protected",
+          "signature"
+        ],
+        "title": "AgentCardSignature",
         "type": "object"
       },
       "AgentErrorDetails": {
@@ -954,6 +971,91 @@
         "title": "AgentErrorDetails",
         "type": "object"
       },
+      "AgentExtension": {
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "params": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Params"
+          },
+          "required": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Required"
+          },
+          "uri": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uri"
+          }
+        },
+        "title": "AgentExtension",
+        "type": "object"
+      },
+      "AgentInterface": {
+        "properties": {
+          "protocolBinding": {
+            "title": "Protocolbinding",
+            "type": "string"
+          },
+          "protocolVersion": {
+            "default": "1.0",
+            "title": "Protocolversion",
+            "type": "string"
+          },
+          "tenant": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tenant"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "protocolBinding"
+        ],
+        "title": "AgentInterface",
+        "type": "object"
+      },
       "AgentMode": {
         "enum": [
           "general",
@@ -989,15 +1091,9 @@
       "AgentSkill": {
         "properties": {
           "description": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Description"
+            "default": "",
+            "title": "Description",
+            "type": "string"
           },
           "examples": {
             "anyOf": [
@@ -1050,18 +1146,11 @@
             "title": "Outputmodes"
           },
           "tags": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Tags"
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
           }
         },
         "required": [
@@ -23686,6 +23775,89 @@
         "title": "SearchResultItem",
         "type": "object"
       },
+      "SecurityRequirement": {
+        "properties": {
+          "schemes": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/StringList"
+            },
+            "title": "Schemes",
+            "type": "object"
+          }
+        },
+        "required": [
+          "schemes"
+        ],
+        "title": "SecurityRequirement",
+        "type": "object"
+      },
+      "SecurityScheme": {
+        "description": "A proto `oneof`: exactly one scheme member is set (ProtoJSON member names).",
+        "properties": {
+          "apiKeySecurityScheme": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Apikeysecurityscheme"
+          },
+          "httpAuthSecurityScheme": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Httpauthsecurityscheme"
+          },
+          "mtlsSecurityScheme": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mtlssecurityscheme"
+          },
+          "oauth2SecurityScheme": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oauth2Securityscheme"
+          },
+          "openIdConnectSecurityScheme": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Openidconnectsecurityscheme"
+          }
+        },
+        "title": "SecurityScheme",
+        "type": "object"
+      },
       "SettingDeclarationResponse": {
         "properties": {
           "component_id": {
@@ -25980,6 +26152,19 @@
           "component"
         ],
         "title": "StepConfigEntry",
+        "type": "object"
+      },
+      "StringList": {
+        "properties": {
+          "list": {
+            "items": {
+              "type": "string"
+            },
+            "title": "List",
+            "type": "array"
+          }
+        },
+        "title": "StringList",
         "type": "object"
       },
       "SubAssistantPublishSettings": {
@@ -35628,7 +35813,7 @@
     },
     "/v1/a2a/assistants/fetch": {
       "get": {
-        "description": "Fetches an agent card from a remote URL\n\nArgs:\n    url: The URL of the remote assistant\n    project_name: The project name to associate with the assistant\n    integration_id: Optional ID of the integration to use for authentication\n    user: The authenticated user making the request\n\nReturns:\n    AgentCard: The fetched agent card",
+        "description": "Fetches an agent card from a remote URL\n\nArgs:\n    url: The URL of the remote assistant\n    project_name: The project name to associate with the assistant\n    integration_id: Optional ID of the integration to use for authentication\n    user: The authenticated user making the request\n\nReturns:\n    AgentCard: The fetched agent card (including the CodeMie-internal fields, which the UI stores)",
         "operationId": "fetch_remote_assistant_v1_a2a_assistants_fetch_get",
         "parameters": [
           {
@@ -35721,13 +35906,75 @@
               "title": "Assistant Id",
               "type": "string"
             }
+          },
+          {
+            "description": "A2A protocol version (Major.Minor). Requests without a supported version are rejected.",
+            "in": "header",
+            "name": "A2A-Version",
+            "required": true,
+            "schema": {
+              "default": "1.0",
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/A2ARequestBody"
+                "description": "A2A JSON-RPC request body (Swagger documentation only; the endpoint parses the raw body itself).",
+                "properties": {
+                  "id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "integer"
+                      }
+                    ],
+                    "default": "request-123",
+                    "description": "Request identifier",
+                    "title": "Id"
+                  },
+                  "jsonrpc": {
+                    "default": "2.0",
+                    "description": "JSON-RPC version",
+                    "title": "Jsonrpc",
+                    "type": "string"
+                  },
+                  "method": {
+                    "default": "SendMessage",
+                    "description": "Method name: SendMessage, SendStreamingMessage, GetTask, CancelTask or GetExtendedAgentCard",
+                    "title": "Method",
+                    "type": "string"
+                  },
+                  "params": {
+                    "additionalProperties": true,
+                    "default": {
+                      "configuration": {
+                        "acceptedOutputModes": [
+                          "text/plain"
+                        ],
+                        "historyLength": 10
+                      },
+                      "message": {
+                        "messageId": "message-123",
+                        "parts": [
+                          {
+                            "text": "Hello, can you help me with this question?"
+                          }
+                        ],
+                        "role": "ROLE_USER"
+                      }
+                    },
+                    "description": "Method parameters",
+                    "title": "Params",
+                    "type": "object"
+                  }
+                },
+                "title": "A2ARequestBody",
+                "type": "object"
               }
             }
           },
@@ -35767,10 +36014,10 @@
         ]
       }
     },
-    "/v1/a2a/assistants/{assistant_id}/.well-known/agent.json": {
+    "/v1/a2a/assistants/{assistant_id}/.well-known/agent-card.json": {
       "get": {
         "description": "Returns A2A agent card for a specific assistant.\nFollows the A2A specification for agent discovery.",
-        "operationId": "get_assistant_agent_card_v1_a2a_assistants__assistant_id___well_known_agent_json_get",
+        "operationId": "get_assistant_agent_card_v1_a2a_assistants__assistant_id___well_known_agent_card_json_get",
         "parameters": [
           {
             "in": "path",
@@ -35786,9 +36033,7 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AgentCard"
-                }
+                "schema": {}
               }
             },
             "description": "Successful Response"

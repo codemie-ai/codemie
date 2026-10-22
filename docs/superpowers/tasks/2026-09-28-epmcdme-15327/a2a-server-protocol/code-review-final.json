@@ -1,0 +1,118 @@
+{
+  "decision": "request-changes",
+  "rationale": "Streaming delivers status-only frames (no agent output/artifacts, no contextId on events), cancel/get lack ownership scoping and race with completion, and the Task 10 -32600 vs -32601 gap needs a user decision. Reachability verified by reading task manager, router and types; 3 deferred (client BedrockAdapter slice 3, legacy-method/agent.json compat slice 4, A2A-Version header negotiation non-goal) listed in code-review-deferred.md; 13 dismissed as noise/unreachable/preference; decision_needed remains so confidence is low.",
+  "confidence": "low",
+  "risk_flags": ["security", "breaking-change", "public-api", "data-contract"],
+  "business_review": [
+    {"kind": "spec", "item": "Design: keep/stub ListTasks, SubscribeToTask and push-notification request classes without adding to dispatch union", "status": "partial", "notes": "no ListTasks/SubscribeToTask classes or stubs added"},
+    {"kind": "spec", "item": "Design: Task id->taskId + contextId; events; statusUpdate/artifactUpdate envelope", "status": "partial", "notes": "taskId alias only; contextId on Task only, never populated; events lack contextId; no envelope"},
+    {"kind": "spec", "item": "Design: router dispatch table incl. SendStreamingMessage; unmapped methods -> MethodNotFound", "status": "partial", "notes": "table omits SendStreamingMessage; MethodNotFound branch unreachable"},
+    {"kind": "spec", "item": "Design: on_send_task_subscribe real via _handle_a2a_stream yielding status/artifact events", "status": "partial", "notes": "only TaskStatusUpdateEvent, no artifact events"},
+    {"kind": "spec", "item": "AC: POST dispatches five v1.0 methods; other well-formed methods return MethodNotFound, not 500", "status": "fail", "notes": "ListTasks returns 400 / -32600; known Task 10 gap"},
+    {"kind": "spec", "item": "AC: SendStreamingMessage returns SSE of JSON-RPC-wrapped status/artifact events ending in terminal state", "status": "partial", "notes": "status-only frames; no artifact events, no content"},
+    {"kind": "spec", "item": "AC: no discriminator retained; camelCase taskId, contextId", "status": "partial", "notes": "discriminators removed; events lack contextId"},
+    {"kind": "spec", "item": "AC: router-level tests for all methods incl. one non-goal method returning MethodNotFound", "status": "partial", "notes": "GetTask/CancelTask only unknown-id path; non-goal test asserts -32600"},
+    {"kind": "spec", "item": "Testing: lint/build/full suite execution", "status": "pending-stage-7", "notes": "execution evidence remains"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "fail", "notes": "17 of 18 subjects match 'EPMCDME-####: Description'; 'a2a-version-decision: add planning artifacts' has no ticket prefix"},
+    {"kind": "code-quality", "status": "partial", "notes": "code-quality.md prefers 'X | None' over typing.Optional; types.py adds 'id: Optional[str]' with taskId alias."},
+    {"kind": "security", "status": "pass", "notes": "A2A router endpoint uses Depends(authenticate); no credential logging or hardcoded secrets found in a targeted scan"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/a2a/server/codemie_task_manager.py",
+      "line": 81,
+      "title": "Cancel/get task lacks ownership scoping",
+      "problem": "on_cancel_task (and on_get_task) load Task.find_by_id(id) with no check that the task belongs to the assistant in the URL or the calling user. Any user with READ access to any assistant can cancel or read another task by id. Cancel also only flips stored status; the running invocation is not interrupted.",
+      "impact": "Cross-tenant task cancellation/read by guessing or obtaining task ids; canceled tasks continue consuming resources.",
+      "recommendation": "Verify task ownership (assistant/user) before returning or cancelling; return TaskNotFoundError otherwise. Optionally signal the running invocation to stop."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/a2a/server/codemie_task_manager.py",
+      "line": 111,
+      "title": "Streaming path skips validation and re-runs terminal tasks",
+      "problem": "on_send_streaming_message uses Task.find_by_id(...) or upsert_task(...) and never calls _validate_request; unlike SendMessage, an existing task's new message is not appended to history, and a COMPLETED/FAILED/CANCELED task is silently re-run.",
+      "impact": "Incompatible acceptedOutputModes accepted; canceled tasks revived and overwritten; history diverges from the non-streaming path.",
+      "recommendation": "Call _validate_request first (yield its error and return) and use upsert_task consistently; reject or explicitly handle terminal-state tasks."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/a2a/server/codemie_task_manager.py",
+      "line": 203,
+      "title": "Cancel is overwritten by completion",
+      "problem": "_invoke_agent and _handle_a2a_stream call update_store with COMPLETED/FAILED/INPUT_REQUIRED after the agent returns without re-reading the stored state; a CancelTask that set CANCELED during the invocation is silently overwritten (check-then-act, no atomicity).",
+      "impact": "Canceled task reported as completed; real cancel is not durable.",
+      "recommendation": "Re-read the task before the final update_store and skip the write (emit CANCELED final) if state is CANCELED."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/a2a/server/codemie_task_manager.py",
+      "line": 238,
+      "title": "Streaming emits status-only frames, no output",
+      "problem": "_create_streaming_response builds TaskStatusUpdateEvent(status=TaskStatus(state=state)) only: the agent message, error text and artifact are dropped, no TaskArtifactUpdateEvent is ever yielded, and events carry no contextId. Tests assert only status.state. final=True is also set for INPUT_REQUIRED. Spec AC requires status/artifact event frames ending in terminal state.",
+      "impact": "SSE clients receive working then completed with no answer content; 'real streaming' delivers no result. Required AC is partial.",
+      "recommendation": "Include the task status message in the final status event and yield a TaskArtifactUpdateEvent for the artifact; add contextId to events; assert content in tests."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/a2a/types.py",
+      "line": 247,
+      "title": "GetExtendedAgentCard params wrongly typed",
+      "problem": "GetExtendedAgentCardRequest.params is TaskIdParams | None, whose required 'id' means a spec-conformant empty params object {} fails validation.",
+      "impact": "Spec-conformant clients get InvalidRequest (-32600) for GetExtendedAgentCard.",
+      "recommendation": "Use params: dict[str, Any] | None = None (or a dedicated empty params model)."
+    },
+    {
+      "id": "CR-006",
+      "kind": "decision",
+      "severity": "critical",
+      "triage": "decision_needed",
+      "file": "src/codemie/rest_api/routers/a2a.py",
+      "line": 131,
+      "title": "Out-of-scope methods return -32600, not -32601",
+      "problem": "Known Task 10 gap: A2ARequest covers only the 5 in-scope methods, so ListTasks/SubscribeToTask/push-config fail validation and return 400/-32600 instead of the AC's MethodNotFound (-32601); the MethodNotFoundError dispatch branch is now dead code, SendStreamingMessage is handled ahead of the table, and the router test pins 400/-32600.",
+      "impact": "Spec AC for unmapped methods is unmet; dead fallback code remains.",
+      "recommendation": "User decides: pre-check the method name and return -32601, add stub request classes to the union, or amend the AC to accept -32600 and remove the dead branch."
+    },
+    {
+      "id": "CR-007",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/rest_api/routers/test_a2a_router.py",
+      "title": "Router tests miss success paths",
+      "problem": "GetTask and CancelTask are only exercised with an unknown id (test_cancel_task_success asserts the not-found path); no router-level successful GetTask/CancelTask and no SSE error-frame test.",
+      "impact": "Success dispatch of two required methods is unverified at router level.",
+      "recommendation": "Add successful GetTask and CancelTask router tests and rename the misnamed test."
+    },
+    {
+      "id": "CR-008",
+      "kind": "evidence",
+      "severity": "major",
+      "triage": "patch",
+      "file": "unknown",
+      "title": "Commit subject lacks EPMCDME ticket prefix",
+      "problem": "Commit 'a2a-version-decision: add planning artifacts' violates the git-workflow EPMCDME-####: Description format.",
+      "impact": "Blocking commit-format standard fails; ticket traceability lost.",
+      "recommendation": "Reword to 'EPMCDME-15327: Add A2A version decision planning artifacts' or ensure the squash commit carries the prefix."
+    }
+  ]
+}

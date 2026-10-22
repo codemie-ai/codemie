@@ -1,0 +1,18 @@
+{
+  "jsonrpc": "2.0",
+  "id": "req-5",
+  "error": {
+    "code": -32009,
+    "message": "A2A protocol version not supported",
+    "data": [
+      {
+        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+        "reason": "VERSION_NOT_SUPPORTED",
+        "domain": "a2a-protocol.org",
+        "metadata": {
+          "supportedVersions": "1.0"
+        }
+      }
+    ]
+  }
+}

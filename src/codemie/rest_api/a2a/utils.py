@@ -26,66 +26,91 @@ from fastapi import Request
 from codemie.configs import config
 from codemie.core.models import AssistantChatRequest, BaseModelResponse, ChatMessage, ChatRole, AuthenticationType
 from codemie.rest_api.a2a.types import (
+    TEXT_PLAIN,
+    INTERNAL_CARD_FIELDS,
     AgentCard,
+    AgentInterface,
     AgentProvider,
     AgentCapabilities,
-    AgentAuthentication,
     AgentSkill,
     Message,
-    TaskSendParams,
-    SendTaskRequest,
-    SendTaskStreamingRequest,
-    TextPart,
+    Part,
+    Role,
+    SecurityRequirement,
+    SecurityScheme,
+    SendMessageConfiguration,
+    SendMessageRequest,
+    SendMessageRPCRequest,
+    SendStreamingMessageRPCRequest,
+    StringList,
     Task,
 )
 from codemie.rest_api.models.assistant import Assistant, ToolKitDetails, ToolDetails
+from codemie.rest_api.security.user import USER_ID_HEADER
 
 
 def convert_to_task_request(
     chat_request: AssistantChatRequest, raw_request: Request
-) -> SendTaskRequest | SendTaskStreamingRequest:
+) -> SendMessageRPCRequest | SendStreamingMessageRPCRequest:
     """
-    Convert an AssistantChatRequest to either SendTaskRequest or SendTaskStreamingRequest.
+    Convert an AssistantChatRequest to either SendMessageRPCRequest or SendStreamingMessageRPCRequest.
+
+    The task id is never sent: the remote server assigns it. The chat conversation id travels as the
+    message `contextId`.
 
     Args:
         chat_request: The AssistantChatRequest to convert
         raw_request: The raw FastAPI request object
 
     Returns:
-        Either SendTaskRequest or SendTaskStreamingRequest depending on request's stream flag
+        Either a streaming or a non-streaming JSON-RPC request depending on request's stream flag
     """
-    # Create Message object from chat request text and content
-    message = Message(role="user", parts=[TextPart(text=chat_request.text)])
-
-    # Create TaskSendParams
-    params = TaskSendParams(
-        id=raw_request.state.uuid,
-        sessionId=chat_request.conversation_id,
-        message=message,
-        historyLength=chat_request.history_index or 0,
+    message = Message(role=Role.USER, parts=[Part(text=chat_request.text)], contextId=chat_request.conversation_id)
+    params = SendMessageRequest(
+        message=message, configuration=SendMessageConfiguration(historyLength=chat_request.history_index or 0)
     )
-
-    # Choose request type based on request.stream flag
-    request_cls = SendTaskStreamingRequest if chat_request.stream else SendTaskRequest
+    request_cls = SendStreamingMessageRPCRequest if chat_request.stream else SendMessageRPCRequest
     return request_cls(params=params)
 
 
-def convert_to_base_model_response(task: Task) -> BaseModelResponse:
+def _parts_to_text(parts: List[Part]) -> str:
+    """Flatten parts to text; non-text parts become short placeholders."""
+    texts = []
+    for part in parts:
+        if part.text is not None:
+            texts.append(part.text)
+        elif part.data is not None:
+            texts.append("[Data object]")
+        else:
+            texts.append(f"[File: {part.filename or 'unnamed'}]")
+    return "".join(texts)
+
+
+def convert_to_base_model_response(result: Task | Message) -> BaseModelResponse:
     """
-    Convert Task to BaseModelResponse.
+    Convert a SendMessage result (Task or Message) to BaseModelResponse.
 
     Args:
-        task: Response from task manager containing result with artifacts
+        result: The task (artifact text, else status message) or direct message returned by the remote agent
 
     Returns:
-        BaseModelResponse with the task result and metadata
+        BaseModelResponse with the result text and metadata
     """
-    response_parts = task.artifacts[0].parts if task.artifacts else task.status.message.parts
+    if isinstance(result, Message):
+        parts, task_id = result.parts, result.taskId
+    else:
+        if result.artifacts:
+            parts = result.artifacts[0].parts
+        elif result.status.message:
+            parts = result.status.message.parts
+        else:
+            parts = []
+        task_id = result.id
     return BaseModelResponse(
-        generated=response_parts[0].text,
+        generated=_parts_to_text(parts),
         time_elapsed=0,  # We could add timing if needed
         thoughts=[],  # We could extract thoughts if needed
-        task_id=task.id,
+        task_id=task_id,
     )
 
 
@@ -99,29 +124,13 @@ def convert_messages_to_chat_messages(messages: List[Message]) -> List[ChatMessa
     Returns:
         List[ChatMessage]: The converted list of ChatMessage objects
     """
-    chat_messages = []
-
-    for message in messages:
-        # Convert role from "user"/"agent" to ChatRole.USER/ChatRole.ASSISTANT
-        role = ChatRole.USER if message.role == "user" else ChatRole.ASSISTANT
-
-        # Extract text content from parts
-        message_text = ""
-        for part in message.parts:
-            if part.type == "text":
-                message_text += part.text
-            elif part.type == "file":
-                # For file parts, we might want to include a placeholder or reference
-                message_text += f"[File: {part.file.name or 'unnamed'}]"
-            elif part.type == "data":
-                # For data parts, we might want to include a summary or representation
-                message_text += "[Data object]"
-
-        # Create ChatMessage object
-        chat_message = ChatMessage(role=role, message=message_text)
-        chat_messages.append(chat_message)
-
-    return chat_messages
+    return [
+        ChatMessage(
+            role=ChatRole.USER if message.role == Role.USER else ChatRole.ASSISTANT,
+            message=_parts_to_text(message.parts),
+        )
+        for message in messages
+    ]
 
 
 def to_kebab_case(s: str) -> str:
@@ -189,8 +198,8 @@ def tool_to_agent_skill(tool: ToolDetails, toolkit_label: Optional[str] = None) 
         description=description,
         tags=tags,
         examples=examples if examples else None,
-        inputModes=["text"],  # Default to text mode
-        outputModes=["text"],  # Default to text mode
+        inputModes=[TEXT_PLAIN],
+        outputModes=[TEXT_PLAIN],
     )
 
 
@@ -240,30 +249,45 @@ def assistant_to_agent_card(
                 id="conversation",
                 name="Conversation",
                 description="General conversation ability",
-                inputModes=["text"],
-                outputModes=["text"],
+                inputModes=[TEXT_PLAIN],
+                outputModes=[TEXT_PLAIN],
             )
         ]
+
+    security_schemes = _security_schemes()
 
     # Create the agent card
     return AgentCard(
         name=assistant.name,
         description=assistant.description,
-        url=f"{request.base_url.scheme}://{request.base_url.netloc}{config.API_ROOT_PATH}/v1/a2a/assistants/{assistant.id}",
+        supportedInterfaces=[
+            AgentInterface(
+                url=f"{request.base_url.scheme}://{request.base_url.netloc}{config.API_ROOT_PATH}/v1/a2a/assistants/{assistant.id}",
+                protocolBinding="JSONRPC",
+            )
+        ],
         version="1.0.0",  # Default version
         provider=AgentProvider(organization=config.A2A_PROVIDER_ORGANIZATION, url=config.A2A_PROVIDER_URL),
-        capabilities=AgentCapabilities(streaming=False, pushNotifications=False, stateTransitionHistory=True),
-        authentication=_get_agent_authentication(),
+        capabilities=AgentCapabilities(streaming=True, pushNotifications=False, extendedAgentCard=True),
+        securitySchemes=security_schemes,
+        securityRequirements=[SecurityRequirement(schemes={name: StringList()}) for name in security_schemes],
         skills=skills,
     )
 
 
-def _get_agent_authentication():
-    credentials = None
-    if config.is_local:
-        credentials = "dev-codemie-user"
-    # Need to add support for integrations to get for given user and pass in header
-    return AgentAuthentication(schemes=["Bearer"], credentials=credentials)
+def _security_schemes() -> dict[str, SecurityScheme]:
+    """The auth the endpoint really accepts: a bearer JWT, plus the `user-id` header with the local IdP."""
+    schemes = {
+        "bearer": SecurityScheme(httpAuthSecurityScheme={"scheme": "bearer", "bearerFormat": "JWT"}),
+    }
+    if config.IDP_PROVIDER == "local":
+        schemes[USER_ID_HEADER] = SecurityScheme(apiKeySecurityScheme={"location": "header", "name": USER_ID_HEADER})
+    return schemes
+
+
+def public_agent_card_dict(card: AgentCard) -> dict[str, Any]:
+    """The wire JSON of a card: v1.0 names, no None values and none of the CodeMie-internal fields."""
+    return card.model_dump(by_alias=True, exclude_none=True, exclude=set(INTERNAL_CARD_FIELDS))
 
 
 def get_auth_header(

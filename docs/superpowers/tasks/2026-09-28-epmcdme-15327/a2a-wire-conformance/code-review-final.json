@@ -1,0 +1,115 @@
+{
+  "decision": "request-changes",
+  "rationale": "Oversized diff (341KB): the blind lens read only the first ~3150 lines, so tail test hunks were not reviewed; 2.3 verified only a few candidates by targeted reads and unreached ones keep lens grading. Task shape (metadata/legacy contextId) and stale guide references miss FR-T5/FR-D1; commit-format standard fails on 4 planning commits. 0 deferred, roughly 20 filtered as noise or accepted-gap overlap.",
+  "confidence": "low",
+  "risk_flags": ["public-api", "data-contract", "breaking-change"],
+  "business_review": [
+    {"kind": "spec", "item": "FR-T5 Task serializes {id, contextId, status, artifacts, history, metadata}; sessionId read as contextId", "status": "partial", "notes": "Task has no metadata field; legacy sessionId-only row serializes without contextId"},
+    {"kind": "spec", "item": "FR-D1 Guide and version.py corrected", "status": "partial", "notes": "Guide still cites deleted adapter.py / BedrockAdapter"},
+    {"kind": "spec", "item": "AC1 Serialized shapes equal v1.0 fixtures, no removed keys", "status": "partial", "notes": "Same gap as FR-T5"},
+    {"kind": "spec", "item": "AC7 Guide and version.py match implementation", "status": "partial", "notes": "Guide references deleted BedrockAdapter/adapter.py"},
+    {"kind": "spec", "item": "AC8 Ruff and scoped A2A pytest pass", "status": "pending-stage-7", "notes": "Owned by Stage 7"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "fail", "notes": "4 subjects lack the EPMCDME-#### prefix: a2a-backward-compat, a2a-client-protocol, a2a-server-protocol, a2a-version-decision planning artifacts commits."},
+    {"kind": "code-quality", "status": "pass", "notes": "No Optional[]/bare generics found in changed a2a modules; license headers present."},
+    {"kind": "security", "status": "pass", "notes": "Router authenticates and checks READ before parsing body; strict JSON parsing; no credential logging."}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": ".ai-run/guides/integration/a2a-integration.md",
+      "line": 30,
+      "title": "Guide cites deleted BedrockAdapter/adapter.py",
+      "problem": "The A2A guide's Evidence line, Rationale bullet (line 30) and Avoid table (line 24) still point to src/codemie/rest_api/a2a/client/adapter.py and BedrockAdapter, which this diff deletes. FR-D1/AC7 require the guide to match the implementation.",
+      "impact": "Spec requirement FR-D1/AC7 is partially unmet; future agents are directed to a nonexistent file as a shape/structure reference.",
+      "recommendation": "Remove or reword the adapter.py/BedrockAdapter references so the guide reflects the in-house v1.0 types and the legacy read-time normalisers."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/a2a/client/client.py",
+      "line": 398,
+      "title": "Sync client paths leak pydantic ValidationError",
+      "problem": "send_task/get_task/cancel_task build SendMessageRPCResponse(**body) etc. outside a try. A malformed or v0.3-shaped remote body (or non-list error.data, now typed List[dict]) raises ValidationError, which is not an A2AClientError; the streaming path already maps it to A2AClientJSONError.",
+      "impact": "The handler's except A2AClientError misses it, so a non-conformant remote yields HTTP 500 rather than a 400 chat error. Reachability was not confirmed by a full read of the call chain.",
+      "recommendation": "Wrap the response model construction in try/except (TypeError, ValidationError) and raise A2AClientJSONError, matching the streaming path."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/a2a/client/remote_agent_connection.py",
+      "line": 91,
+      "title": "Stream frame without result or error crashes",
+      "problem": "In the streaming loop, when response.error is falsy the code dereferences response.result.task/.message/.statusUpdate/.artifactUpdate without checking result is None. A frame like {\"jsonrpc\":\"2.0\",\"id\":1} raises AttributeError.",
+      "impact": "A remote emitting an empty frame aborts the stream with an unhandled exception instead of being skipped or reported as a protocol error.",
+      "recommendation": "Add `if stream_response is None: continue` (or raise A2AClientJSONError) before dereferencing."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/a2a/types.py",
+      "line": 175,
+      "title": "Task wire shape lacks metadata and legacy contextId",
+      "problem": "FR-T5 requires Task to serialize {id, contextId, status, artifacts, history, metadata}. Task has no metadata field (SQLModel reserves the name), and sessionId is exclude=True with only read sites applying `contextId or sessionId`, so a legacy row with only sessionId is served without contextId.",
+      "impact": "Serialized Task does not match the v1.0 fixture shape (AC1) and legacy tasks return a Task missing a required contextId; a missing required behavior.",
+      "recommendation": "Expose metadata via an alias/serialization workaround and populate contextId from sessionId at read time (before-validator or serializer) so the wire Task always carries contextId."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/handlers/assistant_handlers.py",
+      "line": 1345,
+      "title": "Bedrock card ValueError escapes as HTTP 500",
+      "problem": "A2AClient.__init__ raises plain ValueError for bedrock_agentcore cards or bedrock hosts (client.py:89-94), but A2AAssistantHandler.__init__ only catches AgentCardInterfaceError. The card resolver additionally rejects any URL containing 'bedrock-agentcore' while the client checks hostname only.",
+      "impact": "Stored Bedrock AgentCore assistants now fail handler construction with an unmapped ValueError (500) instead of the 400 unusable-card error.",
+      "recommendation": "Catch (AgentCardInterfaceError, ValueError) and map to the 400 unusable-card error; use urlparse hostname consistently in resolver and client."
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/rest_api/a2a/test_client.py",
+      "line": 258,
+      "title": "TLS verify kwarg asserted only by presence",
+      "problem": "Tests at lines 258 and 412 assert only that a `verify` kwarg exists, never that it equals config.HTTPS_VERIFY_SSL.",
+      "impact": "Hardcoding verify=False (or True) passes tests, so a TLS-verification regression on outbound A2A calls would go undetected.",
+      "recommendation": "Assert kwargs['verify'] == config.HTTPS_VERIFY_SSL with the config value both True and False."
+    },
+    {
+      "id": "CR-007",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/rest_api/routers/test_a2a_router.py",
+      "title": "No test for non-streaming dispatch failure",
+      "problem": "The router's final `except Exception` now returns -32603 InternalError carrying the request id (HTTP 400), but the only forced exception in router tests is the SSE path (RuntimeError 'stream exploded').",
+      "impact": "Dropping the handler, returning the wrong id, or leaking str(e) in the non-streaming path would ship unnoticed.",
+      "recommendation": "Add a test patching CodemieTaskManager.on_get_task/on_send_task with RuntimeError asserting status 400, error.code -32603, matching request id, and no exception text in the body."
+    },
+    {
+      "id": "CR-008",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "unknown",
+      "title": "Commit subjects lack EPMCDME ticket prefix",
+      "problem": "git-workflow.md requires the EPMCDME-####: Description format; four planning-artifact commits use '<slice-name>: add planning artifacts' (a2a-backward-compat, a2a-client-protocol, a2a-server-protocol, a2a-version-decision).",
+      "impact": "History would not carry the Jira ticket prefix; commit-format is a documented blocking standard.",
+      "recommendation": "Reword the four subjects to 'EPMCDME-15327: <slice> add planning artifacts', or ensure the squash-merge commit uses the ticket prefix."
+    }
+  ],
+  "finding_status": []
+}

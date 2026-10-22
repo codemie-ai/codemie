@@ -594,7 +594,8 @@ class TestGetRequestHandler:
         assistant.type = AssistantType.A2A
         assistant.hedging_config = hedging_config
 
-        result = get_request_handler(assistant, self._make_user(), "uuid")
+        with patch("codemie.rest_api.handlers.assistant_handlers.RemoteAgentConnections"):
+            result = get_request_handler(assistant, self._make_user(), "uuid")
 
         assert isinstance(result, A2AAssistantHandler)
         assert not isinstance(result, HedgedAssistantHandler)

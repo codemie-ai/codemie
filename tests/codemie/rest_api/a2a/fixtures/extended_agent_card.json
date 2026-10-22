@@ -1,0 +1,65 @@
+{
+  "name": "Recipe Agent (extended)",
+  "description": "Helps with cooking questions",
+  "supportedInterfaces": [
+    {
+      "url": "https://agent.example.com/v1/a2a/assistants/abc",
+      "protocolBinding": "JSONRPC",
+      "protocolVersion": "1.0"
+    }
+  ],
+  "provider": {
+    "organization": "Example Org",
+    "url": "https://example.com"
+  },
+  "version": "1.0.0",
+  "documentationUrl": "https://example.com/docs",
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": false,
+    "extendedAgentCard": true
+  },
+  "securitySchemes": {
+    "bearer": {
+      "httpAuthSecurityScheme": {
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    }
+  },
+  "securityRequirements": [
+    {
+      "schemes": {
+        "bearer": {
+          "list": []
+        }
+      }
+    }
+  ],
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "skills": [
+    {
+      "id": "conversation",
+      "name": "Conversation",
+      "description": "General conversation ability",
+      "tags": [
+        "chat",
+        "general"
+      ],
+      "examples": [
+        "What can I cook with rice?"
+      ],
+      "inputModes": [
+        "text/plain"
+      ],
+      "outputModes": [
+        "text/plain"
+      ]
+    }
+  ]
+}

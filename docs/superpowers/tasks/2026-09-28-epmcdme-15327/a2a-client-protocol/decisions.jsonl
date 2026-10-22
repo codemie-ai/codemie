@@ -1,0 +1,4 @@
+{"ts":"2026-09-30T08:27:45Z","gate_id":"spec.approved","mode":"hitl","verdict":{"decision":"approve","rationale":"User approved spec at gate","follow_ups":[],"confidence":"high","source":"hitl"},"escalated":false}
+{"ts":"2026-09-30T08:30:00Z","gate_id":"plan.approved","mode":"hitl","verdict":{"decision":"approve","rationale":"User approved plan at gate","follow_ups":[],"confidence":"high","source":"hitl"},"escalated":false}
+{"ts":"2026-09-30T09:07:24Z","gate_id":"code-review.final","mode":"hitl","verdict":{"decision":"request-changes","rationale":"User chose request-changes: fix CR-001, CR-002, CR-003","follow_ups":[],"confidence":"high","source":"hitl"},"escalated":false}
+{"ts":"2026-09-30T09:21:52Z","gate_id":"code-review.check","mode":"hitl","verdict":{"decision":"approve","rationale":"User approved check round; CR-001..003 resolved","follow_ups":[],"confidence":"high","source":"hitl"},"escalated":false}

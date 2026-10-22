@@ -1,0 +1,15 @@
+{
+  "jsonrpc": "2.0",
+  "id": "req-5",
+  "error": {
+    "code": -32700,
+    "message": "Invalid JSON payload",
+    "data": [
+      {
+        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+        "reason": "JSON_PARSE_ERROR",
+        "domain": "a2a-protocol.org"
+      }
+    ]
+  }
+}

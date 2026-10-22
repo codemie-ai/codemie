@@ -1,0 +1,19 @@
+{
+  "jsonrpc": "2.0",
+  "id": "req-2",
+  "result": {
+    "artifactUpdate": {
+      "taskId": "43667960-d455-4453-b0cf-1bae4955270d",
+      "contextId": "c295ea44-7543-4f78-b524-7a38915ad6e4",
+      "artifact": {
+        "artifactId": "9b2d7c1e-3a4f-4e5d-8c6b-7a8f9e0d1c2b",
+        "name": "Answer",
+        "parts": [
+          {
+            "text": "Climate change is a long-term shift in temperatures."
+          }
+        ]
+      }
+    }
+  }
+}

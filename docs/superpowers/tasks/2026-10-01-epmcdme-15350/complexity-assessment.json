@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "task": "Add A2A support to demo test agents, verify CodeMie A2A integration in both directions including auth and failure cases, write wrapper guide, update docs, record demo video (EPMCDME-15350); in this repo mostly documentation.",
+  "generated": "2026-10-01T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 15,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "requirements_clarity",
+      "reason": "Target location of 'existing documentation' (AC 6) is ambiguous; no user-facing A2A docs exist in this repo. Most deliverables (agent A2A interface, wrapper guide example, video) live in sibling ai-run-demo-agents repo and depend on in-progress EPMCDME-15348. Scope split between repos must be decided first. Scored this repo's slice only; a whole-ticket view would not be lower."
+    }
+  ],
+  "red_flags_applied": [
+    "Requirements Clarity: ambiguous documentation target and cross-repo ownership of deliverables (open design decision)"
+  ],
+  "split_recommendation": null
+}

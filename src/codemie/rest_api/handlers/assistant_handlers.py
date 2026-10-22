@@ -13,7 +13,9 @@
 # limitations under the License.
 
 import asyncio
+import contextvars
 import json
+import threading
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -49,8 +51,24 @@ from codemie.core.models import (
 )
 from codemie.core.routing_info import RoutingInfo
 from codemie.core.thread import CancellationReason, ThreadedGenerator, finalize_thoughts
-from codemie.rest_api.a2a.client.remote_agent_connection import RemoteAgentConnections, TaskCallbackArg
-from codemie.rest_api.a2a.types import Task, SendTaskRequest, SendTaskStreamingRequest, AgentCard, TaskState
+from codemie.rest_api.a2a.client.remote_agent_connection import (
+    RemoteAgentConnections,
+    TaskCallbackArg,
+    is_final_update,
+)
+from codemie.rest_api.a2a.types import (
+    A2AClientError,
+    A2AProtocolVersionError,
+    AgentCard,
+    AgentCardInterfaceError,
+    Message,
+    SendMessageRPCRequest,
+    SendStreamingMessageRPCRequest,
+    Task,
+    TaskArtifactUpdateEvent,
+    TaskState,
+    get_jsonrpc_url,
+)
 from codemie.rest_api.a2a.utils import convert_to_task_request, convert_to_base_model_response
 from codemie.rest_api.models.assistant import Assistant, AssistantType
 from codemie.rest_api.models.base import ConversationStatus
@@ -1322,8 +1340,20 @@ class A2AAssistantHandler(AssistantRequestHandler):
     def __init__(self, assistant: Assistant, user: User, request_uuid: str):
         super().__init__(assistant, user, request_uuid)
         self.agent_card = assistant.agent_card
-        self.remote_connection = RemoteAgentConnections(
-            agent_card=self.agent_card,
+        try:
+            self.remote_connection = RemoteAgentConnections(
+                agent_card=self.agent_card,
+            )
+        except ValueError as e:
+            raise self._unusable_card_error(e) from e
+
+    @staticmethod
+    def _unusable_card_error(e: ValueError) -> ExtendedHTTPException:
+        return ExtendedHTTPException(
+            code=status.HTTP_400_BAD_REQUEST,
+            message="Remote A2A agent is not usable",
+            details=str(e),
+            help="Re-register the remote agent so its card declares a JSON-RPC interface (A2A protocol v1.0).",
         )
 
     @pyroscope_profile(
@@ -1357,14 +1387,18 @@ class A2AAssistantHandler(AssistantRequestHandler):
         self._populate_conversation_history(request)
 
         task_request = convert_to_task_request(request, raw_request)
-        logger.debug(f"Call agent. Agent: {self.agent_card.name}. Url: {self.agent_card.url}. Request: {task_request}")
+        try:
+            agent_url = get_jsonrpc_url(self.agent_card)
+        except AgentCardInterfaceError as e:
+            raise self._unusable_card_error(e) from e
+        logger.debug(f"Call agent. Agent: {self.agent_card.name}. Url: {agent_url}. Request: {task_request}")
         if self.agent_card.capabilities.streaming:
             return self._handle_a2a_stream(request, task_request)
         else:
             return self._handle_a2a_sync(request, task_request)
 
     def _handle_a2a_stream(
-        self, request: AssistantChatRequest, task_request: SendTaskStreamingRequest
+        self, request: AssistantChatRequest, task_request: SendStreamingMessageRPCRequest
     ) -> StreamingResponse:
         execution_start = time()
 
@@ -1373,38 +1407,20 @@ class A2AAssistantHandler(AssistantRequestHandler):
             request_uuid=self.request_uuid, user_id=self.user.id, conversation_id=request.conversation_id
         )
 
+        answer_streamed = False
+        remote_responded = threading.Event()
+        version_error: list[A2AProtocolVersionError] = []
+
         # Define a callback that will format and send responses to the generator_queue
         def task_callback(task_arg: TaskCallbackArg, agent_card: AgentCard):
-            # Format the response based on the type of update
-            response_data = None
-            if hasattr(task_arg, 'status') and task_arg.status and task_arg.status.message:
-                text_parts = self._extract_text_parts_from_message(task_arg)
-                if text_parts:
-                    thought_message = ' '.join(text_parts)
-                    input_text = ''
-                    if task_arg.status.state == TaskState.SUBMITTED:
-                        input_text = thought_message
-                        thought_message = ''
-                    response_data = StreamedGenerationResult(
-                        thought=Thought(
-                            id=str(uuid.uuid4()),
-                            author_name=self.agent_card.name,
-                            author_type='Agent',
-                            in_progress=True,
-                            message=thought_message,
-                            input_text=input_text,
-                        )
-                    )
-            # Handle artifact updates
-            elif hasattr(task_arg, 'artifact'):
-                text_parts = self._extract_text_parts_from_artifacts(task_arg)
-                if text_parts:
-                    response_data = StreamedGenerationResult(
-                        generated=' '.join(text_parts),
-                        time_elapsed=time() - execution_start,
-                        generated_chunk="",
-                        last=True,
-                    )
+            nonlocal answer_streamed
+            status_ = getattr(task_arg, "status", None)
+            # RemoteAgentConnections first reports a local SUBMITTED placeholder carrying the outgoing message
+            if not (status_ and status_.message is task_request.params.message):
+                remote_responded.set()
+            response_data = self._format_stream_update(task_arg, execution_start, answer_streamed)
+            if response_data and response_data.generated_chunk:
+                answer_streamed = True
             logger.debug(
                 f"Streaming response from agent. Agent: {agent_card.name}. "
                 f"Response: {response_data}. "
@@ -1413,8 +1429,8 @@ class A2AAssistantHandler(AssistantRequestHandler):
             # Send the formatted response to the generator queue
             if response_data:
                 generator_queue.send(response_data.model_dump_json())
-            if hasattr(task_arg, "final") and task_arg.final:
-                if response_data and not response_data.last and response_data.thought:
+            if is_final_update(task_arg):
+                if response_data and not response_data.last and response_data.thought and not answer_streamed:
                     # Workaround to extract final thoughts to GenerationResult if agent require additional input
                     generator_queue.send(
                         StreamedGenerationResult(
@@ -1427,49 +1443,181 @@ class A2AAssistantHandler(AssistantRequestHandler):
                 generator_queue.close()
             return task_arg
 
-        # Create an async generator that will yield responses from the queue
-        async def stream_generator():
-            await self.remote_connection.send_task(task_request.params, task_callback)
-
-            response = StreamedGenerationResult()
-            while True:
-                value = generator_queue.queue.get()
-                if value is not StopIteration:
-                    generation_result = json.loads(value, object_hook=lambda d: SimpleNamespace(**d))
-                    if generation_result.generated is not None:
-                        response = generation_result
+        def run_remote() -> None:
+            try:
+                asyncio.run(self.remote_connection.send_task(task_request.params, task_callback))
+            except A2AProtocolVersionError as e:
+                logger.error(f"Remote A2A agent rejected the protocol version. Agent: {self.agent_card.name}. {e}")
+                if remote_responded.is_set():
+                    self._send_stream_error(generator_queue, e, execution_start)
                 else:
-                    self.save_chat_history(
-                        ChatHistoryData(
-                            execution_start=execution_start,
-                            request=request,
-                            response=response.generated,
-                            thoughts=finalize_thoughts(generator_queue.thoughts),
-                        )
-                    )
-                    break
-                yield value
-                generator_queue.queue.task_done()
+                    version_error.append(e)
+            except A2AClientError as e:
+                logger.error(f"Remote A2A agent call failed. Agent: {self.agent_card.name}. Error: {e}")
+                self._send_stream_error(generator_queue, e, execution_start)
+            except Exception as e:
+                logger.error(f"Unexpected error running remote A2A agent. Agent: {self.agent_card.name}. Error: {e}")
+                self._send_stream_error(generator_queue, e, execution_start)
+            finally:
+                # A remote stream may end without a final update; never leave the consumer waiting.
+                generator_queue.close()
+                remote_responded.set()
 
-        return StreamingResponse(content=stream_generator(), media_type=NDJSON_MEDIA_TYPE)
+        # The remote call runs on its own thread so chunks reach the UI while it runs and the server loop is free.
+        threading.Thread(target=contextvars.copy_context().run, args=(run_remote,), daemon=True).start()
+
+        # Wait for the first remote frame (or the end of the call): a version rejection arrives before any frame,
+        # while an HTTP status can still be returned.
+        remote_responded.wait()
+        if version_error:
+            raise ExtendedHTTPException(
+                code=status.HTTP_400_BAD_REQUEST,
+                message="Remote A2A agent does not support the required protocol version",
+                details=str(version_error[0]),
+                help="The remote agent must implement A2A protocol v1.0 (JSON-RPC binding).",
+            ) from version_error[0]
+
+        return StreamingResponse(
+            content=self._drain_stream(generator_queue, request, execution_start), media_type=NDJSON_MEDIA_TYPE
+        )
+
+    async def _drain_stream(
+        self, generator_queue: ThreadedGenerator, request: AssistantChatRequest, execution_start: float
+    ):
+        """Yield queued chat chunks as they arrive, then persist the chat history."""
+        response = StreamedGenerationResult()
+        answer_chunks: list[str] = []
+        final_sent = False
+        while True:
+            value = await asyncio.to_thread(generator_queue.queue.get)
+            if value is not StopIteration:
+                generation_result = json.loads(value, object_hook=lambda d: SimpleNamespace(**d))
+                if generation_result.generated_chunk:
+                    answer_chunks.append(generation_result.generated_chunk)
+                if generation_result.generated is not None:
+                    response = generation_result
+                final_sent = final_sent or bool(generation_result.last)
+            else:
+                if answer_chunks and not final_sent:
+                    # The UI ends the message at the first `last` chunk, so send exactly one, at the end
+                    response = StreamedGenerationResult(
+                        generated="".join(answer_chunks),
+                        generated_chunk="",
+                        time_elapsed=time() - execution_start,
+                        last=True,
+                    )
+                    yield response.model_dump_json()
+                self.save_chat_history(
+                    ChatHistoryData(
+                        execution_start=execution_start,
+                        request=request,
+                        response=response.generated,
+                        thoughts=finalize_thoughts(generator_queue.thoughts),
+                    )
+                )
+                break
+            yield value
+            generator_queue.queue.task_done()
+
+    @staticmethod
+    def _send_stream_error(generator_queue: ThreadedGenerator, error: Exception, execution_start: float) -> None:
+        generator_queue.send(
+            StreamedGenerationResult(
+                generated=f"Error: {error}",
+                time_elapsed=time() - execution_start,
+                generated_chunk="",
+                last=True,
+            ).model_dump_json()
+        )
+
+    def _format_stream_update(
+        self, task_arg: TaskCallbackArg, execution_start: float, answer_streamed: bool = False
+    ) -> StreamedGenerationResult | None:
+        """Map a remote update to a chat chunk: status text is a thought, artifact / message text is the answer."""
+        if isinstance(task_arg, Message):
+            return self._answer_chunk(self._text_parts(task_arg.parts), execution_start, answer_streamed)
+        if isinstance(task_arg, TaskArtifactUpdateEvent):
+            return self._answer_chunk(
+                self._text_parts(task_arg.artifact.parts),
+                execution_start,
+                answer_streamed and not task_arg.append,
+            )
+
+        status_ = task_arg.status
+        if status_.message:
+            text_parts = self._extract_text_parts_from_message(task_arg)
+            if text_parts:
+                thought_message = " ".join(text_parts)
+                input_text = ""
+                if status_.state == TaskState.SUBMITTED:
+                    input_text = thought_message
+                    thought_message = ""
+                return StreamedGenerationResult(
+                    thought=Thought(
+                        id=str(uuid.uuid4()),
+                        author_name=self.agent_card.name,
+                        author_type="Agent",
+                        in_progress=True,
+                        message=thought_message,
+                        input_text=input_text,
+                    )
+                )
+        if isinstance(task_arg, Task) and task_arg.artifacts and is_final_update(task_arg) and not answer_streamed:
+            # A final Task snapshot carries the answer as artifacts, unless they already streamed
+            return self._answer_chunk(
+                [text for artifact in task_arg.artifacts for text in self._text_parts(artifact.parts)],
+                execution_start,
+                False,
+            )
+        return None
+
+    @staticmethod
+    def _answer_chunk(texts: list[str], execution_start: float, separate: bool) -> StreamedGenerationResult | None:
+        """An incremental answer chunk; `last` is sent once, when the stream ends."""
+        if not texts:
+            return None
+        text = " ".join(texts)
+        return StreamedGenerationResult(
+            generated_chunk=f"\n\n{text}" if separate else text,
+            time_elapsed=time() - execution_start,
+            last=False,
+        )
+
+    @staticmethod
+    def _text_parts(parts) -> list[str]:
+        return [part.text for part in parts if part.text is not None]
 
     def _extract_text_parts_from_message(self, task_arg: TaskCallbackArg) -> list[str]:
-        if hasattr(task_arg, 'status') and task_arg.status and task_arg.status.message:
-            message_parts = task_arg.status.message.parts
-            if message_parts:
-                return [part.text for part in message_parts if hasattr(part, 'text')]
+        status_ = getattr(task_arg, "status", None)
+        if status_ and status_.message and status_.message.parts:
+            return self._text_parts(status_.message.parts)
         return []
 
-    def _extract_text_parts_from_artifacts(self, task_arg):
-        if hasattr(task_arg, 'artifact') and task_arg.artifact and task_arg.artifact.parts:
-            return [part.text for part in task_arg.artifact.parts if hasattr(part, 'text')]
-        return []
-
-    def _handle_a2a_sync(self, request: AssistantChatRequest, task_request: SendTaskRequest) -> BaseModelResponse:
+    def _handle_a2a_sync(self, request: AssistantChatRequest, task_request: SendMessageRPCRequest) -> BaseModelResponse:
         execution_start = time()
-        task_response: Task = asyncio.run(self.remote_connection.send_task(task_request.params, None))
+        try:
+            result = asyncio.run(self.remote_connection.send_task(task_request.params, None))
+        except A2AProtocolVersionError as e:
+            raise ExtendedHTTPException(
+                code=status.HTTP_400_BAD_REQUEST,
+                message="Remote A2A agent does not support the required protocol version",
+                details=str(e),
+                help="The remote agent must implement A2A protocol v1.0 (JSON-RPC binding).",
+            ) from e
+        except A2AClientError as e:
+            raise ExtendedHTTPException(
+                code=status.HTTP_400_BAD_REQUEST,
+                message="Remote A2A agent call failed",
+                details=str(e),
+            ) from e
+        if result is None:
+            raise ExtendedHTTPException(
+                code=status.HTTP_502_BAD_GATEWAY,
+                message="Remote A2A agent returned no result",
+                details="The remote agent answered neither with a task nor with a message.",
+            )
 
-        model_response = convert_to_base_model_response(task_response)
+        model_response = convert_to_base_model_response(result)
         self.save_chat_history(
             ChatHistoryData(
                 execution_start=execution_start, request=request, response=model_response.generated, thoughts=[]

@@ -37,6 +37,7 @@ Detailed project guidance lives under `.ai-run/guides/`, which is the source of 
 | Confluence | `.ai-run/guides/integration/confluence-integration.md` | Confluence integration |
 | Jira | `.ai-run/guides/integration/jira-integration.md` | Jira integration |
 | X-ray | `.ai-run/guides/integration/xray-integration.md` | X-ray integration |
+| A2A | `.ai-run/guides/integration/a2a-integration.md` | A2A protocol version decision and wire-shape markers |
 | Google Docs | `.ai-run/guides/integration/google-docs-integration.md` | Google Docs integration |
 | MCP | `.ai-run/guides/integration/mcp-integration.md` | MCP configuration and tools |
 | CLI Analytics Storage | `.ai-run/guides/integration/cli-analytics-storage.md` | PostgreSQL storage for OTel CLI analytics: settings, sizing, operations |

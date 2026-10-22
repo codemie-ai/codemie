@@ -1,0 +1,17 @@
+{
+  "jsonrpc": "2.0",
+  "id": "req-1",
+  "result": {
+    "message": {
+      "messageId": "0f0d2e1a-6c1b-4f0e-9d0a-1d2c3b4a5e6f",
+      "contextId": "c295ea44-7543-4f78-b524-7a38915ad6e4",
+      "taskId": "43667960-d455-4453-b0cf-1bae4955270d",
+      "role": "ROLE_AGENT",
+      "parts": [
+        {
+          "text": "Climate change is a long-term shift in temperatures."
+        }
+      ]
+    }
+  }
+}

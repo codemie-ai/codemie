@@ -1,0 +1,35 @@
+{
+  "decision": "approve",
+  "rationale": "Both prior blocking findings verified against current source: CR-001 (legacy preferredTransport and additionalInterfaces now carried into supportedInterfaces) and CR-002 (AgentCardInterfaceError mapped to 400 at the handler constructor, with an unpatched test). Tests were not executed here; Stage 7 owns execution. 0 deferred, no new findings discovered by design.",
+  "confidence": "high",
+  "risk_flags": ["data-contract", "public-api", "breaking-change"],
+  "business_review": [
+    {"kind": "spec", "item": "R1: legacy url synthesises JSONRPC interface; v1.0 wins; url not re-emitted", "status": "pass", "notes": "types.py validator and tests"},
+    {"kind": "spec", "item": "R2: validator applies to client card resolver; bedrock fail-fast unchanged", "status": "pass", "notes": "resolver legacy test added"},
+    {"kind": "spec", "item": "R3: typed ValueError subclass mapped to client error, not 500", "status": "partial", "notes": "mapping in process_request is unreachable in production; see CR-002"},
+    {"kind": "spec", "item": "R4: v0.3 method names keep -32600 with 1.0 hint", "status": "pass", "notes": "router message and test"},
+    {"kind": "spec", "item": "R5: no agent.json route added", "status": "pass", "notes": "no route changes"},
+    {"kind": "spec", "item": "R6: legacy NULL-owner a2a_tasks fail closed; legacy parts parse; documented", "status": "pass", "notes": "task manager and types tests"},
+    {"kind": "spec", "item": "R7: verify/fix slice-2 streaming test near l.521", "status": "pending-stage-7", "notes": "needs execution in Stage 7"},
+    {"kind": "spec", "item": "Non-goals respected", "status": "pass", "notes": "diff limited to types, handler, router message, tests, guide"},
+    {"kind": "spec", "item": "AC1: url-only card yields one JSONRPC interface", "status": "pass", "notes": "covered by test"},
+    {"kind": "spec", "item": "AC2: url plus supportedInterfaces keeps interfaces", "status": "pass", "notes": "covered by test"},
+    {"kind": "spec", "item": "AC3: legacy stored card loads through PydanticType", "status": "pass", "notes": "covered by test"},
+    {"kind": "spec", "item": "AC4: client resolver accepts v0.3 card with url", "status": "pass", "notes": "covered by test"},
+    {"kind": "spec", "item": "AC5: no JSON-RPC interface gives typed error and 4xx not 500", "status": "partial", "notes": "test mocks RemoteAgentConnections; real constructor raises bare error; see CR-002"},
+    {"kind": "spec", "item": "AC6: v0.3 method returns -32600 naming version 1.0", "status": "pass", "notes": "covered by test"},
+    {"kind": "spec", "item": "AC7: NULL-owner row yields not-found; kind parts parse", "status": "pass", "notes": "covered by tests"},
+    {"kind": "spec", "item": "AC8: streaming test passes in WSL with -n 0", "status": "pending-stage-7", "notes": "execution is Stage 7 evidence"},
+    {"kind": "spec", "item": "AC9: guide documents compat behaviour", "status": "pass", "notes": "section added"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "4 subjects in range all match the documented EPMCDME-####: Description format"},
+    {"kind": "code-quality", "status": "pass", "notes": "changed src files use typed signatures and modern unions; no documented code-quality rule broken; no new source files needing license headers"},
+    {"kind": "security", "status": "pass", "notes": "no auth, secret logging, or lossy input normalization found; legacy url normalization only remaps a field and validation still runs; error details are str(e) of a fixed message"}
+  ],
+  "findings": [],
+  "finding_status": [
+    {"id": "CR-001", "status": "resolved", "notes": "types.py:393-402 reads preferredTransport (default JSONRPC) and appends additionalInterfaces; get_jsonrpc_url matches case-insensitively; tests added"},
+    {"id": "CR-002", "status": "resolved", "notes": "assistant_handlers.py:1333-1338 maps AgentCardInterfaceError to 400 in __init__ via shared helper; unpatched constructor test added"}
+  ]
+}

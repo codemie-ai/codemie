@@ -13,10 +13,10 @@
 # limitations under the License.
 
 import json
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, status, Depends, Request, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
 
 from codemie.configs import logger
@@ -26,17 +26,22 @@ from codemie.rest_api.a2a.client.card_resolver import A2ACardResolver
 from codemie.rest_api.a2a.server.codemie_task_manager import CodemieTaskManager
 from codemie.rest_api.a2a.types import (
     A2ARequest,
-    AgentCard,
-    SendTaskRequest,
     A2ARequestBody,
-    JSONRPCResponse,
+    AgentCard,
+    InternalError,
+    InvalidParamsError,
     InvalidRequestError,
     JSONParseError,
-    InternalError,
-    GetTaskRequest,
-    SendTaskStreamingRequest,
+    JSONRPCError,
+    JSONRPCResponse,
+    MethodNotFoundError,
+    SendStreamingMessageRPCRequest,
+    VersionNotSupportedError,
+    bad_request,
+    error_info,
 )
-from codemie.rest_api.a2a.utils import assistant_to_agent_card
+from codemie.rest_api.a2a.utils import assistant_to_agent_card, public_agent_card_dict
+from codemie.rest_api.a2a.version import A2A_PROTOCOL_VERSION, is_supported_protocol_version
 from codemie.rest_api.models.assistant import Assistant
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
@@ -47,12 +52,31 @@ router = APIRouter(
     dependencies=[],
 )
 
+A2A_VERSION_HEADER = "A2A-Version"
+SUPPORTED_METHODS = frozenset({"SendMessage", "SendStreamingMessage", "GetTask", "CancelTask", "GetExtendedAgentCard"})
+
+# Swagger documentation for the raw-body endpoint (the request body is parsed by hand, see execute_a2a_request).
+_EXECUTE_OPENAPI_EXTRA = {
+    "parameters": [
+        {
+            "name": A2A_VERSION_HEADER,
+            "in": "header",
+            "required": True,
+            "schema": {"type": "string", "default": A2A_PROTOCOL_VERSION},
+            "description": "A2A protocol version (Major.Minor). Requests without a supported version are rejected.",
+        }
+    ],
+    "requestBody": {
+        "required": True,
+        "content": {"application/json": {"schema": A2ARequestBody.model_json_schema()}},
+    },
+}
+
 
 @router.get(
-    "/assistants/{assistant_id}/.well-known/agent.json",
+    "/assistants/{assistant_id}/.well-known/agent-card.json",
     status_code=status.HTTP_200_OK,
-    response_model=AgentCard,
-    response_model_by_alias=True,
+    response_model=None,
 )
 async def get_assistant_agent_card(assistant_id: str, request: Request):
     """
@@ -78,7 +102,7 @@ async def get_assistant_agent_card(assistant_id: str, request: Request):
                 help="Please ensure you have the correct permissions to use this assistant.",
             )
 
-    return assistant_to_agent_card(assistant, request)
+    return JSONResponse(public_agent_card_dict(assistant_to_agent_card(assistant, request)))
 
 
 @router.post(
@@ -86,15 +110,16 @@ async def get_assistant_agent_card(assistant_id: str, request: Request):
     status_code=status.HTTP_200_OK,
     summary="Execute A2A Request",
     description="Endpoint to process requests to assistant",
+    openapi_extra=_EXECUTE_OPENAPI_EXTRA,
 )
-async def execute_a2a_request(assistant_id: str, request_body: A2ARequestBody, user: User = Depends(authenticate)):
+async def execute_a2a_request(assistant_id: str, request: Request, user: User = Depends(authenticate)):
     """
-    Process A2A request with explicit request body model.
-    This is an alternative to the main endpoint that provides better Swagger UI integration.
-    """
-    # Convert request body to dict
-    body = request_body.model_dump()
+    Process an A2A JSON-RPC request.
 
+    The raw body is parsed here (not by a FastAPI body model) so that every malformed input is answered with a
+    JSON-RPC error instead of a FastAPI 422. Order: authentication, assistant lookup and access check, version
+    gate, JSON parsing, envelope check, method lookup, params validation.
+    """
     # Get assistant by ID first
     assistant = Assistant.find_by_id(assistant_id)
 
@@ -112,27 +137,48 @@ async def execute_a2a_request(assistant_id: str, request_body: A2ARequestBody, u
             help="Please ensure you have the correct permissions to use this assistant.",
         )
 
-    try:
-        # Parse the request body as an A2A request
-        json_rpc_request = A2ARequest.validate_python(body)
+    if not _is_supported_version(_requested_version(request)):
+        return _error_response(VersionNotSupportedError())
 
-        # Initialize task manager
+    try:
+        body = json.loads(await request.body())
+    except ValueError:  # JSONDecodeError and UnicodeDecodeError are both ValueErrors
+        return _error_response(JSONParseError())
+
+    envelope_error = _check_envelope(body)
+    if envelope_error:
+        return _error_response(envelope_error, _request_id(body))
+    if body["method"] not in SUPPORTED_METHODS:
+        return _error_response(MethodNotFoundError(), _request_id(body))
+
+    try:
+        json_rpc_request = A2ARequest.validate_python(body)
+    except ValidationError as e:
+        return _error_response(_invalid_params(e), _request_id(body))
+
+    try:
         task_manager = CodemieTaskManager(assistant=assistant, user=user)
 
-        # Currently we only support SendTaskRequest, other request types will be added later
-        if isinstance(json_rpc_request, GetTaskRequest):
-            response = await task_manager.on_get_task(json_rpc_request)
-        elif isinstance(json_rpc_request, SendTaskRequest):
-            response = await task_manager.on_send_task(json_rpc_request)
-        elif isinstance(json_rpc_request, SendTaskStreamingRequest):
-            response = await task_manager.on_send_task_subscribe(json_rpc_request)
-        else:
-            logger.warning(f"Unexpected request type: {type(json_rpc_request)}")
-            raise ValueError(f"Unexpected request type: {type(request_body.model_dump())}")
-        return JSONResponse(response.model_dump(exclude_none=True))
+        # "SendStreamingMessage" is deliberately absent from the dispatch table below — it
+        # returns an SSE stream rather than a single JSON body.
+        if isinstance(json_rpc_request, SendStreamingMessageRPCRequest):
+            return StreamingResponse(
+                _sse_frames(task_manager, json_rpc_request),
+                media_type="text/event-stream",
+            )
+
+        dispatch = {
+            "SendMessage": lambda tm, req: tm.on_send_task(req),
+            "GetTask": lambda tm, req: tm.on_get_task(req),
+            "CancelTask": lambda tm, req: tm.on_cancel_task(req),
+            "GetExtendedAgentCard": lambda tm, req: tm.on_get_extended_agent_card(req, request),
+        }
+        response = await dispatch[json_rpc_request.method](task_manager, json_rpc_request)
+        return JSONResponse(response.model_dump(exclude_none=True, by_alias=True))
 
     except Exception as e:
-        return _handle_exception(e)
+        logger.error(f"Unhandled exception: {e}")
+        return _error_response(InternalError(), json_rpc_request.id)
 
 
 @router.get(
@@ -157,7 +203,7 @@ async def fetch_remote_assistant(
         user: The authenticated user making the request
 
     Returns:
-        AgentCard: The fetched agent card
+        AgentCard: The fetched agent card (including the CodeMie-internal fields, which the UI stores)
     """
     card_resolver = A2ACardResolver()
     success, agent_card, error_message = await card_resolver.fetch_agent_card(
@@ -174,15 +220,66 @@ async def fetch_remote_assistant(
     return agent_card
 
 
-def _handle_exception(e: Exception) -> JSONResponse:
-    """Handle exceptions during request processing"""
-    if isinstance(e, json.decoder.JSONDecodeError):
-        json_rpc_error = JSONParseError()
-    elif isinstance(e, ValidationError):
-        json_rpc_error = InvalidRequestError(data=json.loads(e.json()))
-    else:
-        logger.error(f"Unhandled exception: {e}")
-        json_rpc_error = InternalError()
+def _requested_version(request: Request) -> str:
+    """The A2A-Version header, else the query parameter; missing/empty means 0.3 (spec section 3.6)."""
+    value = request.headers.get(A2A_VERSION_HEADER) or request.query_params.get(A2A_VERSION_HEADER)
+    return (value or "0.3").strip()
 
-    response = JSONRPCResponse(id=None, error=json_rpc_error)
-    return JSONResponse(response.model_dump(exclude_none=True), status_code=400)
+
+def _is_supported_version(version: str) -> bool:
+    return is_supported_protocol_version(version)
+
+
+def _check_envelope(body: Any) -> JSONRPCError | None:
+    """Return -32600 unless the body is a JSON-RPC 2.0 request object with a method name."""
+    problems = []
+    if not isinstance(body, dict):
+        problems.append(("body", "Request must be a JSON object"))
+    else:
+        if body.get("jsonrpc") != "2.0":
+            problems.append(("jsonrpc", "Must be exactly 2.0"))
+        if not isinstance(body.get("method"), str):
+            problems.append(("method", "A method name is required"))
+        if not _valid_request_id(body.get("id")):
+            problems.append(("id", "Must be a string, a number or null"))
+    if not problems:
+        return None
+    return InvalidRequestError(
+        message=f"Invalid JSON-RPC 2.0 request. Supported A2A protocol version is {A2A_PROTOCOL_VERSION}.",
+        data=[error_info("INVALID_REQUEST"), bad_request(problems)],
+    )
+
+
+def _valid_request_id(value: Any) -> bool:
+    return value is None or (isinstance(value, (str, int)) and not isinstance(value, bool))
+
+
+def _request_id(body: Any) -> str | int | None:
+    request_id = body.get("id") if isinstance(body, dict) else None
+    return request_id if _valid_request_id(request_id) else None
+
+
+def _invalid_params(e: ValidationError) -> InvalidParamsError:
+    """-32602 with a google.rpc.BadRequest listing each offending field."""
+    violations = []
+    for err in e.errors():
+        location = [str(part) for part in err["loc"][1:] if part != "params"]  # loc[0] is the method tag
+        violations.append((".".join(location) or "params", err["msg"]))
+    return InvalidParamsError(data=[bad_request(violations)])
+
+
+def _error_response(error: JSONRPCError, request_id: str | int | None = None) -> JSONResponse:
+    """A JSON-RPC error body with HTTP 200 (JSON-RPC clients read the code from the body); `id` is null if unknown."""
+    body = {"jsonrpc": "2.0", "id": request_id, "error": error.model_dump(exclude_none=True)}
+    return JSONResponse(body)
+
+
+async def _sse_frames(task_manager: CodemieTaskManager, request: SendStreamingMessageRPCRequest):
+    """Yield each streamed JSON-RPC response as an SSE `data:` frame."""
+    try:
+        async for event in task_manager.on_send_streaming_message(request):
+            yield f"data: {json.dumps(event.model_dump(exclude_none=True, by_alias=True), default=str)}\n\n"
+    except Exception as e:
+        logger.error(f"Unhandled exception while streaming A2A response: {e}")
+        error = JSONRPCResponse(id=request.id, error=InternalError())
+        yield f"data: {json.dumps(error.model_dump(exclude_none=True, by_alias=True))}\n\n"

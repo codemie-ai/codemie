@@ -1,0 +1,47 @@
+{
+  "decision": "request-changes",
+  "rationale": "Acceptance lens found AC6 only partially met: the doc's UI registration steps, 24h token lifetime and non-bearer credential styles have no run evidence in verification-report.md (confirmed line 24). The wrapper guide also copies demo-agent code that is unverified and may drift; 0 deferred, 0 dismissed, edge-case lens returned nothing.",
+  "confidence": "medium",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "spec", "item": "AC1/AC2: both agents' cards fetched and called by CodeMie over protocol 1.0 (normal + streaming)", "status": "pass", "notes": "verification-report.md 1.1-1.3"},
+    {"kind": "spec", "item": "AC3: external A2A client discovers and calls a CodeMie assistant", "status": "pass", "notes": "verification-report.md 1.4"},
+    {"kind": "spec", "item": "AC4: auth failures, agent-stopped, malformed card, no-interface card verified", "status": "pass", "notes": "verification-report.md 2.1 and 2.2 carry real errors"},
+    {"kind": "spec", "item": "AC5: wrapper guide with agent-based example, both directions", "status": "pass", "notes": "docs/a2a-wrapper-guide.md sections 2-3 and 6"},
+    {"kind": "spec", "item": "AC6: integration doc covers setup, both directions, operations, limitations; every step executed", "status": "partial", "notes": "UI click path, 24h token lifetime and basic/API key/AWS credential styles lack run evidence"},
+    {"kind": "spec", "item": "AC7: factory-based video", "status": "na", "notes": "explicitly out of scope for this slice"},
+    {"kind": "spec", "item": "Doc references agents repo rather than copying agent code/details", "status": "partial", "notes": "wrapper guide reproduces executor/AgentCard snippets and SDK helper names not shown verified"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "4 subjects in range all match the documented EPMCDME-####: Description format"},
+    {"kind": "code-quality", "status": "pass", "notes": "change touches only markdown docs; no Python, typing, Ruff or license-header rules apply"},
+    {"kind": "security", "status": "pass", "notes": "docs-only change; pattern scan found no embedded credentials, tokens or keys"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "evidence",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "docs/a2a-integration.md",
+      "line": 39,
+      "title": "Documented steps lack run evidence (AC6)",
+      "problem": "The spec requires every step in the integration doc to have been executed during verification. verification-report.md line 24 states the UI registration click path was not re-run (doc section 2 steps 1-3), and there is no run evidence for the 24-hour token lifetime (line 39) or the bearer/basic/API key/AWS credential styles (line 49). The A2A_* timeout defaults are evidenced; the other defaults are not shown.",
+      "impact": "Story AC6 is only partially met; readers may follow unverified setup instructions or rely on unconfirmed claims about token lifetime and credential styles.",
+      "recommendation": "Run and record the UI registration path, the token lifetime and each credential style in verification-report.md, or remove or explicitly mark as unverified the claims that cannot be demonstrated."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "docs/a2a-wrapper-guide.md",
+      "line": 249,
+      "title": "Wrapper guide copies unverified demo-agent code",
+      "problem": "Sections 3.1, 3.2 and 4 (around lines 249-281, 313-321, 327) reproduce demo-agent executor and AgentCard code, SDK helper names and error text. The spec says code should appear only where it pins the mapping and agent details should be referenced from the agents repo; the verification report covers only wire output, not these snippets.",
+      "impact": "Snippets can drift or be wrong while EPMCDME-15348 (agent-side A2A) is unfinished, misleading developers adding a wrapper.",
+      "recommendation": "Trim snippets to the minimal mapping illustration and link to the agents repo for the full code, or verify each snippet against the agents repo and note the version it matches."
+    }
+  ],
+  "finding_status": []
+}

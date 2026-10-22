@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "task": "Add backward compatibility for legacy pre-v1.0 A2A agent cards (read-time url to supportedInterfaces normalisation, typed error), legacy a2a_tasks rows, and old-shape A2A clients (EPMCDME-15327 slice 4 of 4).",
+  "generated": "2026-09-30T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 18,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "requirements_clarity", "reason": "Open design decisions: read-time normalisation vs data migration, whether the server translates old method names and A2A-Version headers, and how legacy a2a_tasks rows with NULL owner should behave. The guide only says empty header means 0.3." },
+    { "dimension": "technical_risk", "reason": "Closest pattern is the existing AliasChoices and model_validator use in types.py, which covers the url mapping but not the wider failure surface. Legacy cards fail at ORM load time in PydanticType.process_result_value, affecting list, get, version and clone reads. Legacy ownership fails closed (security-adjacent). The enumerated legacy shapes have no test template, and the c9d8e7f6a5b4 migration is unverified without Postgres." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from M to L: enumerated legacy edge cases with no existing test template, and the security-adjacent task ownership check.",
+    "Requirements Clarity set to L: open design decisions (migration vs read-time, old-client translation)."
+  ],
+  "split_recommendation": null
+}

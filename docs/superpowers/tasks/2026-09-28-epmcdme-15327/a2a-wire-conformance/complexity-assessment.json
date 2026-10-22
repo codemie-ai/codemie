@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "task": "Bring CodeMie's in-house A2A server and client to exact A2A v1.0.1 JSON-RPC wire shapes with legacy read-time normalisation, version gate, typed errors and rewritten contract tests.",
+  "generated": "2026-09-30T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 24,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Protocol types module, router, task manager, client trio (client, remote_agent_connection, card_resolver), utils converters, A2AAssistantHandler and assistant model card storage all change; new envelope unions and a new client error abstraction. All within one repo and one subsystem family, so XL rather than XXL." },
+    { "dimension": "technical_risk", "reason": "No exact precedent (matching an external proto contract). Closest pattern is slice 3/4 card url normalisation, which only covers top-level url. Persistence trap: PydanticListType silently drops items failing validation, table=True models skip validators, and model_dump() without alias/exclude means Field(exclude=True) would strip stored card internals. Version gate and securitySchemes are security-adjacent, and the AC enumerates edge and error cases (-32009/-32601/-32602, legacy JSONB variants) with no existing parameterized template, so risk is bumped." },
+    { "dimension": "file_change_estimate", "reason": "About 10 source files and about 10 test files modified (about 3,450 lines of existing tests to rewrite) plus a new fixtures directory and two docs: 16+ files touching project test structure." },
+    { "dimension": "affected_layers", "reason": "API (router), Service (task manager, handler), DB persistence (JSONB read normalisation, no schema change or migration), External (remote A2A agents via httpx/SSE). Four layers but no schema migration, so L." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped to XL: security-adjacent work (A2A-Version gate, securitySchemes advertisement, removal of leaked dev credential) plus enumerated edge/error cases with no existing defensive test template",
+    "Component Scope XL: touches shared protocol types consumed by server, client, handler and assistant model"
+  ],
+  "split_recommendation": null
+}

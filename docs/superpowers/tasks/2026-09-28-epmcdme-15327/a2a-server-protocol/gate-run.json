@@ -1,0 +1,8 @@
+{"schema":1,"branch":"EPMCDME-15327_upgrade-a2a-protocol","head":"2210a191801ecf5bcbb27547c336b2d23554aaab","runner":"poetry","started_at":"2026-09-30T07:56:23Z","completed_at":"2026-09-30T08:01:20Z","status":"PASSED","drift_detected":false,
+"gates":[
+{"id":"lint","source":"guide","status":"PASS","duration_ms":5000,"command":"poetry run ruff check <changed paths> (WSL Ubuntu)","exit_code":0},
+{"id":"format","source":"guide","status":"PASS","duration_ms":3000,"command":"poetry run ruff format --check <changed paths> (WSL Ubuntu)","exit_code":0,"notes":"19 files already formatted"},
+{"id":"license","source":"guide","status":"PASS","duration_ms":5000,"command":"poetry run python scripts/license_headers/check_license_headers.py --check --quiet","exit_code":0,"notes":"2292 files, 0 missing headers"},
+{"id":"unit","source":"guide","status":"PASS","duration_ms":106510,"command":"poetry run pytest tests/codemie/rest_api/a2a/server tests/codemie/rest_api/a2a/test_types.py tests/codemie/rest_api/a2a/test_utils.py tests/codemie/rest_api/a2a/test_version.py tests/codemie/rest_api/routers/test_a2a_router.py -n 0 -q -p no:cacheprovider","exit_code":0,"notes":"85 passed"},
+{"id":"client-tests","source":"guide","status":"N/A","command":"tests/codemie/rest_api/a2a/client/","notes":"Excluded: slice 3 scope, known failing"}
+],"failures":{}}

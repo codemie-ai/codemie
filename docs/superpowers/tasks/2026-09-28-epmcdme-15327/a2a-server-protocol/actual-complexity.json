@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "generated": "2026-09-30T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 22,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 14,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Router dispatch table, CodemieTaskManager, base TaskManager, A2A types, utils (agent card), version marker: 4+ components with a public wire-contract change (method renames, Part discriminator removal, taskId alias)." },
+    { "dimension": "technical_risk", "reason": "Task ownership (assistant_id + user_id) and terminal-state guards are authorization logic; real SSE streaming and an Alembic migration on a2a_tasks add rollout risk. Bumped for auth/authz and schema change." },
+    { "dimension": "file_change_estimate", "reason": "14 files changed (1 new migration, 5 new/updated test files, source and docs), 1146 insertions; guide and AGENTS.md belong to slice 1." },
+    { "dimension": "affected_layers", "reason": "API (router), Service (task manager), DB-Persistence (migration adding contextId, assistant_id, user_id and indexes), External (A2A protocol clients)." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped: affects authorization (task ownership checks)",
+    "Technical Risk bumped: database schema change (a2a_tasks columns and indexes)",
+    "Affected Layers bumped: schema change adds persistence layer"
+  ],
+  "split_recommendation": null
+}

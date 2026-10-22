@@ -13,21 +13,19 @@
 # limitations under the License.
 
 from typing import Optional, Tuple
+from urllib.parse import urlparse
 
 import httpx
 
 from codemie.configs import logger, config
-from codemie.rest_api.a2a.types import AgentCard
+from codemie.rest_api.a2a.types import AgentCard, AgentCardInterfaceError, get_jsonrpc_interface
+from codemie.rest_api.a2a.version import A2A_PROTOCOL_VERSION, is_supported_protocol_version
 from codemie.rest_api.a2a.utils import get_auth_header
 from codemie.service.settings.settings import SettingsService
 
 
 class A2ACardResolver:
     """Class for resolving A2A agent cards from URLs"""
-
-    def __init__(self):
-        """Initialize the card resolver"""
-        self.bedrock_agentcore: bool = False
 
     @staticmethod
     def normalize_url(url: str) -> str:
@@ -39,23 +37,27 @@ class A2ACardResolver:
         return url
 
     def build_agent_json_url(self, base_url: str) -> str:
-        """Build the URL for fetching agent.json"""
+        """Build the URL for fetching the v1.0 agent-card.json"""
         normalized_url = self.normalize_url(base_url)
 
-        # Check if URL already ends with .well-known/agent.json
-        if normalized_url.endswith(('.well-known/agent.json', '.well-known/agent-card.json')):
+        if normalized_url.endswith('.well-known/agent-card.json'):
             return normalized_url
 
-        # Add .well-known/agent.json path
-        if not normalized_url.endswith('/'):
-            normalized_url += '/'
+        return normalized_url + '/.well-known/agent-card.json'
 
-        # Add special handling for bedrock-agentcore
-        if "bedrock-agentcore" in normalized_url:
-            self.bedrock_agentcore = True
-            return normalized_url + '.well-known/agent-card.json'
-
-        return normalized_url + '.well-known/agent.json'
+    @staticmethod
+    def _unusable_reason(card: AgentCard) -> Optional[str]:
+        """Why CodeMie cannot call this agent (None when it can): needs a JSON-RPC interface speaking v1.0."""
+        try:
+            interface = get_jsonrpc_interface(card)
+        except AgentCardInterfaceError as e:
+            return str(e)
+        if not is_supported_protocol_version(interface.protocolVersion):
+            return (
+                f"Agent does not support A2A protocol {A2A_PROTOCOL_VERSION} "
+                f"(its JSON-RPC interface declares {interface.protocolVersion})"
+            )
+        return None
 
     async def fetch_agent_card(
         self,
@@ -89,9 +91,11 @@ class A2ACardResolver:
                         user_id=user_id, project_name=project_name, integration_id=integration_id
                     )
                     if creds:
-                        headers = get_auth_header(creds, "GET", agent_url)
+                        headers = dict(get_auth_header(creds, "GET", agent_url))
                 except Exception as e:
                     logger.warning(f"Failed to get A2A credentials: {e}")
+
+            headers["A2A-Version"] = A2A_PROTOCOL_VERSION
 
             async with httpx.AsyncClient(
                 verify=config.HTTPS_VERIFY_SSL,
@@ -108,10 +112,14 @@ class A2ACardResolver:
                     agent_data = response.json()
                     agent_data["project_name"] = project_name
                     agent_data["integration_id"] = integration_id
+                    agent_data["bedrock_agentcore"] = "bedrock-agentcore" in (urlparse(agent_url).hostname or "")
                     agent_data["user_id"] = user_id
-                    agent_data["bedrock_agentcore"] = self.bedrock_agentcore
 
                     agent_card = AgentCard.model_validate(agent_data)
+                    unusable = self._unusable_reason(agent_card)
+                    if unusable:
+                        logger.error(f"Agent card rejected: {unusable}")
+                        return False, None, unusable
                     return True, agent_card, ""
                 except Exception as e:
                     logger.error(f"Error parsing agent card: {e}")

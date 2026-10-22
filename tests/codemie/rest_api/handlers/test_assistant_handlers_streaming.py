@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import json
 from time import time
-from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
@@ -515,13 +514,20 @@ class TestThoughtFinalizationOnSuccess:
     def test_handle_a2a_stream_finalizes_stale_in_progress_thought_on_success(self, mock_user, mock_assistant):
         import asyncio
 
-        from codemie.rest_api.a2a.types import AgentCapabilities, AgentCard
+        from codemie.rest_api.a2a.types import (
+            AgentCapabilities,
+            AgentCard,
+            AgentInterface,
+            TaskState,
+            TaskStatus,
+            TaskStatusUpdateEvent,
+        )
         from codemie.rest_api.handlers.assistant_handlers import A2AAssistantHandler
 
         agent_card = AgentCard(
             name="Remote Agent",
             description="A remote agent",
-            url="https://remote-agent.example.com/api",
+            supportedInterfaces=[AgentInterface(url="https://remote-agent.example.com/api", protocolBinding="JSONRPC")],
             version="1.0.0",
             capabilities=AgentCapabilities(streaming=True, pushNotifications=False),
             skills=[],
@@ -532,7 +538,10 @@ class TestThoughtFinalizationOnSuccess:
         real_tg.thoughts.append({'id': 't1', 'in_progress': True, 'children': []})
 
         async def fake_send_task(params, task_callback):
-            task_callback(SimpleNamespace(final=True), agent_card)
+            task_callback(
+                TaskStatusUpdateEvent(taskId="t", contextId="c", status=TaskStatus(state=TaskState.COMPLETED)),
+                agent_card,
+            )
 
         handler = A2AAssistantHandler(assistant=mock_assistant, user=mock_user, request_uuid="test-uuid")
         handler.remote_connection.send_task = fake_send_task

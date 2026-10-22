@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "generated": "2026-09-30T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 15,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 9,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "file_change_estimate", "reason": "9 files changed (4 source/doc, 5 test files) maps to L by the diffstat mapping, though only 235 insertions and 5 deletions." },
+    { "dimension": "technical_risk", "reason": "Tolerant alias handling (AliasChoices on task id) in the Task SQL model and the a2a types keeps legacy a2a_tasks rows and old-shape clients working. No schema migration, and it follows the existing alias pattern, so M." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

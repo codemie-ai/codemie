@@ -1,0 +1,15 @@
+{
+  "jsonrpc": "2.0",
+  "id": "req-5",
+  "error": {
+    "code": -32005,
+    "message": "Incompatible content types",
+    "data": [
+      {
+        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+        "reason": "CONTENT_TYPE_NOT_SUPPORTED",
+        "domain": "a2a-protocol.org"
+      }
+    ]
+  }
+}

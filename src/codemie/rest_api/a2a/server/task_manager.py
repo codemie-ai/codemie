@@ -16,27 +16,40 @@ from abc import ABC, abstractmethod
 from typing import AsyncIterable
 
 from codemie.rest_api.a2a.types import (
-    GetTaskRequest,
-    GetTaskResponse,
-    SendTaskResponse,
-    SendTaskRequest,
-    SendTaskStreamingResponse,
-    JSONRPCResponse,
-    SendTaskStreamingRequest,
+    CancelTaskRPCRequest,
+    CancelTaskRPCResponse,
+    GetExtendedAgentCardRPCRequest,
+    GetExtendedAgentCardRPCResponse,
+    GetTaskRPCRequest,
+    GetTaskRPCResponse,
+    SendMessageRPCRequest,
+    SendMessageRPCResponse,
+    SendStreamingMessageRPCRequest,
+    StreamRPCResponse,
 )
 
 
 class TaskManager(ABC):
     @abstractmethod
-    async def on_get_task(self, request: GetTaskRequest) -> GetTaskResponse:
+    async def on_get_task(self, request: GetTaskRPCRequest) -> GetTaskRPCResponse:
         pass
 
     @abstractmethod
-    async def on_send_task(self, request: SendTaskRequest) -> SendTaskResponse:
+    async def on_send_task(self, request: SendMessageRPCRequest) -> SendMessageRPCResponse:
         pass
 
     @abstractmethod
-    async def on_send_task_subscribe(
-        self, request: SendTaskStreamingRequest
-    ) -> AsyncIterable[SendTaskStreamingResponse] | JSONRPCResponse:
+    async def on_cancel_task(self, request: CancelTaskRPCRequest) -> CancelTaskRPCResponse:
+        pass
+
+    @abstractmethod
+    async def on_get_extended_agent_card(
+        self, request: GetExtendedAgentCardRPCRequest, http_request
+    ) -> GetExtendedAgentCardRPCResponse:
+        pass
+
+    @abstractmethod
+    async def on_send_streaming_message(
+        self, request: SendStreamingMessageRPCRequest
+    ) -> AsyncIterable[StreamRPCResponse]:
         pass

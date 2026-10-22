@@ -1,0 +1,73 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15327_upgrade-a2a-protocol",
+  "head": "2347a1265f5502c87263a1cdcc36c3ada81ad480",
+  "runner": "poetry",
+  "started_at": "2026-09-30T00:00:00Z",
+  "completed_at": "2026-09-30T00:10:00Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "command": "poetry run ruff check <changed src/tests paths> (check-only substitute for make ruff, which mutates files)",
+      "exit_code": 0,
+      "status": "PASS",
+      "duration_ms": null
+    },
+    {
+      "id": "format",
+      "source": "guide",
+      "command": "poetry run ruff format --check <changed src/tests paths>",
+      "exit_code": 0,
+      "status": "PASS",
+      "duration_ms": null
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "command": "poetry run python scripts/license_headers/check_license_headers.py --check --quiet",
+      "exit_code": 0,
+      "status": "PASS",
+      "duration_ms": null
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "command": "poetry run pytest tests/codemie/rest_api/a2a tests/codemie/rest_api/handlers/test_a2a_assistant_handler.py tests/codemie/rest_api/routers/test_a2a_router.py -n 0 -q -p no:cacheprovider",
+      "exit_code": 0,
+      "notes": "156 passed; scoped because full suite hangs on collection",
+      "status": "PASS",
+      "duration_ms": null
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "SKIPPED",
+      "command": "make build",
+      "exit_code": null,
+      "duration_ms": null,
+      "notes": "Not run: poetry build writes dist/ outside run_dir; not requested in scope."
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "SKIPPED",
+      "command": "make gitleaks",
+      "exit_code": null,
+      "duration_ms": null,
+      "notes": "Docker unavailable/not attempted; CI-owed check. Requires running Docker."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "command": "make sonar-local",
+      "exit_code": null,
+      "duration_ms": null,
+      "notes": "Requires Sonar credentials/network; not available locally."
+    }
+  ],
+  "failures": {}
+}

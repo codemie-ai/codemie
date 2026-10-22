@@ -1,0 +1,56 @@
+{
+  "decision": "request-changes",
+  "rationale": "All four lenses and standards ran; two blocking findings survived reachability checks: the typed-error 400 mapping is bypassed because the handler constructor raises first (confirmed), and legacy non-JSONRPC preferredTransport is mislabelled (reachability unconfirmed). 9 candidates dismissed as noise or below the emission floor (version hint wording, doc-only claims, non-string url); 0 deferred. Pending-stage-7 criteria (R7/AC8) need test execution.",
+  "confidence": "medium",
+  "risk_flags": ["data-contract", "public-api", "breaking-change"],
+  "business_review": [
+    {"kind": "spec", "item": "R1: legacy url synthesises JSONRPC interface; v1.0 wins; url not re-emitted", "status": "pass", "notes": "types.py validator and tests"},
+    {"kind": "spec", "item": "R2: validator applies to client card resolver; bedrock fail-fast unchanged", "status": "pass", "notes": "resolver legacy test added"},
+    {"kind": "spec", "item": "R3: typed ValueError subclass mapped to client error, not 500", "status": "partial", "notes": "mapping in process_request is unreachable in production; see CR-002"},
+    {"kind": "spec", "item": "R4: v0.3 method names keep -32600 with 1.0 hint", "status": "pass", "notes": "router message and test"},
+    {"kind": "spec", "item": "R5: no agent.json route added", "status": "pass", "notes": "no route changes"},
+    {"kind": "spec", "item": "R6: legacy NULL-owner a2a_tasks fail closed; legacy parts parse; documented", "status": "pass", "notes": "task manager and types tests"},
+    {"kind": "spec", "item": "R7: verify/fix slice-2 streaming test near l.521", "status": "pending-stage-7", "notes": "needs execution in Stage 7"},
+    {"kind": "spec", "item": "Non-goals respected", "status": "pass", "notes": "diff limited to types, handler, router message, tests, guide"},
+    {"kind": "spec", "item": "AC1: url-only card yields one JSONRPC interface", "status": "pass", "notes": "covered by test"},
+    {"kind": "spec", "item": "AC2: url plus supportedInterfaces keeps interfaces", "status": "pass", "notes": "covered by test"},
+    {"kind": "spec", "item": "AC3: legacy stored card loads through PydanticType", "status": "pass", "notes": "covered by test"},
+    {"kind": "spec", "item": "AC4: client resolver accepts v0.3 card with url", "status": "pass", "notes": "covered by test"},
+    {"kind": "spec", "item": "AC5: no JSON-RPC interface gives typed error and 4xx not 500", "status": "partial", "notes": "test mocks RemoteAgentConnections; real constructor raises bare error; see CR-002"},
+    {"kind": "spec", "item": "AC6: v0.3 method returns -32600 naming version 1.0", "status": "pass", "notes": "covered by test"},
+    {"kind": "spec", "item": "AC7: NULL-owner row yields not-found; kind parts parse", "status": "pass", "notes": "covered by tests"},
+    {"kind": "spec", "item": "AC8: streaming test passes in WSL with -n 0", "status": "pending-stage-7", "notes": "execution is Stage 7 evidence"},
+    {"kind": "spec", "item": "AC9: guide documents compat behaviour", "status": "pass", "notes": "section added"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "4 subjects in range all match the documented EPMCDME-####: Description format"},
+    {"kind": "code-quality", "status": "pass", "notes": "changed src files use typed signatures and modern unions; no documented code-quality rule broken; no new source files needing license headers"},
+    {"kind": "security", "status": "pass", "notes": "no auth, secret logging, or lossy input normalization found; legacy url normalization only remaps a field and validation still runs; error details are str(e) of a fixed message"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/a2a/types.py",
+      "line": 393,
+      "title": "Legacy url always labelled JSONRPC transport",
+      "problem": "_normalize_legacy_url synthesises {transport: JSONRPC} for any legacy card with a url, ignoring a legacy preferredTransport (GRPC / HTTP+JSON) and additionalInterfaces, which are dropped.",
+      "impact": "A v0.3 card whose primary transport is not JSON-RPC is mislabelled and calls are sent with the wrong protocol to that endpoint. Reachability of such stored cards was not confirmed.",
+      "recommendation": "Read data.get('preferredTransport') (default JSONRPC) and synthesise the interface only when it is JSONRPC (case-insensitive), or carry the declared transport through; preserve additionalInterfaces where they map to supportedInterfaces."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/handlers/assistant_handlers.py",
+      "line": 1333,
+      "title": "Typed interface error escapes handler constructor",
+      "problem": "A2AAssistantHandler.__init__ builds RemoteAgentConnections -> A2AClient, whose __init__ calls get_jsonrpc_url and raises AgentCardInterfaceError before process_request runs. The 400 mapping at line 1369 is therefore never reached for a card lacking a JSON-RPC interface. The test passes only because it patches RemoteAgentConnections.",
+      "impact": "An unusable stored or remote card still surfaces as a bare ValueError (500) instead of the documented 400, so the R3/AC5 requirement is unmet in production.",
+      "recommendation": "Map AgentCardInterfaceError to ExtendedHTTPException 400 at the construction site (in __init__ or where the handler is created), or in A2AClient callers; add a test constructing the handler without patching RemoteAgentConnections."
+    }
+  ]
+}

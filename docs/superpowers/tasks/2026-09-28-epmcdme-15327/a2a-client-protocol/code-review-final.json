@@ -1,0 +1,56 @@
+{
+  "decision": "request-changes",
+  "rationale": "Bedrock fail-fast in A2AClient covers only the card flag, not bedrock-agentcore URLs (spec R10 partial), and a BedrockAdapter mention remains in version.py; stream frame validation errors are unmapped. 1 deferred (legacy stored cards raise raw ValueError in handler, slice 4; see code-review-deferred.md), 12 dismissed as noise or already-triaged.",
+  "confidence": "medium",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "spec", "item": "R10 Bedrock AgentCore dropped: fail fast for bedrock-agentcore URLs in resolver and client", "status": "partial", "notes": "Resolver raises; client checks only card.bedrock_agentcore flag, which the resolver no longer sets"},
+    {"kind": "spec", "item": "AC: no references to SendTask* aliases, BedrockAdapter or push-notification client methods remain in src/", "status": "partial", "notes": "BedrockAdapter still named in version.py:33 docstring"},
+    {"kind": "spec", "item": "AC: bedrock-agentcore URLs produce a clear unsupported error", "status": "partial", "notes": "A2AClient with url override or interface URL does not raise"},
+    {"kind": "spec", "item": "AC: client tests in tests/codemie/rest_api/a2a/client/ pass", "status": "pending-stage-7", "notes": "Stage 7 owns execution"},
+    {"kind": "spec", "item": "AC: make ruff clean on changed files", "status": "pending-stage-7", "notes": "Stage 7 owns lint evidence"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "5 subjects in range all match the documented EPMCDME-####: Description format"},
+    {"kind": "code-quality", "status": "pass", "notes": "No violation of the documented rules found in changed source: new lines add no Optional/typing generics, existing license headers present, ruff fixes committed in T5"},
+    {"kind": "security", "status": "pass", "notes": "Auth headers are built via get_auth_header and not logged; no lossy decoding or credential logging introduced in the changed client code"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/a2a/client/client.py",
+      "line": 86,
+      "title": "Client bedrock fail-fast ignores bedrock-agentcore URLs",
+      "problem": "A2AClient.__init__ raises only when agent_card.bedrock_agentcore is truthy, and the card resolver no longer sets that flag. A client built with a bedrock-agentcore url= override, or from a card whose JSONRPC interface URL is a bedrock-agentcore URL, does not raise. Spec R10 and the AC require a clear unsupported error for bedrock-agentcore URLs in the client.",
+      "impact": "Bedrock AgentCore endpoints are reached with the v1.0 client and fail obscurely at request time instead of with the intended unsupported error; spec requirement R10 is only partly met.",
+      "recommendation": "After resolving self.url, raise ValueError('Bedrock AgentCore (A2A v0.3) is not supported') when the resolved URL's hostname contains bedrock-agentcore, in addition to the card flag; add a client test for the url= override path."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/a2a/client/client.py",
+      "line": 113,
+      "title": "Stream frame validation errors escape untyped",
+      "problem": "send_task_streaming catches only json.JSONDecodeError and httpx.RequestError. A pydantic ValidationError from _parse_stream_result (e.g. an enveloped frame with an unhandled key such as task or message) and httpx_sse.SSEError (non-SSE content type) propagate raw. Reachability of these paths against a live server was not confirmed.",
+      "impact": "Callers that handle A2AClientJSONError/A2AClientHTTPError miss these failures and the stream aborts with an unclassified exception.",
+      "recommendation": "except (ValidationError, SSEError) as e: raise A2AClientJSONError(str(e)) from e, and consider handling task/message envelope keys in _parse_stream_result."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/a2a/version.py",
+      "line": 33,
+      "title": "BedrockAdapter still referenced in src",
+      "problem": "The version.py docstring still names BedrockAdapter, while the AC requires no references to BedrockAdapter to remain in src/.",
+      "impact": "Acceptance criterion is literally unmet and the docstring points to a removed class.",
+      "recommendation": "Reword the docstring to drop the BedrockAdapter reference."
+    }
+  ]
+}
