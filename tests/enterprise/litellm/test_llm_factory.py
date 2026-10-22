@@ -171,8 +171,8 @@ class TestCreateLiteLLMChatModel:
                                         # Should NOT have checked budget
                                         mock_check_budget.assert_not_called()
 
-    def test_skips_user_injection_when_has_personal_credentials(self):
-        """Personal-key bypass must not inject model_kwargs['user'] even when user_id and project are present."""
+    def test_skips_customer_header_when_has_personal_credentials(self):
+        """Personal-key bypass must not set the customer header even when user_id and project are present."""
         from codemie.configs.config import config
         from codemie.rest_api.models.settings import LiteLLMCredentials, LiteLLMContext
 
@@ -198,8 +198,12 @@ class TestCreateLiteLLMChatModel:
                                 with patch(
                                     "codemie.enterprise.litellm.llm_factory._resolve_direct_project_budget_runtime"
                                 ) as mock_resolver:
-                                    # Return a non-None user so the bug would inject it before the fix
-                                    mock_resolver.return_value = ("project-member-123", {}, None, None, True)
+                                    mock_resolver.return_value = (
+                                        {"x-litellm-customer-id": "project-member-123"},
+                                        None,
+                                        None,
+                                        True,
+                                    )
                                     with patch(
                                         "codemie.enterprise.litellm.llm_factory.LiteLLMChatOpenAI"
                                     ) as mock_model_cls:
@@ -212,14 +216,13 @@ class TestCreateLiteLLMChatModel:
                                             user_id="user-123",
                                         )
 
-                                        # Primary: resolver must not be called in personal-key bypass mode
                                         mock_resolver.assert_not_called()
-                                        # Secondary: model_kwargs must not carry a "user" value
                                         call_kwargs = mock_model_cls.call_args.kwargs
-                                        assert call_kwargs.get("model_kwargs", {}).get("user") is None
+                                        assert "model_kwargs" not in call_kwargs
+                                        assert "x-litellm-customer-id" not in call_kwargs["default_headers"]
 
-    def test_sets_user_injection_when_no_personal_credentials(self):
-        """Member-tracking path must still inject model_kwargs['user'] = project runtime user."""
+    def test_sets_customer_header_when_no_personal_credentials(self):
+        """Member-tracking path sets the customer header to the project runtime member ref."""
         from codemie.configs.config import config
         from codemie.rest_api.models.settings import LiteLLMContext
 
@@ -245,7 +248,7 @@ class TestCreateLiteLLMChatModel:
                                 with patch.object(config, "LITE_LLM_PROJECTS_TO_TAGS_LIST", ""):
                                     with patch(
                                         "codemie.enterprise.litellm.llm_factory._resolve_direct_project_budget_runtime",
-                                        return_value=("member-user-123", {}, None, None, True),
+                                        return_value=({"x-litellm-customer-id": "member-user-123"}, None, None, True),
                                     ):
                                         with patch(
                                             "codemie.enterprise.litellm.llm_factory.LiteLLMChatOpenAI"
@@ -260,7 +263,10 @@ class TestCreateLiteLLMChatModel:
                                             )
 
                                             call_kwargs = mock_model_cls.call_args.kwargs
-                                            assert call_kwargs.get("model_kwargs", {}).get("user") == "member-user-123"
+                                            assert "model_kwargs" not in call_kwargs
+                                            assert call_kwargs["default_headers"]["x-litellm-customer-id"] == (
+                                                "member-user-123"
+                                            )
 
 
 class TestGetLiteLLMChatModel:
@@ -342,6 +348,39 @@ class TestCreateLiteLLMEmbeddingModel:
                                         mock_check_budget.assert_called_once_with(
                                             user_email="test@example.com", user_id=None, budget_id="default"
                                         )
+
+    def test_embedding_model_receives_customer_header(self):
+        from codemie.configs.config import config
+
+        mock_model_details = MagicMock()
+        mock_model_details.base_name = "text-embedding-ada-002"
+        mock_model_details.configuration = None
+
+        with (
+            patch.object(config, "LITE_LLM_URL", "http://test:4000"),
+            patch.object(config, "LITE_LLM_APP_KEY", "test-key"),
+            patch.object(config, "OPENAI_API_TYPE", "azure"),
+            patch.object(config, "OPENAI_API_VERSION", "2025-04-01-preview"),
+            patch.object(config, "LITE_LLM_TAGS_HEADER_VALUE", "default"),
+            patch.object(config, "LITE_LLM_PROJECTS_TO_TAGS_LIST", ""),
+            patch("codemie.enterprise.litellm.llm_factory.LiteLLMAzureOpenAIEmbeddings") as mock_embeddings_cls,
+            patch("codemie.enterprise.litellm.dependencies.check_user_budget"),
+            patch("codemie.enterprise.litellm.llm_factory._get_direct_request_category_budget_id", return_value=None),
+            patch("codemie.enterprise.litellm.llm_factory._mirror_budget_assignment"),
+        ):
+            from codemie.enterprise.litellm.llm_factory import create_litellm_embedding_model
+
+            create_litellm_embedding_model(
+                embedding_model="text-embedding-ada-002",
+                llm_model_details=mock_model_details,
+                litellm_context=None,
+                user_email="test@example.com",
+                user_id="uid-1",
+            )
+
+        call_kwargs = mock_embeddings_cls.call_args.kwargs
+        assert "model_kwargs" not in call_kwargs
+        assert call_kwargs["default_headers"]["x-litellm-customer-id"] == "test@example.com"
 
 
 class TestResolveDirectProjectBudgetRuntime:
@@ -441,8 +480,7 @@ class TestResolveDirectProjectBudgetRuntime:
 
         resolved = MagicMock()
         provider_result = MagicMock()
-        provider_result.body_overrides = {"user": "runtime-user"}
-        provider_result.headers = {"x-budget-runtime": "true"}
+        provider_result.headers = {"x-budget-runtime": "true", "x-litellm-customer-id": "runtime-user"}
         provider_result.api_key = "runtime-api-key"
         provider_result.base_url = "https://runtime.example"
 
@@ -488,8 +526,7 @@ class TestResolveDirectProjectBudgetRuntime:
 
         assert execution_order == ["sync", "resolve", "dispatch"]
         assert result == (
-            "runtime-user",
-            {"x-budget-runtime": "true"},
+            {"x-budget-runtime": "true", "x-litellm-customer-id": "runtime-user"},
             "runtime-api-key",
             "https://runtime.example",
             True,
@@ -590,7 +627,7 @@ class TestResolveDirectProjectBudgetRuntime:
                         user_email=user_email,
                     )
 
-        assert result == (None, {}, None, None, False)
+        assert result == ({}, None, None, False)
         mock_sync.assert_not_called()
         mock_resolve.assert_not_called()
         mock_dispatch.assert_not_called()
@@ -610,8 +647,7 @@ class TestResolveDirectProjectBudgetRuntime:
 
         resolved = MagicMock()
         provider_result = MagicMock()
-        provider_result.body_overrides = {"user": "premium-runtime-user"}
-        provider_result.headers = {"x-budget-runtime": "true"}
+        provider_result.headers = {"x-budget-runtime": "true", "x-litellm-customer-id": "premium-runtime-user"}
         provider_result.api_key = "runtime-api-key"
         provider_result.base_url = "https://runtime.example"
 
@@ -639,8 +675,7 @@ class TestResolveDirectProjectBudgetRuntime:
                         )
 
         assert result == (
-            "premium-runtime-user",
-            {"x-budget-runtime": "true"},
+            {"x-budget-runtime": "true", "x-litellm-customer-id": "premium-runtime-user"},
             "runtime-api-key",
             "https://runtime.example",
             True,
@@ -662,6 +697,48 @@ class TestResolveDirectProjectBudgetRuntime:
             user_email="user@example.com",
             model="claude-opus-4-6-20260205",
         )
+
+    def test_member_tracking_without_customer_header_raises(self):
+        from codemie.service.budget.budget_enums import BudgetCategory as CoreBudgetCategory
+        from codemie.enterprise.litellm.llm_factory import (
+            DirectBudgetAvailability,
+            _resolve_direct_project_budget_runtime,
+        )
+
+        model_details = MagicMock()
+        model_details.base_name = "gpt-4.1"
+
+        litellm_context = MagicMock()
+        litellm_context.current_project = "project-1"
+
+        provider_result = MagicMock()
+        provider_result.headers = {"x-budget-runtime": "true"}
+        provider_result.api_key = "runtime-api-key"
+        provider_result.base_url = "https://runtime.example"
+
+        with patch(
+            "codemie.enterprise.litellm.llm_factory._resolve_direct_budget_availability",
+            return_value=DirectBudgetAvailability(
+                user_budget_ids={CoreBudgetCategory.PLATFORM.value: None},
+                project_scopes={CoreBudgetCategory.PLATFORM},
+            ),
+        ):
+            with patch("codemie.enterprise.litellm.llm_factory.ensure_project_member_runtime_ready_sync"):
+                with patch(
+                    "codemie.service.budget.budget_resolution_service.budget_resolution_service.resolve_sync",
+                    return_value=MagicMock(),
+                ):
+                    with patch(
+                        "codemie.service.budget.budget_resolution_service.budget_resolution_service.dispatch_runtime_sync",
+                        return_value=provider_result,
+                    ):
+                        with pytest.raises(RuntimeError, match="no runtime user"):
+                            _resolve_direct_project_budget_runtime(
+                                llm_model_details=model_details,
+                                litellm_context=litellm_context,
+                                user_email="user@example.com",
+                                user_id="user-1",
+                            )
 
     def test_project_with_no_budget_scopes_early_returns_with_false(self):
         """Project with no budget scopes must return early with has_project_budget_scopes=False
@@ -695,7 +772,7 @@ class TestResolveDirectProjectBudgetRuntime:
                             user_email="user@example.com",
                         )
 
-        assert result == (None, {}, None, None, False)
+        assert result == ({}, None, None, False)
         mock_sync.assert_not_called()
         mock_resolve.assert_not_called()
         mock_dispatch.assert_not_called()
@@ -794,19 +871,20 @@ class TestLiteLLMChatOpenAI:
 
 
 class TestConfigureDirectRuntimeOverrides:
-    """Tests for _configure_direct_runtime_overrides — bypass-mode user injection behaviour."""
+    """Tests for _configure_direct_runtime_overrides — bypass-mode customer header behaviour."""
 
-    def test_global_integration_bypass_does_not_inject_user(self):
-        """Global LiteLLM integration in bypass mode must NOT set model_kwargs[user]."""
+    def test_global_integration_bypass_does_not_set_customer_header(self):
+        """Global LiteLLM integration in bypass mode must NOT set the customer header."""
         from codemie.enterprise.litellm.llm_factory import _configure_direct_runtime_overrides
         from codemie.rest_api.models.settings import LiteLLMContext, LiteLLMCredentials
 
         creds = LiteLLMCredentials(api_key="global-key", url="http://litellm:4000")
         context = LiteLLMContext(credentials=creds, current_project="test-project")
         request_params: dict = {}
+        merged_headers: dict = {}
 
         with patch("codemie.enterprise.litellm.llm_factory._resolve_direct_project_budget_runtime") as mock_resolve:
-            mock_resolve.return_value = ("member-ref-123", {}, None, None)
+            mock_resolve.return_value = ({"x-litellm-customer-id": "member-ref-123"}, None, None, True)
 
             _configure_direct_runtime_overrides(
                 llm_model_details=MagicMock(),
@@ -814,23 +892,25 @@ class TestConfigureDirectRuntimeOverrides:
                 user_email="user@test.com",
                 user_id="uid-1",
                 creds=creds,
-                merged_headers={},
+                merged_headers=merged_headers,
                 request_params=request_params,
             )
 
         assert "model_kwargs" not in request_params
+        assert merged_headers == {}
 
-    def test_non_global_bypass_does_not_inject_user(self):
-        """Non-global personal key in bypass mode must NOT set model_kwargs[user] (EPMCDME-13264)."""
+    def test_non_global_bypass_does_not_set_customer_header(self):
+        """Non-global personal key in bypass mode must NOT set the customer header (EPMCDME-13264)."""
         from codemie.enterprise.litellm.llm_factory import _configure_direct_runtime_overrides
         from codemie.rest_api.models.settings import LiteLLMContext, LiteLLMCredentials
 
         creds = LiteLLMCredentials(api_key="personal-key", url="http://litellm:4000")
         context = LiteLLMContext(credentials=creds, current_project="test-project")
         request_params: dict = {}
+        merged_headers: dict = {}
 
         with patch("codemie.enterprise.litellm.llm_factory._resolve_direct_project_budget_runtime") as mock_resolve:
-            mock_resolve.return_value = ("member-ref-123", {}, None, None)
+            mock_resolve.return_value = ({"x-litellm-customer-id": "member-ref-123"}, None, None, True)
 
             _configure_direct_runtime_overrides(
                 llm_model_details=MagicMock(),
@@ -838,12 +918,65 @@ class TestConfigureDirectRuntimeOverrides:
                 user_email="user@test.com",
                 user_id="uid-1",
                 creds=creds,
-                merged_headers={},
+                merged_headers=merged_headers,
                 request_params=request_params,
             )
 
         mock_resolve.assert_not_called()
         assert "model_kwargs" not in request_params
+        assert merged_headers == {}
+
+    def test_project_runtime_customer_header_lands_in_merged_headers(self):
+        from codemie.enterprise.litellm.llm_factory import _configure_direct_runtime_overrides
+        from codemie.rest_api.models.settings import LiteLLMContext
+
+        context = LiteLLMContext(credentials=None, current_project="test-project")
+        request_params: dict = {}
+        merged_headers: dict = {}
+
+        with patch("codemie.enterprise.litellm.llm_factory._resolve_direct_project_budget_runtime") as mock_resolve:
+            mock_resolve.return_value = ({"x-litellm-customer-id": "member-ref-123"}, "runtime-key", None, True)
+
+            _configure_direct_runtime_overrides(
+                llm_model_details=MagicMock(),
+                litellm_context=context,
+                user_email="user@test.com",
+                user_id="uid-1",
+                creds=None,
+                merged_headers=merged_headers,
+                request_params=request_params,
+            )
+
+        assert merged_headers["x-litellm-customer-id"] == "member-ref-123"
+        assert request_params["openai_api_key"] == "runtime-key"
+        assert "model_kwargs" not in request_params
+
+    @pytest.mark.parametrize("user_email", [None, "alice@example.com", "", "  "])
+    def test_platform_budget_sets_customer_header_to_user_email_as_is(self, user_email):
+        from codemie.enterprise.litellm.llm_factory import _apply_platform_budget
+
+        request_params: dict = {}
+        merged_headers: dict = {}
+
+        with (
+            patch("codemie.enterprise.litellm.llm_factory._get_direct_request_category_budget_id", return_value=None),
+            patch("codemie.enterprise.litellm.dependencies.get_category_budget_id", return_value="default"),
+            patch("codemie.enterprise.litellm.dependencies.check_user_budget", return_value=MagicMock()),
+            patch("codemie.enterprise.litellm.llm_factory._mirror_budget_assignment"),
+        ):
+            _apply_platform_budget(
+                llm_model_details=MagicMock(),
+                user_email=user_email,
+                user_id="uid-1",
+                request_params=request_params,
+                merged_headers=merged_headers,
+            )
+
+        assert "model_kwargs" not in request_params
+        if user_email is None:
+            assert "x-litellm-customer-id" not in merged_headers
+        else:
+            assert merged_headers["x-litellm-customer-id"] == user_email
 
 
 class TestConfigureDirectRuntimeOverridesPremiumNoProject:
@@ -871,10 +1004,11 @@ class TestConfigureDirectRuntimeOverridesPremiumNoProject:
         llm_model_details = MagicMock()
         llm_model_details.base_name = "claude-opus-4"
         request_params: dict = {}
+        merged_headers: dict = {}
 
         with patch(
             "codemie.enterprise.litellm.llm_factory._resolve_direct_project_budget_runtime",
-            return_value=(None, {}, None, None, False),
+            return_value=({}, None, None, False),
         ):
             _configure_direct_runtime_overrides(
                 llm_model_details=llm_model_details,
@@ -882,10 +1016,10 @@ class TestConfigureDirectRuntimeOverridesPremiumNoProject:
                 user_email=user_email,
                 user_id=user_id,
                 creds=None,
-                merged_headers={},
+                merged_headers=merged_headers,
                 request_params=request_params,
             )
-        return request_params
+        return request_params, merged_headers
 
     def test_premium_model_no_project_context_uses_premium_budget(self):
         """Premium model + no project context → check_user_budget called with premium username and premium budget."""
@@ -910,14 +1044,15 @@ class TestConfigureDirectRuntimeOverridesPremiumNoProject:
             ) as mock_check,
             patch("codemie.enterprise.litellm.llm_factory._mirror_budget_assignment"),
         ):
-            params = self._invoke()
+            params, headers = self._invoke()
 
         mock_check.assert_called_once_with(
             user_email="alice@example.com_codemie_premium_models",
             user_id="uid-1",
             budget_id="default_premium_models",
         )
-        assert params["model_kwargs"]["user"] == "alice@example.com_codemie_premium_models"
+        assert "model_kwargs" not in params
+        assert headers["x-litellm-customer-id"] == "alice@example.com_codemie_premium_models"
 
     def test_non_premium_model_no_project_context_uses_platform_budget(self):
         """Non-premium model → get_premium_username returns None → PLATFORM path unchanged."""
@@ -937,9 +1072,10 @@ class TestConfigureDirectRuntimeOverridesPremiumNoProject:
             patch("codemie.enterprise.litellm.dependencies.check_user_budget", return_value=MagicMock()),
             patch("codemie.enterprise.litellm.llm_factory._mirror_budget_assignment"),
         ):
-            params = self._invoke()
+            params, headers = self._invoke()
 
-        assert params["model_kwargs"]["user"] == "alice@example.com"
+        assert "model_kwargs" not in params
+        assert headers["x-litellm-customer-id"] == "alice@example.com"
 
     def test_premium_model_no_budget_id_anywhere_falls_through_to_platform(self):
         """Premium model but no personal assignment and no default config → falls through to PLATFORM."""
@@ -965,9 +1101,10 @@ class TestConfigureDirectRuntimeOverridesPremiumNoProject:
             patch("codemie.enterprise.litellm.dependencies.check_user_budget", return_value=MagicMock()),
             patch("codemie.enterprise.litellm.llm_factory._mirror_budget_assignment"),
         ):
-            params = self._invoke()
+            params, headers = self._invoke()
 
-        assert params["model_kwargs"]["user"] == "alice@example.com"
+        assert "model_kwargs" not in params
+        assert headers["x-litellm-customer-id"] == "alice@example.com"
 
     def test_premium_model_personal_assignment_wins_over_default(self):
         """Personal PREMIUM_MODELS assignment present → used instead of default config budget."""
@@ -1047,14 +1184,15 @@ class TestConfigureDirectRuntimeOverridesPremiumNoProject:
             ) as mock_check,
             patch("codemie.enterprise.litellm.llm_factory._mirror_budget_assignment"),
         ):
-            params = self._invoke()
+            params, headers = self._invoke()
 
         mock_check.assert_called_once_with(
             user_email="alice@example.com_codemie_premium_models",
             user_id="uid-1",
             budget_id="personal-premium-budget",
         )
-        assert params["model_kwargs"]["user"] == "alice@example.com_codemie_premium_models"
+        assert "model_kwargs" not in params
+        assert headers["x-litellm-customer-id"] == "alice@example.com_codemie_premium_models"
 
 
 class TestConfigureDirectRuntimeOverridesPremiumWithProjectContext:
@@ -1107,10 +1245,11 @@ class TestConfigureDirectRuntimeOverridesPremiumWithProjectContext:
         llm_model_details = MagicMock()
         llm_model_details.base_name = "claude-opus-4"
         request_params: dict = {}
+        merged_headers: dict = {}
 
         with patch(
             "codemie.enterprise.litellm.llm_factory._resolve_direct_project_budget_runtime",
-            return_value=(None, {}, None, None, has_project_budget_scopes),
+            return_value=({}, None, None, has_project_budget_scopes),
         ):
             _configure_direct_runtime_overrides(
                 llm_model_details=llm_model_details,
@@ -1118,10 +1257,10 @@ class TestConfigureDirectRuntimeOverridesPremiumWithProjectContext:
                 user_email=user_email,
                 user_id=user_id,
                 creds=None,
-                merged_headers={},
+                merged_headers=merged_headers,
                 request_params=request_params,
             )
-        return request_params
+        return request_params, merged_headers
 
     def test_premium_model_project_context_no_scope_uses_platform_budget(self):
         """Regression: project context + premium model + no project premium scope → PLATFORM budget.
@@ -1153,9 +1292,10 @@ class TestConfigureDirectRuntimeOverridesPremiumWithProjectContext:
             ) as mock_check,
             patch("codemie.enterprise.litellm.llm_factory._mirror_budget_assignment"),
         ):
-            params = self._invoke(litellm_context=self._make_litellm_context())
+            params, headers = self._invoke(litellm_context=self._make_litellm_context())
 
-        assert params["model_kwargs"]["user"] == "alice@example.com"
+        assert "model_kwargs" not in params
+        assert headers["x-litellm-customer-id"] == "alice@example.com"
         mock_check.assert_called_once_with(
             user_email="alice@example.com",
             user_id="uid-1",
@@ -1192,12 +1332,13 @@ class TestConfigureDirectRuntimeOverridesPremiumWithProjectContext:
             ) as mock_check,
             patch("codemie.enterprise.litellm.llm_factory._mirror_budget_assignment"),
         ):
-            params = self._invoke(
+            params, headers = self._invoke(
                 litellm_context=self._make_litellm_context(project_name="my-project"),
                 has_project_budget_scopes=False,
             )
 
-        assert params["model_kwargs"]["user"] == "alice@example.com_codemie_premium_models"
+        assert "model_kwargs" not in params
+        assert headers["x-litellm-customer-id"] == "alice@example.com_codemie_premium_models"
         mock_check.assert_called_once_with(
             user_email="alice@example.com_codemie_premium_models",
             user_id="uid-1",
@@ -1235,12 +1376,13 @@ class TestConfigureDirectRuntimeOverridesPremiumWithProjectContext:
             patch("codemie.enterprise.litellm.llm_factory._mirror_budget_assignment"),
         ):
             # current_project == user_email: global assistant personal context
-            params = self._invoke(
+            params, headers = self._invoke(
                 litellm_context=self._make_litellm_context(project_name="alice@example.com"),
                 user_email="alice@example.com",
             )
 
-        assert params["model_kwargs"]["user"] == "alice@example.com_codemie_premium_models"
+        assert "model_kwargs" not in params
+        assert headers["x-litellm-customer-id"] == "alice@example.com_codemie_premium_models"
         mock_check.assert_called_once_with(
             user_email="alice@example.com_codemie_premium_models",
             user_id="uid-1",
@@ -1277,9 +1419,10 @@ class TestConfigureDirectRuntimeOverridesPremiumWithProjectContext:
             ) as mock_check,
             patch("codemie.enterprise.litellm.llm_factory._mirror_budget_assignment"),
         ):
-            params = self._invoke(litellm_context=self._make_litellm_context())
+            params, headers = self._invoke(litellm_context=self._make_litellm_context())
 
-        assert params["model_kwargs"]["user"] == "alice@example.com"
+        assert "model_kwargs" not in params
+        assert headers["x-litellm-customer-id"] == "alice@example.com"
         mock_check.assert_called_once_with(
             user_email="alice@example.com",
             user_id="uid-1",

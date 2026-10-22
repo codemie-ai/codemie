@@ -100,10 +100,7 @@ try:
         LiteLLMConfig,
         LiteLLMService,
     )
-    from codemie_enterprise.litellm.proxy_utils import (
-        inject_user_into_body,
-        parse_usage_from_response,
-    )
+    from codemie_enterprise.litellm.proxy_utils import parse_usage_from_response
 
     HAS_LITELLM = True
 except ImportError:
@@ -113,7 +110,6 @@ except ImportError:
     LiteLLMAPIClient = None  # type: ignore
     LiteLLMConfig = None  # type: ignore
     LiteLLMService = None  # type: ignore
-    inject_user_into_body = None  # type: ignore
     parse_usage_from_response = None  # type: ignore
     HAS_LITELLM = False
 
@@ -251,7 +247,6 @@ __all__ = [
     "LiteLLMAPIClient",
     "LiteLLMConfig",
     "LiteLLMService",
-    "inject_user_into_body",
     "parse_usage_from_response",
     "has_litellm",
     # Plugin

@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "generated": "2026-10-21T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 18,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 11,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Touches the LiteLLM budget provider adapter, the LLM factory, the proxy router, the enterprise loader, the budget resolution service and the provider-neutral BudgetRuntimeProviderResult contract (body_overrides removed). A new shared constant module, customer_header.py, centralises the x-litellm-customer-id header." },
+    { "dimension": "file_change_estimate", "reason": "11 files changed per diffstat (7 source, 4 test; 503 insertions and 433 deletions), which maps to XL on the diffstat file-count scale. Most of the churn is test rewrites, and the source changes are small removal and substitution edits." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

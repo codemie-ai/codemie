@@ -89,7 +89,6 @@ class BudgetRuntimeProviderResult(BaseModel):
     api_key: str | None = None
     base_url: str | None = None
     headers: dict[str, str] = Field(default_factory=dict)
-    body_overrides: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

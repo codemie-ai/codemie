@@ -244,12 +244,11 @@ class TestValidateProjectHeader:
 
 
 class TestBudgetBodyStreamWhitespaceUsername:
-    """Regression for CR-010: a whitespace-only username/project-runtime-user already
-    skipped the litellm_customer_id header (via .strip()), but was still passed as
-    user_id into the outgoing request body, unlike a None/empty value."""
+    """A whitespace-only username/project-runtime-user must not set litellm_customer_id,
+    and the request body is passed through unchanged."""
 
     @pytest.mark.asyncio
-    async def test_project_runtime_whitespace_username_not_injected_as_user_id(self):
+    async def test_project_runtime_whitespace_username_not_set_as_customer_id(self):
         from codemie.enterprise.litellm.runtime_budget_selection import RuntimeBudgetMode
 
         user = MagicMock()
@@ -257,16 +256,15 @@ class TestBudgetBodyStreamWhitespaceUsername:
         user.username = "someone"
         request_info = {}
         project_runtime = MagicMock()
-        project_runtime.body_overrides = {"user": "   "}
+        project_runtime.headers = {"x-litellm-customer-id": "   "}
 
         with (
             patch(
                 "codemie.enterprise.litellm.proxy_router.select_runtime_budget_mode",
                 return_value=MagicMock(mode=RuntimeBudgetMode.PROJECT_BUDGET_WITH_MEMBER_TRACKING),
             ),
-            patch("codemie.enterprise.litellm.proxy_router._inject_user_into_request_body_from_bytes") as mock_inject,
         ):
-            await _create_project_runtime_body_stream(
+            stream = await _create_project_runtime_body_stream(
                 body_bytes=b"{}",
                 user=user,
                 request_info=request_info,
@@ -277,10 +275,10 @@ class TestBudgetBodyStreamWhitespaceUsername:
             )
 
         assert "litellm_customer_id" not in request_info
-        assert mock_inject.call_args.kwargs["user_id"] is None
+        assert b"".join([chunk async for chunk in stream]) == b"{}"
 
     @pytest.mark.asyncio
-    async def test_global_budget_whitespace_username_not_injected_as_user_id(self):
+    async def test_global_budget_whitespace_username_not_set_as_customer_id(self):
         user = MagicMock()
         user.id = "user-123"
         user.username = "someone"
@@ -292,9 +290,8 @@ class TestBudgetBodyStreamWhitespaceUsername:
                 new_callable=AsyncMock,
             ),
             patch("codemie.enterprise.litellm.proxy_router.check_user_budget"),
-            patch("codemie.enterprise.litellm.proxy_router._inject_user_into_request_body_from_bytes") as mock_inject,
         ):
-            await _create_global_budget_body_stream(
+            stream = await _create_global_budget_body_stream(
                 body_bytes=b"{}",
                 user=user,
                 request_info=request_info,
@@ -306,10 +303,10 @@ class TestBudgetBodyStreamWhitespaceUsername:
             )
 
         assert "litellm_customer_id" not in request_info
-        assert mock_inject.call_args.kwargs["user_id"] is None
+        assert b"".join([chunk async for chunk in stream]) == b"{}"
 
     @pytest.mark.asyncio
-    async def test_global_budget_valid_username_still_injected(self):
+    async def test_global_budget_valid_username_sets_customer_id(self):
         user = MagicMock()
         user.id = "user-123"
         user.username = "someone"
@@ -321,9 +318,8 @@ class TestBudgetBodyStreamWhitespaceUsername:
                 new_callable=AsyncMock,
             ),
             patch("codemie.enterprise.litellm.proxy_router.check_user_budget"),
-            patch("codemie.enterprise.litellm.proxy_router._inject_user_into_request_body_from_bytes") as mock_inject,
         ):
-            await _create_global_budget_body_stream(
+            stream = await _create_global_budget_body_stream(
                 body_bytes=b"{}",
                 user=user,
                 request_info=request_info,
@@ -335,7 +331,7 @@ class TestBudgetBodyStreamWhitespaceUsername:
             )
 
         assert request_info["litellm_customer_id"] == "real-user@example.com"
-        assert mock_inject.call_args.kwargs["user_id"] == "real-user@example.com"
+        assert b"".join([chunk async for chunk in stream]) == b"{}"
 
 
 class TestExtractRequestInfo:
@@ -537,10 +533,9 @@ class TestResolveProjectBudgetRuntime:
         session_context = self._build_session_context(session)
         resolved_context = MagicMock()
         provider_result = MagicMock()
-        provider_result.headers = {"x-budget-header": "budget-value"}
+        provider_result.headers = {"x-budget-header": "budget-value", "x-litellm-customer-id": "runtime-subject"}
         provider_result.api_key = "provider-api-key"
         provider_result.base_url = "https://runtime.provider"
-        provider_result.body_overrides = {"user": "runtime-subject"}
 
         call_order: list[str] = []
 
@@ -586,7 +581,10 @@ class TestResolveProjectBudgetRuntime:
 
         assert result is provider_result
         assert call_order == ["ensure", "resolve", "dispatch"]
-        assert request_info["budget_provider_headers"] == {"x-budget-header": "budget-value"}
+        assert request_info["budget_provider_headers"] == {
+            "x-budget-header": "budget-value",
+            "x-litellm-customer-id": "runtime-subject",
+        }
         assert request_info["budget_provider_api_key"] == "provider-api-key"
         assert request_info["budget_provider_base_url"] == "https://runtime.provider"
 
@@ -977,6 +975,34 @@ class TestPrepareProxyHeaders:
 
         assert result["Authorization"] == "Bearer project-budget-key"
 
+    def test_prepare_headers_sets_customer_header_from_litellm_customer_id(self):
+        mock_request = MagicMock()
+        mock_request.headers = Headers({"content-type": "application/json"})
+
+        with patch("codemie.enterprise.litellm.proxy_router.litellm_context") as mock_context:
+            mock_context.get.side_effect = LookupError()
+
+            result = _prepare_proxy_headers(
+                mock_request,
+                request_info={"litellm_customer_id": "user@example.com"},
+            )
+
+        assert result["x-litellm-customer-id"] == "user@example.com"
+
+    def test_prepare_headers_sets_customer_header_from_budget_provider_headers(self):
+        mock_request = MagicMock()
+        mock_request.headers = Headers({"content-type": "application/json"})
+
+        with patch("codemie.enterprise.litellm.proxy_router.litellm_context") as mock_context:
+            mock_context.get.side_effect = LookupError()
+
+            result = _prepare_proxy_headers(
+                mock_request,
+                request_info={"budget_provider_headers": {"x-litellm-customer-id": "ref"}},
+            )
+
+        assert result["x-litellm-customer-id"] == "ref"
+
     def test_prepare_headers_with_context(self):
         """Test preparing headers with litellm context."""
         mock_request = MagicMock()
@@ -1154,46 +1180,17 @@ class TestGetIntegrationApiKey:
         assert mock_service.get_credentials.call_count == 1
 
 
-class TestInjectUserIntoRequestBody:
-    """Test _inject_user_into_request_body_from_bytes function."""
-
-    @pytest.mark.asyncio
-    async def test_inject_user_into_body(self):
-        """Test injecting user into request body."""
-        from codemie.enterprise.litellm.proxy_router import _inject_user_into_request_body_from_bytes
-
-        body_bytes = b'{"messages": [{"role": "user", "content": "Hello"}]}'
-
-        async def mock_stream():
-            yield b'{"messages": [{"role": "user", "content": "Hello"}]}'
-
-        request_info = {
-            "session_id": "session-123",
-            "request_id": "request-456",
-        }
-
-        with patch("codemie.enterprise.litellm.proxy_router.inject_user_into_body") as mock_inject:
-            # Mock the enterprise function to return the same stream
-            mock_inject.return_value = mock_stream()
-
-            _inject_user_into_request_body_from_bytes(body_bytes, "test-user", request_info)
-
-            # Verify enterprise function was called with correct args
-            mock_inject.assert_called_once()
-            call_args = mock_inject.call_args
-            assert call_args.kwargs["username"] == "test-user"
-            assert call_args.kwargs["session_id"] == "session-123"
-            assert call_args.kwargs["request_id"] == "request-456"
-            assert call_args.kwargs["content_type"] == "application/json"
+async def _collect_stream(stream) -> bytes:
+    return b"".join([chunk async for chunk in stream])
 
 
-class TestCreateBodyStreamWithOptionalInjection:
-    """Test _create_body_stream_with_optional_injection function."""
+class TestResolveBudgetAttributionStream:
+    """Test _resolve_budget_attribution_stream function."""
 
     @pytest.mark.asyncio
     async def test_premium_model_uses_premium_budget_id(self):
         """Premium model requests must pass the premium budget id to budget checks."""
-        from codemie.enterprise.litellm.proxy_router import _create_body_stream_with_optional_injection
+        from codemie.enterprise.litellm.proxy_router import _resolve_budget_attribution_stream
 
         user = MagicMock()
         user.username = "user@example.com"
@@ -1206,31 +1203,24 @@ class TestCreateBodyStreamWithOptionalInjection:
                 return_value="premium_models",
             ):
                 with patch("codemie.enterprise.litellm.proxy_router.check_user_budget") as mock_check_user_budget:
-                    with patch(
-                        "codemie.enterprise.litellm.proxy_router._inject_user_into_request_body_from_bytes"
-                    ) as mock_inject:
-                        mock_inject.return_value = "stream"
+                    result = await _resolve_budget_attribution_stream(
+                        body_bytes=b"{}",
+                        user=user,
+                        request_info=request_info,
+                    )
 
-                        result = await _create_body_stream_with_optional_injection(
-                            body_bytes=b"{}",
-                            user=user,
-                            request_info=request_info,
-                        )
-
-        assert result == "stream"
+        assert await _collect_stream(result) == b"{}"
         mock_check_user_budget.assert_called_once_with(
             user_email="user@example.com_codemie_premium_models",
             budget_id="premium_models",
             user_id=user.id,
         )
-        mock_inject.assert_called_once_with(
-            body_bytes=b"{}", user_id="user@example.com_codemie_premium_models", request_info=request_info
-        )
+        assert request_info["litellm_customer_id"] == "user@example.com_codemie_premium_models"
 
     @pytest.mark.asyncio
     async def test_premium_model_uses_runtime_assigned_budget_without_predefined_budget(self):
         """Runtime-assigned premium budget must enable premium routing without predefined config."""
-        from codemie.enterprise.litellm.proxy_router import _create_body_stream_with_optional_injection
+        from codemie.enterprise.litellm.proxy_router import _resolve_budget_attribution_stream
 
         user = MagicMock()
         user.id = "user-1"
@@ -1257,33 +1247,24 @@ class TestCreateBodyStreamWithOptionalInjection:
                     ),
                 ):
                     with patch("codemie.enterprise.litellm.proxy_router.check_user_budget") as mock_check_user_budget:
-                        with patch(
-                            "codemie.enterprise.litellm.proxy_router._inject_user_into_request_body_from_bytes"
-                        ) as mock_inject:
-                            mock_inject.return_value = "stream"
+                        result = await _resolve_budget_attribution_stream(
+                            body_bytes=b"{}",
+                            user=user,
+                            request_info=request_info,
+                        )
 
-                            result = await _create_body_stream_with_optional_injection(
-                                body_bytes=b"{}",
-                                user=user,
-                                request_info=request_info,
-                            )
-
-        assert result == "stream"
+        assert await _collect_stream(result) == b"{}"
         mock_check_user_budget.assert_called_once_with(
             user_email="user@example.com_codemie_premium_models",
             budget_id="runtime-premium-budget",
             user_id=user.id,
         )
-        mock_inject.assert_called_once_with(
-            body_bytes=b"{}",
-            user_id="user@example.com_codemie_premium_models",
-            request_info=request_info,
-        )
+        assert request_info["litellm_customer_id"] == "user@example.com_codemie_premium_models"
 
     @pytest.mark.asyncio
     async def test_regular_model_keeps_default_budget_flow(self):
         """Non-premium requests should not pass an explicit premium budget id."""
-        from codemie.enterprise.litellm.proxy_router import _create_body_stream_with_optional_injection
+        from codemie.enterprise.litellm.proxy_router import _resolve_budget_attribution_stream
 
         user = MagicMock()
         user.username = "user@example.com"
@@ -1291,26 +1272,22 @@ class TestCreateBodyStreamWithOptionalInjection:
 
         with patch("codemie.enterprise.litellm.proxy_router.get_premium_username", return_value=None):
             with patch("codemie.enterprise.litellm.proxy_router.check_user_budget") as mock_check_user_budget:
-                with patch(
-                    "codemie.enterprise.litellm.proxy_router._inject_user_into_request_body_from_bytes"
-                ) as mock_inject:
-                    mock_inject.return_value = "stream"
+                result = await _resolve_budget_attribution_stream(
+                    body_bytes=b"{}",
+                    user=user,
+                    request_info=request_info,
+                )
 
-                    result = await _create_body_stream_with_optional_injection(
-                        body_bytes=b"{}",
-                        user=user,
-                        request_info=request_info,
-                    )
-
-        assert result == "stream"
+        assert await _collect_stream(result) == b"{}"
         mock_check_user_budget.assert_called_once_with(
             user_email="user@example.com", budget_id="default", user_id=user.id
         )
+        assert request_info["litellm_customer_id"] == "user@example.com"
 
     @pytest.mark.asyncio
     async def test_non_premium_web_request_uses_platform_budget_even_when_cli_configured(self):
         """Non-premium web proxy requests should not use the dedicated CLI budget."""
-        from codemie.enterprise.litellm.proxy_router import _create_body_stream_with_optional_injection
+        from codemie.enterprise.litellm.proxy_router import _resolve_budget_attribution_stream
 
         user = MagicMock()
         user.id = "user-1"
@@ -1339,33 +1316,24 @@ class TestCreateBodyStreamWithOptionalInjection:
                     return_value="cli-budget",
                 ):
                     with patch("codemie.enterprise.litellm.proxy_router.check_user_budget") as mock_check_user_budget:
-                        with patch(
-                            "codemie.enterprise.litellm.proxy_router._inject_user_into_request_body_from_bytes"
-                        ) as mock_inject:
-                            mock_inject.return_value = "stream"
+                        result = await _resolve_budget_attribution_stream(
+                            body_bytes=b"{}",
+                            user=user,
+                            request_info=request_info,
+                        )
 
-                            result = await _create_body_stream_with_optional_injection(
-                                body_bytes=b"{}",
-                                user=user,
-                                request_info=request_info,
-                            )
-
-        assert result == "stream"
+        assert await _collect_stream(result) == b"{}"
         mock_check_user_budget.assert_called_once_with(
             user_email="user@example.com",
             budget_id="platform-budget",
             user_id="user-1",
         )
-        mock_inject.assert_called_once_with(
-            body_bytes=b"{}",
-            user_id="user@example.com",
-            request_info=request_info,
-        )
+        assert request_info["litellm_customer_id"] == "user@example.com"
 
     @pytest.mark.asyncio
     async def test_non_premium_cli_request_uses_cli_budget(self):
         """Non-premium CLI proxy requests should use the dedicated CLI budget."""
-        from codemie.enterprise.litellm.proxy_router import _create_body_stream_with_optional_injection
+        from codemie.enterprise.litellm.proxy_router import _resolve_budget_attribution_stream
 
         user = MagicMock()
         user.id = "user-1"
@@ -1394,33 +1362,24 @@ class TestCreateBodyStreamWithOptionalInjection:
                     return_value="cli-budget",
                 ):
                     with patch("codemie.enterprise.litellm.proxy_router.check_user_budget") as mock_check_user_budget:
-                        with patch(
-                            "codemie.enterprise.litellm.proxy_router._inject_user_into_request_body_from_bytes"
-                        ) as mock_inject:
-                            mock_inject.return_value = "stream"
+                        result = await _resolve_budget_attribution_stream(
+                            body_bytes=b"{}",
+                            user=user,
+                            request_info=request_info,
+                        )
 
-                            result = await _create_body_stream_with_optional_injection(
-                                body_bytes=b"{}",
-                                user=user,
-                                request_info=request_info,
-                            )
-
-        assert result == "stream"
+        assert await _collect_stream(result) == b"{}"
         mock_check_user_budget.assert_called_once_with(
             user_email="user@example.com_codemie_cli",
             budget_id="cli-budget",
             user_id="user-1",
         )
-        mock_inject.assert_called_once_with(
-            body_bytes=b"{}",
-            user_id="user@example.com_codemie_cli",
-            request_info=request_info,
-        )
+        assert request_info["litellm_customer_id"] == "user@example.com_codemie_cli"
 
     @pytest.mark.asyncio
     async def test_web_project_runtime_resolves_platform_category(self):
         """Web project requests must resolve project runtime against the platform category."""
-        from codemie.enterprise.litellm.proxy_router import _create_body_stream_with_optional_injection
+        from codemie.enterprise.litellm.proxy_router import _resolve_budget_attribution_stream
 
         user = MagicMock()
         user.id = "user-1"
@@ -1458,24 +1417,20 @@ class TestCreateBodyStreamWithOptionalInjection:
                             return_value="cli-budget",
                         ):
                             with patch("codemie.enterprise.litellm.proxy_router.check_user_budget"):
-                                with patch(
-                                    "codemie.enterprise.litellm.proxy_router._inject_user_into_request_body_from_bytes",
-                                    return_value="stream",
-                                ):
-                                    result = await _create_body_stream_with_optional_injection(
-                                        body_bytes=b"{}",
-                                        user=user,
-                                        request_info=request_info,
-                                    )
+                                result = await _resolve_budget_attribution_stream(
+                                    body_bytes=b"{}",
+                                    user=user,
+                                    request_info=request_info,
+                                )
 
-        assert result == "stream"
+        assert await _collect_stream(result) == b"{}"
         mock_resolve_runtime.assert_awaited_once()
         assert mock_resolve_runtime.await_args.kwargs["category"] == BudgetCategory.PLATFORM
 
     @pytest.mark.asyncio
-    async def test_resolved_user_credentials_skip_budget_injection(self):
-        """Resolved user credentials are treated as own credentials and skip budget injection."""
-        from codemie.enterprise.litellm.proxy_router import _create_body_stream_with_optional_injection
+    async def test_resolved_user_credentials_skip_budget_customer_id(self):
+        """Resolved user credentials are treated as own credentials and skip the budget customer id."""
+        from codemie.enterprise.litellm.proxy_router import _resolve_budget_attribution_stream
 
         user = MagicMock()
         user.id = "user-1"
@@ -1487,25 +1442,20 @@ class TestCreateBodyStreamWithOptionalInjection:
             alias="personal-key",
         )
 
-        with patch("codemie.enterprise.litellm.proxy_router._inject_user_into_request_body_from_bytes") as mock_inject:
-            result = await _create_body_stream_with_optional_injection(
-                body_bytes=b"{}",
-                user=user,
-                request_info=request_info,
-                user_credentials=user_credentials,
-            )
+        result = await _resolve_budget_attribution_stream(
+            body_bytes=b"{}",
+            user=user,
+            request_info=request_info,
+            user_credentials=user_credentials,
+        )
 
-        collected = []
-        async for chunk in result:
-            collected.append(chunk)
-
-        assert collected == [b"{}"]
-        mock_inject.assert_not_called()
+        assert await _collect_stream(result) == b"{}"
+        assert "litellm_customer_id" not in request_info
 
     @pytest.mark.asyncio
     async def test_bypass_mode_with_personal_credentials_passes_through_body(self):
         """In bypass mode (personal user credentials), body is passed through unchanged — no project runtime consulted."""
-        from codemie.enterprise.litellm.proxy_router import _create_body_stream_with_optional_injection
+        from codemie.enterprise.litellm.proxy_router import _resolve_budget_attribution_stream
 
         user = MagicMock()
         user.id = "user-1"
@@ -1522,26 +1472,75 @@ class TestCreateBodyStreamWithOptionalInjection:
             alias="personal-key",
         )
 
-        with (
-            patch(
-                "codemie.enterprise.litellm.proxy_router._resolve_project_budget_runtime",
-                new_callable=AsyncMock,
-            ) as mock_runtime,
-            patch(
-                "codemie.enterprise.litellm.proxy_router._inject_user_into_request_body_from_bytes",
-            ) as mock_inject,
-        ):
-            await _create_body_stream_with_optional_injection(
+        with patch(
+            "codemie.enterprise.litellm.proxy_router._resolve_project_budget_runtime",
+            new_callable=AsyncMock,
+        ) as mock_runtime:
+            result = await _resolve_budget_attribution_stream(
                 body_bytes=b"{}",
                 user=user,
                 request_info=request_info,
                 user_credentials=user_credentials,
             )
 
+        assert await _collect_stream(result) == b"{}"
         mock_runtime.assert_not_called()
-        mock_inject.assert_not_called()
+        assert "litellm_customer_id" not in request_info
         assert request_info.get("budget_provider_api_key") == "sk-project-key"
         assert request_info.get("budget_provider_base_url") == "https://proxy.example.com"
+
+    @pytest.mark.asyncio
+    async def test_project_runtime_stream_passes_body_and_sets_customer_id(self):
+        from codemie.enterprise.litellm.runtime_budget_selection import RuntimeBudgetMode
+
+        user = MagicMock()
+        user.id = "user-123"
+        user.username = "someone"
+        request_info = {}
+        project_runtime = MagicMock()
+        project_runtime.headers = {"x-litellm-customer-id": "member-ref-1"}
+
+        with patch(
+            "codemie.enterprise.litellm.proxy_router.select_runtime_budget_mode",
+            return_value=MagicMock(mode=RuntimeBudgetMode.PROJECT_BUDGET_WITH_MEMBER_TRACKING),
+        ):
+            stream = await _create_project_runtime_body_stream(
+                body_bytes=b'{"model": "gpt-4"}',
+                user=user,
+                request_info=request_info,
+                category=BudgetCategory.PLATFORM,
+                llm_model="gpt-4",
+                project_name="my-project",
+                project_runtime=project_runtime,
+            )
+
+        assert request_info["litellm_customer_id"] == "member-ref-1"
+        assert await _collect_stream(stream) == b'{"model": "gpt-4"}'
+
+    @pytest.mark.asyncio
+    async def test_project_runtime_without_customer_header_raises(self):
+        from codemie.enterprise.litellm.runtime_budget_selection import RuntimeBudgetMode
+
+        user = MagicMock()
+        user.id = "user-123"
+        user.username = "someone"
+        project_runtime = MagicMock()
+        project_runtime.headers = {"x-other": "value"}
+
+        with patch(
+            "codemie.enterprise.litellm.proxy_router.select_runtime_budget_mode",
+            return_value=MagicMock(mode=RuntimeBudgetMode.PROJECT_BUDGET_WITH_MEMBER_TRACKING),
+        ):
+            with pytest.raises(RuntimeError, match="no runtime user"):
+                await _create_project_runtime_body_stream(
+                    body_bytes=b"{}",
+                    user=user,
+                    request_info={},
+                    category=BudgetCategory.PLATFORM,
+                    llm_model="gpt-4",
+                    project_name="my-project",
+                    project_runtime=project_runtime,
+                )
 
 
 class TestParseUsageWithCost:
@@ -1971,7 +1970,7 @@ class TestProxyToLLMProxy:
         # Mock dependencies
         with patch("codemie.enterprise.litellm.proxy_router.is_litellm_enabled", return_value=True):
             with patch(
-                "codemie.enterprise.litellm.proxy_router._create_body_stream_with_optional_injection",
+                "codemie.enterprise.litellm.proxy_router._resolve_budget_attribution_stream",
                 new_callable=AsyncMock,
             ) as mock_inject:
                 mock_inject.return_value = mock_stream()
@@ -2032,7 +2031,7 @@ class TestProxyToLLMProxy:
                 return_value=user_credentials,
             ) as mock_resolve,
             patch(
-                "codemie.enterprise.litellm.proxy_router._create_body_stream_with_optional_injection",
+                "codemie.enterprise.litellm.proxy_router._resolve_budget_attribution_stream",
                 new_callable=AsyncMock,
             ) as mock_body,
             patch("codemie.enterprise.litellm.proxy_router._prepare_proxy_headers") as mock_headers,
@@ -2109,7 +2108,7 @@ class TestProxyToLLMProxy:
         with (
             patch("codemie.enterprise.litellm.proxy_router.is_litellm_enabled", return_value=True),
             patch(
-                "codemie.enterprise.litellm.proxy_router._create_body_stream_with_optional_injection",
+                "codemie.enterprise.litellm.proxy_router._resolve_budget_attribution_stream",
                 new_callable=AsyncMock,
             ) as mock_body,
             patch("codemie.enterprise.litellm.proxy_router._prepare_proxy_headers") as mock_prepare,
@@ -2197,7 +2196,7 @@ class TestProxyToLLMProxy:
 
         with patch("codemie.enterprise.litellm.proxy_router.is_litellm_enabled", return_value=True):
             with patch(
-                "codemie.enterprise.litellm.proxy_router._create_body_stream_with_optional_injection",
+                "codemie.enterprise.litellm.proxy_router._resolve_budget_attribution_stream",
                 new_callable=AsyncMock,
             ) as mock_inject:
                 mock_inject.return_value = mock_stream()

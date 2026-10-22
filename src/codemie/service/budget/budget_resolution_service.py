@@ -299,8 +299,7 @@ class BudgetResolutionService:
             f"user_id={user_id!r} username={user_email!r} project_name={resolved.project_name!r} "
             f"budget_id={resolved.budget_id!r} budget_category={resolved.budget_category.value!r} "
             f"provider={result.provider!r} api_key_present={result.api_key is not None} "
-            f"base_url_present={result.base_url is not None} headers_applied={bool(result.headers)} "
-            f"body_overrides_applied={bool(result.body_overrides)}"
+            f"base_url_present={result.base_url is not None} headers_applied={bool(result.headers)}"
         )
         return result
 
@@ -337,8 +336,7 @@ class BudgetResolutionService:
             f"user_id={user_id!r} username={user_email!r} project_name={resolved.project_name!r} "
             f"budget_id={resolved.budget_id!r} budget_category={resolved.budget_category.value!r} "
             f"provider={result.provider!r} api_key_present={result.api_key is not None} "
-            f"base_url_present={result.base_url is not None} headers_applied={bool(result.headers)} "
-            f"body_overrides_applied={bool(result.body_overrides)}"
+            f"base_url_present={result.base_url is not None} headers_applied={bool(result.headers)}"
         )
         return result
 

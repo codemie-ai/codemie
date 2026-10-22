@@ -1,0 +1,148 @@
+{
+  "decision": "approve",
+  "rationale": "All 3 prior findings (CR-001..CR-003) re-checked against current source and resolved by commit 191c17050; AC7 now met. Earlier rationale: 13 candidates dismissed as noise or out of intent; 0 deferred.",
+  "confidence": "high",
+  "risk_flags": [
+    "public-api",
+    "data-contract"
+  ],
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "AC1: no code sets user in a LiteLLM request body, model_kwargs, extra_body or body_overrides",
+      "status": "pass",
+      "notes": "Header set instead of model_kwargs in llm_factory.py"
+    },
+    {
+      "kind": "spec",
+      "item": "AC2: proxy requests keep original body bytes and x-litellm-customer-id",
+      "status": "pass",
+      "notes": "Body streams return original bytes; request_info customer id unchanged"
+    },
+    {
+      "kind": "spec",
+      "item": "AC3: direct models carry header in default headers, no model_kwargs['user']",
+      "status": "pass",
+      "notes": "Covered for project, premium and platform paths"
+    },
+    {
+      "kind": "spec",
+      "item": "AC4: platform path None yields no header; any string yields header as-is",
+      "status": "pass",
+      "notes": "Parametrized test covers None, email, empty and blank"
+    },
+    {
+      "kind": "spec",
+      "item": "AC5: personal-key bypass requests carry neither header nor user",
+      "status": "pass",
+      "notes": "Bypass path untouched; tests assert absence"
+    },
+    {
+      "kind": "spec",
+      "item": "AC6: member-tracking without header still raises RuntimeError on both paths",
+      "status": "pass",
+      "notes": "Retained and tested on both paths"
+    },
+    {
+      "kind": "spec",
+      "item": "AC7: body_overrides, inject helper and loader export gone; no reference in source or tests",
+      "status": "pass",
+      "notes": "No body_overrides reference remains in src or tests"
+    },
+    {
+      "kind": "spec",
+      "item": "AC8: tests assert header; ruff and affected test modules pass",
+      "status": "pending-stage-7",
+      "notes": "Execution evidence owned by Stage 7"
+    },
+    {
+      "kind": "spec",
+      "item": "Behavior 3: runtime_user dropped, ID read from provider_result.headers",
+      "status": "pass",
+      "notes": "Tuple reduced to 4 elements, signatures updated"
+    },
+    {
+      "kind": "spec",
+      "item": "Behavior 4: dead code and body-override log fields removed",
+      "status": "pass",
+      "notes": "litellm_customer_key log fields sourced from header"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goals: no new guards, no renames, no comments, hop-by-hop unchanged",
+      "status": "pass",
+      "notes": "Respected"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "5 commit subjects in range all match the documented EPMCDME-####: Description format"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "new customer_header.py carries the Apache license header and is a separate module for the shared constant (Module Cohesion rule); typed Final constant; no documented blocking standard broken in the 7 changed src files. Ruff/license gates not run by this reviewer"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "customer id header value is server-derived (user email or premium username), no credentials, tokens or auth headers added to logs or headers; no untrusted-input parsing introduced"
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "tests/enterprise/litellm/test_budget_provider_adapter.py",
+      "line": 986,
+      "title": "Tests still reference removed body_overrides field",
+      "problem": "Spec AC7 requires that no reference to body_overrides remains in source or tests. The test name at line 986 contains 'without_body_overrides' and lines 993 and 1002 assert not hasattr(result, 'body_overrides').",
+      "impact": "A required spec criterion is only partially met. The removed name stays in the codebase and the spec's stated goal of leaving no name that suggests a body-borne value is not achieved.",
+      "recommendation": "Rename the test to drop 'without_body_overrides' and remove the two hasattr(result, 'body_overrides') assertions; the headers assertions already cover the behavior."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/enterprise/litellm/test_llm_factory.py",
+      "line": 921,
+      "title": "Bypass test asserts on a dict never passed in",
+      "problem": "test_non_global_bypass_does_not_set_customer_header declares merged_headers = {} but calls _configure_direct_runtime_overrides with merged_headers={} (a fresh inline dict), so the final assert merged_headers == {} is vacuous and cannot fail.",
+      "impact": "The test no longer verifies that the personal-key bypass leaves the customer header unset; a regression that writes the header would pass.",
+      "recommendation": "Pass merged_headers=merged_headers in the call at line 921, as the sibling bypass test does."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/enterprise/litellm/test_proxy_router.py",
+      "title": "No test that customer id reaches outgoing proxy headers",
+      "problem": "The body injection tests that observed the customer id at the outgoing-request boundary were rewritten to assert only request_info['litellm_customer_id']. _apply_budget_provider_headers (proxy_router.py:329) is now the sole carrier of the id on the proxy path and no test asserts it produces x-litellm-customer-id from request_info or from budget_provider_headers. The _prepare_proxy_headers tests assert only Authorization.",
+      "impact": "If the header copy is dropped, renamed or mis-keyed, proxied requests reach LiteLLM with neither body user nor customer header, silently losing per-user and project-member budget attribution while all tests still pass.",
+      "recommendation": "Add tests calling _prepare_proxy_headers (litellm_context patched to raise LookupError) with request_info={'litellm_customer_id': 'user@example.com'} and with request_info={'budget_provider_headers': {'x-litellm-customer-id': 'ref'}}, asserting result['x-litellm-customer-id'] equals the value."
+    }
+  ],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "resolved",
+      "notes": "grep of src and tests finds no body_overrides reference"
+    },
+    {
+      "id": "CR-002",
+      "status": "resolved",
+      "notes": "bypass test passes merged_headers=merged_headers and asserts it stays empty"
+    },
+    {
+      "id": "CR-003",
+      "status": "resolved",
+      "notes": "test_proxy_router.py asserts x-litellm-customer-id from request_info and from budget_provider_headers via _prepare_proxy_headers"
+    }
+  ]
+}

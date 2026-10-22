@@ -304,181 +304,111 @@ class TestProxyBudgetHelpers:
 
 
 class TestProxyPremiumUsernameInjection:
-    """Verify that _create_body_stream_with_optional_injection picks the right username."""
+    """Verify that _resolve_budget_attribution_stream picks the right username."""
 
     @pytest.mark.asyncio
-    async def test_injects_premium_username_for_premium_model(self):
-        """Config enabled + premium model → derived username injected."""
-        captured_usernames: list[str] = []
-
-        def fake_inject(body_bytes, user_id, request_info):
-            captured_usernames.append(user_id)
-
-            async def gen():
-                yield body_bytes
-
-            return gen()
-
+    async def test_sets_premium_customer_id_for_premium_model(self):
+        """Config enabled + premium model → derived customer id set."""
         with _patch_budget_name("premium_models"), _patch_aliases(["opus"]):
-            with patch(
-                "codemie.enterprise.litellm.proxy_router._inject_user_into_request_body_from_bytes",
-                side_effect=fake_inject,
-            ):
-                with patch("codemie.enterprise.litellm.proxy_router.check_user_budget"):
-                    from codemie.enterprise.litellm.proxy_router import (
-                        _create_body_stream_with_optional_injection,
-                    )
+            with patch("codemie.enterprise.litellm.proxy_router.check_user_budget"):
+                from codemie.enterprise.litellm.proxy_router import (
+                    _resolve_budget_attribution_stream,
+                )
 
-                    mock_user = MagicMock()
-                    mock_user.username = "alice@example.com"
+                mock_user = MagicMock()
+                mock_user.username = "alice@example.com"
 
-                    request_info = {"llm_model": "claude-opus-4"}
+                request_info = {"llm_model": "claude-opus-4"}
 
-                    await _create_body_stream_with_optional_injection(
-                        body_bytes=b'{"model":"claude-opus-4"}',
-                        user=mock_user,
-                        request_info=request_info,
-                    )
+                await _resolve_budget_attribution_stream(
+                    body_bytes=b'{"model":"claude-opus-4"}',
+                    user=mock_user,
+                    request_info=request_info,
+                )
 
-        assert captured_usernames == ["alice@example.com_codemie_premium_models"]
+        assert request_info["litellm_customer_id"] == "alice@example.com_codemie_premium_models"
 
     @pytest.mark.asyncio
-    async def test_injects_base_username_for_non_premium_model(self):
+    async def test_sets_base_customer_id_for_non_premium_model(self):
         """Config enabled + non-premium model → standard username used."""
-        captured_usernames: list[str] = []
-
-        def fake_inject(body_bytes, user_id, request_info):
-            captured_usernames.append(user_id)
-
-            async def gen():
-                yield body_bytes
-
-            return gen()
-
         with _patch_budget_name("premium_models"), _patch_aliases(["opus"]):
-            with patch(
-                "codemie.enterprise.litellm.proxy_router._inject_user_into_request_body_from_bytes",
-                side_effect=fake_inject,
-            ):
-                with patch("codemie.enterprise.litellm.proxy_router.check_user_budget"):
-                    from codemie.enterprise.litellm.proxy_router import (
-                        _create_body_stream_with_optional_injection,
-                    )
+            with patch("codemie.enterprise.litellm.proxy_router.check_user_budget"):
+                from codemie.enterprise.litellm.proxy_router import (
+                    _resolve_budget_attribution_stream,
+                )
 
-                    mock_user = MagicMock()
-                    mock_user.username = "alice@example.com"
+                mock_user = MagicMock()
+                mock_user.username = "alice@example.com"
 
-                    request_info = {"llm_model": "claude-3-5-sonnet"}
+                request_info = {"llm_model": "claude-3-5-sonnet"}
 
-                    await _create_body_stream_with_optional_injection(
-                        body_bytes=b'{"model":"claude-3-5-sonnet"}',
-                        user=mock_user,
-                        request_info=request_info,
-                    )
+                await _resolve_budget_attribution_stream(
+                    body_bytes=b'{"model":"claude-3-5-sonnet"}',
+                    user=mock_user,
+                    request_info=request_info,
+                )
 
-        assert captured_usernames == ["alice@example.com"]
+        assert request_info["litellm_customer_id"] == "alice@example.com"
 
     @pytest.mark.asyncio
-    async def test_injects_platform_username_for_non_premium_web_request(self):
-        captured_usernames: list[str] = []
-
-        def fake_inject(body_bytes, user_id, request_info):
-            captured_usernames.append(user_id)
-
-            async def gen():
-                yield body_bytes
-
-            return gen()
-
+    async def test_sets_platform_customer_id_for_non_premium_web_request(self):
         with _patch_budget_name(""), _patch_cli_budget_name("cli_budget"):
-            with patch(
-                "codemie.enterprise.litellm.proxy_router._inject_user_into_request_body_from_bytes",
-                side_effect=fake_inject,
-            ):
-                with patch("codemie.enterprise.litellm.proxy_router.check_user_budget"):
-                    from codemie.enterprise.litellm.proxy_router import _create_body_stream_with_optional_injection
+            with patch("codemie.enterprise.litellm.proxy_router.check_user_budget"):
+                from codemie.enterprise.litellm.proxy_router import _resolve_budget_attribution_stream
 
-                    mock_user = MagicMock()
-                    mock_user.username = "alice@example.com"
+                mock_user = MagicMock()
+                mock_user.username = "alice@example.com"
 
-                    request_info = {"llm_model": "gpt-4.1-mini", "client_type": "web"}
+                request_info = {"llm_model": "gpt-4.1-mini", "client_type": "web"}
 
-                    await _create_body_stream_with_optional_injection(
-                        body_bytes=b'{"model":"gpt-4.1-mini"}',
-                        user=mock_user,
-                        request_info=request_info,
-                    )
+                await _resolve_budget_attribution_stream(
+                    body_bytes=b'{"model":"gpt-4.1-mini"}',
+                    user=mock_user,
+                    request_info=request_info,
+                )
 
-        assert captured_usernames == ["alice@example.com"]
+        assert request_info["litellm_customer_id"] == "alice@example.com"
 
     @pytest.mark.asyncio
     async def test_premium_budget_takes_precedence_over_proxy_budget(self):
-        captured_usernames: list[str] = []
-
-        def fake_inject(body_bytes, user_id, request_info):
-            captured_usernames.append(user_id)
-
-            async def gen():
-                yield body_bytes
-
-            return gen()
-
         with _patch_budget_name("premium_models"), _patch_aliases(["opus"]), _patch_cli_budget_name("cli_budget"):
-            with patch(
-                "codemie.enterprise.litellm.proxy_router._inject_user_into_request_body_from_bytes",
-                side_effect=fake_inject,
-            ):
-                with patch("codemie.enterprise.litellm.proxy_router.check_user_budget"):
-                    from codemie.enterprise.litellm.proxy_router import _create_body_stream_with_optional_injection
+            with patch("codemie.enterprise.litellm.proxy_router.check_user_budget"):
+                from codemie.enterprise.litellm.proxy_router import _resolve_budget_attribution_stream
 
-                    mock_user = MagicMock()
-                    mock_user.username = "alice@example.com"
+                mock_user = MagicMock()
+                mock_user.username = "alice@example.com"
 
-                    request_info = {"llm_model": "claude-opus-4", "client_type": "web"}
+                request_info = {"llm_model": "claude-opus-4", "client_type": "web"}
 
-                    await _create_body_stream_with_optional_injection(
-                        body_bytes=b'{"model":"claude-opus-4"}',
-                        user=mock_user,
-                        request_info=request_info,
-                    )
+                await _resolve_budget_attribution_stream(
+                    body_bytes=b'{"model":"claude-opus-4"}',
+                    user=mock_user,
+                    request_info=request_info,
+                )
 
-        assert captured_usernames == ["alice@example.com_codemie_premium_models"]
+        assert request_info["litellm_customer_id"] == "alice@example.com_codemie_premium_models"
 
     @pytest.mark.asyncio
-    async def test_injects_base_username_when_config_disabled(self):
+    async def test_sets_base_customer_id_when_config_disabled(self):
         """Config disabled → standard username used regardless of model name."""
-        captured_usernames: list[str] = []
-
-        def fake_inject(body_bytes, user_id, request_info):
-            captured_usernames.append(user_id)
-
-            async def gen():
-                yield body_bytes
-
-            return gen()
-
         with _patch_budget_name(""):
-            with patch(
-                "codemie.enterprise.litellm.proxy_router._inject_user_into_request_body_from_bytes",
-                side_effect=fake_inject,
-            ):
-                with patch("codemie.enterprise.litellm.proxy_router.check_user_budget"):
-                    from codemie.enterprise.litellm.proxy_router import (
-                        _create_body_stream_with_optional_injection,
-                    )
+            with patch("codemie.enterprise.litellm.proxy_router.check_user_budget"):
+                from codemie.enterprise.litellm.proxy_router import (
+                    _resolve_budget_attribution_stream,
+                )
 
-                    mock_user = MagicMock()
-                    mock_user.username = "alice@example.com"
+                mock_user = MagicMock()
+                mock_user.username = "alice@example.com"
 
-                    request_info = {"llm_model": "claude-opus-4"}
+                request_info = {"llm_model": "claude-opus-4"}
 
-                    await _create_body_stream_with_optional_injection(
-                        body_bytes=b'{"model":"claude-opus-4"}',
-                        user=mock_user,
-                        request_info=request_info,
-                    )
+                await _resolve_budget_attribution_stream(
+                    body_bytes=b'{"model":"claude-opus-4"}',
+                    user=mock_user,
+                    request_info=request_info,
+                )
 
-        assert captured_usernames == ["alice@example.com"]
+        assert request_info["litellm_customer_id"] == "alice@example.com"
 
 
 # ---------------------------------------------------------------------------

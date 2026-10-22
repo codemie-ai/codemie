@@ -28,6 +28,7 @@ from codemie.enterprise.litellm.budget_provider_adapter import (
 from codemie.service.budget.budget_enums import BudgetCategory, SyncStatus
 from codemie.service.budget.provider import (
     BudgetProviderState,
+    BudgetRuntimeContext,
     BudgetResetReconciliationTarget,
     MemberBudgetSpendSnapshot,
 )
@@ -967,3 +968,33 @@ class TestAdapterModelsParameter:
         mock_service._generate_project_key.assert_called_once()
         call_kwargs = mock_service._generate_project_key.call_args[1]
         assert call_kwargs["models"] is None
+
+
+def _runtime_context(member_provider_metadata: dict) -> BudgetRuntimeContext:
+    return BudgetRuntimeContext(
+        scope="project",
+        project_name="proj-a",
+        budget_category=BudgetCategory.CLI,
+        budget_id="budget-1",
+        user_id="user-1",
+        user_email="user@example.com",
+        model="gpt-4.1",
+        member_provider_metadata=member_provider_metadata,
+    )
+
+
+def test_resolve_runtime_core_sets_customer_header():
+    adapter = LiteLLMBudgetEnforcementProvider(service=SimpleNamespace())
+    ref = "codemie:project:proj-a:category:cli:user:user-1"
+
+    result = adapter._resolve_runtime_core(context=_runtime_context({"provider_member_ref": ref}))
+
+    assert result.headers == {"x-litellm-customer-id": ref}
+
+
+def test_resolve_runtime_core_without_member_ref_has_no_headers():
+    adapter = LiteLLMBudgetEnforcementProvider(service=SimpleNamespace())
+
+    result = adapter._resolve_runtime_core(context=_runtime_context({}))
+
+    assert result.headers == {}

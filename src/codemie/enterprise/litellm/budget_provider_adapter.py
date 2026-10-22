@@ -29,6 +29,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from codemie.configs import logger
+from codemie.core.constants import LITELLM_CUSTOMER_ID_HEADER
 from codemie.service.budget.budget_enums import BudgetCategory, SyncStatus
 from codemie.service.budget.budget_models import build_override_project_budget_id, build_shared_project_budget_id
 from codemie.service.budget.provider import (
@@ -1356,14 +1357,13 @@ class LiteLLMBudgetEnforcementProvider:
                 f"budget_category={context.budget_category.value!r} model={context.model!r} "
                 f"api_key_present={project_api_key is not None} base_url_present={project_base_url is not None} "
                 f"provider_member_ref={provider_member_ref!r} "
-                f"headers_applied=true body_overrides_applied=true"
+                "headers_applied=true"
             )
             return BudgetRuntimeProviderResult(
                 provider=_PROVIDER_NAME,
                 api_key=project_api_key,
                 base_url=project_base_url,
-                headers={"x-litellm-customer-id": provider_member_ref},
-                body_overrides={"user": provider_member_ref},
+                headers={LITELLM_CUSTOMER_ID_HEADER: provider_member_ref},
             )
         logger.debug(
             f"budget_event=runtime_provider_overrides_applied component=litellm_budget_provider "
@@ -1372,7 +1372,7 @@ class LiteLLMBudgetEnforcementProvider:
             f"budget_category={context.budget_category.value!r} model={context.model!r} "
             f"api_key_present={project_api_key is not None} base_url_present={project_base_url is not None} "
             f"provider_member_ref={provider_member_ref!r} "
-            f"headers_applied=false body_overrides_applied=false"
+            "headers_applied=false"
         )
         return BudgetRuntimeProviderResult(
             provider=_PROVIDER_NAME,

@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "task": "Remove the OpenAI user field from LiteLLM request bodies on the proxy_router and llm_factory direct paths, send x-litellm-customer-id header everywhere, delete obsolete body-injection helpers and overrides, and update affected tests.",
+  "generated": "2026-10-20T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 16,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Touches proxy_router (two body-stream builders plus the injector helper), llm_factory (project override, premium and platform budget paths, runtime resolver tuple), budget_provider_adapter, the shared BudgetRuntimeProviderResult contract and the enterprise loader import/export. Cleanup of body_overrides and runtime_user ripples across these." },
+    { "dimension": "file_change_estimate", "reason": "About 5 source files and 3-4 test files modified across enterprise/litellm, service/budget, enterprise loader and tests; no new files. Dozens of test assertions and about 13 injector patch sites must be rewritten to assert headers." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

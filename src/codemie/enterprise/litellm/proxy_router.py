@@ -61,6 +61,7 @@ from codemie.core.constants import (
     HEADER_CODEMIE_CLI_BRANCH,
     HEADER_CODEMIE_CLI_REPOSITORY,
     HEADER_CODEMIE_CLI_PROJECT,
+    LITELLM_CUSTOMER_ID_HEADER,
 )
 from codemie.core.dependecies import litellm_context
 from codemie.core.utils import calculate_token_cost
@@ -94,7 +95,7 @@ from .runtime_budget_selection import RuntimeBudgetMode, select_runtime_budget_m
 from codemie.repository.project_budget_repository import project_budget_assignment_repository
 
 # Import proxy utils from loader (with enterprise package availability check)
-from ..loader import inject_user_into_body, parse_usage_from_response
+from ..loader import parse_usage_from_response
 from codemie.core.proxy_routing_headers import (
     with_routing_metadata_stream,
     _routing_info_to_headers,
@@ -104,7 +105,6 @@ from codemie.core.routing_costs import with_counterfactual_costs
 from codemie.core.router_proxy_session import RouterProxySession
 
 
-LITELLM_CUSTOMER_ID_HEADER = "x-litellm-customer-id"
 CODEMIE_CACHE_HIT_HEADER = "x-codemie-litellm-cache-hit"
 LITELLM_CACHE_KEY_HEADER = "x-litellm-cache-key"
 # LiteLLM's own complexity router may re-route a request to a different concrete
@@ -522,37 +522,6 @@ def _extract_model(
     return None
 
 
-def _inject_user_into_request_body_from_bytes(body_bytes: bytes, user_id: str, request_info: dict):
-    """
-    Inject user into buffered request body for LiteLLM budget tracking.
-
-    Args:
-        body_bytes: Buffered request body
-        user_id: User ID to inject
-        request_info: Request metadata (session_id, request_id)
-
-    Returns:
-        AsyncGenerator: Modified body stream with user injected
-    """
-    if inject_user_into_body is None:
-        # Fallback: passthrough without user injection
-        async def passthrough():
-            yield body_bytes
-
-        return passthrough()
-
-    async def bytes_to_stream():
-        yield body_bytes
-
-    return inject_user_into_body(
-        body_stream=bytes_to_stream(),
-        content_type="application/json",
-        username=user_id,
-        session_id=request_info.get(SESSION_ID),
-        request_id=request_info.get(REQUEST_ID),
-    )
-
-
 def _stream_body_bytes(body_bytes: bytes):
     async def passthrough():
         yield body_bytes
@@ -790,16 +759,16 @@ async def _resolve_bypass_mode_stream(body_bytes: bytes):
     return _stream_body_bytes(body_bytes)
 
 
-async def _create_body_stream_with_optional_injection(
+async def _resolve_budget_attribution_stream(
     body_bytes: bytes,
     user: User,
     request_info: dict,
     user_credentials: ResolvedLiteLLMUserCredentials | None = None,
 ):
     """
-    Create body stream with or without user injection.
+    Create the request body stream and record the LiteLLM customer id for budget attribution.
 
-    When a dedicated proxy budget applies, the injected LiteLLM username is derived as
+    When a dedicated proxy budget applies, the LiteLLM customer id is derived as
     ``{user.username}_{budget_name}`` so that spend is attributed to a separate budget
     identity. Premium-model attribution takes precedence; otherwise proxy requests may
     use the dedicated proxy budget. If neither feature applies, the standard
@@ -811,7 +780,7 @@ async def _create_body_stream_with_optional_injection(
         request_info: Request metadata
 
     Returns:
-        AsyncGenerator: Body stream (modified or original)
+        AsyncGenerator: Body stream with the request body unchanged
     """
     if user_credentials is not None and user_credentials.is_personal:
         logger.info(
@@ -895,7 +864,7 @@ async def _create_project_runtime_body_stream(
         )
         return _stream_body_bytes(body_bytes)
 
-    project_runtime_username = project_runtime.body_overrides.get("user")
+    project_runtime_username = project_runtime.headers.get(LITELLM_CUSTOMER_ID_HEADER)
     if not isinstance(project_runtime_username, str) or not project_runtime_username:
         raise RuntimeError(
             f"Project member runtime selected but provider returned no runtime user for {project_name!r}"
@@ -909,11 +878,7 @@ async def _create_project_runtime_body_stream(
     )
     if project_runtime_username.strip():
         request_info["litellm_customer_id"] = project_runtime_username
-    return _inject_user_into_request_body_from_bytes(
-        body_bytes=body_bytes,
-        user_id=project_runtime_username if project_runtime_username.strip() else None,
-        request_info=request_info,
-    )
+    return _stream_body_bytes(body_bytes)
 
 
 async def _create_global_budget_body_stream(
@@ -944,7 +909,7 @@ async def _create_global_budget_body_stream(
         )
 
     logger.debug(
-        f"budget_event=runtime_budget_user_injected component=proxy_router user_id={user.id!r} "
+        f"budget_event=runtime_budget_customer_resolved component=proxy_router user_id={user.id!r} "
         f"username={user.username!r} provider_member_ref={username!r} "
         f"litellm_customer_key={username!r} budget_category={category.value!r} "
         f"budget_id={budget_id!r} model={llm_model!r}"
@@ -955,11 +920,7 @@ async def _create_global_budget_body_stream(
     if username_is_valid:
         request_info["litellm_customer_id"] = username
 
-    return _inject_user_into_request_body_from_bytes(
-        body_bytes=body_bytes,
-        user_id=username if username_is_valid else None,
-        request_info=request_info,
-    )
+    return _stream_body_bytes(body_bytes)
 
 
 async def _resolve_project_budget_runtime(user: User, category: BudgetCategory, request_info: dict):
@@ -1025,9 +986,8 @@ async def _resolve_project_budget_runtime(user: User, category: BudgetCategory, 
         f"provider={provider_result.provider!r} api_key_present={provider_result.api_key is not None} "
         f"api_key_fingerprint={_anonymized_key_fingerprint(provider_result.api_key)!r} "
         f"base_url_present={provider_result.base_url is not None} headers_applied={bool(provider_result.headers)} "
-        f"body_overrides_applied={bool(provider_result.body_overrides)} "
         f"provider_header_names={sorted(provider_result.headers.keys())!r} "
-        f"litellm_customer_key={provider_result.body_overrides.get('user')!r}"
+        f"litellm_customer_key={provider_result.headers.get(LITELLM_CUSTOMER_ID_HEADER)!r}"
     )
 
     return provider_result
@@ -1892,8 +1852,8 @@ async def _proxy_to_llm_proxy(
         integration_id=request_info.get(INTEGRATION),
     )
 
-    # Create body stream (with or without user injection)
-    body_stream = await _create_body_stream_with_optional_injection(
+    # Create body stream
+    body_stream = await _resolve_budget_attribution_stream(
         body_bytes=body_bytes,
         user=user,
         request_info=request_info,

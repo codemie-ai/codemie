@@ -27,6 +27,7 @@ from pydantic import BaseModel
 
 from codemie.configs import logger
 
+from codemie.core.constants import LITELLM_CUSTOMER_ID_HEADER
 from .project_member_runtime_sync import ensure_project_member_runtime_ready_sync
 from .runtime_budget_selection import RuntimeBudgetMode, select_runtime_budget_mode
 
@@ -377,19 +378,17 @@ def _build_embedding_model_params(
 
 
 def _has_project_runtime_overrides(
-    runtime_user: str | None,
     runtime_headers: dict[str, str],
     runtime_api_key: str | None,
     runtime_base_url: str | None,
 ) -> bool:
-    return bool(runtime_user or runtime_headers or runtime_api_key or runtime_base_url)
+    return bool(runtime_headers or runtime_api_key or runtime_base_url)
 
 
 def _apply_project_runtime_overrides(
     *,
     merged_headers: dict[str, str],
     request_params: dict[str, Any],
-    runtime_user: str | None,
     runtime_headers: dict[str, str],
     runtime_api_key: str | None,
     runtime_base_url: str | None,
@@ -400,8 +399,6 @@ def _apply_project_runtime_overrides(
     request_params["openai_api_key"] = runtime_api_key or config.LITE_LLM_APP_KEY
     if runtime_base_url:
         request_params["azure_endpoint"] = runtime_base_url
-    if runtime_user:
-        request_params["model_kwargs"] = {"user": runtime_user}
 
 
 def _mirror_budget_assignment(*, user_id: str | None, customer: Any | None, category: "CoreBudgetCategory") -> None:
@@ -460,6 +457,7 @@ def _try_apply_premium_budget(
     user_email: Optional[str],
     user_id: Optional[str],
     request_params: dict[str, Any],
+    merged_headers: dict[str, str],
     has_project_context: bool = False,
 ) -> bool:
     """Apply the premium-model budget when the model/user qualify. Returns whether it was applied."""
@@ -495,7 +493,7 @@ def _try_apply_premium_budget(
         f"litellm_customer_key={premium_username!r}"
     )
     customer = check_user_budget(user_email=premium_username, user_id=user_id, budget_id=premium_budget_id)
-    request_params["model_kwargs"] = {"user": premium_username}
+    merged_headers[LITELLM_CUSTOMER_ID_HEADER] = premium_username
     _mirror_budget_assignment(user_id=user_id, customer=customer, category=CoreBudgetCategory.PREMIUM_MODELS)
     return True
 
@@ -506,6 +504,7 @@ def _apply_platform_budget(
     user_email: Optional[str],
     user_id: Optional[str],
     request_params: dict[str, Any],
+    merged_headers: dict[str, str],
 ) -> None:
     from codemie.service.budget.budget_enums import BudgetCategory as CoreBudgetCategory
     from .budget_categories import BudgetCategory as LiteLLMBudgetCategory
@@ -521,7 +520,8 @@ def _apply_platform_budget(
         f"litellm_customer_key={user_email!r}"
     )
     customer = check_user_budget(user_email=user_email, user_id=user_id, budget_id=platform_budget_id)
-    request_params["model_kwargs"] = {"user": user_email}
+    if user_email is not None:
+        merged_headers[LITELLM_CUSTOMER_ID_HEADER] = user_email
     _mirror_budget_assignment(user_id=user_id, customer=customer, category=CoreBudgetCategory.PLATFORM)
 
 
@@ -574,7 +574,6 @@ def _configure_direct_runtime_overrides(
     if litellm_context and litellm_context.budget_fallback_from:
         runtime_context = litellm_context.model_copy(update={"current_project": project})
     (
-        project_runtime_user,
         project_runtime_headers,
         project_runtime_api_key,
         project_runtime_base_url,
@@ -587,7 +586,6 @@ def _configure_direct_runtime_overrides(
     )
 
     if _has_project_runtime_overrides(
-        project_runtime_user,
         project_runtime_headers,
         project_runtime_api_key,
         project_runtime_base_url,
@@ -596,7 +594,6 @@ def _configure_direct_runtime_overrides(
         _apply_project_runtime_overrides(
             merged_headers=merged_headers,
             request_params=request_params,
-            runtime_user=project_runtime_user,
             runtime_headers=project_runtime_headers,
             runtime_api_key=project_runtime_api_key,
             runtime_base_url=project_runtime_base_url,
@@ -609,8 +606,7 @@ def _configure_direct_runtime_overrides(
             f"base_url_present={project_runtime_base_url is not None} "
             f"headers_applied={bool(project_runtime_headers)} "
             f"provider_header_names={sorted(project_runtime_headers.keys())!r} "
-            f"body_user_present={project_runtime_user is not None} "
-            f"litellm_customer_key={project_runtime_user!r}"
+            f"litellm_customer_key={project_runtime_headers.get(LITELLM_CUSTOMER_ID_HEADER)!r}"
         )
         return
 
@@ -630,6 +626,7 @@ def _configure_direct_runtime_overrides(
         user_email=user_email,
         user_id=user_id,
         request_params=request_params,
+        merged_headers=merged_headers,
         has_project_context=has_real_project_context,
     ):
         _record_direct_budget_attribution(litellm_context, project, project_budget_used=False)
@@ -640,6 +637,7 @@ def _configure_direct_runtime_overrides(
         user_email=user_email,
         user_id=user_id,
         request_params=request_params,
+        merged_headers=merged_headers,
     )
     _record_direct_budget_attribution(litellm_context, project, project_budget_used=False)
 
@@ -820,10 +818,10 @@ def _resolve_direct_project_budget_runtime(
     litellm_context: Optional["LiteLLMContext"],
     user_id: Optional[str],
     user_email: Optional[str],
-) -> tuple[str | None, dict[str, str], str | None, str | None, bool]:
+) -> tuple[dict[str, str], str | None, str | None, bool]:
     """Resolve project budget headers for direct LiteLLM chat model usage.
 
-    The 5th element (has_project_budget_scopes) is True when the project has at least one budget
+    The 4th element (has_project_budget_scopes) is True when the project has at least one budget
     scope for this user. False means the caller must not block personal/default budget fallback.
     """
     if not litellm_context or not litellm_context.current_project or not user_id or not user_email:
@@ -833,7 +831,7 @@ def _resolve_direct_project_budget_runtime(
             f"project_name={(litellm_context.current_project if litellm_context else None)!r} "
             f"model={llm_model_details.base_name!r} reason=missing_context_or_project"
         )
-        return None, {}, None, None, False
+        return {}, None, None, False
 
     from codemie.service.budget.budget_resolution_service import budget_resolution_service
 
@@ -851,7 +849,7 @@ def _resolve_direct_project_budget_runtime(
             f"project_name={litellm_context.current_project!r} "
             f"model={llm_model_details.base_name!r} reason=no_project_budget_scopes"
         )
-        return None, {}, None, None, False
+        return {}, None, None, False
 
     category = _resolve_direct_budget_category(
         user_email=user_email,
@@ -895,7 +893,7 @@ def _resolve_direct_project_budget_runtime(
             f"budget_category={category.value!r} model={llm_model_details.base_name!r} "
             f"reason=no_provider_result"
         )
-        return None, {}, None, None, True
+        return {}, None, None, True
 
     selection = select_runtime_budget_mode(
         has_user_litellm_credentials=False,
@@ -903,7 +901,7 @@ def _resolve_direct_project_budget_runtime(
         project_member_tracking_enabled=True,
         resolved_project_budget=True,
     )
-    runtime_user = provider_result.body_overrides.get("user")
+    runtime_user = provider_result.headers.get(LITELLM_CUSTOMER_ID_HEADER)
     logger.info(
         f"budget_event=runtime_mode_selected component=litellm_llm_factory "
         f"user_id={user_id!r} username={user_email!r} project_name={project_name!r} "
@@ -920,9 +918,9 @@ def _resolve_direct_project_budget_runtime(
             raise RuntimeError(
                 f"Project member runtime selected but provider returned no runtime user for {project_name!r}"
             )
-        return runtime_user, provider_result.headers, provider_result.api_key, provider_result.base_url, True
+        return provider_result.headers, provider_result.api_key, provider_result.base_url, True
 
-    return None, provider_result.headers, provider_result.api_key, provider_result.base_url, True
+    return provider_result.headers, provider_result.api_key, provider_result.base_url, True
 
 
 def create_litellm_embedding_model(
