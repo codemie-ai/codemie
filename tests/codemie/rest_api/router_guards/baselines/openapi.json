@@ -8060,6 +8060,24 @@
         "title": "CreateSVNIndexRequest",
         "type": "object"
       },
+      "CreateSettingResponse": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message",
+          "id"
+        ],
+        "title": "CreateSettingResponse",
+        "type": "object"
+      },
       "CreateWorkflowExecutionRequest": {
         "properties": {
           "conversation_id": {
@@ -16910,6 +16928,65 @@
         "title": "MCPConfigResponse",
         "type": "object"
       },
+      "MCPConfigTestRequest": {
+        "description": "Optional body of the saved-config test request",
+        "properties": {
+          "settings_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "ID of an MCP integration whose credentials are used for the test",
+            "title": "Settings Id"
+          }
+        },
+        "title": "MCPConfigTestRequest",
+        "type": "object"
+      },
+      "MCPConfigTestResponse": {
+        "description": "Non-persisted outcome of a saved-config connectivity test",
+        "properties": {
+          "error_category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Category"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MCPTestStatus"
+          },
+          "tools_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tools Count"
+          }
+        },
+        "required": [
+          "status",
+          "message"
+        ],
+        "title": "MCPConfigTestResponse",
+        "type": "object"
+      },
       "MCPConfigUpdateRequest": {
         "description": "Request model for updating an existing MCP configuration",
         "properties": {
@@ -18024,6 +18101,16 @@
         ],
         "title": "MCPServerDetails",
         "type": "object"
+      },
+      "MCPTestStatus": {
+        "description": "Outcome of a connectivity test of an MCP config",
+        "enum": [
+          "success",
+          "failure",
+          "warning"
+        ],
+        "title": "MCPTestStatus",
+        "type": "string"
       },
       "MCPVariableDefinition": {
         "description": "Definition of a required environment variable for MCP server",
@@ -66253,6 +66340,74 @@
         ]
       }
     },
+    "/v1/mcp-configs/{config_id}/test": {
+      "post": {
+        "description": "Test a saved MCP server configuration (Admin only)",
+        "operationId": "test_mcp_config_v1_mcp_configs__config_id__test_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "config_id",
+            "required": true,
+            "schema": {
+              "title": "Config Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/MCPConfigTestRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MCPConfigTestResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Test MCP Configuration",
+        "tags": [
+          "MCP Configuration"
+        ]
+      }
+    },
     "/v1/mcp/managed-servers": {
       "get": {
         "description": "Return managed MCP servers, optionally filtered to the given client.",
@@ -70011,7 +70166,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/BaseResponse"
+                  "$ref": "#/components/schemas/CreateSettingResponse"
                 }
               }
             },

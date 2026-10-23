@@ -19,7 +19,7 @@ Provides CRUD endpoints for managing shareable MCP server configurations.
 """
 
 from typing import Optional
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Body, status, Depends, Query
 
 from codemie.configs.logger import logger
 from codemie.rest_api.models.mcp_config import (
@@ -27,6 +27,8 @@ from codemie.rest_api.models.mcp_config import (
     MCPConfigCreateRequest,
     MCPConfigUpdateRequest,
     MCPConfigResponse,
+    MCPConfigTestRequest,
+    MCPConfigTestResponse,
     MCPConfigListResponse,
 )
 from codemie.rest_api.security.authentication import authenticate, admin_access_only
@@ -228,6 +230,37 @@ def update_mcp_config(
     """
     logger.info(f"Updating MCP config: {config_id} by admin: {user.id}")
     return MCPConfigService.update(config_id, request)
+
+
+@router.post(
+    "/mcp-configs/{config_id}/test",
+    status_code=status.HTTP_200_OK,
+    response_model=MCPConfigTestResponse,
+    summary="Test MCP Configuration",
+    description="Test a saved MCP server configuration (Admin only)",
+    dependencies=[Depends(authenticate), Depends(admin_access_only)],
+)
+def test_mcp_config(
+    config_id: str,
+    request: MCPConfigTestRequest | None = Body(default=None),
+    user: User = Depends(authenticate),
+) -> MCPConfigTestResponse:
+    """
+    Test a saved MCP server configuration.
+
+    **Admin only.** Connects to the MCP server using the saved configuration.
+
+    **Path Parameters:**
+    - **config_id**: Unique identifier of the MCP configuration to test
+
+    **Body (optional):**
+    - **settings_id**: MCP integration whose credentials are used for the test
+
+    **Returns:**
+    - Test outcome (status, message, error_category, tools_count). Nothing is persisted.
+    """
+    logger.info(f"Testing MCP config: {config_id} by admin: {user.id}")
+    return MCPConfigService.test(config_id, user, request.settings_id if request else None)
 
 
 @router.delete(

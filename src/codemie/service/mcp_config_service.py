@@ -19,6 +19,7 @@ Handles business logic for CRUD operations on MCP server configurations.
 
 from __future__ import annotations
 
+import dataclasses
 import uuid
 from typing import Any, Dict, Optional
 
@@ -45,10 +46,19 @@ from codemie.rest_api.models.mcp_config import (
     MCPConfigResponse,
     MCPServerConfigData,
     MCPConfigUpdateRequest,
+    MCPConfigTestResponse,
+    MCPTestStatus,
 )
+from codemie.rest_api.models.assistant import MCPServerCheckRequest, MCPServerDetails
 from codemie.rest_api.security.user import User
 from codemie.service.encryption.base_encryption_service import BaseEncryptionService
 from codemie.service.encryption.encryption_factory import EncryptionFactory
+from codemie.service.mcp.access_control import MCPAccessControlService
+from codemie.service.mcp.mcp_tester import (
+    MISSING_CREDENTIALS_CATEGORY,
+    RESTRICTED_MODE_CATEGORY,
+    MCPServerTester,
+)
 
 
 # Constants for error messages
@@ -438,14 +448,115 @@ class MCPConfigService:
         """
         mcp_config = MCPConfig.find_by_id(config_id)
         if not mcp_config:
-            raise ExtendedHTTPException(
-                code=status.HTTP_404_NOT_FOUND,
-                message=MCP_CONFIG_NOT_FOUND_MESSAGE,
-                details=f"No MCP configuration found with id: {config_id}",
-                help=VERIFY_CONFIG_ID_HELP,
-            )
+            raise cls._not_found(config_id)
 
         return cls._to_response(mcp_config)
+
+    @classmethod
+    def _not_found(cls, config_id: str) -> ExtendedHTTPException:
+        return ExtendedHTTPException(
+            code=status.HTTP_404_NOT_FOUND,
+            message=MCP_CONFIG_NOT_FOUND_MESSAGE,
+            details=f"No MCP configuration found with id: {config_id}",
+            help=VERIFY_CONFIG_ID_HELP,
+        )
+
+    @classmethod
+    def _load_test_integration(cls, settings_id: str, user: User):
+        """Load and authorize the integration used for a test run (never trusts client-supplied settings)."""
+        # Deferred import: settings_util -> service.assistant -> ... -> mcp.toolkit_service (circular).
+        from codemie.service.settings.settings_util import search_settings_by_id, user_can_access_setting
+        from codemie_tools.base.models import CredentialTypes
+
+        setting = search_settings_by_id(settings_id)
+        if setting is None:
+            raise ExtendedHTTPException(
+                code=status.HTTP_404_NOT_FOUND,
+                message="Integration not found",
+                details=f"No integration found with id: {settings_id}",
+                help="Select an existing MCP integration or create a new one.",
+            )
+        if setting.credential_type != CredentialTypes.ENVIRONMENT_VARS:
+            raise ExtendedHTTPException(
+                code=status.HTTP_400_BAD_REQUEST,
+                message="Invalid integration type",
+                details="The selected integration is not an MCP integration.",
+                help="Select an integration of type MCP.",
+            )
+        if not user_can_access_setting(setting, user, None, marketplace=True):
+            raise ExtendedHTTPException(
+                code=status.HTTP_403_FORBIDDEN,
+                message="Integration is not accessible",
+                details="You do not have access to the selected integration.",
+                help="Select an integration you own or one shared with your project.",
+            )
+        return setting
+
+    @classmethod
+    def _missing_required_env_vars(cls, mcp_config: MCPConfig, setting) -> list[str]:
+        """Names of required env vars provided neither by config.env literals nor by the integration (keys only)."""
+        provided = {
+            k
+            for k, v in ((mcp_config.config.env or {}).items() if mcp_config.config else [])
+            if not _is_missing_required_value(v)
+        }
+        if setting is not None:
+            provided |= {
+                cred.key for cred in setting.credential_values or [] if not _is_missing_required_value(cred.value)
+            }
+        return [v.name for v in mcp_config.required_env_vars or [] if v.required and v.name not in provided]
+
+    @classmethod
+    def test(cls, config_id: str, user: User, settings_id: str | None = None) -> MCPConfigTestResponse:
+        """
+        Test a saved MCP configuration. The outcome is returned and never persisted.
+
+        Args:
+            settings_id: Optional MCP integration whose credentials are merged into the server env.
+
+        Raises:
+            ExtendedHTTPException: If the config or integration is not found, of the wrong type, or inaccessible
+        """
+        mcp_config = MCPConfig.find_by_id(config_id)
+        if not mcp_config:
+            raise cls._not_found(config_id)
+
+        setting = cls._load_test_integration(settings_id, user) if settings_id else None
+
+        missing = cls._missing_required_env_vars(mcp_config, setting)
+        if missing:
+            # Variable names are not secrets; the server is never contacted.
+            return MCPConfigTestResponse(
+                status=MCPTestStatus.FAILURE,
+                message=f"Missing required credentials: {', '.join(missing)}",
+                error_category=MISSING_CREDENTIALS_CATEGORY,
+            )
+
+        server = MCPServerDetails(
+            name=mcp_config.name,
+            mcp_config_id=mcp_config.id,
+            config=mcp_config.config.model_dump() if mcp_config.config else None,
+            # Explicit admin action: test even inactive configs (a disabled server would be skipped
+            # by the toolkit service and yield a false "no tools" warning).
+            enabled=True,
+            settings=setting,
+        )
+
+        # In restricted mode, filter_for_runtime silently drops inactive/non-public catalog
+        # entries; without this check that drop surfaces as a misleading "no tools" warning
+        # instead of explaining that restricted mode is blocking the test.
+        if not MCPAccessControlService.filter_for_runtime([server]):
+            return MCPConfigTestResponse(
+                status=MCPTestStatus.FAILURE,
+                message=(
+                    "This configuration is inactive or not public, so restricted mode "
+                    "prevents it from being used at runtime."
+                ),
+                error_category=RESTRICTED_MODE_CATEGORY,
+            )
+
+        result = MCPServerTester(MCPServerCheckRequest(mcp_server=server), user).run_test()
+        return MCPConfigTestResponse(**dataclasses.asdict(result))
 
     @classmethod
     def update(cls, config_id: str, request: MCPConfigUpdateRequest) -> MCPConfigResponse:
@@ -467,12 +578,7 @@ class MCPConfigService:
         # Get existing config
         mcp_config = MCPConfig.find_by_id(config_id)
         if not mcp_config:
-            raise ExtendedHTTPException(
-                code=status.HTTP_404_NOT_FOUND,
-                message=MCP_CONFIG_NOT_FOUND_MESSAGE,
-                details=f"No MCP configuration found with id: {config_id}",
-                help=VERIFY_CONFIG_ID_HELP,
-            )
+            raise cls._not_found(config_id)
 
         # Check for name conflict if name is being changed
         if request.name and request.name != mcp_config.name:
@@ -602,12 +708,7 @@ class MCPConfigService:
         # Get existing config
         mcp_config = MCPConfig.find_by_id(config_id)
         if not mcp_config:
-            raise ExtendedHTTPException(
-                code=status.HTTP_404_NOT_FOUND,
-                message=MCP_CONFIG_NOT_FOUND_MESSAGE,
-                details=f"No MCP configuration found with id: {config_id}",
-                help=VERIFY_CONFIG_ID_HELP,
-            )
+            raise cls._not_found(config_id)
 
         # Prevent deletion if config is in use
         if mcp_config.usage_count > 0:

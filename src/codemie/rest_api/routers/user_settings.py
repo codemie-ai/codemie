@@ -65,6 +65,10 @@ PERSONAL_LITELLM_DISABLED_DETAILS = "Personal LiteLLM integrations are not enabl
 PERSONAL_LITELLM_DISABLED_HELP = "Please contact your system administrator to enable personal LiteLLM integrations."
 
 
+class CreateSettingResponse(BaseResponse):
+    id: str
+
+
 def _map_integrity_error(request: SettingRequest) -> ExtendedHTTPException:
     """Map a persistence-layer IntegrityError to an API error, scoped by credential_type.
 
@@ -157,7 +161,7 @@ def index_settings(request: Request, user: User = Depends(authenticate)):
 @router.post(
     "/settings/user",
     status_code=status.HTTP_200_OK,
-    response_model=BaseResponse,
+    response_model=CreateSettingResponse,
     response_model_by_alias=True,
 )
 def create_user_setting(request: SettingRequest, user: User = Depends(authenticate)):
@@ -183,9 +187,9 @@ def create_user_setting(request: SettingRequest, user: User = Depends(authentica
     if request.project_name:
         project_access_check(user, request.project_name)
     try:
-        SettingsService.create_setting(user_id=user.id, request=request, user=user)
+        saved = SettingsService.create_setting(user_id=user.id, request=request, user=user)
 
-        return BaseResponse(message="Specified credentials saved")
+        return CreateSettingResponse(message="Specified credentials saved", id=saved.id_)
     except IntegrityError as e:
         raise _map_integrity_error(request) from e
     except Exception as e:

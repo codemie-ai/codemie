@@ -163,6 +163,31 @@ class MCPServerConfigData(BaseModel):
     )
 
 
+class MCPTestStatus(str, Enum):
+    """Outcome of a connectivity test of an MCP config"""
+
+    SUCCESS = "success"
+    FAILURE = "failure"
+    WARNING = "warning"
+
+
+class MCPConfigTestResponse(BaseModel):
+    """Non-persisted outcome of a saved-config connectivity test"""
+
+    status: MCPTestStatus
+    message: str
+    error_category: str | None = None
+    tools_count: int | None = None
+
+
+class MCPConfigTestRequest(BaseModel):
+    """Optional body of the saved-config test request"""
+
+    settings_id: str | None = Field(
+        default=None, description="ID of an MCP integration whose credentials are used for the test"
+    )
+
+
 class MCPConfig(BaseModelWithSQLSupport, table=True):
     """
     Database model for MCP server configuration catalog.

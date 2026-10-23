@@ -20,8 +20,9 @@ import pytest
 
 from codemie.core.exceptions import MCPAuthenticationRequiredException
 from codemie.rest_api.models.assistant import MCPServerCheckRequest, MCPServerConfig, MCPServerDetails
+from codemie.rest_api.models.mcp_config import MCPTestStatus
 from codemie.rest_api.security.user import User
-from codemie.service.mcp.mcp_tester import MCPServerTester, _build_hint_for_category, _get_server_command
+from codemie.service.mcp.mcp_tester import MCPServerTester, MCPTestResult, _build_hint_for_category, _get_server_command
 from codemie.service.mcp.models import MCPBridgeError, MCPErrorCategory, MCPToolLoadException
 from codemie.service.security.token_providers.base_provider import BrokerAuthRequiredException
 
@@ -103,6 +104,61 @@ class TestMCPServerTesterTest:
         assert mock_get_tools.call_args.kwargs.get("mcp_server_single_usage") is True
 
 
+class TestMCPServerTesterRunTest:
+    """run_test() returns a structured MCPTestResult for every outcome."""
+
+    def test_empty_tools_returns_warning_no_tools(self, tester):
+        with patch(_PATCH_TARGET, return_value=[]):
+            result = tester.run_test()
+
+        assert isinstance(result, MCPTestResult)
+        assert result.status == MCPTestStatus.WARNING
+        assert result.error_category == "no_tools"
+        assert result.tools_count == 0
+        assert "Test MCP" in result.message
+
+    def test_tools_found_returns_success_with_count(self, tester):
+        with patch(_PATCH_TARGET, return_value=[Mock(), Mock()]):
+            result = tester.run_test()
+
+        assert result.status == MCPTestStatus.SUCCESS
+        assert result.message == "Success"
+        assert result.error_category is None
+        assert result.tools_count == 2
+
+    @pytest.mark.parametrize("category", list(MCPErrorCategory))
+    def test_tool_load_failure_carries_category_value(self, tester, category):
+        exc = MCPToolLoadException("Test MCP", MCPBridgeError("boom", status_code=500))
+        exc.category = category
+
+        with patch(_PATCH_TARGET, side_effect=exc):
+            result = tester.run_test()
+
+        assert result.status == MCPTestStatus.FAILURE
+        assert result.error_category == category.value
+        assert result.tools_count is None
+
+    def test_generic_failure_has_unknown_category(self, tester):
+        with patch(_PATCH_TARGET, side_effect=RuntimeError("connection refused")):
+            result = tester.run_test()
+
+        assert result.status == MCPTestStatus.FAILURE
+        assert result.error_category == "unknown"
+        assert "connection refused" in result.message
+
+    def test_run_test_reraises_broker_auth_exception(self, tester):
+        exc = BrokerAuthRequiredException(message="m", auth_location="https://a", details="d")
+        with patch(_PATCH_TARGET, side_effect=exc):
+            with pytest.raises(BrokerAuthRequiredException):
+                tester.run_test()
+
+    def test_run_test_reraises_mcp_auth_exception(self, tester):
+        exc = MCPAuthenticationRequiredException({"error": "authentication_required", "servers": []})
+        with patch(_PATCH_TARGET, side_effect=exc):
+            with pytest.raises(MCPAuthenticationRequiredException):
+                tester.run_test()
+
+
 class TestGetServerCommand:
     def test_returns_top_level_command(self):
         server = MCPServerDetails(name="test-server", command="npx")
@@ -119,39 +175,32 @@ class TestGetServerCommand:
 
 class TestBuildHintForCategory:
     def test_connection_closed_with_npx_mentions_stdout(self):
-        server = MCPServerDetails(name="test-server", command="npx")
-        hint = _build_hint_for_category(MCPErrorCategory.CONNECTION_CLOSED, server)
+        hint = _build_hint_for_category(MCPErrorCategory.CONNECTION_CLOSED, True)
         assert "stdout" in hint.lower()
 
     def test_connection_closed_with_npx_mentions_mcp_connect_init_timeout(self):
-        server = MCPServerDetails(name="test-server", command="npx")
-        hint = _build_hint_for_category(MCPErrorCategory.CONNECTION_CLOSED, server)
+        hint = _build_hint_for_category(MCPErrorCategory.CONNECTION_CLOSED, True)
         assert "MCP_CONNECT_INIT_TIMEOUT" in hint
 
     def test_connection_closed_without_npx_is_generic(self):
-        server = MCPServerDetails(name="test-server", command="uvx")
-        hint = _build_hint_for_category(MCPErrorCategory.CONNECTION_CLOSED, server)
+        hint = _build_hint_for_category(MCPErrorCategory.CONNECTION_CLOSED, False)
         assert "stdout" not in hint.lower()
         assert "MCP_CONNECT_INIT_TIMEOUT" not in hint
 
     def test_timeout_mentions_mcp_connect_init_timeout(self):
-        server = MCPServerDetails(name="test-server", command="npx")
-        hint = _build_hint_for_category(MCPErrorCategory.TIMEOUT, server)
+        hint = _build_hint_for_category(MCPErrorCategory.TIMEOUT, True)
         assert "MCP_CONNECT_INIT_TIMEOUT" in hint
 
     def test_startup_failure_mentions_env_vars_or_command(self):
-        server = MCPServerDetails(name="test-server", command="npx")
-        hint = _build_hint_for_category(MCPErrorCategory.STARTUP_FAILURE, server)
+        hint = _build_hint_for_category(MCPErrorCategory.STARTUP_FAILURE, True)
         assert "env" in hint.lower() or "command" in hint.lower() or "variable" in hint.lower()
 
     def test_auth_required_mentions_authentication(self):
-        server = MCPServerDetails(name="test-server", command="npx")
-        hint = _build_hint_for_category(MCPErrorCategory.AUTH_REQUIRED, server)
+        hint = _build_hint_for_category(MCPErrorCategory.AUTH_REQUIRED, True)
         assert "auth" in hint.lower() or "token" in hint.lower() or "credential" in hint.lower()
 
     def test_unknown_returns_generic_fallback(self):
-        server = MCPServerDetails(name="test-server")
-        hint = _build_hint_for_category(MCPErrorCategory.UNKNOWN, server)
+        hint = _build_hint_for_category(MCPErrorCategory.UNKNOWN, False)
         assert "Please, check the configuration." in hint
 
 
@@ -216,3 +265,10 @@ class TestMCPServerTesterNpxRegression:
         assert success is False
         assert exc.category == MCPErrorCategory.STARTUP_FAILURE
         assert "env" in message.lower() or "command" in message.lower() or "variable" in message.lower()
+
+
+class TestMissingCredentialsCategory:
+    def test_constant_value(self):
+        from codemie.service.mcp.mcp_tester import MISSING_CREDENTIALS_CATEGORY
+
+        assert MISSING_CREDENTIALS_CATEGORY == "missing_credentials"

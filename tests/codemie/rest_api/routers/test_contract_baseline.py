@@ -744,10 +744,17 @@ class TestSettingsContract:
     @pytest.mark.parametrize("scope", ["project", "user"])
     def test_create_status_and_keys(self, client, headers, scope):
         with patch(f"{SETTINGS_SERVICE}.create_setting") as create:
+            if scope == "user":
+                mock_setting = MagicMock()
+                mock_setting.id_ = "setting-id-123"
+                create.return_value = mock_setting
             response = client.post(f"/v1/settings/{scope}", json=SETTING_BODY, headers=headers)
 
         assert response.status_code == 200, response.text
-        assert response.json() == {"message": "Specified credentials saved"}
+        response_data = response.json()
+        assert response_data["message"] == "Specified credentials saved"
+        if scope == "user":
+            assert "id" in response_data
         create.assert_called_once()
 
     @pytest.mark.parametrize("scope", ["project", "user"])

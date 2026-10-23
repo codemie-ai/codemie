@@ -1,0 +1,84 @@
+{
+  "decision": "approve",
+  "rationale": "All 4 prior blocking findings were graded against current source at reviewed_head c466304ac and the current changed-files diff: each is resolved with a kind-appropriate, verified fix (test mocks updated for CR-001; is_npx now threaded through persisted MCPTestDetail and the GET-redisplay hint rebuild for CR-002; a shared blank/None presence check applied to both env sources for CR-003; StaleDataError now caught and mapped to _not_found for CR-004). No new findings raised; this targeted verifier does not expand scope.",
+  "confidence": "high",
+  "risk_flags": ["public-api", "security"],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "commit-format", "status": "na", "notes": "No standards guide applicable for this profile; standards audit not expected this round." },
+    { "kind": "code-quality", "status": "na", "notes": "No standards guide applicable for this profile; standards audit not expected this round." },
+    { "kind": "security", "status": "na", "notes": "No standards guide applicable for this profile; standards audit not expected this round." }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/user_settings.py",
+      "line": 187,
+      "title": "create_user_setting AttributeError on saved.id_",
+      "problem": "create_user_setting now does `saved = SettingsService.create_setting(...)` then `CreateSettingResponse(message=..., id=saved.id_)`. Two pre-existing tests (test_create_user_setting_success and test_create_user_setting_with_project_access_check in tests/codemie/rest_api/routers/test_user_settings_crud.py) mock SettingsService.create_setting to return None and assert HTTP 200, which the diff did not update.",
+      "impact": "Those tests will now fail: `None.id_` raises AttributeError, caught by the surrounding `except Exception` and turned into an HTTP 422 instead of the expected 200 with `{\"message\": \"Specified credentials saved\"}`. Production is unaffected (the real SettingsService.create_setting always returns a Settings object), but the suite breaks on the next run.",
+      "recommendation": "Update the two tests' `create_setting` mocks to return an object exposing `id_` (or a real-shaped stub), and update the asserted response body to include the new `id` field."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/mcp/mcp_tester.py",
+      "line": 108,
+      "title": "GET redisplay loses npx-specific hint",
+      "problem": "build_hint_for_category_value() reconstructs a hint for a persisted error_category using a dummy `MCPServerDetails(name=\"\", enabled=True)`, which has no `command`. `_build_hint_for_category`'s `is_npx = command == \"npx\"` check is therefore always False on this path, so a persisted CONNECTION_CLOSED category whose original failure actually came from an npx server never gets the detailed npx remediation hint.",
+      "impact": "An admin who re-fetches the config later (GET) only sees the generic 'check the server process' hint instead of the specific npx guidance they got on the original POST /test, degrading the error-messaging feature this change exists to add.",
+      "recommendation": "Persist the originating command (or an `is_npx` flag) alongside `error_category` in MCPTestDetail, and pass it into the dummy MCPServerDetails reconstruction so the npx-specific hint can be regenerated on later reads."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/mcp_config_service.py",
+      "line": 403,
+      "title": "Inconsistent truthiness in required-env-var check",
+      "problem": "`_missing_required_env_vars` builds its `provided` set with two different truthiness rules: `config.env` literals only count when `if v` (truthy), but `setting.credential_values` keys are added unconditionally (`{cred.key for cred in setting.credential_values or []}`), regardless of whether the value is empty/blank.",
+      "impact": "An integration credential with an empty value is wrongly treated as satisfying a required var, letting the test proceed to actually contact the server instead of returning the clear 'Missing required credentials' message; conversely, a deliberate empty-string override in config.env is wrongly treated as missing, blocking the test with a misleading error even though the value was intentionally set.",
+      "recommendation": "Apply the same presence rule to both sources — e.g. treat a key as provided only when its value is not None/blank in both config.env and credential_values, or document why the two sources intentionally use different rules."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/mcp_config_service.py",
+      "line": 483,
+      "title": "Unhandled StaleDataError on concurrent config delete",
+      "problem": "`_persist_test_result` re-fetches the config to guard against stale overwrites, but if the config is deleted between that re-fetch (line 471) and the subsequent `mcp_config.update(touch_timestamp=False)` call (line 483), the base model's update() raises StaleDataError, which is not caught here.",
+      "impact": "A client that deletes a config while a slow test for the same config is in flight gets an unhandled exception propagating as an HTTP 500 instead of the expected 404 'MCP configuration not found' response.",
+      "recommendation": "Wrap the update() call in a try/except StaleDataError and raise cls._not_found(config_id), matching the pattern already used for the initial find_by_id check."
+    }
+  ],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "resolved",
+      "notes": "Both affected tests' create_setting mocks now return SimpleNamespace(id_=\"setting123\") and assert the response includes the new id field; verified against current test source."
+    },
+    {
+      "id": "CR-002",
+      "status": "resolved",
+      "notes": "MCPTestDetail now carries a persisted is_npx bool, computed from mcp_config.config.command at persist time and threaded into build_hint_for_category_value on redisplay; verified in mcp_config_service.py and mcp_tester.py."
+    },
+    {
+      "id": "CR-003",
+      "status": "resolved",
+      "notes": "Both config.env and credential_values now filter via the shared _is_missing_required_value(v) blank/None check instead of divergent truthiness rules; verified in mcp_config_service.py and _common.py."
+    },
+    {
+      "id": "CR-004",
+      "status": "resolved",
+      "notes": "mcp_config.update(touch_timestamp=False) is now wrapped in try/except StaleDataError, raising cls._not_found(config_id); verified in mcp_config_service.py."
+    }
+  ]
+}

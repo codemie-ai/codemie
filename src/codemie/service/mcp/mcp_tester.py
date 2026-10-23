@@ -12,13 +12,31 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from dataclasses import dataclass
+
 from codemie.configs import logger
 from codemie.core.exceptions import MCPAuthenticationRequiredException
 from codemie.rest_api.models.assistant import MCPServerDetails, MCPServerCheckRequest
+from codemie.rest_api.models.mcp_config import MCPTestStatus
 from codemie.rest_api.security.user import User
 from codemie.service.mcp.models import MCPErrorCategory, MCPToolLoadException
 from codemie.service.mcp.toolkit_service import MCPToolkitService
 from codemie.service.security.token_providers.base_provider import BrokerAuthRequiredException
+
+NO_TOOLS_CATEGORY = "no_tools"
+UNKNOWN_CATEGORY = "unknown"
+MISSING_CREDENTIALS_CATEGORY = "missing_credentials"
+RESTRICTED_MODE_CATEGORY = "restricted_mode"
+
+
+@dataclass(frozen=True)
+class MCPTestResult:
+    """Structured outcome of an MCP server connectivity test."""
+
+    status: MCPTestStatus
+    message: str
+    error_category: str | None = None
+    tools_count: int | None = None
 
 
 def _get_server_command(mcp_server: MCPServerDetails) -> str | None:
@@ -30,11 +48,8 @@ def _get_server_command(mcp_server: MCPServerDetails) -> str | None:
     return None
 
 
-def _build_hint_for_category(category: MCPErrorCategory, mcp_server: MCPServerDetails) -> str:
+def _build_hint_for_category(category: MCPErrorCategory, is_npx: bool) -> str:
     """Return a category-specific diagnostic hint for the user."""
-    command = _get_server_command(mcp_server)
-    is_npx = command == "npx"
-
     if category == MCPErrorCategory.CONNECTION_CLOSED:
         if is_npx:
             return (
@@ -80,7 +95,11 @@ class MCPServerTester:
         self.mcp_server = request.mcp_server
         self.user = user
 
-    def test(self) -> tuple[bool, str]:
+    def run_test(self) -> MCPTestResult:
+        """Run the connectivity test and return a structured result.
+
+        Authentication exceptions are re-raised so callers can trigger the auth flow.
+        """
         try:
             tools = MCPToolkitService.get_mcp_server_tools(
                 mcp_servers=[self.mcp_server], user_id=self.user.id, mcp_server_single_usage=True
@@ -88,19 +107,33 @@ class MCPServerTester:
 
             if not tools:
                 logger.warning("Connection to '%s' succeeded but no tools were retrieved.", self.mcp_server.name)
-                return False, (
-                    f"Connected to '{self.mcp_server.name}' but no tools were retrieved. "
-                    "Please check that the MCP server is running and has tools configured."
+                return MCPTestResult(
+                    status=MCPTestStatus.WARNING,
+                    message=(
+                        f"Connected to '{self.mcp_server.name}' but no tools were retrieved. "
+                        "Please check that the MCP server is running and has tools configured."
+                    ),
+                    error_category=NO_TOOLS_CATEGORY,
+                    tools_count=0,
                 )
 
             logger.info("Testing passed for MCP tools from %s server. Tools count=%d", self.mcp_server.name, len(tools))
-            return True, 'Success'
+            return MCPTestResult(status=MCPTestStatus.SUCCESS, message='Success', tools_count=len(tools))
         except BrokerAuthRequiredException:
             raise
         except MCPAuthenticationRequiredException:
             raise
         except MCPToolLoadException as e:
-            hint = _build_hint_for_category(e.category, self.mcp_server)
-            return False, f"{e}.\n{hint}"
+            is_npx = _get_server_command(self.mcp_server) == "npx"
+            hint = _build_hint_for_category(e.category, is_npx)
+            return MCPTestResult(status=MCPTestStatus.FAILURE, message=f"{e}.\n{hint}", error_category=e.category.value)
         except Exception as e:
-            return False, f"{e}.\nPlease, check the configuration."
+            return MCPTestResult(
+                status=MCPTestStatus.FAILURE,
+                message=f"{e}.\nPlease, check the configuration.",
+                error_category=UNKNOWN_CATEGORY,
+            )
+
+    def test(self) -> tuple[bool, str]:
+        result = self.run_test()
+        return result.status == MCPTestStatus.SUCCESS, result.message

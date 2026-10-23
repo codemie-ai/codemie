@@ -26,6 +26,7 @@ Covers the following endpoints from user_settings.py:
 Target >= 80% coverage for user_settings.py router.
 """
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -322,7 +323,7 @@ async def test_create_user_setting_success(mock_authenticate, mock_create_settin
     """Test create_user_setting successfully creates setting."""
     # Arrange
     mock_authenticate.return_value = mock_user
-    mock_create_setting.return_value = None
+    mock_create_setting.return_value = SimpleNamespace(id_="setting123")
 
     request_data = {
         "alias": "new_aws_creds",
@@ -337,7 +338,7 @@ async def test_create_user_setting_success(mock_authenticate, mock_create_settin
 
     # Assert
     assert response.status_code == status.HTTP_200_OK
-    assert response.json() == {"message": "Specified credentials saved"}
+    assert response.json() == {"message": "Specified credentials saved", "id": "setting123"}
     mock_create_setting.assert_called_once()
     call_kwargs = mock_create_setting.call_args[1]
     assert call_kwargs["user_id"] == "user123"
@@ -354,7 +355,7 @@ async def test_create_user_setting_with_project_access_check(
     """Test create_user_setting checks project access when project_name is provided."""
     # Arrange
     mock_authenticate.return_value = mock_user
-    mock_create_setting.return_value = None
+    mock_create_setting.return_value = SimpleNamespace(id_="setting123")
 
     request_data = {
         "project_name": "test_project",

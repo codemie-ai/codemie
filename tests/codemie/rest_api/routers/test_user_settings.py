@@ -475,7 +475,8 @@ async def test_regular_user_create_litellm_allowed_when_personal_feature_enabled
     user.is_admin = False
     mock_authenticate.return_value = user
     mock_is_feature_enabled.return_value = True
-    mock_create_setting.return_value = None
+    created_setting = SimpleNamespace(id_="setting-123")
+    mock_create_setting.return_value = created_setting
 
     request_data = {
         "project_name": "test_project",
@@ -489,7 +490,7 @@ async def test_regular_user_create_litellm_allowed_when_personal_feature_enabled
         response = await ac.post("/v1/settings/user", headers={"user-id": "user123"}, json=request_data)
 
     assert response.status_code == 200
-    assert response.json() == {"message": "Specified credentials saved"}
+    assert response.json() == {"message": "Specified credentials saved", "id": "setting-123"}
     mock_is_feature_enabled.assert_any_call("personalLiteLLMIntegrations")
     mock_require_litellm_enabled.assert_called_once_with()
     mock_validate_litellm_request.assert_called_once()
@@ -604,7 +605,8 @@ async def test_admin_create_litellm_unchanged_when_personal_feature_disabled(
     user = User(id="admin123", username="admin", roles=["admin"])
     mock_authenticate.return_value = user
     mock_is_feature_enabled.return_value = False
-    mock_create_setting.return_value = None
+    created_setting = SimpleNamespace(id_="setting-456")
+    mock_create_setting.return_value = created_setting
 
     request_data = {
         "project_name": "test_project",
@@ -618,7 +620,7 @@ async def test_admin_create_litellm_unchanged_when_personal_feature_disabled(
         response = await ac.post("/v1/settings/user", headers={"user-id": "admin123"}, json=request_data)
 
     assert response.status_code == 200
-    assert response.json() == {"message": "Specified credentials saved"}
+    assert response.json() == {"message": "Specified credentials saved", "id": "setting-456"}
     assert "personalLiteLLMIntegrations" not in [c.args[0] for c in mock_is_feature_enabled.call_args_list]
     mock_require_litellm_enabled.assert_called_once_with()
     mock_validate_litellm_request.assert_called_once()
@@ -638,6 +640,8 @@ async def test_create_user_setting_accepts_ms_teams(
     mock_authenticate, mock_create_setting, mock_belongs_to_project, mock_singleton, mock_is_feature_enabled
 ):
     mock_authenticate.return_value = User(id="user123", username="testuser", project_names=["test_project"])
+    created_setting = SimpleNamespace(id_="setting-789")
+    mock_create_setting.return_value = created_setting
 
     request_data = {
         "project_name": "test_project",
