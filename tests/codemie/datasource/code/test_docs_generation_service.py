@@ -55,6 +55,20 @@ class TestDocsGenService:
             assert result == expected_path
             mock_makedirs.assert_called_once_with(expected_path)
 
+    def test_limit_output_content_with_endoftext_marker(self):
+        text = "alpha <|endoftext|> beta"
+
+        assert DocsGenService._limit_output_content(text) == text
+
+    def test_limit_output_content_truncates_with_endoftext_marker(self):
+        text = "alpha <|endoftext|> beta gamma delta epsilon zeta eta theta"
+
+        with patch.object(DocsGenService, "TOKEN_LIMIT", 6):
+            result = DocsGenService._limit_output_content(text)
+
+        assert text.startswith(result)
+        assert 0 < len(result) < len(text)
+
     def test_limit_output_content(self):
         test_output = "test" * 20000  # Create large string
 

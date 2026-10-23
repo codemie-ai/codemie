@@ -1,0 +1,78 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-16146_tiktoken-endoftext-indexing",
+  "head": "e6028e564ac35c1092ccad53de449ce6a38f2cb0",
+  "runner": "poetry",
+  "started_at": "2026-10-21T17:04:48.646099",
+  "completed_at": "2026-10-21T17:04:48.646099",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 6985,
+      "command": "make ruff",
+      "exit_code": 0,
+      "notes": "make not installed on host; ran the Makefile recipe directly: poetry run ruff format && ruff check --fix && ruff check"
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 20885,
+      "command": "make build",
+      "exit_code": 0,
+      "notes": "make not installed on host; ran the Makefile recipe directly: poetry build"
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 3263,
+      "command": "make license-check",
+      "exit_code": 0,
+      "notes": "make not installed on host; ran the Makefile recipe directly: check_license_headers.py --check --quiet"
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 469650,
+      "command": "make test",
+      "exit_code": 1,
+      "notes": "make not installed on host; ran the Makefile recipe directly: PYTHONUTF8=1 poetry run pytest tests/. 208 failed, 31 errors, 21300 passed. None in the changed test files (calculate_tokens, monitoring_callback, docs_generation_service); failures are in unrelated areas (code_executor filesystem_policy, enterprise mcp_auth, git tools, scripts hook tests) and look Windows/env related. Without PYTHONUTF8=1, collection of tests/codemie/migrations/test_credentialtypes_enum_migrations.py fails with UnicodeDecodeError (cp1252). Baseline on origin/main not compared."
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make gitleaks",
+      "exit_code": null,
+      "notes": "Docker unavailable (docker info failed) and make missing; start Docker and run the gitleaks container locally."
+    },
+    {
+      "id": "sonar",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make sonar-local",
+      "exit_code": null,
+      "notes": "pre-push hook (only when CODEMIE_PREPUSH_ENABLED=true) runs make sonar-local; not run: make missing and Sonar credentials/server not verified."
+    },
+    {
+      "id": "ci",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "",
+      "exit_code": null,
+      "notes": ".gitlab-ci.yml only waits on external contexts (ci-pipeline, compliance-report); nothing runnable locally."
+    }
+  ],
+  "failures": {
+    "unit": "FAILED tests/scripts/test_commit_msg_hook.py::test_merge_head_present_bypasses_validation\nFAILED tests/scripts/test_commit_msg_hook.py::test_rebase_head_present_bypasses_validation\nFAILED tests/scripts/test_commit_msg_hook.py::test_cherry_pick_head_present_bypasses_validation\nFAILED tests/scripts/test_commit_msg_hook.py::test_leading_comment_lines_ignored\nFAILED tests/scripts/test_pre_commit_fast_hook.py::test_fast_path_passes_without_heavy_steps\nFAILED tests/scripts/test_pre_push_hook.py::test_passes_when_pytest_and_sonar_pass\nFAILED tests/scripts/test_pre_push_hook.py::test_pytest_receives_enterprise_ignore\nFAILED tests/scripts/test_pre_push_hook.py::test_pytest_failure_blocks_and_skips_sonar\nFAILED tests/scripts/test_pre_push_hook.py::test_skipped_when_not_enabled - A...\nFAILED tests/scripts/test_pre_push_hook.py::test_numeric_one_enabled_runs - A...\nFAILED tests/scripts/test_pre_push_hook.py::test_on_enabled_runs - AssertionE...\nFAILED tests/scripts/test_pre_push_hook.py::test_legacy_precommit_enabled_runs_and_warns\nFAILED tests/scripts/test_ruff_staged_hook.py::test_no_staged_py_files_exits_zero\nFAILED tests/scripts/test_ruff_staged_hook.py::test_clean_staged_plus_unstaged_garbage_exits_zero\nFAILED tests/scripts/test_ruff_staged_hook.py::test_ruff_reformats_staged_file_exits_one\nFAILED tests/scripts/test_ruff_staged_hook.py::test_missing_trailing_newline_exits_one\nFAILED tests/scripts/test_ruff_staged_hook.py::test_syntax_error_in_staged_file_reports_clearly\nFAILED tests/scripts/test_ruff_staged_hook.py::test_partial_staging_clean_hunk_dirty_unstaged_exits_zero\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_route_is_in_the_guarded_openapi[index]\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_route_is_in_the_guarded_openapi[budget]\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_route_is_in_the_guarded_openapi[users]\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_route_is_in_the_guarded_openapi[local-auth]\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_route_is_in_the_guarded_openapi[workflow-generation]\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_routes_are_registered_on_the_app\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_building_the_app_attempts_no_network_connection\nERROR tests/codemie/service/security/test_logout_token_cleanup_mock_tms.py::test_logout_removes_only_the_users_rows_and_pod_fallback\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_branch_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_branch_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_set_active_branch_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_set_active_branch_failur\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_list_branches_in_repo_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_list_branches_in_repo_exception\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_replace_file_content_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_replace_file_content_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_file_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_delete_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_delete_file_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_issue_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_update_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_update_issue_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_find_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_comment_on_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_comment_on_issue_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_file_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_delete_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_delete_file_failure\n208 failed, 21300 passed, 217 skipped, 295 warnings, 31 errors in 469.65s (0:07:49)\n"
+  }
+}

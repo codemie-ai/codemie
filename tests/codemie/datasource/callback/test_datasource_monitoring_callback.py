@@ -15,6 +15,8 @@
 import uuid
 from unittest.mock import patch
 
+from langchain_core.documents import Document
+
 import pytest
 
 from codemie.core.models import TokensUsage, CreatedByUser
@@ -238,3 +240,28 @@ class TestDatasourceMonitoringCallback:
 
         # Verify summary was cleared
         mock_request_summary_manager.clear_summary.assert_called_once_with(mock_request_uuid)
+
+    def test_on_split_documents_counts_endoftext_marker(self, mock_index_info, mock_user, mock_request_uuid):
+        callback = DatasourceMonitoringCallback(mock_index_info, mock_user, request_uuid=mock_request_uuid)
+
+        callback.on_split_documents([Document(page_content="x = '<|endoftext|>'")])
+
+        assert callback._estimated_embedding_tokens > 0
+
+    def test_on_split_documents_swallows_estimator_error(self, mock_index_info, mock_user, mock_request_uuid):
+        callback = DatasourceMonitoringCallback(mock_index_info, mock_user, request_uuid=mock_request_uuid)
+        callback._estimated_embedding_tokens = 5
+        secret = "SECRET-DOCUMENT-CONTENT"
+
+        with (
+            patch(
+                "codemie.datasource.callback.datasource_monitoring_callback.calculate_tokens",
+                side_effect=ValueError(secret),
+            ),
+            patch("codemie.datasource.callback.datasource_monitoring_callback.logger") as mock_logger,
+        ):
+            callback.on_split_documents([Document(page_content=secret)])
+
+        assert callback._estimated_embedding_tokens == 5
+        mock_logger.warning.assert_called_once()
+        assert secret not in str(mock_logger.warning.call_args)

@@ -189,7 +189,7 @@ def unpack_json_strings(obj):
 
 def calculate_tokens(text: str, llm_model: str = llm_service.default_llm_model):
     encoding = get_encoding(llm_model)
-    return len(encoding.encode(str(text)))
+    return len(encoding.encode(str(text), disallowed_special=()))
 
 
 def build_embedding_llm_run(embeddings, text: str, model: str):

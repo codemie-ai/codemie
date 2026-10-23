@@ -51,7 +51,7 @@ class DocsGenService:
     @classmethod
     def _limit_output_content(cls, output: Any) -> Any:
         encoding = get_encoding(LLMService.BASE_NAME_GPT_41_MINI)
-        tokens = encoding.encode(str(output))
+        tokens = encoding.encode(str(output), disallowed_special=())
         if len(tokens) > cls.TOKEN_LIMIT:
             output = encoding.decode(tokens[: cls.TOKEN_LIMIT])
         return output

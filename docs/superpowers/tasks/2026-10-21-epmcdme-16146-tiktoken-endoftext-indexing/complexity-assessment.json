@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "task": "Make token estimation in Git code datasource indexing tolerate the tiktoken end-of-text special-token string, with a regression test.",
+  "generated": "2026-10-21T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 10,
+  "size": "S",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Root cause is one function (calculate_tokens in core/utils.py) called by DatasourceMonitoringCallback.on_split_documents; related unsafe sites are optional scope widening." },
+    { "dimension": "technical_risk", "reason": "Exact precedent exists (disallowed_special=() in script_tool_calls/token_count.py with a special-token test). 19 callers of calculate_tokens, but ordinary-text counts are unchanged. Not scored higher: not a security surface, and a defensive test template exists to copy." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

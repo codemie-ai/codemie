@@ -1,0 +1,21 @@
+{
+  "decision": "approve",
+  "rationale": "Edge-case and acceptance lenses (compact profile) ran cleanly and produced no findings; all required criteria pass and the live indexing criterion is pending-stage-7. Nothing deferred, nothing dismissed; standards audit intentionally omitted by profile.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "story-ac", "item": "1. Indexing with marker content does not fail during token estimation", "status": "pass", "notes": "calculate_tokens uses disallowed_special=() and callback wraps estimate in try/except"},
+    {"kind": "story-ac", "item": "2. codemie-ai/codemie repository indexes without ValueError", "status": "pending-stage-7", "notes": "Needs live indexing run"},
+    {"kind": "story-ac", "item": "3. calculate_tokens unchanged for ordinary text", "status": "pass", "notes": "Only the disallowed_special argument changed; test compares with the raw encoder"},
+    {"kind": "story-ac", "item": "4. calculate_tokens positive count with marker, no raise", "status": "pass", "notes": "Covered by test_calculate_tokens_counts_endoftext_marker"},
+    {"kind": "story-ac", "item": "5. _limit_output_content handles marker and truncates correctly", "status": "pass", "notes": "disallowed_special=() added; under-limit and over-limit tests added"},
+    {"kind": "story-ac", "item": "6. Estimator exception is logged as warning, estimate kept, error not propagated", "status": "pass", "notes": "try/except returns before accumulating; log omits content"},
+    {"kind": "story-ac", "item": "7. Regression tests cover required cases", "status": "pass", "notes": "All five listed cases are present in the diff"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "na", "notes": "Standards audit not expected for this profile"},
+    {"kind": "code-quality", "status": "na", "notes": "Standards audit not expected for this profile"},
+    {"kind": "security", "status": "na", "notes": "Standards audit not expected for this profile"}
+  ],
+  "findings": []
+}

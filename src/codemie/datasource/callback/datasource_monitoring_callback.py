@@ -18,6 +18,7 @@ from typing import Optional
 
 from langchain_core.documents import Document
 
+from codemie.configs import logger
 from codemie.core.utils import calculate_tokens
 from codemie.datasource.callback.base_datasource_callback import DatasourceProcessorCallback
 from codemie.rest_api.models.index import IndexDeletedException, IndexInfo, ProgressUpdate
@@ -66,7 +67,13 @@ class DatasourceMonitoringCallback(DatasourceProcessorCallback):
 
     def on_split_documents(self, docs: list[Document]):
         if self.request_uuid:
-            self._estimated_embedding_tokens += sum(calculate_tokens(str(doc.page_content)) for doc in docs)
+            try:
+                batch_tokens = sum(calculate_tokens(str(doc.page_content)) for doc in docs)
+            except Exception as e:
+                # The estimate is best-effort and must never abort indexing; do not log document content.
+                logger.warning(f"Skipping embedding token estimate for split documents: {type(e).__name__}")
+                return
+            self._estimated_embedding_tokens += batch_tokens
 
     def on_complete(self, result):
         """
