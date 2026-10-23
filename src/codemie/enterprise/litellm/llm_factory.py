@@ -342,10 +342,12 @@ def _build_chat_model_base_args(
         'model_name': llm_model_details.base_name,
         'streaming': streaming,
         'max_retries': config.AZURE_OPENAI_MAX_RETRIES,
-        'temperature': temperature,
         'top_p': top_p,
         'include_response_headers': config.LLM_PROXY_TRACK_USAGE,
     }
+
+    if temperature is not None:
+        base_args['temperature'] = temperature
 
     # Without an explicit limit the proxy falls back to LiteLLM defaults (4096 for unmapped models)
     max_output_tokens = _resolve_max_output_tokens(llm_model_details)
@@ -1079,7 +1081,7 @@ def _filter_litellm_params(
 
     # Filter based on model features
     if llm_model_details.features.temperature is False:
-        filtered['temperature'] = 1
+        filtered.pop('temperature', None)
 
     if llm_model_details.features.parallel_tool_calls is False:
         filtered['disabled_params'] = {"parallel_tool_calls": None}

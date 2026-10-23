@@ -16,7 +16,14 @@ import json
 import pytest
 from unittest.mock import Mock, patch
 
-from codemie.core.dependecies import LLMClientWrapper, get_llm_by_credentials
+from codemie.core.dependecies import (
+    LLMClientWrapper,
+    filter_params,
+    get_anthropic_llm,
+    get_bedrock_llm,
+    get_llm_by_credentials,
+    get_vertex_llm,
+)
 
 
 # Mock logger for testing
@@ -260,3 +267,123 @@ class TestGetLLMByCredentialsUserFallback:
         # Verify: UUID is NOT used (that was the original bug)
         assert call_kwargs['user_email'] != "-"
         assert call_kwargs['user_email'] != "unknown"
+
+
+def _model_details(temperature_supported, top_p_supported=True, base_name="gemini-2.5-pro"):
+    details = Mock()
+    details.features.temperature = temperature_supported
+    details.features.parallel_tool_calls = True
+    details.features.streaming = True
+    details.features.max_tokens = True
+    details.features.top_p = top_p_supported
+    details.deployment_name = "model-deployment"
+    details.base_name = base_name
+    details.max_output_tokens = 1000
+    details.configuration = None
+    return details
+
+
+class TestFilterParamsTemperature:
+    """EPMCDME-15208: unsupported temperature is dropped, not forced to 1.
+
+    The only caller (get_llm_by_credentials_raw) never puts temperature in either dict, so these
+    cases exercise the defensive pops rather than a reachable production path.
+    """
+
+    def test_defensively_drops_temperature_when_unsupported(self):
+        result = filter_params({"temperature": 0.3}, {"temperature": 0.3}, _model_details(False))
+        assert "temperature" not in result
+
+    def test_real_caller_shape_has_no_temperature_when_unsupported(self):
+        result = filter_params({"deployment_name": "d"}, {}, _model_details(False))
+        assert "temperature" not in result
+
+    def test_keeps_temperature_when_supported(self):
+        result = filter_params({}, {"temperature": 0.3}, _model_details(True))
+        assert result["temperature"] == 0.3
+
+
+class TestGetBedrockLlmTemperature:
+    """EPMCDME-15208: temperature is omitted from ChatBedrockConverse when None or unsupported."""
+
+    @staticmethod
+    def _call(supported, temperature, top_p=0.9, top_p_supported=True):
+        with (
+            patch("langchain_aws.ChatBedrockConverse") as mock_cls,
+            patch("codemie.core.dependecies.get_bedrock_runtime_client"),
+        ):
+            get_bedrock_llm(_model_details(supported, top_p_supported), temperature=temperature, top_p=top_p)
+        return mock_cls.call_args.kwargs
+
+    def test_omits_temperature_when_none(self):
+        assert "temperature" not in self._call(True, None)
+
+    def test_omits_temperature_when_unsupported(self):
+        assert "temperature" not in self._call(False, 0.5)
+
+    def test_passes_temperature_when_supported(self):
+        kwargs = self._call(True, 0.5)
+        assert kwargs["temperature"] == 0.5
+        assert kwargs["top_p"] == 0.9
+
+    def test_omits_top_p_when_unsupported(self):
+        assert "top_p" not in self._call(True, 0.5, top_p_supported=False)
+
+    def test_omits_top_p_when_none(self):
+        assert "top_p" not in self._call(True, 0.5, top_p=None)
+
+    def test_passes_top_p_when_supported(self):
+        assert self._call(True, 0.5, top_p_supported=True)["top_p"] == 0.9
+
+
+class TestGetAnthropicLlmTemperature:
+    """EPMCDME-15208: temperature is omitted from ChatAnthropic when None or unsupported."""
+
+    @staticmethod
+    def _call(supported, temperature):
+        with (
+            patch("langchain_anthropic.ChatAnthropic") as mock_cls,
+            patch("codemie.core.dependecies._build_codemie_tagging_headers", return_value={}),
+        ):
+            get_anthropic_llm(_model_details(supported), temperature=temperature, top_p=0.9)
+        return mock_cls.call_args.kwargs
+
+    def test_omits_temperature_when_none(self):
+        assert "temperature" not in self._call(True, None)
+
+    def test_omits_temperature_when_unsupported(self):
+        assert "temperature" not in self._call(False, 0.5)
+
+    def test_passes_temperature_when_supported(self):
+        assert self._call(True, 0.5)["temperature"] == 0.5
+
+
+class TestGetVertexLlmTemperature:
+    """EPMCDME-15208: temperature is omitted from the Vertex chat models when None or unsupported."""
+
+    @staticmethod
+    def _call(supported, temperature, base_name):
+        target = (
+            "langchain_google_vertexai.ChatVertexAI"
+            if "gemini" in base_name
+            else "langchain_google_vertexai.model_garden.ChatAnthropicVertex"
+        )
+        with (
+            patch(target) as mock_cls,
+            patch("codemie.core.dependecies._build_codemie_tagging_headers", return_value={}),
+            patch("codemie.agents.tools.schema_compatibility.patch_langchain_google_vertexai_schema"),
+        ):
+            get_vertex_llm(_model_details(supported, base_name=base_name), temperature=temperature, top_p=0.9)
+        return mock_cls.call_args.kwargs
+
+    @pytest.mark.parametrize("base_name", ["gemini-2.5-pro", "claude-sonnet-4"])
+    def test_omits_temperature_when_none(self, base_name):
+        assert "temperature" not in self._call(True, None, base_name)
+
+    @pytest.mark.parametrize("base_name", ["gemini-2.5-pro", "claude-sonnet-4"])
+    def test_omits_temperature_when_unsupported(self, base_name):
+        assert "temperature" not in self._call(False, 0.5, base_name)
+
+    @pytest.mark.parametrize("base_name", ["gemini-2.5-pro", "claude-sonnet-4"])
+    def test_passes_temperature_when_supported(self, base_name):
+        assert self._call(True, 0.5, base_name)["temperature"] == 0.5

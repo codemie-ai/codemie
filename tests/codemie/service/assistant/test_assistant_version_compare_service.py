@@ -301,6 +301,21 @@ class TestPrepareForComparison:
 
         assert AssistantVersionCompareService.has_configuration_changes("assistant-123", request) is True
 
+    @pytest.mark.parametrize("field", ["temperature", "top_p"])
+    @patch('codemie.service.assistant.assistant_version_compare_service.AssistantConfiguration')
+    def test_has_configuration_changes_true_when_sampling_param_cleared(self, mock_config_class, mock_config_v1, field):
+        """EPMCDME-15208: an explicit None over a stored value is a configuration change."""
+        mock_config_class.get_current_version.return_value = mock_config_v1
+
+        request = AssistantRequest(
+            name="Assistant",
+            system_prompt=mock_config_v1.system_prompt,
+            llm_model_type=mock_config_v1.llm_model_type,
+            **{field: None},
+        )
+
+        assert AssistantVersionCompareService.has_configuration_changes("assistant-123", request) is True
+
 
 class TestGenerateSummary:
     """Tests for _generate_summary method"""

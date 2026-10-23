@@ -162,6 +162,31 @@ class TestCreateNewVersionCritical:
         call_kwargs = mock_config_class.call_args[1]
         assert call_kwargs['temperature'] == 0.2
 
+    @patch('codemie.service.assistant.assistant_version_service.AssistantConfiguration')
+    def test_create_new_version_snapshots_explicit_null_sampling_params(
+        self, mock_config_class, mock_assistant, mock_user
+    ):
+        """EPMCDME-15208: explicit temperature/top_p None clears the value in the new version."""
+        mock_assistant.temperature = 0.7
+        mock_assistant.top_p = 0.9
+
+        request = AssistantRequest(
+            name="Test Assistant",
+            system_prompt="Test Prompt",
+            llm_model_type="gpt-4",
+            temperature=None,
+            top_p=None,
+        )
+
+        mock_config_class.return_value = MagicMock()
+        mock_config_class.get_latest_version_number.return_value = 1
+
+        AssistantVersionService.create_new_version(assistant=mock_assistant, request=request, user=mock_user)
+
+        call_kwargs = mock_config_class.call_args[1]
+        assert call_kwargs['temperature'] is None
+        assert call_kwargs['top_p'] is None
+
 
 class TestApplyVersionToAssistant:
     """CRITICAL: Test metadata application to assistant - TC-VS-3.1"""

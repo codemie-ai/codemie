@@ -14,6 +14,8 @@
 
 """Tests for _map_assistant_request helper methods"""
 
+import pytest
+
 from codemie.rest_api.models.assistant import AssistantBase, AssistantRequest
 
 
@@ -241,3 +243,36 @@ class TestMapAssistantRequestPartialUpdate:
         assistant._map_assistant_request(request)
 
         assert assistant.description is None
+
+
+@pytest.mark.parametrize("field", ["temperature", "top_p"])
+class TestSamplingParamsMapping:
+    """EPMCDME-15208: temperature/top_p can be set, updated, cleared and preserved."""
+
+    @staticmethod
+    def _assistant(**kwargs):
+        return AssistantBase(name="Test", description="Test", system_prompt="Test", project="demo", **kwargs)
+
+    @staticmethod
+    def _request(**kwargs):
+        return AssistantRequest(name="Test", description="Test", system_prompt="Test", llm_model_type="gpt-4", **kwargs)
+
+    def test_set_from_none(self, field):
+        assistant = self._assistant()
+        assistant._map_assistant_request(self._request(**{field: 0.5}))
+        assert getattr(assistant, field) == 0.5
+
+    def test_update_existing_value(self, field):
+        assistant = self._assistant(**{field: 0.7})
+        assistant._map_assistant_request(self._request(**{field: 0.2}))
+        assert getattr(assistant, field) == 0.2
+
+    def test_explicit_null_clears_value(self, field):
+        assistant = self._assistant(**{field: 0.7})
+        assistant._map_assistant_request(self._request(**{field: None}))
+        assert getattr(assistant, field) is None
+
+    def test_omitted_preserves_value(self, field):
+        assistant = self._assistant(**{field: 0.7})
+        assistant._map_assistant_request(self._request())
+        assert getattr(assistant, field) == 0.7

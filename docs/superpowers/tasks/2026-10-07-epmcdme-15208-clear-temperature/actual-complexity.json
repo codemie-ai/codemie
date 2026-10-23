@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "generated": "2026-10-07T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 15,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 7,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "file_change_estimate", "reason": "diffstat reports 7 files (2 source: core/dependecies.py and enterprise/litellm/llm_factory.py; 5 test files across core, enterprise, rest_api models and assistant service tests), which maps to L." },
+    { "dimension": "component_scope", "reason": "Two source components (core LLM dependency/Bedrock path and LiteLLM chat model factory) changed so None or unsupported temperature is omitted instead of forced to 1; pattern is clear (_build_chat_model_base_args conditionally sets temperature, _filter_litellm_params pops it)." },
+    { "dimension": "technical_risk", "reason": "Existing pop/omit pattern in _filter_litellm_params covers the change; shared LLM-creation path affects all requests, but no security, schema or performance implications and rollback is trivial. Regression tests cover the None, unsupported and null-clears-top_p cases." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

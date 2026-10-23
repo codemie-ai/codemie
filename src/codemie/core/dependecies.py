@@ -377,7 +377,8 @@ class LLMClientWrapper:
 def filter_params(base_args, optional_args, llm_model_details):
     # Filter parameters based on LLMModel features
     if llm_model_details.features.temperature is False:
-        optional_args['temperature'] = 1
+        base_args.pop('temperature', None)
+        optional_args.pop('temperature', None)
     if llm_model_details.features.parallel_tool_calls is False:
         base_args['disabled_params'] = {"parallel_tool_calls": None}
     if llm_model_details.features.streaming is False:
@@ -464,6 +465,11 @@ def get_llm_by_credentials_raw(
     return AzureChatOpenAI(**filter_params(base_args, optional_args, llm_model_details))
 
 
+def _temperature_allowed(temperature: Optional[float], llm_model_details: LLMModel) -> bool:
+    """True when temperature should be sent: it is set and the model has not opted out via features."""
+    return temperature is not None and llm_model_details.features.temperature is not False
+
+
 def get_vertex_llm(
     llm_model_details: LLMModel,
     temperature: Optional[float] = None,
@@ -482,9 +488,10 @@ def get_vertex_llm(
         'streaming': streaming,
         'max_retries': config.GOOGLE_VERTEXAI_MAX_RETRIES,
         'max_tokens': llm_model_details.max_output_tokens or DEFAULT_MAX_OUTPUT_TOKENS_8K,
-        'temperature': temperature,
         'top_p': top_p,
     }
+    if _temperature_allowed(temperature, llm_model_details):
+        base_args['temperature'] = temperature
 
     # Add headers to client_options if they exist
     if merged_headers:
@@ -520,15 +527,18 @@ def get_bedrock_llm(
         merged_headers.update(llm_model_details.configuration.client_headers)
 
     disabled_streaming = not streaming or not llm_model_details.features.streaming
-    return ChatBedrockConverse(
-        client=get_bedrock_runtime_client(),
-        model=llm_model_details.deployment_name,
-        temperature=temperature,
-        top_p=top_p,
-        max_tokens=llm_model_details.max_output_tokens or DEFAULT_MAX_OUTPUT_TOKENS_8K,
-        disable_streaming=disabled_streaming,
-        additional_model_request_fields=merged_headers if merged_headers else None,
-    )
+    kwargs: dict[str, Any] = {
+        'client': get_bedrock_runtime_client(),
+        'model': llm_model_details.deployment_name,
+        'max_tokens': llm_model_details.max_output_tokens or DEFAULT_MAX_OUTPUT_TOKENS_8K,
+        'disable_streaming': disabled_streaming,
+        'additional_model_request_fields': merged_headers if merged_headers else None,
+    }
+    if _temperature_allowed(temperature, llm_model_details):
+        kwargs['temperature'] = temperature
+    if top_p is not None and llm_model_details.features.top_p is not False:
+        kwargs['top_p'] = top_p
+    return ChatBedrockConverse(**kwargs)
 
 
 def get_anthropic_llm(
@@ -545,15 +555,17 @@ def get_anthropic_llm(
         merged_headers.update(llm_model_details.configuration.client_headers)
 
     model_kwargs = {"extra_headers": merged_headers}
-    return ChatAnthropic(
-        model=llm_model_details.deployment_name,
-        temperature=temperature,
-        top_p=top_p,
-        max_tokens=llm_model_details.max_output_tokens or DEFAULT_MAX_OUTPUT_TOKENS_8K,
-        max_retries=config.ANTHROPIC_MAX_RETRIES,
-        streaming=streaming,
-        model_kwargs=model_kwargs,
-    )
+    kwargs: dict[str, Any] = {
+        'model': llm_model_details.deployment_name,
+        'top_p': top_p,
+        'max_tokens': llm_model_details.max_output_tokens or DEFAULT_MAX_OUTPUT_TOKENS_8K,
+        'max_retries': config.ANTHROPIC_MAX_RETRIES,
+        'streaming': streaming,
+        'model_kwargs': model_kwargs,
+    }
+    if _temperature_allowed(temperature, llm_model_details):
+        kwargs['temperature'] = temperature
+    return ChatAnthropic(**kwargs)
 
 
 def get_elasticsearch_retriever(

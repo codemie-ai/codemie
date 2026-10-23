@@ -93,6 +93,73 @@ class TestGenerateLiteLLMHeadersFromContext:
         assert "X-CodeMie-Project" not in headers
 
 
+class TestBuildChatModelBaseArgs:
+    """EPMCDME-15208: temperature is omitted when None."""
+
+    @staticmethod
+    def _build(temperature):
+        from codemie.enterprise.litellm.llm_factory import _build_chat_model_base_args
+
+        details = MagicMock()
+        details.api_version = None
+        details.base_name = "gpt-4"
+        return _build_chat_model_base_args(
+            llm_model_details=details, creds=None, temperature=temperature, top_p=None, streaming=True
+        )
+
+    def test_omits_temperature_when_none(self):
+        assert "temperature" not in self._build(None)
+
+    def test_keeps_temperature_when_set(self):
+        assert self._build(0.3)["temperature"] == 0.3
+
+
+class TestSerializedRequestTemperature:
+    """EPMCDME-15208: the request payload built by LiteLLMChatOpenAI carries no temperature when cleared."""
+
+    @staticmethod
+    def _model(**extra):
+        from codemie.enterprise.litellm.llm_factory import LiteLLMChatOpenAI
+
+        return LiteLLMChatOpenAI(
+            llm_model_details=MagicMock(),
+            azure_endpoint="https://example.invalid",
+            openai_api_key="test-key",
+            openai_api_version="2024-02-01",
+            deployment_name="deployment",
+            model_name="gpt-4o",
+            **extra,
+        )
+
+    def test_default_params_have_no_temperature_when_cleared(self):
+        assert "temperature" not in self._model()._default_params
+
+    def test_default_params_carry_temperature_when_set(self):
+        assert self._model(temperature=0.3)._default_params["temperature"] == 0.3
+
+
+class TestFilterLiteLLMParams:
+    """EPMCDME-15208: unsupported temperature is dropped, not forced to 1."""
+
+    @staticmethod
+    def _filter(supports_temperature):
+        from codemie.enterprise.litellm.llm_factory import _filter_litellm_params
+
+        details = MagicMock()
+        details.features.temperature = supports_temperature
+        details.features.parallel_tool_calls = True
+        details.features.streaming = True
+        details.features.max_tokens = True
+        details.features.top_p = True
+        return _filter_litellm_params({"temperature": 0.3, "streaming": True}, details)
+
+    def test_drops_temperature_when_unsupported(self):
+        assert "temperature" not in self._filter(False)
+
+    def test_keeps_temperature_when_supported(self):
+        assert self._filter(True)["temperature"] == 0.3
+
+
 class TestCreateLiteLLMChatModel:
     """Test create_litellm_chat_model() function."""
 
