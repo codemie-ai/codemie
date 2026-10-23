@@ -41,6 +41,7 @@ from codemie.enterprise.mcp_auth.dependencies import (
     is_mcp_auth_enabled,
     MCPAuthEnterpriseUnavailableError,
 )
+from codemie.enterprise.mcp_auth._constants import _CLIENT_METADATA_DOCUMENT_PATH
 from codemie.enterprise.mcp_auth._diagnostics import (
     OAuth2CallbackDiagnostics,
     build_oauth2_callback_diagnostics_response,
@@ -110,7 +111,6 @@ _DISABLED_RESPONSE = MCPAuthDisabledResponse(
     action="Enable MCP_AUTH_ENABLED and install the enterprise package",
 )
 
-_CLIENT_METADATA_DOCUMENT_PATH = "/oauth/client-metadata.json"
 _CLIENT_METADATA_QUERY_REJECTED_MESSAGE = "Invalid client metadata document request"
 _CLIENT_METADATA_QUERY_REJECTED_DETAILS = "Query strings are not allowed for this endpoint."
 _CLIENT_METADATA_CONFIG_ERROR_DETAILS = "Client metadata document configuration is invalid."

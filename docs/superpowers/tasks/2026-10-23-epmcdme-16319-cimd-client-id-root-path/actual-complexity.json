@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "generated": "2026-10-23T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 13,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 5,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "technical_risk", "reason": "The CIMD URL builder in the MCP auth URI module now adds the API root path and strips trailing slashes, following the existing callback-URI builder pattern. The base score is S. It was bumped to M because the value is the OAuth client_id that authorization servers see, so a wrong value breaks discovered-flow registration." },
+    { "dimension": "file_change_estimate", "reason": "The diffstat shows 5 files (4 source modules plus 1 extended test module, +71/-5), all under enterprise/mcp_auth and its test directory. That maps to M on the actual-mode scale (4-6 files)." },
+    { "dimension": "component_scope", "reason": "One component, the client metadata document URL builder, with its two consumers rewired to use it: the discovered-flow config preparation and the CIMD router path constant. The path constant is now defined once and imported. Calibration matches the bundled S example epmcdme-10102 (total 11); the M example epmcdme-10203 has three layers, which this change does not." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from S to M: affects authentication (OAuth client_id identity used in CIMD-based client registration)"
+  ],
+  "split_recommendation": null
+}

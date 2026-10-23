@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "task": "Build the CIMD client_id URL in codemie.enterprise.mcp_auth through one re-exported helper that adds the API root path, and drop the duplicate path constant in router.py (EPMCDME-16319).",
+  "generated": "2026-10-23T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 1, "label": "XS" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 12,
+  "size": "S",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "technical_risk", "reason": "Closest pattern is _build_callback_uri (root-path join at call time) plus the dependencies re-export facade, so this is mostly copy-and-adapt. HTTPS validation stays in the enterprise _validate_client_metadata_document_url and is already covered by the AC6 test, so there is no security gap and no bump for that. The error-path template (AC6/AC7) and the monkeypatched-config route tests already exist, so the edge-case bump does not apply either. Base S because of two mechanical traps: a helper that is not re-exported fails deps resolution only at runtime, and two tests hard-code root-path-free URLs. Raised to M by the auth red flag." },
+    { "dimension": "file_change_estimate", "reason": "4 source files modified in one package (_uri, _discovery, dependencies, router) plus 1-2 test files modified and possibly one new discovery seam test, across src/codemie/enterprise/mcp_auth and tests/ (enterprise/mcp_auth, codemie/service/mcp): about 5-7 files in 2-3 directories." },
+    { "dimension": "component_scope", "reason": "Provisionally M (URL builder, discovery config and router across the bridge and API layers). Lowered to S after calibrating against bundle example epmcdme-10102-add-validation-to-form-field: like that example, this is one self-contained component (the mcp_auth URL builder and its two callsites), and the only router change is a trivial removal of a duplicate constant. The M example epmcdme-10203 needs three layers, including a repository." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from S to M: changes the advertised OAuth CIMD client_id used in MCP authentication"
+  ],
+  "split_recommendation": null
+}

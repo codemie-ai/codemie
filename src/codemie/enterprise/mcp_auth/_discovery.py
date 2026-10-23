@@ -31,7 +31,6 @@ from ._common import (
     _sanitize_log_field,
 )
 from ._constants import (
-    _CLIENT_METADATA_DOCUMENT_PATH,
     _DISCOVERED_AUTH_RECOVERY_ACTION,
     DISCOVERY_BRIDGE_UNAVAILABLE_FAILURE_REASON,
 )
@@ -131,10 +130,9 @@ def _prepare_discovered_flow_resolution_config(
 ) -> _DiscoveredFlowResolutionConfig:
     deps = _deps()
     redirect_uri, _, _ = deps.build_redirect_uri()
-    client_metadata_document_url = f"{config.CALLBACK_API_BASE_URL.rstrip('/')}{_CLIENT_METADATA_DOCUMENT_PATH}"
     return _DiscoveredFlowResolutionConfig(
         redirect_uri=redirect_uri,
-        client_metadata_document_url=client_metadata_document_url,
+        client_metadata_document_url=deps.build_client_metadata_document_url(),
         allowed_private_networks=allowed_private_networks,
         allow_local_client_metadata_document_url=deps._mcp_auth_service.config.allow_local_client_metadata_document_url,
     )

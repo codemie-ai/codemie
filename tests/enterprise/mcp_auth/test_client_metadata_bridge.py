@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI, status
@@ -29,6 +30,8 @@ CLIENT_METADATA_PATH = "/oauth/client-metadata.json"
 CALLBACK_BASE_URL = "https://codemie.example.com"
 EXPECTED_CLIENT_ID = f"{CALLBACK_BASE_URL}{CLIENT_METADATA_PATH}"
 EXPECTED_REDIRECT_URI = f"{CALLBACK_BASE_URL}/v1/mcp-auth/oauth2/callback"
+ROOT_PATH = "/code-assistant-api"
+EXPECTED_ROOTED_CLIENT_ID = f"{CALLBACK_BASE_URL}{ROOT_PATH}{CLIENT_METADATA_PATH}"
 RAW_QUERY = (
     "client_secret=secret-sentinel&scope=scope-sentinel&resource=https://resource.example.com/&user_id=user-id-sentinel"
 )
@@ -245,3 +248,60 @@ def test_main_registers_cimd_router_separately_after_mcp_auth_router() -> None:
 
     assert mcp_import_index < cimd_import_index
     assert mcp_include_index < cimd_include_index
+
+
+def test_served_document_client_id_includes_api_root_path_and_shares_redirect_uri_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mcp_auth_dependencies.config, "API_ROOT_PATH", ROOT_PATH)
+
+    body = _build_cimd_client(monkeypatch, enabled=True).get(CLIENT_METADATA_PATH).json()
+
+    assert body["client_id"] == EXPECTED_ROOTED_CLIENT_ID
+    assert body["redirect_uris"] == [f"{CALLBACK_BASE_URL}{ROOT_PATH}/v1/mcp-auth/oauth2/callback"]
+    prefix = f"{CALLBACK_BASE_URL}{ROOT_PATH}/"
+    assert body["client_id"].startswith(prefix)
+    assert body["redirect_uris"][0].startswith(prefix)
+
+
+def test_served_document_client_id_without_root_path_strips_trailing_slash_base(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mcp_auth_dependencies.config, "API_ROOT_PATH", "")
+    monkeypatch.setattr(mcp_auth_dependencies.config, "CALLBACK_API_BASE_URL", f"{CALLBACK_BASE_URL}/")
+
+    body = _build_cimd_client(monkeypatch, enabled=True).get(CLIENT_METADATA_PATH).json()
+
+    # redirect_uri is not asserted: its trailing-slash strip is out of scope.
+    assert body["client_id"] == EXPECTED_CLIENT_ID
+
+
+@pytest.mark.parametrize(
+    ("base_url", "root_path", "expected"),
+    [
+        (CALLBACK_BASE_URL, ROOT_PATH, EXPECTED_ROOTED_CLIENT_ID),
+        (f"{CALLBACK_BASE_URL}/", ROOT_PATH, EXPECTED_ROOTED_CLIENT_ID),
+        (CALLBACK_BASE_URL, "code-assistant-api/", EXPECTED_ROOTED_CLIENT_ID),
+        (f"{CALLBACK_BASE_URL}/", "", EXPECTED_CLIENT_ID),
+        (CALLBACK_BASE_URL, "/", EXPECTED_CLIENT_ID),
+    ],
+)
+def test_discovered_flow_config_client_metadata_document_url_includes_api_root_path(
+    monkeypatch: pytest.MonkeyPatch,
+    base_url: str,
+    root_path: str,
+    expected: str,
+) -> None:
+    from codemie.enterprise.mcp_auth import _discovery
+
+    monkeypatch.setattr(mcp_auth_dependencies.config, "CALLBACK_API_BASE_URL", base_url)
+    monkeypatch.setattr(mcp_auth_dependencies.config, "API_ROOT_PATH", root_path)
+    monkeypatch.setattr(
+        mcp_auth_dependencies,
+        "_mcp_auth_service",
+        SimpleNamespace(config=SimpleNamespace(allow_local_client_metadata_document_url=False)),
+    )
+
+    resolved = _discovery._prepare_discovered_flow_resolution_config(allowed_private_networks=())
+
+    assert resolved.client_metadata_document_url == expected

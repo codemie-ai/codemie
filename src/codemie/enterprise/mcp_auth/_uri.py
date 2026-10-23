@@ -118,11 +118,18 @@ def ensure_client_metadata_document_available() -> None:
         raise MCPAuthEnterpriseUnavailableError from exc
 
 
+def build_client_metadata_document_url() -> str:
+    """Strips trailing slashes from base and root path (unlike _build_callback_uri), so '/' never yields '//'."""
+    base_url = config.CALLBACK_API_BASE_URL.rstrip("/")
+    root_path = get_api_root_path().rstrip("/")
+    return f"{base_url}{root_path}{_CLIENT_METADATA_DOCUMENT_PATH}"
+
+
 def build_client_metadata_document_response() -> Response:
     """Build the public Client ID Metadata Document response."""
 
     redirect_uri, _, _ = build_redirect_uri()
-    client_metadata_document_url = f"{config.CALLBACK_API_BASE_URL.rstrip('/')}{_CLIENT_METADATA_DOCUMENT_PATH}"
+    client_metadata_document_url = build_client_metadata_document_url()
     ensure_client_metadata_document_available()
     try:
         from codemie_enterprise.mcp_auth.discovery.client_metadata import build_client_metadata_document

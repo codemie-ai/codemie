@@ -129,6 +129,7 @@ from ._uri import (  # noqa: E402, F401
     _normalize_resource_path,
     _uses_https,
     build_client_metadata_document_response,
+    build_client_metadata_document_url,
     build_redirect_uri,
     build_saml_acs_url,
     derive_resource_uri,
