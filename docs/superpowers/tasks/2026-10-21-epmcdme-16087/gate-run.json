@@ -1,0 +1,141 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-16087",
+  "head": "c73a8072c48ef60a1f6aa57a86b6cfa64a648923",
+  "runner": "custom",
+  "started_at": "2026-10-21T13:25:01Z",
+  "completed_at": "2026-10-21T13:39:11Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 4601,
+      "command": "make ruff",
+      "exit_code": 0,
+      "notes": "Also covers the codemie-pre-commit hook steps (staged ruff format/fix + ruff check); 2928 files unchanged, working tree unmodified."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 29045,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 3170,
+      "command": "make license-check",
+      "exit_code": 0,
+      "notes": "Also covers the codemie-pre-commit hook license step. Checked 2630 files, 0 missing."
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make gitleaks",
+      "exit_code": null,
+      "notes": "Skip if (guide): Docker is unavailable -- 'docker: command not found'; only podman is installed. Owed: CI does not run it. Enable locally with a docker CLI/shim for podman, or the security/README.md fallback 'gitleaks dir --no-banner .' (gitleaks not installed)."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 49568,
+      "command": "make test",
+      "exit_code": null,
+      "notes": "Out of scope: user asked not to run unrelated unit tests. It was started, then killed after about 50s. Exit 2 was caused by the kill, not by a test result."
+    },
+    {
+      "id": "affected",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 20543,
+      "command": "MSYS_NO_PATHCONV=1 podman run --rm -v \"C:/Users/KostiantynPshenychny/Documents/epm-cdme/repos/codemie:/app\" -w /app python:3.12-slim sh -c \"pip install -q pytest pytest-xdist pytest-env python-dotenv lxml==6.1.0 fonttools==4.66.1 matplotlib==3.9.1 openpyxl && python -m pytest -p no:cacheprovider --noconftest tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py\"",
+      "exit_code": 0,
+      "notes": "Scoped substitute for the Tests gate: GUARD_PYTEST from plan.md, run in a Linux container because the prelude's import resource fails on Windows. 64 passed. Adding test_sandbox_guard.py to the same container gave ERROR at collection: ModuleNotFoundError langchain_core, a gap in the slim image (log: gates.local/affected-with-sandbox-guard.log). test_sandbox_guard.py was not run with the full deps."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make coverage",
+      "exit_code": null,
+      "notes": "Skip if (guide): the user did not request coverage."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 232,
+      "command": "make sonar-local",
+      "exit_code": 0,
+      "notes": "Self-skip: '[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.' To enable, set SONAR_TOKEN in env or .env.local and install sonar-scanner. Without SONAR_SKIP_TESTS=1 it also re-runs the full pytest suite. Also covers the pre-push hook's sonar step."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make verify",
+      "exit_code": null,
+      "notes": "Out of scope: it chains make test (full suite, excluded by the user) and make gitleaks (Docker unavailable). Its ruff and license parts ran as separate gates."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 633146,
+      "command": "make test-harness",
+      "exit_code": 2,
+      "notes": "Run at the user's request. 191 passed, 4 skipped, 88 errors, 3 rerun, 0 FAILED. All 88 errors are fixture setup errors from one cause: \"ValueError: GITHUB_PROJECT '' is not a recognizable 'https://github.com/<owner>/<repo>' URL\". Harness GITHUB_PROJECT config is missing, and ~/.codemie/test-harness.json is absent. Full log: gates.local/harness.log."
+    },
+    {
+      "id": "commit-msg",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 1587,
+      "command": "for c in $(git rev-list origin/main..HEAD); do git log -1 --format=%B $c > msg; bash scripts/git-hooks/commit_msg.sh msg; done",
+      "exit_code": 0,
+      "notes": "All 3 branch commits match ^EPMCDME-[0-9]+:. No guide gate covers the codemie-commit-msg hook."
+    },
+    {
+      "id": "gitleaks-hook",
+      "source": "hook",
+      "status": "FAIL",
+      "duration_ms": 1543,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": 125,
+      "notes": "The codemie-gitleaks pre-commit hook. The scan never ran: podman rejected the volume mount ('Error: invalid option type \"\\\\Users\\\\...\\\\codemie\\\\.git\"'). On this Windows host repo_root is 'C:/...' while git-dir resolves to '/c/.../.git', so the hook adds an extra -v mount that podman cannot parse. The script itself says this is NOT a secret finding. Nothing is staged, so even a working run would scan no content. Neither secret gate checked this branch's changes. .git/hooks has only samples, so the hook is not installed in this checkout."
+    },
+    {
+      "id": "pre-push-pytest",
+      "source": "hook",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "poetry run pytest tests/ --ignore=tests/enterprise/ -W ignore::DeprecationWarning --cov --cov-report=xml:coverage.xml",
+      "exit_code": null,
+      "notes": "The codemie-pre-push hook is opt-in (CODEMIE_PREPUSH_ENABLED unset, so it self-skips) and runs the full suite, which the user excluded. Its sonar step is covered by the sonar gate."
+    },
+    {
+      "id": "ci-wait-ci-init",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": ".wait-ci-init-template (epm-cdme/codemie-gitlab-templates@0.1.2) awaiting contexts ci-pipeline, compliance-report",
+      "exit_code": null,
+      "notes": ".gitlab-ci.yml only waits for external contexts ci-pipeline and compliance-report, which run outside this repo and cannot be run locally. Only CI can settle them. The compliance bot needs a ## Test harness section in the MR description."
+    }
+  ],
+  "failures": {
+    "test-harness": "ERROR tests/integrations/test_integration_update.py - ValueError: GITHUB_PROJ...\nERROR tests/integrations/test_integration_update.py - ValueError: GITHUB_PROJ...\nERROR tests/integrations/test_integration_update.py - ValueError: GITHUB_PROJ...\nERROR tests/integrations/test_integration_update.py - ValueError: GITHUB_PROJ...\nERROR tests/e2e/test_e2e.py - ValueError: GITHUB_PROJECT '' is not a recogniz...\nERROR tests/integrations/test_integration_update.py - ValueError: GITHUB_PROJ...\nERROR tests/e2e/test_e2e.py - ValueError: GITHUB_PROJECT '' is not a recogniz...\nERROR tests/integrations/test_integration_update.py - ValueError: GITHUB_PROJ...\nERROR tests/ui/assistants/test_assistant_mcp_servers.py - ValueError: GITHUB_...\nERROR tests/ui/assistants/test_assistant_mcp_servers.py - ValueError: GITHUB_...\nERROR tests/ui/assistants/test_assistant_mcp_servers.py - ValueError: GITHUB_...\nERROR tests/ui/assistants/test_assistant_mcp_servers.py - ValueError: GITHUB_...\nERROR tests/ui/assistants/test_assistant_mcp_servers.py - ValueError: GITHUB_...\nERROR tests/ui/assistants/test_assistant_mcp_servers.py - ValueError: GITHUB_...\nERROR tests/ui/assistants/test_assistant_mcp_servers.py - ValueError: GITHUB_...\nERROR tests/ui/assistants/test_assistant_mcp_servers.py - ValueError: GITHUB_...\nERROR tests/workflow/assistant_tools/mcp/test_workflow_with_assistant_with_mcp_server.py\nERROR tests/workflow/assistant_tools/mcp/test_workflow_with_assistant_with_mcp_server.py\nERROR tests/workflow/assistant_tools/mcp/test_workflow_with_assistant_with_mcp_server.py\nERROR tests/workflow/assistant_tools/mcp/test_workflow_with_assistant_with_mcp_server.py\nERROR tests/workflow/assistant_tools/mcp/test_workflow_with_assistant_with_mcp_server.py\nERROR tests/workflow/assistant_tools/mcp/test_workflow_with_assistant_with_mcp_server.py\nERROR tests/workflow/assistant_tools/mcp/test_workflow_with_assistant_with_mcp_server.py\nERROR tests/workflow/assistant_tools/mcp/test_workflow_with_assistant_with_mcp_server.py\nERROR tests/workflow/virtual_assistant_tools/mcp/test_workflow_with_mcp_server.py\nERROR tests/workflow/virtual_assistant_tools/mcp/test_workflow_with_mcp_server.py\nERROR tests/workflow/virtual_assistant_tools/mcp/test_workflow_with_mcp_server.py\nERROR tests/workflow/virtual_assistant_tools/mcp/test_workflow_with_mcp_server.py\nERROR tests/workflow/virtual_assistant_tools/mcp/test_workflow_with_mcp_server.py\nERROR tests/workflow/virtual_assistant_tools/mcp/test_workflow_with_mcp_server.py\nERROR tests/workflow/virtual_assistant_tools/mcp/test_workflow_with_mcp_server.py\nERROR tests/workflow/virtual_assistant_tools/mcp/test_workflow_with_mcp_server.py\nERROR tests/workflow/virtual_assistant_tools/vcs/test_workflow_with_vcs_tools.py\nERROR tests/workflow/virtual_assistant_tools/vcs/test_workflow_with_vcs_tools.py\nERROR tests/workflow/virtual_assistant_tools/vcs/test_workflow_with_vcs_tools.py\nERROR tests/workflow/virtual_assistant_tools/vcs/test_workflow_with_vcs_tools.py\nERROR tests/workflow/virtual_assistant_tools/vcs/test_workflow_with_vcs_tools.py\nERROR tests/workflow/virtual_assistant_tools/vcs/test_workflow_with_vcs_tools.py\nERROR tests/workflow/virtual_assistant_tools/vcs/test_workflow_with_vcs_tools.py\nERROR tests/workflow/virtual_assistant_tools/vcs/test_workflow_with_vcs_tools.py\nERROR tests/workspace_scripts/test_workflow_assistant_step_excluded_tools.py\nERROR tests/workspace_scripts/test_workflow_assistant_step_excluded_tools.py\nERROR tests/workspace_scripts/test_workflow_assistant_step_excluded_tools.py\nERROR tests/workspace_scripts/test_workflow_assistant_step_excluded_tools.py\nERROR tests/workspace_scripts/test_workflow_assistant_step_excluded_tools.py\nERROR tests/workspace_scripts/test_workflow_assistant_step_excluded_tools.py\nERROR tests/workspace_scripts/test_workflow_assistant_step_excluded_tools.py\nERROR tests/workspace_scripts/test_workflow_assistant_step_excluded_tools.py\n======= 191 passed, 4 skipped, 88 errors, 3 rerun in 602.64s (0:10:02) ========\nmake: *** [Makefile:74: test-harness] Error 1",
+    "gitleaks-hook": "codemie-gitleaks: scanning staged changes with podman (ghcr.io/gitleaks/gitleaks:v8.30.1)\nError: invalid option type \"\\\\Users\\\\KostiantynPshenychny\\\\Documents\\\\epm-cdme\\\\repos\\\\codemie\\\\.git\"\n\ncodemie-gitleaks: scan failed to run (exit 125) - this is NOT a secret finding.\nCommon causes: image pull failed (offline), container OOM, or git 'dubious ownership' inside the container.\nFix the environment and retry; do not bypass the secrets gate for scan-run failures."
+  }
+}

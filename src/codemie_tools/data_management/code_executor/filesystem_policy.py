@@ -797,51 +797,41 @@ def render_runtime_prelude(
             if _lxml_etree is not None:
                 _ORIGINALS["lxml.etree.XMLParser"] = _lxml_etree.XMLParser
                 _original_xmlparser_cls = _lxml_etree.XMLParser
-                # XMLParser instances are not weak-referenceable (Cython
-                # extension type with no __weakref__ slot), so this set holds
-                # strong references. Parsers created for the lifetime of a
-                # sandboxed script are few and short-lived, so the retained
-                # memory is bounded; the alternative (tracking by id()) risks
-                # a false "trusted" match if a hardened parser is collected
-                # and its id is reused by an unrelated, unsafe instance.
-                # A script that constructs XMLParser() in an unbounded loop
-                # grows this set for the process lifetime; the resulting
-                # memory pressure is contained by the sandbox pod/job's own
-                # memory limit, same as any other in-process allocation.
-                _hardened_parsers: set = set()
+                import weakref as _weakref
 
-                def _hardened_xmlparser_cls(*args, **kwargs):
-                    kwargs["resolve_entities"] = False
-                    kwargs["load_dtd"] = False
-                    kwargs["no_network"] = True
-                    kwargs["huge_tree"] = False
-                    instance = _original_xmlparser_cls(*args, **kwargs)
-                    _hardened_parsers.add(instance)
-                    return instance
+                _SAFE_XML_KWARGS = {
+                    "resolve_entities": False,
+                    "load_dtd": False,
+                    "no_network": True,
+                    "huge_tree": False,
+                }
+                # Keyed by id() and checked with `is` so tracking never calls a
+                # parser's own __hash__/__eq__, which a subclass can override.
+                _hardened_parsers = _weakref.WeakValueDictionary()
 
-                _lxml_etree.XMLParser = _hardened_xmlparser_cls
+                class _HardenedXMLParser(_original_xmlparser_cls):
+                    def __init__(self, *args, **kwargs):
+                        kwargs.update(_SAFE_XML_KWARGS)
+                        super().__init__(*args, **kwargs)
+                        _hardened_parsers[id(self)] = self
+
+                _lxml_etree.XMLParser = _HardenedXMLParser
 
                 def _hardened_default_parser():
-                    return _hardened_xmlparser_cls()
+                    return _HardenedXMLParser()
 
                 def _force_hardened_parser(parser):
                     # A caller can still reach the real, un-patched XMLParser
-                    # type via `type(some_parser_instance)` and construct a
+                    # type via `etree.XMLParser.__bases__[0]` and construct a
                     # parser with unsafe settings directly, bypassing the
                     # `_lxml_etree.XMLParser` reassignment above entirely.
                     # lxml parser settings are write-only at construction and
                     # cannot be introspected or mutated after the fact, so any
                     # parser instance not known to have been produced through
-                    # `_hardened_xmlparser_cls` is replaced outright rather
+                    # `_HardenedXMLParser` is replaced outright rather
                     # than trusted.
-                    try:
-                        if parser is not None and parser in _hardened_parsers:
-                            return parser
-                    except TypeError:
-                        # Unhashable `parser` argument -- fall through to the
-                        # safe default instead of letting the membership test
-                        # crash the call.
-                        pass
+                    if parser is not None and _hardened_parsers.get(id(parser)) is parser:
+                        return parser
                     return _hardened_default_parser()
 
                 for _name in ("fromstring", "XML", "parse"):
@@ -868,14 +858,12 @@ def render_runtime_prelude(
                 if _original_iterparse is not None:
                     _ORIGINALS["lxml.etree.iterparse"] = _original_iterparse
 
-                    def _hardened_iterparse(*args, **kwargs):
-                        kwargs["resolve_entities"] = False
-                        kwargs["load_dtd"] = False
-                        kwargs["no_network"] = True
-                        kwargs["huge_tree"] = False
-                        return _original_iterparse(*args, **kwargs)
+                    class _HardenedIterparse(_original_iterparse):
+                        def __init__(self, *args, **kwargs):
+                            kwargs.update(_SAFE_XML_KWARGS)
+                            super().__init__(*args, **kwargs)
 
-                    _lxml_etree.iterparse = _hardened_iterparse
+                    _lxml_etree.iterparse = _HardenedIterparse
 
             audit_authorized_depth = _authorized_depth
             audit_allow_import_access = _allow_import_access

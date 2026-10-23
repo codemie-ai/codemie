@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "generated": "2026-10-21T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 12,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 2,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "technical_risk", "reason": "The change hardens the sandbox runtime guard (filesystem_policy runtime prelude), a defense-in-depth security boundary for untrusted customer code. It covers lxml XXE/entity-expansion hardening, parser-type bypass resistance (raw base class, subclass, __eq__/__hash__ spoofing, positional parser args, iterparse subclassing) and audit-hook path authorization. There is a precedent pattern (the existing monkeypatch/audit-hook guard), but its bypass-resistance logic is new and security-sensitive. The work was scored M and bumped to L by the security red flag. The L floor for injection prevention also applies." },
+    { "dimension": "component_scope", "reason": "The production change is confined to one component, the render_runtime_prelude template in filesystem_policy.py. Its counterpart test module is the only other file changed. No layer boundary is crossed." },
+    { "dimension": "file_change_estimate", "reason": "Diffstat shows 2 files (1 source file, 1 test module) with 192 insertions and 41 deletions, all in the code_executor package. That maps to S under the actual-mode file-count mapping." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from M to L: security-sensitive sandbox hardening (XXE prevention and parser-bypass resistance in the untrusted-code guard)"
+  ],
+  "split_recommendation": null
+}

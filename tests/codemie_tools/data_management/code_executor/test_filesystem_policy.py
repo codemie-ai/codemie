@@ -637,6 +637,169 @@ def test_guard_forces_safe_lxml_iterparse_defaults_blocking_xxe(tmp_path: Path) 
     assert "texts: [None]" in result.stdout
 
 
+def test_guard_lxml_iterparse_supports_subclass_and_isinstance(tmp_path: Path) -> None:
+    result = _run_guarded(
+        tmp_path,
+        "import io\n"
+        "from lxml import etree\n"
+        "it = etree.iterparse(io.BytesIO(b'<r><a>1</a></r>'))\n"
+        "print('isinstance:', isinstance(it, etree.iterparse), [el.tag for _, el in it])\n"
+        "class Y(etree.iterparse):\n"
+        "    pass\n"
+        "xml = b'<?xml version=\"1.0\"?>"
+        "<!DOCTYPE r [<!ENTITY x SYSTEM \"file:///etc/passwd\">]>"
+        "<r>&x;</r>'\n"
+        "texts = [el.text for _, el in Y(io.BytesIO(xml), load_dtd=True, resolve_entities=True)]\n"
+        "print('texts:', texts)\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "isinstance: True ['a', 'r']" in result.stdout
+    assert "texts: [None]" in result.stdout
+
+
+_XXE_XML_LINE = (
+    "xml = b'<?xml version=\"1.0\"?>" "<!DOCTYPE r [<!ENTITY x SYSTEM \"file:///etc/passwd\">]>" "<r>&x;</r>'\n"
+)
+
+
+def test_guard_lxml_xmlparser_supports_subclass_and_isinstance(tmp_path: Path) -> None:
+    result = _run_guarded(
+        tmp_path,
+        "from lxml import etree\n"
+        "class X(etree.XMLParser):\n"
+        "    pass\n"
+        "print(\n"
+        "    isinstance(etree.XMLParser(), etree.XMLParser),\n"
+        "    isinstance(X(), etree.XMLParser),\n"
+        "    etree.fromstring(b'<r>ok</r>', X()).text,\n"
+        ")\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "True True ok" in result.stdout
+
+
+def test_guard_lxml_unhashable_xmlparser_subclass_constructs_and_blocks_xxe(tmp_path: Path) -> None:
+    result = _run_guarded(
+        tmp_path,
+        "from lxml import etree\n"
+        "class P(etree.XMLParser):\n"
+        "    def __eq__(self, other):\n"
+        "        return False\n"
+        "p = P(remove_blank_text=True)\n" + _XXE_XML_LINE + "print('ok:', etree.fromstring(b'<r>ok</r>', p).text)\n"
+        "print('blank:', etree.fromstring(b'<r>  <a/>  </r>', p).text)\n"
+        "print('xxe:', etree.fromstring(xml, p).text)\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "ok: ok" in result.stdout
+    assert "blank: None" in result.stdout
+    assert "xxe: None" in result.stdout
+
+
+def test_guard_lxml_raw_base_subclass_spoofing_eq_and_hash_is_not_trusted(tmp_path: Path) -> None:
+    result = _run_guarded(
+        tmp_path,
+        "import io\n"
+        "from lxml import etree\n"
+        "tracked = etree.XMLParser()\n"
+        "class Spoof(etree.XMLParser.__bases__[0]):\n"
+        "    def __eq__(self, other):\n"
+        "        return True\n"
+        "    def __hash__(self):\n"
+        "        return hash(tracked)\n"
+        "spoof = Spoof(resolve_entities=True, load_dtd=True, no_network=False, huge_tree=True)\n"
+        + _XXE_XML_LINE
+        + "print('fromstring:', etree.fromstring(xml, spoof).text)\n"
+        "print('XML:', etree.XML(xml, spoof).text)\n"
+        "print('parse:', etree.parse(io.BytesIO(xml), spoof).getroot().text)\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "fromstring: None" in result.stdout
+    assert "XML: None" in result.stdout
+    assert "parse: None" in result.stdout
+
+
+def test_guard_lxml_html_imports(tmp_path: Path) -> None:
+    result = _run_guarded(
+        tmp_path,
+        "from lxml import etree\n" "import lxml.html\n" "print(issubclass(lxml.html.XHTMLParser, etree.XMLParser))\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "True"
+
+
+def test_guard_lxml_fonttools_style_subclass_is_tracked_and_blocks_xxe(tmp_path: Path) -> None:
+    result = _run_guarded(
+        tmp_path,
+        "from lxml import etree\n"
+        "_XMLParser = etree.XMLParser\n"
+        "class XMLParser(_XMLParser):\n"
+        "    def __init__(self, *args, **kwargs):\n"
+        "        kwargs.setdefault('resolve_entities', False)\n"
+        "        super().__init__(*args, **kwargs)\n"
+        "p = XMLParser(remove_blank_text=True)\n" + _XXE_XML_LINE + "print('xxe:', etree.fromstring(xml, p).text)\n"
+        "print('blank:', etree.fromstring(b'<r>  <a/>  </r>', p).text)\n"
+        "import fontTools.misc.etree\n"
+        "print('fonttools: ok')\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "xxe: None" in result.stdout
+    assert "blank: None" in result.stdout
+    assert "fonttools: ok" in result.stdout
+
+
+def test_guard_lxml_unsafe_user_subclass_and_raw_base_blocked(tmp_path: Path) -> None:
+    result = _run_guarded(
+        tmp_path,
+        "import io\n"
+        "from lxml import etree\n"
+        "class Unsafe(etree.XMLParser):\n"
+        "    def __init__(self):\n"
+        "        super().__init__(resolve_entities=True, load_dtd=True, no_network=False, huge_tree=True)\n"
+        + _XXE_XML_LINE
+        + "print('subclass:', etree.XML(xml, Unsafe()).text)\n"
+        "raw = etree.XMLParser.__bases__[0](resolve_entities=True, load_dtd=True, no_network=False)\n"
+        "print('raw:', etree.parse(io.BytesIO(xml), raw).getroot().text)\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "subclass: None" in result.stdout
+    assert "raw: None" in result.stdout
+
+
+def test_guard_matplotlib_writes_single_and_multipage_pdf(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    result = _run_guarded_as_file_in_workspace(
+        workspace_root,
+        "import matplotlib\n"
+        "matplotlib.use('Agg')\n"
+        "import matplotlib.pyplot as plt\n"
+        "from matplotlib.backends.backend_pdf import PdfPages\n"
+        "fig, ax = plt.subplots()\n"
+        "ax.plot([1, 2, 3], [4, 5, 6])\n"
+        "ax.set_title('single')\n"
+        "fig.savefig('one.pdf', format='pdf')\n"
+        "with PdfPages('multi.pdf') as pdf:\n"
+        "    for page in range(3):\n"
+        "        fig, ax = plt.subplots()\n"
+        "        ax.plot([0, page], [page, 0])\n"
+        "        ax.set_title(f'page {page}')\n"
+        "        pdf.savefig(fig)\n"
+        "        plt.close(fig)\n"
+        "print('saved')\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (workspace_root / "one.pdf").stat().st_size > 0
+    assert (workspace_root / "multi.pdf").stat().st_size > 0
+
+
 def test_guard_neutralizes_billion_laughs_entity_expansion(tmp_path: Path) -> None:
     payload = (
         "from lxml import etree\n"

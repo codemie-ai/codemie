@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "task": "Replace the plain-function lxml.etree.XMLParser and lxml.etree.iterparse overrides in the code-executor runtime guard (filesystem_policy.py) with hardened, class-compatible subclasses that keep all XML protections and parser tracking, plus regression tests.",
+  "generated": "2026-10-21T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 1, "label": "XS" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 11,
+  "size": "S",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "technical_risk", "reason": "The closest existing pattern is the current hardened factory functions and the parse wrappers that consult the tracked-parser set. They define the protections but not class-compatible subclassing: a user subclass that sets its own kwargs (the FontTools setdefault shim) must still be forced to the safe values and tracked. The approach is proven by a prototype in the real executor image, which puts the base at M. It is bumped to L because the change sits in XXE/entity-expansion hardening, which is security-sensitive. The existing subprocess XXE and billion-laughs tests give a template for error-path assertions, so the edge-case auto-bump does not apply." },
+    { "dimension": "component_scope", "reason": "One component changes: the lxml block of the runtime prelude template inside install_guard. The fromstring/XML/parse wrappers stay unchanged, and all three execution paths (Jobs, shared pod, workspace script) pick up the fix from the same backend-injected prelude." },
+    { "dimension": "requirements_clarity", "reason": "The acceptance criteria are explicit, and the fix shape is named and prototyped. Minor open points: lxml.html import breakage is extra impact not in the ticket, matplotlib/FontTools validation needs the Linux executor image because the backend venv's fontTools predates the shim, and AC 8 is a process decision rather than code." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from M to L: security requirement (XML external-entity / entity-expansion hardening in the sandbox guard must remain enforced)"
+  ],
+  "split_recommendation": null
+}
