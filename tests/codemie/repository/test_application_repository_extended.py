@@ -46,6 +46,12 @@ def _compile_sql(statement) -> str:
     ).lower()
 
 
+@pytest.fixture
+def db_session():
+    """Mock database session."""
+    return MagicMock()
+
+
 class TestApplicationRepositoryBasicOperations:
     """Test basic CRUD operations not covered by existing tests."""
 
@@ -827,6 +833,33 @@ class TestUpdateProjectCreatedBy:
         result = application_repository.update_project(mock_session, app, description="new description")
 
         assert result.created_by == "original-owner"
+
+
+class TestListSharedProjectsForUsers:
+    """Test list_shared_projects_for_users query."""
+
+    def test_returns_empty_without_query_for_empty_input(self, db_session):
+        assert application_repository.list_shared_projects_for_users(db_session, []) == []
+        db_session.exec.assert_not_called()
+
+    def test_returns_applications_from_query(self, db_session):
+        app = Application(id="proj-a", name="proj-a", project_type="shared")
+        db_session.exec.return_value.all.return_value = [app]
+
+        assert application_repository.list_shared_projects_for_users(db_session, ["u1"]) == [app]
+
+    def test_query_joins_membership_and_filters_shared_active(self, db_session):
+        db_session.exec.return_value.all.return_value = []
+
+        application_repository.list_shared_projects_for_users(db_session, ["u1", "u2"])
+
+        sql = _compile_sql(db_session.exec.call_args.args[0])
+        assert "join user_projects on user_projects.project_name = applications.name" in sql
+        assert "user_projects.user_id in ('u1', 'u2')" in sql
+        assert "applications.project_type = 'shared'" in sql
+        assert "applications.deleted_at is null" in sql
+        assert "distinct" in sql
+        assert "order by applications.name" in sql
 
 
 class TestUpdateProjectCliAnalyticsEnabled:

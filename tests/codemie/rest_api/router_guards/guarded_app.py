@@ -21,8 +21,8 @@ or a ``Config`` default, so neither the developer's shell nor ``.env`` files cha
 
 Every conditional router of ``main.py`` is on except MCP auth: ``index`` (Elasticsearch configured),
 ``budget_router`` (LiteLLM plus ``LLM_PROXY_BUDGET_CHECK_ENABLED``), the user-management group and
-``local_auth_router`` (``ENABLE_USER_MANAGEMENT`` with ``IDP_PROVIDER=local``) and
-``POST /v1/workflows/generate``.
+``local_auth_router`` (``ENABLE_USER_MANAGEMENT`` with ``IDP_PROVIDER=local``), the ServiceNow integration
+router (``SERVICENOW_INTEGRATION_ENABLED`` with ``ENABLE_USER_MANAGEMENT``) and ``POST /v1/workflows/generate``.
 
 Recorded gap: the ``MCP_AUTH_ENABLED`` variants of ``get_mcp_auth_router()`` and ``get_cimd_router()``
 are not guarded; the guarded app carries their 503 stubs. Those routers are registered last, outside the
@@ -52,6 +52,7 @@ _INHERITED_ENV_NAMES: Final = ("PATH", "HOME")
 PROFILE_ENV: Final[dict[str, str]] = {
     "ENV": "local",
     "ENABLE_USER_MANAGEMENT": "true",
+    "SERVICENOW_INTEGRATION_ENABLED": "true",
     "IDP_PROVIDER": "local",
     "RETRIEVAL_BACKEND": "elasticsearch",
     "ELASTIC_URL": "http://localhost:9200",

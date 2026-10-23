@@ -566,6 +566,52 @@ async def test_user_detail_access_project_admin_user_not_exists(
     mock_user_repo.get_by_id.assert_called_once_with(mock_session, "nonexistent-user")
 
 
+class TestAuthenticateServiceNowScope:
+    ALLOWED = frozenset({("POST", "/v1/integrations/servicenow/budgets")})
+
+    async def _authenticate_as(self, mocker, caller: User, method: str, path: str):
+        request = mocker.MagicMock()
+        request.headers = {}
+        request.method = method
+        request.scope = {"route": mocker.MagicMock(path=path)}
+        provider = MagicMock()
+        provider.authenticate_and_load_user = AsyncMock(return_value=caller)
+        with (
+            patch("codemie.rest_api.security.authentication.get_user_provider", return_value=provider),
+            patch("codemie.rest_api.security.authentication.IdpFactory"),
+            patch("codemie.rest_api.security.servicenow_access.config") as mock_config,
+            patch("codemie.rest_api.security.servicenow_access._allowed_routes", return_value=self.ALLOWED),
+        ):
+            mock_config.SERVICENOW_INTEGRATION_ENABLED = True
+            mock_config.SERVICENOW_SERVICE_ACCOUNT_ID = "sn-sa-1"
+            return await authenticate(request, internal_user_id=None, bind_key=None)
+
+    @pytest.mark.anyio
+    async def test_service_account_on_blocked_route_is_403(self, mocker):
+        caller = User(id="sn-sa-1", user_type="service_account", project_names=[])
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            await self._authenticate_as(mocker, caller, "GET", "/v1/admin/project-budget-groups")
+
+        assert exc_info.value.code == 403
+
+    @pytest.mark.anyio
+    async def test_service_account_on_allowed_route_returns_user(self, mocker):
+        caller = User(id="sn-sa-1", user_type="service_account", project_names=[])
+
+        result = await self._authenticate_as(mocker, caller, "POST", "/v1/integrations/servicenow/budgets")
+
+        assert result is caller
+
+    @pytest.mark.anyio
+    async def test_regular_user_on_blocked_route_returns_user(self, mocker):
+        caller = User(id="u1", username="regular_user", project_names=[])
+
+        result = await self._authenticate_as(mocker, caller, "GET", "/v1/admin/project-budget-groups")
+
+        assert result is caller
+
+
 class TestAuthenticateTeamsSenderBranch:
     async def _authenticate_as(self, mocker, caller: User, headers: dict):
         request = mocker.MagicMock()

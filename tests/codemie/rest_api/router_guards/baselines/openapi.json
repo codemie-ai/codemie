@@ -9347,6 +9347,45 @@
         "title": "ErrorCode",
         "type": "string"
       },
+      "ErrorDetail": {
+        "description": "Error response detail.",
+        "properties": {
+          "details": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Detailed error information",
+            "title": "Details"
+          },
+          "help": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Help text for resolving the error",
+            "title": "Help"
+          },
+          "message": {
+            "description": "Error message",
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "title": "ErrorDetail",
+        "type": "object"
+      },
       "ErrorDetailLevel": {
         "description": "Error verbosity level for API responses.\n\nControls how much detail is included in tool error responses:\n- MINIMAL: Only error code and message (for production clients)\n- STANDARD: Adds HTTP status and tool_call_id (default, for debugging)\n- FULL: Includes all details including timestamp (for development)",
         "enum": [
@@ -9356,6 +9395,20 @@
         ],
         "title": "ErrorDetailLevel",
         "type": "string"
+      },
+      "ErrorResponse": {
+        "description": "Standard error response.",
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorDetail",
+            "description": "Error information"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "title": "ErrorResponse",
+        "type": "object"
       },
       "EvaluationResponse": {
         "description": "Response model for evaluation endpoints.",
@@ -23944,6 +23997,270 @@
           }
         },
         "title": "SecurityScheme",
+        "type": "object"
+      },
+      "ServiceNowBudgetAction": {
+        "description": "Budget action requested by ServiceNow.",
+        "enum": [
+          "set",
+          "adjust",
+          "cancel"
+        ],
+        "title": "ServiceNowBudgetAction",
+        "type": "string"
+      },
+      "ServiceNowBudgetCategoryResponse": {
+        "properties": {
+          "budget_reset_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Next reset time, or null.",
+            "title": "Budget Reset At"
+          },
+          "category": {
+            "$ref": "#/components/schemas/BudgetCategory",
+            "description": "Budget category."
+          },
+          "max_budget": {
+            "description": "Monthly limit.",
+            "title": "Max Budget",
+            "type": "number"
+          },
+          "soft_budget": {
+            "description": "Warning threshold; 80% of the limit unless one was already set.",
+            "title": "Soft Budget",
+            "type": "number"
+          }
+        },
+        "required": [
+          "category",
+          "max_budget",
+          "soft_budget"
+        ],
+        "title": "ServiceNowBudgetCategoryResponse",
+        "type": "object"
+      },
+      "ServiceNowBudgetGroupResponse": {
+        "properties": {
+          "budget_duration": {
+            "description": "Budget period; 30d for budgets created by this integration.",
+            "title": "Budget Duration",
+            "type": "string"
+          },
+          "categories": {
+            "description": "Budget per category.",
+            "items": {
+              "$ref": "#/components/schemas/ServiceNowBudgetCategoryResponse"
+            },
+            "title": "Categories",
+            "type": "array"
+          },
+          "total_amount": {
+            "description": "Sum of all category budgets.",
+            "title": "Total Amount",
+            "type": "number"
+          }
+        },
+        "required": [
+          "total_amount",
+          "budget_duration",
+          "categories"
+        ],
+        "title": "ServiceNowBudgetGroupResponse",
+        "type": "object"
+      },
+      "ServiceNowBudgetRequest": {
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/ServiceNowBudgetAction",
+            "description": "set replaces the budget, adjust merges into it, cancel deletes it."
+          },
+          "admin_emails": {
+            "description": "People to make project admins (requester and approvers). Ignored by cancel.",
+            "items": {
+              "format": "email",
+              "type": "string"
+            },
+            "title": "Admin Emails",
+            "type": "array"
+          },
+          "amounts": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "minimum": 0.0,
+                  "type": "number"
+                },
+                "propertyNames": {
+                  "$ref": "#/components/schemas/BudgetCategory"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Monthly budget per category in USD (platform, cli, premium_models). Required for set and adjust; set must include platform > 0. Ignored by cancel.",
+            "examples": [
+              {
+                "cli": 100,
+                "platform": 500,
+                "premium_models": 50
+              }
+            ],
+            "title": "Amounts"
+          },
+          "codemie_project_name": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "minLength": 3,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "CodeMie project to manage. Optional; defaults to epam_project_code. Case-insensitive.",
+            "examples": [
+              "epm-aimf"
+            ],
+            "title": "Codemie Project Name"
+          },
+          "epam_project_code": {
+            "description": "EPAM project code. Used as the CodeMie project name when codemie_project_name is omitted; when the two differ, it names the cost center a new project is linked to. Case-insensitive.",
+            "examples": [
+              "nbs-cmpa"
+            ],
+            "maxLength": 100,
+            "minLength": 3,
+            "title": "Epam Project Code",
+            "type": "string"
+          },
+          "request_id": {
+            "description": "ServiceNow request number, used for audit logs and the name of a newly created budget.",
+            "examples": [
+              "RITM0012345"
+            ],
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "request_id",
+          "epam_project_code"
+        ],
+        "title": "ServiceNowBudgetRequest",
+        "type": "object"
+      },
+      "ServiceNowBudgetResponse": {
+        "properties": {
+          "admins_assigned": {
+            "description": "Requested emails whose users are project admins after the request, including those who already were.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Admins Assigned",
+            "type": "array"
+          },
+          "admins_pending": {
+            "description": "Requested emails that couldn't be assigned: no active CodeMie user (they haven't signed in yet) or a service account.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Admins Pending",
+            "type": "array"
+          },
+          "budget": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ServiceNowBudgetGroupResponse"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Budget after the request, or null after cancel."
+          },
+          "cost_center": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Cost center the project is linked to, or null.",
+            "title": "Cost Center"
+          },
+          "created_cost_center": {
+            "description": "Whether this request created the cost center.",
+            "title": "Created Cost Center",
+            "type": "boolean"
+          },
+          "created_project": {
+            "description": "Whether this request created the project.",
+            "title": "Created Project",
+            "type": "boolean"
+          },
+          "project_name": {
+            "description": "Project the request was applied to, as stored in CodeMie.",
+            "title": "Project Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_name",
+          "cost_center",
+          "created_project",
+          "created_cost_center",
+          "budget",
+          "admins_assigned",
+          "admins_pending"
+        ],
+        "title": "ServiceNowBudgetResponse",
+        "type": "object"
+      },
+      "ServiceNowProjectResponse": {
+        "properties": {
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Human-readable project name, or null when the project has none.",
+            "examples": [
+              "AI Multimodal Framework"
+            ],
+            "title": "Display Name"
+          },
+          "project_name": {
+            "description": "CodeMie project name (unique, lowercase).",
+            "examples": [
+              "epm-aimf"
+            ],
+            "title": "Project Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_name"
+        ],
+        "title": "ServiceNowProjectResponse",
         "type": "object"
       },
       "SettingDeclarationResponse": {
@@ -63661,6 +63978,197 @@
         "summary": "App Info",
         "tags": [
           "Common"
+        ]
+      }
+    },
+    "/v1/integrations/servicenow/budgets": {
+      "post": {
+        "description": "Applies an approved ServiceNow request to a project's monthly budget.\n\n| `action` | Missing project | Missing budget | Existing budget |\n|---|---|---|---|\n| `set` | created (+ cost center when the names differ) | created | **replaced**: categories not sent are removed |\n| `adjust` | created (+ cost center when the names differ) | created from the request | **merged**: categories not sent are kept; `0` removes one |\n| `cancel` | 404 | nothing to do (200) | deleted |\n\n- `set` and `adjust` make every `admin_emails` user a project admin. Unknown and service-account emails are reported in `admins_pending`. `cancel` ignores `admin_emails` and `amounts`.\n- Every check runs before anything is written: a request that fails changes nothing.\n- An existing project is never renamed, and its cost center link never changes.\n- Requests are safe to retry: the same input produces the same final state.\n\nCallable only by the ServiceNow integration service account.",
+        "operationId": "apply_servicenow_budget_v1_integrations_servicenow_budgets_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "adjust": {
+                  "summary": "Adjust one category",
+                  "value": {
+                    "action": "adjust",
+                    "amounts": {
+                      "cli": 200
+                    },
+                    "codemie_project_name": "epm-aimf",
+                    "epam_project_code": "nbs-cmpa",
+                    "request_id": "RITM0012346"
+                  }
+                },
+                "cancel": {
+                  "summary": "Cancel the budget",
+                  "value": {
+                    "action": "cancel",
+                    "codemie_project_name": "epm-aimf",
+                    "epam_project_code": "nbs-cmpa",
+                    "request_id": "RITM0012347"
+                  }
+                },
+                "set": {
+                  "summary": "Set a new budget",
+                  "value": {
+                    "action": "set",
+                    "admin_emails": [
+                      "requester@epam.com",
+                      "approver@epam.com"
+                    ],
+                    "amounts": {
+                      "cli": 100,
+                      "platform": 500,
+                      "premium_models": 50
+                    },
+                    "codemie_project_name": "epm-aimf",
+                    "epam_project_code": "nbs-cmpa",
+                    "request_id": "RITM0012345"
+                  }
+                }
+              },
+              "schema": {
+                "$ref": "#/components/schemas/ServiceNowBudgetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceNowBudgetResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "A project or cost center name to be created is invalid, or an adjust would leave platform at 0."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The caller is not the ServiceNow service account, the project is a personal project, or a cost center is needed while cost centers are disabled."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "cancel on a project that doesn't exist."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The name belongs to a deleted project or cost center."
+          },
+          "422": {
+            "description": "Invalid request body (unknown category, negative or non-finite amount, missing amounts, set without platform, invalid email)."
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Apply a ServiceNow budget request to a project",
+        "tags": [
+          "ServiceNow Integration"
+        ]
+      }
+    },
+    "/v1/integrations/servicenow/projects": {
+      "get": {
+        "description": "Returns the CodeMie projects that any of the given users belong to. Personal projects are excluded.\n\nThe result is the deduplicated union across all emails, sorted by project name. Emails with no active CodeMie user are skipped; if no email matches, the response is an empty list.\n\nCallable only by the ServiceNow integration service account.",
+        "operationId": "list_servicenow_projects_v1_integrations_servicenow_projects_get",
+        "parameters": [
+          {
+            "description": "Requester and approver emails. Letter case and surrounding spaces are ignored.",
+            "in": "query",
+            "name": "emails",
+            "required": true,
+            "schema": {
+              "description": "Requester and approver emails. Letter case and surrounding spaces are ignored.",
+              "examples": [
+                "requester@epam.com"
+              ],
+              "items": {
+                "format": "email",
+                "type": "string"
+              },
+              "title": "Emails",
+              "type": "array"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ServiceNowProjectResponse"
+                  },
+                  "title": "Response List Servicenow Projects V1 Integrations Servicenow Projects Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The caller is not the ServiceNow integration service account."
+          },
+          "422": {
+            "description": "Invalid query: no emails or an invalid email."
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "List projects for the given users",
+        "tags": [
+          "ServiceNow Integration"
         ]
       }
     },

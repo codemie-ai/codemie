@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "task": "Add a ServiceNow budget integration to the CodeMie backend: two service-account-only endpoints that resolve or create a project and cost center, assign project admins, and set, adjust or cancel the project's budget group, with authenticate() limiting the service account to those routes.",
+  "generated": "2026-10-19T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 24,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Base L. Adds four components (integration router, request/response models, orchestration service, scoped security module) that compose ProjectService, CostCenterService, ProjectAssignmentService and ProjectBudgetService, plus two extractions and two repository queries. The work spans the project, cost-center, membership and budget subsystems. Bumped to XL because it changes the shared authenticate() dependency." },
+    { "dimension": "technical_risk", "reason": "The closest pattern is the Teams service account (TEAMS_SERVICE_ACCOUNT_ID with teams_authentication_resolver). It identifies a service account but does not scope one to particular routes. The per-route allowlist reads request.scope['route'], which no source module uses today, so that gap counts as a security divergence. The service account bypasses maintainer_access_only and gets maintainer-level budget authority, with the allowlist as the only containment. The orchestration spans a sync Session and then an AsyncSession. A concurrent group create raises IntegrityError from a partial unique index, not the 409 the plan catches. LiteLLM sync runs before commit, so a rolled-back create can leave provider-side budgets behind. Base M, then two bumps to XL (security-pattern gap, authentication/authorization)." },
+    { "dimension": "file_change_estimate", "reason": "4 new source files and 7 modified source files (config.py, main.py, authentication.py, project_service.py, cost_center_service.py, user_repository.py, application_repository.py). About 8 test files, plus router-guard guarded_app.py and the regenerated openapi.json and route_precedence.json baselines. That covers the routers, security, service, repository, config and tests directories." },
+    { "dimension": "affected_layers", "reason": "API (new router), Service (new orchestrator and extractions in existing services), DB-Persistence (new repository queries, no schema change), Infrastructure (config settings and main.py router wiring), and auth as a cross-cutting concern. No UI and no new outbound external client, so L, not XL." },
+    { "dimension": "requirements_clarity", "reason": "An approved spec and plan exist and their anchors match source, apart from one stale validator-reference count. Some behaviour is still unspecified: the implicit dependency on ENABLE_USER_MANAGEMENT, IntegrityError handling on a concurrent group create, and passing through the stored mixed-case project name for the case-sensitive eligibility check. Scored M." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L to XL: touches the core shared authenticate() security dependency",
+    "Technical Risk bumped from M to L: the closest pattern (Teams service-account resolver) does not cover per-route authorization scoping",
+    "Technical Risk bumped from L to XL: affects authentication and authorization (service-account route allowlist and a maintainer-privilege bypass for budget groups)"
+  ],
+  "split_recommendation": null
+}

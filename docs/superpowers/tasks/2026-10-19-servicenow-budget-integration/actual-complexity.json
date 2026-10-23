@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "generated": "2026-10-19T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 24,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 21,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "New ServiceNow integration router, request/response models, ServiceNowIntegrationService and servicenow_access guard, plus changes to CostCenterService, ProjectService, ApplicationRepository, UserRepository, config and app wiring. The orchestration spans the project, cost center, project-assignment, user and project-budget subsystems. Base L, bumped to XL because the shared authentication module was modified." },
+    { "dimension": "technical_risk", "reason": "The closest precedent is the existing project budget service (create, update and delete of budget groups), which is reused. It does not cover the new security-sensitive part: confining the service account to one router inside authenticate(). That part has no precedent. The change also adds concurrency handling (IntegrityError retry, 409 fallback from create to update) and Decimal percentage splits of money amounts. Base L, bumped to XL because the change affects authentication and authorization." },
+    { "dimension": "file_change_estimate", "reason": "The diffstat reports 21 files (3055 insertions): 11 source files (3 new: router, models, servicenow_access) and 10 test files including the OpenAPI baseline. 16 or more files maps to XXL." },
+    { "dimension": "requirements_clarity", "reason": "The code shows clearly defined behaviour: set/adjust/cancel action semantics, explicit 404/409/403 error paths for missing, deleted and personal projects, and pending versus assigned admins. This suggests mostly settled acceptance criteria with a few minor decisions, such as the default 30d duration and soft-budget preservation tolerance." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L to XL: touches the core shared authentication module (authenticate() now enforces ServiceNow service-account scope)",
+    "Technical Risk bumped from L to XL: affects authentication/authorization (service-account route confinement and integration access guard)"
+  ],
+  "split_recommendation": null
+}

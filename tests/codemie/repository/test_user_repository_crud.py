@@ -462,6 +462,35 @@ class TestUserRepositoryGetByEmails:
             "bob@example.com": user_2,
         }
 
+    def test_get_by_emails_does_not_filter_by_status_by_default(self, user_repository, db_session):
+        db_session.exec.return_value.all.return_value = []
+
+        user_repository.get_by_emails(db_session, ["A@example.com"])
+
+        sql = str(db_session.exec.call_args.args[0].compile(compile_kwargs={"literal_binds": True}))
+        where_clause = sql.split("WHERE", 1)[1]
+        assert where_clause.strip() == "lower(users.email) IN ('a@example.com')"
+
+    def test_get_by_emails_active_only_returns_empty_without_query_for_empty_input(self, user_repository, db_session):
+        assert user_repository.get_by_emails(db_session, [], active_only=True) == {}
+        db_session.exec.assert_not_called()
+
+    def test_get_by_emails_active_only_maps_lowercased_email_to_user(self, user_repository, db_session):
+        alice = UserDB(id="u1", email="Alice@Example.com", username="alice", name="Alice")
+        db_session.exec.return_value.all.return_value = [alice]
+
+        result = user_repository.get_by_emails(db_session, ["ALICE@example.com"], active_only=True)
+
+        assert result == {"alice@example.com": alice}
+
+    def test_get_by_emails_active_only_filters_inactive_and_deleted_users(self, user_repository, db_session):
+        db_session.exec.return_value.all.return_value = []
+
+        user_repository.get_by_emails(db_session, ["A@example.com"], active_only=True)
+
+        sql = str(db_session.exec.call_args.args[0].compile(compile_kwargs={"literal_binds": True}))
+        assert "lower(users.email) IN ('a@example.com') AND users.is_active AND users.deleted_at IS NULL" in sql
+
 
 class TestUserRepositoryCountActiveAdmins:
     """Test count_active_admins method."""

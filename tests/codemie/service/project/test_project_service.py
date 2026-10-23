@@ -17,6 +17,7 @@
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+from uuid import uuid4
 
 import pytest
 from sqlalchemy.exc import IntegrityError
@@ -24,6 +25,7 @@ from sqlalchemy.exc import IntegrityError
 from codemie.configs import config
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.security.user import User
+from codemie.service.activity.activity_models import ProjectManagementEvent
 from codemie.service.project.project_service import ProjectService
 
 
@@ -327,6 +329,186 @@ class TestProjectServiceCreateSharedProject:
         mock_user_repository.get_active_by_id.assert_not_called()
         mock_application_repository.count_shared_projects_created_by_user.assert_not_called()
         mock_user_project_repository.add_project.assert_called_once()
+
+
+@pytest.fixture
+def service_account() -> User:
+    with patch.object(config, "ENV", "dev"), patch.object(config, "ENABLE_USER_MANAGEMENT", True):
+        return User(id="svc-1", username="svc", email="svc@example.com", is_admin=False)
+
+
+@patch("codemie.service.project.project_service.llm_service")
+@patch("codemie.service.project.project_service.activity_event_repository")
+@patch("codemie.service.project.project_service.user_project_repository")
+@patch("codemie.service.project.project_service.application_repository")
+@patch("codemie.service.project.project_service.cost_center_service")
+class TestCreateSharedProjectInSession:
+    @pytest.fixture(autouse=True)
+    def _chat_model_check_passes(self):
+        with patch.object(ProjectService, "ensure_chat_model_allowed"):
+            yield
+
+    @staticmethod
+    def _prepare(mock_application_repository, mock_llm_service, models=("gpt-4o", "claude-3")):
+        mock_application_repository.get_by_name_case_insensitive.return_value = None
+        project = SimpleNamespace(name="epm-aimf")
+        mock_application_repository.create.return_value = project
+        mock_llm_service.get_allowed_chat_models.return_value = [SimpleNamespace(deployment_name=m) for m in models]
+        return project
+
+    def test_creates_project_without_creator_membership(
+        self,
+        mock_cost_center_service,
+        mock_application_repository,
+        mock_user_project_repository,
+        mock_activity,
+        mock_llm_service,
+        service_account,
+    ):
+        session = MagicMock()
+        mock_cost_center_service.ensure_exists_for_project.return_value = None
+        project = self._prepare(mock_application_repository, mock_llm_service)
+
+        result = ProjectService.create_shared_project_in_session(session, actor=service_account, name="epm-aimf")
+
+        assert result is project
+        mock_application_repository.create.assert_called_once()
+        assert mock_application_repository.create.call_args.kwargs["created_by"] == service_account.id
+        assert mock_application_repository.create.call_args.kwargs["project_type"] == "shared"
+        mock_user_project_repository.add_project.assert_not_called()
+        session.commit.assert_not_called()
+        session.expunge.assert_not_called()
+
+    def test_skips_project_limit(
+        self,
+        mock_cost_center_service,
+        mock_application_repository,
+        mock_user_project_repository,
+        mock_activity,
+        mock_llm_service,
+        service_account,
+    ):
+        mock_cost_center_service.ensure_exists_for_project.return_value = None
+        self._prepare(mock_application_repository, mock_llm_service)
+
+        ProjectService.create_shared_project_in_session(MagicMock(), actor=service_account, name="epm-aimf")
+
+        assert service_account.is_admin is False
+        mock_application_repository.count_shared_projects_created_by_user.assert_not_called()
+
+    def test_links_cost_center(
+        self,
+        mock_cost_center_service,
+        mock_application_repository,
+        mock_user_project_repository,
+        mock_activity,
+        mock_llm_service,
+        service_account,
+    ):
+        session = MagicMock()
+        cost_center_id = uuid4()
+        mock_cost_center_service.ensure_exists_for_project.return_value = SimpleNamespace(id=cost_center_id)
+        self._prepare(mock_application_repository, mock_llm_service)
+
+        ProjectService.create_shared_project_in_session(
+            session, actor=service_account, name="epm-aimf", cost_center_id=cost_center_id
+        )
+
+        mock_cost_center_service.ensure_exists_for_project.assert_called_once_with(session, cost_center_id)
+        assert mock_application_repository.create.call_args.kwargs["cost_center_id"] == cost_center_id
+
+    def test_soft_deleted_name_raises_409(
+        self,
+        mock_cost_center_service,
+        mock_application_repository,
+        mock_user_project_repository,
+        mock_activity,
+        mock_llm_service,
+        service_account,
+    ):
+        mock_cost_center_service.ensure_exists_for_project.return_value = None
+        mock_application_repository.get_by_name_case_insensitive.return_value = SimpleNamespace(
+            name="epm-aimf", deleted_at=datetime(2026, 1, 1, tzinfo=UTC)
+        )
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectService.create_shared_project_in_session(MagicMock(), actor=service_account, name="epm-aimf")
+
+        assert exc_info.value.code == 409
+        assert exc_info.value.message == "Project 'epm-aimf' already exists. Please choose a different name."
+        mock_application_repository.create.assert_not_called()
+
+    def test_initializes_allowed_and_default_models(
+        self,
+        mock_cost_center_service,
+        mock_application_repository,
+        mock_user_project_repository,
+        mock_activity,
+        mock_llm_service,
+        service_account,
+    ):
+        mock_cost_center_service.ensure_exists_for_project.return_value = None
+        self._prepare(mock_application_repository, mock_llm_service, models=("gpt-4o", "claude-3"))
+
+        project = ProjectService.create_shared_project_in_session(MagicMock(), actor=service_account, name="epm-aimf")
+
+        mock_llm_service.get_allowed_chat_models.assert_called_once_with(service_account, include_all=False)
+        assert project.allowed_models == ["gpt-4o", "claude-3"]
+        assert project.default_model == "gpt-4o"
+
+    def test_writes_project_created_activity_event(
+        self,
+        mock_cost_center_service,
+        mock_application_repository,
+        mock_user_project_repository,
+        mock_activity,
+        mock_llm_service,
+        service_account,
+    ):
+        session = MagicMock()
+        mock_cost_center_service.ensure_exists_for_project.return_value = None
+        self._prepare(mock_application_repository, mock_llm_service)
+
+        ProjectService.create_shared_project_in_session(session, actor=service_account, name="epm-aimf")
+
+        mock_activity.insert.assert_called_once()
+        event, event_session = mock_activity.insert.call_args.args
+        assert event.event_type == ProjectManagementEvent.PROJECT_CREATED
+        assert event.entity_id == "epm-aimf"
+        assert event.actor_id == service_account.id
+        assert event_session is session
+
+    def test_invalid_name_raises_400_before_db(
+        self,
+        mock_cost_center_service,
+        mock_application_repository,
+        mock_user_project_repository,
+        mock_activity,
+        mock_llm_service,
+        service_account,
+    ):
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectService.create_shared_project_in_session(MagicMock(), actor=service_account, name="EPM AIMF")
+
+        assert exc_info.value.code == 400
+        assert mock_application_repository.method_calls == []
+        mock_cost_center_service.ensure_exists_for_project.assert_not_called()
+
+    def test_integrity_error_propagates(
+        self,
+        mock_cost_center_service,
+        mock_application_repository,
+        mock_user_project_repository,
+        mock_activity,
+        mock_llm_service,
+        service_account,
+    ):
+        mock_cost_center_service.ensure_exists_for_project.return_value = None
+        self._prepare(mock_application_repository, mock_llm_service)
+        mock_application_repository.create.side_effect = IntegrityError("stmt", "params", Exception("duplicate"))
+
+        with pytest.raises(IntegrityError):
+            ProjectService.create_shared_project_in_session(MagicMock(), actor=service_account, name="epm-aimf")
 
 
 class TestProjectServiceValidation:

@@ -13,11 +13,13 @@
 # limitations under the License.
 
 import asyncio
+import math
 import uuid
 import traceback
 import contextlib
 from contextlib import asynccontextmanager
 from datetime import datetime
+from typing import Any
 from urllib.parse import urlsplit
 
 from elasticsearch import ApiError
@@ -80,6 +82,7 @@ from codemie.rest_api.routers import (
     settings,
     projects,
     cost_centers,
+    servicenow_integration,
     llm_models,
     files,
     conversation,
@@ -1085,6 +1088,20 @@ if config.ENABLE_USER_MANAGEMENT:
         app.include_router(local_auth_router.router)
     app.include_router(activity_events_router.router)
 
+if config.SERVICENOW_INTEGRATION_ENABLED:
+    if not config.ENABLE_USER_MANAGEMENT:
+        logger.warning(
+            "servicenow_integration_disabled: requires ENABLE_USER_MANAGEMENT=true, router not registered,"
+            " domain=servicenow_integration"
+        )
+    else:
+        if not config.SERVICENOW_SERVICE_ACCOUNT_ID:
+            logger.warning(
+                "servicenow_integration_misconfigured: SERVICENOW_SERVICE_ACCOUNT_ID is empty,"
+                " every request will be rejected, domain=servicenow_integration"
+            )
+        app.include_router(servicenow_integration.router)
+
 app.include_router(get_mcp_auth_router())
 app.include_router(get_cimd_router())
 
@@ -1285,7 +1302,19 @@ async def oauth_connect_required_handler(request: Request, exc: OAuthConnectRequ
     )
 
 
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, float) and not math.isfinite(value):
+        return str(value)
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
+
+
 def _sanitize_error(error: dict) -> dict:
+    if "input" in error:
+        error = {**error, "input": _json_safe(error["input"])}
     ctx = error.get("ctx")
     if ctx and isinstance(ctx, dict):
         sanitized_ctx = {

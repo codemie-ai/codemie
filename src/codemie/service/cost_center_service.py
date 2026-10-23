@@ -80,18 +80,37 @@ class CostCenterService:
             raise ExtendedHTTPException(code=409, message=f"Cost center '{existing.name}' already exists")
 
         try:
-            cost_center = cost_center_repository.create(
-                session,
-                name=validated_name,
-                description=validated_description,
-                created_by=user.id,
-            )
+            return cls._insert(session, name=validated_name, description=validated_description, created_by=user.id)
         except IntegrityError as exc:
             raise ExtendedHTTPException(code=409, message=f"Cost center '{validated_name}' already exists") from exc
 
+    @classmethod
+    def get_or_create(cls, session: Session, *, name: str, created_by: str) -> tuple[CostCenter, bool]:
+        """Return the active cost center with this name, creating it when missing. Caller must authorize.
+
+        Flushes without committing; an IntegrityError from a concurrent insert propagates so the caller can retry.
+        """
+        cls.ensure_feature_enabled()
+        validated_name = cls.validate_name(name)
+
+        existing = cost_center_repository.get_by_name_case_insensitive(session, validated_name)
+        if existing:
+            if existing.deleted_at is not None:
+                raise ExtendedHTTPException(
+                    code=409,
+                    message=f"Cost center '{existing.name}' has been deleted",
+                    help="Restore the cost center or use a different EPAM project code.",
+                )
+            return existing, False
+
+        return cls._insert(session, name=validated_name, description=None, created_by=created_by), True
+
+    @classmethod
+    def _insert(cls, session: Session, *, name: str, description: str | None, created_by: str) -> CostCenter:
+        cost_center = cost_center_repository.create(session, name=name, description=description, created_by=created_by)
         logger.info(
-            f"cost_center_created: cost_center_id={cost_center.id}, name={validated_name!r}, "
-            f"by={user.id}, domain=project_management"
+            f"cost_center_created: cost_center_id={cost_center.id}, name={name!r}, "
+            f"by={created_by}, domain=project_management"
         )
         return cost_center
 

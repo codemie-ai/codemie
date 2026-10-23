@@ -1,0 +1,132 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-16127_servicenow-budget-integration",
+  "head": "caa68dc0f3a46f2741c533368edf7bbf5eb980db",
+  "runner": "custom",
+  "started_at": "2026-10-19T14:19:53Z",
+  "completed_at": "2026-10-19T14:37:51Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "ruff",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 4239,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 18243,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2323,
+      "command": "make license-check",
+      "exit_code": 0,
+      "notes": "Also covers the license step of the codemie-pre-commit hook chain."
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 282,
+      "command": "make gitleaks",
+      "exit_code": 2,
+      "notes": "Skip-if met: Docker unavailable ('/usr/bin/sh: line 1: docker: command not found'). Podman is installed; full-tree secret scan still owed - needs docker on PATH (or a podman-backed docker shim)."
+    },
+    {
+      "id": "codemie-gitleaks",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 2029,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": 125,
+      "notes": "Also wired as pre-commit hook. Scan-run failure, NOT a secret finding: podman rejects the Windows git-dir mount ('Error: invalid option type <C: drive git-dir path>') because validate_secrets.sh mounts $git_dir:$git_dir when git returns a C:-prefixed path. Nothing was staged, so even a working run would scan an empty diff. No secret scan has run on this branch."
+    },
+    {
+      "id": "test",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 91036,
+      "command": "make test",
+      "exit_code": 2,
+      "notes": "Out of scope by user instruction ('do not run unrelated tests'); full run was stopped at ~27% with no failures up to that point. The pre-push hook's pytest (tests/ --ignore=tests/enterprise --cov) is opt-in (CODEMIE_PREPUSH_ENABLED) and likewise not run."
+    },
+    {
+      "id": "affected",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 29257,
+      "command": "poetry run pytest tests/codemie/repository/test_application_repository_extended.py tests/codemie/repository/test_user_repository_crud.py tests/codemie/rest_api/router_guards/ tests/codemie/rest_api/routers/test_servicenow_integration_router.py tests/codemie/rest_api/security/test_authentication.py tests/codemie/rest_api/security/test_servicenow_access.py tests/codemie/service/project/test_project_service.py tests/codemie/service/test_cost_center_service.py tests/codemie/service/test_servicenow_integration_service.py",
+      "exit_code": 1,
+      "notes": "User-scoped substitute for 'make test': branch-changed test files plus tests/codemie/rest_api/router_guards/ (openapi baseline changed). 384 passed, 2 skipped, 4 failed, 7 errors - all 11 in router_guards. 10 come from the app_probe subprocess dying on import with 'OSError: [WinError 10106] The requested service provider could not be loaded or initialized' (Windows/env); test_baseline.py::test_matching_live_object_passes fails with a diff on an identical object (likely Windows newline handling). The changed openapi.json baseline is therefore unverified locally. All ServiceNow/repository/security/project/cost-center tests passed."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make coverage",
+      "exit_code": null,
+      "notes": "Skip-if met: coverage not requested."
+    },
+    {
+      "id": "sonar-local",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 475,
+      "command": "make sonar-local",
+      "exit_code": 0,
+      "notes": "Exit 0 self-skip: '[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.' Set SONAR_TOKEN (and sonar-scanner on PATH) to run it; also the second half of the opt-in pre-push hook."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make verify",
+      "exit_code": null,
+      "notes": "Skip-if met: prerequisite missing (Docker for gitleaks); it also includes the full 'make test' that the user ruled out. Components ruff/license/gitleaks were run individually above."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 703945,
+      "command": "make test-harness",
+      "exit_code": 2,
+      "notes": "Run with env CODEMIE_API_DOMAIN=http://localhost:8080 (no harness config existed) against the local uvicorn backend started from this checkout's .venv (serves /v1/integrations/servicenow/*). 197 passed, 4 skipped, 1 failed, 1 error, 11 reruns in 695s. ERROR test_workflow_with_assistant_with_open_api_tools[INVOKE_EXTERNAL_API] is client-side 'WinError 10048' socket exhaustion (default 8 workers; guide warns about this, suggests 'uvx codemie-test-harness run sanity-api -n 2 --reruns 2'); FAILED test_propagated_headers::test_workflow_context_store_has_no_propagated_headers_when_flag_is_false is 'TimeoutError: State was not executed within the timeout period.' Neither touches ServiceNow code. Full output: codemie-test-reports/junit.xml."
+    },
+    {
+      "id": "commit-msg",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 6795,
+      "command": "for c in $(git rev-list main..HEAD); do git log -1 --format=%B $c > /tmp/cm_$c; bash scripts/git-hooks/commit_msg.sh /tmp/cm_$c || exit 1; rm -f /tmp/cm_$c; done",
+      "exit_code": 0,
+      "notes": "All 11 commits in main..HEAD start with 'EPMCDME-16127:'. Note: hooks are not installed in .git/hooks (samples only), so pre-commit/commit-msg/pre-push never ran at commit time; codemie-pre-commit chain (staged ruff, ruff check, license) is covered by ruff and license-check."
+    },
+    {
+      "id": "ci-external-contexts",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "GitLab external statuses: ci-pipeline, compliance-report (.gitlab-ci.yml wait-ci-init)",
+      "exit_code": null,
+      "notes": ".gitlab-ci.yml only runs pre-ci-guard waiting for external statuses 'ci-pipeline' and 'compliance-report' produced outside this repo; not runnable locally. compliance-report checks the MR description '## Test harness' section text; nothing local proves these will be green."
+    }
+  ],
+  "failures": {
+    "codemie-gitleaks": "codemie-gitleaks: scanning staged changes with podman (ghcr.io/gitleaks/gitleaks:v8.30.1)\nError: invalid option type \"\\\\Users\\\\KostiantynPshenychny\\\\Documents\\\\epm-cdme\\\\repos\\\\codemie\\\\.git\"\n\ncodemie-gitleaks: scan failed to run (exit 125) - this is NOT a secret finding.\nCommon causes: image pull failed (offline), container OOM, or git 'dubious ownership' inside the container.\nFix the environment and retry; do not bypass the secrets gate for scan-run failures.",
+    "affected": "E               stderr:\nE               Traceback (most recent call last):\nE                 File \"C:\\Users\\KostiantynPshenychny\\Documents\\epm-cdme\\repos\\codemie\\tests\\codemie\\rest_api\\router_guards\\app_probe.py\", line 34, in <module>\nE                   from unittest.mock import MagicMock, patch\nE                 File \"C:\\Users\\KostiantynPshenychny\\AppData\\Roaming\\uv\\python\\cpython-3.12.15-windows-x86_64-none\\Lib\\unittest\\mock.py\", line 26, in <module>\nE                   import asyncio\nE                 File \"C:\\Users\\KostiantynPshenychny\\AppData\\Roaming\\uv\\python\\cpython-3.12.15-windows-x86_64-none\\Lib\\asyncio\\__init__.py\", line 43, in <module>\nE                   from .windows_events import *\nE                 File \"C:\\Users\\KostiantynPshenychny\\AppData\\Roaming\\uv\\python\\cpython-3.12.15-windows-x86_64-none\\Lib\\asyncio\\windows_events.py\", line 8, in <module>\nE                   import _overlapped\nE               OSError: [WinError 10106] The requested service provider could not be loaded or initialized\n\ntests\\codemie\\rest_api\\router_guards\\guarded_app.py:100: RuntimeError\n============================== warnings summary ===============================\n.venv\\Lib\\site-packages\\fastapi\\testclient.py:1\n.venv\\Lib\\site-packages\\fastapi\\testclient.py:1\n.venv\\Lib\\site-packages\\fastapi\\testclient.py:1\n  C:\\Users\\KostiantynPshenychny\\Documents\\epm-cdme\\repos\\codemie\\.venv\\Lib\\site-packages\\fastapi\\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.\n    from starlette.testclient import TestClient as TestClient  # noqa\n\n.venv\\Lib\\site-packages\\google\\auth\\transport\\grpc.py:44\n.venv\\Lib\\site-packages\\google\\auth\\transport\\grpc.py:44\n.venv\\Lib\\site-packages\\google\\auth\\transport\\grpc.py:44\n  C:\\Users\\KostiantynPshenychny\\Documents\\epm-cdme\\repos\\codemie\\.venv\\Lib\\site-packages\\google\\auth\\transport\\grpc.py:44: FutureWarning: grpcio < 1.83.0 does not support Post-Quantum Cryptography (PQC). Support for non-PQC environments is deprecated. In October 2026, google-auth will raise its minimum requirements to enforce grpcio >= 1.83.0. For more details on Google Cloud's post-quantum security migration, visit: https://cloud.google.com/security/resources/post-quantum-cryptography\n    warnings.warn(\n\n.venv\\Lib\\site-packages\\langgraph\\cache\\base\\__init__.py:8\n.venv\\Lib\\site-packages\\langgraph\\cache\\base\\__init__.py:8\n.venv\\Lib\\site-packages\\langgraph\\cache\\base\\__init__.py:8\n  C:\\Users\\KostiantynPshenychny\\Documents\\epm-cdme\\repos\\codemie\\.venv\\Lib\\site-packages\\langgraph\\cache\\base\\__init__.py:8: LangChainPendingDeprecationWarning: The default value of `allowed_objects` will change in a future version. Pass an explicit value (e.g., allowed_objects='messages' or allowed_objects='core') to suppress this warning.\n    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer\n\ntests/codemie/rest_api/routers/test_servicenow_integration_router.py: 18 warnings\n  C:\\Users\\KostiantynPshenychny\\Documents\\epm-cdme\\repos\\codemie\\.venv\\Lib\\site-packages\\starlette\\_exception_handler.py:59: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    response = await handler(conn, exc)  # type: ignore[arg-type]\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ===========================\nFAILED tests/codemie/rest_api/router_guards/test_baseline.py::test_matching_live_object_passes\nFAILED tests/codemie/rest_api/router_guards/test_route_precedence.py::test_baseline_order_is_preserved\nFAILED tests/codemie/rest_api/router_guards/test_route_precedence.py::test_new_overlapping_pairs_are_reported_but_never_fail\nFAILED tests/codemie/rest_api/router_guards/test_openapi_snapshot.py::test_openapi_matches_baseline\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_route_is_in_the_guarded_openapi[index]\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_route_is_in_the_guarded_openapi[budget]\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_route_is_in_the_guarded_openapi[users]\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_route_is_in_the_guarded_openapi[local-auth]\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_route_is_in_the_guarded_openapi[workflow-generation]\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_routes_are_registered_on_the_app\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_building_the_app_attempts_no_network_connection\n====== 4 failed, 384 passed, 2 skipped, 27 warnings, 7 errors in 24.48s =======",
+    "test-harness": "            sleep(pool_interval)\n        if is_workflow_execution_state_state:\n>           raise TimeoutError(\"State was not executed within the timeout period.\")\nE           TimeoutError: State was not executed within the timeout period.\n\ntests\\utils\\workflow_utils.py:773: TimeoutError\n------------------------------ Captured log call ------------------------------\n\u001b[32mINFO    \u001b[0m codemie_sdk.utils.http:http.py:33 Successfully processed POST request to /v1/workflows/3834db3a-ebf0-46db-9a28-b77faa92b616/executions\n\u001b[32mINFO    \u001b[0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows/3834db3a-ebf0-46db-9a28-b77faa92b616/executions\n\u001b[32mINFO    \u001b[0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows/3834db3a-ebf0-46db-9a28-b77faa92b616/executions/d3e8f7fc-f3ce-44cf-b97b-3506fbf0ee4f/states\n\u001b[32mINFO    \u001b[0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows/3834db3a-ebf0-46db-9a28-b77faa92b616/executions/d3e8f7fc-f3ce-44cf-b97b-3506fbf0ee4f/states\n\u001b[32mINFO    \u001b[0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows/3834db3a-ebf0-46db-9a28-b77faa92b616/executions\n\u001b[32mINFO    \u001b[0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows/3834db3a-ebf0-46db-9a28-b77faa92b616/executions/d3e8f7fc-f3ce-44cf-b97b-3506fbf0ee4f/states\n\u001b[32mINFO    \u001b[0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows/3834db3a-ebf0-46db-9a28-b77faa92b616/executions/d3e8f7fc-f3ce-44cf-b97b-3506fbf0ee4f/transitions/to/1be890ae-22a1-4471-95b4-9b2ffcf189a8\n---------------------------- Captured log teardown ----------------------------\n\u001b[31m\u001b[1mERROR   \u001b[0m codemie_sdk.utils.http:http.py:36 Error during GET request to /v1/conversations: HTTPConnectionPool(host='localhost', port=8080): Max retries exceeded with url: /v1/conversations (Caused by NewConnectionError(\"HTTPConnection(host='localhost', port=8080): Failed to establish a new connection: [WinError 10048] Only one usage of each socket address (protocol/network address/port) is normally permitted\"))\n----------------------------- Captured log setup ------------------------------\n\u001b[31m\u001b[1mERROR   \u001b[0m codemie_sdk.utils.http:http.py:36 Error during POST request to /v1/workflows: HTTPConnectionPool(host='localhost', port=8080): Max retries exceeded with url: /v1/workflows (Caused by NewConnectionError(\"HTTPConnection(host='localhost', port=8080): Failed to establish a new connection: [WinError 10048] Only one usage of each socket address (protocol/network address/port) is normally permitted\"))2026-10-19 17:36:29,946 - codemie_test_harness.tests.conftest - INFO - Starting session cleanup...\n2026-10-19 17:36:50,551 - codemie_test_harness.tests.conftest - INFO - Session cleanup completed.\n\n----------------------------- Captured log setup ------------------------------\n\u001b[32mINFO    \u001b[0m codemie_sdk.utils.http:http.py:33 Successfully processed POST request to /v1/workflows\n\u001b[32mINFO    \u001b[0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows\n------------------------------ Captured log call ------------------------------\n\u001b[32mINFO    \u001b[0m codemie_sdk.utils.http:http.py:33 Successfully processed POST request to /v1/workflows/868fb79e-0dc1-4a2e-bb28-4e0f46266c3f/executions\n\u001b[32mINFO    \u001b[0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows/868fb79e-0dc1-4a2e-bb28-4e0f46266c3f/executions\n\u001b[32mINFO    \u001b[0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows/868fb79e-0dc1-4a2e-bb28-4e0f46266c3f/executions/1b3fbc36-3d29-4e4f-b3d4-fe74fbc97889/states\n\u001b[32mINFO    \u001b[0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows/868fb79e-0dc1-4a2e-bb28-4e0f46266c3f/executions/1b3fbc36-3d29-4e4f-b3d4-fe74fbc97889/states\n\u001b[32mINFO    \u001b[0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows/868fb79e-0dc1-4a2e-bb28-4e0f46266c3f/executions/1b3fbc36-3d29-4e4f-b3d4-fe74fbc97889/states\n\u001b[32mINFO    \u001b[0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows/868fb79e-0dc1-4a2e-bb28-4e0f46266c3f/executions/1b3fbc36-3d29-4e4f-b3d4-fe74fbc97889/states\n\u001b[32mINFO    \u001b[0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows/868fb79e-0dc1-4a2e-bb28-4e0f46266c3f/executions/1b3fbc36-3d29-4e4f-b3d4-fe74fbc97889/states\n\u001b[32mINFO    \u001b[0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows/868fb79e-0dc1-4a2e-bb28-4e0f46266c3f/executions/1b3fbc36-3d29-4e4f-b3d4-fe74fbc97889/states\n\u001b[32mINFO    \u001b[0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows/868fb79e-0dc1-4a2e-bb28-4e0f46266c3f/executions/1b3fbc36-3d29-4e4f-b3d4-fe74fbc97889/states\n\u001b[32mINFO    \u001b[0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows/868fb79e-0dc1-4a2e-bb28-4e0f46266c3f/executions/1b3fbc36-3d29-4e4f-b3d4-fe74fbc97889/states\n\u001b[32mINFO    \u001b[0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows/868fb79e-0dc1-4a2e-bb28-4e0f46266c3f/executions/1b3fbc36-3d29-4e4f-b3d4-fe74fbc97889/states\n\u001b[32mINFO    \u001b[0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows/868fb79e-0dc1-4a2e-bb28-4e0f46266c3f/executions/1b3fbc36-3d29-4e4f-b3d4-fe74fbc97889/states\n\u001b[32mINFO    \u001b[0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows/868fb79e-0dc1-4a2e-bb28-4e0f46266c3f/executions/1b3fbc36-3d29-4e4f-b3d4-fe74fbc97889/states\n\u001b[32mINFO    \u001b[0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows/868fb79e-0dc1-4a2e-bb28-4e0f46266c3f/executions/1b3fbc36-3d29-4e4f-b3d4-fe74fbc97889/states\n\u001b[32mINFO    \u001b[0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/workflows/868fb79e-0dc1-4a2e-bb28-4e0f46266c3f/executions/1b3fbc36-3d29-4e4f-b3d4-fe74fbc97889/states\n---------------------------- Captured log teardown ----------------------------\n\u001b[31m\u001b[1mERROR   \u001b[0m codemie_sdk.utils.http:http.py:36 Error during GET request to /v1/conversations: HTTPConnectionPool(host='localhost', port=8080): Max retries exceeded with url: /v1/conversations (Caused by NewConnectionError(\"HTTPConnection(host='localhost', port=8080): Failed to establish a new connection: [WinError 10048] Only one usage of each socket address (protocol/network address/port) is normally permitted\"))\n---------------------------- Captured log teardown ----------------------------\n\u001b[32mINFO    \u001b[0m codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/conversations\n\u001b[32mINFO    \u001b[0m codemie_sdk.utils.http:http.py:33 Successfully processed DELETE request to /v1/workflows/868fb79e-0dc1-4a2e-bb28-4e0f46266c3f\n- generated xml file: C:\\Users\\KostiantynPshenychny\\Documents\\epm-cdme\\repos\\codemie\\codemie-test-reports\\junit.xml -\n=========================== short test summary info ===========================\nFAILED tests/workflow/context_management/test_propagated_headers.py::test_workflow_context_store_has_no_propagated_headers_when_flag_is_false\nERROR tests/workflow/assistant_tools/open_api/test_workflow_with_assistant_with_open_api_tools.py::test_workflow_with_assistant_with_open_api_tools[OpenApiTool.INVOKE_EXTERNAL_API]\n=== 1 failed, 197 passed, 4 skipped, 1 error, 11 rerun in 695.41s (0:11:35) ===\nmake: *** [Makefile:74: test-harness] Error 1"
+  }
+}

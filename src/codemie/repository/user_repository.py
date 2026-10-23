@@ -367,12 +367,13 @@ class UserRepository:
         """
         return self.get_by_username(session, username) is not None
 
-    def get_by_emails(self, session: Session, emails: list[str]) -> dict[str, "UserDB"]:
+    def get_by_emails(self, session: Session, emails: list[str], active_only: bool = False) -> dict[str, "UserDB"]:
         """Bulk-fetch users by email (case-insensitive), returning a lower-email → UserDB map.
 
         Args:
             session: Database session
             emails: List of email addresses to look up
+            active_only: Restrict to active, non-deleted users
 
         Returns:
             Dict mapping lowercased email to UserDB for each found user
@@ -384,6 +385,8 @@ class UserRepository:
         statement = select(UserDB).where(
             func.lower(UserDB.email).in_(lower_emails)  # type: ignore[attr-defined]
         )
+        if active_only:
+            statement = statement.where(UserDB.is_active, UserDB.deleted_at.is_(None))
         users = session.exec(statement).all()
         return {u.email.lower(): u for u in users}
 

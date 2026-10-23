@@ -144,60 +144,28 @@ class ProjectService:
     ) -> Application:
         """Create a shared project and grant creator project-admin membership."""
         cls._require_cli_analytics_write(user, cli_analytics_enabled)
-        validated_name = cls._validate_shared_project_name(project_name)
+        validated_name = cls.validate_shared_project_name(project_name)
         validated_description = cls._validate_project_description(description) if description is not None else None
         validated_display_name = cls._validate_display_name(display_name) if display_name is not None else None
 
         with get_session() as session:
             cls._enforce_project_limit(session, user)
-            cost_center = cost_center_service.ensure_exists_for_project(session, cost_center_id)
-
-            existing = application_repository.get_by_name_case_insensitive(session, validated_name)
-            if existing:
-                raise ExtendedHTTPException(
-                    code=409,
-                    message=cls._duplicate_project_message(existing.name),
-                )
 
             try:
-                create_kwargs = {
-                    "session": session,
-                    "name": validated_name,
-                    "display_name": validated_display_name,
-                    "description": validated_description,
-                    "project_type": Application.ProjectType.SHARED,
-                    "created_by": user.id,
-                }
-                if cost_center:
-                    create_kwargs["cost_center_id"] = cost_center.id
-                if cli_analytics_enabled is not None:
-                    create_kwargs["cli_analytics_enabled"] = cli_analytics_enabled
-                project = application_repository.create(**create_kwargs)
-
-                # Initialize project-level model availability + default model
-                # so the UI shows a checked "DEFAULT" radio on first open.
-                models = llm_service.get_allowed_chat_models(user, include_all=False)
-                deployment_names = [m.deployment_name for m in models]
-                validated_models = cls.validate_allowed_models(deployment_names)
-                cls.ensure_chat_model_allowed(validated_models)
-                project.allowed_models = validated_models
-                project.default_model = validated_models[0]
-
+                project = cls.create_shared_project_in_session(
+                    session,
+                    actor=user,
+                    name=validated_name,
+                    cost_center_id=cost_center_id,
+                    display_name=validated_display_name,
+                    description=validated_description,
+                    cli_analytics_enabled=cli_analytics_enabled,
+                )
                 user_project_repository.add_project(
                     session=session,
                     user_id=user.id,
                     project_name=validated_name,
                     is_project_admin=True,
-                )
-                activity_event_repository.insert(
-                    ActivityEventCreate(
-                        domain=ActivityDomain.PROJECT_MANAGEMENT,
-                        event_type=ProjectManagementEvent.PROJECT_CREATED,
-                        entity_type=ActivityEntityType.PROJECT,
-                        entity_id=validated_name,
-                        actor_id=user.id,
-                    ),
-                    session,
                 )
                 session.expunge(project)  # Expunge before commit to preserve loaded attributes for the caller
                 session.commit()
@@ -218,6 +186,68 @@ class ProjectService:
                     code=409,
                     message=cls._duplicate_project_message(existing_name),
                 ) from e
+
+    @classmethod
+    def create_shared_project_in_session(
+        cls,
+        session: Session,
+        *,
+        actor: User,
+        name: str,
+        cost_center_id: UUID | None = None,
+        display_name: str | None = None,
+        description: str | None = None,
+        cli_analytics_enabled: bool | None = None,
+    ) -> Application:
+        """Create a shared project inside the caller's transaction; caller must authorize.
+
+        Adds no creator membership, skips the project limit, and does not commit, expunge or
+        invalidate caches. IntegrityError from a concurrent duplicate propagates to the caller.
+        """
+        validated_name = cls.validate_shared_project_name(name)
+        cost_center = cost_center_service.ensure_exists_for_project(session, cost_center_id)
+
+        existing = application_repository.get_by_name_case_insensitive(session, validated_name)
+        if existing:
+            raise ExtendedHTTPException(
+                code=409,
+                message=cls._duplicate_project_message(existing.name),
+            )
+
+        create_kwargs = {
+            "session": session,
+            "name": validated_name,
+            "display_name": display_name,
+            "description": description,
+            "project_type": Application.ProjectType.SHARED,
+            "created_by": actor.id,
+        }
+        if cost_center:
+            create_kwargs["cost_center_id"] = cost_center.id
+        if cli_analytics_enabled is not None:
+            create_kwargs["cli_analytics_enabled"] = cli_analytics_enabled
+        project = application_repository.create(**create_kwargs)
+
+        # Initialize project-level model availability + default model
+        # so the UI shows a checked "DEFAULT" radio on first open.
+        models = llm_service.get_allowed_chat_models(actor, include_all=False)
+        deployment_names = [m.deployment_name for m in models]
+        validated_models = cls.validate_allowed_models(deployment_names)
+        cls.ensure_chat_model_allowed(validated_models)
+        project.allowed_models = validated_models
+        project.default_model = validated_models[0]
+
+        activity_event_repository.insert(
+            ActivityEventCreate(
+                domain=ActivityDomain.PROJECT_MANAGEMENT,
+                event_type=ProjectManagementEvent.PROJECT_CREATED,
+                entity_type=ActivityEntityType.PROJECT,
+                entity_id=validated_name,
+                actor_id=actor.id,
+            ),
+            session,
+        )
+        return project
 
     @classmethod
     def update_project(
@@ -387,7 +417,7 @@ class ProjectService:
         if name is None:
             return None
 
-        validated_name = cls._validate_shared_project_name(name)
+        validated_name = cls.validate_shared_project_name(name)
         existing = application_repository.get_by_name_case_insensitive(session, validated_name)
         if existing and existing.name.lower() != project_name.lower():
             raise ExtendedHTTPException(
@@ -487,7 +517,7 @@ class ProjectService:
             )
 
     @classmethod
-    def _validate_shared_project_name(cls, name: str) -> str:
+    def validate_shared_project_name(cls, name: str) -> str:
         if len(name) < cls.MIN_PROJECT_NAME_LENGTH:
             raise ExtendedHTTPException(code=400, message=cls.ERRORS.NAME_TOO_SHORT)
 

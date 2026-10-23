@@ -24,6 +24,7 @@ from fastapi.security import APIKeyHeader
 from codemie.configs.logger import logger
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.security.idp.local import USER_ID_HEADER, LocalIdp
+from codemie.rest_api.security.servicenow_access import enforce_servicenow_scope, is_servicenow_service_account
 from codemie.rest_api.security.user import User
 from codemie.rest_api.security.user_context import (
     set_current_user,
@@ -149,6 +150,8 @@ async def authenticate(
             if is_teams_bot_request(user, request):
                 user = await impersonate_teams_bot_request(user, request)
 
+            enforce_servicenow_scope(user, request)
+
         # 4. Store in context (unchanged from current behavior)
         request.state.user = user
         set_current_user(user)
@@ -235,6 +238,21 @@ async def maintainer_access_only(request: Request):
             message=ACCESS_DENIED_MESSAGE,
             details="This action requires maintainer privileges.",
             help="If you believe you should have maintainer access, please contact your system administrator.",
+        )
+
+
+async def servicenow_integration_access_only(request: Request) -> None:
+    """Checks if current user is the ServiceNow integration service account."""
+    if not is_servicenow_service_account(request.state.user):
+        logger.warning(
+            f"access_denied_servicenow_integration: actor_user_id={request.state.user.id},"
+            " domain=servicenow_integration"
+        )
+        raise ExtendedHTTPException(
+            code=status.HTTP_403_FORBIDDEN,
+            message=ACCESS_DENIED_MESSAGE,
+            details="This endpoint is reserved for the ServiceNow integration service account.",
+            help=_CONTACT_ADMIN_HELP,
         )
 
 

@@ -536,6 +536,32 @@ class ApplicationRepository:
 
         return {name: (project_type, created_by) for name, project_type, created_by in results}
 
+    def list_shared_projects_for_users(self, session: Session, user_ids: list[str]) -> list[Application]:
+        """List distinct, non-deleted shared projects that any of the given users belong to.
+
+        Args:
+            session: Database session
+            user_ids: User IDs whose project memberships are considered
+
+        Returns:
+            Applications ordered by name
+        """
+        if not user_ids:
+            return []
+
+        statement = (
+            select(Application)
+            .join(UserProject, UserProject.project_name == Application.name)
+            .where(
+                UserProject.user_id.in_(user_ids),  # type: ignore[attr-defined]
+                Application.project_type == "shared",
+                Application.deleted_at.is_(None),
+            )
+            .distinct()
+            .order_by(Application.name)
+        )
+        return list(session.exec(statement).all())
+
     def count_shared_projects_created_by_user(self, session: Session, user_id: str) -> int:
         """Count shared projects created by a user for project_limit enforcement.
 
