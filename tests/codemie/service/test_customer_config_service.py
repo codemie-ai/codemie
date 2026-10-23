@@ -429,8 +429,8 @@ async def test_a_row_missing_a_declared_field_keeps_the_yaml_value(yaml_with_dis
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("flag_enabled", [True, False])
-async def test_leaderboard_component_ignores_leaderboard_enabled_env(patched_yaml, flag_enabled):
-    """The API pool does not run the computation job, so LEADERBOARD_ENABLED must not affect /v1/config."""
+async def test_leaderboard_component_follows_leaderboard_enabled_env(patched_yaml, flag_enabled):
+    """aiChampionsLeaderboard is present only when LEADERBOARD_ENABLED is true, even if customer-config enables it."""
     patched_yaml.components = [
         Component(id="aiChampionsLeaderboard", settings=ComponentSetting(enabled=True)),
     ]
@@ -440,7 +440,10 @@ async def test_leaderboard_component_ignores_leaderboard_enabled_env(patched_yam
             mock_cfg.LEADERBOARD_ENABLED = flag_enabled
             components = await resolve_components()
 
-    assert _find(components, "aiChampionsLeaderboard") is not None
+    if flag_enabled:
+        assert _find(components, "aiChampionsLeaderboard") is not None
+    else:
+        assert _find(components, "aiChampionsLeaderboard") is None
 
 
 @pytest.mark.asyncio

@@ -1347,6 +1347,185 @@
         "title": "AllowedModelsUpdateResponse",
         "type": "object"
       },
+      "AnalysisInfo": {
+        "description": "When and how the cached analysis behind a response was computed.",
+        "properties": {
+          "allocated": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allocated"
+          },
+          "cache": {
+            "description": "hit, miss, shared (computed for another request) or stale",
+            "title": "Cache",
+            "type": "string"
+          },
+          "computed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Computed At"
+          },
+          "coverage": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coverage"
+          },
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Ms"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "evidence_window": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Window"
+          },
+          "refreshing": {
+            "default": false,
+            "description": "A newer analysis is being computed; ask again shortly",
+            "title": "Refreshing",
+            "type": "boolean"
+          },
+          "settings": {
+            "$ref": "#/components/schemas/AnalysisSettingsInfo"
+          },
+          "stale": {
+            "default": false,
+            "title": "Stale",
+            "type": "boolean"
+          },
+          "timings": {
+            "additionalProperties": true,
+            "title": "Timings",
+            "type": "object"
+          },
+          "ttl_s": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ttl S"
+          },
+          "unclassified_reasons": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unclassified Reasons"
+          },
+          "window": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window"
+          }
+        },
+        "required": [
+          "cache",
+          "settings"
+        ],
+        "title": "AnalysisInfo",
+        "type": "object"
+      },
+      "AnalysisSettingsInfo": {
+        "properties": {
+          "defaults_hash": {
+            "title": "Defaults Hash",
+            "type": "string"
+          },
+          "hash": {
+            "title": "Hash",
+            "type": "string"
+          },
+          "overridden": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Overridden",
+            "type": "array"
+          },
+          "schema_version": {
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "tier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tier"
+          }
+        },
+        "required": [
+          "hash",
+          "defaults_hash",
+          "schema_version"
+        ],
+        "title": "AnalysisSettingsInfo",
+        "type": "object"
+      },
       "AnalyticsDetailResponse": {
         "description": "Response for analytics detail/drilldown endpoints.",
         "properties": {
@@ -30185,6 +30364,161 @@
         "title": "UpsertWorkspaceFileRequest",
         "type": "object"
       },
+      "UsageAttributionRange": {
+        "description": "The effective range: the end is rounded down to 15 minutes and the range is clamped to the maximum.",
+        "properties": {
+          "clamped": {
+            "title": "Clamped",
+            "type": "boolean"
+          },
+          "days": {
+            "title": "Days",
+            "type": "number"
+          },
+          "evidence_from": {
+            "description": "Categories use at least the minimum evidence window",
+            "title": "Evidence From",
+            "type": "string"
+          },
+          "from": {
+            "title": "From",
+            "type": "string"
+          },
+          "requested_from": {
+            "title": "Requested From",
+            "type": "string"
+          },
+          "requested_to": {
+            "title": "Requested To",
+            "type": "string"
+          },
+          "to": {
+            "title": "To",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "days",
+          "clamped",
+          "requested_from",
+          "requested_to",
+          "evidence_from"
+        ],
+        "title": "UsageAttributionRange",
+        "type": "object"
+      },
+      "UsageAttributionResponse": {
+        "description": "A composite widget: tiles, charts, a popup or How It Works.",
+        "properties": {
+          "analysis": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AnalysisInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "data": {
+            "additionalProperties": true,
+            "title": "Data",
+            "type": "object"
+          },
+          "range": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UsageAttributionRange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "title": "UsageAttributionResponse",
+        "type": "object"
+      },
+      "UsageAttributionSettingsResponse": {
+        "description": "The tunable schema, the defaults and whether the caller may tune.",
+        "properties": {
+          "data": {
+            "additionalProperties": true,
+            "title": "Data",
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "title": "UsageAttributionSettingsResponse",
+        "type": "object"
+      },
+      "UsageAttributionTableResponse": {
+        "description": "A table: rows of the current page, totals over every matching row, and the counts behind the filters.",
+        "properties": {
+          "analysis": {
+            "$ref": "#/components/schemas/AnalysisInfo"
+          },
+          "counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Counts",
+            "type": "object"
+          },
+          "data": {
+            "additionalProperties": true,
+            "description": "rows and totals",
+            "title": "Data",
+            "type": "object"
+          },
+          "display": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "number"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display"
+          },
+          "pagination": {
+            "$ref": "#/components/schemas/codemie__rest_api__models__analytics__PaginationMetadata"
+          },
+          "range": {
+            "$ref": "#/components/schemas/UsageAttributionRange"
+          },
+          "threshold": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Threshold"
+          }
+        },
+        "required": [
+          "data",
+          "pagination",
+          "range",
+          "analysis"
+        ],
+        "title": "UsageAttributionTableResponse",
+        "type": "object"
+      },
       "UserBudgetAssignRequest": {
         "description": "Request body for setting per-category budget assignments on a user.\n\nPass null as the budget_id value to clear a category assignment.",
         "properties": {
@@ -52678,6 +53012,1962 @@
           }
         ],
         "summary": "Get Top Workflow Usage",
+        "tags": [
+          "Dashboard Analytics"
+        ]
+      }
+    },
+    "/v1/analytics/usage-attribution/breakdown": {
+      "get": {
+        "operationId": "get_breakdown_v1_analytics_usage_attribution_breakdown_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "dimension",
+            "required": false,
+            "schema": {
+              "default": "country",
+              "pattern": "^(country|job)$",
+              "title": "Dimension",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "category",
+            "required": false,
+            "schema": {
+              "default": "production",
+              "pattern": "^(production|learning|testing|experimental|pet_project|unclassified)$",
+              "title": "Category",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "time_period",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(last_hour|last_6_hours|last_24_hours|last_7_days|last_30_days|last_60_days|last_year)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Time Period"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "overrides",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16384,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Overrides"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageAttributionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "CLI spend paid from personal budgets, by country or job title group",
+        "tags": [
+          "Dashboard Analytics"
+        ]
+      }
+    },
+    "/v1/analytics/usage-attribution/cli-summary": {
+      "get": {
+        "operationId": "get_cli_summary_v1_analytics_usage_attribution_cli_summary_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "time_period",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(last_hour|last_6_hours|last_24_hours|last_7_days|last_30_days|last_60_days|last_year)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Time Period"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "overrides",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16384,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Overrides"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageAttributionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "CLI categories: tiles, Where the Money Goes, Who Pays and CLI Spend by Category",
+        "tags": [
+          "Dashboard Analytics"
+        ]
+      }
+    },
+    "/v1/analytics/usage-attribution/people": {
+      "get": {
+        "operationId": "get_people_v1_analytics_usage_attribution_people_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "filter",
+            "required": false,
+            "schema": {
+              "default": "all",
+              "pattern": "^(all|cand|prod|exp|shared|platform)$",
+              "title": "Filter",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Search"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "per_page",
+            "required": false,
+            "schema": {
+              "default": 10,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Per Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort_by",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 40,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Sort By"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort_order",
+            "required": false,
+            "schema": {
+              "default": "desc",
+              "pattern": "^(asc|desc)$",
+              "title": "Sort Order",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "time_period",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(last_hour|last_6_hours|last_24_hours|last_7_days|last_30_days|last_60_days|last_year)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Time Period"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "overrides",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16384,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Overrides"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageAttributionTableResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "People",
+        "tags": [
+          "Dashboard Analytics"
+        ]
+      }
+    },
+    "/v1/analytics/usage-attribution/people-groups": {
+      "get": {
+        "operationId": "get_people_groups_v1_analytics_usage_attribution_people_groups_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "group_by",
+            "required": false,
+            "schema": {
+              "default": "common",
+              "pattern": "^(common|project|repositories|organization)$",
+              "title": "Group By",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Per 30 days, scaled to the period",
+            "in": "query",
+            "name": "min_amount",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "description": "Per 30 days, scaled to the period",
+              "maximum": 100000,
+              "minimum": 0,
+              "title": "Min Amount",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Search"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "per_page",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Per Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort_by",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 40,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Sort By"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort_order",
+            "required": false,
+            "schema": {
+              "default": "desc",
+              "pattern": "^(asc|desc)$",
+              "title": "Sort Order",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "time_period",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(last_hour|last_6_hours|last_24_hours|last_7_days|last_30_days|last_60_days|last_year)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Time Period"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "overrides",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16384,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Overrides"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageAttributionTableResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "People: chargeback candidates grouped by common condition",
+        "tags": [
+          "Dashboard Analytics"
+        ]
+      }
+    },
+    "/v1/analytics/usage-attribution/people-groups/{group_by}/{group_id}": {
+      "get": {
+        "operationId": "get_people_group_v1_analytics_usage_attribution_people_groups__group_by___group_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "group_by",
+            "required": true,
+            "schema": {
+              "pattern": "^(common|project|repositories|organization)$",
+              "title": "Group By",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "group_id",
+            "required": true,
+            "schema": {
+              "maxLength": 80,
+              "title": "Group Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "time_period",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(last_hour|last_6_hours|last_24_hours|last_7_days|last_30_days|last_60_days|last_year)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Time Period"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "overrides",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16384,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Overrides"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageAttributionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "People: one group of chargeback candidates",
+        "tags": [
+          "Dashboard Analytics"
+        ]
+      }
+    },
+    "/v1/analytics/usage-attribution/people-summary": {
+      "get": {
+        "operationId": "get_people_summary_v1_analytics_usage_attribution_people_summary_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "time_period",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(last_hour|last_6_hours|last_24_hours|last_7_days|last_30_days|last_60_days|last_year)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Time Period"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "overrides",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16384,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Overrides"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageAttributionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "People: chargeback candidates and how much of their work they share (tiles)",
+        "tags": [
+          "Dashboard Analytics"
+        ]
+      }
+    },
+    "/v1/analytics/usage-attribution/people/{user_id}": {
+      "get": {
+        "operationId": "get_person_v1_analytics_usage_attribution_people__user_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "title": "User Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "time_period",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(last_hour|last_6_hours|last_24_hours|last_7_days|last_30_days|last_60_days|last_year)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Time Period"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "overrides",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16384,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Overrides"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageAttributionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Person popup",
+        "tags": [
+          "Dashboard Analytics"
+        ]
+      }
+    },
+    "/v1/analytics/usage-attribution/refresh": {
+      "post": {
+        "operationId": "post_refresh_v1_analytics_usage_attribution_refresh_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "time_period",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(last_hour|last_6_hours|last_24_hours|last_7_days|last_30_days|last_60_days|last_year)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Time Period"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "overrides",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16384,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Overrides"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Recompute the analysis of a period and settings (at most once a minute; admins and maintainers)",
+        "tags": [
+          "Dashboard Analytics"
+        ]
+      }
+    },
+    "/v1/analytics/usage-attribution/repository-groups": {
+      "get": {
+        "operationId": "get_repository_groups_v1_analytics_usage_attribution_repository_groups_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "default": "threshold",
+              "pattern": "^(threshold|all)$",
+              "title": "Scope",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Search"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "per_page",
+            "required": false,
+            "schema": {
+              "default": 10,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Per Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort_by",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 40,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Sort By"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort_order",
+            "required": false,
+            "schema": {
+              "default": "desc",
+              "pattern": "^(asc|desc)$",
+              "title": "Sort Order",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "time_period",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(last_hour|last_6_hours|last_24_hours|last_7_days|last_30_days|last_60_days|last_year)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Time Period"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "overrides",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16384,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Overrides"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageAttributionTableResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Repository Groups in Personal Projects",
+        "tags": [
+          "Dashboard Analytics"
+        ]
+      }
+    },
+    "/v1/analytics/usage-attribution/repository-groups/{group_id}": {
+      "get": {
+        "operationId": "get_repository_group_v1_analytics_usage_attribution_repository_groups__group_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "group_id",
+            "required": true,
+            "schema": {
+              "pattern": "^g-[0-9a-f]{6,40}$",
+              "title": "Group Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "time_period",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(last_hour|last_6_hours|last_24_hours|last_7_days|last_30_days|last_60_days|last_year)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Time Period"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "overrides",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16384,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Overrides"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageAttributionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Repository group popup",
+        "tags": [
+          "Dashboard Analytics"
+        ]
+      }
+    },
+    "/v1/analytics/usage-attribution/settings": {
+      "get": {
+        "operationId": "get_settings_v1_analytics_usage_attribution_settings_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageAttributionSettingsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Analysis settings: defaults, the tunable schema and whether the caller may tune",
+        "tags": [
+          "Dashboard Analytics"
+        ]
+      }
+    },
+    "/v1/analytics/usage-attribution/shared-projects": {
+      "get": {
+        "operationId": "get_shared_projects_v1_analytics_usage_attribution_shared_projects_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "default": "threshold",
+              "pattern": "^(threshold|all)$",
+              "title": "Scope",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Search"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "per_page",
+            "required": false,
+            "schema": {
+              "default": 10,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Per Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort_by",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 40,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Sort By"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort_order",
+            "required": false,
+            "schema": {
+              "default": "desc",
+              "pattern": "^(asc|desc)$",
+              "title": "Sort Order",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "time_period",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(last_hour|last_6_hours|last_24_hours|last_7_days|last_30_days|last_60_days|last_year)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Time Period"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "overrides",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16384,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Overrides"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageAttributionTableResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Shared Projects Without a Budget",
+        "tags": [
+          "Dashboard Analytics"
+        ]
+      }
+    },
+    "/v1/analytics/usage-attribution/shared-projects/{project_name}": {
+      "get": {
+        "operationId": "get_shared_project_v1_analytics_usage_attribution_shared_projects__project_name__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_name",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "title": "Project Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "time_period",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(last_hour|last_6_hours|last_24_hours|last_7_days|last_30_days|last_60_days|last_year)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Time Period"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "overrides",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16384,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Overrides"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageAttributionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Shared project popup",
+        "tags": [
+          "Dashboard Analytics"
+        ]
+      }
+    },
+    "/v1/analytics/usage-attribution/status": {
+      "get": {
+        "operationId": "get_status_v1_analytics_usage_attribution_status_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "time_period",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(last_hour|last_6_hours|last_24_hours|last_7_days|last_30_days|last_60_days|last_year)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Time Period"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "overrides",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16384,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Overrides"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageAttributionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "How It Works: coverage, data quality, run details and the settings in effect",
+        "tags": [
+          "Dashboard Analytics"
+        ]
+      }
+    },
+    "/v1/analytics/usage-attribution/totals": {
+      "get": {
+        "description": "Fast sums without the analysis (A1): about 2-3 s on first load, cached for 15 minutes.",
+        "operationId": "get_totals_v1_analytics_usage_attribution_totals_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "time_period",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^(last_hour|last_6_hours|last_24_hours|last_7_days|last_30_days|last_60_days|last_year)$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Time Period"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "overrides",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16384,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Overrides"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageAttributionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Total, Web Platform, CLI, Charged Back and Who Pays",
         "tags": [
           "Dashboard Analytics"
         ]

@@ -835,7 +835,10 @@ class TestShippedWorkspaceScriptToolCalls(unittest.TestCase):
         ids = [c.id for c in self._load_shipped().components]
 
         self.assertEqual(ids[: len(PRE_EXISTING_SHIPPED_COMPONENT_IDS)], list(PRE_EXISTING_SHIPPED_COMPONENT_IDS))
-        self.assertEqual(ids[len(PRE_EXISTING_SHIPPED_COMPONENT_IDS) :], ["features:workspaceScriptBridge"])
+        self.assertEqual(
+            ids[len(PRE_EXISTING_SHIPPED_COMPONENT_IDS) :],
+            ["features:workspaceScriptBridge", "features:usageAttribution"],
+        )
 
 
 class TestCapabilityHidingFlags(unittest.TestCase):

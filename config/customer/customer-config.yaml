@@ -329,6 +329,29 @@ components:
       maxParallelCalls: 5
       name: "Workspace Script Bridge"
       description: "Allow scripts run in the workspace sandbox to call the backend during their run"
+  - id: "features:usageAttribution"
+    settings:
+      enabled: false
+      name: "Usage Attribution"
+      description: "Analytics tab for admins, maintainers and auditors: who pays for Web Platform and CLI usage, CLI categories and chargeback candidates"
+      availableForExternal: false
+      # Every other analysis setting has a default in service/usage_attribution/settings.py; values set here replace
+      # them (validated against the same bounds at load). Admins and maintainers can override the tunable ones for
+      # their own view in Analysis Settings; nothing is stored on the server.
+      fallbackFieldSince: "2026-10-09T12:00:00Z"
+      sharedProjectThresholdPer30Days: 1000
+      repositoryGroupThresholdPer30Days: 1000
+      experimentsHighlightPer30Days: 500
+      platformPeopleFilterPer30Days: 300
+      candidateProductionDaysPer30Days: 5
+      ownerProjectRules: []
+      tuning:
+        enabled: true
+        roles: ["admin", "maintainer"]
+        maxOverrideBytes: 4096
+        maxCustomComputationsPerHour: 10
+        # Every analysis a user starts (a period or settings not cached yet) counts, default settings too.
+        maxComputationsPerHour: 30
 
 preconfigured_assistants:
   # Optional settings.llm_model_type overrides the assistant model on creation and every deployment.

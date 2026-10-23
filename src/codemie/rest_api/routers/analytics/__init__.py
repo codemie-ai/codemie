@@ -32,6 +32,7 @@ from codemie.rest_api.routers.analytics import (
     routing,
     spending,
     usage,
+    usage_attribution,
 )
 from codemie.rest_api.security.authentication import authenticate
 
@@ -45,5 +46,6 @@ router.include_router(cli_enriched_users.router)
 router.include_router(spending.router)
 router.include_router(leaderboard.router)
 router.include_router(routing.router)
+router.include_router(usage_attribution.router)
 
 __all__ = ["router"]

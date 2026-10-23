@@ -476,6 +476,25 @@ def _initialize_optional_features():
         logger.info("WorkflowPool initialized for sub-workflow pre-compilation")
 
 
+def _check_usage_attribution_settings() -> None:
+    """Validate the Usage Attribution settings of the customer configuration when the feature is on.
+
+    A value outside its bounds is reported here, at startup; the feature's endpoints then answer 500 until it is
+    fixed, so a setting can never default to something the Analysis Settings dialog would reject.
+    """
+    from codemie.service.usage_attribution.constants import FEATURE_KEY
+
+    if not _customer_config.is_feature_enabled(FEATURE_KEY):
+        return
+    try:
+        from codemie.service.usage_attribution.handler import load_defaults
+
+        load_defaults()
+        logger.info("Usage Attribution: settings validated")
+    except Exception as exc:
+        logger.error(f"Usage Attribution settings are invalid: {exc}")
+
+
 def _check_sharepoint_pkce_redis() -> None:
     """Warn at startup if SharePoint PKCE is enabled but Redis is unreachable."""
     if not config.SHAREPOINT_PKCE_ENABLED:
@@ -784,6 +803,10 @@ async def _shutdown_services(app: FastAPI, tasks: list):
         app, 'activity_events_retention_scheduler', 'Activity events retention scheduler', method='shutdown'
     )
     _stop_scheduler(app, 'metrics_rotation_scheduler', 'Metrics rotation scheduler')
+
+    from codemie.service.usage_attribution.analysis import shutdown_analysis_service
+
+    shutdown_analysis_service()
     _stop_scheduler(app, 'inactive_project_budget_scheduler', 'Inactive project budget stop scheduler')
     _stop_scheduler(app, 'inactive_cost_center_budget_scheduler', 'Inactive cost center budget stop scheduler')
     _stop_scheduler(app, 'active_project_budget_scheduler', 'Active project budget restore scheduler')
@@ -908,6 +931,7 @@ async def lifespan(app: FastAPI):
     # Initialize optional features
     _initialize_optional_features()
     _check_sharepoint_pkce_redis()
+    _check_usage_attribution_settings()
     assert_oauth_state_signing_secret_configured()
     assert_token_vault_available()
     warn_insecure_oauth_storage_for_enabled_providers()

@@ -56,6 +56,11 @@ from codemie.service.customer_config_declarations import (
     by_key,
 )
 from codemie.service.dynamic_config_service import DynamicConfigService
+from codemie.service.usage_attribution.constants import USAGE_ATTRIBUTION_COMPONENT_ID
+
+_LEADERBOARD_COMPONENT_ID = "aiChampionsLeaderboard"
+_PRIVATE_SETTINGS_COMPONENT_IDS = frozenset({USAGE_ATTRIBUTION_COMPONENT_ID})
+_PUBLIC_SETTING_FIELDS = ("enabled", "availableForExternal", "name", "description")
 
 
 class OverrideCache:
@@ -158,7 +163,22 @@ async def resolve_components() -> list[Component]:
         customer_config.get_runtime_components(),
         set(CONFIG_IDS.values()),
     )
-    return [component for component in resolved if component.settings.enabled]
+    enabled = [component for component in resolved if component.settings.enabled]
+
+    if not config.LEADERBOARD_ENABLED:
+        enabled = [component for component in enabled if component.id != _LEADERBOARD_COMPONENT_ID]
+
+    return [_public_view(component) for component in enabled]
+
+
+def _public_view(component: Component) -> Component:
+    """Drop the private settings of a component (the Usage Attribution analysis settings are served only by its own
+    gated endpoint)."""
+    if component.id not in _PRIVATE_SETTINGS_COMPONENT_IDS:
+        return component
+    settings = component.settings.model_dump()
+    public = {key: settings[key] for key in _PUBLIC_SETTING_FIELDS if key in settings}
+    return Component(id=component.id, settings=ComponentSetting(**public))
 
 
 _INVALID_VALUE_MESSAGE = "Invalid configuration value"
