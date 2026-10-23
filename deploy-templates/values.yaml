@@ -309,6 +309,16 @@ ingressCallbacksIndex:
   # -- The path to AI/Run API for Callbacks Index
   path: "/code-assistant-api/v1/callbacks/index/(.*)"
 
+## AI/Run API ingress configuration for OAuth client metadata (public discovery endpoint, no auth)
+ingressOauthClientMetadata:
+  # -- Additional ingress annotations
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /oauth/client-metadata.json
+  # -- Ingress path type
+  pathType: ImplementationSpecific
+  # -- The path to AI/Run API for OAuth client metadata
+  path: "/code-assistant-api/oauth/client-metadata.json"
+
 ## Dedicated ds-pool processing workload
 dsPool:
   # -- Enable a separate deployment/rollout for ds-pool processing

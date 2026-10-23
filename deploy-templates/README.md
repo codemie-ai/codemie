@@ -87,6 +87,9 @@ A Helm chart for AI/Run API
 | ingressCallbacksIndex.annotations | object | `{"nginx.ingress.kubernetes.io/rewrite-target":"/v1/callbacks/index/$1"}` | Additional ingress annotations |
 | ingressCallbacksIndex.path | string | `"/code-assistant-api/v1/callbacks/index/(.*)"` | The path to AI/Run API for Callbacks Index |
 | ingressCallbacksIndex.pathType | string | `"ImplementationSpecific"` | Ingress path type |
+| ingressOauthClientMetadata.annotations | object | `{"nginx.ingress.kubernetes.io/rewrite-target":"/oauth/client-metadata.json"}` | Additional ingress annotations |
+| ingressOauthClientMetadata.path | string | `"/code-assistant-api/oauth/client-metadata.json"` | The path to AI/Run API for OAuth client metadata |
+| ingressOauthClientMetadata.pathType | string | `"ImplementationSpecific"` | Ingress path type |
 | ingressSwagger.annotations | object | `{}` | Additional ingress annotations |
 | ingressSwagger.path | string | `"/openapi.json"` | The path to AI/Run API for Swagger |
 | ingressSwagger.pathType | string | `"ImplementationSpecific"` | Ingress path type |
