@@ -40,6 +40,18 @@ from typing import Any
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
 from codemie.repository.cli_analytics.ports import Rows
 from codemie.repository.cli_analytics.postgres.engine import AnalyticsPgEngine
+from codemie.repository.cli_analytics.postgres.otlp import MAX_KEY_BYTES
+from codemie.repository.cli_analytics.postgres.fork_attribution import (
+    dispatch_fork_candidate,
+    executed_tool_span,
+    first_subagent_start,
+    fork_of_counted_call,
+    fork_of_dispatch,
+    is_claude_code,
+    skill_end_agent_id,
+    sole_dispatch_of_prompt,
+    tool_response_agent_id,
+)
 from codemie.repository.cli_analytics.vocabulary import (
     BUILTIN_COMMAND_NAMES,
     DIMENSION_HOOK_TYPES,
@@ -657,13 +669,39 @@ class PostgresCliAnalyticsReader:
                FROM active_time_daily WHERE session_id = $sid::text)::bigint                     AS active_ms,
             (SELECT sum(turns) FROM turns_daily WHERE session_id = $sid::text)::bigint           AS turns,
             (SELECT sum(tool_calls) FROM tool_facts_daily WHERE session_id = $sid::text)::bigint AS tool_call_count,
-            (SELECT sum(agent_count) FROM tool_facts_daily WHERE session_id = $sid::text)::bigint AS agent_count,
+            (coalesce((SELECT sum(agent_count) FROM tool_facts_daily WHERE session_id = $sid::text), 0)
+             -- a hook event not yet reflected by a matching span OR by an already-rolled-up
+             -- invocations_hourly row (once the rollup catches up, it already counts this
+             -- agent_type via tool_facts_daily above, so this must not double it).
+             -- Restricted to a day with no TOOL/TOOL_EXECUTION/INTERACTION span at all, same as the
+             -- rollup's own hook fallback (_NO_SPAN_OF_KIND in rollups.py): the kind-3 hook branch
+             -- there never runs on a day that has spans, so on such a day the rollup can never
+             -- "catch up" and this correction would otherwise add the same +1 forever.
+             + (SELECT count(*) FROM hook_events he
+                WHERE he.session_id = $sid::text AND he.event_type = 'agent.subagent.start' AND he.agent_type <> ''
+                  AND octet_length(he.agent_type) <= {MAX_KEY_BYTES} AND {first_subagent_start("he")}
+                  AND NOT (coalesce(he.skill_name, '') <> '' AND {is_claude_code('he')})
+                  AND NOT {fork_of_counted_call("he")}
+                  AND NOT {fork_of_dispatch("he")}
+                  AND he.agent_type NOT IN (SELECT subagent_type FROM spans
+                                            WHERE span_kind = {_TOOL} AND session_id = $sid::text
+                                              AND subagent_type <> '')
+                  AND he.agent_type NOT IN (SELECT name FROM invocations_hourly
+                                            WHERE kind = 3 AND session_id = $sid::text)
+                  AND NOT EXISTS (SELECT 1 FROM spans sp
+                                  WHERE sp.session_id = he.session_id
+                                    AND sp.span_kind IN ({_TOOL}, {_EXEC}, {_INTERACTION})
+                                    AND sp.ts >= date_trunc('day', he.ts, 'UTC')
+                                    AND sp.ts < date_trunc('day', he.ts, 'UTC') + interval '1 day'))
+            )::bigint AS agent_count,
+            -- tool_facts_daily already counts each skill invocation once; a dispatch adds only while its
+            -- name has no kind-2 row, that is before the rollup has caught up with it.
             (coalesce((SELECT sum(skill_count) FROM tool_facts_daily WHERE session_id = $sid::text), 0)
              + (SELECT count(*) FROM hook_events
                 WHERE session_id = $sid::text AND event_type = '{SKILL_DISPATCH_EVENT}' AND skill_name <> ''
-                  AND skill_name NOT IN (SELECT skill_name FROM spans
-                                         WHERE span_kind = {_TOOL} AND session_id = $sid::text
-                                           AND skill_name <> '')))::bigint                     AS skill_count""",
+                  AND octet_length(skill_name) <= {MAX_KEY_BYTES}
+                  AND skill_name NOT IN (SELECT name FROM invocations_hourly
+                                         WHERE kind = 2 AND session_id = $sid::text)))::bigint  AS skill_count""",
             {"sid": session_id},
         )
 
@@ -704,28 +742,40 @@ class PostgresCliAnalyticsReader:
     async def get_session_detail_dispatches(self, session_id: str) -> Rows:
         """Agent and skill dispatches (tool spans) plus slash-command skills (hook events).
 
-        A skill's "real" duration runs to the end of its interaction. An agent's bar starts when its
-        Agent tool call started (the agent.tool.start hook event, `dispatch_start`; the launch ack when
-        that is missing) and its run time runs from there to its own SubagentStop hook event, matched
-        by agentId; it is NULL when that stop never arrived. The handler clamps it to the session end.
+        One row per skill invocation. A forked skill's row is its initiator's: the Skill call's span row
+        (its agent.tool.end names the fork's agentId) or the slash command's dispatch (the fork shares its
+        prompt_id, and its skill name unless it ran in the foreground without one); that row takes the fork's
+        run (its SubagentStart to its SubagentStop) and cost by the fork's agentId, and the fork adds no row
+        of its own. A fork with no initiator row is its own `command` row. Another skill's "real" duration
+        runs to the end of its interaction.
+        An agent's bar starts at its SubagentStart hook event, found by the agentId of its Agent call's
+        result (`dispatch_start`); without one, at the call start (agent.tool.start); the launch ack when
+        both are missing. Its run time runs from there to its own SubagentStop hook event, matched by
+        agentId; it is NULL when that stop never arrived. The handler clamps it to the session end.
         The tool-execution span duration (`duration_ms`) is selected for the row shape but no agent row
         uses it: it closes when a background agent is launched. An agent dispatch's cost and tokens
         are an exact ID chain, not an estimate: the Agent tool call's hook event names the agentId the
         subagent was launched with; the subagent's LLM requests (llm_request spans) carry that agentId
         and are children of the span that groups its api_request events, so those events are summed.
-        A dispatch with no agentId at all (a skill, or an agent from telemetry without it) falls back
-        to its parent span's API requests from the first dispatch on, as before. Several such
-        dispatches sharing one parent then each show that total (the known, accepted limitation of
-        the fallback). An agent whose agentId is known but has no API requests gets NULL: its parent
-        span is the main thread, whose cost is not the subagent's.
+        A dispatch with no agentId at all (an inline skill, or an agent from telemetry without it) falls back
+        to its own slice of the parent span's API requests: from its own start to the next strictly later
+        sibling start under the same parent (or unbounded for the last one), split equally among the
+        dispatches that start together, so dispatches sharing a parent never each show the identical,
+        undivided sum. An agent or fork whose
+        agentId is known but has no API requests gets NULL: its parent span is the main thread, whose
+        cost is not the subagent's.
         """
         return await self._q(
             f"""
         WITH t AS (
             SELECT coalesce(subagent_type, '') AS subagent_type, coalesce(skill_name, '') AS skill_name,
-                   tool_use_id, ts AS span_start, parent_span_id
-            FROM spans
+                   tool_use_id, ts AS span_start, parent_span_id, span_id
+            FROM spans s
             WHERE span_kind = {_TOOL} AND session_id = $sid::text AND (subagent_type <> '' OR skill_name <> '')
+              -- an Agent or Skill call with no evidence it ran is denied, not a dispatch. Ingest stores an absent
+              -- subagent_type as NULL, so a skill row is told apart with coalesce, not = ''.
+              AND (CASE WHEN coalesce(s.subagent_type, '') <> '' THEN {executed_tool_span("s", "Agent")}
+                        ELSE {executed_tool_span("s", "Skill")} END)
         ), ex AS (
             SELECT tool_use_id, max(duration_ns / 1000000) AS duration_ms FROM spans
             WHERE span_kind = {_EXEC} AND session_id = $sid::text AND tool_use_id <> ''
@@ -736,7 +786,8 @@ class PostgresCliAnalyticsReader:
             GROUP BY span_id
         ), agent_end AS (
             -- each Agent tool call's result: the launch ack of a background agent, or the return of a foreground one
-            SELECT DISTINCT ON (tool_use_id) tool_use_id, ts, attrs->>'tool_response' AS tool_response
+            SELECT DISTINCT ON (tool_use_id) tool_use_id, ts,
+                   {tool_response_agent_id("attrs->>'tool_response'")} AS agent_id
             FROM hook_events
             WHERE session_id = $sid::text AND event_type = 'agent.tool.end' AND tool_name = 'Agent'
               AND tool_use_id <> ''
@@ -748,21 +799,77 @@ class PostgresCliAnalyticsReader:
             WHERE session_id = $sid::text AND event_type = 'agent.tool.start' AND tool_name = 'Agent'
               AND tool_use_id <> ''
             GROUP BY tool_use_id
+        ), forked AS (
+            -- when each subagent started, from its own earliest SubagentStart hook event (the typed agent_id column)
+            SELECT agent_id, min(ts) AS ts
+            FROM hook_events
+            WHERE session_id = $sid::text AND event_type = 'agent.subagent.start' AND agent_id <> ''
+            GROUP BY agent_id
         ), launched AS (
-            -- the agentId each Agent tool call launched, and when its run began: the call start, for background and
-            -- foreground agents alike (a background agent's launch ack arrives seconds later, a foreground agent's
-            -- result after its stop); the ack only when the start is missing
-            SELECT e.tool_use_id,
-                   coalesce(s.ts, e.ts) AS launch_ts,
-                   substring(e.tool_response from 'agentId[^a-zA-Z0-9_-]+([a-zA-Z0-9_-]+)') AS agent_id
+            -- the agentId each Agent tool call launched, and when its run began: its SubagentStart, for background
+            -- and foreground agents alike; the call start when that is missing; the ack only when both are (a
+            -- background agent's launch ack arrives seconds later, a foreground agent's result after its stop)
+            SELECT e.tool_use_id, coalesce(f.ts, s.ts, e.ts) AS launch_ts, e.agent_id
             FROM agent_end e
             LEFT JOIN agent_start s ON s.tool_use_id = e.tool_use_id
-        ), stopped AS (
-            -- when each subagent stopped, from its own SubagentStop hook event (the typed agent_id column)
-            SELECT agent_id, max(ts) AS ended_at
+            LEFT JOIN forked f ON f.agent_id = e.agent_id
+        ), skill_fork AS (
+            -- the fork each Claude Code Skill call started, named by the agentId of its latest result; NULL for a
+            -- skill that ran inline
+            SELECT DISTINCT ON (tool_use_id) tool_use_id,
+                   {skill_end_agent_id("hook_events")} AS agent_id
             FROM hook_events
-            WHERE session_id = $sid::text AND event_type = 'agent.subagent.stop' AND agent_id IS NOT NULL
+            WHERE session_id = $sid::text AND event_type = 'agent.tool.end' AND tool_name = 'Skill'
+              AND tool_use_id <> '' AND {is_claude_code()}
+            ORDER BY tool_use_id, ts DESC
+        ), dispatch_fork AS (
+            -- each slash-command dispatch and the fork it started, by the rollups' rule: the earliest fork
+            -- candidate at or after it with its prompt_id and skill name, else, when none has the name, the earliest
+            -- one without a skill name (a foreground fork); none for another client's dispatch or one without a
+            -- prompt_id; a dispatch whose skill name is too long to count is left out, as the counts leave it out;
+            -- a dispatch whose prompt_id holds another dispatch pairs with none
+            SELECT d.ts, d.skill_name, df.agent_id, df.ts AS fork_ts
+            FROM hook_events d
+            LEFT JOIN LATERAL (
+                SELECT f.agent_id, f.ts
+                FROM hook_events f
+                WHERE f.session_id = d.session_id AND f.agent_id <> '' AND {dispatch_fork_candidate("f")}
+                  AND f.prompt_id = d.prompt_id AND (f.skill_name = d.skill_name OR coalesce(f.skill_name, '') = '')
+                  AND f.ts >= d.ts
+                  AND {is_claude_code('d')} AND d.prompt_id <> ''
+                  AND {sole_dispatch_of_prompt('d')}
+                ORDER BY coalesce(f.skill_name, '') = '', f.ts, f.ingest_seq
+                LIMIT 1
+            ) df ON true
+            WHERE d.session_id = $sid::text AND d.event_type = '{SKILL_DISPATCH_EVENT}' AND d.skill_name <> ''
+              AND octet_length(d.skill_name) <= {MAX_KEY_BYTES}
+        ), idle AS (
+            -- an agent continued by SendMessage starts again with the same agent_id: the time from a stop to the
+            -- next start of the same agent is no run, once a later stop closes that run; each stop's gap counts once
+            SELECT agent_id, sum(gap) AS idle
+            FROM (
+                SELECT DISTINCT ON (s.agent_id, p.stopped_at) s.agent_id, s.ts - p.stopped_at AS gap
+                FROM hook_events s
+                JOIN LATERAL (
+                    SELECT max(x.ts) AS stopped_at FROM hook_events x
+                    WHERE x.session_id = s.session_id AND x.event_type = 'agent.subagent.stop'
+                      AND x.agent_id = s.agent_id AND x.ts < s.ts
+                ) p ON p.stopped_at IS NOT NULL
+                WHERE s.session_id = $sid::text AND s.event_type = 'agent.subagent.start' AND s.agent_id <> ''
+                  AND EXISTS (SELECT 1 FROM hook_events y
+                              WHERE y.session_id = s.session_id AND y.event_type = 'agent.subagent.stop'
+                                AND y.agent_id = s.agent_id AND y.ts > s.ts)
+                ORDER BY s.agent_id, p.stopped_at, s.ts
+            ) gaps
             GROUP BY agent_id
+        ), stopped AS (
+            -- when each subagent stopped, from its own SubagentStop hook event (the typed agent_id column), less the
+            -- idle time between its runs, so that its last stop minus its first start is the sum of its runs
+            SELECT x.agent_id, max(x.ts) - coalesce(i.idle, interval '0') AS ended_at
+            FROM hook_events x
+            LEFT JOIN idle i ON i.agent_id = x.agent_id
+            WHERE x.session_id = $sid::text AND x.event_type = 'agent.subagent.stop' AND x.agent_id IS NOT NULL
+            GROUP BY x.agent_id, i.idle
         ), agent_groups AS (
             -- the span grouping a subagent's api_request events, named by its LLM requests' agentId
             SELECT DISTINCT attrs->>'agent_id' AS agent_id, parent_span_id
@@ -780,31 +887,54 @@ class PostgresCliAnalyticsReader:
             JOIN log_events l
                  ON l.span_id = g.parent_span_id AND l.session_id = $sid::text AND l.event_kind = {_API_REQUEST}
             GROUP BY g.agent_id
-        ), first_start AS (
-            SELECT parent_span_id, min(span_start) AS min_span_start FROM t GROUP BY parent_span_id
+        ), fallback_start AS (
+            -- every dispatch's own start under its parent, agent or skill alike (same formula the
+            -- final SELECT displays as dispatch_start), used only to bound sibling_window below
+            SELECT t.span_id AS fallback_id, t.parent_span_id,
+                   coalesce(CASE WHEN t.subagent_type <> '' THEN la.launch_ts END, t.span_start) AS start_ts,
+                   (la.agent_id IS NULL AND sf.agent_id IS NULL) AS takes_parent
+            FROM t
+            LEFT JOIN launched la ON la.tool_use_id = t.tool_use_id AND t.tool_use_id <> ''
+            LEFT JOIN skill_fork sf ON sf.tool_use_id = t.tool_use_id AND t.tool_use_id <> '' AND t.skill_name <> ''
+        ), sibling_window AS (
+            -- each dispatch's own slice of its parent's API-request stream: from its own start to the next
+            -- strictly later sibling start under the same parent (or unbounded for the last one); the dispatches
+            -- with no resolvable agentId that start together split their slice equally (one with an agentId takes
+            -- its own requests, not a share), so none shows the identical, undivided sum a sibling shows.
+            SELECT fallback_id, parent_span_id, start_ts,
+                   min(start_ts) OVER (PARTITION BY parent_span_id ORDER BY start_ts
+                                       RANGE BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING EXCLUDE GROUP) AS next_start,
+                   count(*) FILTER (WHERE takes_parent) OVER (PARTITION BY parent_span_id, start_ts) AS ties
+            FROM fallback_start
         ), parent_usage AS (
-            -- dispatches with no agentId: the API requests of their parent span, counted from the first dispatch on
-            SELECT l.span_id,
-                   sum(coalesce(l.cost_usd, 0))              FILTER (WHERE after) AS cost_usd,
-                   sum(coalesce(l.input_tokens, 0))          FILTER (WHERE after) AS input_tokens,
-                   sum(coalesce(l.output_tokens, 0))         FILTER (WHERE after) AS output_tokens,
-                   sum(coalesce(l.cache_read_tokens, 0))     FILTER (WHERE after) AS cache_read_tokens,
-                   sum(coalesce(l.cache_creation_tokens, 0)) FILTER (WHERE after) AS cache_creation_tokens
-            FROM log_events l
-            JOIN first_start m ON m.parent_span_id = l.span_id
-            CROSS JOIN LATERAL (SELECT l.ts >= m.min_span_start AS after) x
-            WHERE l.session_id = $sid::text AND l.event_kind = {_API_REQUEST} AND l.span_id IS NOT NULL
-            GROUP BY l.span_id
+            -- dispatches with no agentId: their own windowed slice of the parent's API requests (see sibling_window)
+            SELECT w.fallback_id,
+                   sum(coalesce(l.cost_usd, 0))::numeric / w.ties              AS cost_usd,
+                   sum(coalesce(l.input_tokens, 0))::numeric / w.ties          AS input_tokens,
+                   sum(coalesce(l.output_tokens, 0))::numeric / w.ties         AS output_tokens,
+                   sum(coalesce(l.cache_read_tokens, 0))::numeric / w.ties     AS cache_read_tokens,
+                   sum(coalesce(l.cache_creation_tokens, 0))::numeric / w.ties AS cache_creation_tokens
+            FROM sibling_window w
+            JOIN log_events l
+                 ON l.span_id = w.parent_span_id AND l.session_id = $sid::text AND l.event_kind = {_API_REQUEST}
+                   AND l.ts >= w.start_ts AND (w.next_start IS NULL OR l.ts < w.next_start)
+            WHERE w.ties > 0
+            GROUP BY w.fallback_id, w.ties
         )
         SELECT * FROM (
         SELECT t.subagent_type, t.skill_name, 0 AS is_slash_command,
-               -- an agent's bar starts at its Agent call's start; a skill's at its tool span
+               -- an agent's bar starts when its run began (see launched); a skill's at its tool span
                coalesce(CASE WHEN t.subagent_type <> '' THEN la.launch_ts END, t.span_start) AS dispatch_start,
                coalesce(ex.duration_ms, 0)::bigint AS duration_ms,
-               -- an interaction with no match counts as starting at 1970-01-01 (0 ns) and lasting 0 ns
-               ((coalesce({_ns("ia.ts")}, 0) + coalesce(ia.duration_ns, 0) - {_ns("t.span_start")}) / 1000000)::bigint
-                                                         AS real_duration_ms,
-               -- the subagent's run time: from its Agent call's start to its stop; NULL when it never stopped
+               -- a forked skill's: its fork's run, NULL when it never stopped; another skill's: to the end of its
+               -- interaction, NULL when it has none
+               CASE WHEN sf.agent_id IS NOT NULL
+                    THEN CASE WHEN st.ended_at >= fs.ts
+                              THEN (extract(epoch FROM st.ended_at - fs.ts) * 1000)::bigint END
+                    WHEN ia.ts IS NOT NULL
+                    THEN (({_ns("ia.ts")} + coalesce(ia.duration_ns, 0) - {_ns("t.span_start")})
+                          / 1000000)::bigint END AS real_duration_ms,
+               -- the subagent's run time: from its start to its stop; NULL when it never stopped
                CASE WHEN st.ended_at >= la.launch_ts
                     THEN (extract(epoch FROM st.ended_at - la.launch_ts) * 1000)::bigint END AS subagent_duration_ms,
                coalesce(au.cost_usd, pu.cost_usd)::float8                AS cost_usd,
@@ -816,16 +946,53 @@ class PostgresCliAnalyticsReader:
         LEFT JOIN ex ON ex.tool_use_id = t.tool_use_id AND t.tool_use_id <> ''
         LEFT JOIN ia ON ia.span_id = t.parent_span_id
         LEFT JOIN launched la ON la.tool_use_id = t.tool_use_id AND t.tool_use_id <> ''
-        LEFT JOIN stopped st ON st.agent_id = la.agent_id
-        LEFT JOIN agent_usage au ON au.agent_id = la.agent_id
-        -- only without an agentId: a known agent with no API requests has no cost, not the main thread's
-        LEFT JOIN parent_usage pu ON pu.span_id = t.parent_span_id AND la.agent_id IS NULL
+        LEFT JOIN skill_fork sf ON sf.tool_use_id = t.tool_use_id AND t.tool_use_id <> '' AND t.skill_name <> ''
+        LEFT JOIN forked fs ON fs.agent_id = sf.agent_id
+        LEFT JOIN stopped st ON st.agent_id = coalesce(la.agent_id, sf.agent_id)
+        LEFT JOIN agent_usage au ON au.agent_id = coalesce(la.agent_id, sf.agent_id)
+        -- only without an agentId: a known agent or fork with no API requests has no cost, not the main thread's
+        LEFT JOIN parent_usage pu ON pu.fallback_id = t.span_id AND la.agent_id IS NULL AND sf.agent_id IS NULL
         UNION ALL
-        SELECT '', skill_name, 1, ts, 0, 0, NULL, 0::float8, 0, 0, 0, 0
-        FROM hook_events
-        WHERE session_id = $sid::text AND event_type = '{SKILL_DISPATCH_EVENT}' AND skill_name <> ''
-          AND skill_name NOT IN (SELECT skill_name FROM spans
-                                 WHERE span_kind = {_TOOL} AND session_id = $sid::text AND skill_name <> '')
+        -- A forked skill (a skill-tagged agent.subagent.start) whose initiator has no row of its own: no
+        -- Skill span names it by agentId and no slash-command dispatch paired with it (an older CLI, or a
+        -- Skill call seen only as hook events). Its run time and cost come by its typed agent_id, as an
+        -- agent's do. real_duration_ms mirrors subagent_duration_ms: the handler reads real_duration_ms
+        -- for this row's "command" kind.
+        SELECT '', h.skill_name, 1, h.ts, 0,
+               CASE WHEN st.ended_at >= h.ts
+                    THEN (extract(epoch FROM st.ended_at - h.ts) * 1000)::bigint END,
+               CASE WHEN st.ended_at >= h.ts
+                    THEN (extract(epoch FROM st.ended_at - h.ts) * 1000)::bigint END AS subagent_duration_ms,
+               au.cost_usd::float8 AS cost_usd, au.input_tokens::bigint AS input_tokens,
+               au.output_tokens::bigint AS output_tokens, au.cache_read_tokens::bigint AS cache_read_tokens,
+               au.cache_creation_tokens::bigint AS cache_creation_tokens
+        FROM hook_events h
+        LEFT JOIN stopped st ON st.agent_id = h.agent_id AND h.agent_id <> ''
+        LEFT JOIN agent_usage au ON au.agent_id = h.agent_id AND h.agent_id <> ''
+        WHERE h.session_id = $sid::text AND h.event_type = 'agent.subagent.start' AND h.skill_name <> ''
+          AND {is_claude_code('h')}
+          -- one row per fork: a re-sent or resumed start of the same agent_id is not another invocation
+          AND {first_subagent_start("h")}
+          AND NOT EXISTS (SELECT 1 FROM dispatch_fork df WHERE df.agent_id = h.agent_id)
+          AND NOT EXISTS (SELECT 1 FROM t JOIN skill_fork sf ON sf.tool_use_id = t.tool_use_id
+                          WHERE t.skill_name <> '' AND sf.agent_id = h.agent_id)
+        UNION ALL
+        -- A slash-command skill dispatch. With a fork it takes the fork's run and cost by the fork's agentId;
+        -- a skill that ran in the main thread has no cost or duration of its own (0). Never matched against a
+        -- TOOL span by name.
+        SELECT '', df.skill_name, 1, df.ts, 0,
+               CASE WHEN df.agent_id IS NULL THEN 0
+                    WHEN st.ended_at >= df.fork_ts THEN (extract(epoch FROM st.ended_at - df.fork_ts) * 1000)::bigint
+               END,
+               NULL,
+               CASE WHEN df.agent_id IS NULL THEN 0 ELSE au.cost_usd END::float8,
+               CASE WHEN df.agent_id IS NULL THEN 0 ELSE au.input_tokens END::bigint,
+               CASE WHEN df.agent_id IS NULL THEN 0 ELSE au.output_tokens END::bigint,
+               CASE WHEN df.agent_id IS NULL THEN 0 ELSE au.cache_read_tokens END::bigint,
+               CASE WHEN df.agent_id IS NULL THEN 0 ELSE au.cache_creation_tokens END::bigint
+        FROM dispatch_fork df
+        LEFT JOIN stopped st ON st.agent_id = df.agent_id
+        LEFT JOIN agent_usage au ON au.agent_id = df.agent_id
         ) dispatches
         ORDER BY dispatch_start, is_slash_command, subagent_type {_C}, skill_name {_C}""",
             {"sid": session_id},

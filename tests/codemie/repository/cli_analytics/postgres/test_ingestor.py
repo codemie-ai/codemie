@@ -55,6 +55,8 @@ class RecordingConnection:
         self.ledger: set[tuple] = set()
         self.error = error
         self.transactions = 0
+        self.fork_days: list[dict] = []  # what the fork-day lookup answers
+        self.later_start_days: list[dict] = []  # what the later-start lookup answers
 
     @asynccontextmanager
     async def _transaction(self):
@@ -76,6 +78,10 @@ class RecordingConnection:
         if self.error:
             raise self.error
         self.statements.append((sql, args))
+        if "AND f.ts > u.t" in sql:
+            return self.later_start_days
+        if "JOIN hook_events f" in sql:
+            return self.fork_days
         fresh = [k for k in zip(*args, strict=True) if k not in self.ledger]
         self.ledger.update(fresh)
         return [{"day": d, "h": h} for d, h in fresh]
@@ -90,6 +96,9 @@ class FakeEngine:
         self.conn = conn or RecordingConnection()
         self.acquire_error = acquire_error
         self.acquire_timeouts: list[float | None] = []
+
+    def lock_key(self, name: str) -> int:
+        return self.settings.lock_key(name)
 
     @asynccontextmanager
     async def acquire(self, timeout=None):
@@ -428,6 +437,92 @@ async def test_hook_events_are_stored_with_the_sender_and_answered_in_json():
     assert (result.body, result.media_type, result.accepted) == (b"{}", "application/json", 1)
     (dirty_args,) = engine.conn.sql("INSERT INTO rollup_dirty")
     assert list(dirty_args[2]) == [34]  # DIMENSIONS 2 + SESSION 32
+
+
+@pytest.mark.asyncio
+async def test_a_skill_call_end_queues_its_forks_own_day():
+    """A Skill agent.tool.end naming its fork looks the fork's day up by (session_id, agent_id) in the same
+    transaction and queues it with SPAN_FACTS beside the end's own keys, in one rollup_dirty insert."""
+    engine = FakeEngine()
+    fork_day = date(2026, 1, 1)
+    engine.conn.fork_days = [{"day": fork_day, "session_id": "s1"}]
+    events = [
+        {
+            "type": "agent.tool.end",
+            "session_id": "s1",
+            "timestamp": T.isoformat(),
+            "tool_name": "Skill",
+            "tool_use_id": "toolu_1",
+            "fork_agent_id": "a861e999c42f7f90c",
+        }
+    ]
+
+    await _ingestor(engine).ingest_hook_events(events, "dev@example.com", 0)
+
+    (lookup_args,) = engine.conn.sql("JOIN hook_events f")
+    assert lookup_args == (["s1"], ["a861e999c42f7f90c"])
+    (dirty_args,) = engine.conn.sql("INSERT INTO rollup_dirty")
+    marks = dict(zip(zip(dirty_args[0], dirty_args[1], strict=True), dirty_args[2], strict=True))
+    assert marks[(fork_day, "s1")] == 4  # SPAN_FACTS
+    assert marks[(T.date(), "s1")] & 4
+
+
+@pytest.mark.asyncio
+async def test_a_batch_without_a_skill_or_agent_call_end_makes_no_fork_day_lookup():
+    engine = FakeEngine()
+    events = [{"type": "agent.tool.end", "session_id": "s1", "timestamp": T.isoformat(), "tool_name": "Read"}]
+
+    await _ingestor(engine).ingest_hook_events(events, "dev@example.com", 0)
+
+    assert engine.conn.sql("JOIN hook_events f") == []
+    assert engine.conn.sql("pg_advisory_xact_lock") == []
+
+
+@pytest.mark.asyncio
+async def test_a_batch_running_the_fork_lookups_locks_its_sessions_first_in_key_order():
+    """A Skill end naming a fork (session s1) and a keyed agent.subagent.start (session s2): one statement takes
+    the transaction-scoped lock of each session, keys sorted, after the rows are inserted and before either
+    lookup, so a concurrent batch of the same session commits before these lookups read its rows."""
+    engine = FakeEngine()
+    events = [
+        {
+            "type": "agent.tool.end",
+            "session_id": "s1",
+            "timestamp": T.isoformat(),
+            "tool_name": "Skill",
+            "tool_use_id": "toolu_1",
+            "fork_agent_id": "a861e999c42f7f90c",
+        },
+        {"type": "agent.subagent.start", "session_id": "s2", "timestamp": T.isoformat(), "agent_id": "a1"},
+    ]
+
+    await _ingestor(engine).ingest_hook_events(events, "dev@example.com", 0)
+
+    statements = [sql for sql, _ in engine.conn.statements]
+    (lock,) = [i for i, sql in enumerate(statements) if "pg_advisory_xact_lock" in sql]
+    assert engine.conn.statements[lock][1] == ([-3786935906701147602, 4325205642299247865],)  # s2's key, s1's
+    hooks_insert = next(i for i, sql in enumerate(statements) if "INSERT INTO hook_events" in sql)
+    fork_lookup = next(i for i, sql in enumerate(statements) if "JOIN hook_events f" in sql)
+    later_start_lookup = next(i for i, sql in enumerate(statements) if "AND f.ts > u.t" in sql)
+    assert hooks_insert < lock < fork_lookup and lock < later_start_lookup
+
+
+@pytest.mark.asyncio
+async def test_a_keyed_subagent_start_queues_the_days_of_the_later_starts_of_its_agent_id():
+    """A keyed agent.subagent.start looks up the later starts of its (session_id, agent_id) after its ts and
+    queues each one's day with SPAN_FACTS."""
+    engine = FakeEngine()
+    later_day = date(2026, 9, 25)
+    engine.conn.later_start_days = [{"day": later_day, "session_id": "s1"}]
+    events = [{"type": "agent.subagent.start", "session_id": "s1", "timestamp": T.isoformat(), "agent_id": "a1"}]
+
+    await _ingestor(engine).ingest_hook_events(events, "dev@example.com", 0)
+
+    (lookup_args,) = engine.conn.sql("AND f.ts > u.t")
+    assert lookup_args == (["s1"], ["a1"], [T])
+    (dirty_args,) = engine.conn.sql("INSERT INTO rollup_dirty")
+    marks = dict(zip(zip(dirty_args[0], dirty_args[1], strict=True), dirty_args[2], strict=True))
+    assert marks[(later_day, "s1")] == 4  # SPAN_FACTS
 
 
 @pytest.mark.asyncio

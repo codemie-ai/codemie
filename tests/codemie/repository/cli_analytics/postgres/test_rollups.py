@@ -28,6 +28,7 @@ import pytest
 
 from codemie.repository.cli_analytics.postgres import dirty, rollups, session_derived
 from codemie.repository.cli_analytics.postgres.dirty import RollupFamily
+from codemie.repository.cli_analytics.postgres.fork_attribution import executed_tool_span, executed_tool_start
 from codemie.repository.cli_analytics.postgres.rollups import RECOMPUTE, RollupRefresher
 
 
@@ -709,8 +710,9 @@ _NO_SPAN_OF_KIND = (
 
 
 def test_span_facts_statements_read_hooks_for_pairs_without_tool_or_interaction_spans() -> None:
-    # Each SPAN_FACTS INSERT keeps its spans branch and gains hook_events branches that run only on a
-    # fallback pair, so spans and hooks are never added together. Row contents are proven live (Task 17).
+    # Each SPAN_FACTS INSERT keeps its spans branch and gains hook_events branches. Tool calls, turns, files
+    # and agents run only on a fallback pair; skills run on every pair, each invocation counted once.
+    # Row contents are proven live (Task 17).
     inserts = {
         _target_table(s): s
         for s in RECOMPUTE
@@ -719,24 +721,46 @@ def test_span_facts_statements_read_hooks_for_pairs_without_tool_or_interaction_
     # table -> (hook branches, hook event types it reads)
     fallback = {
         "turns_daily": (1, ("agent.prompt.submit",)),
-        "tool_facts_daily": (1, ("agent.tool.start", "agent.subagent.start", "agent.skill.dispatch")),
+        # tool_facts_daily has 2 hook branches: tool_calls/agent_count are blanket-gated; skill_count
+        # has its own branch, gated by the per-invocation dedup check instead of the blanket
+        # _NO_SPAN_OF_KIND, so an inline slash-command skill still counts on a day with other,
+        # unrelated tool spans.
+        "tool_facts_daily": (2, ("agent.tool.start", "agent.subagent.start", "agent.skill.dispatch")),
         "session_files_daily": (1, ("agent.tool.start",)),
-        # kinds 1, 2 and 3; kind 1 success reads agent.tool.end
+        # kinds 1, 2 and 3; kind 1 success reads agent.tool.end. Kind 2 (skill) is gated by the
+        # per-invocation dedup check, not the blanket one — see blanket_gated below.
         "invocations_hourly": (
             3,
             ("agent.tool.start", "agent.tool.end", "agent.subagent.start", "agent.skill.dispatch"),
         ),
+    }
+    # how many times each table's hook branches use the blanket _NO_SPAN_OF_KIND gate: the branches
+    # gated by it, plus one in each skill branch, where a Skill agent.tool.start without a tool_use_id
+    # falls back to it inside _SKILL_HOOK_NOT_DUPED.
+    blanket_gated_branches = {
+        "turns_daily": 1,
+        "tool_facts_daily": 2,
+        "session_files_daily": 1,
+        "invocations_hourly": 3,
     }
 
     for table, (branches, events) in fallback.items():
         insert = inserts[table]
         assert " spans s" in insert or " spans t" in insert, table  # a pair with spans keeps them
         assert insert.count("JOIN hook_events h ON") == branches, table
-        assert insert.count(_NO_SPAN_OF_KIND) == branches, table
-        assert "span_name" not in insert, table
+        assert insert.count(_NO_SPAN_OF_KIND) == blanket_gated_branches[table], table
+        # span_name only scopes the denied-call gate to Claude Code spans
+        assert "span_name" not in re.sub(r"starts_with\(\w+\.span_name, 'claude_code\.'\)", "", insert), table
         for event in events:
             assert f"'{event}'" in insert, (table, event)
         assert _gate_bits(insert) == rollups._TRIGGER_BITS[table]
+
+    # the skill-only hook branches use the per-invocation dedup gate instead of the blanket one: an
+    # agent.tool.start is checked against the TOOL span of its own call (by tool_use_id, within the window
+    # other evidence in this file joins on), an agent.subagent.start against the initiator of its fork
+    # (a counted Skill call by agentId, or a slash command by prompt_id); agent.skill.dispatch always counts.
+    assert inserts["tool_facts_daily"].count(rollups._SKILL_HOOK_NOT_DUPED) == 1
+    assert inserts["invocations_hourly"].count(rollups._SKILL_HOOK_NOT_DUPED) == 1
 
     # success = agent.tool.end of the same session and tool_use_id, on the start's day; '' never pairs.
     kind_1 = inserts["invocations_hourly"]
@@ -746,13 +770,50 @@ def test_span_facts_statements_read_hooks_for_pairs_without_tool_or_interaction_
     files = inserts["session_files_daily"]
     assert "h.attrs->'file_path'" in files
     assert "h.tool_name = ANY(" in files
-    # A hook skill is counted where it is also a row of kind 2: both statements test the same name.
-    hook_skill = (
-        "(h.event_type = 'agent.tool.start' OR h.event_type = 'agent.skill.dispatch') "
-        f"AND {rollups._hook_key('h.skill_name')}"
+    # tool_facts_daily's skill_count and kind 2 count one set of hook events: an agent.tool.start, a slash
+    # command's dispatch or the first start of a fork, with a skill name, not counted by another initiator; the
+    # start only with evidence its call ran.
+    assert (
+        f"(({rollups._IS_TOOL_START} AND {executed_tool_start('h', 'Skill')}) OR {rollups._IS_DISPATCH} "
+        f"OR {rollups._IS_FIRST_SUBAGENT_START}) "
+        f"AND {rollups._hook_key('h.skill_name')} AND {rollups._SKILL_HOOK_NOT_DUPED}"
+    ) == rollups._COUNTED_SKILL_HOOK
+    assert (
+        f"SELECT k.day, k.session_id, 0, 0, count(*)\n        {rollups._in_day('h', 'hook_events')}\n"
+        f"        WHERE k.kinds & {rollups._SPANS} <> 0 AND k.session_id <> '' AND {rollups._COUNTED_SKILL_HOOK}\n"
+    ) in inserts["tool_facts_daily"]
+    assert f"WHERE k.kinds & {rollups._SPANS} <> 0 AND {rollups._COUNTED_SKILL_HOOK}\n" in kind_1
+    # kind 3 (agent) excludes a fork of a skill — skill-tagged, started by a Skill call or paired with a slash
+    # command — it is a skill, never also an agent, mirroring tool_facts_daily's agent_count FILTER.
+    assert (
+        f"{rollups._IS_FIRST_SUBAGENT_START} AND NOT {rollups._SKILL_TAG_READ}\n"
+        f"      AND NOT {rollups._IS_SKILL_FORK} AND NOT {rollups._FORK_OF_DISPATCH} "
+        f"AND {rollups._hook_key('h.agent_type')}" in kind_1
     )
-    assert f"count(*) FILTER (WHERE {hook_skill})" in inserts["tool_facts_daily"]
-    assert f"AND {hook_skill}" in kind_1
+    # agent_count takes the same bounded agent_type as kind 3
+    assert (
+        f"AND NOT {rollups._IS_SKILL_FORK} AND NOT {rollups._FORK_OF_DISPATCH}\n"
+        f"                                 AND {rollups._hook_key('h.agent_type')})"
+    ) in inserts["tool_facts_daily"]
+
+
+def test_subagent_start_with_skill_name_counts_as_skill_not_agent() -> None:
+    """An agent.subagent.start with skill_name counts into skill_count, not agent_count — never both."""
+    inserts = {
+        _target_table(s): s
+        for s in RECOMPUTE
+        if s.lstrip().startswith("INSERT INTO") and _gate_bits(s) & rollups._SPANS
+    }
+    tool_facts = inserts["tool_facts_daily"]
+    assert (
+        f"{rollups._IS_FIRST_SUBAGENT_START} AND NOT {rollups._SKILL_TAG_READ}\n"
+        f"                                 AND NOT {rollups._IS_SKILL_FORK}" in tool_facts
+    )
+    assert rollups._COUNTED_SKILL_HOOK in tool_facts
+    # the skill-tag rule reads Claude Code events only: another client's tagged start stays an agent
+    assert rollups._SKILL_TAG_READ == (
+        "(coalesce(h.skill_name, '') <> '' AND coalesce(h.attrs->>'platform', 'claude-code') = 'claude-code')"
+    )
 
 
 def test_session_files_daily_gates_is_written_is_edited_on_success() -> None:
@@ -852,7 +913,7 @@ def test_mark_range_yields_the_ingest_bits_per_source() -> None:
     assert "((ts - interval '1 hour') AT TIME ZONE 'UTC')::date" in sql
     # spans: own day, and for tool, execution and interaction spans (kinds 1, 2, 3) the day of ts - 1 h too,
     # as dirty_keys marks them: a span in the first hour after the range still queues the range's last day
-    shifted_spans = [b for b in inner.split("UNION ALL") if " FROM spans" in b and "interval '1 hour'" in b]
+    shifted_spans = [b for b in inner.split("UNION ALL") if " FROM spans" in b and "ts - interval '1 hour'" in b]
     assert len(shifted_spans) == 1
     assert f"SELECT ((ts - interval '1 hour') AT TIME ZONE 'UTC')::date, session_id, {rollups._SPANS} FROM spans" in (
         " ".join(shifted_spans[0].split())
@@ -881,6 +942,42 @@ def test_mark_range_yields_the_ingest_bits_per_source() -> None:
         f"CASE WHEN ts - {day_start} <= {reach} THEN (ts AT TIME ZONE 'UTC')::date - 1 "
         f"WHEN {day_start} + interval '1 day' - ts <= {reach} THEN (ts AT TIME ZONE 'UTC')::date + 1 END"
     )
+    # a skill initiator within 1 h of midnight (a slash-command dispatch, a Skill agent.tool.start or
+    # agent.tool.end, a Skill TOOL span) also queues the neighbouring day's SPAN_FACTS, as dirty_keys marks
+    # it: its fork may start there
+    neighbour_day = (
+        f"CASE WHEN ts - {day_start} <= interval '1 hour' THEN (ts AT TIME ZONE 'UTC')::date - 1 "
+        f"WHEN {day_start} + interval '1 day' - ts <= interval '1 hour' THEN (ts AT TIME ZONE 'UTC')::date + 1 END"
+    )
+    assert rollups._SKILL_INITIATOR_HOOK == (
+        "(event_type = 'agent.skill.dispatch' "
+        "OR (event_type IN ('agent.tool.start', 'agent.tool.end') AND tool_name = 'Skill'))"
+    )
+    hook_next = [b for b in by_table["hook_events"] if neighbour_day in b]
+    assert len(hook_next) == 1 and rollups._SKILL_INITIATOR_HOOK in hook_next[0]
+    assert f"SELECT {neighbour_day}, session_id, {rollups._SPANS} FROM hook_events" in hook_next[0]
+    span_next = [b for b in by_table["spans"] if neighbour_day in b]
+    assert len(span_next) == 1 and "AND span_kind = 1 AND skill_name <> ''" in span_next[0]
+    assert f"SELECT {neighbour_day}, session_id, {rollups._SPANS} FROM spans" in span_next[0]
+    # a finished Agent or Skill call of any client on the range's days or the day after queues the day before it
+    assert rollups._FINISHED_DISPATCH_HOOK == (
+        "(event_type IN ('agent.tool.end', 'agent.tool.error') AND tool_name IN ('Agent', 'Skill'))"
+    )
+    hook_before = [b for b in by_table["hook_events"] if rollups._FINISHED_DISPATCH_HOOK in b and "::date - 1," in b]
+    assert len(hook_before) == 1
+    assert " ".join(hook_before[0].split()) == (
+        f"SELECT (ts AT TIME ZONE 'UTC')::date - 1, session_id, {rollups._SPANS} FROM hook_events "
+        "WHERE ts >= ($1::date::timestamp AT TIME ZONE 'UTC') AND ts < (($2::date + 2)::timestamp AT TIME ZONE 'UTC') "
+        f"AND session_id <> '' AND {rollups._FINISHED_DISPATCH_HOOK}"
+    )
+    # so does a TOOL_EXECUTION span, the gate's other evidence
+    span_before = [b for b in by_table["spans"] if "::date - 1," in b]
+    assert len(span_before) == 1
+    assert " ".join(span_before[0].split()) == (
+        f"SELECT (ts AT TIME ZONE 'UTC')::date - 1, session_id, {rollups._SPANS} FROM spans "
+        "WHERE ts >= ($1::date::timestamp AT TIME ZONE 'UTC') AND ts < (($2::date + 2)::timestamp AT TIME ZONE 'UTC') "
+        "AND span_kind = 2"
+    )
     # turns: api_request, user_prompt and api_error rows mark SPAN_FACTS on their day and on the neighbour day
     # within 1 h (bounds inclusive); agent.prompt.submit marks both neighbours within 1 h too
     turn_neighbour = rollups._neighbour_day("interval '3600 seconds'")
@@ -895,8 +992,8 @@ def test_mark_range_yields_the_ingest_bits_per_source() -> None:
     hook_turn = " ".join(next(b for b in by_table["hook_events"] if turn_neighbour in b).split())
     assert "session_id, 4 FROM hook_events" in hook_turn
     assert "AND session_id <> '' AND event_type = 'agent.prompt.submit'" in hook_turn
-    # clamped to raw retention ($4, NULL without it); a row far from midnight queues no neighbour
-    assert "WHERE raw.day IS NOT NULL AND ($4::date IS NULL OR raw.day >= $4::date)" in sql
+    # clamped to raw retention ($4, NULL without it) and to years 1-9999; a row far from midnight queues no neighbour
+    assert "WHERE raw.day BETWEEN '0001-01-01' AND '9999-12-31' AND ($4::date IS NULL OR raw.day >= $4::date)" in sql
 
 
 @pytest.mark.asyncio
@@ -1195,6 +1292,24 @@ def test_a_computed_subagent_duration_is_never_negative() -> None:
     assert duration.endswith(f", CASE WHEN tm.ended_at >= tm.started_at THEN {computed} END)")
     assert duration.count(computed) == 1  # the difference is taken only inside the guard
     assert duration in rollups._SUBAGENT_INVOCATIONS
+
+
+def test_agent_and_skill_counts_need_run_evidence_in_tool_facts_and_invocation_rollups() -> None:
+    # A Claude Code TOOL span of an Agent or Skill call with no execution span and no agent.tool.end/.error of that
+    # tool with the same tool_use_id is a denied call: it must not add to tool_facts_daily or invocations_hourly.
+    tool_facts = " ".join(" ".join(s.split()) for s in RECOMPUTE if "INSERT INTO tool_facts_daily" in s)
+    assert f"count(*) FILTER (WHERE s.subagent_type <> '' AND {executed_tool_span('s', 'Agent')})" in tool_facts
+    assert f"count(*) FILTER (WHERE s.skill_name <> '' AND {executed_tool_span('s', 'Skill')})" in tool_facts
+    invocations = " ".join(" ".join(s.split()) for s in RECOMPUTE if "INSERT INTO invocations_hourly" in s)
+    assert f"AND t.subagent_type <> '' AND {executed_tool_span('t', 'Agent')}" in invocations
+    assert f"AND t.skill_name <> '' AND {executed_tool_span('t', 'Skill')}" in invocations
+    # both pieces of evidence are looked for from 1 hour before the call to 1 day after it, the end of that tool only,
+    # and only a Claude Code span is gated
+    gate = executed_tool_span("s", "Skill")
+    assert gate.startswith("(NOT starts_with(s.span_name, 'claude_code.') OR ")
+    assert "AND x.ts >= s.ts - interval '1 hour' AND x.ts < s.ts + interval '1 day')" in gate
+    assert "AND s_r.tool_name = 'Skill' AND s_r.tool_use_id = s.tool_use_id" in gate
+    assert "AND s_r.ts >= s.ts - interval '1 hour' AND s_r.ts < s.ts + interval '1 day'))" in gate
 
 
 def test_kind_4_rollup_excludes_builtin_commands() -> None:

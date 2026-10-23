@@ -25,6 +25,7 @@ import pytest
 
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
 from codemie.repository.cli_analytics.ports import CliAnalyticsReader
+from codemie.repository.cli_analytics.postgres.fork_attribution import executed_tool_span, tool_response_agent_id
 from codemie.repository.cli_analytics.postgres.reader import (
     PostgresCliAnalyticsReader,
     _C,
@@ -837,6 +838,119 @@ def test_window_params_keep_projects_by_default():
     assert window_params(_flt(projects=["p"]))["projects"] == ["p"]
 
 
+@pytest.mark.asyncio
+async def test_scalars_agent_count_has_dedup_correction_like_skill_count():
+    """get_session_detail_scalars corrects skill_count for hook-only dispatches not yet in
+    tool_facts_daily; agent_count must have the same correction, or a skill-tagged subagent
+    dispatch that hasn't rolled up yet undercounts/overcounts agent_count."""
+    recorder = _SqlRecorder()
+
+    await PostgresCliAnalyticsReader(recorder).get_session_detail_scalars("s1")
+
+    sql = " ".join(recorder.statements[0].split())
+    agent_count_expr = sql.split("AS agent_count")[0].rsplit("AS tool_call_count", 1)[-1]
+    assert "FROM hook_events" in agent_count_expr
+    assert "agent.subagent.start" in agent_count_expr
+    assert "NOT IN (SELECT subagent_type FROM spans" in agent_count_expr
+    # a Claude Code skill-tagged start is a skill, not an agent; another client's stays an agent
+    assert (
+        "AND NOT (coalesce(he.skill_name, '') <> '' AND coalesce(he.attrs->>'platform', 'claude-code') = "
+        "'claude-code')" in agent_count_expr
+    )
+    # a fork of a counted Skill call is a skill, never an agent, with or without skill_name; the Skill end names
+    # it by its fork_agent_id, else by the complete agentId in its tool_response
+    in_response = tool_response_agent_id("he_e.attrs->>'tool_response'")
+    agent_id = f"coalesce(nullif(he_e.attrs->>'fork_agent_id', ''), {in_response})"
+    assert (
+        "AND NOT (coalesce(he.attrs->>'platform', 'claude-code') = 'claude-code' "
+        "AND EXISTS (SELECT 1 FROM hook_events he_e WHERE he_e.session_id = he.session_id "
+        "AND he_e.event_type = 'agent.tool.end' AND he_e.tool_name = 'Skill' "
+        "AND coalesce(he_e.attrs->>'platform', 'claude-code') = 'claude-code' "
+        f"AND {agent_id} = he.agent_id AND he_e.tool_use_id <> '' "
+        "AND (EXISTS (SELECT 1 FROM spans he_s WHERE he_s.session_id = he_e.session_id AND he_s.span_kind = 1 "
+        "AND he_s.tool_use_id = he_e.tool_use_id AND he_s.skill_name <> '' "
+        f"AND {executed_tool_span('he_s', 'Skill')})" in agent_count_expr
+    )
+    # nor is the fork a slash command pairs with, with or without skill_name
+    assert (
+        "AND NOT ((he.event_type = 'agent.subagent.start' AND coalesce(he.attrs->>'platform', 'claude-code') = "
+        "'claude-code' AND NOT EXISTS (SELECT 1 FROM hook_events he_p WHERE he_p.session_id = he.session_id "
+        "AND he_p.event_type = 'agent.subagent.start' AND he.agent_id <> '' AND he_p.agent_id = he.agent_id "
+        "AND (he_p.ts, he_p.ingest_seq) < (he.ts, he.ingest_seq)) "
+        "AND NOT EXISTS (SELECT 1 FROM hook_events he_s WHERE he_s.session_id = he.session_id" in agent_count_expr
+    )
+    assert "AND he_d.event_type = 'agent.skill.dispatch'" in agent_count_expr
+    # the day with no span is the UTC day, as in the rollups
+    assert (
+        "AND sp.ts >= date_trunc('day', he.ts, 'UTC') AND sp.ts < date_trunc('day', he.ts, 'UTC') + interval '1 day'"
+        in agent_count_expr
+    )
+
+
+@pytest.mark.asyncio
+async def test_dispatch_union_branch_treats_subagent_hook_skill_name_as_skill_dispatch():
+    """A forked skill's SubagentStart (skill_name, no TOOL span) is a skill row, not an agent, read by its own
+    agentId, unless its initiator has a row: a Skill span whose result names its agentId, or the slash-command
+    dispatch it pairs with. A dispatch row takes its fork's cost by the fork's agentId."""
+    recorder = _SqlRecorder()
+
+    await PostgresCliAnalyticsReader(recorder).get_session_detail_dispatches("s1")
+
+    sql = " ".join(recorder.statements[0].split())
+    assert (
+        "FROM hook_events h LEFT JOIN stopped st ON st.agent_id = h.agent_id AND h.agent_id <> '' "
+        "LEFT JOIN agent_usage au ON au.agent_id = h.agent_id AND h.agent_id <> '' "
+        "WHERE h.session_id = $1::text AND h.event_type = 'agent.subagent.start' AND h.skill_name <> '' "
+        "AND coalesce(h.attrs->>'platform', 'claude-code') = 'claude-code' "
+        "-- one row per fork: a re-sent or resumed start of the same agent_id is not another invocation "
+        "AND NOT EXISTS (SELECT 1 FROM hook_events h_p WHERE h_p.session_id = h.session_id "
+        "AND h_p.event_type = 'agent.subagent.start' AND h.agent_id <> '' AND h_p.agent_id = h.agent_id "
+        "AND (h_p.ts, h_p.ingest_seq) < (h.ts, h.ingest_seq)) "
+        "AND NOT EXISTS (SELECT 1 FROM dispatch_fork df WHERE df.agent_id = h.agent_id) "
+        "AND NOT EXISTS (SELECT 1 FROM t JOIN skill_fork sf ON sf.tool_use_id = t.tool_use_id "
+        "WHERE t.skill_name <> '' AND sf.agent_id = h.agent_id)" in sql
+    )
+    assert "WHERE d.session_id = $1::text AND d.event_type = 'agent.skill.dispatch' AND d.skill_name <> ''" in sql
+    # (b): same prompt_id, the earliest fork candidate at or after the dispatch with its skill name, else the
+    # earliest without one
+    assert (
+        "WHERE f.session_id = d.session_id AND f.agent_id <> '' AND (f.event_type = 'agent.subagent.start' "
+        "AND coalesce(f.attrs->>'platform', 'claude-code') = 'claude-code' "
+        "AND NOT EXISTS (SELECT 1 FROM hook_events f_p WHERE f_p.session_id = f.session_id "
+        "AND f_p.event_type = 'agent.subagent.start' AND f.agent_id <> '' AND f_p.agent_id = f.agent_id "
+        "AND (f_p.ts, f_p.ingest_seq) < (f.ts, f.ingest_seq)) "
+        "AND NOT EXISTS (SELECT 1 FROM hook_events f_s WHERE f_s.session_id = f.session_id" in sql
+    )
+    # a dispatch whose prompt_id holds another dispatch pairs with none
+    assert (
+        "AND f.prompt_id = d.prompt_id AND (f.skill_name = d.skill_name OR coalesce(f.skill_name, '') = '') "
+        "AND f.ts >= d.ts "
+        "AND coalesce(d.attrs->>'platform', 'claude-code') = 'claude-code' AND d.prompt_id <> '' "
+        "AND NOT EXISTS (SELECT 1 FROM hook_events d_o WHERE d_o.session_id = d.session_id "
+        "AND d_o.event_type = 'agent.skill.dispatch' "
+        "AND coalesce(d_o.attrs->>'platform', 'claude-code') = 'claude-code' "
+        "AND d_o.prompt_id = d.prompt_id AND (d_o.ts, d_o.ingest_seq) <> (d.ts, d.ingest_seq)) "
+        "ORDER BY coalesce(f.skill_name, '') = '', f.ts, f.ingest_seq LIMIT 1" in sql
+    )
+    assert "FROM dispatch_fork df LEFT JOIN stopped st ON st.agent_id = df.agent_id" in sql
+    assert "CASE WHEN df.agent_id IS NULL THEN 0 ELSE au.cost_usd END::float8" in sql
+
+
+@pytest.mark.asyncio
+async def test_an_agent_call_is_a_dispatch_only_with_run_evidence_from_an_hour_before_to_a_day_after_it():
+    """An Agent or Skill call is a dispatch only through the gate the rollups count it by."""
+    recorder = _SqlRecorder()
+
+    await PostgresCliAnalyticsReader(recorder).get_session_detail_dispatches("s1")
+
+    sql = " ".join(recorder.statements[0].split())
+    # coalesce: ingest stores an absent subagent_type as NULL, and NULL = '' would drop skill rows
+    assert (
+        f"AND (CASE WHEN coalesce(s.subagent_type, '') <> '' THEN {executed_tool_span('s', 'Agent')} "
+        f"ELSE {executed_tool_span('s', 'Skill')} END)"
+    ) in sql
+
+
 # ── get_session_detail_dispatches: exact agent attribution via the agentId chain ──
 
 
@@ -849,13 +963,28 @@ async def _dispatches_sql() -> str:
 
 @pytest.mark.asyncio
 async def test_agent_id_is_read_from_the_agent_tool_call_hook_event():
-    # The agentId a subagent reports back with is named in its own Agent tool call's hook event.
-    # Matched by identity (the tool_use_id), never by position or timing.
+    # The agentId a subagent reports back with is named in its own Agent tool call's hook event, a Skill call's
+    # fork in the Skill call's. Matched by identity (the tool_use_id), never by position or timing.
     sql = await _dispatches_sql()
+    agent_id = tool_response_agent_id("attrs->>'tool_response'")
 
-    assert "FROM hook_events" in sql and "event_type = 'agent.tool.end'" in sql
-    assert "substring(e.tool_response from 'agentId[^a-zA-Z0-9_-]+([a-zA-Z0-9_-]+)')" in sql
+    assert (
+        f"tool_use_id, ts, {agent_id} AS agent_id FROM hook_events WHERE session_id = $1::text "
+        "AND event_type = 'agent.tool.end' AND tool_name = 'Agent'" in sql
+    )
+    in_response = tool_response_agent_id("hook_events.attrs->>'tool_response'")
+    skill_agent_id = f"coalesce(nullif(hook_events.attrs->>'fork_agent_id', ''), {in_response})"
+    assert (
+        f"tool_use_id, {skill_agent_id} AS agent_id FROM hook_events WHERE session_id = $1::text "
+        "AND event_type = 'agent.tool.end' AND tool_name = 'Skill' AND tool_use_id <> '' "
+        "AND coalesce(attrs->>'platform', 'claude-code') = 'claude-code'" in sql
+    )
+    assert "agentId[^a-zA-Z0-9_-]+" not in sql
     assert "LEFT JOIN launched la ON la.tool_use_id = t.tool_use_id" in sql
+    assert (
+        "LEFT JOIN skill_fork sf ON sf.tool_use_id = t.tool_use_id AND t.tool_use_id <> '' AND t.skill_name <> ''"
+        in sql
+    )
 
 
 @pytest.mark.asyncio
@@ -866,44 +995,81 @@ async def test_agent_cost_is_summed_from_the_api_requests_of_its_llm_request_gro
 
     assert "span_kind = 4" in sql and "attrs ? 'agent_id'" in sql
     assert "l.span_id = g.parent_span_id" in sql
-    assert "LEFT JOIN agent_usage au ON au.agent_id = la.agent_id" in sql
+    assert "LEFT JOIN agent_usage au ON au.agent_id = coalesce(la.agent_id, sf.agent_id)" in sql
 
 
 @pytest.mark.asyncio
-async def test_agent_run_time_runs_from_its_call_start_to_its_subagent_stop_event():
-    # The run time of any agent, background or foreground, is its Agent tool call's start (agent.tool.start) to
-    # its own SubagentStop hook event, matched by agentId. The launch ack is only the fallback when the start is
-    # missing: it arrives seconds after the call. The tool-execution span closes at launch, so it is not used.
+async def test_agent_run_time_runs_from_its_subagent_start_to_its_subagent_stop_event():
+    # The run time of any agent, background or foreground, is its own SubagentStart hook event (found by the
+    # agentId of its call's result) to its own SubagentStop; without the start, the Agent tool call's start
+    # (agent.tool.start); the launch ack only when both are missing: it arrives seconds after the call. The
+    # tool-execution span closes at launch, so it is not used. A forked skill's run is its fork's.
     sql = await _dispatches_sql()
 
-    assert "coalesce(s.ts, e.ts) AS launch_ts" in sql
+    assert (
+        "SELECT agent_id, min(ts) AS ts FROM hook_events WHERE session_id = $1::text "
+        "AND event_type = 'agent.subagent.start' AND agent_id <> '' GROUP BY agent_id" in sql
+    )
+    assert "coalesce(f.ts, s.ts, e.ts) AS launch_ts" in sql
+    assert "LEFT JOIN forked f ON f.agent_id = e.agent_id" in sql
     assert "async_launched" not in sql
     assert "event_type = 'agent.subagent.stop'" in sql
-    assert "LEFT JOIN stopped st ON st.agent_id = la.agent_id" in sql
+    assert "LEFT JOIN stopped st ON st.agent_id = coalesce(la.agent_id, sf.agent_id)" in sql
+    assert (
+        "CASE WHEN sf.agent_id IS NOT NULL THEN CASE WHEN st.ended_at >= fs.ts "
+        "THEN (extract(epoch FROM st.ended_at - fs.ts) * 1000)::bigint END" in sql
+    )
     assert "subagent_duration_ms" in sql
 
 
 @pytest.mark.asyncio
 async def test_an_agent_dispatch_falls_back_to_its_parent_span_only_when_it_has_no_agent_id():
-    # The agent_usage join is preferred. Only a dispatch with no agentId at all falls back to its parent
-    # span's api_requests from the first dispatch on (the owner's decision), never divided between
-    # dispatches. A known agentId with no api_request group stays NULL: the parent span is the main
-    # thread, whose cost is not the subagent's (CR-001).
+    # The agent_usage join is preferred. Only a dispatch with no agentId at all falls back to its own
+    # windowed slice of the parent span's api_requests (see the sibling_window test below: an
+    # un-windowed slice would duplicate cost whenever two such dispatches share a parent). A known
+    # agentId with no api_request group, an agent's or a forked skill's, stays NULL: the parent span
+    # is the main thread, whose cost is not the subagent's.
     sql = await _dispatches_sql()
 
     assert "coalesce(au.cost_usd, pu.cost_usd)::float8 AS cost_usd" in sql
-    assert "LEFT JOIN parent_usage pu ON pu.span_id = t.parent_span_id AND la.agent_id IS NULL" in sql
-    assert "FILTER (WHERE after) AS cost_usd" in sql
-    assert "JOIN first_start m ON m.parent_span_id = l.span_id" in sql
+    assert (
+        "LEFT JOIN parent_usage pu ON pu.fallback_id = t.span_id AND la.agent_id IS NULL AND sf.agent_id IS NULL" in sql
+    )
     assert "DISTINCT ON (tool_use_id)" in sql
-    for removed in ("windows AS", "matches AS", "active_n", "dispatch_id", "sibling_count", "lead(ts)"):
+    # the full even-split/time-window mechanism (row_number dispatch_id,
+    # per-event active_n division, an unconditional sibling_count divisor) must still never come back —
+    # only the narrower, next-sibling-start-bounded split below, scoped to the no-agentId fallback alone
+    for removed in ("windows AS", "matches AS", "active_n", "sibling_count", "row_number() OVER"):
         assert removed not in sql
 
 
 @pytest.mark.asyncio
-async def test_agent_dispatch_starts_at_its_launch_and_skills_at_their_tool_span():
-    # An agent's bar starts when it launched (the Agent call's hook ack), the same instant its run time is
-    # measured from. Only agents take that anchor: a skill's Skill call also has a hook ack, which must not move it.
+async def test_the_no_agent_id_fallback_splits_cost_at_the_next_sibling_s_start():
+    """Two dispatches with no resolvable agentId sharing one parent must not each take the parent's
+    whole API-request sum: each reads only its own slice, from its own start to the next strictly later
+    sibling start under the same parent, unbounded for the last one, split equally among the dispatches
+    that start together (otherwise two such dispatches each show the same $1.00 against a $1.00 session)."""
+    sql = await _dispatches_sql()
+
+    assert "fallback_id, parent_span_id, start_ts" in sql
+    assert (
+        "min(start_ts) OVER (PARTITION BY parent_span_id ORDER BY start_ts "
+        "RANGE BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING EXCLUDE GROUP) AS next_start, "
+        "count(*) FILTER (WHERE takes_parent) OVER (PARTITION BY parent_span_id, start_ts) AS ties" in sql
+    )
+    # only the dispatches that take the parent's requests share a slice; a dispatch with an agentId takes its own
+    assert "(la.agent_id IS NULL AND sf.agent_id IS NULL) AS takes_parent" in sql
+    assert "sum(coalesce(l.cost_usd, 0))::numeric / w.ties AS cost_usd" in sql
+    assert "sum(coalesce(l.input_tokens, 0))::numeric / w.ties AS input_tokens" in sql
+    assert "FROM sibling_window w" in sql
+    assert "l.ts >= w.start_ts AND (w.next_start IS NULL OR l.ts < w.next_start)" in sql
+    assert "WHERE w.ties > 0 GROUP BY w.fallback_id, w.ties" in sql
+
+
+@pytest.mark.asyncio
+async def test_an_agent_row_starts_at_its_run_start_a_skill_row_at_its_tool_span_in_start_order():
+    # An agent's bar starts when its run began (launched: its SubagentStart, else its call start), the same
+    # instant its run time is measured from. Only agents take that anchor: a skill's bar stays at its tool span.
     sql = await _dispatches_sql()
 
     assert "coalesce(CASE WHEN t.subagent_type <> '' THEN la.launch_ts END, t.span_start) AS dispatch_start" in sql

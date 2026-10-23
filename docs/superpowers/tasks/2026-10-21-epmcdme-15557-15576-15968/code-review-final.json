@@ -1,0 +1,43 @@
+{
+  "decision": "approve",
+  "rationale": "All four lenses and the standards audit ran clean of blocking issues and every story/spec criterion passes (live PG 17/14 run is pending-stage-7), but the diff is oversized (+4415 lines, mostly the 2841-line live test file), so the lenses could not cover it in one pass and confidence is low. 2 deferred to code-review-deferred.md: default make test only asserts SQL text for the new gate/fork SQL (live tests opt-in, no CI pytest); denied Agent/Skill calls still count in tool_calls (formula unchanged). 22 dismissed after reading the source, e.g. per-name scalar undercount is bounded by the 30 s rollup refresh, NULL→0 agent_count is already coalesced by the handler, and pytest/_count_dispatch_subtypes imports exist.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [
+    { "kind": "story-ac", "item": "EPMCDME-15557: a denied Agent call creates no agent dispatch (or is not-started with no cost)", "status": "pass", "notes": "reader dispatches CTE t filters TOOL spans through executed_tool_span; test_live_denied_agent_call_is_absent_from_sql_and_api_and_takes_no_cost" },
+    { "kind": "story-ac", "item": "EPMCDME-15557: a denied call does not absorb the rest of the turn's cost", "status": "pass", "notes": "denied span never enters t, so no parent_usage slice; parent_usage split per sibling_window" },
+    { "kind": "story-ac", "item": "EPMCDME-15557: Agents (agent_count) and Agent subtypes exclude the denied call", "status": "pass", "notes": "tool_facts_daily agent_count and invocations_hourly kind 3 span arm gated by executed_tool_span(Agent)" },
+    { "kind": "story-ac", "item": "EPMCDME-15576: background agent duration spans SubagentStart to SubagentStop", "status": "pass", "notes": "launched takes coalesce(forked.ts, call start, ack); stopped = last SubagentStop less idle" },
+    { "kind": "story-ac", "item": "EPMCDME-15576: dispatch cost and tokens are the agent's own API requests, not the parent turn's", "status": "pass", "notes": "agent_usage joined by agent id; parent_usage only when both agent ids are NULL" },
+    { "kind": "story-ac", "item": "EPMCDME-15576: dispatches sharing a parent span do not each receive the same cost sum", "status": "pass", "notes": "sibling_window bounds each dispatch at the next sibling start, ties divided equally" },
+    { "kind": "story-ac", "item": "EPMCDME-15576 related: forked code-review skill run appears with its real run on the timeline", "status": "pass", "notes": "skill_fork / dispatch_fork CTEs give the initiator row the fork's run" },
+    { "kind": "story-ac", "item": "EPMCDME-15968: skills invoked through slash commands count as skills (skill_count=1 for /code-review)", "status": "pass", "notes": "_COUNTED_SKILL_HOOK counts agent.skill.dispatch on every pair" },
+    { "kind": "story-ac", "item": "EPMCDME-15968: slash-command skills appear in skills_invoked", "status": "pass", "notes": "skills_invoked built from kind-2 rows; kind 2 hook arm includes dispatches on span days" },
+    { "kind": "story-ac", "item": "EPMCDME-15968: forked skill attributed to scope_kind=skill / scope_name=<skill>", "status": "pass", "notes": "sent by codemie-code #642, already stored and rolled up; no backend change required" },
+    { "kind": "story-ac", "item": "EPMCDME-15968: one invocation counts once whether started by the Skill tool or a slash command", "status": "pass", "notes": "_NO_SKILL_SPAN_OF_CALL, fork_of_counted_call / fork_of_dispatch, first_subagent_start" },
+    { "kind": "story-ac", "item": "EPMCDME-15968: on the session timeline the invocation is one row with the fork's cost, tokens and duration", "status": "pass", "notes": "span row via skill_fork, dispatch row via dispatch_fork; orphan-fork arm excludes named forks" },
+    { "kind": "story-ac", "item": "EPMCDME-15968: a forked skill is not counted in agent_count, Agent subtypes or AGENTS", "status": "pass", "notes": "kind-3 and agent arms exclude _SKILL_TAG_READ, _IS_SKILL_FORK, _FORK_OF_DISPATCH; reader applies the same" },
+    { "kind": "story-ac", "item": "EPMCDME-15968 comment: backend counts agent.subagent.start and its skill_name even when the session has spans", "status": "pass", "notes": "skill-tagged first subagent start counted on every pair" },
+    { "kind": "story-ac", "item": "EPMCDME-15968 known limitation: case closes with no backend change once #642 sends fork_agent_id", "status": "pass", "notes": "skill_end_agent_id prefers attrs fork_agent_id over parsed agentId" },
+    { "kind": "spec", "item": "Agent and Skill calls count only with evidence they ran (TOOL_EXECUTION span or agent.tool.end/.error, -1 h to +1 day)", "status": "pass", "notes": "executed_tool_span / _ended_call in fork_attribution.py, applied in rollups and reader" },
+    { "kind": "spec", "item": "One gate fragment shared by reader and rollups in postgres/fork_attribution.py", "status": "pass", "notes": "reader.py and rollups.py import the shared fragments" },
+    { "kind": "spec", "item": "Gate and fork joins read Claude Code events only; other clients count as on main", "status": "pass", "notes": "span_name prefix claude_code. and is_claude_code (platform claude-code or absent)" },
+    { "kind": "spec", "item": "Agent run measured from subagent.start to subagent.stop; SendMessage continuation = sum of runs; counted by first start", "status": "pass", "notes": "forked/launched/idle/stopped CTEs; _IS_FIRST_SUBAGENT_START" },
+    { "kind": "spec", "item": "Dispatches without agentId split parent requests by start time; tied starts share equally", "status": "pass", "notes": "sibling_window next_start + ties" },
+    { "kind": "spec", "item": "Fork joins initiator by exact key: fork_agent_id, complete agentId, dispatch prompt_id + skill name, earliest unnamed fork", "status": "pass", "notes": "skill_end_agent_id, tool_response_agent_id, fork_of_dispatch, reader dispatch_fork LATERAL" },
+    { "kind": "spec", "item": "A slash command pairs with a fork only when it is the sole agent.skill.dispatch of its prompt_id", "status": "pass", "notes": "sole_dispatch_of_prompt in rollups and reader" },
+    { "kind": "spec", "item": "A fork whose Skill call is not counted stays an agent (without skill_name)", "status": "pass", "notes": "fork_of_counted_call requires a counted initiator" },
+    { "kind": "spec", "item": "Re-queuing of neighbouring, named-subagent and later-start days at ingest and in backfill", "status": "pass", "notes": "dirty.py marks; ingestor FORK_DAYS_SQL / LATER_START_DAYS_SQL; _MARK_RANGE arms" },
+    { "kind": "spec", "item": "Ingest takes a transaction-scoped advisory lock per session (sorted keys) before the extra lookups", "status": "pass", "notes": "_SESSION_LOCKS_SQL pg_advisory_xact_lock over sorted keys before the lookups" },
+    { "kind": "spec", "item": "No migration, no new setting, no new index, no API shape change", "status": "pass", "notes": "none added; dispatch row columns unchanged" },
+    { "kind": "spec", "item": "Live rollup tests share one advisory lock; gate tests skip without TEST_LOCAL_PG_URL; make test-cli-analytics-live on PG 17 and 14", "status": "pass", "notes": "live_rollup_lock.py, pytestmark skipif, Makefile target, quality-gates.md section" },
+    { "kind": "spec", "item": "Live PostgreSQL tests pass on postgres 17 and 14, none skipped", "status": "pending-stage-7", "notes": "tests and make target present; pass result is execution evidence" },
+    { "kind": "spec", "item": "Repository guides updated (cli-analytics-events.md, cli-analytics-storage.md), including backfill after deploy", "status": "pass", "notes": "both guides changed; storage guide documents the backfill range" }
+  ],
+  "standards_review": [
+    { "kind": "commit-format", "status": "pass", "notes": "both commit subjects in dfffcbe6f..HEAD use the documented EPMCDME-####: Description format (git-workflow.md Commit Message Format)" },
+    { "kind": "code-quality", "status": "pass", "notes": "new modules carry the Apache header and future annotations; added src functions fully typed; fork SQL extracted to its own module; untyped tests match existing convention; Ruff not run" },
+    { "kind": "security", "status": "pass", "notes": "no auth/secret/logging changes; new SQL interpolates only internal aliases and constants, session ids and ingest arrays are bound parameters; strict json.loads on stored attrs" }
+  ],
+  "findings": []
+}

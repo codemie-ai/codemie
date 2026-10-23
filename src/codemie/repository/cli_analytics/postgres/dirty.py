@@ -23,8 +23,8 @@ from __future__ import annotations
 from datetime import date, datetime, time, timedelta, timezone
 from enum import IntFlag
 
-from codemie.repository.cli_analytics.postgres.otlp import DecodedBatch, HookRow, LogRow, UsageRow
-from codemie.repository.cli_analytics.vocabulary import ROLLUP_METRICS, EventKind, SpanKind
+from codemie.repository.cli_analytics.postgres.otlp import DecodedBatch, HookRow, LogRow, MetricRow, SpanRow, UsageRow
+from codemie.repository.cli_analytics.vocabulary import ROLLUP_METRICS, SKILL_DISPATCH_EVENT, EventKind, SpanKind
 
 
 class RollupFamily(IntFlag):
@@ -44,11 +44,13 @@ _ROLLUP_METRICS = frozenset(ROLLUP_METRICS)
 # success is recomputed on its own day, so a span this close to midnight also marks the day before.
 _CROSS_MIDNIGHT = timedelta(hours=1)
 
+_TOOL_END = "agent.tool.end"
+
 # Hook types that mark SPAN_FACTS, on their own day and the day of `ts - 1 h`, like spans.
 _SPAN_HOOK_TYPES = frozenset(
     {
         "agent.tool.start",
-        "agent.tool.end",
+        _TOOL_END,
         "agent.tool.error",
         "agent.subagent.start",
         "agent.skill.dispatch",
@@ -98,6 +100,17 @@ def _mark_near_midnight(keys: DirtyKeys, day: date, ts: datetime, session_id: st
         keys[(neighbour, session_id)] = keys.get((neighbour, session_id), 0) | mask
 
 
+def _mark_next_day_near_midnight(keys: DirtyKeys, day: date, ts: datetime, session_id: str) -> None:
+    """Mark SPAN_FACTS on the day after `day` when `ts` is within 1 h before its midnight: the denied-call gate's
+    evidence of a call lies up to 1 h before the call, so it may sit on the day before the call's."""
+    following = _neighbour(day, 1)
+    if following is None:
+        return
+    to_midnight = datetime.combine(following, time.min, tzinfo=timezone.utc) - ts
+    if to_midnight <= _CROSS_MIDNIGHT:
+        _mark(keys, following, session_id, RollupFamily.SPAN_FACTS)
+
+
 def _mark_log(keys: DirtyKeys, log: LogRow) -> None:
     mask = 0
     if log.event_kind in _LOG_KINDS:
@@ -128,6 +141,35 @@ def _mark_usage(keys: DirtyKeys, row: UsageRow) -> None:
     _mark_near_midnight(keys, row.day, row.ts, row.session_id, int(mask), USAGE_REQUEST_REACH)
 
 
+def _is_skill_initiator(hook: HookRow) -> bool:
+    """A hook event a skill's fork is deduped against; the fork may start on the next day."""
+    return hook.event_type == SKILL_DISPATCH_EVENT or (
+        hook.event_type in ("agent.tool.start", _TOOL_END) and hook.tool_name == "Skill"
+    )
+
+
+def _is_finished_dispatch(hook: HookRow) -> bool:
+    """A finished Agent or Skill call of any client: the denied-call gate's evidence lies up to 1 day after the
+    call, and a fork's Skill initiator up to 1 day after the fork, so the call's or fork's day may be the
+    day before, at any time of day."""
+    return hook.event_type in (_TOOL_END, "agent.tool.error") and hook.tool_name in ("Agent", "Skill")
+
+
+def _mark_span_hook(keys: DirtyKeys, hook: HookRow) -> None:
+    _mark(keys, hook.day, hook.session_id, RollupFamily.SPAN_FACTS)
+    if hook.ts - datetime.combine(hook.day, time.min, tzinfo=timezone.utc) < _CROSS_MIDNIGHT:
+        previous = _neighbour(hook.day, -1)
+        if previous is not None:
+            _mark(keys, previous, hook.session_id, RollupFamily.SPAN_FACTS)
+    if _is_skill_initiator(hook):
+        _mark_near_midnight(keys, hook.day, hook.ts, hook.session_id, int(RollupFamily.SPAN_FACTS), _CROSS_MIDNIGHT)
+    if _is_finished_dispatch(hook):
+        previous = _neighbour(hook.day, -1)
+        if previous is not None:
+            _mark(keys, previous, hook.session_id, RollupFamily.SPAN_FACTS)
+        _mark_next_day_near_midnight(keys, hook.day, hook.ts, hook.session_id)
+
+
 def _mark_hook(keys: DirtyKeys, hook: HookRow) -> None:
     if not hook.session_id:
         return
@@ -137,13 +179,32 @@ def _mark_hook(keys: DirtyKeys, hook: HookRow) -> None:
         # the span's day, on either side of midnight within the reach.
         _mark_near_midnight(keys, hook.day, hook.ts, hook.session_id, int(RollupFamily.SPAN_FACTS), _CROSS_MIDNIGHT)
     elif hook.event_type in _SPAN_HOOK_TYPES:
-        _mark(keys, hook.day, hook.session_id, RollupFamily.SPAN_FACTS)
-        if hook.ts - datetime.combine(hook.day, time.min, tzinfo=timezone.utc) < _CROSS_MIDNIGHT:
-            previous = _neighbour(hook.day, -1)
-            if previous is not None:
-                _mark(keys, previous, hook.session_id, RollupFamily.SPAN_FACTS)
+        _mark_span_hook(keys, hook)
     elif hook.event_type == _SUBAGENT_USAGE:
         _mark(keys, hook.day, hook.session_id, RollupFamily.USAGE_FACTS)
+
+
+def _mark_span(keys: DirtyKeys, span: SpanRow) -> None:
+    if span.span_kind in _SPAN_KINDS:
+        _mark(keys, span.day, span.session_id, RollupFamily.SPAN_FACTS)
+        _mark(keys, (span.ts - _CROSS_MIDNIGHT).date(), span.session_id, RollupFamily.SPAN_FACTS)
+        if span.span_kind == SpanKind.TOOL_EXECUTION:
+            # the denied-call gate's evidence of a call up to 1 day before, at any time of day
+            previous = _neighbour(span.day, -1)
+            if previous is not None:
+                _mark(keys, previous, span.session_id, RollupFamily.SPAN_FACTS)
+            _mark_next_day_near_midnight(keys, span.day, span.ts, span.session_id)
+        if span.span_kind == SpanKind.TOOL and span.skill_name:
+            _mark_near_midnight(keys, span.day, span.ts, span.session_id, int(RollupFamily.SPAN_FACTS), _CROSS_MIDNIGHT)
+    if span.session_id:
+        _mark(keys, span.day, span.session_id, RollupFamily.SESSION)
+
+
+def _mark_metric(keys: DirtyKeys, point: MetricRow) -> None:
+    if point.metric_name in _ROLLUP_METRICS:
+        _mark(keys, point.day, point.session_id, RollupFamily.METRIC_FACTS)
+    if point.session_id:
+        _mark(keys, point.day, point.session_id, RollupFamily.SESSION)
 
 
 def dirty_keys(batch: DecodedBatch) -> DirtyKeys:
@@ -156,14 +217,7 @@ def dirty_keys(batch: DecodedBatch) -> DirtyKeys:
     for hook in batch.hooks:
         _mark_hook(keys, hook)
     for span in batch.spans:
-        if span.span_kind in _SPAN_KINDS:
-            _mark(keys, span.day, span.session_id, RollupFamily.SPAN_FACTS)
-            _mark(keys, (span.ts - _CROSS_MIDNIGHT).date(), span.session_id, RollupFamily.SPAN_FACTS)
-        if span.session_id:
-            _mark(keys, span.day, span.session_id, RollupFamily.SESSION)
+        _mark_span(keys, span)
     for point in batch.metrics:
-        if point.metric_name in _ROLLUP_METRICS:
-            _mark(keys, point.day, point.session_id, RollupFamily.METRIC_FACTS)
-        if point.session_id:
-            _mark(keys, point.day, point.session_id, RollupFamily.SESSION)
+        _mark_metric(keys, point)
     return keys

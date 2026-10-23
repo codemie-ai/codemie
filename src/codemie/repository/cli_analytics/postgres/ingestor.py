@@ -50,8 +50,14 @@ from codemie.repository.cli_analytics.ports import (
     TelemetryStorageUnavailableError,
     accepted_project,
 )
-from codemie.repository.cli_analytics.postgres.dirty import dirty_keys
+from codemie.repository.cli_analytics.postgres.dirty import RollupFamily, dirty_keys
 from codemie.repository.cli_analytics.postgres.engine import AnalyticsPgEngine
+from codemie.repository.cli_analytics.postgres.fork_attribution import (
+    FORK_DAYS_SQL,
+    LATER_START_DAYS_SQL,
+    keyed_subagent_starts,
+    named_subagent_ids,
+)
 from codemie.repository.cli_analytics.postgres.otlp import (
     JSON_MEDIA_TYPE,
     DecodedBatch,
@@ -166,6 +172,9 @@ SELECT d, h FROM unnest($1::date[], $2::int8[]) AS u(d, h)
 ORDER BY d, h
 ON CONFLICT DO NOTHING
 RETURNING day, h"""
+
+# Sorted, so two batches sharing sessions take their locks in one order and cannot deadlock.
+_SESSION_LOCKS_SQL = "SELECT pg_advisory_xact_lock(k) FROM unnest($1::bigint[]) AS k ORDER BY k"
 
 # `version` changes with every mark, which tells the refresher that a key it recomputed
 # was marked again meanwhile (see rollups.py).
@@ -393,7 +402,24 @@ class PostgresTelemetryIngestor:
                 rows = getattr(stored, attr)
                 if rows:
                     await conn.execute(_INSERT_SQL[table], *_columns(rows))
-            dirty = sorted(dirty_keys(stored).items())
+            marks = dirty_keys(stored)
+            forks = named_subagent_ids(stored.hooks)
+            starts = keyed_subagent_starts(stored.hooks)
+            if sessions := {s for s, _ in forks} | {s for s, _, _ in starts}:
+                # Of two batches of one session the second to reach this lock waits for the first to commit,
+                # so its lookups below see the other's rows and re-queue the day the other made stale.
+                lock_keys = sorted(self._engine.lock_key(f"ingest-session:{s}") for s in sessions)
+                await conn.execute(_SESSION_LOCKS_SQL, lock_keys)
+            if forks:
+                for row in await conn.fetch(FORK_DAYS_SQL, [s for s, _ in forks], [a for _, a in forks]):
+                    key = (row["day"], row["session_id"])
+                    marks[key] = marks.get(key, 0) | int(RollupFamily.SPAN_FACTS)
+            if starts:
+                columns = [s for s, _, _ in starts], [a for _, a, _ in starts], [t for _, _, t in starts]
+                for row in await conn.fetch(LATER_START_DAYS_SQL, *columns):
+                    key = (row["day"], row["session_id"])
+                    marks[key] = marks.get(key, 0) | int(RollupFamily.SPAN_FACTS)
+            dirty = sorted(marks.items())
             if dirty:
                 await conn.execute(
                     _DIRTY_SQL, [k[0] for k, _ in dirty], [k[1] for k, _ in dirty], [f for _, f in dirty]

@@ -59,6 +59,16 @@ from codemie.repository.cli_analytics.postgres.engine import CLIENT_TIMEOUT_MARG
 from codemie.repository.cli_analytics.postgres.maintenance import TODAY_UTC_SQL
 from codemie.repository.cli_analytics.postgres.otlp import MAX_KEY_BYTES, MAX_PATH_BYTES
 from codemie.repository.cli_analytics.postgres.session_derived import update_session_derived
+from codemie.repository.cli_analytics.postgres.fork_attribution import (
+    executed_tool_span,
+    executed_tool_start,
+    first_subagent_start,
+    fork_of_counted_call,
+    fork_of_dispatch,
+    is_claude_code,
+    skill_end_agent_id,
+    tool_response_agent_id,
+)
 from codemie.repository.cli_analytics.vocabulary import (
     ACTIVE_TIME_METRICS,
     AUTO_PROMPT_PREFIX,
@@ -992,11 +1002,6 @@ def _booleans(attrs: str) -> str:
     return attrs
 
 
-def _day_of(ts: str) -> tuple[str, str]:
-    return f"date_trunc('day', {ts}, 'UTC')", f"date_trunc('day', {ts}, 'UTC') + interval '1 day'"
-
-
-_DISPATCH_LO, _DISPATCH_HI = _day_of("d.ts")
 _ANY_SPAN_KIND = f"({_TOOL}, {_EXEC}, {_INTERACTION})"
 
 # Earliest and latest time over every raw record of the session (the fallback activity range).
@@ -1048,23 +1053,10 @@ _COUNTER_JOINS = f"""LEFT JOIN session_dims cur ON cur.session_id = k.session_id
                (SELECT jsonb_object_agg(x.name, x.calls)
                 FROM (SELECT i.name, sum(i.calls) AS calls FROM invocations_hourly i
                       WHERE i.session_id = k.session_id AND i.kind = 3 GROUP BY i.name) x) AS agents,
-               -- Skills: kind 2 of invocations_hourly, plus the dispatches of a skill with no span on a
-               -- day that has spans (a day without them already counts its dispatches in kind 2).
+               -- Skills: kind 2 of invocations_hourly, where each skill invocation is counted once.
                (SELECT jsonb_object_agg(x.name, x.calls)
-                FROM (SELECT y.name, sum(y.calls) AS calls FROM (
-                          SELECT i.name, i.calls::bigint AS calls FROM invocations_hourly i
-                          WHERE i.session_id = k.session_id AND i.kind = 2
-                          UNION ALL
-                          SELECT d.skill_name, 1 FROM hook_events d
-                          WHERE d.session_id = k.session_id AND d.event_type = {_literal(SKILL_DISPATCH_EVENT)}
-                            AND d.skill_name <> ''
-                            AND EXISTS (SELECT 1 FROM spans s WHERE s.session_id = k.session_id
-                                        AND s.span_kind IN {_ANY_SPAN_KIND}
-                                        AND s.ts >= {_DISPATCH_LO} AND s.ts < {_DISPATCH_HI})
-                            AND NOT EXISTS (SELECT 1 FROM spans s WHERE s.session_id = k.session_id
-                                            AND s.span_kind = {_TOOL} AND s.skill_name = d.skill_name
-                                            AND s.ts >= {_DISPATCH_LO} AND s.ts < {_DISPATCH_HI})
-                      ) y GROUP BY y.name) x) AS skills,
+                FROM (SELECT i.name, sum(i.calls) AS calls FROM invocations_hourly i
+                      WHERE i.session_id = k.session_id AND i.kind = 2 GROUP BY i.name) x) AS skills,
                -- OTel tool_result events; without them, the hook ends and errors.
                (SELECT CASE WHEN o.n > 0 THEN o.n
                             ELSE (SELECT count(*) FROM hook_events h WHERE h.session_id = k.session_id
@@ -1506,10 +1498,18 @@ _SUBAGENT_INVOCATIONS = f"""INSERT INTO subagent_invocations AS si ({", ".join(c
         {", ".join(_subagent_set(c) for c, _ in _SUBAGENT_VALUES)}"""
 
 
+def _hook_key(column: str, limit: int = _MAX_KEY_BYTES) -> str:
+    """A hook text that becomes part of a rollup key: non-empty and bounded like ingest's span keys
+    (never truncated, never an index row too large)."""
+    return f"{column} <> '' AND octet_length({column}) <= {limit}"
+
+
 # Counter fallback. A (day, session) pair whose UTC day has no span of kind TOOL,
 # TOOL_EXECUTION or INTERACTION takes its SPAN_FACTS rows from hook_events. The test is on the
-# kind, never on the span name. A pair has one source: each hook branch runs only where
-# its span branch finds nothing, so the two never share a key and are never added together.
+# kind, never on the span name. Tool calls, turns, files and agents have one source per pair:
+# their hook branches run only where the span branch finds nothing. Skills are read from both on
+# every pair, and each skill invocation is counted once: a hook event of a call that has a span, or
+# a fork whose initiator is counted, is left out.
 _NO_SPAN_OF_KIND = (
     f"NOT EXISTS (SELECT 1 FROM spans s WHERE s.session_id = k.session_id AND s.span_kind IN {_ANY_SPAN_KIND} "
     f"AND s.ts >= {_DAY_LO} AND s.ts < {_DAY_HI})"
@@ -1547,15 +1547,45 @@ _REAL_TURN = (
 )
 _IS_TOOL_START = f"h.event_type = {_literal(_TOOL_START)}"
 _IS_SUBAGENT_START = f"h.event_type = {_literal(_SUBAGENT_START)}"
+# A count of subagent starts takes each agent_id once: an agent continued by SendMessage starts again.
+_IS_FIRST_SUBAGENT_START = f"({_IS_SUBAGENT_START} AND {first_subagent_start('h')})"
 _IS_DISPATCH = f"h.event_type = {_literal(SKILL_DISPATCH_EVENT)}"
+# A skill invocation is counted by its initiator: a Skill TOOL span or agent.tool.start (the model), or
+# agent.skill.dispatch (a slash command). agent.tool.start fires alongside the TOOL span of the very
+# same call (same tool_use_id), so it is dropped when that span exists, within the window other
+# evidence in this file joins on (ts - 1 hour .. ts + 1 day); a same-named span of another call
+# never drops it. A forked skill also sends the agent.subagent.start of its fork; the fork is
+# dropped when it joins a counted initiator by an exact key, and counts on its own otherwise.
+# A start without a tool_use_id cannot be tied to its span: it counts only where the day has no span.
+_NO_SKILL_SPAN_OF_CALL = (
+    f"(CASE WHEN h.tool_use_id <> '' THEN NOT EXISTS (SELECT 1 FROM spans sk WHERE sk.session_id = h.session_id "
+    f"AND sk.span_kind = {_TOOL} AND sk.tool_use_id = h.tool_use_id AND sk.skill_name <> '' "
+    f"AND sk.ts >= h.ts - interval '1 hour' AND sk.ts < h.ts + interval '1 day') ELSE {_NO_SPAN_OF_KIND} END)"
+)
+
+
+# h is the fork of a slash command (the reader's timeline pairs by the same rule); a fork a Skill call names
+# never is, and one without a skill name is a skill, not an agent, once paired.
+_FORK_OF_DISPATCH = fork_of_dispatch("h")
+# A fork of a counted Skill call is a skill, never an agent, with or without a skill name; one named by an
+# uncounted call stays an agent, so the invocation still counts once.
+_IS_SKILL_FORK = fork_of_counted_call("h")
+# A skill-tagged agent.subagent.start is a skill only from Claude Code, the client whose initiator it joins.
+_SKILL_TAG_READ = f"(coalesce(h.skill_name, '') <> '' AND {is_claude_code('h')})"
+_SKILL_HOOK_NOT_DUPED = (
+    f"((NOT ({_IS_TOOL_START}) OR {_NO_SKILL_SPAN_OF_CALL}) "
+    f"AND (NOT ({_IS_SUBAGENT_START}) OR ({is_claude_code('h')} "
+    f"AND NOT ({_IS_SKILL_FORK} OR {_FORK_OF_DISPATCH}))))"
+)
+# A denied Skill call's agent.tool.start is no invocation.
+_SKILL_START_RAN = executed_tool_start("h", "Skill")
+# The hook events a skill invocation is counted by: tool_facts_daily's skill_count and kind 2 of invocations_hourly.
+_COUNTED_SKILL_HOOK = (
+    f"(({_IS_TOOL_START} AND {_SKILL_START_RAN}) OR {_IS_DISPATCH} OR {_IS_FIRST_SUBAGENT_START}) "
+    f"AND {_hook_key('h.skill_name')} AND {_SKILL_HOOK_NOT_DUPED}"
+)
 # file_path of agent.tool.start has no typed hook column: it is kept in attrs.
 _HOOK_FILE_PATH = _json_text("h.attrs", "file_path")
-
-
-def _hook_key(column: str, limit: int = _MAX_KEY_BYTES) -> str:
-    """A hook text that becomes part of a rollup key: non-empty and bounded like ingest's span keys
-    (never truncated, never an index row too large)."""
-    return f"{column} <> '' AND octet_length({column}) <= {limit}"
 
 
 RECOMPUTE: list[str] = [
@@ -1605,23 +1635,40 @@ RECOMPUTE: list[str] = [
     *_replace_daily(
         "tool_facts_daily",
         _SPANS,
+        # The span branch and the skill-only hook-fallback branch are not mutually exclusive on
+        # _NO_SPAN_OF_KIND: a session can have both a real TOOL span (branch 1)
+        # and a slash-command skill with no matching span (branch 3) on the same day. _replace_daily
+        # is a plain DELETE+INSERT with no merge across UNION ALL arms, so without this outer sum
+        # two rows for the same (day, session_id) would violate the primary key. Wrapping the three
+        # branches and summing collapses them to one row per key.
         f"""(day, session_id, tool_calls, agent_count, skill_count)
+        SELECT day, session_id, sum(tool_calls)::bigint, sum(agent_count)::bigint, sum(skill_count)::bigint
+        FROM (
         SELECT k.day, k.session_id,
-               count(*) FILTER (WHERE s.tool_name <> ''),
-               count(*) FILTER (WHERE s.subagent_type <> ''),
-               count(*) FILTER (WHERE s.skill_name <> '')
+               count(*) FILTER (WHERE s.tool_name <> '') AS tool_calls,
+               count(*) FILTER (WHERE s.subagent_type <> '' AND {executed_tool_span("s", "Agent")}) AS agent_count,
+               count(*) FILTER (WHERE s.skill_name <> '' AND {executed_tool_span("s", "Skill")}) AS skill_count
         {_in_day("s", "spans")}
         WHERE k.kinds & {_SPANS} <> 0 AND k.session_id <> '' AND s.span_kind = {_TOOL}
         GROUP BY 1, 2
         UNION ALL
         SELECT k.day, k.session_id,
                count(*) FILTER (WHERE {_IS_TOOL_START} AND h.tool_name <> ''),
-               count(*) FILTER (WHERE {_IS_SUBAGENT_START}),
-               count(*) FILTER (WHERE ({_IS_TOOL_START} OR {_IS_DISPATCH}) AND {_hook_key("h.skill_name")})
+               count(*) FILTER (WHERE {_IS_FIRST_SUBAGENT_START} AND NOT {_SKILL_TAG_READ}
+                                 AND NOT {_IS_SKILL_FORK} AND NOT {_FORK_OF_DISPATCH}
+                                 AND {_hook_key("h.agent_type")}),
+               0
         {_in_day("h", "hook_events")}
         WHERE k.kinds & {_SPANS} <> 0 AND k.session_id <> ''
-          AND h.event_type IN ({_literal(_TOOL_START)}, {_literal(_SUBAGENT_START)}, {_literal(SKILL_DISPATCH_EVENT)})
+          AND h.event_type IN ({_literal(_TOOL_START)}, {_literal(_SUBAGENT_START)})
           AND {_NO_SPAN_OF_KIND}
+        GROUP BY 1, 2
+        UNION ALL
+        SELECT k.day, k.session_id, 0, 0, count(*)
+        {_in_day("h", "hook_events")}
+        WHERE k.kinds & {_SPANS} <> 0 AND k.session_id <> '' AND {_COUNTED_SKILL_HOOK}
+        GROUP BY 1, 2
+        ) x
         GROUP BY 1, 2""",
     ),
     *_replace_daily(
@@ -1666,9 +1713,18 @@ RECOMPUTE: list[str] = [
     f"AND t.session_id = k.session_id AND t.hour >= {_DAY_LO} AND t.hour < {_DAY_HI}",
     # A tool call succeeded when its execution span (any session: the join is on
     # tool_use_id alone) says so; the execution starts after the tool span, within a day.
+    # The kind-2 span and hook-fallback arms are not mutually exclusive on one blanket gate: the hook
+    # arm's _SKILL_HOOK_NOT_DUPED drops only the agent.tool.start of a call its TOOL span already
+    # counts, and a fork joined to a counted initiator (a counted Skill call or a slash-command
+    # dispatch), not every session+day a same-named span exists in. A real Skill-tool span and an unrelated
+    # agent.skill.dispatch/skill-tagged agent.subagent.start of the same skill name can land in the
+    # same hour. Wrapping all seven arms and summing (as tool_facts_daily does) collapses them to one
+    # row per (hour, session_id, kind, name) instead of a UniqueViolationError on the primary key.
     f"""INSERT INTO invocations_hourly (hour, session_id, kind, name, calls, success)
-    SELECT date_trunc('hour', t.ts, 'UTC'), k.session_id, 1, t.tool_name, count(*),
-           count(*) FILTER (WHERE e.success = 'true')
+    SELECT hour, session_id, kind, name, sum(calls)::bigint, sum(success)::bigint
+    FROM (
+    SELECT date_trunc('hour', t.ts, 'UTC') AS hour, k.session_id, 1 AS kind, t.tool_name AS name, count(*) AS calls,
+           count(*) FILTER (WHERE e.success = 'true') AS success
     {_in_day("t", "spans")}
     LEFT JOIN LATERAL (
         SELECT max(x.success) AS success FROM spans x
@@ -1694,22 +1750,27 @@ RECOMPUTE: list[str] = [
     SELECT date_trunc('hour', t.ts, 'UTC'), k.session_id, 2, t.skill_name, count(*), 0
     {_in_day("t", "spans")}
     WHERE k.kinds & {_SPANS} <> 0 AND t.span_kind = {_TOOL} AND t.skill_name <> ''
+      AND {executed_tool_span("t", "Skill")}
     GROUP BY 1, 2, 4
     UNION ALL
+    -- The hook initiators, and a skill-tagged fork with no counted initiator, as tool_facts_daily's skill_count.
     SELECT date_trunc('hour', h.ts, 'UTC'), k.session_id, 2, h.skill_name, count(*), 0
     {_in_day("h", "hook_events")}
-    WHERE k.kinds & {_SPANS} <> 0 AND ({_IS_TOOL_START} OR {_IS_DISPATCH}) AND {_hook_key("h.skill_name")}
-      AND {_NO_SPAN_OF_KIND}
+    WHERE k.kinds & {_SPANS} <> 0 AND {_COUNTED_SKILL_HOOK}
     GROUP BY 1, 2, 4
     UNION ALL
     SELECT date_trunc('hour', t.ts, 'UTC'), k.session_id, 3, t.subagent_type, count(*), 0
     {_in_day("t", "spans")}
     WHERE k.kinds & {_SPANS} <> 0 AND t.span_kind = {_TOOL} AND t.subagent_type <> ''
+      AND {executed_tool_span("t", "Agent")}
     GROUP BY 1, 2, 4
     UNION ALL
+    -- A fork of a skill (skill-tagged, started by a Skill call or paired with a slash command) is a skill,
+    -- never also an agent here.
     SELECT date_trunc('hour', h.ts, 'UTC'), k.session_id, 3, h.agent_type, count(*), 0
     {_in_day("h", "hook_events")}
-    WHERE k.kinds & {_SPANS} <> 0 AND {_IS_SUBAGENT_START} AND {_hook_key("h.agent_type")} AND {_NO_SPAN_OF_KIND}
+    WHERE k.kinds & {_SPANS} <> 0 AND {_IS_FIRST_SUBAGENT_START} AND NOT {_SKILL_TAG_READ}
+      AND NOT {_IS_SKILL_FORK} AND NOT {_FORK_OF_DISPATCH} AND {_hook_key("h.agent_type")} AND {_NO_SPAN_OF_KIND}
     GROUP BY 1, 2, 4
     UNION ALL
     SELECT date_trunc('hour', l.ts, 'UTC'), k.session_id, 4, l.command_name, count(*), 0
@@ -1719,7 +1780,9 @@ RECOMPUTE: list[str] = [
       AND l.event_kind = {int(EventKind.USER_PROMPT)}
       AND l.command_name <> ''
       AND l.command_name <> ALL({_text_array(BUILTIN_COMMAND_NAMES)})
-    GROUP BY 1, 2, 4""",
+    GROUP BY 1, 2, 4
+    ) x
+    GROUP BY 1, 2, 3, 4""",
     # Per session, from all of the session's rows (not only the claimed day). Skills accumulate,
     # so a skill whose raw rows passed retention is kept.
     f"""INSERT INTO session_skills (session_id, skill_name, updated_at)
@@ -1838,6 +1901,24 @@ def _neighbour_day(reach: str) -> str:
     )
 
 
+# A skill initiator within 1 h of midnight also marks the next day, where its fork may start, as at ingest.
+_SKILL_INITIATOR_HOOK = (
+    f"(event_type = {_literal(SKILL_DISPATCH_EVENT)} "
+    f"OR (event_type IN ({_literal(_TOOL_START)}, {_literal(_TOOL_END)}) AND tool_name = 'Skill'))"
+)
+# A finished Agent or Skill call of any client, and a TOOL_EXECUTION span, mark the day before at any time of
+# day, as at ingest: the denied-call gate's evidence lies up to 1 day after the call, a fork's Skill initiator up
+# to 1 day after the fork.
+_FINISHED_DISPATCH_HOOK = (
+    f"(event_type IN ({_literal(_TOOL_END)}, {_literal(_TOOL_ERROR)}) AND tool_name IN ('Agent', 'Skill'))"
+)
+# A TOOL_EXECUTION span and a finished Agent or Skill call within 1 h before midnight mark the next day too, as at
+# ingest: the denied-call gate's evidence lies up to 1 h before the call.
+_BEFORE_MIDNIGHT = f"(({_DAY_OF_TS} + 1)::timestamp AT TIME ZONE 'UTC') - ts <= interval '1 hour'"
+# An event on the range's days or the day after marks the day before it: the range's days are all marked.
+_RANGE_AND_NEXT_DAY = (
+    "ts >= ($1::date::timestamp AT TIME ZONE 'UTC') AND ts < (($2::date + 2)::timestamp AT TIME ZONE 'UTC')"
+)
 # An api_request marks the neighbouring day within 1 h with a request_id (the identifier tier pairs across
 # midnight that far), within 5 s without one (the fingerprint window), as at ingest.
 _API_REQUEST_REACH = f"CASE WHEN request_id <> '' THEN {_GROUP_REACH} ELSE {_MATCH} END"
@@ -1846,6 +1927,12 @@ _USAGE_ROW_BITS = f"{_LOG} | {_USAGE} | {_SESSION_IF_ANY}"
 _TURN_LOG_KINDS_SQL = f"({', '.join(str(int(k)) for k in sorted(_TURN_LOG_KINDS))})"
 # The neighbouring days are queued with the bits of the row's own day, and no day older than $4
 # (today - raw retention; NULL without raw retention), like the days of the range itself.
+# The subagent a Skill or Agent agent.tool.end names, as ingest reads it: its day is queued again wherever it lies.
+_E_TOOL_RESPONSE = "e.attrs->>'tool_response'"
+_NAMED_SUBAGENT_ID = (
+    f"CASE WHEN e.tool_name = 'Skill' THEN {skill_end_agent_id('e')} "
+    f"ELSE {tool_response_agent_id(_E_TOOL_RESPONSE)} END"
+)
 _MARK_RANGE = f"""
 INSERT INTO rollup_dirty AS r (day, session_id, kinds)
 SELECT day, session_id, bit_or(kinds) & $3 FROM (
@@ -1877,6 +1964,27 @@ SELECT day, session_id, bit_or(kinds) & $3 FROM (
     SELECT ((ts - interval '1 hour') AT TIME ZONE 'UTC')::date, session_id, {_SPANS} FROM hook_events
     WHERE {_RANGE_SHIFTED} AND session_id <> '' AND event_type IN ({_FALLBACK_HOOKS})
     UNION ALL
+    SELECT {_neighbour_day("interval '1 hour'")}, session_id, {_SPANS} FROM hook_events
+    WHERE {_RANGE} AND session_id <> '' AND {_SKILL_INITIATOR_HOOK}
+    UNION ALL
+    SELECT {_DAY_OF_TS} - 1, session_id, {_SPANS} FROM hook_events
+    WHERE {_RANGE_AND_NEXT_DAY} AND session_id <> '' AND {_FINISHED_DISPATCH_HOOK}
+    UNION ALL
+    SELECT (f.ts AT TIME ZONE 'UTC')::date, f.session_id, {_SPANS}
+    FROM hook_events e JOIN hook_events f ON f.session_id = e.session_id
+        AND f.event_type = {_literal(_SUBAGENT_START)} AND f.agent_id = {_NAMED_SUBAGENT_ID}
+    WHERE {_RANGE.replace("ts ", "e.ts ")} AND e.session_id <> '' AND e.event_type = {_literal(_TOOL_END)}
+      AND e.tool_name IN ('Skill', 'Agent')
+    UNION ALL
+    SELECT (f.ts AT TIME ZONE 'UTC')::date, f.session_id, {_SPANS}
+    FROM hook_events e JOIN hook_events f ON f.session_id = e.session_id
+        AND f.event_type = {_literal(_SUBAGENT_START)} AND f.agent_id = e.agent_id AND f.ts > e.ts
+    WHERE {_RANGE.replace("ts ", "e.ts ")} AND e.session_id <> '' AND e.event_type = {_literal(_SUBAGENT_START)}
+      AND e.agent_id <> ''
+    UNION ALL
+    SELECT {_DAY_OF_TS} + 1, session_id, {_SPANS} FROM hook_events
+    WHERE {_RANGE} AND session_id <> '' AND {_FINISHED_DISPATCH_HOOK} AND {_BEFORE_MIDNIGHT}
+    UNION ALL
     SELECT {_neighbour_day(_TURN_WINDOW)}, session_id, {_SPANS} FROM hook_events
     WHERE {_RANGE} AND session_id <> '' AND event_type = {_literal(_PROMPT_SUBMIT)}
     UNION ALL
@@ -1886,10 +1994,19 @@ SELECT day, session_id, bit_or(kinds) & $3 FROM (
     SELECT ((ts - interval '1 hour') AT TIME ZONE 'UTC')::date, session_id, {_SPANS} FROM spans
     WHERE {_RANGE_SHIFTED} AND span_kind IN {_ANY_SPAN_KIND}
     UNION ALL
+    SELECT {_DAY_OF_TS} - 1, session_id, {_SPANS} FROM spans
+    WHERE {_RANGE_AND_NEXT_DAY} AND span_kind = {_EXEC}
+    UNION ALL
+    SELECT {_DAY_OF_TS} + 1, session_id, {_SPANS} FROM spans
+    WHERE {_RANGE} AND span_kind = {_EXEC} AND {_BEFORE_MIDNIGHT}
+    UNION ALL
+    SELECT {_neighbour_day("interval '1 hour'")}, session_id, {_SPANS} FROM spans
+    WHERE {_RANGE} AND span_kind = {_TOOL} AND skill_name <> ''
+    UNION ALL
     SELECT {_DAY_OF_TS}, session_id, {_METRICS} | {_SESSION_IF_ANY} FROM metric_points
     WHERE {_RANGE}
 ) raw
-WHERE raw.day IS NOT NULL AND ($4::date IS NULL OR raw.day >= $4::date)
+WHERE raw.day BETWEEN '0001-01-01' AND '9999-12-31' AND ($4::date IS NULL OR raw.day >= $4::date)
 GROUP BY 1, 2
 HAVING bit_or(kinds) & $3 <> 0
 ORDER BY 1, 2
@@ -2067,14 +2184,19 @@ class RollupRefresher:
             today = self._clock() if self._clock else await conn.fetchval(TODAY_UTC_SQL)
             earliest = today - timedelta(days=self._raw_retention_days)
             day = max(day, earliest)
-        while day <= last_day:
+        # stepping by offset: a step past the range's last day overflows on 9999-12-31
+        for offset in range((last_day - day).days + 1):
             async with conn.transaction():
                 await conn.execute(_REFRESH_STATEMENT_TIMEOUT, timeout=_REFRESH_CLIENT_TIMEOUT_S)
                 status = await conn.execute(
-                    _MARK_RANGE, day, day, int(mask), earliest, timeout=_REFRESH_CLIENT_TIMEOUT_S
+                    _MARK_RANGE,
+                    day + timedelta(days=offset),
+                    day + timedelta(days=offset),
+                    int(mask),
+                    earliest,
+                    timeout=_REFRESH_CLIENT_TIMEOUT_S,
                 )
             marked += int(status.rsplit(" ", 1)[-1])
-            day += timedelta(days=1)
         return marked
 
     async def backlog(self, conn: asyncpg.Connection | None = None) -> tuple[int, float | None]:

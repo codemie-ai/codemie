@@ -39,6 +39,7 @@ from codemie.repository.cli_analytics.postgres.maintenance import quote_ident
 from codemie.repository.cli_analytics.postgres.rollups import RollupRefresher
 from codemie.repository.cli_analytics.postgres.runtime import PostgresAnalyticsRuntime
 from codemie.repository.cli_analytics.postgres.settings import AnalyticsPgSettings
+from tests.codemie.repository.cli_analytics.support.live_rollup_lock import live_rollup_lock
 
 # pytest.ini forces PG_URL to a dead port for the whole suite; TEST_LOCAL_PG_URL points this file at
 # a real local analytics Postgres (default: the docker-compose `postgres` service's credentials).
@@ -261,15 +262,17 @@ async def _live(*sessions: str) -> AsyncIterator[_Live]:
         finally:
             await lock.close()  # closing the session releases its advisory lock
         await _assert_ingest_target(engine)
-        try:
-            yield _Live(engine, PostgresTelemetryIngestor(engine))
-        finally:
-            async with engine.acquire() as conn:
-                for table in await conn.fetch(_SESSION_TABLES):
-                    await conn.execute(
-                        f"DELETE FROM {quote_ident(table['relname'])} WHERE session_id = ANY($1::text[])",
-                        list(sessions),
-                    )
+        # The recompute shares the one database with the other live rollup tests.
+        async with live_rollup_lock(engine):
+            try:
+                yield _Live(engine, PostgresTelemetryIngestor(engine))
+            finally:
+                async with engine.acquire() as conn:
+                    for table in await conn.fetch(_SESSION_TABLES):
+                        await conn.execute(
+                            f"DELETE FROM {quote_ident(table['relname'])} WHERE session_id = ANY($1::text[])",
+                            list(sessions),
+                        )
     finally:
         await engine.close()
 

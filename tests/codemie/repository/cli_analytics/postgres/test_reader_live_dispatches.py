@@ -60,11 +60,15 @@ _STOP_EVENT_SQL = """
     INSERT INTO hook_events (ts, session_id, event_type, agent_id, attrs)
     VALUES ($1, $2, 'agent.subagent.stop', $3, $4)
 """
+_START_EVENT_SQL = """
+    INSERT INTO hook_events (ts, session_id, event_type, agent_id, agent_type)
+    VALUES ($1, $2, 'agent.subagent.start', $3, 'Explore')
+"""
 
 
 async def _get_engine() -> AnalyticsPgEngine | None:
     try:
-        settings = AnalyticsPgSettings.from_config(Config(PG_URL=_LOCAL_PG_URL))
+        settings = AnalyticsPgSettings.from_config(Config(PG_URL=_LOCAL_PG_URL, CLI_ANALYTICS_PG_URL=_LOCAL_PG_URL))
         engine = AnalyticsPgEngine(settings)
         async with engine.acquire() as conn:
             await conn.fetchval("SELECT 1")
@@ -358,10 +362,11 @@ async def test_a_dispatch_with_no_agent_id_falls_back_to_its_parent_span_from_it
 
 
 @pytest.mark.asyncio
-async def test_subagent_run_time_runs_from_its_call_start_to_its_stop_event_and_is_null_without_one():
-    """A background subagent's run time is its SubagentStop hook event minus its Agent call's start
-    (agent.tool.start), not the launch ack that arrives seconds later, matched by agentId. Its bar starts at
-    that call start too. A subagent with no stop event has no run time (null)."""
+async def test_subagent_run_runs_from_its_subagent_start_else_its_call_start_to_its_stop_or_is_null():
+    """A background subagent's run time is its SubagentStop hook event minus its SubagentStart, both matched
+    by agentId; without a SubagentStart, minus its Agent call's start (agent.tool.start), never the launch ack
+    that arrives seconds later. Its bar starts at that same instant. A subagent with no stop event has no run
+    time (null)."""
     engine = await _get_engine()
     session_id = "test-epmcdme-15512-live-stop"
     now = datetime.now(timezone.utc)
@@ -386,14 +391,28 @@ async def test_subagent_run_time_runs_from_its_call_start_to_its_stop_event_and_
             subagent_span_id=b"sub-running",
             api_requests=[(0.05, 300, 400)],
         )
+        await _seed_agent(
+            engine,
+            session_id=session_id,
+            ts=start,
+            tool_use_id="tu-started",
+            agent_id="agentstarted",
+            subagent_span_id=b"sub-started",
+            api_requests=[(0.07, 100, 100)],
+        )
         async with engine.acquire() as conn:
             await conn.execute(_STOP_EVENT_SQL, start + timedelta(seconds=30), session_id, "agentstopped", "{}")
+            # SubagentStart 300 ms after its PreToolUse
+            await conn.execute(_START_EVENT_SQL, start + timedelta(milliseconds=300), session_id, "agentstarted")
+            await conn.execute(_STOP_EVENT_SQL, start + timedelta(seconds=30), session_id, "agentstarted", "{}")
 
         rows = await PostgresCliAnalyticsReader(engine).get_session_detail_dispatches(session_id)
         by_cost = {round(r["cost_usd"], 2): r for r in rows}
         assert by_cost[0.11]["subagent_duration_ms"] == 30_000
         assert by_cost[0.11]["dispatch_start"] == start.replace(tzinfo=None)  # the reader returns naive UTC
         assert by_cost[0.05]["subagent_duration_ms"] is None
+        assert by_cost[0.07]["subagent_duration_ms"] == 29_700
+        assert by_cost[0.07]["dispatch_start"] == (start + timedelta(milliseconds=300)).replace(tzinfo=None)
     finally:
         await _cleanup(engine, session_id)
         await engine.close()

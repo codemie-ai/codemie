@@ -17,7 +17,12 @@ from datetime import date, datetime, timedelta, timezone
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
-from codemie.service.analytics.handlers.cli_analytics_handler import LocalAnalyticsHandler, _iso, _pct
+from codemie.service.analytics.handlers.cli_analytics_handler import (
+    LocalAnalyticsHandler,
+    _count_dispatch_subtypes,
+    _iso,
+    _pct,
+)
 from codemie.service.analytics.handlers.coding_agent_pricing import cache_read_cost
 
 
@@ -539,9 +544,27 @@ def _dispatch_row(
 def test_skill_dispatch_uses_real_duration_ms():
     """Skill duration_ms must come from real_duration_ms (interaction end minus skill start), not tool execution time."""
     rows = [_dispatch_row(skill_name="codemie:codemie-analytics", duration_ms=9, real_duration_ms=152845)]
-    result = LocalAnalyticsHandler._build_dispatches(rows, datetime(2026, 1, 1, 0, 0, 0), 160000, 1.0)
+    result = LocalAnalyticsHandler._build_dispatches(rows, datetime(2026, 1, 1, 0, 0, 0), 200000, 1.0)
     skill = next(d for d in result if d["kind"] == "skill")
     assert skill["duration_ms"] == 152845
+
+
+def test_forked_skill_dispatch_run_is_clamped_to_the_session_and_null_while_running():
+    """A forked skill's row takes its fork's run: cut at the session end, and unknown (None) while it has not stopped."""
+    rows = [
+        _dispatch_row(skill_name="probe-fork", real_duration_ms=152845),
+        _dispatch_row(skill_name="probe-skill", real_duration_ms=None),
+    ]
+    result = LocalAnalyticsHandler._build_dispatches(rows, datetime(2026, 1, 1, 0, 0, 0), 160000, 1.0)
+    durations = {d["label"]: d["duration_ms"] for d in result if d["kind"] == "skill"}
+    assert durations == {"skill · probe-fork": 150000, "skill · probe-skill": None}
+
+
+def test_a_negative_skill_run_is_unknown_not_a_bar():
+    """A skill row whose run cannot be measured (a negative value) shows no duration instead of a bar backwards."""
+    rows = [_dispatch_row(skill_name="probe-skill", real_duration_ms=-1792564820149)]
+    result = LocalAnalyticsHandler._build_dispatches(rows, datetime(2026, 1, 1, 0, 0, 0), 160000, 1.0)
+    assert next(d for d in result if d["kind"] == "skill")["duration_ms"] is None
 
 
 def test_agent_dispatch_uses_subagent_run_duration_ms():
@@ -564,9 +587,53 @@ def test_skill_dispatch_ignores_subagent_duration_ms():
     rows = [
         _dispatch_row(skill_name="codemie:codemie-analytics", real_duration_ms=152845) | {"subagent_duration_ms": 1}
     ]
-    result = LocalAnalyticsHandler._build_dispatches(rows, datetime(2026, 1, 1, 0, 0, 0), 160000, 1.0)
+    result = LocalAnalyticsHandler._build_dispatches(rows, datetime(2026, 1, 1, 0, 0, 0), 200000, 1.0)
     skill = next(d for d in result if d["kind"] == "skill")
     assert skill["duration_ms"] == 152845
+
+
+def test_forked_skill_command_dispatch_uses_real_duration_ms():
+    """A forked skill (skill-tagged agent.subagent.start) is a "command"-kind row whose real_duration_ms
+    mirrors subagent_duration_ms at the SQL layer; the handler reads
+    real_duration_ms for this kind unchanged, so duration_ms must reflect the forked skill's own run
+    time, not render as the free, instant row a main-thread slash command legitimately is."""
+    rows = [
+        _dispatch_row(skill_name="code-review", duration_ms=0, real_duration_ms=180_000)
+        | {"is_slash_command": True, "subagent_duration_ms": 180_000}
+    ]
+    result = LocalAnalyticsHandler._build_dispatches(rows, datetime(2026, 1, 1, 0, 0, 0), 300_000, 3.5)
+    command = next(d for d in result if d["kind"] == "command")
+    assert command["duration_ms"] == 180_000
+
+
+def test_main_thread_slash_command_dispatch_stays_instant():
+    """A main-thread slash command (no fork, no agentId) has real_duration_ms 0 and no
+    subagent_duration_ms at the SQL layer: it must still render as the free, instant row it is."""
+    rows = [
+        _dispatch_row(skill_name="code-review", duration_ms=0, real_duration_ms=0)
+        | {"is_slash_command": True, "subagent_duration_ms": None}
+    ]
+    result = LocalAnalyticsHandler._build_dispatches(rows, datetime(2026, 1, 1, 0, 0, 0), 300_000, 0.0)
+    command = next(d for d in result if d["kind"] == "command")
+    assert command["duration_ms"] == 0
+
+
+@pytest.mark.parametrize("real_duration_ms", [0, 4000])
+def test_a_slash_command_at_the_session_end_keeps_its_duration(real_duration_ms):
+    """A command dispatched at the session's last event cannot be clamped: it keeps its known duration, 0 included."""
+    rows = [
+        _dispatch_row(skill_name="code-review", duration_ms=0, real_duration_ms=real_duration_ms, offset_s=300)
+        | {"is_slash_command": True}
+    ]
+    result = LocalAnalyticsHandler._build_dispatches(rows, datetime(2026, 1, 1, 0, 0, 0), 300_000, 0.0)
+    command = next(d for d in result if d["kind"] == "command")
+    assert command["duration_ms"] == real_duration_ms
+
+
+def test_a_skill_in_a_zero_length_session_keeps_its_duration():
+    rows = [_dispatch_row(skill_name="probe-skill", real_duration_ms=2500, offset_s=0)]
+    result = LocalAnalyticsHandler._build_dispatches(rows, datetime(2026, 1, 1, 0, 0, 0), 0, 0.0)
+    assert next(d for d in result if d["kind"] == "skill")["duration_ms"] == 2500
 
 
 def test_dead_sessions_counts_a_session_with_no_successful_file_change_as_dead():
@@ -610,6 +677,16 @@ def test_dead_sessions_counts_a_read_only_session_as_dead():
     dead, wasted = LocalAnalyticsHandler._dead_sessions(cost_facts, files_by_session)
     assert dead == 1
     assert wasted == 0.0426152
+
+
+def test_subtypes_count_only_the_agent_rows_the_reader_returns():
+    """Denied Agent calls never reach the handler: the reader gates them.
+    Subtype counts come from the rows the handler is given, so only executed Agent rows count."""
+    rows = [
+        _dispatch_row(subagent_type="Explore", duration_ms=53235, real_duration_ms=130460, offset_s=25),
+        _dispatch_row(subagent_type="Plan", duration_ms=1000, real_duration_ms=2000, offset_s=40),
+    ]
+    assert _count_dispatch_subtypes(rows) == {"Explore": 1, "Plan": 1}
 
 
 def _users_repo(user_rows):

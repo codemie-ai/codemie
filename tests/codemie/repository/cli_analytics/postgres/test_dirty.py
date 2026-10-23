@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timezone
 
 import pytest
 
@@ -107,6 +107,7 @@ def test_tool_execution_and_interaction_spans_invalidate_span_facts():
 
     assert dirty_keys(batch) == {
         (D, "s1"): 36,  # SPAN_FACTS 4 + SESSION 32
+        (PREVIOUS, "s1"): 4,  # the execution span's gate evidence may be of a call the day before: SPAN_FACTS only
         (D, "s9"): 32,  # an llm_request span is no span fact; the session id gives SESSION 32
     }
 
@@ -119,6 +120,15 @@ def test_spans_in_the_first_hour_also_invalidate_the_previous_day():
         (D, "s1"): 36,  # SPAN_FACTS 4 + SESSION 32
         (PREVIOUS, "s1"): 4,  # SPAN_FACTS only
     }
+
+
+@pytest.mark.parametrize(("ts", "next_day"), [(time(23, 0), True), (time(22, 59, 59), False)], ids=["1h", "beyond"])
+def test_an_execution_span_within_an_hour_before_midnight_also_marks_the_next_day(ts: time, next_day: bool) -> None:
+    # the gate's evidence of a call lies up to 1 h before the call, which may then be on the next day
+    batch = _spans(_span("claude_code.tool.execution", datetime.combine(D, ts, tzinfo=timezone.utc)))
+
+    expected = {(D, "s1"): 36, (PREVIOUS, "s1"): 4}  # SPAN_FACTS 4 + SESSION 32; SPAN_FACTS only
+    assert dirty_keys(batch) == (expected | {(NEXT, "s1"): 4} if next_day else expected)
 
 
 def test_only_rollup_metrics_invalidate_metric_facts():
@@ -364,6 +374,106 @@ def test_a_span_hook_at_the_edge_of_the_calendar_marks_only_its_own_day(event_ty
     batch = _hooks(hb.minimal(event_type, "s1", ts.isoformat()))
 
     assert dirty_keys(batch) == {(ts.date(), "s1"): 38}  # DIMENSIONS 2 + SPAN_FACTS 4 + SESSION 32
+
+
+def test_execution_evidence_on_the_last_calendar_day_marks_no_day_after_it() -> None:
+    # 23:30 is within the 1 h before midnight, but there is no day after 9999-12-31; nothing raises.
+    # OTLP nanoseconds end in 2554, so the span row is redated after decoding.
+    (decoded,) = _spans(_span("claude_code.tool.execution", NOON)).spans
+    span = DecodedBatch(spans=[decoded._replace(day=LAST_HOUR.date(), h=23, ts=LAST_HOUR)])
+    agent_end = _hooks({**hb.minimal("agent.tool.end", "s2", LAST_HOUR.isoformat()), "tool_name": "Agent"})
+    batch = DecodedBatch(spans=span.spans, hooks=agent_end.hooks)
+
+    last, before = date(9999, 12, 31), date(9999, 12, 30)
+    assert dirty_keys(batch) == {
+        (last, "s1"): 36,  # SPAN_FACTS 4 + SESSION 32
+        (before, "s1"): 4,  # SPAN_FACTS: the gate's call may lie up to 1 day before its execution span
+        (last, "s2"): 38,  # DIMENSIONS 2 + SPAN_FACTS 4 + SESSION 32
+        (before, "s2"): 4,  # SPAN_FACTS: a finished Agent call marks the day before
+    }
+
+
+def test_a_slash_command_dispatch_30_minutes_before_midnight_also_marks_the_next_day() -> None:
+    # its fork may start after midnight, and is deduped against it on the next day
+    batch = _hooks(hb.minimal("agent.skill.dispatch", "s1", _at(23, 30, 0).isoformat()))
+
+    assert dirty_keys(batch) == {(D, "s1"): 38, (NEXT, "s1"): 4}  # 2 + 4 + 32; SPAN_FACTS only
+
+
+def test_a_skill_tool_end_1_hour_before_midnight_also_marks_the_next_day() -> None:
+    # 24:00:00 - 23:00:00 = 1 h, the reach itself (bound inclusive); a finished Skill call also marks the day before
+    batch = _hooks({**hb.minimal("agent.tool.end", "s1", _at(23, 0, 0).isoformat()), "tool_name": "Skill"})
+
+    assert dirty_keys(batch) == {(PREVIOUS, "s1"): 4, (D, "s1"): 38, (NEXT, "s1"): 4}  # 2 + 4 + 32; SPAN_FACTS only
+
+
+def test_a_skill_tool_start_30_minutes_before_midnight_also_marks_the_next_day() -> None:
+    # a Skill call's agent.tool.start is the initiator its fork is deduped against, as its agent.tool.end is
+    batch = _hooks({**hb.minimal("agent.tool.start", "s1", _at(23, 30, 0).isoformat()), "tool_name": "Skill"})
+
+    assert dirty_keys(batch) == {(D, "s1"): 38, (NEXT, "s1"): 4}  # 2 + 4 + 32; SPAN_FACTS only
+
+
+@pytest.mark.parametrize(
+    ("event_type", "tool_name", "ts"),
+    [("agent.tool.end", "Agent", time(23, 0)), ("agent.tool.error", "Skill", time(23, 30))],
+    ids=["agent-end", "skill-error"],
+)
+def test_a_finished_agent_or_skill_call_within_an_hour_before_midnight_also_marks_the_next_day(
+    event_type: str, tool_name: str, ts: time
+) -> None:
+    # the gate's evidence of a call lies up to 1 h before the call, which may then be on the next day
+    event = hb.minimal(event_type, "s1", datetime.combine(D, ts, tzinfo=timezone.utc).isoformat())
+    batch = _hooks({**event, "tool_name": tool_name})
+
+    assert dirty_keys(batch) == {(PREVIOUS, "s1"): 4, (D, "s1"): 38, (NEXT, "s1"): 4}  # SPAN_FACTS; 2 + 4 + 32
+
+
+@pytest.mark.parametrize(
+    ("event_type", "tool_name"), [("agent.tool.end", "Agent"), ("agent.tool.error", "Skill")], ids=["agent", "skill"]
+)
+def test_a_finished_agent_or_skill_call_at_any_time_also_marks_the_day_before(event_type: str, tool_name: str) -> None:
+    # the gate's evidence of the call, or a fork's Skill initiator, may arrive the day after the call or the fork
+    batch = _hooks({**hb.minimal(event_type, "s1", _at(15, 0, 0).isoformat()), "tool_name": tool_name})
+
+    assert dirty_keys(batch) == {(PREVIOUS, "s1"): 4, (D, "s1"): 38}  # SPAN_FACTS only; 2 + 4 + 32
+
+
+def test_a_finished_read_call_marks_only_its_day() -> None:
+    batch = _hooks({**hb.minimal("agent.tool.end", "s1", _at(15, 0, 0).isoformat()), "tool_name": "Read"})
+
+    assert dirty_keys(batch) == {(D, "s1"): 38}  # DIMENSIONS 2 + SPAN_FACTS 4 + SESSION 32
+
+
+def test_a_finished_agent_call_of_another_client_also_marks_the_day_before() -> None:
+    # the denied-call gate takes evidence from any client
+    event = {**hb.minimal("agent.tool.end", "s1", _at(15, 0, 0).isoformat()), "tool_name": "Agent"}
+    batch = _hooks({**event, "platform": "copilot-cli"})
+
+    assert dirty_keys(batch) == {(PREVIOUS, "s1"): 4, (D, "s1"): 38}  # SPAN_FACTS only; 2 + 4 + 32
+
+
+def _tool_span(ts: datetime, **attrs: str):
+    return b.span(
+        "claude_code.tool",
+        trace_id=b"t" * 16,
+        span_id=b"skillspn",
+        start=ts,
+        end=ts,
+        attrs={"session.id": "s1", "tool_name": "Skill", **attrs},
+    )
+
+
+def test_a_skill_tool_span_just_before_midnight_also_marks_the_next_day() -> None:
+    batch = _spans(_tool_span(_at(23, 59, 59), skill_name="probe-fork"))
+
+    assert dirty_keys(batch) == {(D, "s1"): 36, (NEXT, "s1"): 4}  # SPAN_FACTS 4 + SESSION 32; SPAN_FACTS only
+
+
+def test_a_tool_span_without_a_skill_just_before_midnight_marks_only_its_day() -> None:
+    batch = _spans(_tool_span(_at(23, 59, 59)))
+
+    assert dirty_keys(batch) == {(D, "s1"): 36}  # SPAN_FACTS 4 + SESSION 32
 
 
 def test_the_midnight_rule_does_not_apply_to_other_log_events() -> None:
