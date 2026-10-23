@@ -140,7 +140,8 @@ One event per request to the model: one group of transcript lines with the same 
 | `cache_creation_5m_tokens`, `cache_creation_1h_tokens` | int | cache writes by lifetime | same names |
 | `thinking_tokens` | int | a part of `output_tokens`, never added to it | same name |
 | `web_search_requests`, `web_fetch_requests` | int | server tool use | same names |
-| `stop_reason` | string | the stop reason of the message | same name |
+| `stop_reason` | string | the stop reason of the message; empty or absent on a non-error request means a partial streaming snapshot; an `is_api_error` request is never partial | same name |
+| `output_tokens_partial` | bool | sent by the CLI when `output_tokens` is a partial count; the backend does not store it, partial is derived from an empty `stop_reason` on a request that is not an `is_api_error` one; the backend ignores `output_tokens_partial`, `stop_reason` (on a non-`is_api_error` request) decides | not stored |
 | `is_api_error` | bool | the line is an API error | same name |
 | `git_branch` | string | the branch of the line | same name |
 | any other key | | | `attrs` |

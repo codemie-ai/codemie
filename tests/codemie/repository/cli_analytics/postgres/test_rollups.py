@@ -1034,11 +1034,80 @@ def test_the_fingerprint_compares_the_raw_model_and_the_token_counts() -> None:
     assert "b.model = a.model " not in tier_2
     for otel, transcript in (
         ("b.input_tokens", "coalesce(a.input_tokens, 0)"),
-        ("b.output_tokens", "coalesce(a.output_tokens, 0)"),
         ("b.cache_read_tokens", "coalesce(a.cache_read_tokens, 0)"),
         ("b.cache_creation_tokens", "coalesce(a.cache_5m, 0) + coalesce(a.cache_1h, 0)"),
     ):
         assert f"coalesce({otel}, 0) = {transcript}" in tier_2, otel
+    # The output is equal for every request, a partial one included: a partial request cannot take the exact
+    # match of a final one; leftover partials go to tier 3.
+    assert "AND coalesce(b.output_tokens, 0) = coalesce(a.output_tokens, 0) AND" in tier_2
+    assert "CASE" not in tier_2 and "b.output_tokens, 0) >=" not in tier_2
+    assert "a.partial OR" not in tier_2
+
+
+def test_a_leftover_partial_request_is_paired_by_a_third_tier() -> None:
+    # A partial transcript request (a placeholder output) that tiers 1 and 2 left unpaired takes the OTel
+    # record of its model within 30 s on its UTC day whatever the input and cache totals, so the request is not written
+    # twice (transcript row with the placeholder + service row with the full OTel tokens).
+    sql = rollups._BUILD_REQUESTS
+    assert rollups._MATCH_PARTIAL == "interval '30 seconds'"
+    tier_3 = " ".join(sql.split("\nc3 AS (", 1)[1].split("\n),", 1)[0].split())
+    assert f"b.ts >= a.ts - {rollups._MATCH_PARTIAL} AND b.ts <= a.ts + {rollups._MATCH_PARTIAL}" in tier_3
+    # the same bounds, id rule and raw model as tier 2
+    assert "a.ts >= a.lo AND a.ts < a.hi AND b.ts >= b.lo AND b.ts < b.hi" in tier_3
+    assert "AND (a.request_id IS NULL OR b.request_id IS NULL) AND b.model = a.model_raw AND" in tier_3
+    # partial with a positive output, the OTel output at least its own; no input or cache comparison
+    assert (
+        "AND a.partial AND coalesce(a.output_tokens, 0) > 0 AND coalesce(b.output_tokens, 0) >= a.output_tokens"
+        in tier_3
+    )
+    # one UTC day, and the class filter: a main-thread request takes only a conversation record (never a
+    # side call or a subagent's), a subagent's never the main thread's (an empty query_source passes both ways)
+    assert "AND a.t_day = b.o_day" in tier_3
+    assert (
+        "AND CASE WHEN coalesce(a.agent_id, '') = '' "
+        "THEN coalesce(b.query_source, '') IN ('', 'repl_main_thread', 'sdk') "
+        "ELSE coalesce(b.query_source, '') = '' OR b.query_source LIKE 'agent:%' END"
+    ) in tier_3
+    # the ranking columns: totals equal, agent name equal; the walk orders by them before the gap
+    assert "AS totals_equal" in tier_3 and "AS name_match" in tier_3
+    assert "a.agent_type = b.agent_name" in tier_3 and "substring(b.query_source FROM '[^:]*$')" in tier_3
+    assert "ORDER BY d.totals_equal DESC, d.name_match DESC, d.gap, d.oid" in " ".join(sql.split())
+    assert "ORDER BY d.gap, d.oid" in " ".join(sql.split())  # tier 2 keeps the nearest
+    # neither side may be in a pair of tier 1 or 2
+    for side, key in (("a", "tid"), ("b", "oid")):
+        assert (
+            f"NOT EXISTS (SELECT 1 FROM p2 WHERE p2.day = {side}.day AND p2.session_id = {side}.session_id "
+            f"AND p2.{key} = {side}.{key})"
+        ) in tier_3
+    # one to one like tier 2, then the tier-3 pairs join `p`, which the matched/transcript/unmatched rows read
+    assert "\nwalk3 (day, session_id, n, used, tid, oid) AS (" in sql
+    assert "FROM d3 d WHERE d.day = q.day" in " ".join(sql.split())
+    p2 = " ".join(sql.split("\np2 AS (", 1)[1].split("\n),", 1)[0].split())
+    assert p2 == (
+        "SELECT day, session_id, tid, oid FROM t1 UNION ALL SELECT day, session_id, tid, oid FROM d "
+        "WHERE t_edges = 1 AND o_edges = 1 UNION ALL SELECT day, session_id, tid, oid FROM walk WHERE oid IS NOT NULL"
+    )
+    final = " ".join(sql.split("\np AS (", 1)[1].split("\n)", 1)[0].split())
+    assert final == (
+        "SELECT day, session_id, tid, oid FROM p2 UNION ALL SELECT day, session_id, tid, oid FROM d3 "
+        "WHERE t_edges = 1 AND o_edges = 1 UNION ALL SELECT day, session_id, tid, oid FROM walk3 WHERE oid IS NOT NULL"
+    )
+
+
+def test_a_matched_partial_request_takes_the_larger_output() -> None:
+    # A request without a stop_reason is a partial transcript snapshot: output is greatest(transcript, OTel).
+    # A final request, and a transcript-only row (a lower bound), keep the transcript value.
+    # An API-error row (is_api_error) has no stop_reason and no output, but it is never partial.
+    assert (
+        "(max(nullif(u.stop_reason, '')) IS NULL AND NOT coalesce(bool_or(u.is_api_error), false)) AS partial"
+        in rollups._BUILD_REQUESTS
+    )
+    parts = rollups._BUILD_REQUESTS.split("-- A matched request takes", 1)[1].split("UNION ALL")
+    matched, transcript = " ".join(parts[0].split()), " ".join(parts[1].split())
+    assert "CASE WHEN a.partial THEN greatest(a.output_tokens, b.output_tokens) ELSE a.output_tokens END" in matched
+    assert "greatest(a.output_tokens" not in transcript
+    assert "a.input_tokens, a.output_tokens, a.cache_read_tokens" in transcript
 
 
 def _plugin_model(raw: str) -> str:

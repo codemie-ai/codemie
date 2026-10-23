@@ -251,6 +251,10 @@ _CREATE_REQUESTS = (
 # Two records of one request paired by fingerprint are at most this far apart; a day is widened by
 # it on both sides for that tier.
 _MATCH = "interval '5 seconds'"
+# The tier for leftover partial transcript requests (a streaming snapshot, its output a placeholder)
+# looks this far either side of the request's time, within one UTC day: the OTel record of a streaming
+# response can be stamped well after the last transcript line, and input and cache totals are not required.
+_MATCH_PARTIAL = "interval '30 seconds'"
 # The identifier tier pairs a transcript request and an OTel record across midnight when both lie
 # within this reach of it, so the candidate sets of both reach this far past the day's edges. The
 # rows of one transcript request are read this far past those, so a request whose rows straddle an
@@ -261,12 +265,21 @@ _TRANSCRIPT_CACHE_WRITE = (
     "CASE WHEN a.cache_5m IS NULL AND a.cache_1h IS NULL THEN NULL "
     "ELSE coalesce(a.cache_5m, 0) + coalesce(a.cache_1h, 0) END"
 )
-_TRANSCRIPT_COLUMNS = (
-    "coalesce(a.speed, ''), coalesce(a.inference_geo, ''), coalesce(a.service_tier, ''), coalesce(a.scope_kind, ''), "
-    "coalesce(a.scope_name, ''), coalesce(a.agent_id, ''), coalesce(a.agent_type, ''), "
-    f"a.input_tokens, a.output_tokens, a.cache_read_tokens, {_TRANSCRIPT_CACHE_WRITE}, a.cache_5m, a.cache_1h, "
-    "a.thinking_tokens, a.web_search_requests, a.web_fetch_requests"
-)
+# A request without a stop_reason that is not an is_api_error one is a partial transcript snapshot of
+# a streaming response, so a matched one takes the larger of the transcript and the OTel output.
+_MATCHED_OUTPUT = "CASE WHEN a.partial THEN greatest(a.output_tokens, b.output_tokens) ELSE a.output_tokens END"
+
+
+def _transcript_columns(output: str) -> str:
+    """The columns a transcript request contributes to a row, `output` being the output-tokens expression."""
+    return (
+        "coalesce(a.speed, ''), coalesce(a.inference_geo, ''), coalesce(a.service_tier, ''), "
+        "coalesce(a.scope_kind, ''), coalesce(a.scope_name, ''), coalesce(a.agent_id, ''), "
+        f"coalesce(a.agent_type, ''), a.input_tokens, {output}, a.cache_read_tokens, {_TRANSCRIPT_CACHE_WRITE}, "
+        "a.cache_5m, a.cache_1h, a.thinking_tokens, a.web_search_requests, a.web_fetch_requests"
+    )
+
+
 _T_ORDER = (
     "ts, request_id, message_id, model_raw, model, input_tokens, output_tokens, cache_read_tokens, cache_5m, "
     "cache_1h, thinking_tokens, web_search_requests, web_fetch_requests, user_email, speed, inference_geo, "
@@ -297,6 +310,89 @@ def _normalised_model(value: str) -> str:
     return expression
 
 
+def _candidates(name: str, window: str, conditions: str, paired: str, ranking: str = "") -> str:
+    """The CTE `name` of fingerprint candidates among what the pairs `paired` left: same session and day,
+    both records inside their day widened by 5 s and at most `window` apart, not both ids present, the raw
+    model equal, plus `conditions`. `gap` is the distance in time; `ranking` adds columns to select."""
+    return f"""{name} AS (
+    SELECT a.day, a.session_id, a.tid, b.oid, greatest(b.ts - a.ts, a.ts - b.ts) AS gap{ranking}
+    FROM t a
+    JOIN o b ON b.day = a.day AND b.session_id = a.session_id
+     AND b.ts >= a.ts - {window} AND b.ts <= a.ts + {window}
+    WHERE a.ts >= a.lo AND a.ts < a.hi AND b.ts >= b.lo AND b.ts < b.hi
+      AND (a.request_id IS NULL OR b.request_id IS NULL)
+      AND b.model = a.model_raw
+      {conditions}
+      AND NOT EXISTS (SELECT 1 FROM {paired}
+                      WHERE {paired}.day = a.day AND {paired}.session_id = a.session_id AND {paired}.tid = a.tid)
+      AND NOT EXISTS (SELECT 1 FROM {paired}
+                      WHERE {paired}.day = b.day AND {paired}.session_id = b.session_id AND {paired}.oid = b.oid)
+)"""
+
+
+def _one_to_one(c: str, suffix: str, order: str = "d.gap, d.oid") -> str:
+    """The CTEs `d`, `q` and `walk` (each with `suffix`) that resolve the candidates `c` one to one, each
+    transcript request taking its first free record in `order`."""
+    return f"""d{suffix} AS (
+    SELECT {c}.*, count(*) OVER (PARTITION BY {c}.day, {c}.session_id, {c}.tid) AS t_edges,
+           count(*) OVER (PARTITION BY {c}.day, {c}.session_id, {c}.oid) AS o_edges
+    FROM {c}
+),
+-- A candidate that shares neither side is a pair as it is. The rest are paired one to one in time
+-- order: each transcript request takes the nearest free record, ties to the earlier (lower oid).
+q{suffix} AS (
+    SELECT x.day, x.session_id, x.tid, row_number() OVER (PARTITION BY x.day, x.session_id ORDER BY x.tid) AS n
+    FROM (SELECT DISTINCT day, session_id, tid FROM d{suffix} WHERE t_edges > 1 OR o_edges > 1) x
+),
+walk{suffix} (day, session_id, n, used, tid, oid) AS (
+    SELECT DISTINCT day, session_id, 0::bigint, ARRAY[]::bigint[], NULL::bigint, NULL::bigint FROM q{suffix}
+    UNION ALL
+    SELECT w.day, w.session_id, w.n + 1, CASE WHEN f.oid IS NULL THEN w.used ELSE w.used || f.oid END, q.tid, f.oid
+    FROM walk{suffix} w
+    JOIN q{suffix} q ON q.day = w.day AND q.session_id = w.session_id AND q.n = w.n + 1
+    LEFT JOIN LATERAL (
+        SELECT d.oid FROM d{suffix} d
+        WHERE d.day = q.day AND d.session_id = q.session_id AND d.tid = q.tid AND d.oid <> ALL (w.used)
+        ORDER BY {order}
+        LIMIT 1
+    ) f ON true
+)"""
+
+
+def _resolved(suffix: str) -> str:
+    """The pairs of the candidates resolved by `_one_to_one(.., suffix)`, as `day, session_id, tid, oid` rows."""
+    return (
+        f"SELECT day, session_id, tid, oid FROM d{suffix} WHERE t_edges = 1 AND o_edges = 1\n"
+        f"    UNION ALL\n    SELECT day, session_id, tid, oid FROM walk{suffix} WHERE oid IS NOT NULL"
+    )
+
+
+_TIER_2_MATCH = """AND coalesce(b.input_tokens, 0) = coalesce(a.input_tokens, 0)
+      AND coalesce(b.output_tokens, 0) = coalesce(a.output_tokens, 0)
+      AND coalesce(b.cache_read_tokens, 0) = coalesce(a.cache_read_tokens, 0)
+      AND coalesce(b.cache_creation_tokens, 0) = coalesce(a.cache_5m, 0) + coalesce(a.cache_1h, 0)"""
+# Tier 3: a partial request with a positive output, the OTel output at least its own, both on one UTC
+# day, a main-thread request only with a conversation record of the main thread (`repl_main_thread` or
+# `sdk`, so never a `compact`, `generate_session_title` or `prompt_suggestion` side call) and a subagent
+# request only with a record of a subagent (an empty query_source, e.g. Claude Desktop's, passes both ways).
+_TIER_3_MATCH = """AND a.partial AND coalesce(a.output_tokens, 0) > 0
+      AND coalesce(b.output_tokens, 0) >= a.output_tokens
+      AND a.t_day = b.o_day
+      AND CASE WHEN coalesce(a.agent_id, '') = '' THEN coalesce(b.query_source, '') IN ('', 'repl_main_thread', 'sdk')
+               ELSE coalesce(b.query_source, '') = '' OR b.query_source LIKE 'agent:%' END"""
+# Tier 3 preference, before the gap: the input, cache-read and cache-write totals equal, then the
+# transcript's agent type equal to the OTel agent name or to the last part of an `agent:` query_source.
+_TIER_3_RANKING = """,
+           (coalesce(b.input_tokens, 0) = coalesce(a.input_tokens, 0)
+            AND coalesce(b.cache_read_tokens, 0) = coalesce(a.cache_read_tokens, 0)
+            AND coalesce(b.cache_creation_tokens, 0) = coalesce(a.cache_5m, 0) + coalesce(a.cache_1h, 0))
+               AS totals_equal,
+           coalesce(nullif(a.agent_type, '') IS NOT NULL
+                    AND (a.agent_type = b.agent_name
+                         OR (b.query_source LIKE 'agent:%' AND a.agent_type = substring(b.query_source FROM '[^:]*$'))),
+                    false) AS name_match"""
+
+
 _BUILD_REQUESTS = f"""INSERT INTO {_REQUESTS} (day, hour, ts, session_id, req_kind, model, model_name, user_email,
     query_source, speed, inference_geo, service_tier, scope_kind, scope_name, agent_id, agent_type, input_tokens,
     output_tokens, cache_read_tokens, cache_creation_tokens, cache_5m, cache_1h, thinking_tokens,
@@ -325,6 +421,7 @@ tr AS (
            max(u.cache_creation_5m_tokens) AS cache_5m, max(u.cache_creation_1h_tokens) AS cache_1h,
            max(u.thinking_tokens) AS thinking_tokens, max(u.web_search_requests) AS web_search_requests,
            max(u.web_fetch_requests) AS web_fetch_requests,
+           (max(nullif(u.stop_reason, '')) IS NULL AND NOT coalesce(bool_or(u.is_api_error), false)) AS partial,
            max(CASE WHEN coalesce(nullif(u.request_id, ''), nullif(u.message_id, '')) IS NULL
                     THEN u.tableoid::text || u.ctid::text END) AS row_key
     FROM rk r
@@ -375,56 +472,30 @@ t1 AS (
       AND a.ts >= {_utc("b.o_day")} - {_GROUP_REACH} AND a.ts < {_utc("b.o_day + 1")} + {_GROUP_REACH}
 ),
 -- Tier 2 candidates among what tier 1 left, both within the day widened by 5 s: not both ids present,
--- the raw model, three token counts and the cache-write total equal, at most 5 s apart.
-c AS (
-    SELECT a.day, a.session_id, a.tid, b.oid, greatest(b.ts - a.ts, a.ts - b.ts) AS gap
-    FROM t a
-    JOIN o b ON b.day = a.day AND b.session_id = a.session_id
-     AND b.ts >= a.ts - {_MATCH} AND b.ts <= a.ts + {_MATCH}
-    WHERE a.ts >= a.lo AND a.ts < a.hi AND b.ts >= b.lo AND b.ts < b.hi
-      AND (a.request_id IS NULL OR b.request_id IS NULL)
-      AND b.model = a.model_raw
-      AND coalesce(b.input_tokens, 0) = coalesce(a.input_tokens, 0)
-      AND coalesce(b.output_tokens, 0) = coalesce(a.output_tokens, 0)
-      AND coalesce(b.cache_read_tokens, 0) = coalesce(a.cache_read_tokens, 0)
-      AND coalesce(b.cache_creation_tokens, 0) = coalesce(a.cache_5m, 0) + coalesce(a.cache_1h, 0)
-      AND NOT EXISTS (SELECT 1 FROM t1 WHERE t1.day = a.day AND t1.session_id = a.session_id AND t1.tid = a.tid)
-      AND NOT EXISTS (SELECT 1 FROM t1 WHERE t1.day = b.day AND t1.session_id = b.session_id AND t1.oid = b.oid)
-),
-d AS (
-    SELECT c.*, count(*) OVER (PARTITION BY c.day, c.session_id, c.tid) AS t_edges,
-           count(*) OVER (PARTITION BY c.day, c.session_id, c.oid) AS o_edges
-    FROM c
-),
--- A candidate that shares neither side is a pair as it is. The rest are paired one to one in time
--- order: each transcript request takes the nearest free record, ties to the earlier (lower oid).
-q AS (
-    SELECT x.day, x.session_id, x.tid, row_number() OVER (PARTITION BY x.day, x.session_id ORDER BY x.tid) AS n
-    FROM (SELECT DISTINCT day, session_id, tid FROM d WHERE t_edges > 1 OR o_edges > 1) x
-),
-walk (day, session_id, n, used, tid, oid) AS (
-    SELECT DISTINCT day, session_id, 0::bigint, ARRAY[]::bigint[], NULL::bigint, NULL::bigint FROM q
-    UNION ALL
-    SELECT w.day, w.session_id, w.n + 1, CASE WHEN f.oid IS NULL THEN w.used ELSE w.used || f.oid END, q.tid, f.oid
-    FROM walk w
-    JOIN q ON q.day = w.day AND q.session_id = w.session_id AND q.n = w.n + 1
-    LEFT JOIN LATERAL (
-        SELECT d.oid FROM d
-        WHERE d.day = q.day AND d.session_id = q.session_id AND d.tid = q.tid AND d.oid <> ALL (w.used)
-        ORDER BY d.gap, d.oid
-        LIMIT 1
-    ) f ON true
-),
-p AS (
+-- the raw model, input, output, cache-read and cache-write totals equal, at most 5 s apart.
+{_candidates("c", _MATCH, _TIER_2_MATCH, "t1")},
+{_one_to_one("c", "")},
+p2 AS (
     SELECT day, session_id, tid, oid FROM t1
     UNION ALL
-    SELECT day, session_id, tid, oid FROM d WHERE t_edges = 1 AND o_edges = 1
+    {_resolved("")}
+),
+-- Tier 3 candidates among what tiers 1 and 2 left, for a partial transcript request with a positive
+-- output only (its output is a placeholder, so its input and cache totals need not equal the OTel
+-- record's, as in Claude Desktop): not both ids present, the raw model equal, the OTel output at least
+-- its own, at most 30 s apart, on one UTC day, of the same class (main thread or subagent). Resolved one
+-- to one like tier 2, the first free record by: totals equal, agent name equal, nearest.
+{_candidates("c3", _MATCH_PARTIAL, _TIER_3_MATCH, "p2", _TIER_3_RANKING)},
+{_one_to_one("c3", "3", "d.totals_equal DESC, d.name_match DESC, d.gap, d.oid")},
+p AS (
+    SELECT day, session_id, tid, oid FROM p2
     UNION ALL
-    SELECT day, session_id, tid, oid FROM walk WHERE oid IS NOT NULL
+    {_resolved("3")}
 )
 -- A matched request takes the day and hour of its transcript time, wherever its OTel record lies.
 SELECT a.day, date_trunc('hour', a.ts, 'UTC'), a.ts, a.session_id, 'matched', coalesce(a.model, ''),
-       coalesce(b.model, ''), coalesce(b.user_email, ''), coalesce(b.query_source, ''), {_TRANSCRIPT_COLUMNS},
+       coalesce(b.model, ''), coalesce(b.user_email, ''), coalesce(b.query_source, ''),
+       {_transcript_columns(_MATCHED_OUTPUT)},
        b.cost_usd, b.duration_ms, b.ttft_ms
 FROM p
 JOIN t a ON a.day = p.day AND a.session_id = p.session_id AND a.tid = p.tid
@@ -432,7 +503,7 @@ JOIN o b ON b.day = p.day AND b.session_id = p.session_id AND b.oid = p.oid
 WHERE a.t_day = a.day
 UNION ALL
 SELECT a.day, date_trunc('hour', a.ts, 'UTC'), a.ts, a.session_id, 'transcript', coalesce(a.model, ''),
-       coalesce(a.model_raw, ''), coalesce(a.user_email, ''), '', {_TRANSCRIPT_COLUMNS},
+       coalesce(a.model_raw, ''), coalesce(a.user_email, ''), '', {_transcript_columns('a.output_tokens')},
        NULL, NULL, NULL
 FROM t a
 WHERE a.t_day = a.day
