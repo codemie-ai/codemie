@@ -738,10 +738,8 @@ class LocalAnalyticsHandler:
             turns = turns_by_session.get(sid, 0)
             lines = lines_by_session.get(sid, {})
             started_at = row.get("started_at")
-            last_event = row.get("last_event_at")
-            duration_ms = 0
-            if isinstance(started_at, datetime) and isinstance(last_event, datetime):
-                duration_ms = max(0, int((last_event - started_at).total_seconds() * 1000))
+            # The reader's activity-range duration: the one Session Detail and Users Avg report too.
+            duration_ms = max(0, _i(row.get("duration_ms")))
             model_cost_rows = model_rows_by_session.get(sid, [])
             crc = self._session_cache_read_cost(model_cost_rows, model, cache_read)[0]
             sessions.append(

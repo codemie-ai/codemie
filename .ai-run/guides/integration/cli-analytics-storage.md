@@ -52,6 +52,8 @@ The connection must be direct or session-pooled (PgBouncer `pool_mode = session`
 
 On the PostgreSQL reader a session is in a date window if and only if `session_dims.started_at` is in `[start_dt, end_dt]` (inclusive, bounds truncated to ms). The predicate lives once, in `_sessions_cte` (`sel`); every windowed fact query scopes or inner-joins to `sel` and carries no day, timestamp or hour predicate, so an in-window session contributes all its data whatever the fact's own day, and a session that started before the window contributes nothing. Sessions without `started_at` are excluded. Session-detail and skill-name lookups keyed by `session_id` are not windowed.
 
+The window decides membership only. The start, end and duration a session reports are its activity range (see Notes for a reader), which can begin before `started_at`: a session whose first OTel event precedes its first hook is still in the window of its `started_at`.
+
 The section 6.6 latency budget (825 ms per endpoint) is unverified for these whole-session scans: no 30-day, ~28.5K-session run was available locally.
 
 ## Schema Extension
@@ -256,7 +258,8 @@ Columns that do not depend on a summary:
 
 **Notes for a reader.**
 
-- Two pairs of times. `started_at` and `last_event_at` are hook times and decide the dashboard windows. `activity_started_at` and `ended_at` are the first and the last transcript line (the raw range in the fallback) and give the length of the session.
+- Two pairs of times. `started_at` and `last_event_at` are hook times and decide the dashboard windows. `activity_started_at` and `ended_at` are the first and the last transcript line (the raw range in the fallback).
+- The reported session range (EPMCDME-15506). The client stamps a hook after its own setup work, so an OTel `api_request` or tool span can precede the first hook or follow the last one. The reader reports start = `least(started_at, activity_started_at, earliest log_events / spans row)`, end = `greatest(last_event_at, ended_at, latest log_events / spans row)`, and `duration_ms` = end − start: wall clock, idle time included. Every path looks for OTel rows only within one day of the column bounds, which prunes the other weekly partitions at run time, so the Sessions list and Session Detail always agree; a session without a `session_dims` row (Session Detail only) has no column bounds and every row of it counts. The Sessions list, Session Detail, `get_session_durations` (Users Avg Session Duration, the Overview `duration_ms`) and the activity heatmap all report this range. `session_dims.duration_ms` is not read by them.
 - `session_dims` counters describe the main thread. Tools, skills and commands of a subagent are in `subagent_invocations`.
 - In `session_usage`, `agent_id = ''` is the main thread and `agent_id <> ''` a subagent. `scope_kind = 'service'` is a request Claude Code made outside the transcript (session title, compaction): it has tokens and cost and no counterpart in the counters. The rule is the missing transcript counterpart, never the value of `query_source`; values seen so far are `repl_main_thread`, `sdk`, `agent:builtin:<type>`, `generate_session_title` and `compact`.
 - `model` is normalised, for a request known from OTel only by the plugin's steps, so a model has one name in every row; fast mode and the inference region are in `speed` and `inference_geo`, not in the model name. `cost_daily.model_name` keeps the raw OTel name.

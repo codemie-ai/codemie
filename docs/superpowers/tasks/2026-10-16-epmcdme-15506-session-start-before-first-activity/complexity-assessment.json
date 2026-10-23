@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "task": "Ensure CLI analytics session start_time is never later than the session's earliest recorded event (hook, OTel log/span, usage) and recompute duration from the corrected start consistently across sessions list, session detail, and Users Avg Session Duration, with an automated test covering an event earlier than the current derived start (EPMCDME-15506).",
+  "generated": "2026-10-16",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 16,
+  "size": "M",
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "requirements_clarity", "reason": "Acceptance criteria are explicit, but two design decisions remain open: correct the reported start/duration at read time versus moving session_dims.started_at in the rollup pipeline (which changes window semantics and dirty-bit marking), and how to reconcile a corrected start with a client-supplied summary duration_ms (AC2/AC3). Summary-sourced activity_started_at is client-stamped, so AC1 may require the raw log_events/spans minimum." },
+    { "dimension": "technical_risk", "reason": "Established patterns (f-string SQL over the sel CTE, SQL-shape and mocked-row handler tests), but five or more duration call sites in the reader and LocalAnalyticsHandler must change consistently; regression surface on the shared get_session_durations contract (EPMCDME-15228 priced-sessions average rule), dispatch bar offsets/clamping, and an existing test encoding the agent-before-session behaviour. A read-time fix keeps window membership unchanged and needs no backfill." },
+    { "dimension": "component_scope", "reason": "Session queries in the PostgreSQL CLI analytics reader (durations, cost facts, detail meta, possibly start times), LocalAnalyticsHandler paths (sessions list, detail, users avg, overview KPI, dispatch timeline), possibly the reader port, plus the two CLI analytics guides; rollups and dirty marking only if the rollup-side option is chosen." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

@@ -1,0 +1,82 @@
+{
+  "task": "EPMCDME-15506: report each CLI analytics session's start, end and duration from its full activity range (hook times, activity columns and OTel log_events/spans) in the sessions list, session detail, users average and activity heatmap, while window membership still follows started_at.",
+  "generated": "2026-10-16T00:00:00Z",
+  "dimensions": {
+    "component_scope": {
+      "score": 3,
+      "label": "M",
+      "affected": "PostgresCliAnalyticsReader (new _activity_range helper and act CTE used by get_session_durations, get_session_cost_facts, get_session_start_times, get_session_detail_meta), LocalAnalyticsHandler (get_sessions takes duration from the reader), CLI analytics storage guide",
+      "layers": "Repository (PostgreSQL read queries), Service (analytics handler), Docs"
+    },
+    "requirements_clarity": {
+      "score": 2,
+      "label": "S",
+      "status": "Clear",
+      "gaps": "Minor design decisions settled during implementation: the 1-day probe bound for OTel rows outside the column range, and keeping window membership on started_at instead of the widened start"
+    },
+    "technical_risk": {
+      "score": 3,
+      "label": "M",
+      "risk_factors": "New SQL pattern (correlated min/max probes over the weekly-partitioned log_events and spans tables), partition-pruning and query-cost concerns on the list endpoints, behaviour change in reported start/duration that the UI and Users average consume",
+      "mitigation": "Probes bounded to one day around the column range for runtime partition pruning; read-only change with no schema migration and simple rollback; unit tests plus a live-Postgres behavioural test that skips when the database is unreachable"
+    },
+    "file_change_estimate": {
+      "score": 3,
+      "label": "M",
+      "modified_files": 5,
+      "modified_file_list": [
+        ".ai-run/guides/integration/cli-analytics-storage.md",
+        "src/codemie/repository/cli_analytics/postgres/reader.py",
+        "src/codemie/service/analytics/handlers/cli_analytics_handler.py",
+        "tests/codemie/repository/cli_analytics/postgres/test_reader.py",
+        "tests/codemie/service/analytics/handlers/test_cli_analytics_handler.py"
+      ],
+      "new_files": 1,
+      "new_file_list": [
+        "tests/codemie/repository/cli_analytics/postgres/test_reader_live_session_range.py"
+      ],
+      "affected_dirs": [
+        ".ai-run",
+        "src",
+        "tests"
+      ]
+    },
+    "dependencies": {
+      "score": 1,
+      "label": "XS",
+      "new_packages": [],
+      "version_changes": []
+    },
+    "affected_layers": {
+      "score": 2,
+      "label": "S",
+      "layers_changed": [
+        "Repository (DB read queries)",
+        "Service"
+      ],
+      "schema_migration": false,
+      "cross_system": false
+    }
+  },
+  "total": 14,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 6,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    {
+      "dimension": "technical_risk",
+      "reason": "The reader gains a new range expression with correlated probes into partitioned OTel tables, bounded to a day for pruning; this is a new query pattern on list endpoints, but it is read-only and has no schema change."
+    },
+    {
+      "dimension": "component_scope",
+      "reason": "Changes center on the PostgreSQL reader, which four queries share through one activity CTE, plus a small handler change and a guide update. That is two code components across the Repository and Service layers."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "6 files in total: 2 source files, 1 guide, 2 extended test modules and 1 new live-Postgres test module. Most of the 384 inserted lines are tests."
+    }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

@@ -50,11 +50,28 @@ BASE_COST_ROW = {
     "prompt": "hello",
     "started_at": datetime(2026, 1, 1, 0, 0, 0),
     "last_event_at": datetime(2026, 1, 1, 0, 1, 0),
+    "duration_ms": 60_000,
 }
 
 
 def make_filter():
     return LocalAnalyticsFilter(start_dt=datetime(2026, 1, 1), end_dt=datetime(2026, 12, 31))
+
+
+@pytest.mark.asyncio
+async def test_get_sessions_reports_the_reader_duration():
+    """The reader's activity-range duration, the same one detail and Users Avg report, not a recomputation."""
+    handler = make_handler(cost_facts=[{**BASE_COST_ROW, "duration_ms": 72_000}])
+    data, _, _ = await handler.get_sessions(make_filter(), page=0, per_page=20, sort_by="start_time", search=None)
+    assert data["sessions"][0]["duration_ms"] == 72_000
+
+
+@pytest.mark.asyncio
+async def test_get_sessions_with_a_missing_reader_duration_reports_zero():
+    row = {k: v for k, v in BASE_COST_ROW.items() if k != "duration_ms"}
+    handler = make_handler(cost_facts=[row])
+    data, _, _ = await handler.get_sessions(make_filter(), page=0, per_page=20, sort_by="start_time", search=None)
+    assert data["sessions"][0]["duration_ms"] == 0
 
 
 @pytest.mark.asyncio
@@ -983,6 +1000,24 @@ async def test_session_detail_harness_name_is_humanized():
     handler = make_detail_handler({"session_id": "s1", "harness_service_name": "claude-code"})
     detail, _ = await handler.get_session_detail("s1")
     assert detail["harness_name"] == "Claude Code"
+
+
+@pytest.mark.asyncio
+async def test_session_detail_places_an_agent_launched_before_the_first_hook():
+    # EPMCDME-15506: the meta start is the activity range start (00:00:00), earlier than the session's
+    # first hook (00:00:12). An agent launched at 00:00:05 is placed from that start, not dropped as
+    # launched before the session.
+    handler = make_detail_handler(
+        {"session_id": "s1", "started_at": datetime(2026, 1, 1, 0, 0, 0), "duration_ms": 600_000}
+    )
+    rows = [_dispatch_row(subagent_type="Explore", offset_s=5) | {"subagent_duration_ms": 1000}]
+    handler._repo.get_session_detail_dispatches = AsyncMock(return_value=rows)
+
+    detail, _ = await handler.get_session_detail("s1")
+
+    agent = next(d for d in detail["dispatches"] if d["kind"] == "agent")
+    assert agent["start_offset_ms"] == 5000
+    assert agent["duration_ms"] == 1000
 
 
 @pytest.mark.asyncio

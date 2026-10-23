@@ -155,6 +155,35 @@ def _ns(column: str) -> str:
     return f"((extract(epoch FROM {column}) * 1000000)::bigint * 1000)"
 
 
+def _activity_range(alias: str) -> tuple[str, str]:
+    """The reported start and end of a session: its hook times, activity columns and OTel rows.
+
+    Hook times are stamped by the client after its own setup work, so an api_request or a tool span
+    can precede the first dimension hook or follow the last one. `alias` exposes session_id,
+    started_at, activity_started_at, last_event_at and ended_at. Such rows are looked for only within
+    a day of the column bounds, which prunes the other weekly partitions at run time; without column
+    bounds (no session_dims row) every row of the session counts.
+    """
+    start = f"least({alias}.started_at, {alias}.activity_started_at)"
+    end = f"greatest({alias}.last_event_at, {alias}.ended_at)"
+    earlier = (
+        f" AND {{a}}.ts >= coalesce({start} - interval '1 day', '-infinity')"
+        f" AND {{a}}.ts < coalesce({start}, 'infinity')"
+    )
+    later = (
+        f" AND {{a}}.ts > coalesce({end}, '-infinity')"
+        f" AND {{a}}.ts <= coalesce({end} + interval '1 day', 'infinity')"
+    )
+
+    def probes(agg: str, bound: str) -> str:
+        return ", ".join(
+            f"(SELECT {agg}({a}.ts) FROM {table} {a} WHERE {a}.session_id = {alias}.session_id{bound.format(a=a)})"
+            for table, a in (("log_events", "le"), ("spans", "sp"))
+        )
+
+    return f"least({start}, {probes('min', earlier)})", f"greatest({end}, {probes('max', later)})"
+
+
 class PostgresCliAnalyticsReader:
     """Read-only PostgreSQL access for the Local Analytics endpoints."""
 
@@ -203,10 +232,23 @@ class PostgresCliAnalyticsReader:
                                 nullif(d.developer_name, ''), '') AS user_email,
                        d.started_at,
                        d.last_event_at,
+                       d.activity_started_at,
+                       d.ended_at,
                        coalesce(d.first_prompt, '') AS first_prompt
                 FROM session_dims d
                 WHERE d.started_at IS NOT NULL AND {_STARTED_IN_WINDOW}
             ) x{where}
+        )"""
+
+    @staticmethod
+    def _activity_cte() -> str:
+        """The reported start, end and duration of every session in `sel` (see `_activity_range`)."""
+        start, end = _activity_range("s")
+        return f"""
+        act AS (
+            SELECT r.session_id, r.session_start, r.session_end,
+                   {_ms("r.session_end")} - {_ms("r.session_start")} AS duration_ms
+            FROM (SELECT s.session_id, {start} AS session_start, {end} AS session_end FROM sel s) r
         )"""
 
     @staticmethod
@@ -522,9 +564,9 @@ class PostgresCliAnalyticsReader:
     async def get_session_durations(self, f: LocalAnalyticsFilter) -> Rows:
         return await self._q(
             f"""
-        WITH {self._sessions_cte(f)}
-        SELECT session_id, {_ms("last_event_at")} - {_ms("started_at")} AS duration_ms
-        FROM sel""",
+        WITH {self._sessions_cte(f)},{self._activity_cte()}
+        SELECT session_id, duration_ms
+        FROM act""",
             window_params(f),
         )
 
@@ -556,15 +598,16 @@ class PostgresCliAnalyticsReader:
             params["search"] = f"%{search.strip().lower()}%"
         return await self._q(
             f"""
-        WITH {self._sessions_cte(f)}
+        WITH {self._sessions_cte(f)},{self._activity_cte()}
         SELECT c.session_id,
                {_DEVELOPER}                                 AS developer_name,
                max(s.repository)                            AS repository,
                max(s.branch)                                AS branch,
                max(s.project_name)                          AS project_name,
                max(s.first_prompt)                          AS prompt,
-               max(s.started_at)                            AS started_at,
-               max(s.last_event_at)                         AS last_event_at,
+               max(a.session_start)                         AS started_at,
+               max(a.session_end)                           AS last_event_at,
+               max(a.duration_ms)                           AS duration_ms,
                {_TOP_MODEL}                                 AS model_name,
                sum(c.cost_usd)                              AS cost_usd,
                sum(c.input_tokens)::bigint                  AS input_tokens,
@@ -574,6 +617,7 @@ class PostgresCliAnalyticsReader:
                sum(c.api_call_count)::bigint                AS api_call_count
         FROM {_cost_rows("c.session_id IN (SELECT session_id FROM sel)")}
              JOIN sel s ON s.session_id = c.session_id
+             JOIN act a ON a.session_id = c.session_id
         GROUP BY c.session_id, 2{having_sql}""",
             params,
         )
@@ -581,8 +625,8 @@ class PostgresCliAnalyticsReader:
     async def get_session_start_times(self, f: LocalAnalyticsFilter) -> Rows:
         return await self._q(
             f"""
-        WITH {self._sessions_cte(f)}
-        SELECT started_at FROM sel""",
+        WITH {self._sessions_cte(f)},{self._activity_cte()}
+        SELECT session_start AS started_at FROM act""",
             window_params(f),
         )
 
@@ -603,6 +647,9 @@ class PostgresCliAnalyticsReader:
     # ── session detail ───────────────────────────────────────────────────────
 
     async def get_session_detail_meta(self, session_id: str) -> Rows:
+        # The same range as the list, keyed on the cost row's session so a session without a
+        # session_dims row still gets its earliest event as start.
+        start, end = _activity_range("t")
         return await self._q(
             f"""
         WITH c AS (SELECT DISTINCT session_id FROM cost_daily WHERE session_id = $sid::text),
@@ -621,11 +668,15 @@ class PostgresCliAnalyticsReader:
                nullif(d.branch, '')                                                   AS branch,
                nullif(d.project_name, '')                                             AS project_name,
                nullif(d.first_prompt, '')                                             AS prompt,
-               coalesce(d.started_at, {_EPOCH})                                       AS started_at,  -- or 1970-01-01
-               coalesce({_ms("d.last_event_at")} - {_ms("d.started_at")}, 0)          AS duration_ms,
+               coalesce(r.session_start, {_EPOCH})                                    AS started_at,  -- or 1970-01-01
+               coalesce({_ms("r.session_end")} - {_ms("r.session_start")}, 0)         AS duration_ms,
                nullif(o.service_name, '')                                             AS harness_service_name
         FROM c
         LEFT JOIN session_dims d ON d.session_id = c.session_id
+        CROSS JOIN LATERAL (
+            SELECT {start} AS session_start, {end} AS session_end
+            FROM (SELECT c.session_id, d.started_at, d.activity_started_at, d.last_event_at, d.ended_at) t
+        ) r
         LEFT JOIN h ON h.session_id = c.session_id
         LEFT JOIN otel_resources o ON o.resource_id = h.resource_id""",
             {"sid": session_id},

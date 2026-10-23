@@ -305,6 +305,28 @@ async def test_session_start_times_rely_on_sel_alone():
     assert sql.count("BETWEEN") == 1  # only the one inside sel
 
 
+@pytest.mark.parametrize("method", ["get_session_durations", "get_session_cost_facts", "get_session_start_times"])
+@pytest.mark.asyncio
+async def test_session_queries_report_the_activity_range(method):
+    # Hook times lag the session's OTel events: the reported range also reads log_events and spans.
+    sql, _ = await _sql_of(method)
+
+    assert "act AS (" in sql
+    assert "least(" in sql and "greatest(" in sql
+    assert "FROM log_events" in sql and "FROM spans" in sql
+    assert sql.count("BETWEEN") == 1  # the window is still decided only in sel
+
+
+@pytest.mark.asyncio
+async def test_activity_probes_are_bounded_by_a_day_around_the_hook_times():
+    sql, _ = await _sql_of("get_session_durations")
+
+    assert sql.count("- interval '1 day'") == 2  # the earliest log_events / spans probes
+    assert sql.count("+ interval '1 day'") == 2  # the latest ones
+    assert re.search(r"\.ts < coalesce\(least\(", sql)  # an event at the candidate start is not earlier
+    assert re.search(r"\.ts > coalesce\(greatest\(", sql)
+
+
 @pytest.mark.asyncio
 async def test_users_last_active_has_no_overlap_where():
     sql, _ = await _sql_of("get_users_last_active")
@@ -331,6 +353,20 @@ async def test_session_detail_meta_resolves_the_earliest_service_name():
     assert "otel_resources" in sql
     assert "harness_service_name" in sql
     assert "ORDER BY" in sql.upper()
+
+
+@pytest.mark.asyncio
+async def test_session_detail_meta_reads_the_same_activity_range_as_the_list():
+    # One definition: the same day-bounded probes, open-ended when the session has no session_dims row.
+    recorder = _SqlRecorder()
+
+    await PostgresCliAnalyticsReader(recorder).get_session_detail_meta("s1")  # type: ignore[arg-type]
+
+    sql = " ".join(recorder.statements[0].split())
+    assert "FROM log_events le" in sql and "FROM spans sp" in sql
+    assert sql.count("- interval '1 day'") == 2 and sql.count("+ interval '1 day'") == 2
+    assert "'-infinity'" in sql and "'infinity'" in sql
+    assert "le.session_id = t.session_id" in sql  # keyed on the cost row's session, not the dims row
 
 
 @pytest.mark.asyncio
