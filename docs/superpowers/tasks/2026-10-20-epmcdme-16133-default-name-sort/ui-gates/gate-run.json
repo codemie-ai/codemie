@@ -1,0 +1,121 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-16133_members-default-sort",
+  "head": "8223c80ae4bd01314988934ddf6a47236b4d8a92",
+  "runner": "custom",
+  "started_at": "2026-10-21T12:17:40Z",
+  "completed_at": "2026-10-21T12:36:00Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 26069,
+      "command": "npm run lint",
+      "exit_code": 0
+    },
+    {
+      "id": "typecheck",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 19800,
+      "command": "npm run typecheck",
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "npm run license-check",
+      "exit_code": null,
+      "notes": "Guide Skip-if met: no dependency added/removed/moved (package.json and package-lock.json not in diff vs origin/main)."
+    },
+    {
+      "id": "secrets",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 18173,
+      "command": "npm run secrets:check",
+      "exit_code": 0,
+      "notes": "Output contains 'no leaks found' (gitleaks container ran); also covers the husky pre-commit secrets:check step. Working-tree scan only."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 263273,
+      "command": "npm run test:unit:slnt",
+      "exit_code": 0,
+      "notes": "715 files, 7252 passed, 1 skipped."
+    },
+    {
+      "id": "integration",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 195666,
+      "command": "npm run test:integration:slnt",
+      "exit_code": 0,
+      "notes": "50 files, 564 passed, 1 skipped."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 488126,
+      "command": "npm run test-harness",
+      "exit_code": 1,
+      "notes": "1 failed, 92 passed, 14 rerun: tests/ui/chats/test_chat_functionality.py::test_stop_button_visible_after_resend_first_message_in_multi_message_chat[chromium]. Observed: the UI on localhost:5173 is served by a vite process with cwd /Users/Anton_Atrashkou/codemie-dev/codemie-ui (main checkout, HEAD ref main), NOT this worktree, so the harness exercised main code, not branch code. junit written to <repo>/codemie-test-reports/junit.xml."
+    },
+    {
+      "id": "lint-staged",
+      "source": "hook",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "npx lint-staged",
+      "exit_code": null,
+      "notes": "Operates only on staged files and rewrites them (prettier --write, eslint --fix, license header --fix); nothing staged and repo must not be modified. Its checks are covered by lint, typecheck and license-headers gates. Guide/hook mismatch: guide says hook gates run automatically and are not invoked manually."
+    },
+    {
+      "id": "license-headers",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 893,
+      "command": "npm run license-headers:check",
+      "exit_code": 0,
+      "notes": "Checked 2371 files, 0 missing license headers."
+    },
+    {
+      "id": "sonar-local",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 241,
+      "command": "npm run sonar-local",
+      "exit_code": 0,
+      "notes": "Self-skip, exit 0: '[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.' Set SONAR_TOKEN (e.g. in .env.local) with access to the SonarQube in .sonarlint/connectedMode.json to run locally; otherwise only CI/Sonar settles it."
+    },
+    {
+      "id": "wait-ci-init",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "(GitLab CI job wait-ci-init)",
+      "exit_code": null,
+      "notes": "Gate waits on external pipeline contexts ci-pipeline and compliance-report (remote infrastructure); cannot be run locally. Still owed to CI."
+    },
+    {
+      "id": "ui",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "",
+      "exit_code": null,
+      "notes": "UI surface changed but no configured UI test script; browser verification is a separate caller decision. (test-harness sanity-ui ran separately, against main checkout.)"
+    }
+  ],
+  "failures": {
+    "test-harness": "E         - button \"Default\"\nE         - button \"Skills\":\nE           - img\nE           - text: Skills\nE         - button \"Send\"\nE         - separator \"Resize configuration panel\"\nE         - complementary\nE       - button \"Help\":\nE         - img\nE       - status: You should address an assistant. Type @ to see available options or visit the marketplace to browse globally available assistants.\n\ntests/ui/pageobject/chats/chat_page.py:1218: AssertionError\n------------------------------ Captured log setup ------------------------------\nINFO     codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/user\nINFO     codemie_sdk.utils.http:http.py:33 Successfully processed POST request to /v1/conversations\n---------------------------- Captured log teardown -----------------------------\nINFO     codemie_sdk.utils.http:http.py:33 Successfully processed DELETE request to /v1/conversations/11e4a454-2845-4b5e-b21e-d52e889b43ba\nINFO     reportportal_logger:rp_guard.py:50 Test failed - Screenshot captured: test_stop_button_visible_after_resend_first_message_in_multi_message_chat[chromium]\nINFO     codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/assistants\nINFO     codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/conversations\n------------------------------ Captured log setup ------------------------------\nINFO     codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/user\nINFO     codemie_sdk.utils.http:http.py:33 Successfully processed POST request to /v1/conversations\n---------------------------- Captured log teardown -----------------------------\nINFO     codemie_sdk.utils.http:http.py:33 Successfully processed DELETE request to /v1/conversations/b4f47120-0c95-4b27-8730-658bbe64a9ce\nINFO     reportportal_logger:rp_guard.py:50 Test failed - Screenshot captured: test_stop_button_visible_after_resend_first_message_in_multi_message_chat[chromium]\nINFO     codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/assistants\nINFO     codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/conversations\n------------------------------ Captured log setup ------------------------------\nINFO     codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/user\nINFO     codemie_sdk.utils.http:http.py:33 Successfully processed POST request to /v1/conversations\n---------------------------- Captured log teardown -----------------------------\nINFO     codemie_sdk.utils.http:http.py:33 Successfully processed DELETE request to /v1/conversations/11e4a454-2845-4b5e-b21e-d52e889b43ba\nINFO     reportportal_logger:rp_guard.py:50 Test failed - Screenshot captured: test_stop_button_visible_after_resend_first_message_in_multi_message_chat[chromium]\nINFO     codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/assistants\nINFO     codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/conversations\n---------------------------- Captured log teardown -----------------------------\nINFO     codemie_sdk.utils.http:http.py:33 Successfully processed DELETE request to /v1/conversations/b4f47120-0c95-4b27-8730-658bbe64a9ce\nINFO     reportportal_logger:rp_guard.py:50 Test failed - Screenshot captured: test_stop_button_visible_after_resend_first_message_in_multi_message_chat[chromium]\nINFO     codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/assistants\nINFO     codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/conversations\n---------------------------- Captured log teardown -----------------------------\nINFO     codemie_sdk.utils.http:http.py:33 Successfully processed DELETE request to /v1/conversations/c9017ace-6222-41a7-8b5c-1c365f5161fb\nINFO     reportportal_logger:rp_guard.py:50 Test failed - Screenshot captured: test_stop_button_visible_after_resend_first_message_in_multi_message_chat[chromium]\nINFO     codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/assistants\nINFO     codemie_sdk.utils.http:http.py:33 Successfully processed GET request to /v1/conversations\n- generated xml file: /Users/Anton_Atrashkou/codemie-dev/codemie-ui/.claude/worktrees/EPMCDME-16133/codemie-test-reports/junit.xml -\n=========================== short test summary info ============================\nFAILED tests/ui/chats/test_chat_functionality.py::test_stop_button_visible_after_resend_first_message_in_multi_message_chat[chromium]\n============== 1 failed, 92 passed, 14 rerun in 439.46s (0:07:19) =============="
+  }
+}

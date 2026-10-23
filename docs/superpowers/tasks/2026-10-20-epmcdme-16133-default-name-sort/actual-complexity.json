@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "generated": "2026-10-21T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 16,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 9,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Multi-repo changes with distinct content across 2 repos — scope scored additively. Backend: UserRepository default ORDER BY (name-key expression with email/id tie-breakers), UserManagementService and user management router sort defaults; UI: ProjectMembersManager stops sending sort options and the user store getUsers signature drops sort params. Roughly 5 components across UI, API, Service and repository query layers, each change small." },
+    { "dimension": "file_change_estimate", "reason": "9 files changed in total (codemie 5, codemie-ui 4), including 2 new test files (test_user_repository_sort.py, ProjectMembersNoSortParams.test.tsx) and a regenerated OpenAPI baseline; 7-10 files maps to L. Net diff is small (64 insertions, 102 deletions)." },
+    { "dimension": "affected_layers", "reason": "UI, API, Service and DB-persistence query ordering touched, but no schema change or migration, so held at M rather than L." },
+    { "dimension": "technical_risk", "reason": "Existing _SORT_COLUMN_MAP sort pattern and ORDER BY compile tests reused; additive defaults with trivial rollback, no security or performance surface. Calibration note: nearest bundled example epmcdme-10102 (S, 11) is lower overall; the gap comes from the cross-repo file count and component spread, not from risk or clarity." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

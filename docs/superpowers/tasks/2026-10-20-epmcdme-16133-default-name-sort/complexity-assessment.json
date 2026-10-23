@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "task": "Make case-insensitive A-to-Z by name (lower(coalesce(nullif(name,''),username)), email, id) the default order of GET /v1/admin/users without btrim, and stop the codemie-ui project Members tab from sending sort params.",
+  "generated": "2026-10-20T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 1, "label": "XS" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 14,
+  "size": "S",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "file_change_estimate", "reason": "About 9 modified files and 0 new across two repos: backend user_repository, user_management_service and user_management_router (docstrings and Query descriptions), the OpenAPI baseline and test_user_repository_sort; frontend ProjectMembersManager, the user store, ProjectMembersOrdering.test and user.test. Most edits are a few lines or deletions." },
+    { "dimension": "component_scope", "reason": "Repository query default plus sort map, docs-only edits in the service and router, and on the UI side the user store and the Members tab component, split across the codemie and codemie-ui repos. There is no shared contract change because the explicit sort_by/sort_order API stays the same, so this is not cross-system scope." },
+    { "dimension": "affected_layers", "reason": "Persistence query (no schema change), Service and API (docs/OpenAPI descriptions) and UI (store and page). That is the standard full-stack path with no migration." },
+    { "dimension": "technical_risk", "reason": "The closest pattern is EPMCDME-16070's _SORT_COLUMN_MAP and SQL-string ORDER BY tests (also mirrored in application_repository). This task reuses it with less code. There is no security-sensitive surface. The risks are procedural: the OpenAPI baseline regeneration needs a careful diff review on an already-failing snapshot, and the default order visibly changes for the Users Management page and SDK consumers." },
+    { "dimension": "calibration", "reason": "Total 14 sits on the 14/15 S/M boundary. It leans lower per the borderline rule: Technical Risk is S and the existing patterns cover nearly all of the work. This agrees with bundled S example epmcdme-10102. The file count is higher here only because two repos and their tests are touched." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

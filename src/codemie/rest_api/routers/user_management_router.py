@@ -133,7 +133,11 @@ def list_users(
         ),
     ),
     sort_by: Literal["name"] | None = Query(
-        None, description="Sort field. 'name' sorts by display name (falls back to username); default is newest first"
+        None,
+        description=(
+            "Sort field. 'name' sorts by display name (falls back to username); "
+            "default is A to Z by name (falls back to username), ties broken by email then id"
+        ),
     ),
     sort_order: Literal["asc", "desc"] = Query("asc", description="Sort direction for sort_by; ignored without it"),
     user: User = Depends(authenticate),

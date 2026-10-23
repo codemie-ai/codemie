@@ -1,0 +1,138 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-16133_default-name-sort",
+  "head": "b9a01706304fa390d09792a79604bf64a75da702",
+  "runner": "custom",
+  "started_at": "2026-10-21T12:18:39Z",
+  "completed_at": "2026-10-21T12:34:00Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 3790,
+      "command": "make ruff",
+      "exit_code": 0,
+      "notes": "2914 files unchanged by format; ruff check clean; no working-tree changes. Run with VIRTUAL_ENV=codemie-nZhCaEOo-py3.12 (main checkout venv), PYTHONPATH=src, POETRY_VIRTUALENVS_PATH=<empty scratch dir> so `poetry run` resolves that venv instead of the incomplete worktree venv codemie-_MtJ8JKG-py3.13"
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 4733,
+      "command": "make build",
+      "exit_code": 0,
+      "notes": "Built codemie-0.8.0 sdist+wheel into dist/ (gitignored)"
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1333,
+      "command": "make license-check",
+      "exit_code": 0,
+      "notes": "Checked 2617 files, 0 missing license headers"
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 49389,
+      "command": "make gitleaks",
+      "exit_code": 0,
+      "notes": "Docker (Rancher Desktop) available; full-tree scan ~54 MB: 'no leaks found'"
+    },
+    {
+      "id": "codemie-gitleaks",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 2028,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": 0,
+      "notes": "Self-skip: exit 0 but nothing staged: 'scanned ~0 bytes (0) in 160ms'. Branch content covered by full-tree `make gitleaks` PASS; this hook runs for real at commit time on staged changes"
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 188405,
+      "command": "make test",
+      "exit_code": 2,
+      "notes": "Pre-existing: identical failing/erroring test set reproduced on origin/main d8210b1 (merge base) with the same env (90 failed / 84 errors / 19734 passed on both); 0 failures unique to branch. Causes: exchangelib not installed in venv, codemie-enterprise absent (app_probe fails, so OpenAPI snapshot test cannot compare), LLM proxy/startup tests. test_authentication_service::test_load_user_for_auth_found did not fail in this env. Branch test tests/codemie/repository/test_user_repository_sort.py: 7 passed. Run with VIRTUAL_ENV=codemie-nZhCaEOo-py3.12 (main checkout venv), PYTHONPATH=src, POETRY_VIRTUALENVS_PATH=<empty scratch dir> so `poetry run` resolves that venv instead of the incomplete worktree venv codemie-_MtJ8JKG-py3.13"
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make coverage",
+      "notes": "Skip if: user did not request coverage (not requested in dispatch). Run `make coverage` to enable"
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 208,
+      "command": "make sonar-local",
+      "exit_code": 0,
+      "notes": "Self-skip: exit 0 with '[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.' Enable by exporting SONAR_TOKEN (or SONAR_TOKEN in .env.local) with access to the SonarQube host in .sonarlint/connectedMode.json. Still owed"
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make verify",
+      "notes": "Not run as a composite: its constituents (ruff, gitleaks, test) were run individually above; its `license` prerequisite is `check_license_headers.py --fix` (mutates files) and the non-mutating `make license-check` PASSed instead. Result would equal unit FAIL"
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "notes": "Needs infrastructure not provisioned here: docker compose stack up, superadmin fixtures, ~/.codemie/test-harness.json, ENV=local Bearer patch. Required for the MR description `## Test harness` section (auto_epm-cdme_vcs checks 3.1/3.2); still owed before opening the MR"
+    },
+    {
+      "id": "ruff-staged",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 90,
+      "command": "bash scripts/git-hooks/_ruff_staged.sh",
+      "exit_code": 0,
+      "notes": "Self-skip: '[pre-commit] No staged Python files - skipping Ruff format/fix check.' Covered by `make ruff` PASS over the full tree (pre-commit hook chain: _ruff_staged.sh -> ruff check -> license check; latter two covered by lint/license gates)"
+    },
+    {
+      "id": "commit-msg",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 154,
+      "command": "bash scripts/git-hooks/commit_msg.sh <msg-file> (run per commit in origin/main..HEAD: e7a335b, b9a0170)",
+      "exit_code": 0,
+      "notes": "Both subjects start with 'EPMCDME-16133:'"
+    },
+    {
+      "id": "pre-push-pytest",
+      "source": "hook",
+      "status": "FAIL",
+      "duration_ms": 340424,
+      "command": "poetry run pytest tests/ --ignore=tests/enterprise/ -W ignore::DeprecationWarning --cov --cov-report=xml:coverage.xml",
+      "exit_code": 1,
+      "notes": "Pre-existing: 52 failed / 79 errors / 18900 passed; the 131 failing ids are exactly origin/main's `make test` failures minus tests/enterprise; 0 unique to branch. Hook is opt-in (CODEMIE_PREPUSH_ENABLED=true) and chains `make sonar-local` (SONAR_SKIP_TESTS=1) next, which is SKIPPED above for missing SONAR_TOKEN. Run with VIRTUAL_ENV=codemie-nZhCaEOo-py3.12 (main checkout venv), PYTHONPATH=src, POETRY_VIRTUALENVS_PATH=<empty scratch dir> so `poetry run` resolves that venv instead of the incomplete worktree venv codemie-_MtJ8JKG-py3.13"
+    },
+    {
+      "id": "ci-pipeline",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "external GitLab pipeline (.gitlab-ci.yml wait-ci-init: EXPECTED_CONTEXTS ci-pipeline, compliance-report)",
+      "notes": "Repo .gitlab-ci.yml only includes a pre-ci-guard template that waits for external status contexts; no runnable jobs defined in-repo. Guide states no pipeline runs these gates; regression suite runs on `/sanity` MR comment. Only CI/MR can settle"
+    }
+  ],
+  "failures": {
+    "unit": "ERROR tests/codemie/rest_api/routers/test_tool.py\nERROR tests/codemie/rest_api/routers/test_user_kata_progress.py\nERROR tests/codemie/rest_api/routers/test_user_settings.py\nERROR tests/codemie/rest_api/routers/test_user_settings_crud.py\nERROR tests/codemie/rest_api/routers/test_workflow.py\nERROR tests/codemie/rest_api/routers/test_workflow_execution_transitions.py\nERROR tests/codemie/rest_api/routers/test_workflow_executions.py\nERROR tests/codemie/rest_api/routers/test_workflow_executions_marketplace.py\nERROR tests/codemie/rest_api/routers/test_workflow_marketplace_router.py\nERROR tests/codemie/rest_api/routers/test_workflow_selectable.py\nERROR tests/codemie/rest_api/test_customer_config_warmup.py\nERROR tests/codemie/rest_api/test_mcp_auth_required_handler.py\nERROR tests/codemie/service/settings/test_settings_tester.py\nERROR tests/codemie/service/settings/test_xwiki_settings.py\nERROR tests/codemie_tools/ms_exchange/test_client_factory.py\nERROR tests/codemie_tools/ms_exchange/test_errors.py\nERROR tests/codemie_tools/ms_exchange/test_ews_client.py\nERROR tests/codemie_tools/ms_exchange/test_graph_client.py\nERROR tests/codemie_tools/ms_exchange/test_toolkit.py\nERROR tests/codemie_tools/ms_exchange/test_tools.py\nERROR tests/enterprise/mcp_auth/test_client_metadata_bridge.py\nERROR tests/enterprise/mcp_auth/test_mcp_auth_status_bridge.py\nERROR tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py\nERROR tests/enterprise/mcp_auth/test_saml_initiate_bridge.py\nERROR tests/enterprise/mcp_auth/test_saml_metadata_bridge.py\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_route_is_in_the_guarded_openapi[index]\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_route_is_in_the_guarded_openapi[budget]\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_route_is_in_the_guarded_openapi[users]\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_route_is_in_the_guarded_openapi[local-auth]\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_route_is_in_the_guarded_openapi[workflow-generation]\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_routes_are_registered_on_the_app\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_building_the_app_attempts_no_network_connection\nERROR tests/codemie/rest_api/test_startup_integration.py::TestLiteLLMServiceInitialization::test_litellm_service_initialized_when_enabled\nERROR tests/codemie/rest_api/test_startup_integration.py::TestLiteLLMServiceInitialization::test_litellm_service_not_initialized_when_disabled\nERROR tests/codemie/rest_api/test_startup_integration.py::TestLiteLLMModelsInitialization::test_initialize_models_called_when_enabled\nERROR tests/codemie/rest_api/test_startup_integration.py::TestLiteLLMModelsInitialization::test_initialize_models_not_called_when_disabled\nERROR tests/codemie/rest_api/test_startup_integration.py::TestLiteLLMBudgetInitialization::test_budget_setup_when_enabled\nERROR tests/codemie/rest_api/test_startup_integration.py::TestLiteLLMBudgetInitialization::test_budget_setup_skipped_when_disabled\nERROR tests/codemie/rest_api/test_startup_integration.py::TestLifespanShutdown::test_litellm_service_shutdown\nERROR tests/codemie/rest_api/test_startup_integration.py::TestLifespanShutdown::test_llm_proxy_client_closed\nERROR tests/codemie/rest_api/test_startup_integration.py::TestLifespanShutdown::test_observability_provider_shutdown\nERROR tests/codemie/rest_api/test_startup_integration.py::TestCliAnalyticsRuntimeLifecycle::test_runtime_is_started_on_boot_and_stopped_on_shutdown\nERROR tests/codemie/rest_api/test_startup_integration.py::TestGlobalServiceRegistry::test_litellm_service_registered_globally\nERROR tests/codemie/rest_api/test_startup_integration.py::TestMCPAuthStartupValidation::test_initialize_mcp_auth_runs_during_startup\nERROR tests/codemie/rest_api/test_startup_integration.py::TestMCPAuthStartupValidation::test_initialize_mcp_auth_failure_aborts_startup\nERROR tests/codemie/rest_api/test_startup_integration.py::TestMCPAuthStartupValidation::test_shutdown_mcp_auth_runs_during_shutdown\nERROR tests/codemie/rest_api/test_startup_integration.py::test_lifespan_computes_model_provider_readiness_and_stores_it_on_app_state\nERROR tests/codemie/service/security/test_logout_token_cleanup_mock_tms.py::test_logout_removes_only_the_users_rows_and_pod_fallback\n= 90 failed, 19734 passed, 193 skipped, 183 warnings, 84 errors in 182.86s (0:03:02) =\nmake: *** [test] Error 1\n",
+    "pre-push-pytest": "ERROR tests/codemie/rest_api/routers/test_project_budget_router.py\nERROR tests/codemie/rest_api/routers/test_project_settings_project_change.py\nERROR tests/codemie/rest_api/routers/test_provider.py\nERROR tests/codemie/rest_api/routers/test_resume_workflow_execution.py\nERROR tests/codemie/rest_api/routers/test_share.py\nERROR tests/codemie/rest_api/routers/test_system_prompt_validation.py\nERROR tests/codemie/rest_api/routers/test_tool.py\nERROR tests/codemie/rest_api/routers/test_user_kata_progress.py\nERROR tests/codemie/rest_api/routers/test_user_settings.py\nERROR tests/codemie/rest_api/routers/test_user_settings_crud.py\nERROR tests/codemie/rest_api/routers/test_workflow.py\nERROR tests/codemie/rest_api/routers/test_workflow_execution_transitions.py\nERROR tests/codemie/rest_api/routers/test_workflow_executions.py\nERROR tests/codemie/rest_api/routers/test_workflow_executions_marketplace.py\nERROR tests/codemie/rest_api/routers/test_workflow_marketplace_router.py\nERROR tests/codemie/rest_api/routers/test_workflow_selectable.py\nERROR tests/codemie/rest_api/test_customer_config_warmup.py\nERROR tests/codemie/rest_api/test_mcp_auth_required_handler.py\nERROR tests/codemie/service/settings/test_settings_tester.py\nERROR tests/codemie/service/settings/test_xwiki_settings.py\nERROR tests/codemie_tools/ms_exchange/test_client_factory.py\nERROR tests/codemie_tools/ms_exchange/test_errors.py\nERROR tests/codemie_tools/ms_exchange/test_ews_client.py\nERROR tests/codemie_tools/ms_exchange/test_graph_client.py\nERROR tests/codemie_tools/ms_exchange/test_toolkit.py\nERROR tests/codemie_tools/ms_exchange/test_tools.py\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_route_is_in_the_guarded_openapi[index]\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_route_is_in_the_guarded_openapi[budget]\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_route_is_in_the_guarded_openapi[users]\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_route_is_in_the_guarded_openapi[local-auth]\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_route_is_in_the_guarded_openapi[workflow-generation]\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_routes_are_registered_on_the_app\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_building_the_app_attempts_no_network_connection\nERROR tests/codemie/rest_api/test_startup_integration.py::TestLiteLLMServiceInitialization::test_litellm_service_initialized_when_enabled\nERROR tests/codemie/rest_api/test_startup_integration.py::TestLiteLLMServiceInitialization::test_litellm_service_not_initialized_when_disabled\nERROR tests/codemie/rest_api/test_startup_integration.py::TestLiteLLMModelsInitialization::test_initialize_models_called_when_enabled\nERROR tests/codemie/rest_api/test_startup_integration.py::TestLiteLLMModelsInitialization::test_initialize_models_not_called_when_disabled\nERROR tests/codemie/rest_api/test_startup_integration.py::TestLiteLLMBudgetInitialization::test_budget_setup_when_enabled\nERROR tests/codemie/rest_api/test_startup_integration.py::TestLiteLLMBudgetInitialization::test_budget_setup_skipped_when_disabled\nERROR tests/codemie/rest_api/test_startup_integration.py::TestLifespanShutdown::test_litellm_service_shutdown\nERROR tests/codemie/rest_api/test_startup_integration.py::TestLifespanShutdown::test_llm_proxy_client_closed\nERROR tests/codemie/rest_api/test_startup_integration.py::TestLifespanShutdown::test_observability_provider_shutdown\nERROR tests/codemie/rest_api/test_startup_integration.py::TestCliAnalyticsRuntimeLifecycle::test_runtime_is_started_on_boot_and_stopped_on_shutdown\nERROR tests/codemie/rest_api/test_startup_integration.py::TestGlobalServiceRegistry::test_litellm_service_registered_globally\nERROR tests/codemie/rest_api/test_startup_integration.py::TestMCPAuthStartupValidation::test_initialize_mcp_auth_runs_during_startup\nERROR tests/codemie/rest_api/test_startup_integration.py::TestMCPAuthStartupValidation::test_initialize_mcp_auth_failure_aborts_startup\nERROR tests/codemie/rest_api/test_startup_integration.py::TestMCPAuthStartupValidation::test_shutdown_mcp_auth_runs_during_shutdown\nERROR tests/codemie/rest_api/test_startup_integration.py::test_lifespan_computes_model_provider_readiness_and_stores_it_on_app_state\nERROR tests/codemie/service/security/test_logout_token_cleanup_mock_tms.py::test_logout_removes_only_the_users_rows_and_pod_fallback\n= 52 failed, 18900 passed, 181 skipped, 183 warnings, 79 errors in 332.65s (0:05:32) =\n"
+  }
+}

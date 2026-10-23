@@ -342,7 +342,8 @@ class UserManagementService:
             per_page: Items per page
             search: Search term
             filters: Structured filter object (projects, user_type, platform_role)
-            sort_by: Optional sort field ("name"); default order is newest first
+            sort_by: Optional sort field ("name"); default is A to Z by name (falls back to username),
+                ties broken by email then id
             sort_order: Direction for sort_by ("asc" or "desc"); ignored without sort_by
 
         Returns:
@@ -532,7 +533,8 @@ class UserManagementService:
             per_page: Items per page
             search: Search term
             filters: Structured filter object (projects, user_type, platform_role)
-            sort_by: Optional sort field ("name"); default order is newest first
+            sort_by: Optional sort field ("name"); default is A to Z by name (falls back to username),
+                ties broken by email then id
             sort_order: Direction for sort_by ("asc" or "desc"); ignored without sort_by
 
         Returns:

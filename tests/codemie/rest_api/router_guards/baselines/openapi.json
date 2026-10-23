@@ -38808,7 +38808,7 @@
             }
           },
           {
-            "description": "Sort field. 'name' sorts by display name (falls back to username); default is newest first",
+            "description": "Sort field. 'name' sorts by display name (falls back to username); default is A to Z by name (falls back to username), ties broken by email then id",
             "in": "query",
             "name": "sort_by",
             "required": false,
@@ -38822,7 +38822,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Sort field. 'name' sorts by display name (falls back to username); default is newest first",
+              "description": "Sort field. 'name' sorts by display name (falls back to username); default is A to Z by name (falls back to username), ties broken by email then id",
               "title": "Sort By"
             }
           },

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for EPMCDME-16070: ORDER BY built by UserRepository.query_users."""
+"""Unit tests for EPMCDME-16070 and EPMCDME-16133: ORDER BY built by UserRepository.query_users."""
 
 import re
 from unittest.mock import MagicMock
@@ -23,8 +23,8 @@ from sqlmodel import Session
 from codemie.repository.user_repository import user_repository
 from codemie.rest_api.models.user_management import UserListFilters
 
-# Whitespace set stripped before the empty check: space, tab, newline, carriage return, NBSP.
-NAME_EXPR = "lower(coalesce(nullif(btrim(users.name, ' \t\n\r\u00a0'), ''), users.username))"
+NAME_EXPR = "lower(coalesce(nullif(users.name, ''), users.username))"
+DEFAULT = f"{NAME_EXPR} asc, users.email asc, users.id asc"
 
 
 def _compile_sql(statement) -> str:
@@ -44,7 +44,6 @@ def _normalise(sql: str) -> str:
 def _order_by_clause(**kwargs) -> str:
     session = MagicMock(spec=Session)
     user_repository.query_users(session, **kwargs)
-    # Split without collapsing whitespace: the btrim character set is whitespace itself.
     sql = _compile_sql(session.exec.call_args[0][0])
     order_by = re.split(r"\s+order by\s+", sql, maxsplit=1)[1]
     return re.split(r"\s+limit\s+", order_by, maxsplit=1)[0]
@@ -58,24 +57,23 @@ class TestQueryUsersOrdering:
         assert _order_by_clause(sort_by="name", sort_order="desc") == f"{NAME_EXPR} desc, users.email asc, users.id asc"
 
     def test_default_order(self):
-        assert _order_by_clause() == "users.date desc, users.id asc"
+        assert _order_by_clause() == DEFAULT
 
     def test_default_order_ignores_sort_order(self):
-        assert _order_by_clause(sort_order="desc") == "users.date desc, users.id asc"
+        assert _order_by_clause(sort_order="desc") == DEFAULT
 
     def test_positional_call_shape_still_supported(self):
         session = MagicMock(spec=Session)
         user_repository.query_users(session, None, UserListFilters(), 2, 10)
         sql = _normalise(_compile_sql(session.exec.call_args[0][0]))
-        assert "order by users.date desc, users.id asc" in sql
+        assert f"order by {DEFAULT}" in sql
 
 
-class TestNameSortKeyWhitespace:
-    def test_name_key_strips_all_whitespace_kinds(self):
+class TestNameSortKeyNoTrim:
+    def test_name_key_has_no_trim(self):
         sql = _compile_sql(user_repository._SORT_COLUMN_MAP["name"])
         assert sql == NAME_EXPR
-        for char in (" ", "\t", "\n", "\r", "\u00a0"):
-            assert char in sql.split("btrim(users.name, ", 1)[1].split(")", 1)[0]
+        assert "trim" not in sql
 
 
 class TestCountUsersUnordered:
