@@ -1344,3 +1344,28 @@ def test_kind_4_rollup_excludes_builtin_commands() -> None:
     assert "'exit'" in expected_array
     assert "'quit'" in expected_array
     assert "'compact'" not in expected_array  # compact is a real command, not built-in
+
+
+def test_a_computed_session_duration_is_never_negative() -> None:
+    # Same guard as the subagent duration_ms above, applied to the session-level duration_ms this
+    # fix introduced: ended_at (a provisional summary combined with later raw activity) could
+    # otherwise precede activity_started_at on clock skew, giving a negative number instead of NULL
+    # (EPMCDME-15584 MR !4532 review, CR-001).
+    computed = rollups._ms_between(rollups._ENDED_AT, rollups._ACTIVITY_STARTED_AT)
+    assert (
+        f"CASE WHEN ({rollups._ENDED_AT}) >= ({rollups._ACTIVITY_STARTED_AT}) THEN {computed} END"
+    ) == rollups._DURATION_MS
+    assert dict(rollups._COUNTER_VALUES)["duration_ms"] == rollups._DURATION_MS
+
+
+def test_a_malformed_is_final_value_defaults_to_final_instead_of_raising() -> None:
+    # ::boolean only accepts a fixed set of literal spellings; _booleans() normalizes a canonical
+    # "true"/"false" string into a real jsonb boolean but leaves anything else (a different
+    # representation, a malformed attrs blob) untouched, so a bare cast on that raw text would raise
+    # and fail the whole session's recompute. Guard the cast itself (EPMCDME-15584 MR !4532 review,
+    # CR-002): anything that isn't literally "true"/"false" after lower() defaults to final (true),
+    # the same safety choice already made for an absent is_final.
+    assert (
+        f"CASE WHEN {rollups._IS_FINAL_TEXT} IN ('true', 'false') THEN {rollups._IS_FINAL_TEXT}::boolean ELSE true END"
+    ) == rollups._IS_FINAL_SUMMARY
+    assert "::boolean" not in rollups._IS_FINAL_TEXT  # the cast only ever happens inside the guard

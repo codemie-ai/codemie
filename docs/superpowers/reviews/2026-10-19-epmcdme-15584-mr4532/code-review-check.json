@@ -1,0 +1,43 @@
+{
+  "decision": "approve",
+  "rationale": "All four blocking findings from code-review-final.json (CR-001..CR-004) are resolved in commit 69a65922f and unchanged by the later rebase/CI-restart commits (924c18dda, 7f26d7cfb, d3da14485), which touched no reviewed file besides deleting an ad-hoc diff snapshot. Static inspection of current HEAD confirms each guard is present (_DURATION_MS and _IS_FINAL_SUMMARY in rollups.py, the three CASE-guarded duration reads in reader.py, max(0, ...) in cli_analytics_handler.py, and the disclosed idle-tail caveat in cli-analytics-storage.md), and the targeted unit suite (243 passed) plus the live Postgres suite (5 passed, including the new CR-001/CR-002 regression tests test_live_an_ended_at_before_the_started_at_gives_a_null_duration_not_a_negative_one and test_live_a_malformed_is_final_value_does_not_fail_the_refresh) both pass. CR-004 was resolved by benchmarking rather than restructuring (documented 5x-stress-volume measurement in qa-report.md showing no measurable regression), which the original finding's recommendation explicitly allowed as an alternative to code restructuring. No new high-risk issue was introduced by the fix-up diff (reviewed directly: all new CASE guards are NULL-safe, and the new max(0, ...) clamp only applies after the None-check, so no regression path was found); confidence is high.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "story-ac", "item": "AC1: Normal /exit reliably records session completion", "status": "na", "notes": "Backend-only diff; the CLI hook sender lives in a separate repository (codemie-code) not present here. Pre-accepted as out of scope for a backend-only fix per this task's own technical-analysis.md; nothing in this diff changes that boundary."},
+    {"kind": "story-ac", "item": "AC2: Missing/cancelled SessionEnd does not truncate session duration", "status": "partial", "notes": "The new greatest(summary.ended_at, fb.last_ts) widening fixes the case where some later raw record exists after the last Stop. A session that sends zero further raw telemetry after its last Stop (the ticket's own primary reported shape) still has duration cut at that Stop's timestamp -- the fix narrows the bug's frequency but does not close it for this specific, common shape."},
+    {"kind": "story-ac", "item": "AC3: Session duration matches actual session lifetime within documented tolerance", "status": "partial", "notes": "A tolerance paragraph was added to cli-analytics-storage.md, satisfying the letter of 'documented'. But its wording ('closed by the next raw event or summary, whichever lands first') implies the gap always eventually closes, which is false for a session with no further telemetry after its last Stop -- see CR-003."},
+    {"kind": "spec", "item": "AC4: Cost/tokens remain unaffected", "status": "pass", "notes": "Only ended_at/activity_started_at/duration_ms expressions and the provisional-summary join predicate are touched; no cost/token/request/turn/tool counter in rollups.py is modified by this diff."},
+    {"kind": "story-ac", "item": "AC5: Automated coverage includes repeated normal exits and cancelled SessionEnd fallback behavior", "status": "partial", "notes": "test_live_session_duration_fallback.py covers non-final-summary widening, final-summary authority, and stability across repeated rollup refreshes (the 'repeated' half, as recomputation, not repeated CLI exits -- pre-accepted out of scope). No test exercises the fully-idle-after-last-Stop case where the fix's own mechanism cannot widen the duration -- exactly the gap in AC2/AC3 above."},
+    {"kind": "spec", "item": "Review note_2466282: a non-final (is_final:false) summary must be treated as a provisional lower bound combined with the latest raw record, not authoritative", "status": "pass", "notes": "_IS_FINAL_SUMMARY/_PROVISIONAL_SUMMARY and the _ENDED_AT CASE expression implement exactly this; a final summary (or absent is_final) stays authoritative outright, a provisional one is combined via greatest(...) with fb.last_ts, and _FALLBACK_DUE was extended with OR _PROVISIONAL_SUMMARY so fb.last_ts is actually computed in that case."},
+    {"kind": "spec", "item": "Review note_2466282: AC3's documented tolerance must state where the undercount is bounded and by what", "status": "partial", "notes": "Same gap as AC3 above: the documented bound is only real when a later event eventually arrives; the idle-tail case is not disclosed as unbounded."}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "Committed as 'EPMCDME-15584: Make a non-final session summary provisional for duration', matching the project's 'EPMCDME-<id>: <imperative summary>' convention, with the required Generated with AI / Co-Authored-By trailers."},
+    {"kind": "code-quality", "status": "pass", "notes": "ruff format --check and ruff check both clean on the changed files per two independent verification passes (implementer and independent audit)."},
+    {"kind": "security", "status": "pass", "notes": "No auth, secrets, or injection-relevant code touched. The ::boolean cast issue (CR-002) is a reliability/robustness defect (an unhandled malformed-input error path), not an auth/injection/secrets issue, so it is reported as a correctness finding, not flagged here."}
+  ],
+  "findings": [],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "resolved",
+      "notes": "rollups.py _DURATION_MS now wraps the computation in 'CASE WHEN ended >= started THEN ... END', matching the existing _SUBAGENT_VALUES convention; reader.py adds CASE-guarded (not greatest()) clamps at all three duration read sites (get_session_durations, get_session_cost_facts, get_session_detail_meta); cli_analytics_handler.py wraps the fallback branch in max(0, ...). New unit test test_a_computed_session_duration_is_never_negative pins the SQL shape; new live test test_live_an_ended_at_before_the_started_at_gives_a_null_duration_not_a_negative_one (RED-confirmed against pre-fix code per qa-report.md) and the full 243-test unit suite plus the 5-test live suite pass on current HEAD."
+    },
+    {
+      "id": "CR-002",
+      "status": "resolved",
+      "notes": "_IS_FINAL_SUMMARY in rollups.py no longer casts raw JSON text to ::boolean unguarded; _IS_FINAL_TEXT/_IS_FINAL_SUMMARY now gate the cast behind 'CASE WHEN lower(text) IN (\\'true\\',\\'false\\') THEN text::boolean ELSE true END'. New unit test test_a_malformed_is_final_value_defaults_to_final_instead_of_raising and live test test_live_a_malformed_is_final_value_does_not_fail_the_refresh (corrected per qa-report.md to use 'unknown', genuinely outside Postgres's accepted boolean-literal set, after an initial RED attempt with '1' was found to be a valid literal) both pass."
+    },
+    {
+      "id": "CR-003",
+      "status": "resolved",
+      "notes": ".ai-run/guides/integration/cli-analytics-storage.md's tolerance paragraph now explicitly discloses the idle-tail case: when a session sends no further raw/summary event after its last Stop, the undercount is not bounded by this mechanism and persists indefinitely. Docs-only change, verified by reading the current file content in the fix-up diff."
+    },
+    {
+      "id": "CR-004",
+      "status": "resolved",
+      "notes": "The original finding's recommendation offered two paths -- benchmark first, or narrow the provisional branch to compute only fb.last_ts. The fix-up took the benchmark path: qa-report.md documents a 5x-stress-volume (100,000 log_events on one session) timing comparison between FINAL and PROVISIONAL summary refreshes, showing a -2.7% delta (within run-to-run noise), i.e. no measurable regression. This directly answers the finding's stated concern (an unmeasured performance-regression risk) with a measurement; no code restructuring was required by the recommendation when the measurement comes back clean."
+    }
+  ]
+}

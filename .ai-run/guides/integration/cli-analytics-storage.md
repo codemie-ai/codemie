@@ -236,6 +236,34 @@ commands", `<command-name>` and `<local-command-stdout>` wrappers — reach neit
 prompt hook (checked after `/compact`, with `--continue` and with `--resume`), so they are never counted. Limits: a request more than 1 hour after its command is not seen, and the command is not
 counted; without the plugin hooks an auto prompt stays a turn.
 
+**`ended_at`/`duration_ms` and a non-final summary.** `agent.session.summary` is sent on every Stop,
+not only at `SessionEnd`, each one marked `is_final`. A **final** summary (`is_final: true`, or the
+field absent — an older client never sent it, and absence keeps the pre-existing, final-wins
+behavior) is authoritative outright: `ended_at`/`duration_ms` come from it alone, even if some
+unrelated raw record lands later. A **provisional** summary (`is_final: false`, the shape every Stop
+sends since codemie-code v0.15.9) is a lower bound, not the final word: `ended_at` is the *later* of
+that summary's own `ended_at` and the session's latest raw record, so a `SessionEnd` cancelled after
+the last Stop (a normal `/exit`) does not truncate the stored duration back to that Stop. Tolerance:
+once a final summary or a real `SessionEnd` is recorded, the value is exact to the transcript; while
+only provisional summaries have been seen, the duration can still undercount by up to the gap between
+the true exit and the latest raw record this session has sent so far. That gap narrows with the next
+raw event or summary, whichever lands first, and closes outright once the real `SessionEnd` arrives —
+**but if neither ever does** (the session goes idle after its last Stop and sends no further
+telemetry of any kind, the normal-`/exit`-with-cancelled-`SessionEnd` shape this fix exists for), there
+is no later event to narrow or close it: the undercount is not bounded by this mechanism at all and
+the duration stays at the last Stop's timestamp indefinitely, the same as before this fix.
+
+This stored `ended_at` is not the whole of the reported duration, and the two layers do not make each
+other redundant. The reader derives what a dashboard shows from the activity range
+(`greatest(last_event_at, ended_at, latest log_events, latest spans)`, see Window Semantics), so a
+tail that lands in `log_events` or `spans` is recovered there even when the stored `ended_at` is cut
+at a Stop. The reverse does not hold: those probes read those two tables only, and `last_event_at`
+moves for the 13 dimension hook types alone, so a tail that is a non-dimension hook
+(`agent.git.snapshot`, which is sent *at the end of the session*), a `usage_requests` row or a
+`metric_points` row is invisible to the reader. The fallback range behind `ended_at` spans all five
+raw tables, so correcting it here is the only way those tails reach the reported duration — and
+`ended_at` is itself one of the inputs to that `greatest(...)`.
+
 Columns that do not depend on a summary:
 
 | Column | Source |

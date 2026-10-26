@@ -1,0 +1,62 @@
+{
+  "task": "Prefer session_dims.duration_ms rollup over the hook-pair (last_event_at - started_at) diff for session duration, falling back to the diff only when duration_ms is NULL, across get_session_durations, get_session_detail_meta, get_session_cost_facts (reader) and get_sessions (handler).",
+  "generated": "2026-10-14T00:00:00Z",
+  "dimensions": {
+    "component_scope": {
+      "score": 3,
+      "label": "M",
+      "affected": "PostgresCliAnalyticsReader (get_session_durations, get_session_detail_meta, get_session_cost_facts), LocalAnalyticsHandler (get_sessions)",
+      "layers": "Repository, Service"
+    },
+    "requirements_clarity": {
+      "score": 2,
+      "label": "S",
+      "status": "Clear",
+      "gaps": null
+    },
+    "technical_risk": {
+      "score": 2,
+      "label": "S",
+      "risk_factors": "Duration computation feeds multiple analytics surfaces (session list, session detail, overview KPIs, per-user averages); the fallback must not change already-populated duration_ms values for sessions where the rollup exists",
+      "mitigation": "Uses coalesce()/None-check fallback consistent with the existing session_duration_ms pattern already read in _sessions_cte; hook-pair diff path unchanged and only used when duration_ms is NULL"
+    },
+    "file_change_estimate": {
+      "score": 3,
+      "label": "M",
+      "modified_files": 4,
+      "modified_file_list": [
+        "src/codemie/repository/cli_analytics/postgres/reader.py",
+        "src/codemie/service/analytics/handlers/cli_analytics_handler.py",
+        "tests/codemie/repository/cli_analytics/postgres/test_reader.py",
+        "tests/codemie/service/analytics/handlers/test_cli_analytics_handler.py"
+      ],
+      "new_files": 0,
+      "new_file_list": [],
+      "affected_dirs": ["src", "tests"]
+    },
+    "dependencies": {
+      "score": 1,
+      "label": "XS",
+      "new_packages": [],
+      "version_changes": []
+    },
+    "affected_layers": {
+      "score": 2,
+      "label": "S",
+      "layers_changed": ["Repository", "Service"],
+      "schema_migration": false,
+      "cross_system": false
+    }
+  },
+  "total": 13,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 4,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Four methods touched across two layers (3 reader query methods + 1 handler assembly method), coordinated by one coalesce-based fallback rule" },
+    { "dimension": "file_change_estimate", "reason": "4 files changed (71 insertions, 7 deletions): 2 source files plus matching unit tests, no new files created" }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

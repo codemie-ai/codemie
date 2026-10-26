@@ -1025,9 +1025,22 @@ _HOOK_COMPACTIONS = f"""SELECT h.ts, h.ingest_seq, jsonb_strip_nulls(jsonb_build
               AND NOT EXISTS (SELECT 1 FROM log_events l WHERE l.session_id = k.session_id
                               AND l.event_name = {_literal(_OTEL_COMPACTION)})"""
 
+# codemie-code >=0.15.9 sends agent.session.summary on every Stop, not only at SessionEnd, each one
+# marked `is_final`. Missing `is_final` (an older client, or a summary shape from before this field
+# existed) defaults to true: unchanged, final-wins behavior for every summary that does not say
+# otherwise. Only an explicit `is_final: false` is "provisional" (EPMCDME-15584 MR !4532 review).
+# _booleans() only turns a canonical "true"/"false" string into a real jsonb boolean; a malformed or
+# unexpected value (anything else) passes through unchanged, so a bare ::boolean cast on it would
+# raise and fail the whole session's recompute (EPMCDME-15584 MR !4532 review, CR-002) -- guard the
+# cast itself instead of trusting every value under this key is castable.
+_IS_FINAL_TEXT = f"lower({_booleans('sm.attrs')}->>'is_final')"
+_IS_FINAL_SUMMARY = f"CASE WHEN {_IS_FINAL_TEXT} IN ('true', 'false') THEN {_IS_FINAL_TEXT}::boolean ELSE true END"
+_PROVISIONAL_SUMMARY = f"sm.ts IS NOT NULL AND NOT {_IS_FINAL_SUMMARY}"
+
 # The joins the counters read, after the stored row `cur`:
 #   sm  the latest summary;  rd  the rollup-derived columns (every time);
-#   fb  the fallback sources (only when due);  fl  file counts;  er  tool errors;  tl  tools.
+#   fb  the fallback sources (only when due, or the latest summary is provisional); fl  file counts;
+#   er  tool errors;  tl  tools.
 _COUNTER_JOINS = f"""LEFT JOIN session_dims cur ON cur.session_id = k.session_id
     LEFT JOIN LATERAL (
         SELECT h.ts, h.attrs FROM hook_events h
@@ -1074,7 +1087,13 @@ _COUNTER_JOINS = f"""LEFT JOIN session_dims cur ON cur.session_id = k.session_id
                     {_HOOK_COMPACTIONS}
                 ) c) AS compactions
         FROM (SELECT min(x.lo) AS first_ts, max(x.hi) AS last_ts FROM ({_RAW_RANGE}) x) r
-        WHERE {_FALLBACK_DUE}
+        -- also computed (for fb.last_ts alone; every other fb.* column here stays unused in that
+        -- case, since _summary_or already picks the summary value whenever sm.ts IS NOT NULL) when
+        -- the latest summary is a non-final Stop snapshot, so ended_at/duration_ms below can take
+        -- the later of it and raw activity instead of truncating at the last Stop (EPMCDME-15584
+        -- MR !4532 review, note_2466282: codemie-code >=0.15.9 sends a non-final summary on every
+        -- Stop, so a cancelled SessionEnd left the stored duration cut at the last Stop forever).
+        WHERE ({_FALLBACK_DUE}) OR {_PROVISIONAL_SUMMARY}
     ) fb ON true
     -- Distinct paths of the session's days (the stored range reaches past a purged tail), per flag.
     LEFT JOIN LATERAL (
@@ -1135,7 +1154,6 @@ _COUNTER_JOINS = f"""LEFT JOIN session_dims cur ON cur.session_id = k.session_id
 
 _COMPACTION_COUNT = "coalesce(jsonb_array_length(fb.compactions), 0)"
 _SUMMARY_ATTRS = "sm.attrs"  # the latest summary's attrs (`sm` in _COUNTER_JOINS)
-_FALLBACK_DURATION = _ms_between("fb.last_ts", "fb.first_ts")
 _CLIENT_VERSION = f"coalesce(lv.v->>'client_version', {_otel_session_text('app.version')})"
 
 
@@ -1145,6 +1163,26 @@ def _summary_or(summary: str, fallback: str) -> str:
 
 def _summary_count(key: str, digits: int = _INT_DIGITS) -> str:
     return _json_count(_SUMMARY_ATTRS, key, digits)
+
+
+# ended_at/duration_ms do not use the plain summary-or-fallback rule every other counter uses: a
+# provisional (non-final) summary is a lower bound, not the final word, so its ended_at is taken
+# together with the raw range's own last_ts (greatest() skips either side that is NULL) instead of
+# replacing it outright. A final summary (or no summary at all) keeps the existing, simpler rule
+# (EPMCDME-15584 MR !4532 review, note_2466282).
+_ENDED_AT = (
+    f"CASE WHEN sm.ts IS NULL THEN fb.last_ts "
+    f"WHEN {_IS_FINAL_SUMMARY} THEN {_json_ts(_SUMMARY_ATTRS, 'ended_at')} "
+    f"ELSE greatest({_json_ts(_SUMMARY_ATTRS, 'ended_at')}, fb.last_ts) END"
+)
+_ACTIVITY_STARTED_AT = _summary_or(_json_ts(_SUMMARY_ATTRS, "started_at"), "fb.first_ts")
+# Guarded the same way _SUBAGENT_VALUES' own duration_ms already is: clock skew between a summary's
+# ended_at and fb.last_ts (or malformed client attrs) could otherwise put ended_at before
+# activity_started_at and yield a negative duration (EPMCDME-15584 MR !4532 review, CR-001) --
+# NULL (not a negative number) when that happens, same as the subagent precedent.
+_DURATION_MS = (
+    f"CASE WHEN ({_ENDED_AT}) >= ({_ACTIVITY_STARTED_AT}) THEN {_ms_between(_ENDED_AT, _ACTIVITY_STARTED_AT)} END"
+)
 
 
 # (column, value) of the summary columns whose fallback comes from the rollups: recomputed each time.
@@ -1180,9 +1218,9 @@ _COUNTERS_FROM_RAW: tuple[tuple[str, str], ...] = (
 _COUNTER_VALUES: tuple[tuple[str, str], ...] = (
     *_COUNTERS_FROM_ROLLUPS,
     *_COUNTERS_FROM_RAW,
-    ("activity_started_at", _summary_or(_json_ts(_SUMMARY_ATTRS, "started_at"), "fb.first_ts")),
-    ("ended_at", _summary_or(_json_ts(_SUMMARY_ATTRS, "ended_at"), "fb.last_ts")),
-    ("duration_ms", _summary_or(_summary_count("duration_ms", _BIGINT_DIGITS), _FALLBACK_DURATION)),
+    ("activity_started_at", _ACTIVITY_STARTED_AT),
+    ("ended_at", _ENDED_AT),
+    ("duration_ms", _DURATION_MS),
     (
         "client_versions",
         _summary_or(
