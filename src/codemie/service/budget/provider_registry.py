@@ -270,6 +270,13 @@ class _NoopBudgetEnforcementProvider:
         _ = provider_member_refs
         return []
 
+    async def collect_member_budget_spend_for_allocations(
+        self,
+        allocations: list[ProjectMemberBudgetAssignment],
+    ) -> list[MemberBudgetSpendSnapshot]:
+        _ = allocations
+        return []
+
     async def reconcile_budget_reset_timestamps(
         self,
         *,

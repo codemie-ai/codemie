@@ -1,0 +1,82 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-14433_per-project-spending-personal-page",
+  "head": "55aaabbb60639381163586669c58413e93a8dd54",
+  "runner": "custom",
+  "started_at": "2026-08-31T00:00:00Z",
+  "completed_at": "2026-08-31T00:10:00Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 8000,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 5000,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 4000,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 500,
+      "command": "make gitleaks",
+      "exit_code": 127,
+      "notes": "Docker unavailable (command not found). Enable by starting Docker Desktop; the gate runs `docker run ghcr.io/gitleaks/gitleaks:v8.30.1 dir` against the working tree. CI will run this gate for real."
+    },
+    {
+      "id": "test",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make test",
+      "exit_code": null,
+      "notes": "Scoped run: user requested focused tests only; full suite skipped."
+    },
+    {
+      "id": "focused-test",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 37270,
+      "command": "poetry run pytest tests/codemie/repository/test_project_spend_tracking_repository.py tests/codemie/rest_api/routers/test_analytics.py tests/codemie/service/analytics/handlers/test_budget_usage_service.py tests/codemie/service/analytics/handlers/test_member_spend_service.py -v",
+      "exit_code": 0,
+      "notes": "213 passed, 1 warning (LangChainPendingDeprecationWarning from langgraph)."
+    },
+    {
+      "id": "sonar-local",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 1000,
+      "command": "make sonar-local",
+      "exit_code": 0,
+      "notes": "Self-skipped: '[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.' Set SONAR_TOKEN to run locally. The pre-push hook also runs this gate when CODEMIE_PREPUSH_ENABLED=true."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "exit_code": null,
+      "notes": "Not opening an MR in this run; required only at MR delivery. Prereqs: docker stack up, superadmin fixtures, ~/.codemie/test-harness.json."
+    }
+  ],
+  "failures": {}
+}

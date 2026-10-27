@@ -241,6 +241,9 @@ class TestBudgetUsageServiceIsLitellmEnabled:
         assert result is True
 
 
+_MSS = "codemie.service.analytics.handlers.member_spend_service.member_spend_service"
+
+
 class TestBudgetUsageServiceGetBudgetUsage:
     """Tests for BudgetUsageService.get_budget_usage orchestration."""
 
@@ -251,11 +254,15 @@ class TestBudgetUsageServiceGetBudgetUsage:
         mock_session = AsyncMock()
         fresh_row = SimpleNamespace(spend_date=datetime.now(timezone.utc))
 
-        with patch.object(
-            service, "_load_from_db", new_callable=AsyncMock, return_value=([], {}, {"b1": fresh_row}, {})
+        with (
+            patch(_MSS) as mock_mss,
+            patch.object(
+                service, "_load_from_db", new_callable=AsyncMock, return_value=([], {}, {"b1": fresh_row}, {})
+            ),
+            patch.object(service, "_needs_refresh", return_value=False),
         ):
-            with patch.object(service, "_needs_refresh", return_value=False):
-                columns, rows = await service.get_budget_usage(mock_session, "user-1", "user@test.com")
+            mock_mss.get_user_project_rows = AsyncMock(return_value=[])
+            columns, rows = await service.get_budget_usage(mock_session, "user-1", "user@test.com")
 
         assert isinstance(columns, list)
         assert isinstance(rows, list)
@@ -268,10 +275,14 @@ class TestBudgetUsageServiceGetBudgetUsage:
         mock_session = AsyncMock()
         assignment = SimpleNamespace(budget_id="b1", category="platform")
 
-        with patch.object(service, "_load_from_db", new_callable=AsyncMock, return_value=([assignment], {}, {}, {})):
-            with patch.object(service, "_needs_refresh", return_value=True):
-                with patch.object(service, "_is_litellm_enabled", return_value=False):
-                    columns, rows = await service.get_budget_usage(mock_session, "user-1", "user@test.com")
+        with (
+            patch(_MSS) as mock_mss,
+            patch.object(service, "_load_from_db", new_callable=AsyncMock, return_value=([assignment], {}, {}, {})),
+            patch.object(service, "_needs_refresh", return_value=True),
+            patch.object(service, "_is_litellm_enabled", return_value=False),
+        ):
+            mock_mss.get_user_project_rows = AsyncMock(return_value=[])
+            columns, rows = await service.get_budget_usage(mock_session, "user-1", "user@test.com")
 
         mock_session.rollback.assert_not_called()
         assert isinstance(rows, list)
@@ -290,13 +301,15 @@ class TestBudgetUsageServiceGetBudgetUsage:
             ([assignment], {"b1": budget}, fresh_spend, {}),
         ]
 
-        with patch.object(service, "_load_from_db", new_callable=AsyncMock, side_effect=load_calls):
-            with patch.object(service, "_needs_refresh", return_value=True):
-                with patch.object(service, "_is_litellm_enabled", return_value=True):
-                    with patch.object(
-                        service, "_refresh_from_litellm", new_callable=AsyncMock, return_value=fresh_spend
-                    ):
-                        columns, rows = await service.get_budget_usage(mock_session, "user-1", "user@test.com")
+        with (
+            patch(_MSS) as mock_mss,
+            patch.object(service, "_load_from_db", new_callable=AsyncMock, side_effect=load_calls),
+            patch.object(service, "_needs_refresh", return_value=True),
+            patch.object(service, "_is_litellm_enabled", return_value=True),
+            patch.object(service, "_refresh_from_litellm", new_callable=AsyncMock, return_value=fresh_spend),
+        ):
+            mock_mss.get_user_project_rows = AsyncMock(return_value=[])
+            columns, rows = await service.get_budget_usage(mock_session, "user-1", "user@test.com")
 
         mock_session.rollback.assert_called_once()
         assert isinstance(rows, list)
@@ -308,11 +321,15 @@ class TestBudgetUsageServiceGetBudgetUsage:
         mock_session = AsyncMock()
         refresh_mock = AsyncMock()
 
-        with patch.object(service, "_load_from_db", new_callable=AsyncMock, return_value=([], {}, {}, {})):
-            with patch.object(service, "_needs_refresh", return_value=True):
-                with patch.object(service, "_is_litellm_enabled", return_value=True):
-                    with patch.object(service, "_refresh_from_litellm", refresh_mock):
-                        await service.get_budget_usage(mock_session, "user-1", "user@test.com")
+        with (
+            patch(_MSS) as mock_mss,
+            patch.object(service, "_load_from_db", new_callable=AsyncMock, return_value=([], {}, {}, {})),
+            patch.object(service, "_needs_refresh", return_value=True),
+            patch.object(service, "_is_litellm_enabled", return_value=True),
+            patch.object(service, "_refresh_from_litellm", refresh_mock),
+        ):
+            mock_mss.get_user_project_rows = AsyncMock(return_value=[])
+            await service.get_budget_usage(mock_session, "user-1", "user@test.com")
 
         refresh_mock.assert_not_called()
 
@@ -565,6 +582,198 @@ class TestCollectSpendRowsResetTransition:
 
         assert rows == []
         assert "bud-1" in unchanged_ids
+
+
+class TestExpandProjectRows:
+    """Tests for _expand_project_rows (Task 4)."""
+
+    def _project_row(self, name, **overrides):
+        base = {
+            "project_name": name,
+            "platform": 1.0,
+            "platform_limit": 10.0,
+            "cli": 0.5,
+            "cli_limit": 5.0,
+            "premium_models": 0.0,
+            "premium_models_limit": None,
+        }
+        return {**base, **overrides}
+
+    def test_expand_sorts_by_project_name_case_insensitive(self):
+        from codemie.service.analytics.handlers.budget_usage_service import _expand_project_rows
+
+        rows = _expand_project_rows([self._project_row("Zebra"), self._project_row("alpha")])
+        names = [r["project_name"] for r in rows]
+        assert names == ["alpha", "alpha (cli)", "Zebra", "Zebra (cli)"]
+
+    def test_expand_emits_all_three_categories_when_all_allocated(self):
+        from codemie.service.analytics.handlers.budget_usage_service import _expand_project_rows
+
+        row = self._project_row("p", premium_models=0.0, premium_models_limit=2.0)
+        names = [r["project_name"] for r in _expand_project_rows([row])]
+        assert names == ["p", "p (cli)", "p (premium)"]
+
+    def test_expand_empty_input(self):
+        from codemie.service.analytics.handlers.budget_usage_service import _expand_project_rows
+
+        assert _expand_project_rows([]) == []
+
+    def test_expand_skips_null_limit_zero_spend(self):
+        from codemie.service.analytics.handlers.budget_usage_service import _expand_project_rows
+
+        row = self._project_row("p", premium_models=0.0, premium_models_limit=None)
+        result = _expand_project_rows([row])
+        assert all("premium" not in r["project_name"] for r in result)
+
+    def test_expand_skips_spend_with_null_limit(self):
+        """Spend left over from a deleted project budget has no limit to report against."""
+        from codemie.service.analytics.handlers.budget_usage_service import _expand_project_rows
+
+        row = self._project_row("p", platform=2.5, platform_limit=None)
+        result = _expand_project_rows([row])
+        assert [r["project_name"] for r in result] == ["p (cli)"]
+
+    def test_expand_null_reset_fields_when_absent(self):
+        from codemie.service.analytics.handlers.budget_usage_service import _expand_project_rows
+
+        result = _expand_project_rows([self._project_row("p")])
+        for r in result:
+            assert r["budget_reset_at"] is None
+            assert r["time_until_reset"] is None
+
+    def test_expand_populates_reset_fields_from_row(self):
+        from codemie.service.analytics.handlers.budget_usage_service import _expand_project_rows
+
+        reset_at = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()
+        row = self._project_row("p", platform_reset_at=reset_at)
+        platform_row = next(r for r in _expand_project_rows([row]) if r["project_name"] == "p")
+        assert platform_row["budget_reset_at"] == reset_at
+        assert platform_row["time_until_reset"] is not None
+
+    def test_expand_all_categories_skipped_emits_no_rows(self):
+        """A project with no allocation in any category must produce no rows."""
+        from codemie.service.analytics.handlers.budget_usage_service import _expand_project_rows
+
+        all_zero = {
+            "project_name": "empty-proj",
+            "platform": 3.0,
+            "platform_limit": None,
+            "cli": 0.0,
+            "cli_limit": None,
+            "premium_models": 0.0,
+            "premium_models_limit": None,
+        }
+        other = self._project_row("other")
+        result = _expand_project_rows([all_zero, other])
+        assert not any(r["project_name"].startswith("empty-proj") for r in result)
+        assert any(r["project_name"].startswith("other") for r in result)
+
+
+class TestGetBudgetUsageWithProjectRows:
+    """Integration tests for get_budget_usage with project rows (Task 4)."""
+
+    def _assignment(self, category: str):
+        return SimpleNamespace(budget_id=f"bid-{category}", category=category)
+
+    @pytest.mark.asyncio
+    async def test_project_rows_use_user_scoped_refresh(self):
+        service = BudgetUsageService()
+        mock_session = AsyncMock()
+
+        with (
+            patch(_MSS) as mock_mss,
+            patch.object(service, "_load_from_db", new_callable=AsyncMock, return_value=([], {}, {}, {})),
+            patch.object(service, "_needs_refresh", return_value=False),
+        ):
+            mock_mss.get_user_project_rows = AsyncMock(return_value=[])
+            await service.get_budget_usage(mock_session, "user-1", "user@test.com")
+
+        mock_mss.get_user_project_rows.assert_awaited_once_with(
+            mock_session, "user-1", enforced_only=True, with_reset=True, user_scoped_refresh=True
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_budget_usage_personal_rows_first_then_project(self):
+        from codemie.service.analytics.handlers.budget_usage_service import BudgetUsageService
+
+        project_rows_raw = [
+            {
+                "project_name": "proj-a",
+                "platform": 1.0,
+                "platform_limit": 10.0,
+                "cli": 0.0,
+                "cli_limit": None,
+                "premium_models": 0.0,
+                "premium_models_limit": None,
+            }
+        ]
+        service = BudgetUsageService()
+        mock_session = AsyncMock()
+        assignment = self._assignment("platform")
+        budget = SimpleNamespace(max_budget=100.0, budget_reset_at=None)
+        spend = SimpleNamespace(budget_period_spend=Decimal("5.0"), spend_date=datetime.now(timezone.utc))
+
+        _mss = "codemie.service.analytics.handlers.member_spend_service.member_spend_service"
+
+        call_order: list[str] = []
+
+        async def _spy_project_spend_rows(session, uid, **kwargs):
+            call_order.append("get_user_project_rows")
+            return project_rows_raw
+
+        async def _spy_load_from_db(session, uid, email):
+            call_order.append("_load_from_db")
+            return ([assignment], {"bid-platform": budget}, {"bid-platform": spend}, {})
+
+        with (
+            patch(_mss) as mock_mss,
+            patch.object(service, "_load_from_db", side_effect=_spy_load_from_db),
+            patch.object(service, "_needs_refresh", return_value=False),
+        ):
+            mock_mss.get_user_project_rows = AsyncMock(side_effect=_spy_project_spend_rows)
+            _, rows = await service.get_budget_usage(mock_session, "user-1", "user@example.com")
+
+        personal = [r for r in rows if "user@example.com" in r["project_name"]]
+        project = [r for r in rows if "proj-a" in r["project_name"]]
+        assert personal and project
+        assert rows.index(personal[-1]) < rows.index(project[0])
+        assert call_order.index("get_user_project_rows") < call_order.index(
+            "_load_from_db"
+        ), "get_user_project_rows must be awaited before _load_from_db"
+
+    @pytest.mark.asyncio
+    async def test_personal_rows_are_category_sorted(self):
+        """Assignments come back from the DB unordered; the response must sort by category."""
+        service = BudgetUsageService()
+        mock_session = AsyncMock()
+        assignments = [
+            self._assignment("premium_models"),
+            self._assignment("cli"),
+            self._assignment("platform"),
+        ]
+        budgets = {
+            "bid-premium_models": SimpleNamespace(max_budget=5.0, budget_reset_at=None),
+            "bid-cli": SimpleNamespace(max_budget=20.0, budget_reset_at=None),
+            "bid-platform": SimpleNamespace(max_budget=100.0, budget_reset_at=None),
+        }
+
+        _mss = "codemie.service.analytics.handlers.member_spend_service.member_spend_service"
+
+        with (
+            patch(_mss) as mock_mss,
+            patch.object(
+                service,
+                "_load_from_db",
+                new_callable=AsyncMock,
+                return_value=(assignments, budgets, {}, {}),
+            ),
+            patch.object(service, "_needs_refresh", return_value=False),
+        ):
+            mock_mss.get_user_project_rows = AsyncMock(return_value=[])
+            _, rows = await service.get_budget_usage(mock_session, "user-1", "alice")
+
+        names = [r["project_name"] for r in rows]
+        assert names == ["alice", "alice (cli)", "alice (premium)"]
 
 
 class TestCollectSpendRowsBudgetReassignment:

@@ -426,6 +426,28 @@ class TestApplicationRepositoryAsyncOperations:
     """Test async variants of repository methods."""
 
     @pytest.mark.asyncio
+    async def test_aget_personal_project_names_filters_to_given_personal_projects(self):
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = ["me@corp.com"]
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(return_value=mock_result)
+
+        result = await application_repository.aget_personal_project_names(mock_session, ["atlas", "me@corp.com"])
+
+        assert result == {"me@corp.com"}
+        query_text = _compile_sql(mock_session.execute.call_args[0][0])
+        assert "applications.name in ('atlas', 'me@corp.com')" in query_text
+        assert "applications.project_type = 'personal'" in query_text
+        assert "applications.deleted_at is null" in query_text
+
+    @pytest.mark.asyncio
+    async def test_aget_personal_project_names_skips_query_for_no_names(self):
+        mock_session = AsyncMock()
+
+        assert await application_repository.aget_personal_project_names(mock_session, []) == set()
+        mock_session.execute.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_aget_by_name_returns_application_when_exists(self):
         """aget_by_name returns Application when project exists (async)."""
         # Arrange

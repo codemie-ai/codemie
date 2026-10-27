@@ -1,0 +1,26 @@
+[
+  {
+    "location": "src/codemie/service/analytics/handlers/budget_usage_service.py:189",
+    "trigger_condition": "BudgetCategory gains a fourth member not present in _CATEGORY_SUFFIX",
+    "guard_snippet": "_CATEGORY_SUFFIX.get(category.value, f' ({category.value})')",
+    "potential_consequence": "KeyError crashes _expand_project_rows for every user on the personal page"
+  },
+  {
+    "location": "src/codemie/service/analytics/handlers/member_spend_service.py:269",
+    "trigger_condition": "_refresh_all_member_spend raises; finally block still sets _last_checked_at",
+    "guard_snippet": "Only set _last_checked_at inside the try block on successful refresh, not in finally",
+    "potential_consequence": "Failed refresh silences retries for full TTL; project spend stays stale until expiry"
+  },
+  {
+    "location": "src/codemie/service/analytics/handlers/budget_usage_service.py:361-365",
+    "trigger_condition": "personal-budget LiteLLM refresh fails and triggers session.rollback() after project rows are fetched on the same session",
+    "guard_snippet": "Fetch project rows after the personal-budget refresh-or-rollback completes, or use a separate session",
+    "potential_consequence": "_refresh_all_member_spend DB writes rolled back while _last_checked_at marks them fresh; project spend served stale indefinitely"
+  },
+  {
+    "location": "src/codemie/service/analytics/handlers/budget_usage_service.py:363",
+    "trigger_condition": "get_user_project_spend_rows raises (DB error, broken connection, etc.)",
+    "guard_snippet": "try: project_rows = _expand_project_rows(await ...); except Exception: logger.warning(...); project_rows = []",
+    "potential_consequence": "Any project-path failure kills the entire get_budget_usage call, denying personal budget data"
+  }
+]

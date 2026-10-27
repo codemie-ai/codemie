@@ -16,10 +16,12 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from uuid import UUID
 
 from sqlalchemy import func, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 from sqlmodel import select
 
 from codemie.configs import config, logger
@@ -28,6 +30,7 @@ from codemie.service.spend_tracking.spend_utils import quantize_spend
 
 
 _EXCLUDED_SUBJECT_TYPES_DEFAULT: frozenset[str] = frozenset({"project_budget"})
+_MEMBER_REFRESH_ALL_LOCK_KEY = "member_spend_refresh:all"
 
 
 class ProjectSpendTrackingRepository:
@@ -577,6 +580,70 @@ class ProjectSpendTrackingRepository:
         await session.execute(stmt)
         await session.commit()
 
+    async def touch_member_spend_dates(
+        self,
+        session: AsyncSession,
+        row_ids: list[UUID],
+        now: datetime,
+    ) -> None:
+        """Update spend_date to ``now`` on the given member_budget rows.
+
+        Called when LiteLLM confirms a member's spend is unchanged, so the user-scoped
+        freshness check sees a fresh timestamp without inserting a duplicate row. A row
+        that is no longer the newest for its (project, budget, user) is left alone, so a
+        row inserted by a concurrent refresh is never overtaken by an older one.
+        """
+        if not row_ids:
+            return
+
+        newer = aliased(ProjectSpendTracking, name="newer")
+        newer_row_exists = (
+            select(newer.id)
+            .where(newer.project_name == ProjectSpendTracking.project_name)
+            .where(newer.budget_id == ProjectSpendTracking.budget_id)
+            .where(newer.user_id == ProjectSpendTracking.user_id)
+            .where(newer.spend_subject_type == "member_budget")
+            .where(newer.spend_date > ProjectSpendTracking.spend_date)
+            .exists()
+        )
+        stmt = (
+            update(ProjectSpendTracking)
+            .where(ProjectSpendTracking.id.in_(row_ids))
+            .where(ProjectSpendTracking.spend_subject_type == "member_budget")
+            .where(~newer_row_exists)
+            .values(spend_date=now)
+        )
+
+        await session.execute(stmt)
+        await session.commit()
+
+    async def try_lock_member_refresh(self, session: AsyncSession, user_id: str) -> bool:
+        """Try to take the locks for refreshing one user's member spend in this transaction.
+
+        Takes the global member refresh lock in shared mode, so it never runs while
+        ``lock_all_member_refresh`` holds it, then the user's own lock. Returns False when
+        either is held elsewhere. Both are released at the transaction's next commit or
+        rollback.
+        """
+        for statement, key in (
+            ("SELECT pg_try_advisory_xact_lock_shared(hashtext(:key))", _MEMBER_REFRESH_ALL_LOCK_KEY),
+            ("SELECT pg_try_advisory_xact_lock(hashtext(:key))", f"member_spend_refresh:{user_id}"),
+        ):
+            result = await session.execute(text(statement), {"key": key})
+            if not result.scalar_one():
+                return False
+        return True
+
+    async def lock_all_member_refresh(self, session: AsyncSession) -> None:
+        """Wait for the global member refresh lock in exclusive mode for this transaction.
+
+        Held while every member's spend is refreshed, so no user-scoped refresh writes
+        alongside it. Released at the transaction's next commit or rollback.
+        """
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": _MEMBER_REFRESH_ALL_LOCK_KEY}
+        )
+
     async def get_latest_by_budget_ids(
         self,
         session: AsyncSession,
@@ -708,20 +775,6 @@ class ProjectSpendTrackingRepository:
             scope_value=project_name,
             group_column=ProjectSpendTracking.user_id,
         )
-
-    async def get_newest_member_spend_date(self, session: AsyncSession) -> datetime | None:
-        """Return the newest spend_date across all member_budget rows, or None if there are none.
-
-        This is the lazy-refresh freshness marker. It is deliberately table-wide rather
-        than per-slice: the refresh is global, so the newest row anywhere answers
-        "when did we last check?". A per-slice max would read as permanently stale for
-        members with no recent spend, since zero-delta rows are never written.
-        """
-        stmt = select(func.max(ProjectSpendTracking.spend_date)).where(
-            ProjectSpendTracking.spend_subject_type == "member_budget"
-        )
-        result = await session.execute(stmt)
-        return result.scalar_one_or_none()
 
     async def get_latest_before_today_by_budget_ids(
         self,
@@ -1037,33 +1090,10 @@ class ProjectSpendTrackingRepository:
     ) -> dict[str, datetime]:
         """Return, per budget_category, the spend_date of the last pre-reset project_budget row.
 
-        Scans only the last 90 days. Categories whose budget_period_spend never decreased
-        inside that window are absent from the result.
+        Single-project form of ``get_project_reset_cutoffs_for_projects``.
         """
-        # 90 days holds at least two monthly budget periods, so the most recent reset stays in range.
-        window_start = datetime.now(timezone.utc) - timedelta(days=90)
-        stmt = (
-            select(
-                ProjectSpendTracking.budget_category,
-                ProjectSpendTracking.budget_period_spend,
-                ProjectSpendTracking.spend_date,
-            )
-            .where(ProjectSpendTracking.project_name == project_name)
-            .where(ProjectSpendTracking.spend_subject_type == "project_budget")
-            .where(ProjectSpendTracking.spend_date >= window_start)
-            .order_by(ProjectSpendTracking.budget_category, ProjectSpendTracking.spend_date)
-        )
-        result = await session.execute(stmt)
-
-        cutoffs: dict[str, datetime] = {}
-        previous: dict[str, tuple[Decimal, datetime]] = {}
-        for row in result.all():
-            category = row.budget_category
-            current = quantize_spend(row.budget_period_spend)
-            if category in previous and current < previous[category][0]:
-                cutoffs[category] = previous[category][1]
-            previous[category] = (current, row.spend_date)
-        return cutoffs
+        cutoffs = await self.get_project_reset_cutoffs_for_projects(session, [project_name])
+        return cutoffs.get(project_name, {})
 
     async def get_lifetime_spend(
         self,
@@ -1093,6 +1123,51 @@ class ProjectSpendTrackingRepository:
         stmt = select(func.coalesce(func.sum(ProjectSpendTracking.daily_spend), 0)).where(*filters)
         result = await session.execute(stmt)
         return float(result.scalar_one())
+
+    async def get_project_reset_cutoffs_for_projects(
+        self,
+        session: AsyncSession,
+        project_names: list[str],
+    ) -> dict[str, dict[str, datetime]]:
+        """Return, per project and budget_category, the spend_date of the last pre-reset project_budget row.
+
+        Scans only the last 90 days. Categories whose budget_period_spend never decreased
+        inside that window are absent from the result.
+        """
+        if not project_names:
+            return {}
+
+        # 90 days holds at least two monthly budget periods, so the most recent reset stays in range.
+        window_start = datetime.now(timezone.utc) - timedelta(days=90)
+        stmt = (
+            select(
+                ProjectSpendTracking.project_name,
+                ProjectSpendTracking.budget_category,
+                ProjectSpendTracking.budget_period_spend,
+                ProjectSpendTracking.spend_date,
+            )
+            .where(ProjectSpendTracking.project_name.in_(project_names))
+            .where(ProjectSpendTracking.spend_subject_type == "project_budget")
+            .where(ProjectSpendTracking.spend_date >= window_start)
+            .order_by(
+                ProjectSpendTracking.project_name,
+                ProjectSpendTracking.budget_category,
+                ProjectSpendTracking.spend_date,
+            )
+        )
+        result = await session.execute(stmt)
+
+        cutoffs: dict[str, dict[str, datetime]] = {}
+        previous: dict[tuple[str, str], tuple[Decimal, datetime]] = {}
+        for row in result.all():
+            project = row.project_name
+            category = row.budget_category
+            key = (project, category)
+            current = quantize_spend(row.budget_period_spend)
+            if key in previous and current < previous[key][0]:
+                cutoffs.setdefault(project, {})[category] = previous[key][1]
+            previous[key] = (current, row.spend_date)
+        return cutoffs
 
 
 project_spend_tracking_repository = ProjectSpendTrackingRepository()

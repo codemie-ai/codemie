@@ -676,3 +676,37 @@ def test_create_setting_does_not_store_empty_sensitive_field(
     stored_creds = mock_encrypt.call_args[0][0]
     stored_keys = [c.key for c in stored_creds]
     assert "aws_session_token" not in stored_keys
+
+
+class TestGetProjectsEnforcingMemberSpendLimits:
+    @staticmethod
+    def _setting(project_name: str, enabled: str, alias: str = SettingsService.ENFORCE_MEMBER_SPEND_LIMITS_ALIAS):
+        setting = MagicMock(project_name=project_name, alias=alias)
+        setting.normalize_values.return_value = {SettingsService.ENABLED: enabled}
+        return setting
+
+    def test_empty_input_skips_query(self):
+        with patch.object(Settings, "get_by_project_names") as get_by_project_names:
+            assert SettingsService.get_projects_enforcing_member_spend_limits([]) == set()
+        get_by_project_names.assert_not_called()
+
+    def test_returns_only_projects_with_enabled_flag(self):
+        settings = [
+            self._setting("proj-on", "True"),
+            self._setting("proj-off", "false"),
+            self._setting("proj-other-alias", "true", alias="some-other-setting"),
+        ]
+        with (
+            patch.object(Settings, "get_by_project_names", return_value=settings) as get_by_project_names,
+            patch.object(SettingsService, "_decrypt_credentials") as decrypt,
+        ):
+            result = SettingsService.get_projects_enforcing_member_spend_limits(
+                ["proj-on", "proj-off", "proj-other-alias", "proj-unset"]
+            )
+
+        assert result == {"proj-on"}
+        get_by_project_names.assert_called_once_with(
+            ["proj-on", "proj-off", "proj-other-alias", "proj-unset"],
+            credential_type=CredentialTypes.ENVIRONMENT_VARS,
+        )
+        assert decrypt.call_count == 2

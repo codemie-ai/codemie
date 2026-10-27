@@ -534,101 +534,13 @@ class TestGetLatestMemberRowsForProject:
         assert result == {("u-7", "platform"): row}
 
 
-class TestGetNewestMemberSpendDate:
-    """Tests for get_newest_member_spend_date."""
-
-    @pytest.mark.asyncio
-    async def test_returns_none_when_table_empty(self):
-        repo = ProjectSpendTrackingRepository()
-        session = MagicMock()
-        result_mock = MagicMock()
-        result_mock.scalar_one_or_none.return_value = None
-        session.execute = AsyncMock(return_value=result_mock)
-
-        assert await repo.get_newest_member_spend_date(session) is None
-
-    @pytest.mark.asyncio
-    async def test_returns_max_spend_date(self):
-        expected = datetime(2026, 8, 13, 10, 0, tzinfo=timezone.utc)
-        repo = ProjectSpendTrackingRepository()
-        session = MagicMock()
-        result_mock = MagicMock()
-        result_mock.scalar_one_or_none.return_value = expected
-        session.execute = AsyncMock(return_value=result_mock)
-
-        assert await repo.get_newest_member_spend_date(session) == expected
-
-    @pytest.mark.asyncio
-    async def test_scopes_to_member_budget_and_is_not_slice_scoped(self):
-        """Freshness marker is table-wide over member_budget rows only.
-
-        Per-slice scoping would read as permanently stale for members with no
-        recent spend, since the collector never writes zero-delta rows.
-        """
-        repo = ProjectSpendTrackingRepository()
-        session = MagicMock()
-        result_mock = MagicMock()
-        result_mock.scalar_one_or_none.return_value = None
-        session.execute = AsyncMock(return_value=result_mock)
-
-        await repo.get_newest_member_spend_date(session)
-
-        sql = _compile_sql(session.execute.call_args[0][0])
-        assert "member_budget" in sql
-        assert "max(project_spend_tracking.spend_date)" in sql.lower()
-        # No slice scoping: a user_id or project_name predicate would defeat the marker.
-        assert "user_id" not in sql
-        assert "project_name" not in sql
-
-
-@pytest.mark.asyncio
-async def test_get_latest_member_rows_for_user_filters_subject_type_in_both_queries():
-    """spend_subject_type must appear in subquery AND outer WHERE, or the join can match other types."""
-    repo = ProjectSpendTrackingRepository()
-    result_mock = MagicMock()
-    result_mock.scalars.return_value.all.return_value = []
-    session = AsyncMock()
-    session.execute.return_value = result_mock
-
-    await repo.get_latest_member_rows_for_user(session, "u-1")
-
-    sql = _compile_sql(session.execute.call_args[0][0])
-    assert (
-        sql.count("member_budget") >= 2
-    ), f"Expected spend_subject_type filter in both subquery and outer query, got SQL:\n{sql}"
-    assert sql.count("'u-1'") >= 2, f"Expected user scoping in both subquery and outer query, got SQL:\n{sql}"
-    assert (
-        "max(project_spend_tracking.created_at)" in sql.lower()
-    ), f"Expected MAX(created_at) tiebreaker so concurrent refreshes resolve deterministically, got SQL:\n{sql}"
-
-
-@pytest.mark.asyncio
-async def test_get_latest_member_rows_for_project_filters_subject_type_in_both_queries():
-    """spend_subject_type must appear in subquery AND outer WHERE, or the join can match other types."""
-    repo = ProjectSpendTrackingRepository()
-    result_mock = MagicMock()
-    result_mock.scalars.return_value.all.return_value = []
-    session = AsyncMock()
-    session.execute.return_value = result_mock
-
-    await repo.get_latest_member_rows_for_project(session, "atlas-core")
-
-    sql = _compile_sql(session.execute.call_args[0][0])
-    assert (
-        sql.count("member_budget") >= 2
-    ), f"Expected spend_subject_type filter in both subquery and outer query, got SQL:\n{sql}"
-    assert sql.count("'atlas-core'") >= 2, f"Expected project scoping in both subquery and outer query, got SQL:\n{sql}"
-    assert (
-        "max(project_spend_tracking.created_at)" in sql.lower()
-    ), f"Expected MAX(created_at) tiebreaker so concurrent refreshes resolve deterministically, got SQL:\n{sql}"
-
-
 class TestGetProjectResetCutoffs:
     """The last pre-reset project_budget observation per category."""
 
     @staticmethod
     def _row(category: str, period_spend: str, spend_date: datetime):
         return SimpleNamespace(
+            project_name="epm-aisa",
             budget_category=category,
             budget_period_spend=Decimal(period_spend),
             spend_date=spend_date,
@@ -705,6 +617,67 @@ class TestGetProjectResetCutoffs:
         assert "ORDER BY" in sql.upper()
 
 
+class TestGetProjectResetCutoffsForProjects:
+    """Batched variant: one query for many projects."""
+
+    @staticmethod
+    def _prow(project: str, category: str, period_spend: str, spend_date: datetime):
+        return SimpleNamespace(
+            project_name=project,
+            budget_category=category,
+            budget_period_spend=Decimal(period_spend),
+            spend_date=spend_date,
+        )
+
+    @staticmethod
+    def _session(rows):
+        result = MagicMock()
+        result.all.return_value = rows
+        session = AsyncMock()
+        session.execute = AsyncMock(return_value=result)
+        return session
+
+    @pytest.mark.asyncio
+    async def test_cutoffs_are_grouped_per_project(self):
+        repo = ProjectSpendTrackingRepository()
+        rows = [
+            self._prow("proj-a", "platform", "3221.46", datetime(2026, 7, 31, 23, tzinfo=timezone.utc)),
+            self._prow("proj-a", "platform", "38.13", datetime(2026, 8, 2, 23, tzinfo=timezone.utc)),
+            self._prow("proj-b", "cli", "10.00", datetime(2026, 7, 31, 23, tzinfo=timezone.utc)),
+            self._prow("proj-b", "cli", "12.00", datetime(2026, 8, 2, 23, tzinfo=timezone.utc)),
+        ]
+        got = await repo.get_project_reset_cutoffs_for_projects(self._session(rows), ["proj-a", "proj-b"])
+        assert got == {"proj-a": {"platform": datetime(2026, 7, 31, 23, tzinfo=timezone.utc)}}
+
+    @pytest.mark.asyncio
+    async def test_projects_do_not_share_decrease_detection(self):
+        """A drop in one project must not create a cutoff in another."""
+        repo = ProjectSpendTrackingRepository()
+        rows = [
+            self._prow("proj-a", "platform", "100.00", datetime(2026, 8, 1, 23, tzinfo=timezone.utc)),
+            self._prow("proj-b", "platform", "5.00", datetime(2026, 8, 2, 23, tzinfo=timezone.utc)),
+        ]
+        got = await repo.get_project_reset_cutoffs_for_projects(self._session(rows), ["proj-a", "proj-b"])
+        assert got == {}
+
+    @pytest.mark.asyncio
+    async def test_empty_input_issues_no_query(self):
+        repo = ProjectSpendTrackingRepository()
+        session = self._session([])
+        assert await repo.get_project_reset_cutoffs_for_projects(session, []) == {}
+        session.execute.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_one_query_for_many_projects(self):
+        repo = ProjectSpendTrackingRepository()
+        session = self._session([])
+        await repo.get_project_reset_cutoffs_for_projects(session, ["proj-a", "proj-b"])
+        assert session.execute.await_count == 1
+        sql = _compile_sql(session.execute.await_args.args[0])
+        assert "project_budget" in sql
+        assert "proj-a" in sql and "proj-b" in sql
+
+
 class TestLatestProjectBudgetRowsByCategory:
     """Latest project_budget row per project and category, whatever its budget_id."""
 
@@ -741,3 +714,82 @@ class TestLatestProjectBudgetRowsByCategory:
             in sql
         )
         assert sql.rstrip().endswith("WHERE anon_1.row_rank = 1")
+
+
+class TestTouchMemberSpendDates:
+    @pytest.mark.asyncio
+    async def test_touch_member_spend_dates_noop_for_empty_ids(self):
+        session = AsyncMock()
+
+        await ProjectSpendTrackingRepository().touch_member_spend_dates(session, [], datetime.now(timezone.utc))
+
+        session.execute.assert_not_awaited()
+        session.commit.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_touch_member_spend_dates_updates_only_newest_given_member_rows(self):
+        session = AsyncMock()
+        row_id = uuid4()
+
+        await ProjectSpendTrackingRepository().touch_member_spend_dates(
+            session, [row_id], datetime(2026, 10, 27, 12, tzinfo=timezone.utc)
+        )
+
+        sql = _compile_sql(session.execute.await_args.args[0])
+        assert sql.startswith("UPDATE project_spend_tracking SET spend_date=")
+        assert f"project_spend_tracking.id IN ('{row_id.hex}')" in sql
+        assert "'member_budget'" in sql
+        assert "NOT (EXISTS (" in sql
+        assert "newer.project_name = project_spend_tracking.project_name" in sql
+        assert "newer.budget_id = project_spend_tracking.budget_id" in sql
+        assert "newer.user_id = project_spend_tracking.user_id" in sql
+        assert "newer.spend_date > project_spend_tracking.spend_date" in sql
+        session.commit.assert_awaited_once()
+
+
+class TestMemberRefreshLocks:
+    @staticmethod
+    def _session(*scalars):
+        results = []
+        for value in scalars:
+            result = MagicMock()
+            result.scalar_one.return_value = value
+            results.append(result)
+        session = AsyncMock()
+        session.execute = AsyncMock(side_effect=results)
+        return session
+
+    @pytest.mark.asyncio
+    async def test_try_lock_takes_shared_global_lock_then_user_lock(self):
+        session = self._session(True, True)
+
+        assert await ProjectSpendTrackingRepository().try_lock_member_refresh(session, "u-1") is True
+
+        (shared_stmt, shared_params), (user_stmt, user_params) = [c.args for c in session.execute.await_args_list]
+        assert "pg_try_advisory_xact_lock_shared(hashtext(:key))" in str(shared_stmt)
+        assert shared_params == {"key": "member_spend_refresh:all"}
+        assert "pg_try_advisory_xact_lock(hashtext(:key))" in str(user_stmt)
+        assert user_params == {"key": "member_spend_refresh:u-1"}
+
+    @pytest.mark.asyncio
+    async def test_try_lock_gives_up_while_global_refresh_runs(self):
+        session = self._session(False)
+
+        assert await ProjectSpendTrackingRepository().try_lock_member_refresh(session, "u-1") is False
+        assert session.execute.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_try_lock_gives_up_while_same_user_refreshes(self):
+        session = self._session(True, False)
+
+        assert await ProjectSpendTrackingRepository().try_lock_member_refresh(session, "u-1") is False
+
+    @pytest.mark.asyncio
+    async def test_lock_all_member_refresh_waits_for_exclusive_global_lock(self):
+        session = AsyncMock()
+
+        await ProjectSpendTrackingRepository().lock_all_member_refresh(session)
+
+        stmt, params = session.execute.await_args.args
+        assert "pg_advisory_xact_lock(hashtext(:key))" in str(stmt)
+        assert params == {"key": "member_spend_refresh:all"}

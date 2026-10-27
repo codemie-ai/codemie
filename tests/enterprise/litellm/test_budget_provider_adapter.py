@@ -220,6 +220,120 @@ async def test_list_personal_budget_assignments_normalizes_identifiers_and_skips
     assert entries[1].budget_category == BudgetCategory.PLATFORM
 
 
+_REF_A = "codemie:project:proj-a:category:cli:user:user-1"
+_REF_B = "codemie:project:proj-b:category:platform:user:user-1"
+
+
+def _member_allocation(project_name: str, category: str, provider_metadata: dict) -> SimpleNamespace:
+    return SimpleNamespace(
+        project_name=project_name,
+        budget_category=category,
+        project_budget_id=f"budget-{project_name}",
+        user_id="user-1",
+        budget_reset_at="2026-11-01T00:00:00Z",
+        provider_metadata=provider_metadata,
+    )
+
+
+def _run_inline_to_thread():
+    return patch(
+        "codemie.enterprise.litellm.budget_provider_adapter.asyncio.to_thread",
+        side_effect=lambda fn, *args: fn(*args),
+    )
+
+
+@pytest.mark.asyncio
+async def test_collect_for_allocations_calls_customer_info_per_allocation():
+    service = SimpleNamespace(
+        get_customer_info=MagicMock(side_effect=lambda ref: SimpleNamespace(user_id=ref, spend=1.5))
+    )
+    adapter = LiteLLMBudgetEnforcementProvider(service=service)
+    allocations = [
+        _member_allocation("proj-a", "cli", {"provider_member_ref": _REF_A}),
+        _member_allocation("proj-b", "platform", {"provider_member_ref": _REF_B}),
+    ]
+
+    with _run_inline_to_thread():
+        snapshots = await adapter.collect_member_budget_spend_for_allocations(allocations)
+
+    assert snapshots == [
+        MemberBudgetSpendSnapshot(
+            project_name="proj-a",
+            budget_category=BudgetCategory.CLI,
+            budget_id="budget-proj-a",
+            user_id="user-1",
+            spend=Decimal("1.5"),
+            budget_reset_at="2026-11-01T00:00:00Z",
+            provider_subject_id=_REF_A,
+        ),
+        MemberBudgetSpendSnapshot(
+            project_name="proj-b",
+            budget_category=BudgetCategory.PLATFORM,
+            budget_id="budget-proj-b",
+            user_id="user-1",
+            spend=Decimal("1.5"),
+            budget_reset_at="2026-11-01T00:00:00Z",
+            provider_subject_id=_REF_B,
+        ),
+    ]
+    assert service.get_customer_info.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_collect_for_allocations_reads_ref_from_raw_metadata():
+    service = SimpleNamespace(get_customer_info=MagicMock(return_value=SimpleNamespace(user_id=_REF_A, spend=2)))
+    adapter = LiteLLMBudgetEnforcementProvider(service=service)
+
+    with _run_inline_to_thread():
+        snapshots = await adapter.collect_member_budget_spend_for_allocations(
+            [_member_allocation("proj-a", "cli", {"raw": {"provider_member_ref": _REF_A}})]
+        )
+
+    assert [s.provider_subject_id for s in snapshots] == [_REF_A]
+    service.get_customer_info.assert_called_once_with(_REF_A)
+
+
+@pytest.mark.asyncio
+async def test_collect_for_allocations_skips_missing_ref_and_missing_customer():
+    service = SimpleNamespace(get_customer_info=MagicMock(return_value=None))
+    adapter = LiteLLMBudgetEnforcementProvider(service=service)
+    allocations = [
+        _member_allocation("proj-a", "cli", {}),
+        _member_allocation("proj-b", "platform", {"provider_member_ref": _REF_B}),
+    ]
+
+    with _run_inline_to_thread():
+        snapshots = await adapter.collect_member_budget_spend_for_allocations(allocations)
+
+    assert snapshots == []
+    service.get_customer_info.assert_called_once_with(_REF_B)
+
+
+@pytest.mark.asyncio
+async def test_collect_for_allocations_returns_empty_when_customer_info_raises():
+    service = SimpleNamespace(get_customer_info=MagicMock(side_effect=RuntimeError("litellm down")))
+    adapter = LiteLLMBudgetEnforcementProvider(service=service)
+
+    with _run_inline_to_thread():
+        snapshots = await adapter.collect_member_budget_spend_for_allocations(
+            [_member_allocation("proj-a", "cli", {"provider_member_ref": _REF_A})]
+        )
+
+    assert snapshots == []
+
+
+@pytest.mark.asyncio
+async def test_collect_for_allocations_without_service_returns_empty():
+    adapter = LiteLLMBudgetEnforcementProvider(service=None)
+
+    with patch("codemie.enterprise.litellm.dependencies.get_litellm_service_or_none", return_value=None):
+        snapshots = await adapter.collect_member_budget_spend_for_allocations(
+            [_member_allocation("proj-a", "cli", {"provider_member_ref": _REF_A})]
+        )
+
+    assert snapshots == []
+
+
 @pytest.mark.asyncio
 async def test_sync_member_allocation_uses_effective_max_budget_when_provided():
     allocation = SimpleNamespace(

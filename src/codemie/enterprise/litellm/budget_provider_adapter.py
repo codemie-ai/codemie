@@ -1580,6 +1580,56 @@ class LiteLLMBudgetEnforcementProvider:
         )
         return member_snapshots
 
+    async def collect_member_budget_spend_for_allocations(
+        self,
+        allocations: list[ProjectMemberBudgetAssignment],
+    ) -> list[MemberBudgetSpendSnapshot]:
+        """Return spend for the given allocations, one /customer/info call per member customer.
+
+        Unlike ``collect_member_budget_spend_for_refs`` this never downloads /customer/list,
+        so its cost grows with the allocations passed in, not with the whole tenant.
+        """
+        service = self._get_service()
+        if service is None:
+            return []
+
+        targets = []
+        for alloc in allocations:
+            ref = _metadata_value(alloc.provider_metadata or {}, "provider_member_ref")
+            if ref and _is_project_scoped_customer_id(ref):
+                targets.append((alloc, ref))
+        if not targets:
+            return []
+
+        try:
+            customers = await asyncio.gather(*(asyncio.to_thread(service.get_customer_info, ref) for _, ref in targets))
+        except Exception as exc:
+            logger.warning(
+                f"budget_event=spend_collection_failed component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} scope=member_allocations error={exc}"
+            )
+            return []
+
+        snapshots = [
+            MemberBudgetSpendSnapshot(
+                project_name=alloc.project_name,
+                budget_category=BudgetCategory(alloc.budget_category),
+                budget_id=alloc.project_budget_id,
+                user_id=alloc.user_id,
+                spend=Decimal(str(customer.spend)),
+                budget_reset_at=_normalize_budget_reset_at(None, alloc.budget_reset_at),
+                provider_subject_id=ref,
+            )
+            for (alloc, ref), customer in zip(targets, customers, strict=True)
+            if customer is not None
+        ]
+        logger.info(
+            f"budget_event=spend_collection_completed component=litellm_budget_provider "
+            f"provider={_PROVIDER_NAME!r} scope=member_allocations requested_count={len(targets)} "
+            f"member_snapshot_count={len(snapshots)}"
+        )
+        return snapshots
+
     async def collect_personal_spend(self) -> list[PersonalSpendEntry] | None:
         """Return personal (non-project-scoped) spend entries from LiteLLM.
 

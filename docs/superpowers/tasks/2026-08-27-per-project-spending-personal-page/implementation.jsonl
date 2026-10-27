@@ -1,0 +1,5 @@
+{"task_id":"1","status":"done","commit":"a24963358","test_command":"python -m pytest tests/codemie/repository/test_project_spend_tracking_repository.py::TestGetProjectResetCutoffsForProjects -q"}
+{"task_id":"2","status":"done","commit":"56110a543","test_command":"python -m pytest tests/codemie/service/analytics/handlers/test_member_spend_service.py -q"}
+{"task_id":"3","status":"done","commit":"5d659fc95","test_command":"python -m pytest tests/codemie/service/analytics/handlers/test_member_spend_service.py -q"}
+{"task_id":"4","status":"done","commit":"2ce9eb92b","test_command":"python -m pytest tests/codemie/service/analytics/handlers/test_budget_usage_service.py -q"}
+{"task_id":"5","status":"done","commit":"fd7ef3485","test_command":"python -m pytest tests/codemie/rest_api/routers/test_analytics.py::TestGetUserKeySpending -q"}

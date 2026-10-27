@@ -121,7 +121,7 @@ class ProjectAssignmentService:
             )
             return
 
-        snapshots = await provider.collect_member_budget_spend_for_refs({ref})
+        snapshots = await provider.collect_member_budget_spend_for_allocations([allocation])
         if not snapshots:
             logger.debug(
                 f"budget_event=project_member_spend_snapshot_skipped component=project_assignment_service "

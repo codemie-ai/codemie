@@ -1,0 +1,187 @@
+{
+  "decision": "request-changes",
+  "rationale": "6 blocking findings: 3 edge-case (fragile BudgetCategory suffix lookup, unhandled project-rows exception kills personal budget, failed-refresh latch unconditionally set in finally block), 2 critical spec-required test gaps (call-order assertion and all-skipped-project scenario absent), 1 standards violation (bare list[dict] annotations in member_spend_service.py). 1 dismissed: personal-budget session.rollback() cannot undo member-spend writes already committed per-batch by insert_member_budget_entries. No deferred findings.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "AC 1 — both paths return personal rows plus per-(project,category) rows for every non-personal membership with allocation or non-zero spend",
+      "status": "pass",
+      "notes": "get_budget_usage appends project_rows via _expand_project_rows; router tests cover both paths — test_analytics.py:2378,2414"
+    },
+    {
+      "kind": "spec",
+      "item": "AC 2 — per-project current_spending/budget_limit match admin endpoint values; reset-cutoff filtering applied",
+      "status": "pass",
+      "notes": "_expand_project_rows uses same get_user_project_spend_rows path incl. _drop_rows_before_cutoff with batched cutoffs"
+    },
+    {
+      "kind": "spec",
+      "item": "AC 3 — personal rows appear before all per-project rows, sorted platform→CLI→premium",
+      "status": "pass",
+      "notes": "return is personal_rows + project_rows; test_personal_rows_are_category_sorted confirms order"
+    },
+    {
+      "kind": "spec",
+      "item": "AC 4 — per-project rows sorted by project name case-insensitive ascending, then platform→CLI→premium",
+      "status": "pass",
+      "notes": "_expand_project_rows sorts by casefold() then iterates BudgetCategory; test_expand_sorts_by_project_name_case_insensitive confirms"
+    },
+    {
+      "kind": "spec",
+      "item": "AC 5 — budget_reset_at and time_until_reset are null for all per-project rows",
+      "status": "pass",
+      "notes": "_expand_project_rows passes budget_reset_at:None; test_expand_null_reset_fields asserts both None"
+    },
+    {
+      "kind": "spec",
+      "item": "AC 6 — only personal rows returned when user has no non-personal memberships or no allocation/spend in any category",
+      "status": "pass",
+      "notes": "test_expand_skips_null_limit_zero_spend and test_expand_empty_input cover this"
+    },
+    {
+      "kind": "spec",
+      "item": "AC 7 — GET /v1/analytics/user-project-spending returns unchanged data",
+      "status": "pass",
+      "notes": "get_user_project_spend refactored to thin wrapper; test_get_user_project_spend_still_returns_columns_and_rows confirms contract"
+    },
+    {
+      "kind": "spec",
+      "item": "AC 8 — after a no-change refresh, second _ensure_fresh within TTL makes no provider call",
+      "status": "pass",
+      "notes": "_last_checked_at set after lock; test_latch_skips_provider_after_no_change_refresh asserts refresh.assert_awaited_once"
+    },
+    {
+      "kind": "spec",
+      "item": "AC 9 — concurrent requests on one process coalesce to one in-flight provider refresh",
+      "status": "pass",
+      "notes": "asyncio.Lock in _ensure_fresh with post-lock re-check; test_concurrent_requests_coalesce asserts calls==1 for 5 concurrent coroutines"
+    },
+    {
+      "kind": "spec",
+      "item": "AC 10 — no member_budget row's spend_date modified by any introduced code path",
+      "status": "pass",
+      "notes": "_last_checked_at is in-memory; test_no_change_refresh_writes_nothing_but_still_latches asserts insert_mock not awaited"
+    },
+    {
+      "kind": "spec",
+      "item": "Tests Required — _expand_project_rows unit tests covering all scenarios incl. project with no allocation or spend in any category",
+      "status": "partial",
+      "notes": "6/7 cases covered; test for all-null-limit zero-spend project absent — no test constructs all three categories skipped"
+    },
+    {
+      "kind": "spec",
+      "item": "Tests Required — get_budget_usage integration test verifying get_user_project_spend_rows is called before _load_from_db",
+      "status": "partial",
+      "notes": "test verifies output ordering but not call ordering; spec explicitly requires this assertion"
+    },
+    {
+      "kind": "spec",
+      "item": "Tests Required — router-level tests for per-project rows on both self-service and admin paths with personal rows first",
+      "status": "pass",
+      "notes": "test_budget_usage_includes_project_rows and test_admin_path_includes_project_rows in test_analytics.py cover both paths"
+    },
+    {
+      "kind": "spec",
+      "item": "Tests Required — freshness latch tests (no-row refresh sets latch, fresh DB short-circuits, stale in-memory + fresh DB skips, concurrent, no insert)",
+      "status": "pass",
+      "notes": "TestEnsureFreshLatch covers all four cases; test_no_change_refresh_writes_nothing_but_still_latches covers no-insert requirement"
+    },
+    {
+      "kind": "spec",
+      "item": "Tests Required — get_project_reset_cutoffs_for_projects returns correct per-project cutoffs; issues one query for multi-project user",
+      "status": "pass",
+      "notes": "TestGetProjectResetCutoffsForProjects covers grouped cutoffs, cross-project isolation, empty-input guard, single-query assertion"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "All 5 commit subjects match EPMCDME-####: Description format: Add router-level tests; Add _expand_project_rows; Add dual-marker freshness latch; Extract get_user_project_spend_rows; Add batched reset-cutoff method."
+    },
+    {
+      "kind": "code-quality",
+      "status": "partial",
+      "notes": "License headers and from __future__ present; modern unions used. Violation: bare list[dict] at lines 49, 55, 196, 239 in member_spend_service.py; code-quality.md requires list[dict[str, Any]]."
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "No credential logging; auth dependencies not modified. SQL uses ORM-parameterised expressions; f-string in text() at :485 uses only an internal constant, not user input. No issues found."
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/analytics/handlers/budget_usage_service.py",
+      "line": 189,
+      "title": "Fragile BudgetCategory suffix lookup without fallback",
+      "problem": "_CATEGORY_SUFFIX is indexed directly with category.value inside _expand_project_rows. The map has exactly 3 keys matching the current enum members; any future BudgetCategory addition absent from the map raises KeyError. Reachability uncertain — the iteration is over the live enum and the code path is reachable from the personal page endpoint.",
+      "impact": "Adding a fourth BudgetCategory crashes _expand_project_rows for every user on the personal page until the map is patched.",
+      "recommendation": "Replace _CATEGORY_SUFFIX[category.value] with _CATEGORY_SUFFIX.get(category.value, f' ({category.value})') to degrade gracefully on unknown categories."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/analytics/handlers/budget_usage_service.py",
+      "line": 363,
+      "title": "Unhandled exception in project rows path kills budget response",
+      "problem": "get_user_project_spend_rows is awaited at lines 366-368 without any try/except; a DB error, broken connection, or any exception propagates unhandled and aborts get_budget_usage entirely.",
+      "impact": "A transient project-spend failure denies the user their personal budget data, returning a 500 on the analytics endpoint even when personal data is available.",
+      "recommendation": "Wrap lines 366-368 in try/except Exception, log a warning, and fall back to project_rows = [] so personal budget data is always returned."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/analytics/handlers/member_spend_service.py",
+      "line": 49,
+      "title": "Bare list[dict] annotations violate parameterized generics rule",
+      "problem": "_category_columns is annotated -> list[dict], local variable columns typed list[dict] (line 55), and the return types of get_user_project_spend and get_project_member_spend include list[dict] in their tuple annotations (lines 196, 239). code-quality.md requires parameterized generics.",
+      "impact": "Partially-met blocking code-quality standard; dict left unparameterised loses element-type checking and fails the commit-quality gate.",
+      "recommendation": "Replace every list[dict] in this file with list[dict[str, Any]]; Any is already imported from typing."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/analytics/handlers/member_spend_service.py",
+      "line": 317,
+      "title": "Failed refresh silences retries via unconditional latch in finally",
+      "problem": "_last_checked_at is set in the finally block (lines 317-318) regardless of whether _refresh_all_member_spend succeeded or raised. The exception is caught and logged, but the latch is still armed.",
+      "impact": "A failed provider call marks the data as fresh, suppressing all retry attempts for the full TTL; project member spend stays stale until the latch expires.",
+      "recommendation": "Move self._last_checked_at = datetime.now(timezone.utc) into the try block after _refresh_all_member_spend returns successfully, and remove it from the finally block."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "unknown",
+      "title": "Missing call-order assertion: project rows fetched before _load_from_db",
+      "problem": "test_get_budget_usage_personal_rows_first_then_project verifies output ordering but does not assert that get_user_project_spend_rows is awaited before _load_from_db. The spec explicitly names this call-order assertion as required.",
+      "impact": "A call-ordering regression — such as inserting a _load_from_db call before the project rows fetch — could go undetected; expire_on_commit would then silently invalidate project row ORM objects.",
+      "recommendation": "Add a call-sequence assertion via assert_awaited sequence inspection or a side_effect ordering hook confirming get_user_project_spend_rows is awaited before _load_from_db."
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "unknown",
+      "title": "Missing test: all-categories-skipped project emits no rows",
+      "problem": "No test constructs a project_spend_rows entry where platform=0/None, cli=0/None, premium=0/None; the all-skip path of _expand_project_rows is unexercised. The spec explicitly requires this scenario.",
+      "impact": "A regression in the limit/spend skip guard for the all-empty case would go undetected, potentially leaking zero-spend project rows into the personal page response.",
+      "recommendation": "Add a test with a project having limit=None and spend=0 for all three categories and assert _expand_project_rows returns no rows for that project while rows for other projects are unaffected."
+    }
+  ]
+}

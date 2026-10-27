@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
+from codemie.service.budget.budget_enums import BudgetCategory
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
@@ -160,6 +162,40 @@ def _build_spending_row(label: str, spending: dict) -> dict[str, Any]:
     }
 
 
+_CATEGORY_SUFFIX = {
+    BudgetCategory.PLATFORM.value: "",
+    BudgetCategory.CLI.value: " (cli)",
+    BudgetCategory.PREMIUM_MODELS.value: " (premium)",
+}
+
+_CATEGORY_RANK = {cat.value: idx for idx, cat in enumerate(BudgetCategory)}
+
+
+def _category_label(base_label: str, category: str) -> str:
+    return f"{base_label}{_CATEGORY_SUFFIX.get(category, f' ({category})')}"
+
+
+def _expand_project_rows(project_spend_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Expand columnar project-spend rows into one row per project per category."""
+    rows = []
+    for project in sorted(project_spend_rows, key=lambda p: p["project_name"].casefold()):
+        for category in BudgetCategory:
+            limit = project[f"{category.value}_limit"]
+            if limit is None:
+                continue
+            rows.append(
+                _build_spending_row(
+                    _category_label(project["project_name"], category.value),
+                    {
+                        "total_spend": project[category.value],
+                        "max_budget": limit,
+                        "budget_reset_at": project.get(f"{category.value}_reset_at"),
+                    },
+                )
+            )
+    return rows
+
+
 def _build_budget_usage_rows(
     user_label: str,
     assignments: list,
@@ -169,18 +205,12 @@ def _build_budget_usage_rows(
     """Build tabular budget usage data from personal budget assignments."""
     rows = []
 
-    category_labels = {
-        "platform": user_label,
-        "cli": f"{user_label} (cli)",
-        "premium_models": f"{user_label} (premium)",
-    }
-
-    for assignment in assignments:
+    for assignment in sorted(assignments, key=lambda a: _CATEGORY_RANK.get(a.category, len(_CATEGORY_RANK))):
         budget = budgets_map.get(assignment.budget_id)
         if budget is None:
             continue
         spend_row = spend_map.get(assignment.budget_id)
-        label = category_labels.get(assignment.category, f"{user_label} ({assignment.category})")
+        label = _category_label(user_label, assignment.category)
         spending = {
             "total_spend": float(spend_row.budget_period_spend) if spend_row else 0.0,
             "max_budget": budget.max_budget,
@@ -328,6 +358,24 @@ class BudgetUsageService:
         Performs a lazy refresh from LiteLLM if spend data is older than
         config.BUDGET_USAGE_STALENESS_THRESHOLD_MS milliseconds.
         """
+        from codemie.service.analytics.handlers.member_spend_service import member_spend_service
+
+        try:
+            project_rows = _expand_project_rows(
+                await member_spend_service.get_user_project_rows(
+                    session, subject_user_id, enforced_only=True, with_reset=True, user_scoped_refresh=True
+                )
+            )
+        except Exception as e:
+            logger.warning(
+                f"Failed to fetch project rows for user {subject_user_id}: {e}. Returning personal rows only."
+            )
+            project_rows = []
+            try:
+                await session.rollback()
+            except Exception as rollback_error:
+                logger.warning(f"Rollback after failed project row fetch also failed: {rollback_error}")
+
         assignments, budgets_map, spend_map, prev_day_map = await self._load_from_db(
             session, subject_user_id, subject_label
         )
@@ -351,7 +399,8 @@ class BudgetUsageService:
             await session.rollback()
             assignments, budgets_map, _, __ = await self._load_from_db(session, subject_user_id, subject_label)
 
-        return _build_budget_usage_rows(subject_label, assignments, budgets_map, spend_map)
+        columns, personal_rows = _build_budget_usage_rows(subject_label, assignments, budgets_map, spend_map)
+        return columns, personal_rows + project_rows
 
     def _needs_refresh(self, spend_map: dict) -> bool:
         """Return True if spend_map is empty or the most recent row is older than the threshold."""

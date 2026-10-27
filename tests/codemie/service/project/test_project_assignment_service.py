@@ -904,7 +904,7 @@ class TestCaptureTerminalMemberSpend:
         snapshot = self._make_snapshot("5.00")
 
         mock_provider = AsyncMock()
-        mock_provider.collect_member_budget_spend_for_refs.return_value = [snapshot]
+        mock_provider.collect_member_budget_spend_for_allocations.return_value = [snapshot]
 
         mock_session = AsyncMock()
         mock_get_session.return_value.__aenter__.return_value = mock_session
@@ -914,7 +914,7 @@ class TestCaptureTerminalMemberSpend:
 
         await ProjectAssignmentService._capture_terminal_member_spend(allocation, mock_provider, now)
 
-        mock_provider.collect_member_budget_spend_for_refs.assert_awaited_once_with({"ref-1"})
+        mock_provider.collect_member_budget_spend_for_allocations.assert_awaited_once_with([allocation])
         mock_repo.insert_member_budget_entries.assert_awaited_once()
         inserted_rows = mock_repo.insert_member_budget_entries.call_args[0][1]
         assert len(inserted_rows) == 1
@@ -942,7 +942,7 @@ class TestCaptureTerminalMemberSpend:
         prev_row.cumulative_spend = Decimal("20.00")
 
         mock_provider = AsyncMock()
-        mock_provider.collect_member_budget_spend_for_refs.return_value = [snapshot]
+        mock_provider.collect_member_budget_spend_for_allocations.return_value = [snapshot]
 
         mock_session = AsyncMock()
         mock_get_session.return_value.__aenter__.return_value = mock_session
@@ -969,7 +969,7 @@ class TestCaptureTerminalMemberSpend:
 
         await ProjectAssignmentService._capture_terminal_member_spend(allocation, mock_provider, now)
 
-        mock_provider.collect_member_budget_spend_for_refs.assert_not_awaited()
+        mock_provider.collect_member_budget_spend_for_allocations.assert_not_awaited()
 
     @pytest.mark.asyncio
     @patch("codemie.service.project.project_assignment_service.project_spend_tracking_repository")
@@ -985,7 +985,7 @@ class TestCaptureTerminalMemberSpend:
         prev_row.cumulative_spend = Decimal("20.00")
 
         mock_provider = AsyncMock()
-        mock_provider.collect_member_budget_spend_for_refs.return_value = [snapshot]
+        mock_provider.collect_member_budget_spend_for_allocations.return_value = [snapshot]
 
         mock_session = AsyncMock()
         mock_get_session.return_value.__aenter__.return_value = mock_session
@@ -1005,11 +1005,11 @@ class TestCaptureTerminalMemberSpend:
         now = datetime(2026, 7, 22, 12, 0, 0, tzinfo=timezone.utc)
         allocation = self._make_allocation(provider_member_ref="ref-1")
         mock_provider = AsyncMock()
-        mock_provider.collect_member_budget_spend_for_refs.return_value = []
+        mock_provider.collect_member_budget_spend_for_allocations.return_value = []
 
         await ProjectAssignmentService._capture_terminal_member_spend(allocation, mock_provider, now)
 
-        mock_provider.collect_member_budget_spend_for_refs.assert_awaited_once_with({"ref-1"})
+        mock_provider.collect_member_budget_spend_for_allocations.assert_awaited_once_with([allocation])
 
     @pytest.mark.asyncio
     @patch("codemie.service.project.project_assignment_service.project_spend_tracking_repository")
@@ -1028,7 +1028,7 @@ class TestCaptureTerminalMemberSpend:
         )
 
         mock_provider = AsyncMock()
-        mock_provider.collect_member_budget_spend_for_refs.return_value = [snapshot]
+        mock_provider.collect_member_budget_spend_for_allocations.return_value = [snapshot]
 
         mock_session = AsyncMock()
         mock_get_session.return_value.__aenter__.return_value = mock_session

@@ -1153,6 +1153,22 @@ class SettingsService(BaseSettingsService):
         return str(enabled).lower() == "true"
 
     @classmethod
+    def get_projects_enforcing_member_spend_limits(cls, project_names: list[str]) -> set[str]:
+        """Return the subset of projects with member spend limit enforcement enabled, in one query."""
+        if not project_names:
+            return set()
+
+        settings = Settings.get_by_project_names(project_names, credential_type=CredentialTypes.ENVIRONMENT_VARS)
+        enforced: set[str] = set()
+        for setting in settings:
+            if setting.alias != cls.ENFORCE_MEMBER_SPEND_LIMITS_ALIAS:
+                continue
+            cls._decrypt_credentials(setting)
+            if str(setting.normalize_values().get(cls.ENABLED)).lower() == "true":
+                enforced.add(setting.project_name)
+        return enforced
+
+    @classmethod
     def set_enforce_member_spend_limits(cls, project_name: str, enabled: bool) -> None:
         """Persist the project-wide member spend enforcement flag."""
         if not project_name:

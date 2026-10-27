@@ -1642,6 +1642,85 @@ class TestGetUserKeySpending:
 
         assert "data" in response
 
+    @pytest.mark.asyncio
+    async def test_budget_usage_includes_project_rows(self, mock_user):
+        """Per-project rows appear in self-service response after personal rows."""
+        from codemie.rest_api.routers.analytics.spending import get_user_budget_usage
+        from codemie.service.analytics.handlers.budget_usage_service import _get_key_spending_columns
+
+        rows = [
+            {
+                "project_name": mock_user.email,
+                "current_spending": 1.0,
+                "budget_reset_at": None,
+                "time_until_reset": None,
+                "budget_limit": 10.0,
+                "total": 10.0,
+            },
+            {
+                "project_name": "proj-x",
+                "current_spending": 2.0,
+                "budget_reset_at": None,
+                "time_until_reset": None,
+                "budget_limit": 20.0,
+                "total": 10.0,
+            },
+        ]
+        with patch("codemie.clients.postgres.get_async_session", return_value=self._mock_session_ctx()):
+            with patch(
+                "codemie.service.analytics.handlers.budget_usage_service.BudgetUsageService.get_budget_usage",
+                new_callable=AsyncMock,
+                return_value=(_get_key_spending_columns(), rows),
+            ):
+                response = await get_user_budget_usage(user=mock_user, user_id=None)
+
+        names = [r["project_name"] for r in response["data"]["rows"]]
+        assert names.index(mock_user.email) < names.index("proj-x")
+
+    @pytest.mark.asyncio
+    async def test_admin_path_includes_project_rows(self, mock_user):
+        """Per-project rows appear in admin-path response (AC 1)."""
+        from codemie.rest_api.routers.analytics.spending import get_user_budget_usage
+        from codemie.service.analytics.handlers.budget_usage_service import _get_key_spending_columns
+
+        rows = [
+            {
+                "project_name": "target-username",
+                "current_spending": 1.0,
+                "budget_reset_at": None,
+                "time_until_reset": None,
+                "budget_limit": 10.0,
+                "total": 10.0,
+            },
+            {
+                "project_name": "proj-admin",
+                "current_spending": 3.0,
+                "budget_reset_at": None,
+                "time_until_reset": None,
+                "budget_limit": 30.0,
+                "total": 10.0,
+            },
+        ]
+
+        with (
+            patch(
+                "codemie.rest_api.routers.analytics.spending._resolve_admin_budget_subject",
+                new_callable=AsyncMock,
+                return_value=("target-user-id", "target-username"),
+            ),
+            patch("codemie.clients.postgres.get_async_session", return_value=self._mock_session_ctx()),
+            patch(
+                "codemie.service.analytics.handlers.budget_usage_service.BudgetUsageService.get_budget_usage",
+                new_callable=AsyncMock,
+                return_value=(_get_key_spending_columns(), rows),
+            ),
+        ):
+            response = await get_user_budget_usage(user=mock_user, user_id="target-user-id")
+
+        result_rows = response["data"]["rows"]
+        project_row = next(r for r in result_rows if r["project_name"] == "proj-admin")
+        assert project_row is not None
+
 
 class TestAuthorizeAdminBudgetView:
     """Tests for _authorize_admin_budget_view authorization helper."""

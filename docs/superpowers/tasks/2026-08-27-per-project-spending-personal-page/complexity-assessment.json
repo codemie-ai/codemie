@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "task": "Extend budget_usage endpoint to include per-project spending rows in the user's personal spending panel, sorted by project name then type (platform -> cli -> premium).",
+  "generated": "2026-08-27T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 18,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "technical_risk",
+      "reason": "No existing pattern in this codebase for combining BudgetUsageService and MemberSpendService in a single request — each lazy-refresh path issues internal DB commits (insert_budget_entries, insert_member_budget_entries) that expire ORM objects in a shared AsyncSession. The two paths must run in separate session scopes or in a defined order; no precedent exists here. Auto-bump applied: acceptance criteria enumerate graceful handling of empty per-project member assignments with no existing test template covering that defensive path."
+    },
+    {
+      "dimension": "component_scope",
+      "reason": "Three components touched: analytics router (get_user_budget_usage), BudgetUsageService (extended to call MemberSpendService data), and MemberSpendService (reused as a data source). Spans API and Service layers. Requires column-schema transformation from MemberSpendService's columnar format (one row per project, one column per category) into BudgetUsageService's row-per-category layout."
+    },
+    {
+      "dimension": "requirements_clarity",
+      "reason": "Core behaviour and sort order are well-specified. Gaps: admin user_id path scope is unspecified (AC targets only the self-service path); budget_reset_at and time_until_reset fields have no equivalent in ProjectMemberBudgetAssignment, requiring a null-value convention that is not documented."
+    }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from L to XL: acceptance criteria enumerate a specific error/edge case (empty per-project member assignments handled gracefully) and no existing test template covers that defensive pattern in the budget_usage path."
+  ],
+  "split_recommendation": null
+}

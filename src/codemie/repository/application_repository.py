@@ -876,6 +876,26 @@ class ApplicationRepository:
         result = await session.execute(statement)
         return list(result.scalars().all())
 
+    async def aget_personal_project_names(self, session: AsyncSession, names: list[str]) -> set[str]:
+        """Return which of the given project names are non-deleted personal projects.
+
+        Args:
+            session: Async database session
+            names: Project names to check
+
+        Returns:
+            The subset of names that belong to personal projects
+        """
+        if not names:
+            return set()
+        statement = select(Application.name).where(
+            Application.name.in_(names),
+            Application.project_type == Application.ProjectType.PERSONAL.value,
+            Application.deleted_at.is_(None),
+        )
+        result = await session.execute(statement)
+        return set(result.scalars().all())
+
     async def aget_or_create(self, session: AsyncSession, name: str) -> Application:
         """Get existing application or create if doesn't exist (async)
 
