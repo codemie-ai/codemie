@@ -346,9 +346,9 @@ def test_build_list_filters_non_admin_adds_project_scope():
     """Non-admin user must see only their own projects."""
     user = _make_user(is_admin=False, project_names=["proj-a", "proj-b"])
     conditions, params = SchedulerSettingsService._build_list_filters(
-        project_id=None,
+        project_ids=None,
         resource_type=None,
-        resource_id=None,
+        resource_ids=None,
         search=None,
         status=None,
         last_run_status=None,
@@ -363,9 +363,9 @@ def test_build_list_filters_admin_skips_project_scope():
     """Admin/maintainer must see all projects — no project_names condition added."""
     user = _make_user(is_admin=True, project_names=["proj-a"])
     conditions, params = SchedulerSettingsService._build_list_filters(
-        project_id=None,
+        project_ids=None,
         resource_type=None,
-        resource_id=None,
+        resource_ids=None,
         search=None,
         status=None,
         last_run_status=None,
@@ -375,22 +375,63 @@ def test_build_list_filters_admin_skips_project_scope():
     assert not any("project_names" in c for c in conditions), "Admins must not be scoped to project_names"
 
 
-def test_build_list_filters_explicit_project_id_adds_alongside_scope():
-    """When project_id is given explicitly it is ANDed with the user's project_names scope."""
+def _filters(**kw):
+    args = {
+        "project_ids": None,
+        "resource_type": None,
+        "resource_ids": None,
+        "search": None,
+        "status": None,
+        "last_run_status": None,
+        "owner_type": None,
+        **kw,
+    }
+    return SchedulerSettingsService._build_list_filters(**args)
+
+
+def test_build_list_filters_explicit_project_ids_adds_alongside_scope():
+    """When project_ids is given explicitly it is ANDed with the user's project_names scope."""
     user = _make_user(is_admin=False, project_names=["proj-a"])
-    conditions, params = SchedulerSettingsService._build_list_filters(
-        project_id="proj-a",
-        resource_type=None,
-        resource_id=None,
-        search=None,
-        status=None,
-        last_run_status=None,
-        owner_type=None,
-        user=user,
-    )
-    assert any(":project_id" in c for c in conditions)
-    assert params.get("project_id") == "proj-a"
+    conditions, params = _filters(project_ids=["proj-a"], user=user)
+    assert "s.project_name = ANY(:project_ids)" in conditions
+    assert params.get("project_ids") == ["proj-a"]
     assert any("project_names" in c for c in conditions), "project_names scope must still be applied"
+
+
+def test_build_list_filters_several_project_ids():
+    conditions, params = _filters(project_ids=["a", "b"])
+    assert "s.project_name = ANY(:project_ids)" in conditions
+    assert params["project_ids"] == ["a", "b"]
+
+
+@pytest.mark.parametrize("value", [None, [], ["", " "]])
+def test_build_list_filters_blank_project_ids_add_no_condition(value):
+    conditions, params = _filters(project_ids=value, resource_ids=value)
+    assert not any("project_ids" in c or "resource_ids" in c for c in conditions)
+    assert "project_ids" not in params
+    assert "resource_ids" not in params
+
+
+def test_build_list_filters_blank_entries_are_dropped():
+    _, params = _filters(project_ids=["a", "", " "])
+    assert params["project_ids"] == ["a"]
+
+
+@pytest.mark.parametrize("ids", [["r1"], ["r1", "r2"]])
+def test_build_list_filters_resource_ids(ids):
+    conditions, params = _filters(resource_ids=ids)
+    assert any("cv->>'value' = ANY(:resource_ids)" in c for c in conditions)
+    assert params["resource_ids"] == ids
+
+
+@pytest.mark.parametrize("ids", [["inaccessible"], ["proj-a", "inaccessible"]])
+def test_build_list_filters_non_admin_keeps_scope_with_requested_projects(ids):
+    user = _make_user(is_admin=False, project_names=["proj-a"])
+    conditions, params = _filters(project_ids=ids, user=user)
+    assert "s.project_name = ANY(:project_names)" in conditions
+    assert params["project_names"] == ["proj-a"]
+    assert "s.project_name = ANY(:project_ids)" in conditions
+    assert params["project_ids"] == ids
 
 
 # ===================== get_filter_options user-scoping tests =====================
@@ -416,9 +457,9 @@ def test_build_list_filters_empty_project_names_returns_no_rows_condition():
     """Non-admin with empty project_names must produce a 'never match' condition, not a type error."""
     user = _make_user(is_admin=False, project_names=[])
     conditions, params = SchedulerSettingsService._build_list_filters(
-        project_id=None,
+        project_ids=None,
         resource_type=None,
-        resource_id=None,
+        resource_ids=None,
         search=None,
         status=None,
         last_run_status=None,
@@ -442,9 +483,9 @@ def test_build_list_filters_owner_type_user_adds_caller_id_for_non_admin():
     """ownerType=User must scope results to the caller's user_id for regular users."""
     user = _make_user_with_id(user_id="user-42", is_admin=False)
     conditions, params = SchedulerSettingsService._build_list_filters(
-        project_id=None,
+        project_ids=None,
         resource_type=None,
-        resource_id=None,
+        resource_ids=None,
         search=None,
         status=None,
         last_run_status=None,
@@ -461,9 +502,9 @@ def test_build_list_filters_owner_type_user_adds_caller_id_for_admin():
     """ownerType=User must scope results to the caller's user_id even for admins — no bypass."""
     user = _make_user_with_id(user_id="admin-99", is_admin=True)
     conditions, params = SchedulerSettingsService._build_list_filters(
-        project_id=None,
+        project_ids=None,
         resource_type=None,
-        resource_id=None,
+        resource_ids=None,
         search=None,
         status=None,
         last_run_status=None,
@@ -479,9 +520,9 @@ def test_build_list_filters_owner_type_project_does_not_add_caller_id():
     """ownerType=Project must NOT add a user_id constraint."""
     user = _make_user_with_id(user_id="user-42", is_admin=False)
     conditions, params = SchedulerSettingsService._build_list_filters(
-        project_id=None,
+        project_ids=None,
         resource_type=None,
-        resource_id=None,
+        resource_ids=None,
         search=None,
         status=None,
         last_run_status=None,
@@ -497,9 +538,9 @@ def test_build_list_filters_no_owner_type_does_not_add_caller_id():
     """When ownerType is absent, no user_id constraint should be added."""
     user = _make_user_with_id(user_id="user-42", is_admin=False)
     conditions, params = SchedulerSettingsService._build_list_filters(
-        project_id=None,
+        project_ids=None,
         resource_type=None,
-        resource_id=None,
+        resource_ids=None,
         search=None,
         status=None,
         last_run_status=None,

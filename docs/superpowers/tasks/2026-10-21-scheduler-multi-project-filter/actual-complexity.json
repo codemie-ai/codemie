@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "generated": "2026-10-21T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 13,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 5,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Two components: the list_schedulers router endpoint (repeated projectId/resourceId query params as list[str]) and SchedulerSettingsService.list_schedulers filters (project_ids/resource_ids); established pattern, no new abstractions." },
+    { "dimension": "file_change_estimate", "reason": "5 files: router, service, OpenAPI baseline JSON, and two test files; all modifications, no new files, no new packages." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

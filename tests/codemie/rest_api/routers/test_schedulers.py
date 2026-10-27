@@ -504,8 +504,8 @@ def test_router_forwards_owner_type_to_service():
             page_size=10,
             search=None,
             resource_type=None,
-            project_id=None,
-            resource_id=None,
+            project_ids=None,
+            resource_ids=None,
             status=None,
             last_run_status=None,
             owner_type="Project",
@@ -515,13 +515,44 @@ def test_router_forwards_owner_type_to_service():
         assert kwargs["owner_type"] == "Project"
 
 
+@pytest.mark.parametrize(
+    "query, expected_projects, expected_resources",
+    [
+        ("projectId=a&projectId=b&resourceId=r1", ["a", "b"], ["r1"]),
+        ("projectId=a", ["a"], None),
+        ("", None, None),
+    ],
+)
+def test_router_list_schedulers_binds_repeated_params_as_lists(query, expected_projects, expected_resources):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from codemie.rest_api.routers.schedulers import router
+    from codemie.rest_api.security.authentication import authenticate
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[authenticate] = lambda: MagicMock()
+
+    with patch("codemie.rest_api.routers.schedulers.SchedulerSettingsService") as mock_svc_cls:
+        mock_svc_cls.list_schedulers.return_value = {
+            "items": [],
+            "pagination": {"page": 0, "per_page": 10, "total": 0, "pages": 0},
+        }
+        TestClient(app).get(f"/v1/schedulers?{query}")
+
+    _, kwargs = mock_svc_cls.list_schedulers.call_args
+    assert kwargs["project_ids"] == expected_projects
+    assert kwargs["resource_ids"] == expected_resources
+
+
 def test_build_list_filters_appends_setting_type_when_owner_type_provided():
     from codemie.service.settings.scheduler_settings_service import SchedulerSettingsService
 
     conditions, params = SchedulerSettingsService._build_list_filters(
-        project_id=None,
+        project_ids=None,
         resource_type=None,
-        resource_id=None,
+        resource_ids=None,
         search=None,
         status=None,
         last_run_status=None,
@@ -536,9 +567,9 @@ def test_build_list_filters_omits_setting_type_when_owner_type_is_none():
     from codemie.service.settings.scheduler_settings_service import SchedulerSettingsService
 
     conditions, params = SchedulerSettingsService._build_list_filters(
-        project_id=None,
+        project_ids=None,
         resource_type=None,
-        resource_id=None,
+        resource_ids=None,
         search=None,
         status=None,
         last_run_status=None,

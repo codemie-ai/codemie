@@ -465,7 +465,7 @@ class SchedulerSettingsService(BaseSettingsService):
 
     @staticmethod
     def _build_list_filters(
-        project_id, resource_type, resource_id, search, status, last_run_status, owner_type=None, user=None
+        project_ids, resource_type, resource_ids, search, status, last_run_status, owner_type=None, user=None
     ):
         conditions = ["s.credential_type = 'SCHEDULER'"]
         params: dict = {}
@@ -478,21 +478,24 @@ class SchedulerSettingsService(BaseSettingsService):
                 conditions.append("s.project_name = ANY(:project_names)")
                 params["project_names"] = project_names
 
-        if project_id:
-            conditions.append("s.project_name = :project_id")
-            params["project_id"] = project_id
+        project_ids = [v for v in (project_ids or []) if v and v.strip()]
+        resource_ids = [v for v in (resource_ids or []) if v and v.strip()]
+
+        if project_ids:
+            conditions.append("s.project_name = ANY(:project_ids)")
+            params["project_ids"] = project_ids
         if resource_type:
             conditions.append(
                 "EXISTS (SELECT 1 FROM jsonb_array_elements(s.credential_values::jsonb) cv "
                 "WHERE cv->>'key' = 'resource_type' AND lower(cv->>'value') = lower(:resource_type))"
             )
             params["resource_type"] = resource_type
-        if resource_id:
+        if resource_ids:
             conditions.append(
                 "EXISTS (SELECT 1 FROM jsonb_array_elements(s.credential_values::jsonb) cv "
-                "WHERE cv->>'key' = 'resource_id' AND cv->>'value' = :resource_id)"
+                "WHERE cv->>'key' = 'resource_id' AND cv->>'value' = ANY(:resource_ids))"
             )
-            params["resource_id"] = resource_id
+            params["resource_ids"] = resource_ids
         if search:
             conditions.append(
                 "(s.alias ILIKE :search OR EXISTS ("
@@ -519,8 +522,8 @@ class SchedulerSettingsService(BaseSettingsService):
         per_page=10,
         search=None,
         resource_type=None,
-        project_id=None,
-        resource_id=None,
+        project_ids=None,
+        resource_ids=None,
         status=None,
         last_run_status=None,
         owner_type=None,
@@ -535,7 +538,7 @@ class SchedulerSettingsService(BaseSettingsService):
         from codemie.rest_api.models.scheduler_run import SchedulersPaginatedResponse
 
         conditions, params = SchedulerSettingsService._build_list_filters(
-            project_id, resource_type, resource_id, search, status, last_run_status, owner_type, user=user
+            project_ids, resource_type, resource_ids, search, status, last_run_status, owner_type, user=user
         )
 
         last_run_join = (
