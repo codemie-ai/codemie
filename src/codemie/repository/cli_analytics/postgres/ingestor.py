@@ -275,6 +275,15 @@ def _keep_fresh(batch: DecodedBatch, fresh: set[tuple]) -> DecodedBatch:
     return _subset(batch, records)
 
 
+def _hook_in_project(row: Any, project: str) -> Any:
+    if row.codemie_project_name == project:
+        return row
+    current = row.codemie_project_name or ""
+    if current.strip() and current.lower() != project.lower():
+        return row
+    return row._replace(codemie_project_name=project)
+
+
 async def _insert_rows(conn: asyncpg.Connection, stored: DecodedBatch, new_resources: list[tuple]) -> None:
     if new_resources:
         await conn.execute(_RESOURCES_SQL, *_columns([(None, None, *r) for r in new_resources]))
@@ -328,16 +337,8 @@ def _attributed_to(batch: DecodedBatch, project: str | None) -> DecodedBatch:
     replaced. Nothing else of the batch changes: the identity of a record is computed from the event as
     sent, and the other attributes are stored as received.
     """
-    if project is None:
-        return batch
-    wanted = project.lower()
-    batch.hooks = [
-        row._replace(codemie_project_name=project)
-        if row.codemie_project_name != project
-        and (not (row.codemie_project_name or "").strip() or row.codemie_project_name.lower() == wanted)
-        else row
-        for row in batch.hooks
-    ]
+    if project is not None:
+        batch.hooks = [_hook_in_project(row, project) for row in batch.hooks]
     return batch
 
 

@@ -125,6 +125,75 @@ def test_record_skill_event_wraps_unexpected_service_errors() -> None:
     assert "command=add status=completed" in exc_info.value.details
 
 
+def test_record_skill_event_header_overrides_decoded() -> None:
+    """A percent-encoded X-CodeMie-Repository/-Branch header decodes and overrides the body;
+    X-CodeMie-Project is passed to the service exactly as sent."""
+    event = SkillEvent(id="event-1", user_id="user-1", session_id="session-1", command="add", status="completed")
+    request = SkillEventRequest(
+        session_id="session-1",
+        command="add",
+        status="completed",
+        skill_slug="code-review",
+        repository="body/repo",
+        branch="body-branch",
+        project="body-project",
+    )
+
+    with patch("codemie.rest_api.routers.skill_events.skill_event_service.record", return_value=event) as record:
+        record_skill_event(
+            request=request,
+            user=_user(),
+            x_codemie_repository="clients/my%20repo",
+            x_codemie_branch="feature/%D1%82%D0%B5%D1%81%D1%82",
+            x_codemie_project="my%20project",
+        )
+
+    assert record.call_args.kwargs["x_codemie_repository"] == "clients/my repo"
+    assert record.call_args.kwargs["x_codemie_branch"] == "feature/тест"
+    assert record.call_args.kwargs["x_codemie_project"] == "my%20project"
+
+
+def test_record_skill_event_whitespace_only_header_falls_back_to_body() -> None:
+    """CR-002: a repository/branch header that decodes to whitespace-only must not override a
+    legitimate body-supplied value. Project is not decoded, so "%20" reaches the service as sent."""
+    event = SkillEvent(id="event-1", user_id="user-1", session_id="session-1", command="add", status="completed")
+    request = SkillEventRequest(
+        session_id="session-1",
+        command="add",
+        status="completed",
+        skill_slug="code-review",
+        repository="body/repo",
+        branch="body-branch",
+        project="body-project",
+    )
+
+    with patch("codemie.rest_api.routers.skill_events.skill_event_service.record", return_value=event) as record:
+        record_skill_event(
+            request=request,
+            user=_user(),
+            x_codemie_repository="%20",
+            x_codemie_branch="%20",
+            x_codemie_project="%20",
+        )
+
+    assert record.call_args.kwargs["x_codemie_repository"] is None
+    assert record.call_args.kwargs["x_codemie_branch"] is None
+    assert record.call_args.kwargs["x_codemie_project"] == "%20"
+
+
+def test_record_skill_event_without_headers_uses_body_fields() -> None:
+    """Missing attribution headers leave the body's repository/branch/project untouched."""
+    event = SkillEvent(id="event-1", user_id="user-1", session_id="session-1", command="add", status="completed")
+    request = _request()
+
+    with patch("codemie.rest_api.routers.skill_events.skill_event_service.record", return_value=event) as record:
+        record_skill_event(request=request, user=_user())
+
+    assert record.call_args.kwargs.get("x_codemie_repository") is None
+    assert record.call_args.kwargs.get("x_codemie_branch") is None
+    assert record.call_args.kwargs.get("x_codemie_project") is None
+
+
 # ---------------------------------------------------------------------------
 # GET /v1/skills/events — raw chronological event log
 # ---------------------------------------------------------------------------

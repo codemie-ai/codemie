@@ -348,14 +348,14 @@ async def test_live_agent_count_in_api_matches_the_rollup_and_skips_denied_calls
         assert rollup_count == detail["agent_count"] == 3
         assert subtype_calls == 3
         # The offset names the call: an agent bar starts at its launch ack (agent.tool.end), else at its tool span,
-        # counted from the session start at minute 10. On time: its end at minute 10 -> 0; execution span 23 h
-        # later: no end, its span at minute 55 -> 45 min; next-day end: its end at minute 40 + 23 h -> 23 h 30 min.
-        # An excluded call would add a row of its own: late at 2 days 20 min, exec-late at 40 min, early at 50 min, denied
-        # (before the session start) at 0.
+        # counted from the session start at minute 0 (the interaction span). On time: its end at minute 10 -> 10 min;
+        # execution span 23 h later: no end, its span at minute 55 -> 55 min; next-day end: its end at minute 40 + 23 h
+        # -> 23 h 40 min. An excluded call would add a row of its own: late at 2 days 30 min, exec-late at 50 min,
+        # early at 60 min, denied (a tool span at minute 5, no end and no execution span) at 5 min.
         assert [(d["label"], d["start_offset_ms"]) for d in detail["dispatches"] if d["kind"] == "agent"] == [
-            ("agent · Explore #1", 0),
-            ("agent · Explore #2", 2_700_000),
-            ("agent · Explore #3", 84_600_000),
+            ("agent · Explore #1", 600_000),
+            ("agent · Explore #2", 3_300_000),
+            ("agent · Explore #3", 85_200_000),
         ]
     finally:
         await _cleanup(engine, session_id)

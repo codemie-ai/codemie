@@ -16,8 +16,16 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, status
 from codemie.configs import logger
-from codemie.core.constants import HEADER_CODEMIE_CHROME_EXTENSION, HEADER_CODEMIE_CLI, HEADER_CODEMIE_CLIENT
+from codemie.core.constants import (
+    HEADER_CODEMIE_CHROME_EXTENSION,
+    HEADER_CODEMIE_CLI,
+    HEADER_CODEMIE_CLI_BRANCH,
+    HEADER_CODEMIE_CLI_PROJECT,
+    HEADER_CODEMIE_CLI_REPOSITORY,
+    HEADER_CODEMIE_CLIENT,
+)
 from codemie.core.exceptions import ExtendedHTTPException
+from codemie.core.header_decoding import decode_attribution_header
 from codemie.rest_api.models.metrics import MetricsRequest, MetricsResponse
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
@@ -39,6 +47,9 @@ def send_metric(
     x_codemie_cli: Annotated[str | None, Header(alias=HEADER_CODEMIE_CLI)] = None,
     x_codemie_client: Annotated[str | None, Header(alias=HEADER_CODEMIE_CLIENT)] = None,
     x_codemie_chrome_extension: Annotated[str | None, Header(alias=HEADER_CODEMIE_CHROME_EXTENSION)] = None,
+    x_codemie_repository: Annotated[str | None, Header(alias=HEADER_CODEMIE_CLI_REPOSITORY)] = None,
+    x_codemie_branch: Annotated[str | None, Header(alias=HEADER_CODEMIE_CLI_BRANCH)] = None,
+    x_codemie_project: Annotated[str | None, Header(alias=HEADER_CODEMIE_CLI_PROJECT)] = None,
 ):
     """
     Send a custom count metric using the base monitoring service.
@@ -83,6 +94,15 @@ def send_metric(
             attributes[MetricsAttributes.CODEMIE_CLIENT] = x_codemie_client
         if x_codemie_chrome_extension:
             attributes[MetricsAttributes.CHROME_EXTENSION] = x_codemie_chrome_extension
+
+        decoded_repository = decode_attribution_header(x_codemie_repository)
+        if decoded_repository:
+            attributes[MetricsAttributes.REPOSITORY] = decoded_repository
+        decoded_branch = decode_attribution_header(x_codemie_branch)
+        if decoded_branch:
+            attributes[MetricsAttributes.BRANCH] = decoded_branch
+        if x_codemie_project:
+            attributes[MetricsAttributes.PROJECT] = x_codemie_project
 
         BaseMonitoringService.send_count_metric(name=metric_name, attributes=attributes)
 

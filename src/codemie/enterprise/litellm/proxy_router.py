@@ -28,6 +28,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request,
 from packaging.version import InvalidVersion, Version
 from starlette.datastructures import Headers
 from starlette.responses import StreamingResponse
+from codemie.core.header_decoding import decode_attribution_header
 from codemie.service.monitoring.base_monitoring_service import limit_string, send_log_metric
 from codemie.service.monitoring.metrics_constants import MetricsAttributes, LLM_ERROR_TOTAL_METRIC
 from codemie.configs.logger import logging_user_id, current_user_email, logging_conversation_id, logging_uuid
@@ -468,8 +469,8 @@ def _extract_request_info(headers: Headers | httpx.Headers | dict, user: User | 
         USER_AGENT: headers.get("User-Agent", UNKNOWN),
         CODEMIE_CLI: headers.get(HEADER_CODEMIE_CLI, ""),
         CHROME_EXTENSION: headers.get(HEADER_CODEMIE_CHROME_EXTENSION, ""),
-        BRANCH: headers.get(HEADER_CODEMIE_CLI_BRANCH, ""),
-        REPOSITORY: headers.get(HEADER_CODEMIE_CLI_REPOSITORY, ""),
+        BRANCH: decode_attribution_header(headers.get(HEADER_CODEMIE_CLI_BRANCH, "")) or "",
+        REPOSITORY: decode_attribution_header(headers.get(HEADER_CODEMIE_CLI_REPOSITORY, "")) or "",
         PROJECT: project,
         INTEGRATION: headers.get(HEADER_CODEMIE_INTEGRATION) or None,
     }

@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "generated": "2026-10-23T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 24,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 17,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "New shared core utility (src/codemie/core/header_decoding.py) is threaded into the LiteLLM proxy router, the CLI analytics ingest router/service/postgres gate, the metrics router, and the skill-events router/service — one utility, but consumed from 4+ distinct call sites across API, service, and persistence layers." },
+    { "dimension": "technical_risk", "reason": "decode_attribution_header follows a well-established pattern (stdlib unquote with per-segment fallback and tests), but its output feeds the CLI analytics project authorization gate (cli_analytics_project_gate.py) and attribution used for budget tracking in proxy_router.py — an incorrect decode could silently change which project/budget a request is attributed to. A follow-up commit (\"Fix review findings\") confirms review surfaced real issues after the first pass." },
+    { "dimension": "file_change_estimate", "reason": "diffstat reports 17 files changed (612 insertions, 31 deletions): 1 new core module + 6 modified production call sites + ~10 test files touched/added, spanning multiple directories (core, enterprise/litellm, repository/cli_analytics, rest_api/routers, service)." },
+    { "dimension": "affected_layers", "reason": "Touches API routers (cli_analytics, metrics, skill_events), Service layer (skill_event_service, cli_analytics_project_gate), DB-Persistence (postgres ingestor attribution), and the External/Integration-facing LiteLLM proxy router — four distinct layers coordinated around one decoding contract, though no schema migration was needed." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L to XL: touches core shared utilities (new header_decoding.py consumed across API, service, and persistence layers)",
+    "Technical Risk bumped from L to XL: affects authorization — decoded header values feed the CLI analytics project access gate and budget/project attribution"
+  ],
+  "split_recommendation": null
+}

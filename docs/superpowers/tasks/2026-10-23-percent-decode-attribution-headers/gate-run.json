@@ -1,0 +1,102 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-16260-decode-attribution-headers",
+  "head": "ff2344e94565626eab2ec8015eb1b71bb1ab95d2",
+  "runner": "poetry",
+  "started_at": "2026-10-23T13:25:38Z",
+  "completed_at": "2026-10-23T13:32:44Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "ruff",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2361,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 10740,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 7077,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "test",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 128120,
+      "command": "make test",
+      "exit_code": 1,
+      "notes": "58 failed, 22272 passed, 296 skipped, 3 errors. Narrowed re-run shows the failures split into two unrelated-to-diff clusters, not a regression from the changed files (src/codemie/core/header_decoding.py, proxy_router.py, cli_analytics ports/ingestor/router, metrics/skill_events routers, metrics_constants, skill_event_service): (1) all tests/enterprise/mcp_auth/* failures plus test_toolkit_service_auth_resolver.py and test_provider_adapters.py (*_maps_enterprise_token_data) are explained by `poetry show` marking codemie-enterprise as not installed in this checkout (ModuleNotFoundError: codemie_enterprise); the pre-push hook itself runs `pytest tests/ --ignore=tests/enterprise/` for this reason, a mismatch between the guide's `make test` (includes tests/enterprise) and the hook's narrower scope, noted here per the mismatch rule. (2) test_openapi_matches_baseline fails on an OpenAPI diff of >790 lines, consistent with routes missing because the enterprise extra is absent, same root cause. (3) the 3 ERRORs are pre-existing collection failures unrelated to this diff: tests/codemie/rest_api/routers/analytics_ui/test_common.py and tests/codemie/service/analytics_ui/test_uow.py import modules (codemie.repository.analytics_ui._base, codemie.service.analytics_ui.uow) that do not exist anywhere in this checkout, and tests/codemie/service/security/test_logout_token_cleanup_mock_tms.py::test_logout_removes_only_the_users_rows_and_pod_fallback showed ERROR under full xdist run but SKIPPED when re-run in isolation. None of the failing/erroring files are in the branch diff. Exit code is FAIL per the literal gate contract regardless of root cause."
+    },
+    {
+      "id": "test-cli-analytics-live",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 123560,
+      "command": "make test-cli-analytics-live",
+      "exit_code": 0,
+      "notes": "In scope because the diff touches src/codemie/repository/cli_analytics/postgres/ingestor.py. 121 live tests passed on throwaway PostgreSQL 17 and 14 containers, none skipped."
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 15169,
+      "command": "make gitleaks",
+      "exit_code": 0,
+      "notes": "Also the CI/verify secret-scan gate (full working-tree dir scan); Docker was reachable so it was not N/A."
+    },
+    {
+      "id": "gitleaks-precommit",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 728,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": 0,
+      "notes": "Self-skip: tool ran but scanned nothing — output showed '0 commits scanned.' / 'scanned ~0 bytes (0)'. Nothing is currently staged (git status shows only an untracked docs/ folder); re-run after staging the actual code changes to get real coverage from this hook."
+    },
+    {
+      "id": "sonar-local",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 110,
+      "command": "make sonar-local",
+      "exit_code": 0,
+      "notes": "Self-skip: 'Skipping Sonar scan because SONAR_TOKEN is not set.' SONAR_TOKEN is absent from the environment and .env.local does not exist. Set SONAR_TOKEN (and SONAR_HOST_URL if required) to enable locally; CI/the human /sanity path still owes this check."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "notes": "Not opening an MR in this run (guide Skip-if: local iteration only). Requires live infra (docker compose stack, superadmin fixtures, ~/.codemie/test-harness.json) that this run does not stand up; required for the MR compliance bot's '## Test harness' section, not for this gate pass."
+    },
+    {
+      "id": "commit-msg",
+      "source": "hook",
+      "status": "N/A",
+      "notes": "codemie-commit-msg validates the subject line of a pending commit message (EPMCDME-<n>: prefix). No commit is being made in this gate run, so there is no message to validate."
+    },
+    {
+      "id": "pre-push-heavy",
+      "source": "hook",
+      "status": "N/A",
+      "notes": "scripts/git-hooks/pre_push.sh chains pytest (same as the 'test' gate, minus tests/enterprise) + sonar-local, but only runs when CODEMIE_PREPUSH_ENABLED=true; disabled by default in this environment, so the hook itself would not have run these checks on a real push. Covered already by the 'test' and 'sonar-local' gates above; flagged per the mismatch rule rather than duplicated."
+    }
+  ],
+  "failures": {
+    "test": "FAILED tests/codemie/rest_api/router_guards/test_openapi_snapshot.py::test_openapi_matches_baseline\nFAILED tests/codemie/service/mcp/test_toolkit_service_auth_resolver.py::test_nfr23_discovered_pipeline_preserves_current_scope_and_invokes_tool_with_token\nFAILED tests/codemie/service/mcp/test_toolkit_service_auth_resolver.py::test_prepare_server_config_falls_back_to_legacy_when_discovered_token_missing\nFAILED tests/codemie/service/oauth/adapters/test_provider_adapters.py::test_gitlab_exchange_maps_enterprise_token_data\nFAILED tests/codemie/service/oauth/adapters/test_provider_adapters.py::test_atlassian_exchange_maps_enterprise_token_data\nFAILED tests/enterprise/mcp_auth/test_client_metadata_bridge.py::test_enabled_cimd_route_returns_public_document_headers_and_does_not_require_auth\nFAILED tests/enterprise/mcp_auth/test_client_metadata_bridge.py::test_enabled_cimd_route_rejects_query_without_echoing_tainted_inputs\nFAILED tests/enterprise/mcp_auth/test_client_metadata_bridge.py::test_enabled_cimd_route_sanitizes_invalid_configured_base_url_without_echoing_tainted_values\nFAILED tests/enterprise/mcp_auth/test_client_metadata_bridge.py::test_served_document_client_id_includes_api_root_path_and_shares_redirect_uri_prefix\nFAILED tests/enterprise/mcp_auth/test_client_metadata_bridge.py::test_served_document_client_id_without_root_path_strips_trailing_slash_base\nFAILED tests/enterprise/mcp_auth/test_discovery_probe_bridge.py::test_discovered_auth_gate_registration_failures_return_config_error_payload[no_supported_registration_mechanism-attempted_mechanisms0]\nFAILED tests/enterprise/mcp_auth/test_discovery_probe_bridge.py::test_discovered_auth_gate_registration_failures_return_config_error_payload[dcr_timeout-attempted_mechanisms1]\nFAILED tests/enterprise/mcp_auth/test_discovery_probe_bridge.py::test_discovered_auth_gate_registration_failures_return_config_error_payload[dcr_unavailable-attempted_mechanisms2]\nFAILED tests/enterprise/mcp_auth/test_oauth2_callback_bridge.py::test_callback_entry_log_state_prefix_joins_to_initiate\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_initiate_route_recovery_attempt_three_returns_auth_required_envelope\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_build_oauth2_initiate_response_passes_canonical_resource_to_enterprise_builder\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_raise_client_error_logs_warning_with_sanitized_details_before_raising\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_static_oauth2_initiate_logs_info_with_state_prefix_and_authorize_fields\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_static_oauth2_initiate_info_log_never_contains_full_state\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_saml_initiate_logs_info_with_state_prefix_and_authorize_fields\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_build_saml_initiate_passes_mcp_config_id_as_required_param\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_static_initiate_survives_malformed_authorize_url\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py (many parametrized cases — token refresh / reauth / discovery mapping)\nFAILED tests/enterprise/mcp_auth/test_private_network_allowlist_bridge.py::test_private_network_allowlist_reader_output_passes_to_enterprise_as_discovery\nFAILED tests/enterprise/mcp_auth/test_discovery_probe_bridge.py::test_discovery_probe_bridge_does_not_await_async_db_engine_in_worker_loop\nFAILED tests/enterprise/mcp_auth/test_insufficient_scope_recovery_bridge.py::test_bridge_maps_real_assistant_recovery_payload_snapshot\nFAILED tests/enterprise/mcp_auth/test_mcp_auth_status_bridge.py (2 cases) + test_build_discovered_auth_status_response_returns_config_error_snapshot\nERROR tests/codemie/rest_api/routers/analytics_ui/test_common.py — ModuleNotFoundError: No module named 'codemie.repository.analytics_ui._base'\nERROR tests/codemie/service/analytics_ui/test_uow.py — ModuleNotFoundError: No module named 'codemie.service.analytics_ui.uow'\nERROR tests/codemie/service/security/test_logout_token_cleanup_mock_tms.py::test_logout_removes_only_the_users_rows_and_pod_fallback\n58 failed, 22272 passed, 296 skipped, 314 warnings, 3 errors in 123.40s (0:02:03)\nmake: *** [test] Error 1\n\nRoot cause isolation (narrowed re-runs):\n- `poetry show` lists codemie-enterprise as not installed (!) in this checkout; `import codemie_enterprise` raises ModuleNotFoundError. All tests/enterprise/mcp_auth/* failures, plus test_toolkit_service_auth_resolver.py's two failures and test_provider_adapters.py's two *_maps_enterprise_token_data failures, are consistent with this missing extra.\n- test_openapi_matches_baseline fails with a >790-line OpenAPI schema diff (LLM Proxy / messages / models routes present/absent), consistent with routes gated behind the same missing enterprise extra.\n- Re-running tests/codemie/rest_api/routers/analytics_ui/test_common.py and tests/codemie/service/analytics_ui/test_uow.py in isolation reproduces the same ModuleNotFoundError for modules that do not exist anywhere in the current tree (not introduced or removed by this branch's diff).\n- None of the files in `git diff --name-only 81615eedeacfeda86d5f8cc604b134e9e548975d...HEAD` touch analytics_ui, openapi baseline, toolkit_service_auth_resolver, provider_adapters, or tests/enterprise/mcp_auth."
+  }
+}

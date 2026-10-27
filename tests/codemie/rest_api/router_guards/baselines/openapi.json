@@ -69322,6 +69322,54 @@
               ],
               "title": "X-Codemie-Chrome-Extension"
             }
+          },
+          {
+            "in": "header",
+            "name": "X-CodeMie-Repository",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Codemie-Repository"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CodeMie-Branch",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Codemie-Branch"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CodeMie-Project",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Codemie-Project"
+            }
           }
         ],
         "requestBody": {
@@ -73827,6 +73875,54 @@
                 }
               ],
               "title": "X-Codemie-Client"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CodeMie-Repository",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Codemie-Repository"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CodeMie-Branch",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Codemie-Branch"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CodeMie-Project",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Codemie-Project"
             }
           }
         ],

@@ -110,6 +110,9 @@ class SkillEventService:
         user: User,
         x_codemie_cli: Optional[str] = None,
         x_codemie_client: Optional[str] = None,
+        x_codemie_repository: Optional[str] = None,
+        x_codemie_branch: Optional[str] = None,
+        x_codemie_project: Optional[str] = None,
     ) -> SkillEvent:
         """Persist the event and mirror it to the legacy metrics path.
 
@@ -117,6 +120,11 @@ class SkillEventService:
         failures are logged and swallowed — Postgres is the authoritative
         store; transient Elastic-shipper hiccups must not lose data the
         client already trusted us to keep.
+
+        ``x_codemie_repository``/``x_codemie_branch`` are already decoded by the router and
+        ``x_codemie_project`` is passed as sent; when non-blank they take precedence over the
+        corresponding body field. The body fields are used raw (not percent-decoded): the CLI
+        percent-encodes only the headers, and sends the JSON body values as plain text.
         """
         slug, skill_id = derive_skill_identity(
             request.source,
@@ -133,9 +141,9 @@ class SkillEventService:
             agent_version=request.agent_version,
             client_type=x_codemie_client,
             cli_version=x_codemie_cli,
-            repository=request.repository,
-            branch=request.branch,
-            project=request.project,
+            repository=x_codemie_repository or request.repository,
+            branch=x_codemie_branch or request.branch,
+            project=x_codemie_project or request.project,
             command=request.command,
             status=request.status,
             scope=request.scope,

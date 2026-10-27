@@ -26,10 +26,12 @@ from fastapi import HTTPException
 from starlette.datastructures import Headers
 
 from codemie.core.constants import (
+    BRANCH,
     CODEMIE_CLI,
     CHROME_EXTENSION,
     LLM_MODEL,
     PROJECT,
+    REPOSITORY,
     HEADER_CODEMIE_CLI,
     HEADER_CODEMIE_CHROME_EXTENSION,
     HEADER_CODEMIE_CLI_BRANCH,
@@ -481,6 +483,45 @@ class TestExtractRequestInfo:
         result = _extract_request_info(headers, user=None)
 
         assert result[PROJECT] == ""
+
+    def test_extract_request_info_repository_and_branch_empty_string_when_missing(self):
+        """Missing Repository/Branch headers default to "" (str), matching the pre-decode behavior."""
+        headers = Headers({})
+
+        result = _extract_request_info(headers)
+
+        assert result[REPOSITORY] == ""
+        assert result[BRANCH] == ""
+
+    def test_extract_request_info_decodes_percent_encoded_repository_and_branch(self):
+        """Percent-encoded Repository/Branch headers are decoded before storage; Project is stored as sent."""
+        headers = Headers(
+            {
+                HEADER_CODEMIE_CLI_REPOSITORY: "clients/my%20repo",
+                HEADER_CODEMIE_CLI_BRANCH: "feature/%D1%82%D0%B5%D1%81%D1%82",
+                HEADER_CODEMIE_CLI_PROJECT: "my%20project",
+            }
+        )
+
+        result = _extract_request_info(headers)
+
+        assert result[REPOSITORY] == "clients/my repo"
+        assert result[BRANCH] == "feature/тест"
+        assert result[PROJECT] == "my%20project"
+
+    def test_extract_request_info_raw_header_passthrough(self):
+        """Unencoded Repository/Branch headers round-trip unchanged (old CLIs)."""
+        headers = Headers(
+            {
+                HEADER_CODEMIE_CLI_REPOSITORY: "org/repo",
+                HEADER_CODEMIE_CLI_BRANCH: "main",
+            }
+        )
+
+        result = _extract_request_info(headers)
+
+        assert result[REPOSITORY] == "org/repo"
+        assert result[BRANCH] == "main"
 
 
 class TestResolveProjectBudgetRuntime:

@@ -27,8 +27,15 @@ from typing import Annotated, Optional
 from fastapi import APIRouter, Depends, Header, Query, status
 
 from codemie.configs import logger
-from codemie.core.constants import HEADER_CODEMIE_CLI, HEADER_CODEMIE_CLIENT
+from codemie.core.constants import (
+    HEADER_CODEMIE_CLI,
+    HEADER_CODEMIE_CLI_BRANCH,
+    HEADER_CODEMIE_CLI_PROJECT,
+    HEADER_CODEMIE_CLI_REPOSITORY,
+    HEADER_CODEMIE_CLIENT,
+)
 from codemie.core.exceptions import ExtendedHTTPException
+from codemie.core.header_decoding import decode_attribution_header
 from codemie.rest_api.models.base import PaginatedListResponse, PaginationData
 from codemie.rest_api.models.skill_event import (
     SkillEventLogItem,
@@ -62,6 +69,9 @@ def record_skill_event(
     user: User = Depends(authenticate),
     x_codemie_cli: Annotated[str | None, Header(alias=HEADER_CODEMIE_CLI)] = None,
     x_codemie_client: Annotated[str | None, Header(alias=HEADER_CODEMIE_CLIENT)] = None,
+    x_codemie_repository: Annotated[str | None, Header(alias=HEADER_CODEMIE_CLI_REPOSITORY)] = None,
+    x_codemie_branch: Annotated[str | None, Header(alias=HEADER_CODEMIE_CLI_BRANCH)] = None,
+    x_codemie_project: Annotated[str | None, Header(alias=HEADER_CODEMIE_CLI_PROJECT)] = None,
 ) -> SkillEventResponse:
     """Record a single `codemie skill *` lifecycle event.
 
@@ -77,6 +87,9 @@ def record_skill_event(
             user=user,
             x_codemie_cli=x_codemie_cli,
             x_codemie_client=x_codemie_client,
+            x_codemie_repository=decode_attribution_header(x_codemie_repository),
+            x_codemie_branch=decode_attribution_header(x_codemie_branch),
+            x_codemie_project=x_codemie_project,
         )
         return SkillEventResponse(
             id=event.id,

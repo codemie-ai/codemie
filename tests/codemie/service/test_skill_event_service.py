@@ -199,6 +199,29 @@ def test_record_persists_enriched_event_and_mirrors_flat_metric() -> None:
     )
 
 
+def test_record_keeps_body_fields_raw_when_no_header_sent() -> None:
+    """The CLI percent-encodes only the headers; JSON body values are sent raw, so a literal
+    percent sequence in the body must not be decoded (EPMCDME-16260)."""
+    repository = FakeSkillEventRepository()
+    service = SkillEventService(repository=repository)
+    request = SkillEventRequest(
+        session_id="session-1",
+        command="add",
+        status="completed",
+        skill_slug="code-review",
+        repository="clients/A%20B",
+        branch="fix/100%25",
+        project="A%20B",
+    )
+
+    with patch("codemie.service.skill_event_service.send_log_metric"):
+        event = service.record(request=request, user=_user())
+
+    assert event.repository == "clients/A%20B"
+    assert event.branch == "fix/100%25"
+    assert event.project == "A%20B"
+
+
 def test_record_returns_persisted_event_when_metric_mirror_fails() -> None:
     repository = FakeSkillEventRepository()
     service = SkillEventService(repository=repository)

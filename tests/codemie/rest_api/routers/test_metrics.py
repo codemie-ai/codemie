@@ -127,3 +127,68 @@ async def test_send_metric_minimal(mock_authenticate, mock_send_count_metric):
     # Verify the BaseMonitoringService was called with default values
     expected_attributes = {"user_id": "user123", "user_name": "testuser", "user_email": "testuser@example.com"}
     mock_send_count_metric.assert_called_once_with(name="frontend_minimal_metric", attributes=expected_attributes)
+
+
+@pytest.mark.anyio
+@patch.object(BaseMonitoringService, 'send_count_metric')
+@patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
+async def test_send_metric_decodes_repository_branch_and_passes_project_raw(mock_authenticate, mock_send_count_metric):
+    # Arrange
+    mock_authenticate.return_value = User(id="user123", name="testuser", username="testuser@example.com")
+    mock_send_count_metric.return_value = None
+
+    # Act
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.post(
+            "/v1/metrics",
+            headers={
+                "X-CodeMie-Repository": "clients/my%20repo",
+                "X-CodeMie-Branch": "feature/%D1%82%D0%B5%D1%81%D1%82",
+                "X-CodeMie-Project": "my%20project",
+            },
+            json=sample_metrics_request,
+        )
+
+    # Assert
+    assert response.status_code == 200
+    expected_attributes = {
+        "test_attribute": "test_value",
+        "user_id": "user123",
+        "user_name": "testuser",
+        "user_email": "testuser@example.com",
+        "repository": "clients/my repo",
+        "branch": "feature/тест",
+        "project": "my%20project",
+    }
+    mock_send_count_metric.assert_called_once_with(
+        name=sample_metrics_request["name"],
+        attributes=expected_attributes,
+    )
+
+
+@pytest.mark.anyio
+@patch.object(BaseMonitoringService, 'send_count_metric')
+@patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
+async def test_send_metric_without_attribution_headers_unaffected(mock_authenticate, mock_send_count_metric):
+    # Arrange
+    mock_authenticate.return_value = User(id="user123", name="testuser", username="testuser@example.com")
+    mock_send_count_metric.return_value = None
+
+    # Act
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.post("/v1/metrics", json=sample_metrics_request)
+
+    # Assert
+    assert response.status_code == 200
+    expected_attributes = {
+        "test_attribute": "test_value",
+        "user_id": "user123",
+        "user_name": "testuser",
+        "user_email": "testuser@example.com",
+    }
+    mock_send_count_metric.assert_called_once_with(
+        name=sample_metrics_request["name"],
+        attributes=expected_attributes,
+    )

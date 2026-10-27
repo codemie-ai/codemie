@@ -42,6 +42,7 @@ from codemie.repository.cli_analytics.factory import CliAnalyticsStorage
 from codemie.repository.cli_analytics.postgres.ingestor import PostgresTelemetryIngestor
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
+from codemie.service.analytics.cli_analytics_project_gate import _ProjectIngestGate
 from tests.codemie.repository.cli_analytics.postgres.test_ingestor import FakeEngine
 from tests.codemie.repository.cli_analytics.support import hook_event_builders as hb
 from tests.codemie.repository.cli_analytics.support import otlp_builders as b
@@ -455,6 +456,42 @@ def test_two_projects_with_different_settings_are_isolated(env):
 
     assert stored_after_first > 0
     assert len(env.engine.conn.statements) == stored_after_first, "the disabled project's batch wrote something"
+
+
+# ── project header is used as sent, never percent-decoded (EPMCDME-16260) ────
+
+
+@asynccontextmanager
+async def _fake_session():
+    yield object()
+
+
+def _lookup_exact(stored_app: Application) -> AsyncMock:
+    """Only matches a query for the stored app's exact (case-insensitive) name — proves the gate
+    looks up the header value exactly as sent."""
+
+    async def _side_effect(_session, name: str):
+        return stored_app if name.lower() == stored_app.name.lower() else None
+
+    return AsyncMock(side_effect=_side_effect)
+
+
+@pytest.mark.asyncio
+async def test_gate_raw_project_header_unchanged():
+    """An unencoded header (old CLIs) still matches the stored project name as before."""
+    stored_app = Application(id=ENABLED, name=ENABLED, cli_analytics_enabled=True)
+    user = make_user([ENABLED])
+    gate = _ProjectIngestGate(user, ENABLED)
+
+    with (
+        patch(f"{GATE}.get_async_session", _fake_session),
+        patch(f"{GATE}.application_repository.aget_active_by_name_case_insensitive", _lookup_exact(stored_app)),
+        patch.object(config, "ENABLE_USER_MANAGEMENT", False),
+    ):
+        reason = await gate(frozenset())
+
+    assert reason is None
+    assert gate.canonical_project == ENABLED
 
 
 def test_flipping_the_flag_applies_to_the_next_request_and_history_is_untouched(env):
