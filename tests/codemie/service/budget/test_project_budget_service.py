@@ -87,7 +87,7 @@ async def test_resync_member_allocations_updates_shared_child_budget_for_equal_m
 
     call_kwargs = provider.sync_member_allocation.await_args.kwargs
     assert call_kwargs["effective_max_budget"] is None
-    mock_update_metadata.assert_not_awaited()
+    mock_update_metadata.assert_awaited_once()
     mock_ensure_shared_child_budget.assert_awaited_once_with(
         session,
         main_budget=budget,

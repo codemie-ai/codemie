@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "generated": "2026-10-26",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 19,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 8,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "provision_member_allocation in project_member_runtime_sync.py was extracted/reused as a shared core helper called from project_budget_service.py (fixed-allocation sync, rebalance self-heal) and from project_assignment_service.py (eager provisioning on member add via provision_member_allocation_sync) — 3 production modules coordinated around one shared utility." },
+    { "dimension": "technical_risk", "reason": "Budget/spend-enforcement logic with real financial impact; adds new detect-and-provision fallback paths on rebalance/override and a sync-to-async event-loop bridge with explicit timeout/cancellation handling for never-used members — no single exact precedent, though the sync bridge pattern itself mirrors existing resync_project_member_allocations_sync." },
+    { "dimension": "file_change_estimate", "reason": "diffstat: 8 files changed, 1076 insertions(+), 68 deletions(-) across 3 source files and 5 test files spanning enterprise/litellm, service/budget, and service/project directories." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L to XL: touches core shared utility (provision_member_allocation) reused across project_member_runtime_sync.py, project_budget_service.py, and project_assignment_service.py"
+  ],
+  "split_recommendation": null
+}

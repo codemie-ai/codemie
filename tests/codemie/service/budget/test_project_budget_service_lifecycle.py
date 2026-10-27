@@ -849,9 +849,15 @@ async def test_resync_member_allocation_syncs_litellm_for_equal_mode_members():
     )
     mock_provider = SimpleNamespace(sync_member_allocation=AsyncMock(return_value=member_state))
 
-    with patch(
-        "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository.update_allocation",
-        new=AsyncMock(return_value=equal_alloc),
+    with (
+        patch(
+            "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository.update_allocation",
+            new=AsyncMock(return_value=equal_alloc),
+        ),
+        patch(
+            "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository.update_provider_metadata",
+            new=AsyncMock(),
+        ),
     ):
         result = await service._resync_member_allocation(
             session=session,

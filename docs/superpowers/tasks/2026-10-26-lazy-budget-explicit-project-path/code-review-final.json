@@ -1,0 +1,50 @@
+{
+  "decision": "request-changes",
+  "rationale": "No story/spec artifact was provided for this round (acceptance lens not dispatched) so business criteria could not be checked and confidence is capped low; standards audit ran clean with no coverage gap. Reading the real code behind each lens claim: the member-add eager-provision path (_sync_project_budget_member_added) always no-ops because both call sites commit the newly-added allocation strictly after calling the cross-session provisioning bridge, so the task's goal (a) deliverable never actually provisions in production (CR-003, critical) -- the rebalance/override fallback (goal b) still works and is covered by tests. Two further real-but-lower-severity issues: an orphaned non-daemon thread/DB session on a 30s timeout in the new eager-provision bridge (CR-002->renumbered: see findings) and an unresolved asymmetry in whether shared-mode first-provisioned members get the same child-budget provider-state persistence as fixed-mode ones (needs a human call on intended behavior, kept as patch/major under no-spec routing). 8 lens-reported items were dismissed after source verification: 5 false positives (cache-key type match confirmed, narrowed except is behaviorally equivalent to the pre-refactor code, provider_member_ref is never a falsy-but-set value in practice, single-slot thread_error matches the pre-existing codebase pattern, 30s blocking-latency concern is currently unreachable because the call always returns fast due to CR-003) and 3 design choices explicitly accepted by the original task (self-heal-via-warning on eager-provision failure, no retry/metric on skip, which mirror the explicitly out-of-scope fail-open/fail-closed inconsistency). No findings were deferred.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "All 3 commit subjects in range follow the documented EPMCDME-#### format"},
+    {"kind": "code-quality", "status": "pass", "notes": "New/changed functions use explicit modern type hints; provisioning logic extends each file's existing core responsibility"},
+    {"kind": "security", "status": "pass", "notes": "Logging across the new provisioning paths uses sanitized operation context; no credentials/tokens logged; no new untrusted-input parsing"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/enterprise/litellm/project_member_runtime_sync.py",
+      "line": 216,
+      "title": "Eager-provision bridge leaks thread/future on 30s timeout",
+      "problem": "In the new provision_member_allocation_sync, on the main-loop dispatch path future.result(timeout=30) raises TimeoutError without cancelling the scheduled coroutine, and on the worker-thread fallback path worker.join(timeout=30) returns while the daemon=False thread keeps running _run() to completion.",
+      "impact": "If the LiteLLM provider is slow or unavailable at member-add time, the caller gives up after 30s but the orphaned coroutine/thread keeps its own DB session/connection open indefinitely, which can exhaust the connection pool under repeated timeouts and the non-daemon thread can block process shutdown.",
+      "recommendation": "On TimeoutError from future.result(), call future.cancel(); for the worker-thread fallback, either mark the thread daemon=True or explicitly track and cancel/join it with a hard upper bound before returning control to the caller."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/budget/project_budget_service.py",
+      "line": 1164,
+      "title": "Shared-mode first-provision skips child-budget persistence",
+      "problem": "_sync_fixed_allocation persists the provisioned member_state onto the per-user override child budget via _persist_child_budget_provider_state after calling provision_member_allocation for a never-synced member (lines 1105-1110), but _resync_member_allocation's equal/shared-mode branch for the same never-synced-member case (lines 1164-1169) calls provision_member_allocation and returns without any equivalent persistence call; _ensure_shared_child_budget_after_resync, called once per budget_id afterward, only refreshes soft/max amounts via _upsert_child_budget, never provider_metadata or budget_reset_at.",
+      "impact": "It is ambiguous whether the shared child budget's provider_metadata/budget_reset_at is intended to be refreshed on a member's first provisioning the same way the override child budget's is; if it is, this is a real gap -- the shared child budget's provider bookkeeping silently stays stale for the exact never-used-member scenario this change targets for shared-mode allocations.",
+      "recommendation": "Confirm with the budget-provider contract whether shared-mode first-provisioning needs the same _persist_child_budget_provider_state call as the fixed-mode path; if so, add it to the non-fixed branch of _resync_member_allocation."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/service/project/project_assignment_service.py",
+      "line": 261,
+      "title": "Eager provisioning at member-add never sees the new allocation",
+      "problem": "_sync_project_budget_member_added calls session.add(allocation) (line 261) and, still inside the caller's own uncommitted sync Session, immediately calls provision_member_allocation_sync(...) (line 268). That function opens a brand-new async session on a separate connection (get_async_session()) and queries get_active_by_project_category_user for the allocation; under default READ COMMITTED isolation it cannot see the uncommitted row from the other connection's open transaction, so it deterministically logs reason=allocation_not_visible_yet and returns without provisioning. Both call sites commit only after this call returns -- assign_user_to_project's caller commits in membership.py:61 after the whole service call, and the IdP-bootstrap path (_sync_budget_for_idp_projects._sync_one) commits at authentication_service.py:283, also after _sync_project_budget_member_added returns -- so this is the deterministic outcome of every invocation, not a rare race. The surrounding try/except only logs a warning and continues, masking the no-op.",
+      "impact": "The task's explicit goal (a) deliverable -- eagerly provisioning the LiteLLM record at member-add time for a never-used member -- never actually runs in production; a newly added member is left exactly as unprovisioned as before this change. The original reported bug is only avoided via the separate rebalance/override fallback (goal b), not by this member-add path. No test exercises the real two-session visibility behavior: existing unit tests mock provision_member_allocation_sync away entirely, so this gap ships undetected.",
+      "recommendation": "Flush and commit (or otherwise make visible to other connections) the newly added allocation before invoking provision_member_allocation_sync, or restructure eager provisioning to operate on the allocation object already held in the caller's own session instead of re-querying it from a separate connection."
+    }
+  ]
+}

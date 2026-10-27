@@ -1,0 +1,84 @@
+{
+  "schema": 1,
+  "branch": "epmcdme-16152",
+  "head": "b1c4b60aaa6b85ef164cda7103f2eb087d5c996b",
+  "runner": "poetry",
+  "started_at": "2026-10-26T13:24:32Z",
+  "completed_at": "2026-10-26T13:34:50Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2093,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 8709,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1527,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "gitleaks-ci",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 162830,
+      "command": "make gitleaks",
+      "exit_code": 1,
+      "notes": "All 31 findings are in /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv, a gitignored local runtime-storage artifact (see .gitignore:34) unrelated to this branch's diff, not tracked by git. 'make gitleaks' mounts the whole working tree (including gitignored files) so pre-existing local dev data pollutes the scan on this machine. A supplementary git-history-scoped scan (gitleaks git --log-opts=ae985d2d..HEAD) found 0 leaks in the branch's actual commits. Literal Pass/Fail criteria in the guide ('secret-like value is detected') were applied as written, so this is recorded as FAIL; the repository/local workspace, not the branch content, is the source of the finding."
+    },
+    {
+      "id": "gitleaks-hook",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 1034,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": 0,
+      "notes": "Self-skip: output was '0 commits scanned... scanned ~0 bytes... no leaks found' because nothing is currently staged (working tree is clean on this branch). To exercise this gate for real, stage the branch's files and re-run. Supplementary check: 'gitleaks git --log-opts=ae985d2dbff58f7513b1096e9483ba0d16bf13df..HEAD' against the actual branch commits reported 5 commits scanned, no leaks found."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 144500,
+      "command": "make test",
+      "exit_code": 0,
+      "notes": "22789 passed, 274 skipped, 316 warnings in 140.25s."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 100,
+      "command": "SONAR_SKIP_TESTS=1 make sonar-local",
+      "exit_code": 1,
+      "notes": "Self-skip / missing prerequisite: 'sonar-scanner was not found. Install the official SonarScanner CLI or set SONAR_SCANNER_PATH.' SONAR_TOKEN is set and Node/Docker are present, but the SonarScanner CLI binary itself is not installed locally. Install the official SonarScanner CLI (or set SONAR_SCANNER_PATH to point at an existing install) to run this gate locally; otherwise it is only settled by a human/CI running the real scan."
+    },
+    {
+      "id": "commit-msg",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 0,
+      "command": "scripts/git-hooks/commit_msg.sh (verified statically against git log ae985d2dbff58f7513b1096e9483ba0d16bf13df..HEAD)",
+      "exit_code": 0,
+      "notes": "All 4 commit subjects on this branch start with 'EPMCDME-16152:', matching the enforced ^EPMCDME-[0-9]+: pattern; verified by inspection rather than re-running the hook since no new commit is being created in this gate run."
+    }
+  ],
+  "failures": {
+    "gitleaks-ci": "Finding:     ..._id – s3-user\\n * aws_secret_access_key:[REDACTED]\\nand save\\n\\nRestart ...\nSecret:      [REDACTED]\nRuleID:      generic-api-key\nEntropy:     4.734184\nFile:        /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv\nLine:        1901\nFingerprint: /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv:generic-api-key:1901\n\nFinding:     ..._id – s3-user\\n * aws_secret_access_key:[REDACTED]\\nand save\\n\\nRestart ...\nSecret:      [REDACTED]\nRuleID:      generic-api-key\nEntropy:     4.734184\nFile:        /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv\nLine:        1905\nFingerprint: /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv:generic-api-key:1905\n\nFinding:     ...IAXZT7RRAUQ7LKSR6Y\\nSecret access key: [REDACTED]\\nBucket: algtestbucke...\nSecret:      [REDACTED]\nRuleID:      generic-api-key\nEntropy:     4.753056\nFile:        /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv\nLine:        2176\nFingerprint: /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv:generic-api-key:2176\n\nFinding:     ...:\\n\\nAccess key ID: [REDACTED]\\nSecret access key:...\nSecret:      [REDACTED]\nRuleID:      aws-access-token\nEntropy:     3.646439\nFile:        /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv\nLine:        2176\nFingerprint: /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv:aws-access-token:2176\n\nFinding:     nAccount_key: REDACTED\\n\nSecret:      REDACTED\nRuleID:      generic-api-key\nEntropy:     5.335638\nTags:        [decoded:unicode decode-depth:1]\nFile:        /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv\nLine:        2191\nFingerprint: /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv:generic-api-key:2191\n\nFinding:     ... s3-user\\n - Insert Secret Key: [REDACTED]\\n - Insert Bucket Nam...\nSecret:      [REDACTED]\nRuleID:      generic-api-key\nEntropy:     4.734184\nFile:        /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv\nLine:        2194\nFingerprint: /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv:generic-api-key:2194\n\nINF scanned ~410834532 bytes (410.83 MB) in 2m49s\nWRN leaks found: 31\nmake: *** [gitleaks] Error 1\n\nAll 31 findings point at /workspace/codemie-storage/dev-codemie-user/Test cases P1.csv, a gitignored local runtime-storage directory (.gitignore:34), not any file touched by this branch's diff."
+  }
+}

@@ -54,7 +54,7 @@ from codemie.service.activity.activity_models import (
     BudgetManagementEvent,
 )
 from codemie.service.activity.activity_repository import activity_event_repository
-from codemie.service.budget.provider import BudgetEnforcementProvider, BudgetProviderState
+from codemie.service.budget.provider import BudgetEnforcementProvider, BudgetProviderMemberState, BudgetProviderState
 from codemie.service.budget.provider_registry import get_active_provider
 
 if TYPE_CHECKING:
@@ -511,6 +511,34 @@ class ProjectBudgetService:
             },
         )
 
+    async def _sync_member_allocation(
+        self,
+        session: AsyncSession,
+        *,
+        allocation: ProjectMemberBudgetAssignment,
+        budget: Budget,
+        provider: BudgetEnforcementProvider,
+        effective_max_budget: float | None = None,
+    ) -> BudgetProviderMemberState:
+        """Sync one member and persist provider metadata in the caller's transaction."""
+        member_state = await provider.sync_member_allocation(
+            allocation=allocation, budget=budget, effective_max_budget=effective_max_budget
+        )
+        await project_member_budget_assignment_repository.update_provider_metadata(
+            session,
+            allocation_id=allocation.id,
+            provider_metadata=self._build_provider_metadata(
+                provider=member_state.provider,
+                provider_member_ref=member_state.provider_member_ref,
+                provider_budget_id=member_state.provider_budget_id,
+                sync_status=member_state.sync_status,
+                raw=member_state.metadata,
+            ),
+            sync_status=member_state.sync_status,
+            budget_reset_at=member_state.budget_reset_at,
+        )
+        return member_state
+
     async def _sync_created_member_allocations(
         self,
         *,
@@ -540,28 +568,17 @@ class ProjectBudgetService:
                     f"allocated_soft_budget={getattr(alloc, 'allocated_soft_budget', None)!r}"
                 )
                 effective_max_budget = alloc.allocated_max_budget if enforce_limit else budget.max_budget
-                member_state = await provider.sync_member_allocation(
-                    allocation=alloc, budget=budget, effective_max_budget=effective_max_budget
+                member_state = await self._sync_member_allocation(
+                    session=session,
+                    provider=provider,
+                    allocation=alloc,
+                    budget=budget,
+                    effective_max_budget=effective_max_budget,
                 )
                 await self._persist_child_budget_provider_state(
                     session,
                     budget_id=effective_budget_id,
                     member_state=member_state,
-                )
-                await project_member_budget_assignment_repository.update_provider_metadata(
-                    session,
-                    allocation_id=alloc.id,
-                    provider_metadata={
-                        **self._build_provider_metadata(
-                            provider=member_state.provider,
-                            provider_member_ref=member_state.provider_member_ref,
-                            provider_budget_id=member_state.provider_budget_id,
-                            sync_status=member_state.sync_status,
-                            raw=member_state.metadata,
-                        )
-                    },
-                    sync_status=member_state.sync_status,
-                    budget_reset_at=member_state.budget_reset_at,
                 )
                 logger.debug(
                     f"budget_event=provider_member_budget_sync_completed component=project_budget_service "
@@ -1081,7 +1098,6 @@ class ProjectBudgetService:
         self,
         session: AsyncSession,
         budget: Budget,
-        alloc_id: str,
         updated: ProjectMemberBudgetAssignment,
         provider: BudgetEnforcementProvider,
     ) -> None:
@@ -1095,26 +1111,13 @@ class ProjectBudgetService:
             allocated_soft_budget=updated.allocated_soft_budget,
             allocated_max_budget=updated.allocated_max_budget,
         )
-        member_state = await provider.sync_member_allocation(allocation=updated, budget=budget)
+        member_state = await self._sync_member_allocation(
+            session=session, provider=provider, allocation=updated, budget=budget
+        )
         await self._persist_child_budget_provider_state(
             session,
             budget_id=self._effective_member_budget_id(budget.budget_id, updated),
             member_state=member_state,
-        )
-        await project_member_budget_assignment_repository.update_provider_metadata(
-            session,
-            allocation_id=alloc_id,
-            provider_metadata={
-                **self._build_provider_metadata(
-                    provider=member_state.provider,
-                    provider_member_ref=member_state.provider_member_ref,
-                    provider_budget_id=member_state.provider_budget_id,
-                    sync_status=member_state.sync_status,
-                    raw=member_state.metadata,
-                )
-            },
-            sync_status=member_state.sync_status,
-            budget_reset_at=member_state.budget_reset_at,
         )
 
     async def _resync_member_allocation(
@@ -1131,6 +1134,7 @@ class ProjectBudgetService:
         if new_amounts is None:
             return None
         new_max, new_soft = new_amounts
+
         try:
             updated = await project_member_budget_assignment_repository.update_allocation(
                 session,
@@ -1138,14 +1142,22 @@ class ProjectBudgetService:
                 allocated_max_budget=new_max,
                 allocated_soft_budget=new_soft,
             )
+
             if updated is None:
                 return None
+
             if updated.allocation_mode == AllocationMode.FIXED.value:
-                await self._sync_fixed_allocation(session, budget, alloc.id, updated, provider)
+                await self._sync_fixed_allocation(session, budget, updated, provider)
                 return None
-            await provider.sync_member_allocation(
-                allocation=updated, budget=budget, effective_max_budget=effective_max_budget
+
+            await self._sync_member_allocation(
+                session=session,
+                provider=provider,
+                allocation=updated,
+                budget=budget,
+                effective_max_budget=effective_max_budget,
             )
+
             return (
                 effective_max_budget if effective_max_budget is not None else updated.allocated_max_budget
             ), updated.allocated_soft_budget
@@ -1624,7 +1636,9 @@ class ProjectBudgetService:
             allocation_mode=AllocationMode.EQUAL.value,
             override_reason=None,
         )
-        member_state = await provider.sync_member_allocation(
+        member_state = await self._sync_member_allocation(
+            session=session,
+            provider=provider,
             allocation=allocation,
             budget=budget,
             effective_max_budget=correct_max,
@@ -1633,19 +1647,6 @@ class ProjectBudgetService:
             session,
             budget_id=self._effective_member_budget_id(budget.budget_id, allocation),
             member_state=member_state,
-        )
-        await project_member_budget_assignment_repository.update_provider_metadata(
-            session,
-            allocation_id=allocation.id,
-            provider_metadata=self._build_provider_metadata(
-                provider=member_state.provider,
-                provider_member_ref=member_state.provider_member_ref,
-                provider_budget_id=member_state.provider_budget_id,
-                sync_status=member_state.sync_status,
-                raw=member_state.metadata,
-            ),
-            sync_status=member_state.sync_status,
-            budget_reset_at=member_state.budget_reset_at,
         )
         await self.rebalance_project_budget(session, budget_id, actor_id)
         await activity_event_repository.async_insert(
