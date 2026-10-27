@@ -574,3 +574,132 @@ def test_on_tool_start_without_real_tool_name_keeps_metadata(_mock_replay_v2) ->
     thought = callback.thoughts_storage[str(run_id)]
     assert thought.metadata["tool_name"] == "search_docs"
     assert thought.author_name == "Search Docs"
+
+
+# ---------------------------------------------------------------------------
+# EPMCDME-16017: streamed event_type and tool_type
+# ---------------------------------------------------------------------------
+
+
+def _streamed_thoughts(queue: ThoughtQueue) -> list[dict]:
+    return [item.data.model_dump() for item in list(queue.queue.queue)]
+
+
+def test_llm_lifecycle_streams_event_types() -> None:
+    queue = ThoughtQueue()
+    callback = AgentStreamingCallback(gen=queue)
+    run_id = uuid.uuid4()
+
+    callback.on_llm_start({}, [], run_id=run_id)
+    callback.on_llm_new_token("hi", run_id=run_id)
+    callback.on_llm_end("done", run_id=run_id)
+
+    assert [t["event_type"] for t in _streamed_thoughts(queue)] == ["llm_start", "llm_new_token", "llm_end"]
+
+
+def test_llm_error_streams_llm_error_event_type() -> None:
+    queue = ThoughtQueue()
+    callback = AgentStreamingCallback(gen=queue)
+
+    callback.on_llm_error(RuntimeError("boom"), run_id=uuid.uuid4())
+
+    assert [t["event_type"] for t in _streamed_thoughts(queue)] == ["llm_error"]
+
+
+def test_tool_lifecycle_streams_event_types() -> None:
+    queue = ThoughtQueue()
+    callback = AgentStreamingCallback(gen=queue)
+    run_id = uuid.uuid4()
+
+    callback.on_tool_start({"name": "some_tool"}, "q", run_id=run_id)
+    callback.on_tool_end("result", run_id=run_id)
+
+    assert [t["event_type"] for t in _streamed_thoughts(queue)] == ["tool_start", "tool_end"]
+
+
+def test_tool_error_streams_tool_error_event_type() -> None:
+    queue = ThoughtQueue()
+    callback = AgentStreamingCallback(gen=queue)
+    run_id = uuid.uuid4()
+
+    callback.on_tool_start({"name": "some_tool"}, "q", run_id=run_id)
+    callback.on_tool_error(RuntimeError("boom"), run_id=run_id)
+
+    assert [t["event_type"] for t in _streamed_thoughts(queue)] == ["tool_start", "tool_error"]
+
+
+@pytest.mark.parametrize(
+    ("raw_type", "expected"),
+    [
+        ("datasource", "datasource"),
+        ("plugin", "function"),
+        ("mcp", "function"),
+        ("internal", "function"),
+        (None, "function"),
+    ],
+)
+def test_on_tool_start_streams_normalized_tool_type_in_metadata(raw_type, expected) -> None:
+    queue = ThoughtQueue()
+    callback = AgentStreamingCallback(gen=queue)
+    run_id = uuid.uuid4()
+    metadata = {"tool_type": raw_type} if raw_type is not None else {}
+
+    callback.on_tool_start({"name": "some_tool"}, "q", run_id=run_id, metadata=metadata)
+
+    thought = _streamed_thoughts(queue)[0]
+    assert thought["metadata"]["tool_type"] == expected
+    assert "tool_type" not in thought
+
+
+def test_on_tool_start_accepts_tool_type_enum_member() -> None:
+    from codemie.core.constants import ToolType
+
+    callback = AgentStreamingCallback(gen=ThoughtQueue())
+    run_id = uuid.uuid4()
+
+    callback.on_tool_start({"name": "search_kb"}, "q", run_id=run_id, metadata={"tool_type": ToolType.DATASOURCE})
+
+    assert callback.thoughts_storage[str(run_id)].metadata["tool_type"] == "datasource"
+
+
+# ---------------------------------------------------------------------------
+# EPMCDME-16017: tool_type must not switch on replay-only metadata handling
+# ---------------------------------------------------------------------------
+
+_REPLAY_ENABLED_PATH = "codemie.agents.callbacks.callback_utils._is_conversation_replay_v2_enabled"
+_IMAGE_ARTIFACT = [{"data": "AAAA", "mime_type": "image/png"}]
+
+
+def _run_tool_with_artifact(replay_enabled: bool) -> dict:
+    queue = ThoughtQueue()
+    callback = AgentStreamingCallback(gen=queue)
+    run_id = uuid.uuid4()
+    with patch(_REPLAY_ENABLED_PATH, return_value=replay_enabled):
+        callback.on_tool_start({"name": "some_tool"}, "q", run_id=run_id, metadata={})
+        callback.on_tool_end("result", run_id=run_id, artifact=_IMAGE_ARTIFACT)
+    return _streamed_thoughts(queue)[-1]["metadata"]
+
+
+def test_tool_end_with_replay_disabled_keeps_only_tool_type_in_metadata() -> None:
+    assert _run_tool_with_artifact(replay_enabled=False) == {"tool_type": "function"}
+
+
+def test_tool_error_with_replay_disabled_keeps_only_tool_type_in_metadata() -> None:
+    queue = ThoughtQueue()
+    callback = AgentStreamingCallback(gen=queue)
+    run_id = uuid.uuid4()
+    with patch(_REPLAY_ENABLED_PATH, return_value=False):
+        callback.on_tool_start({"name": "some_tool"}, "q", run_id=run_id, metadata={})
+        callback.on_tool_error(RuntimeError("boom"), run_id=run_id)
+
+    assert _streamed_thoughts(queue)[-1]["metadata"] == {"tool_type": "function"}
+
+
+def test_tool_end_with_replay_enabled_still_records_replay_state_and_images() -> None:
+    metadata = _run_tool_with_artifact(replay_enabled=True)
+
+    assert metadata["replay_type"]
+    assert metadata["status"]
+    assert metadata["result_summary"]
+    assert metadata["image_artifacts"] == _IMAGE_ARTIFACT
+    assert metadata["tool_type"] == "function"

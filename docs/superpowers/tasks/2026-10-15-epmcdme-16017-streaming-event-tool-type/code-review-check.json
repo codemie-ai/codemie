@@ -1,0 +1,60 @@
+{
+  "decision": "approve",
+  "rationale": "event_type and tool_type streaming moved from the fork into upstream. Verified by unit tests (933 passed, 4 skipped across agents, chains and monitoring), a live streamed search_kb call (tool_start then tool_end with metadata.tool_type=datasource and a correct answer) and the api-and-sanity harness on the final code (197 passed, 4 skipped, 0 failed, 6 reruns). Self-review by the implementing agent; acceptance criteria taken from the MDDAAIAD-3911 task notes.",
+  "confidence": "medium",
+  "risk_flags": [
+    "streaming-contract",
+    "observability-metrics",
+    "conversation-replay"
+  ],
+  "business_review": [
+    {
+      "kind": "story-ac",
+      "item": "Streaming implementation from fork MR 83 present in upstream",
+      "status": "pass",
+      "notes": "event_type and tool_type ported"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Correct end-to-end handling of event_type, tool_type and other fields",
+      "status": "pass",
+      "notes": "verified by unit tests and a live streamed capture"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Automated test coverage of the streamed fields",
+      "status": "pass",
+      "notes": "callback, bridge, resume path and SearchKBTool tests added"
+    },
+    {
+      "kind": "story-ac",
+      "item": "No fork-only streaming changes required",
+      "status": "partial",
+      "notes": "the fork keeps its own copy until the next upstream merge"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "branch-name",
+      "status": "pass",
+      "notes": "EPMCDME-16017_streaming-event-tool-type"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "ruff check clean on the changed files"
+    },
+    {
+      "kind": "testing",
+      "status": "pass",
+      "notes": "new tests pass; live capture and sanity harness done"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "no secrets in the diff"
+    }
+  ],
+  "findings": [],
+  "finding_status": []
+}

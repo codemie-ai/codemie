@@ -27256,6 +27256,17 @@
             "default": false,
             "title": "Error"
           },
+          "event_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Type"
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -27408,6 +27419,17 @@
             ],
             "default": false,
             "title": "Error"
+          },
+          "event_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Type"
           },
           "id": {
             "title": "Id",

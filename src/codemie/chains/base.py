@@ -43,6 +43,7 @@ class Thought(BaseModel):
     parent_id: Optional[str] = None
     metadata: Optional[dict] = {}
     in_progress: bool = False
+    event_type: Optional[str] = None
     input_text: Optional[str] = None
     message: Optional[str] = None
     author_type: Optional[str] = ThoughtAuthorType.Tool

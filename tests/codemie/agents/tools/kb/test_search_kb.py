@@ -762,3 +762,20 @@ class TestLLMRoutingProcessorFactories(unittest.TestCase):
 
         self.assertNotIn(FullDatasourceTypes.GIT_FAQ.value, _LLM_ROUTING_PROCESSOR_FACTORIES)
         self.assertNotIn("llm_routing", FullDatasourceTypes.GIT_FAQ.value)
+
+
+def test_search_kb_tool_declares_datasource_type_and_id_in_metadata():
+    index_info = MagicMock(spec=IndexInfo)
+    index_info.id = "idx-1"
+    index_info.repo_name = "test-kb"
+    index_info.description = "test description"
+    index_info.error = False
+    index_info.completed = True
+    index_info.index_type = "kb"
+    index_info.last_reindex_triggered_at = None
+    index_info.update_date = None
+
+    tool = SearchKBTool(index_info=index_info, llm_model="gpt-4")
+
+    assert tool.metadata["tool_type"] == "datasource"
+    assert tool.metadata["tool_id"] == "idx-1"

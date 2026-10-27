@@ -1434,8 +1434,15 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
     def _on_llm_error(self, error: BaseException, run_id: str, author: str | None = None):
         self._callback_bridge.on_llm_error(error, run_id, author=author)
 
-    def _on_tool_start(self, tool_name: str, input_str: str, run_id: str | None = None, author: str | None = None):
-        self._callback_bridge.on_tool_start(tool_name, input_str, run_id=run_id, author=author)
+    def _on_tool_start(
+        self,
+        tool_name: str,
+        input_str: str,
+        run_id: str | None = None,
+        author: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ):
+        self._callback_bridge.on_tool_start(tool_name, input_str, run_id=run_id, author=author, metadata=metadata)
 
     def _on_tool_end(
         self,

@@ -33,10 +33,11 @@ from codemie.agents.callbacks.callback_utils import (
     _classify_execution_error,
     _escape_callback_message,
     _truncate_for_log,
+    _has_replay_state,
     _update_tool_replay_metadata,
 )
 from codemie.chains.base import StreamedGenerationResult, Thought, ThoughtOutputFormat, ThoughtAuthorType
-from codemie.core.constants import OUTPUT_FORMAT, ToolNamePrefix
+from codemie.core.constants import OUTPUT_FORMAT, ToolNamePrefix, ToolMetadataKeys, ToolType, StreamingEventType
 from codemie.configs import logger
 from codemie.configs.logger import current_user_email, set_logging_info
 from codemie.core.routing_info import LastRoutingTracker, RoutingInfo
@@ -44,6 +45,16 @@ from codemie.core.thread import ThreadedGenerator
 from codemie.core.thought_queue import ThoughtQueue
 from codemie.service.llm_service.llm_service import llm_service
 from codemie.service.mcp.models import MCPToolInvocationResponse
+
+
+FUNCTION_TOOL_TYPE = "function"
+
+
+def _streamed_tool_type(raw_type: Any) -> str:
+    """The streamed contract only distinguishes datasource tools; every other tool is a plain function."""
+    if raw_type in (ToolType.DATASOURCE, ToolType.DATASOURCE.value):
+        return ToolType.DATASOURCE.value
+    return FUNCTION_TOOL_TYPE
 
 
 class ThoughtInMemoryStorage(dict[str, Thought]):
@@ -60,6 +71,7 @@ class ThoughtInMemoryStorage(dict[str, Thought]):
         input_text: str = '',
         output_format: ThoughtOutputFormat | None = None,
         by_run_id: bool = False,
+        event_type: str | None = None,
         replay_tool_name: str | None = None,
     ) -> Thought:
         """Create and store a new in-progress thought for run_id.
@@ -78,6 +90,7 @@ class ThoughtInMemoryStorage(dict[str, Thought]):
         thought = Thought(
             id=thought_id,
             author_name=tool_name,
+            event_type=event_type,
             parent_id=self.parent_id,
             author_type=author_type,
             output_format=output_format,
@@ -153,7 +166,11 @@ class AgentStreamingCallback(StreamingStdOutCallbackHandler):
         self, serialized: Dict[str, Any], prompts: List[str], *, run_id: UUID, author: str | None = None, **kwargs: Any
     ) -> None:
         storage = self._get_storage(author)
-        thought = storage.create_thought(run_id=run_id, tool_name=self.GENERIC_TOOL_NAME)
+        thought = storage.create_thought(
+            run_id=run_id,
+            tool_name=self.GENERIC_TOOL_NAME,
+            event_type=StreamingEventType.LLM_START.value,
+        )
         self._send_thought(thought)
 
     def _extract_response_routing(self, response: "LLMResult | AIMessage | str") -> tuple[str | None, float | None]:
@@ -193,8 +210,16 @@ class AgentStreamingCallback(StreamingStdOutCallbackHandler):
     def on_llm_new_token(self, token: str, *, run_id: UUID, author: str | None = None, **kwargs: Any) -> None:
         storage = self._get_storage(author)
         if not storage.get(str(run_id)):
-            storage.create_thought(run_id=run_id, tool_name=self.GENERIC_TOOL_NAME)
-        thought = storage.update_thought(run_id, message=self._escape_message(token))
+            storage.create_thought(
+                run_id=run_id,
+                tool_name=self.GENERIC_TOOL_NAME,
+                event_type=StreamingEventType.LLM_NEW_TOKEN.value,
+            )
+        thought = storage.update_thought(
+            run_id,
+            message=self._escape_message(token),
+            event_type=StreamingEventType.LLM_NEW_TOKEN.value,
+        )
         if thought is None:
             return
         self._send_thought(thought)
@@ -244,6 +269,7 @@ class AgentStreamingCallback(StreamingStdOutCallbackHandler):
             update_kwargs["routing"] = RoutingInfo(**routing_fields)
         if metadata:
             update_kwargs["metadata"] = metadata
+        update_kwargs["event_type"] = StreamingEventType.LLM_END.value
 
         thought = storage.update_thought(run_id, **update_kwargs)
         if thought is None:
@@ -279,13 +305,18 @@ class AgentStreamingCallback(StreamingStdOutCallbackHandler):
         self._debug(f"Error in LLM response generation: {error}")
         storage = self._get_storage(author)
         if not storage.get(str(run_id)):
-            storage.create_thought(run_id=run_id, tool_name=self.GENERIC_TOOL_NAME)
+            storage.create_thought(
+                run_id=run_id,
+                tool_name=self.GENERIC_TOOL_NAME,
+                event_type=StreamingEventType.LLM_ERROR.value,
+            )
         execution_error = _classify_execution_error(error)
         thought = storage.update_thought(
             run_id,
             message=self._escape_message(str(error)),
             error=True,
             in_progress=False,
+            event_type=StreamingEventType.LLM_ERROR.value,
         )
         if thought is None:
             return
@@ -318,7 +349,8 @@ class AgentStreamingCallback(StreamingStdOutCallbackHandler):
         **kwargs: Any,
     ) -> None:
         storage = self._get_storage(author)
-        output_format = kwargs.get('metadata', {}).get(OUTPUT_FORMAT)
+        meta = kwargs.get('metadata') or {}
+        output_format = meta.get(OUTPUT_FORMAT)
         tool_name = serialized['name']
         tool_display_name = resolve_tool_display_name(tool_name, self.name_resolver)
         thought = storage.create_thought(
@@ -327,8 +359,13 @@ class AgentStreamingCallback(StreamingStdOutCallbackHandler):
             input_text=input_str,
             output_format=output_format,
             by_run_id=True,
+            event_type=StreamingEventType.TOOL_START.value,
             replay_tool_name=serialized.get('tool_name'),
         )
+        if thought.metadata is None:
+            thought.metadata = {}
+        tool_type_key = ToolMetadataKeys.TOOL_TYPE.value
+        thought.metadata[tool_type_key] = _streamed_tool_type(meta.get(tool_type_key))
         last_routing = self._routing_tracker.current
         if last_routing is not None and last_routing.routed_model is not None and thought.metadata is not None:
             thought.metadata["llm_tier"] = last_routing.routed_model
@@ -369,11 +406,12 @@ class AgentStreamingCallback(StreamingStdOutCallbackHandler):
             run_id,
             message=self._escape_message(message),
             in_progress=False,
+            event_type=StreamingEventType.TOOL_END.value,
         )
         if thought:
             _update_tool_replay_metadata(thought.metadata, output, is_error=False)
             artifact = kwargs.get("artifact")
-            if artifact and isinstance(artifact, list) and thought.metadata:
+            if artifact and isinstance(artifact, list) and _has_replay_state(thought.metadata):
                 image_data = [
                     {"data": item["data"], "mime_type": item["mime_type"]}
                     for item in artifact
@@ -408,6 +446,7 @@ class AgentStreamingCallback(StreamingStdOutCallbackHandler):
             message=message,
             in_progress=False,
             error=True,
+            event_type=StreamingEventType.TOOL_ERROR.value,
         )
         if thought:
             _update_tool_replay_metadata(thought.metadata, error, is_error=True)

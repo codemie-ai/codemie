@@ -136,6 +136,12 @@ class ToolType(str, Enum):
     INTERNAL = "internal"
     PLUGIN = "plugin"
     MCP = "mcp"
+    DATASOURCE = "datasource"
+
+
+class ToolMetadataKeys(str, Enum):
+    TOOL_ID = "tool_id"
+    TOOL_TYPE = "tool_type"
 
 
 class ToolNamePrefix(str, Enum):
@@ -164,3 +170,13 @@ class MermaidResponseType(str, Enum):
 class LLMProxyMode(str, Enum):
     lite_llm = "lite_llm"
     internal = "internal"
+
+
+class StreamingEventType(str, Enum):
+    LLM_START = "llm_start"
+    LLM_END = "llm_end"
+    LLM_ERROR = "llm_error"
+    LLM_NEW_TOKEN = "llm_new_token"
+    TOOL_START = "tool_start"
+    TOOL_END = "tool_end"
+    TOOL_ERROR = "tool_error"

@@ -26,7 +26,7 @@ from codemie.agents.callbacks.agent_streaming_callback import AgentStreamingCall
 from codemie.agents.utils import adapt_tool_name
 from codemie.agents.tools.datasource_health_mixin import DatasourceHealthMixin
 from codemie.configs import logger
-from codemie.core.constants import REQUEST_ID
+from codemie.core.constants import REQUEST_ID, ToolMetadataKeys, ToolType
 from codemie.core.dependecies import get_llm_by_credentials
 from codemie.datasource.google_doc.google_doc_datasource_processor import GoogleDocDatasourceProcessor
 from codemie.datasource.loader.models import is_image_document_metadata
@@ -151,6 +151,11 @@ class SearchKBTool(CodeMieTool, DatasourceHealthMixin):
         self.description = self._build_description_health_prefix(index_info) + self.description_template.format(
             index_info.description
         )
+        self.metadata = {
+            **(self.metadata or {}),
+            ToolMetadataKeys.TOOL_TYPE.value: ToolType.DATASOURCE.value,
+            ToolMetadataKeys.TOOL_ID.value: index_info.id,
+        }
 
     def execute(self, query: str, **kwargs) -> SearchKBResponse:
         if self.index_info and self.index_info.error:

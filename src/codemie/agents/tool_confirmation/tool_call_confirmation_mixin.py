@@ -231,11 +231,21 @@ class ToolCallConfirmationMixin:
 
         run_id = self._tool_call_id_to_uuid(action.tool_call_id or "")
 
+        # The thought is named by display_name, which the bridge cannot match to a tool; resolve by the real name.
+        try:
+            metadata = self._callback_bridge.attribution_metadata(self.tool_pending_event.tool_name)
+        except Exception as error:
+            logger.warning(
+                f"Could not resolve tool metadata for '{self.tool_pending_event.tool_name}' on resume; "
+                f"the thought is streamed without tool attribution: {error}"
+            )
+            metadata = {}
         try:
             self._on_tool_start(
                 self.tool_pending_event.display_name or self.tool_pending_event.tool_name,
                 json.dumps(self.tool_pending_event.tool_args),
                 run_id=run_id,
+                metadata=metadata,
             )
         finally:
             self.tool_pending_event = None

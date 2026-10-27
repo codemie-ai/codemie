@@ -98,7 +98,7 @@ class LangGraphCallbackBridge:
                 self._log_error(f"On llm error callback {callback} error: {callback_error}")
         self.agent._current_llm_run_id = None
 
-    def _attribution_metadata(self, tool_name: str) -> dict[str, Any]:
+    def attribution_metadata(self, tool_name: str) -> dict[str, Any]:
         """The run attribution the agent stamped on the tool (see ``_configure_tools``); empty for a tool the agent
         does not own. The stream hands the callbacks only the tool name, unlike a LangChain-driven tool run."""
         for tool in getattr(self.agent, "tools", None) or []:
@@ -113,10 +113,12 @@ class LangGraphCallbackBridge:
         input_str: str,
         run_id: UUID | None = None,
         author: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         serialized = {"name": tool_name}
         callback_run_id = run_id or uuid.uuid4()
-        metadata = self._attribution_metadata(tool_name)
+        if metadata is None:
+            metadata = self.attribution_metadata(tool_name)
         for callback in self.agent.callbacks:
             try:
                 callback.on_tool_start(serialized, input_str, run_id=callback_run_id, author=author, metadata=metadata)

@@ -17,6 +17,7 @@ from ast import literal_eval
 from typing import Any
 
 from codemie.configs import config
+from codemie.core.constants import ToolMetadataKeys
 from codemie.core.utils import extract_text_from_llm_output
 from codemie.service.constants import (
     AI_AGENT_CONVERSATION_REPLAY_V2_ENABLED_KEY,
@@ -112,8 +113,13 @@ def _build_tool_message(output: Any) -> str:
     return f"{output} \n\n"
 
 
+def _has_replay_state(metadata: dict[str, Any] | None) -> bool:
+    """Whether the thought metadata carries anything beyond the streamed tool_type, which says nothing about replay."""
+    return bool(metadata) and any(key != ToolMetadataKeys.TOOL_TYPE.value for key in metadata)
+
+
 def _update_tool_replay_metadata(metadata: dict[str, Any] | None, output: Any, *, is_error: bool) -> None:
-    if not metadata:
+    if not _has_replay_state(metadata):
         return
 
     tool_name = metadata.get("tool_name", "").lower()
