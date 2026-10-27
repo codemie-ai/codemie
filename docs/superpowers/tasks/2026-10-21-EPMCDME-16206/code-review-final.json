@@ -1,0 +1,13 @@
+{
+  "decision": "approve",
+  "rationale": "Only the edge-case lens ran (compact profile, no spec), so confidence is low. Pillow usage in image_loader.py (Image.open, Image.Image, ExifTags.TAGS) was read and is basic; the Pillow 13 API-break concern was not substantiated. 1 deferred (duplicate Pillow declaration across groups, see code-review-deferred.md), 3 dismissed (lock churn from Poetry version, specifier normalization, unconfirmed API risk).",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "commit-format", "status": "na", "notes": "Standards audit not expected for this profile." },
+    { "kind": "code-quality", "status": "na", "notes": "Standards audit not expected for this profile." },
+    { "kind": "security", "status": "na", "notes": "Standards audit not expected for this profile." }
+  ],
+  "findings": []
+}

@@ -130,7 +130,7 @@ msrest = "0.7.1"
 openapi-schema-pydantic = "^1.2.4"
 packaging = ">=24.0"
 pandas = "^2.2.2"
-Pillow = "^12.1.1"
+Pillow = "^13.0.0"
 psycopg = {extras = ["binary", "pool"], version = "^3.2.9"}
 pydantic = "^2.9.2"
 pydantic-settings = "^2.5.2"
@@ -172,7 +172,7 @@ ecdsa = "^0.19.1"
 aiohttp = "~3.14.3"
 # Security (EPMCDME-12868): pin >=48.0.1 to fix GHSA-537c-gmf6-5ccf (cryptography weak RSA key handling); Security (EPMCDME-13894): pin >=50.0.0 to fix GHSA-g6cj-pr64-35w5 and GHSA-jwv3-5hgf-82ww (PKCS#7 Bleichenbacher oracle + cert-chain path-building DoS)
 cryptography = "~50.0.0"
-pillow = "^12.3.0"
+pillow = "^13.0.0"
 lxml = "^6.1.0"
 # Security (EPMCDME-15105): pin ^2.21.0 to fix CVE-2026-86049 (jupyter-server vulnerability; bounded to next-minor); supersedes prior pin from EPMCDME-12962 (CVE-2026-44727)
 jupyter-server = "^2.21.0"
