@@ -311,6 +311,8 @@ class TestLoadUserForAuth:
             patch("codemie.service.user.authentication_service.user_repository") as mock_user_repo,
             patch("codemie.service.user.authentication_service.user_project_repository") as mock_proj_repo,
             patch("codemie.service.user.authentication_service.user_kb_repository") as mock_kb_repo,
+            # ENV=local (pytest.ini) makes every User an admin; assert the DB value instead.
+            patch.object(config, "ENV", "dev"),
         ):
             mock_user_repo.aget_active_by_id = AsyncMock(return_value=mock_user)
             mock_proj_repo.aget_by_user_id = AsyncMock(return_value=mock_projects)

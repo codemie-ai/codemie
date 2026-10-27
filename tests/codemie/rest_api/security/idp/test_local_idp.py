@@ -66,6 +66,7 @@ async def test_authenticate_with_explicit_user_id():
 async def test_authenticate_db_success_with_user_management_enabled(mocker):
     """Test authentication with ENABLE_USER_MANAGEMENT=True preserves DB is_admin."""
     mocker.patch("codemie.rest_api.security.user.config.ENABLE_USER_MANAGEMENT", True)
+    mocker.patch("codemie.rest_api.security.idp.local.config.ENV", "dev")
 
     idp = LocalIdp()
     test_user_id = "db_user"

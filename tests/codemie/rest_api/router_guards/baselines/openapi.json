@@ -1882,6 +1882,11 @@
             "title": "Is React",
             "type": "boolean"
           },
+          "is_verified": {
+            "default": false,
+            "title": "Is Verified",
+            "type": "boolean"
+          },
           "llm_model_type": {
             "anyOf": [
               {
@@ -1893,6 +1898,69 @@
               }
             ],
             "title": "Llm Model Type"
+          },
+          "marketplace_decided_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Marketplace Decided At"
+          },
+          "marketplace_decided_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Marketplace Decided By"
+          },
+          "marketplace_decision_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Marketplace Decision Reason"
+          },
+          "marketplace_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": "DRAFT",
+            "title": "Marketplace Status"
+          },
+          "marketplace_submitted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Marketplace Submitted At"
+          },
+          "marketplace_version": {
+            "default": 0,
+            "title": "Marketplace Version",
+            "type": "integer"
           },
           "mcp_servers": {
             "items": {
@@ -3069,6 +3137,33 @@
             "default": false,
             "title": "Is Global"
           },
+          "is_verified": {
+            "default": false,
+            "title": "Is Verified",
+            "type": "boolean"
+          },
+          "marketplace_decision_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Marketplace Decision Reason"
+          },
+          "marketplace_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Marketplace Status"
+          },
           "name": {
             "title": "Name",
             "type": "string"
@@ -3736,17 +3831,6 @@
             "default": false,
             "title": "Interactive Enabled",
             "type": "boolean"
-          },
-          "is_global": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Is Global"
           },
           "is_react": {
             "default": true,
@@ -6160,7 +6244,7 @@
           "severity": {
             "$ref": "#/components/schemas/RecommendationSeverity",
             "default": "critical",
-            "description": "Severity level of this recommendation. 'critical' indicates serious issues that significantly impact quality; 'optional' indicates suggestions for improvement. This is informational only - users can bypass all recommendations."
+            "description": "Severity level of this recommendation. 'critical' blocks publication: the assistant cannot be published until it is addressed. 'optional' is advisory: the user acknowledges it and publication proceeds."
           }
         },
         "required": [
@@ -10338,7 +10422,7 @@
           "severity": {
             "$ref": "#/components/schemas/RecommendationSeverity",
             "default": "critical",
-            "description": "Severity level of this recommendation. 'critical' indicates serious issues that significantly impact quality; 'optional' indicates suggestions for improvement. This is informational only - users can bypass all recommendations."
+            "description": "Severity level of this recommendation. 'critical' blocks publication: the assistant cannot be published until it is addressed. 'optional' is advisory: the user acknowledges it and publication proceeds."
           }
         },
         "required": [
@@ -10481,6 +10565,102 @@
           "email"
         ],
         "title": "ForgotPasswordRequest",
+        "type": "object"
+      },
+      "GateCheckRequest": {
+        "description": "Request body for the gate-check dry-run endpoint.\n\nSame shape as PUT /v1/assistants/{id} but `categories` is required so the\ngate engine can evaluate category-dependent rules against unsaved values.\nAll text fields are required so the gate evaluates the actual unsaved form\nvalues, not whatever happens to be in the DB.",
+        "properties": {
+          "categories": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 3,
+            "minItems": 1,
+            "title": "Categories",
+            "type": "array"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "system_prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "System Prompt"
+          }
+        },
+        "required": [
+          "categories",
+          "name"
+        ],
+        "title": "GateCheckRequest",
+        "type": "object"
+      },
+      "GateCheckResponse": {
+        "description": "Result of a side-effect-free gate evaluation.",
+        "properties": {
+          "gate_findings": {
+            "items": {
+              "$ref": "#/components/schemas/GateFinding"
+            },
+            "title": "Gate Findings",
+            "type": "array"
+          },
+          "passed": {
+            "title": "Passed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "passed"
+        ],
+        "title": "GateCheckResponse",
+        "type": "object"
+      },
+      "GateFinding": {
+        "description": "One deterministic gate finding, as the publish endpoint reports it.\n\nMirrors `validator.models.Finding.to_dict()` field for field so the wire\nshape and the engine's shape cannot drift.",
+        "properties": {
+          "detail": {
+            "additionalProperties": true,
+            "title": "Detail",
+            "type": "object"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "rule": {
+            "title": "Rule",
+            "type": "string"
+          },
+          "severity": {
+            "title": "Severity",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rule",
+          "severity",
+          "message"
+        ],
+        "title": "GateFinding",
         "type": "object"
       },
       "GeneratedMessage-Input": {
@@ -20092,6 +20272,11 @@
             "title": "Is React",
             "type": "boolean"
           },
+          "is_verified": {
+            "default": false,
+            "title": "Is Verified",
+            "type": "boolean"
+          },
           "llm_model_type": {
             "anyOf": [
               {
@@ -20103,6 +20288,69 @@
               }
             ],
             "title": "Llm Model Type"
+          },
+          "marketplace_decided_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Marketplace Decided At"
+          },
+          "marketplace_decided_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Marketplace Decided By"
+          },
+          "marketplace_decision_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Marketplace Decision Reason"
+          },
+          "marketplace_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": "DRAFT",
+            "title": "Marketplace Status"
+          },
+          "marketplace_submitted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Marketplace Submitted At"
+          },
+          "marketplace_version": {
+            "default": 0,
+            "title": "Marketplace Version",
+            "type": "integer"
           },
           "mcp_servers": {
             "items": {
@@ -22657,6 +22905,54 @@
         "title": "ProviderToolkitMetadata",
         "type": "object"
       },
+      "PublishToMarketplaceResponse": {
+        "description": "Result of a publish attempt.\n\nUnder the approval gate a publish is a *submission*, so the caller needs\nmore than a sentence: which state the assistant landed in, when it entered\nthe queue, and what the deterministic gates found (OPTIONAL findings are\nadvisory and are returned for acknowledgment rather than blocking).\n`message` keeps its existing meaning and position for existing clients.",
+        "properties": {
+          "acknowledged": {
+            "default": false,
+            "title": "Acknowledged",
+            "type": "boolean"
+          },
+          "gate_findings": {
+            "items": {
+              "$ref": "#/components/schemas/GateFinding"
+            },
+            "title": "Gate Findings",
+            "type": "array"
+          },
+          "marketplace_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Marketplace Status"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "submitted_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Submitted At"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "title": "PublishToMarketplaceResponse",
+        "type": "object"
+      },
       "PublishValidationResponse": {
         "description": "Response model for assistant publish validation",
         "properties": {
@@ -22829,7 +23125,7 @@
         "type": "string"
       },
       "RecommendationSeverity": {
-        "description": "Severity level for validation recommendations during marketplace publishing.\n\nThis is informational only - helps users understand the importance of recommendations.\nBoth critical and optional recommendations can be bypassed via 'Publish Anyway' button.",
+        "description": "Severity level for validation recommendations during marketplace publishing.\n\nSeverity is enforced, not decorative (LLM hardening appendix, spec P1-17):\na single CRITICAL finding rejects the submission, while OPTIONAL findings\nare advisory and only have to be acknowledged. Declining OPTIONAL findings\nis a waiver reserved for admins and maintainers, not a skip button.",
         "enum": [
           "critical",
           "optional"
@@ -28455,7 +28751,7 @@
           "severity": {
             "$ref": "#/components/schemas/RecommendationSeverity",
             "default": "critical",
-            "description": "Severity level of this recommendation. 'critical' indicates serious issues that significantly impact quality; 'optional' indicates suggestions for improvement. This is informational only - users can bypass all recommendations."
+            "description": "Severity level of this recommendation. 'critical' blocks publication: the assistant cannot be published until it is addressed. 'optional' is advisory: the user acknowledges it and publication proceeds."
           }
         },
         "required": [
@@ -36243,11 +36539,29 @@
             "title": "Categories",
             "type": "array"
           },
+          "force_publish": {
+            "default": false,
+            "description": "Administrators/maintainers only: bypass a CRITICAL gate block and publish straight to APPROVED/Verified, same as the marketplace-management queue's Force-Publish action. Only set when the user explicitly clicks 'Force-Publish'. Requires override_notice.",
+            "title": "Force Publish",
+            "type": "boolean"
+          },
           "ignore_recommendations": {
             "default": false,
             "description": "If true, bypasses all validation recommendations and publishes anyway. This should only be set when user explicitly clicks 'Publish Anyway' button.",
             "title": "Ignore Recommendations",
             "type": "boolean"
+          },
+          "override_notice": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Justification for force_publish, persisted on the review-decision record. Required (20-2000 chars) when force_publish is true.",
+            "title": "Override Notice"
           },
           "sub_assistants_settings": {
             "anyOf": [
@@ -58114,7 +58428,7 @@
     },
     "/v1/assistants/{assistant_id}": {
       "delete": {
-        "description": "Update user-specific assistant",
+        "description": "Delete a user-specific assistant, and its marketplace listing with it.\n\nDeleting a *published* assistant used to leave its Elasticsearch document\nbehind forever: this handler removed the row and returned, and no de-index\nran on this path at all. Measured 2026-08-25, the marketplace index held 226\ndocuments against 219 rows with `is_global = true`, and all seven extras\nwere ids with no row in Postgres -- published assistants that had been\ndeleted. The marketplace kept serving cards for assistants that could no\nlonger be opened, cloned or run.",
         "operationId": "delete_assistant_v1_assistants__assistant_id__delete",
         "parameters": [
           {
@@ -58346,7 +58660,7 @@
     },
     "/v1/assistants/{assistant_id}/marketplace/publish": {
       "post": {
-        "description": "Publish an assistant to the marketplace, including any sub-assistants.\n\nWhen an assistant has sub-assistants, this endpoint will:\n1. Process all sub-assistants with their individual settings (toolkits, mcp_servers, categories, is_global)\n2. Publish sub-assistants to marketplace or keep them private based on is_global flag:\n   - is_global=True: Sub-assistant visible in marketplace and usable by orchestrator\n   - is_global=False: Sub-assistant kept private (not in marketplace) but still usable by orchestrator\n3. Finally publish the orchestrator assistant to the marketplace\n\nOnly administrators can publish assistants to the marketplace.",
+        "description": "Publish an assistant to the marketplace, including any sub-assistants.\n\nWhen an assistant has sub-assistants, this endpoint will:\n1. Process all sub-assistants with their individual settings (toolkits, mcp_servers, categories, is_global)\n2. Publish sub-assistants to marketplace or keep them private based on is_global flag:\n   - is_global=True: Sub-assistant visible in marketplace and usable by orchestrator\n   - is_global=False: Sub-assistant kept private (not in marketplace) but still usable by orchestrator\n3. Finally publish the orchestrator assistant to the marketplace\n\nAnyone with write access to the assistant may publish it; this is not an\nadministrator-only endpoint. (The docstring used to claim it was, while\n`_validate_publish_marketplace` only ever checked write access \u2014 F-02.)\n\nWhen the approval gate is armed (`is_approval_gate_armed()`), publishing is a *submission*:\nthe deterministic gates run first, a CRITICAL finding is a 422, and the\nassistant lands in the moderation queue as PENDING_REVIEW and private until\na moderator approves it.",
         "operationId": "publish_assistant_to_marketplace_v1_assistants__assistant_id__marketplace_publish_post",
         "parameters": [
           {
@@ -58381,7 +58695,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/BaseResponse"
+                  "$ref": "#/components/schemas/PublishToMarketplaceResponse"
                 }
               }
             },
@@ -58407,6 +58721,67 @@
           }
         ],
         "summary": "Publish Assistant To Marketplace",
+        "tags": [
+          "Assistant"
+        ]
+      }
+    },
+    "/v1/assistants/{assistant_id}/marketplace/publish/gate-check": {
+      "post": {
+        "description": "Run the full publish validation pipeline against unsaved request body values.\n\nMirrors the publish endpoint's validation order exactly \u2014 deterministic gates\nfirst, then LLM quality assessment \u2014 so callers get a true preview of whether\npublish will succeed. No side effects: does not persist, queue, or change\nmarketplace_status.",
+        "operationId": "gate_check_assistant_for_marketplace_v1_assistants__assistant_id__marketplace_publish_gate_check_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "assistant_id",
+            "required": true,
+            "schema": {
+              "title": "Assistant Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GateCheckRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GateCheckResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Gate Check Assistant For Marketplace",
         "tags": [
           "Assistant"
         ]
@@ -58465,7 +58840,7 @@
     },
     "/v1/assistants/{assistant_id}/marketplace/unpublish": {
       "post": {
-        "description": "Unpublish an assistant from the marketplace by setting its is_global field to False.\nOnly administrators can unpublish assistants from the marketplace.",
+        "description": "Unpublish an assistant from the marketplace through the WITHDRAW decision path.\n\nNot a field assignment: WITHDRAW's `allowed_from` is restricted to\n`(PENDING_REVIEW, APPROVED)`, plus `DRAFT` while `is_global` (assistants\nthat were public before the migration), so a private `DRAFT` or a\n`REJECTED` assistant (never public, nothing to unpublish) 409s here instead of silently becoming\n`WITHDRAWN`. The CAS also bumps `marketplace_version`, clears\n`is_verified`, and writes the same `mm_review_decision` ledger row and\n`ASSISTANT_WITHDRAWN` event every other moderation decision does, so a\nuser-initiated unpublish is visible in the audit trail and a gate-off\nre-publish afterwards no longer silently regains the Verified badge.",
         "operationId": "unpublish_assistant_from_marketplace_v1_assistants__assistant_id__marketplace_unpublish_post",
         "parameters": [
           {

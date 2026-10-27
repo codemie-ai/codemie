@@ -25,7 +25,10 @@ from codemie.rest_api.models.assistant_generator import RecommendationSeverity
 
 # Constants for field descriptions
 SEVERITY_LEVEL_DESCRIPTION = (
-    "Severity level: 'critical' for serious issues, 'optional' for recommendations. This is informational only."
+    "Severity level. 'critical' means the assistant cannot be published as-is: a marketplace shopper would be "
+    "misled, the assistant's behaviour is undefined or unsafe, or it cannot perform the purpose it advertises. "
+    "'optional' means the finding is advisory - the assistant works and the user only has to acknowledge it. "
+    "Severity is enforced: a single 'critical' finding blocks publication."
 )
 
 
@@ -61,7 +64,9 @@ class MetadataValidationResult(BaseModel):
 
     fields: list[MetadataFieldValidation] = Field(default_factory=list, description="Validation results for each field")
     is_valid: bool = Field(description="Are all metadata fields valid?")
-    overall_reasoning: str = Field(description="Overall assessment of metadata quality")
+    overall_reasoning: str = Field(
+        description="Overall assessment of metadata quality. At most 2 sentences, 300 characters."
+    )
 
 
 class ToolsValidationResult(BaseModel):
@@ -90,7 +95,7 @@ class ContextValidationResult(BaseModel):
         "wrong data source type, wrong data source content, or unnecessary context not mentioned in system prompt)",
     )
     available_context: list[str] = Field(default_factory=list, description="All available context names for user")
-    reasoning: str = Field(description="Reasoning for context validation and recommendations")
+    reasoning: str = Field(description="Why the context is valid or not. At most 2 sentences, 300 characters.")
     severity: RecommendationSeverity = Field(
         default=RecommendationSeverity.CRITICAL,
         description=SEVERITY_LEVEL_DESCRIPTION,
@@ -111,5 +116,9 @@ class ToolsDecisionResult(BaseModel):
     )
     tools_to_exclude: list[str] = Field(
         default_factory=list, description="Tool names to REJECT (not relevant to capabilities)"
+    )
+    severity: RecommendationSeverity = Field(
+        default=RecommendationSeverity.CRITICAL,
+        description=SEVERITY_LEVEL_DESCRIPTION,
     )
     reasoning: str = Field(description="Explanation of which tools included/excluded and why")

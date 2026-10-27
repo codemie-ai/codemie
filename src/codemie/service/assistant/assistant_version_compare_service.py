@@ -18,14 +18,51 @@ from typing import Dict, Any
 from deepdiff import DeepDiff
 
 from codemie.rest_api.models.assistant import (
+    Assistant,
     AssistantConfiguration,
     AssistantVersionCompareResponse,
     AssistantRequest,
 )
 
 
+# Non-versioned fields a marketplace reviewer judges (name/category gates, injected
+# skill instructions, prompt variables, planner prompt, icon). A change to any of them
+# invalidates an approval even though it does not create a new version.
+MARKETPLACE_REVIEWED_FIELDS = ('name', 'categories', 'icon_url', 'skill_ids', 'prompt_variables', 'plan_prompt')
+
+
 class AssistantVersionCompareService:
     """Service for comparing assistant versions"""
+
+    @staticmethod
+    def _normalize_reviewed_value(field: str, value: Any) -> Any:
+        if field in ('categories', 'skill_ids', 'prompt_variables'):
+            value = value or []
+            return [v.model_dump() if hasattr(v, 'model_dump') else v for v in value]
+        return value or None
+
+    @classmethod
+    def has_marketplace_field_changes(cls, assistant: Assistant, request: AssistantRequest) -> bool:
+        """True if the request changes a marketplace-reviewed, non-versioned field.
+
+        Honors the partial-update contract: only fields explicitly set in the request count.
+        """
+        fields_set = request.model_fields_set
+        for field in MARKETPLACE_REVIEWED_FIELDS:
+            if field not in fields_set:
+                continue
+            current = cls._normalize_reviewed_value(field, getattr(assistant, field, None))
+            incoming = cls._normalize_reviewed_value(field, getattr(request, field, None))
+            if current != incoming:
+                return True
+        return False
+
+    @classmethod
+    def requires_re_review(cls, assistant: Assistant, request: AssistantRequest) -> bool:
+        """True if the edit changes versioned config or any marketplace-reviewed field."""
+        return cls.has_configuration_changes(assistant.id, request) or cls.has_marketplace_field_changes(
+            assistant, request
+        )
 
     @classmethod
     def has_configuration_changes(cls, assistant_id: str, request: AssistantRequest) -> bool:

@@ -30,7 +30,13 @@ from dotenv import load_dotenv
 # Stub optional native packages that may not be available in all environments
 # (e.g. tree_sitter_languages has no Python 3.13 wheel on Windows).
 # This must run before any codemie imports so the stubs are in place at import time.
-for _missing_pkg in ("tree_sitter_languages", "python_calamine", "switchyard", "switchyard.libsy"):
+for _missing_pkg in (
+    "tree_sitter_languages",
+    "python_calamine",
+    "switchyard",
+    "switchyard.libsy",
+    "clickhouse_connect",
+):
     try:
         __import__(_missing_pkg)
     except ImportError:
@@ -90,6 +96,39 @@ def isolate_run_reporting_state():
         litellm_context.reset(token)
         tool_execution_sinks.restore(saved[0])
         sandbox_run_sinks.restore(saved[1])
+
+
+# Plugins the suite structurally depends on. `pytest.ini` declares an `env =`
+# block, which only pytest-env understands; `pytest_mock` supplies `mocker`.
+_REQUIRED_PYTEST_PLUGINS = ("pytest_env", "pytest_mock")
+
+_WRONG_RUNNER_HELP = """\
+Missing pytest plugin(s): {missing}.
+
+Run the suite from the repo checkout with the dev dependency group installed:
+
+    cd codemie && poetry install --with dev && make test
+
+`make test` is `poetry run pytest tests/` -- that is the ONLY supported runner.
+
+Do NOT run pytest inside the `codemie` container. Its Dockerfile installs
+`poetry install --only main` (Dockerfile:61 and :65), so /venv holds no dev
+dependencies and never will. `pytest.ini` also relies on pytest-env for its
+`env =` block (ENV, REPOS_LOCAL_DIR, PG_URL); without that plugin the tests
+read the real environment instead and fail in unrelated, confusing ways.
+"""
+
+
+@pytest.fixture(scope="session", autouse=True)
+def require_pytest_plugins():
+    """Fail loudly, once, when the suite is run by an interpreter that cannot
+    support it -- rather than letting the missing plugins surface as a dozen
+    unrelated errors somewhere deep in the run."""
+    import importlib.util
+
+    missing = [name for name in _REQUIRED_PYTEST_PLUGINS if importlib.util.find_spec(name) is None]
+    if missing:
+        raise AssertionError(_WRONG_RUNNER_HELP.format(missing=", ".join(missing)))
 
 
 @pytest.fixture(scope="session", autouse=True)

@@ -28,6 +28,7 @@ from pydantic import (
     computed_field,
     field_validator,
 )
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field as SQLField, Session, select, Column, and_, Index, text
 
@@ -331,7 +332,6 @@ class AssistantRequest(BaseModel):
     conversation_starters: list[str] = Field(default_factory=list)
     shared: bool = True
     is_react: bool = True
-    is_global: Optional[bool] = None
     agent_mode: Optional[AgentMode] = AgentMode.GENERAL
     plan_prompt: Optional[str] = None
     slug: Optional[str] = None
@@ -497,7 +497,7 @@ class QualityValidationResult(BaseModel):
     decision: str = Field(..., description="Validation decision: 'accept' or 'reject'")
     recommendations: Optional[RefineGeneratorResponse] = Field(
         default=None,
-        description="Field-level recommendations for improvement (populated only when decision is 'reject')",
+        description="Field-level recommendations for improvement (on 'accept', only OPTIONAL ones, to be acknowledged)",
     )
 
 
@@ -601,6 +601,21 @@ class AssistantListResponse(BaseModel):
     is_global: Optional[bool] = False
     shared: Optional[bool] = False
     origin: Optional[AssistantOrigin] = AssistantOrigin.UNKNOWN
+    marketplace_status: Optional[str] = None
+    marketplace_decision_reason: Optional[str] = None
+    is_verified: bool = False
+
+    @model_validator(mode="after")
+    def _normalize_is_verified(self) -> Self:
+        """Force is_verified=False whenever marketplace_status is not APPROVED.
+
+        DB rows can carry is_verified=True with a non-APPROVED status (e.g. data
+        migrated before a consistency constraint existed).  Normalizing here keeps
+        API responses semantically valid regardless of DB state.
+        """
+        if self.marketplace_status != "APPROVED":
+            self.is_verified = False
+        return self
 
 
 class NestedAssistantResponse(BaseModel):
@@ -660,6 +675,56 @@ class AssistantBase(CommonBaseModel, Owned):
     # IMPORTANT: is_react is deprecated and will be removed in future versions. DO NOT USE IT.
     is_react: bool = True
     is_global: Optional[bool] = SQLField(default=False, index=True)
+    # DRAFT, not APPROVED (EXECUTION-PLAN 12.3, F-53). `5df1d2e53fbf:29` shipped
+    # a server default of 'APPROVED' -- the review state machine's TERMINAL state --
+    # so every assistant ever created claimed a moderation decision nobody made.
+    # 7.2 (`p7r2i3v4b5f6`) had to backfill 63 rows out of exactly that; leaving the
+    # default in place meant the backfill had to be re-run after every deploy.
+    #
+    # DRAFT rather than NULL because the state machine says so, not by taste:
+    # `_SUBMITTABLE_STATUSES` is ('DRAFT', 'REJECTED', 'WITHDRAWN') and
+    # `queue_service` guards SUBMIT with `AND marketplace_status = ANY(:allowed)`.
+    # NULL equals nothing in SQL, so a NULL row could never be submitted -- its
+    # first publish would 409 against its own transition table. NULL stays
+    # *permitted* by `ck_assistants_marketplace_status` for the pre-5df1d2e53fbf
+    # history that carries it; it is not what a new row should be born as.
+    #
+    # Both defaults move together: the ORM's `default` covers writers that go
+    # through SQLModel, `server_default` covers migrations, bulk imports and psql.
+    marketplace_status: Optional[str] = SQLField(
+        default='DRAFT', index=True, sa_column_kwargs={'server_default': 'DRAFT'}
+    )
+    # When this assistant entered the marketplace review queue (EXECUTION-PLAN
+    # 5.6, migration s1u2b3m4t5d6). Distinct from `update_date`, which the router
+    # used as a proxy and which any edit while pending silently rewrites. NULL
+    # for every row published before the approval gate existed, so the queue
+    # orders NULLS LAST rather than back-dating that history.
+    #
+    # `sa_column` is explicit because SQLModel maps a bare `datetime` to a naive
+    # column, which disagrees with the migration's `timestamptz` and puts the
+    # value the UI renders hours out on any host that is not on UTC.
+    marketplace_submitted_at: Optional[datetime] = SQLField(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    # --- review decision state (migration o1r2e3v4i5e6, EXECUTION-PLAN 6.1) ---
+    #
+    # `marketplace_version` is the compare-and-set token. Every review decision
+    # is a single `UPDATE ... WHERE marketplace_version = :observed`, so two
+    # admins who both read version N produce exactly one winner and one 409
+    # instead of a lost update (F-03). It is never assigned in Python: the CAS
+    # statement increments it, which is the point.
+    marketplace_version: int = SQLField(default=0, sa_column=Column(Integer, nullable=False, server_default="0"))
+    # Only an APPROVED, globally visible assistant is verified. Reject and
+    # withdraw clear it together with `is_global` (F-04).
+    is_verified: bool = SQLField(default=False, sa_column=Column(Boolean, nullable=False, server_default=text("false")))
+    marketplace_decided_at: Optional[datetime] = SQLField(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    marketplace_decided_by: Optional[str] = SQLField(
+        default=None,
+        sa_column=Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True),
+    )
+    marketplace_decision_reason: Optional[str] = SQLField(default=None, sa_column=Column(Text, nullable=True))
     created_date: datetime = SQLField(default_factory=lambda: datetime.now(UTC))
     updated_date: Optional[datetime] = None
     agent_mode: Optional[AgentMode] = AgentMode.GENERAL
@@ -738,6 +803,14 @@ class AssistantBase(CommonBaseModel, Owned):
         Index('ix_assistants_id', "id", postgresql_using='gin', postgresql_ops={"id": "gin_trgm_ops"}),
         Index('ix_assistants_categories', 'categories', postgresql_using='gin'),
         Index('ix_assistants_skill_ids', 'skill_ids', postgresql_using='gin'),
+        # The moderation queue: a handful of rows out of the whole table, always
+        # read oldest-submitted-first (EXECUTION-PLAN 5.6, specs D-53 / P2-18).
+        Index(
+            'ix_assistants_marketplace_pending_queue',
+            'marketplace_status',
+            'marketplace_submitted_at',
+            postgresql_where=text("marketplace_status = 'PENDING_REVIEW'"),
+        ),
         # Bedrock Agent indexes
         Index(
             'ix_assistants_bedrock_aws_settings_id',
@@ -1076,6 +1149,25 @@ class AssistantBase(CommonBaseModel, Owned):
             return set(self.assistant_ids or [])
 
 
+# The 7 columns a marketplace moderation transition owns. `BaseModelWithSQLSupport.update()`
+# does a full-row `session.merge(self)`, so any caller holding a copy of `self` loaded
+# before a concurrent moderation decision committed would otherwise revert that decision
+# on its own next save. Callers that are not themselves performing a moderation transition
+# must call `Assistant.refresh_marketplace_columns_from_db()` immediately before `update()`
+# to pick up the current committed values first. Module-level (not a class attribute) so
+# Pydantic's metaclass doesn't mistake a leading-underscore name for a private model field.
+MARKETPLACE_COLUMNS = (
+    "is_global",
+    "marketplace_status",
+    "marketplace_submitted_at",
+    "marketplace_version",
+    "is_verified",
+    "marketplace_decided_at",
+    "marketplace_decided_by",
+    "marketplace_decision_reason",
+)
+
+
 class Assistant(BaseModelWithSQLSupport, AssistantBase, table=True):
     """SQLModel version of Assistant for PostgreSQL storage"""
 
@@ -1104,6 +1196,22 @@ class Assistant(BaseModelWithSQLSupport, AssistantBase, table=True):
         assistant.display_name = display_name
         return assistant
 
+    def refresh_marketplace_columns_from_db(self) -> None:
+        """Overwrite the in-memory marketplace columns with the current committed
+        DB values, so a subsequent `update()` merge cannot clobber a concurrent
+        moderation decision with stale data this object was loaded with."""
+        from codemie.clients.postgres import get_session
+        from sqlmodel import select
+
+        with get_session() as session:
+            row = session.exec(
+                select(*(getattr(Assistant, col) for col in MARKETPLACE_COLUMNS)).where(Assistant.id == self.id)
+            ).first()
+        if row is None:
+            return
+        for col, value in zip(MARKETPLACE_COLUMNS, row, strict=True):
+            setattr(self, col, value)
+
     def update_assistant(self, request: AssistantRequest, user: User, change_notes: Optional[str] = None):
         """
         Update assistant and create a new version.
@@ -1115,12 +1223,25 @@ class Assistant(BaseModelWithSQLSupport, AssistantBase, table=True):
         from codemie.service.assistant.assistant_version_service import AssistantVersionService
         from codemie.service.assistant.assistant_version_compare_service import AssistantVersionCompareService
 
+        has_content_changes = AssistantVersionCompareService.has_configuration_changes(self.id, request)
+
         # Update master record fields (only non-versioned fields like name, slug, etc.)
         self._map_assistant_request(request)
 
+        # Owner edits never touch marketplace columns themselves, but update()'s
+        # full-row merge would otherwise overwrite a concurrent moderation
+        # decision with the stale values this object was loaded with.
+        self.refresh_marketplace_columns_from_db()
+
+        # Invalidating an open review or an approval is NOT done here: it is a queue-service
+        # transition (RE_SUBMIT -- CAS on the version, ledger row, activity event) that the
+        # caller runs once this edit is committed; see `update_assistant` in the assistants
+        # router. A silent status write from this generic merge took a pending submission
+        # out of the queue with no record and no CAS against a concurrent decision.
+
         self.update()
 
-        if AssistantVersionCompareService.has_configuration_changes(self.id, request):
+        if has_content_changes:
             # Create new version with configuration changes
             AssistantVersionService.create_new_version(
                 assistant=self, request=request, user=user, change_notes=change_notes
@@ -1162,8 +1283,52 @@ class Assistant(BaseModelWithSQLSupport, AssistantBase, table=True):
 
             assistant.delete()
             GuardrailService.remove_guardrail_assignments_for_entity(GuardrailEntity.ASSISTANT, assistant_internal_id)
+            cls._purge_marketplace_moderation_data(assistant_id)
             return
         return {"status": "not found"}
+
+    @staticmethod
+    def _purge_marketplace_moderation_data(assistant_id: str) -> None:
+        """Remove this assistant's moderation history (EXECUTION-PLAN 8.7; F-39, R12, S16).
+
+        POLICY -- this is a deliberate decision, not a cascade. `design-persistence.md`
+        2.4 gives `mm_audit_verdict.assistant_id` NO foreign key to `assistants.id` on
+        purpose: moderation history has to be able to outlive the entity, so that a
+        reviewer cannot erase the record of what they decided by deleting the thing they
+        decided about. A cascade would destroy exactly that guarantee, so the cleanup is
+        an explicit call here, and the policy is split by what the row is a record OF:
+
+          * machine-generated assessments of the deleted content -- verdicts, findings,
+            similarity rows, LLM assessments, events -- are PURGED. They quote the
+            assistant's own prompt and description, they say nothing about any person,
+            and they are what makes a deleted assistant reappear as a Cleanup row with a
+            NULL name and 404 when clicked (F-39);
+          * `mm_review_decision` rows are ANONYMISED, not deleted: which administrator
+            decided what, from which state, when, survives; the free text that quoted the
+            deleted content is replaced by a redaction tombstone and the row is stamped
+            `redacted_at`.
+
+        The statements live in `service/marketplace_management/audit_retention.py`, which
+        is also where the sweep that catches historic orphans lives.
+
+        Failures are logged and swallowed. A moderation table that is unreachable must
+        not make assistants undeletable -- the daily sweep reclaims anything this call
+        misses, so failing closed here would trade a retention lag for an outage on a
+        core endpoint.
+        """
+        try:
+            import sqlmodel
+
+            from codemie.clients.postgres import PostgresClient
+            from codemie.service.marketplace_management import audit_retention
+
+            with sqlmodel.Session(PostgresClient.get_engine()) as session:
+                audit_retention.marketplace_moderation_purge_repository.purge_entity(
+                    entity_kind="ASSISTANT", entity_id=assistant_id, session=session
+                )
+                session.commit()
+        except Exception as exc:  # noqa: BLE001 - see the docstring
+            logger.warning(f"Failed to purge marketplace moderation data for assistant {assistant_id}: {exc}")
 
     # noinspection PyMethodOverriding
     @classmethod

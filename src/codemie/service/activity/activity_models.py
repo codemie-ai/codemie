@@ -31,6 +31,7 @@ class ActivityDomain:
     BUDGET_MANAGEMENT = "budget_management"
     PROJECT_MANAGEMENT = "project_management"
     CUSTOMER_CONFIG = "customer_config"
+    MARKETPLACE = "marketplace"
 
 
 class ActivityEntityType:
@@ -41,6 +42,29 @@ class ActivityEntityType:
     USER_BUDGET_ASSIGNMENT = "user_budget_assignment"
     PROJECT_BUDGET_ASSIGNMENT = "project_budget_assignment"
     CUSTOMER_CONFIG_SETTING = "customer_config_setting"
+    ASSISTANT = "assistant"
+
+
+class MarketplaceModerationEvent:
+    """Moderation decisions on a marketplace entity (EXECUTION-PLAN 9.3, F-35).
+
+    These replace `mm_marketplace_event`, a table with a free-text actor, a
+    float timestamp and no reader anywhere in the codebase. Each name is the
+    lower-cased legacy `event_type` it supersedes, so the backfill in
+    `a9c1t2i3v4e5` (`'marketplace.assistant.' || lower(e.event_type)`) and the
+    live writer produce the same strings and a reader sees one continuous
+    history across the cut-over.
+    """
+
+    ASSISTANT_SUBMITTED = "marketplace.assistant.submitted"
+    ASSISTANT_RE_SUBMITTED = "marketplace.assistant.re_submitted"
+    ASSISTANT_APPROVED = "marketplace.assistant.approved"
+    ASSISTANT_REJECTED = "marketplace.assistant.rejected"
+    ASSISTANT_FORCE_PUBLISHED = "marketplace.assistant.force_published"
+    ASSISTANT_WITHDRAWN = "marketplace.assistant.withdrawn"
+    ASSISTANT_PROMPT_VIEWED = "marketplace.assistant.prompt_viewed"
+    THRESHOLD_UPDATED = "marketplace.threshold.updated"
+    THRESHOLD_RESET = "marketplace.threshold.reset"
 
 
 class ProjectManagementEvent:

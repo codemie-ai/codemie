@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "task": "Add a side-effect-free POST /v1/assistants/{id}/marketplace/publish/gate-check endpoint that runs deterministic marketplace quality gates against request body values and returns gate findings without persisting anything.",
+  "generated": "2026-09-18T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 12,
+  "size": "S",
+  "routing": "writing-plans",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Touches 2–3 components: a new route handler in assistant.py, a new GateCheckRequest/GateCheckResponse model pair in models/assistant.py, and reuse (no modification) of the existing _publish_gate_findings helper and gates.run_all engine. Falls in the M band (2–3 components, 2 layers) but is a pure addition with no restructuring."
+    },
+    {
+      "dimension": "requirements_clarity",
+      "reason": "Core contract is clearly specified (same gate logic, 200 in all cases, no side effects). Two minor open points — AssistantRecord construction strategy (DB-load-then-override vs. direct mapping) and the MARKETPLACE_APPROVAL_GATE_ENABLED=False short-circuit behavior — are resolvable without stakeholder alignment."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "Direct precedent exists: POST .../publish/validate is a side-effect-free sub-endpoint in the same router following the same auth and response conventions. Path-ordering constraint in assistant.py is a documented, low-effort concern. Gate timeout (~2 s worst-case for inline-credential regex) is within acceptable sync handler limits."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "Modified: assistant.py (router) and models/assistant.py (1–2 new Pydantic models). New: 1–2 test files. Total 3–4 files across 2 directories — fits the S band (3–4 files, 0–1 new files, but new test files push it solidly into S)."
+    },
+    {
+      "dimension": "affected_layers",
+      "reason": "API layer gains one new route handler. Service and Repository layers are accessed read-only through existing helpers (_get_assistant_by_id_or_raise, _publish_gate_findings) with no new service class or repository method. Effectively 2 layers (API + read-only service/repo reuse)."
+    }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

@@ -53,6 +53,7 @@ from codemie.rest_api.models.guardrail import Guardrail, GuardrailAssignment
 from codemie.rest_api.models.index import IndexInfo
 from codemie.rest_api.models.settings import Settings, SettingType
 from codemie.rest_api.models.skill import Skill
+from codemie.rest_api.models.user_management import UserDB
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
 from codemie.service.encryption.base_encryption_service import Base64EncryptionService, PlainEncryptionService
@@ -111,6 +112,7 @@ TABLE_MODELS = (
     IndexInfo,
     Settings,
     Skill,
+    UserDB,  # target of assistants.marketplace_decided_by
     WorkflowConfig,
 )
 

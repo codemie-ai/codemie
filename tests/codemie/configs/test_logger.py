@@ -16,10 +16,15 @@ import json
 import logging
 import sys
 
+import pytest
+
 from codemie.configs import config
 from codemie.configs.logger import process_record_msg, LogFormatter
 
-config.ENV = "dev"
+
+@pytest.fixture(autouse=True)
+def _dev_env(monkeypatch):
+    monkeypatch.setattr(config, "ENV", "dev")
 
 
 def json_serial(obj):

@@ -151,21 +151,50 @@ async def reindex_marketplace_assistants(
     Returns:
         BaseResponse with status message
     """
+    # This endpoint predates the marketplace management (moderation/review)
+    # feature and is not gated by its flag: it is the UI data-sources page's
+    # reindex action for the marketplace_assistants platform datasource, and
+    # every environment -- including ones that have not opted into the new
+    # moderation flow -- still needs the ability to reconcile that index.
+    # Gating it on `is_marketplace_management_enabled()` 404s reindexing for
+    # everyone who hasn't opted in, which is the regression this comment
+    # flagged; the moderation feature's own routes carry their own kill
+    # switch (see `register_marketplace_management_router` in main.py) and
+    # do not need this endpoint to also enforce it.
     logger.info(
         "Marketplace reindexing triggered by admin",
         extra={"admin_id": admin.id, "admin_name": admin.name},
     )
 
     def reindex_task():
+        # This endpoint is the drain for the marketplace index backlog
+        # (EXECUTION-PLAN 9.6, F-87). `PLATFORM_DATASOURCES_SYNC_ENABLED` is
+        # False in most environments, so no full sync runs at startup and the
+        # only writer is the per-publish incremental call -- which means any
+        # assistant that became `is_global` another way is absent until this
+        # runs. Measuring the divergence on both sides of the sync is what
+        # turns "reindexing started" into a statement with a verifiable result.
+        from codemie.service.marketplace_management.marketplace_index_sync import (
+            measure_index_divergence,
+        )
+
         try:
+            before = measure_index_divergence(emit=False)
             logger.info(
                 "Starting marketplace assistants reindexing",
-                extra={"admin_id": admin.id, "admin_name": admin.name},
+                extra={"admin_id": admin.id, "admin_name": admin.name, "divergence_before": before},
             )
             results = PlatformIndexingService.sync_all_platform_datasources(user=admin)
+            after = measure_index_divergence(emit=True)
             logger.info(
                 "Marketplace reindexing completed",
-                extra={"results": results, "total_indexed": sum(results.values()), "admin_id": admin.id},
+                extra={
+                    "results": results,
+                    "total_indexed": sum(results.values()),
+                    "admin_id": admin.id,
+                    "divergence_before": before,
+                    "divergence_after": after,
+                },
             )
         except Exception as e:
             logger.error(
@@ -173,6 +202,9 @@ async def reindex_marketplace_assistants(
                 exc_info=True,
                 extra={"admin_id": admin.id},
             )
+            # Re-measure so the log says where the index was left, not merely
+            # that something went wrong part-way through.
+            measure_index_divergence(emit=True)
 
     background_tasks.add_task(reindex_task)
 

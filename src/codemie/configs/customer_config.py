@@ -44,6 +44,8 @@ CONFIG_IDS = {
     "conversationAnalytics": "features:conversationAnalytics",
     "smartToolSelection": "features:smartToolSelection",
     "metricsAnalytics": "features:metricsAnalytics",
+    "marketplaceManagement": "features:marketplaceManagement",
+    "marketplaceApprovalGate": "features:marketplaceApprovalGate",
 }
 
 
@@ -271,6 +273,30 @@ class CustomerConfig(BaseModel):
             Component(
                 id=CONFIG_IDS["metricsAnalytics"],
                 settings=ComponentSetting(enabled=is_enterprise),
+            )
+        )
+
+        # Marketplace management (moderation) console. Runtime-computed, like the
+        # OAuth flags above, so the UI and the backend read the same source of
+        # truth (`is_marketplace_management_enabled()`) instead of the UI tracking
+        # its own YAML-only flag that could drift from the backend's env-driven
+        # kill switch — see MR !4070 review comment #22.
+        from codemie.configs.marketplace_management import is_approval_gate_armed, is_marketplace_management_enabled
+
+        runtime_config.append(
+            Component(
+                id=CONFIG_IDS["marketplaceManagement"],
+                settings=ComponentSetting(enabled=is_marketplace_management_enabled()),
+            )
+        )
+
+        # Approval gate (queue-on-publish, re-review-on-edit). Reports the gate the
+        # backend actually enforces (`is_approval_gate_armed()`: the gate flag AND
+        # marketplace management), so the UI's edit warnings follow the same switch.
+        runtime_config.append(
+            Component(
+                id=CONFIG_IDS["marketplaceApprovalGate"],
+                settings=ComponentSetting(enabled=is_approval_gate_armed()),
             )
         )
 

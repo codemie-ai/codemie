@@ -51,7 +51,16 @@ def test_assistant_clone_event_model_dump_has_only_required_fields():
     event = AssistantCloneEventSQL(id=str(uuid4()), assistant_id="a1", user_id="u1")
     dumped = event.model_dump()
 
-    expected_keys = {"id", "assistant_id", "user_id", "created_at"}
+    expected_keys = {
+        "id",
+        "assistant_id",
+        "user_id",
+        "created_at",
+        # Added with the clone provenance edge (EXECUTION-PLAN 9.1, F-70):
+        # marketplace duplicate detection reads it as ground truth for
+        # "this assistant was cloned from that one".
+        "clone_assistant_id",
+    }
     unwanted_keys = {"date", "update_date"}  # Would come from CommonBaseModel if inheritance was wrong
 
     assert set(dumped.keys()) == expected_keys, f"Expected {expected_keys}, got {set(dumped.keys())}"

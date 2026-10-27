@@ -825,13 +825,16 @@ class TestAssistantMcpGovernance:
         request = self._request([MCPServerDetails(name="rogue", command="npx", enabled=True)])
         mode = MagicMock()
         mode.is_component_enabled.return_value = True
+        user = MagicMock(spec=User)
+        user.id = "u1"
+        user.is_admin_or_maintainer = True
         with patch("codemie.service.mcp.access_control.customer_config", mode):
             with pytest.raises(ValidationException, match="rogue") as exc:
-                create_assistant(request, user=MagicMock(spec=User))
+                create_assistant(request, user=user)
             assert "mcp_config_id" not in str(exc.value)
 
     def test_create_admin_user_violating_payload_still_rejected(self):
-        # AC7: admin/maintainer is not a bypass — set the flags explicitly on the mock.
+        # AC7: admin/maintainer is not a bypass for MCP governance — set the flags explicitly on the mock.
         from codemie.rest_api.routers.assistant.management import create_assistant
         from codemie.rest_api.models.assistant import MCPServerDetails
         from codemie.core.exceptions import ValidationException
@@ -840,8 +843,10 @@ class TestAssistantMcpGovernance:
         mode = MagicMock()
         mode.is_component_enabled.return_value = True
         user = MagicMock(spec=User)
+        user.id = "u1"
         user.is_admin = True
         user.is_maintainer = True
+        user.is_admin_or_maintainer = True
         with patch("codemie.service.mcp.access_control.customer_config", mode):
             with pytest.raises(ValidationException, match="rogue") as exc:
                 create_assistant(request, user=user)
@@ -857,6 +862,9 @@ class TestAssistantMcpGovernance:
         mode.is_component_enabled.return_value = True
         existing = MagicMock(spec=Assistant)
         existing.project = "demo"
+        user = MagicMock(spec=User)
+        user.id = "u1"
+        user.is_admin_or_maintainer = True
         with (
             patch("codemie.service.mcp.access_control.customer_config", mode),
             patch("codemie.rest_api.routers.assistant.management.project_access_check"),
@@ -865,7 +873,7 @@ class TestAssistantMcpGovernance:
             patch("codemie.rest_api.routers.assistant.management._validate_remote_entities_and_raise"),
         ):
             with pytest.raises(ValidationException, match="rogue") as exc:
-                update_assistant("assistant-1", request, background_tasks=MagicMock(), user=MagicMock(spec=User))
+                update_assistant("assistant-1", request, background_tasks=MagicMock(), user=user)
             assert "mcp_config_id" not in str(exc.value)
 
     def test_create_open_mode_allows_handwritten_server(self):
@@ -974,7 +982,9 @@ class TestCreateAssistantCloneTracking:
         request = self._build_request(source_assistant_id="source-id-1")
         response = self._run_create(request)
 
-        mock_clone_event_repo.log_clone_event.assert_called_once_with("source-id-1", "user-123")
+        mock_clone_event_repo.log_clone_event.assert_called_once_with(
+            "source-id-1", "user-123", clone_assistant_id=None
+        )
         mock_assistant_repo_class.update_clone_count.assert_called_once_with("source-id-1")
         assert response.assistant_id is not None
 
@@ -994,7 +1004,7 @@ class TestCreateAssistantCloneTracking:
         self._run_create(request)
 
         assert mock_clone_event_repo.log_clone_event.call_count == 2
-        mock_clone_event_repo.log_clone_event.assert_called_with("source-id-1", "user-123")
+        mock_clone_event_repo.log_clone_event.assert_called_with("source-id-1", "user-123", clone_assistant_id=None)
         assert mock_assistant_repo_class.update_clone_count.call_count == 2
         mock_assistant_repo_class.update_clone_count.assert_called_with("source-id-1")
 
@@ -1189,8 +1199,8 @@ class TestAskVirtualAssistantSingleUserInvariant:
         call_args = mock_to_thread.call_args.args
         passed_assistant = call_args[1]
         passed_user = call_args[4]
-        assert passed_assistant.project == "caller-project"
-        assert passed_user is mock_user
+        assert passed_assistant.project == "caller-project"  # project scoping stays on the original caller
+        assert passed_user is mock_user  # budget resolution uses the resolved user
 
 
 class TestAskVirtualAssistantMcpGovernance:
@@ -1468,3 +1478,411 @@ class TestSlugAmbiguityDetection:
 
         assert result is expected
         mock_get_all.assert_called_once_with({"slug.keyword": "shared-slug"})
+
+
+# ---------------------------------------------------------------------------
+# EPMCDME-14734: Edit-triggered re-review
+# ---------------------------------------------------------------------------
+
+_ASSISTANT_MOD = "codemie.rest_api.routers.assistant.management"
+
+
+class TestUpdateAssistantReReview:
+    """Edit-triggered re-review (EPMCDME-14734).
+
+    When a marketplace-APPROVED assistant is edited and the gate flag is on,
+    update_assistant must call MarketplaceQueueService.decide(RE_SUBMIT) and
+    must NOT schedule a background reindex (the queue service owns the index
+    transition after review completes).
+    """
+
+    def _make_assistant(self, marketplace_status: str, marketplace_version: int = 0):
+        """Build a minimal mock assistant."""
+        a = MagicMock()
+        a.id = "asst-resubmit"
+        a.marketplace_status = marketplace_status
+        a.marketplace_version = marketplace_version
+        a.is_global = marketplace_status == "APPROVED"
+        a.is_verified = marketplace_status == "APPROVED"
+        a.project = "test-project"
+        a.context = []
+        a.mcp_servers = []
+        a.toolkits = []
+        return a
+
+    def _make_request(self):
+        req = MagicMock()
+        req.skip_integration_validation = True
+        req.prompt_variables = None
+        req.mcp_servers = []
+        req.categories = []
+        req.guardrail_assignments = []
+        req.project = "test-project"
+        return req
+
+    def _common_patches(self):
+        return [
+            patch(f"{_ASSISTANT_MOD}.project_access_check"),
+            patch(f"{_ASSISTANT_MOD}.check_user_can_access_assistant"),
+            patch(f"{_ASSISTANT_MOD}._validate_remote_entities_and_raise"),
+            patch(f"{_ASSISTANT_MOD}.MCPAccessControlService"),
+            patch(f"{_ASSISTANT_MOD}.category_service"),
+            patch(f"{_ASSISTANT_MOD}._track_mcp_usage_changes"),
+            patch(f"{_ASSISTANT_MOD}.GuardrailService"),
+            patch(f"{_ASSISTANT_MOD}._track_assistant_management_metric"),
+            patch(f"{_ASSISTANT_MOD}.AssistantRepository"),
+        ]
+
+    def _run_update(self, assistant, mock_config, mock_mqs_class, has_content_changes=True):
+        """Call update_assistant with all common collaborators mocked."""
+        from codemie.rest_api.routers.assistant.management import update_assistant
+
+        user = MagicMock(spec=User)
+        user.id = "user-1"
+        user.email = "admin@test.com"
+
+        request = self._make_request()
+        background_tasks = MagicMock()
+
+        patches = self._common_patches()
+        for p in patches:
+            p.start()
+        try:
+            with (
+                patch(f"{_ASSISTANT_MOD}.get_assistant_by_id_or_raise", return_value=assistant),
+                patch(f"{_ASSISTANT_MOD}.config", mock_config),
+                patch(
+                    f"{_ASSISTANT_MOD}.is_approval_gate_armed",
+                    return_value=mock_config.MARKETPLACE_APPROVAL_GATE_ENABLED,
+                ),
+                patch(
+                    f"{_ASSISTANT_MOD}.AssistantVersionCompareService.has_configuration_changes",
+                    return_value=has_content_changes,
+                ),
+            ):
+                update_assistant(
+                    assistant_id=str(assistant.id),
+                    request=request,
+                    background_tasks=background_tasks,
+                    user=user,
+                )
+        finally:
+            for p in patches:
+                p.stop()
+
+        return background_tasks, user
+
+    # (a) APPROVED + gate ON → decide(RE_SUBMIT) called; reindex NOT scheduled
+    def test_re_review_triggered_for_approved_assistant_gate_on(self):
+        """PUT on APPROVED assistant with gate ON triggers RE_SUBMIT; no background reindex."""
+        mock_config = MagicMock()
+        mock_config.MARKETPLACE_APPROVAL_GATE_ENABLED = True
+
+        mock_mqs_instance = MagicMock()
+        mock_mqs_class = MagicMock(return_value=mock_mqs_instance)
+
+        assistant = self._make_assistant("APPROVED")
+
+        with patch(
+            "codemie.service.marketplace_management.queue_service.MarketplaceQueueService",
+            mock_mqs_class,
+        ):
+            background_tasks, user = self._run_update(assistant, mock_config, mock_mqs_class)
+
+        mock_mqs_instance.re_submit.assert_called_once()
+        # Background reindex must NOT be scheduled
+        background_tasks.add_task.assert_not_called()
+
+    # (a2) APPROVED + gate ON + nothing changed → stays public, no re-review
+    def test_no_re_review_when_nothing_changed(self):
+        """Saving an APPROVED assistant without content changes must not take it private."""
+        mock_config = MagicMock()
+        mock_config.MARKETPLACE_APPROVAL_GATE_ENABLED = True
+
+        mock_mqs_instance = MagicMock()
+        mock_mqs_class = MagicMock(return_value=mock_mqs_instance)
+
+        assistant = self._make_assistant("APPROVED")
+
+        with patch(
+            "codemie.service.marketplace_management.queue_service.MarketplaceQueueService",
+            mock_mqs_class,
+        ):
+            background_tasks, _ = self._run_update(assistant, mock_config, mock_mqs_class, has_content_changes=False)
+
+        mock_mqs_instance.re_submit.assert_not_called()
+        # Still public, so the marketplace copy is reindexed as on any edit
+        background_tasks.add_task.assert_called_once()
+
+    # (b) APPROVED + gate OFF → decide not called; reindex path unaffected
+    def test_no_re_review_when_gate_off(self):
+        """PUT on APPROVED assistant with gate OFF must not call decide()."""
+        mock_config = MagicMock()
+        mock_config.MARKETPLACE_APPROVAL_GATE_ENABLED = False
+
+        mock_mqs_instance = MagicMock()
+        mock_mqs_class = MagicMock(return_value=mock_mqs_instance)
+
+        assistant = self._make_assistant("APPROVED")
+
+        with patch(
+            "codemie.service.marketplace_management.queue_service.MarketplaceQueueService",
+            mock_mqs_class,
+        ):
+            background_tasks, _ = self._run_update(assistant, mock_config, mock_mqs_class)
+
+        mock_mqs_instance.re_submit.assert_not_called()
+        # Reindex IS scheduled because assistant is still APPROVED (is_global=True) and gate is off
+        background_tasks.add_task.assert_called_once()
+
+    # (c) Non-APPROVED statuses → decide never called
+    @pytest.mark.parametrize("status_val", ["REJECTED", "DRAFT"])
+    def test_no_re_review_for_unreviewed_statuses(self, status_val):
+        """PUT on an assistant that is neither approved nor under review must never trigger decide()."""
+        mock_config = MagicMock()
+        mock_config.MARKETPLACE_APPROVAL_GATE_ENABLED = True
+
+        mock_mqs_instance = MagicMock()
+        mock_mqs_class = MagicMock(return_value=mock_mqs_instance)
+
+        assistant = self._make_assistant(status_val)
+
+        with patch(
+            "codemie.service.marketplace_management.queue_service.MarketplaceQueueService",
+            mock_mqs_class,
+        ):
+            self._run_update(assistant, mock_config, mock_mqs_class)
+
+        mock_mqs_instance.re_submit.assert_not_called()
+
+    # (c2) PENDING_REVIEW → an edit keeps it in the queue through RE_SUBMIT, gate armed or not
+    @pytest.mark.parametrize("gate_on", [True, False])
+    def test_re_review_triggered_for_pending_assistant(self, gate_on):
+        """PUT on a PENDING_REVIEW assistant re-submits it instead of silently dropping it to DRAFT."""
+        mock_config = MagicMock()
+        mock_config.MARKETPLACE_APPROVAL_GATE_ENABLED = gate_on
+
+        mock_mqs_instance = MagicMock()
+        mock_mqs_class = MagicMock(return_value=mock_mqs_instance)
+
+        assistant = self._make_assistant("PENDING_REVIEW", marketplace_version=4)
+
+        with patch(
+            "codemie.service.marketplace_management.queue_service.MarketplaceQueueService",
+            mock_mqs_class,
+        ):
+            self._run_update(assistant, mock_config, mock_mqs_class)
+
+        mock_mqs_instance.re_submit.assert_called_once()
+        assert mock_mqs_instance.re_submit.call_args.kwargs["expected_version"] == 4
+
+    # (c3) PENDING_REVIEW + nothing changed → stays queued, no new decision
+    def test_no_re_review_for_pending_assistant_when_nothing_changed(self):
+        mock_config = MagicMock()
+        mock_config.MARKETPLACE_APPROVAL_GATE_ENABLED = True
+
+        mock_mqs_instance = MagicMock()
+        mock_mqs_class = MagicMock(return_value=mock_mqs_instance)
+
+        assistant = self._make_assistant("PENDING_REVIEW")
+
+        with patch(
+            "codemie.service.marketplace_management.queue_service.MarketplaceQueueService",
+            mock_mqs_class,
+        ):
+            self._run_update(assistant, mock_config, mock_mqs_class, has_content_changes=False)
+
+        mock_mqs_instance.re_submit.assert_not_called()
+
+    # (d) re_submit receives decided_by_id=user.id and decided_by_email=user.email
+    def test_re_review_passes_user_identity_to_decide(self):
+        """re_submit() must receive decided_by_id and decided_by_email from the acting user."""
+        mock_config = MagicMock()
+        mock_config.MARKETPLACE_APPROVAL_GATE_ENABLED = True
+
+        mock_mqs_instance = MagicMock()
+        mock_mqs_class = MagicMock(return_value=mock_mqs_instance)
+
+        assistant = self._make_assistant("APPROVED", marketplace_version=3)
+
+        with patch(
+            "codemie.service.marketplace_management.queue_service.MarketplaceQueueService",
+            mock_mqs_class,
+        ):
+            _, user = self._run_update(assistant, mock_config, mock_mqs_class)
+
+        mock_mqs_instance.re_submit.assert_called_once()
+        call_kwargs = mock_mqs_instance.re_submit.call_args.kwargs
+        assert call_kwargs["decided_by_id"] == "user-1"
+        assert call_kwargs["decided_by_email"] == "admin@test.com"
+        assert call_kwargs["expected_version"] == 3
+
+
+class TestSkipIntegrationValidationAuthorization:
+    """Server-side enforcement of roles on skip_integration_validation.
+
+    A non-admin, non-maintainer must not be able to bypass integration
+    validation by setting the flag — the check must live on the server so
+    that direct API calls are also blocked.  Admins and maintainers are
+    always allowed. The role check applies only while MARKETPLACE_MANAGEMENT_ENABLED is on.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _marketplace_management_on(self):
+        with patch("codemie.rest_api.routers.assistant.management.config.MARKETPLACE_MANAGEMENT_ENABLED", True):
+            yield
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _make_user(self, *, is_admin: bool = False, is_maintainer: bool = False) -> MagicMock:
+        user = MagicMock(spec=User)
+        user.id = "user-test"
+        user.username = "tester"
+        user.name = "Test User"
+        user.is_admin = is_admin
+        user.is_maintainer = is_maintainer
+        user.is_admin_or_maintainer = is_admin or is_maintainer
+        return user
+
+    def _make_create_request(self, *, skip: bool):
+        from codemie.rest_api.models.assistant import AssistantRequest
+
+        return AssistantRequest(
+            name="My Assistant",
+            description="d",
+            system_prompt="p",
+            project="demo",
+            llm_model_type="gpt-4o",
+            skip_integration_validation=skip,
+        )
+
+    # ------------------------------------------------------------------
+    # _require_skip_validation_permission unit tests
+    # ------------------------------------------------------------------
+
+    def test_helper_raises_403_for_regular_user(self):
+        from codemie.rest_api.routers.assistant.management import _require_skip_validation_permission
+
+        user = self._make_user()
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            _require_skip_validation_permission(user, "My Assistant")
+
+        assert exc_info.value.code == 403
+
+    def test_helper_allows_regular_user_when_marketplace_management_disabled(self):
+        from codemie.rest_api.routers.assistant.management import _require_skip_validation_permission
+
+        with patch("codemie.rest_api.routers.assistant.management.config.MARKETPLACE_MANAGEMENT_ENABLED", False):
+            _require_skip_validation_permission(self._make_user(), "My Assistant")
+
+    def test_helper_allows_admin(self):
+        from codemie.rest_api.routers.assistant.management import _require_skip_validation_permission
+
+        user = self._make_user(is_admin=True)
+        _require_skip_validation_permission(user, "My Assistant")  # must not raise
+
+    def test_helper_allows_maintainer(self):
+        from codemie.rest_api.routers.assistant.management import _require_skip_validation_permission
+
+        user = self._make_user(is_maintainer=True)
+        _require_skip_validation_permission(user, "My Assistant")  # must not raise
+
+    # ------------------------------------------------------------------
+    # create path (_validate_integrations_or_response)
+    # ------------------------------------------------------------------
+
+    def test_create_regular_user_skip_true_raises_403(self):
+        from codemie.rest_api.routers.assistant.management import _validate_integrations_or_response
+
+        user = self._make_user()
+        request = self._make_create_request(skip=True)
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            _validate_integrations_or_response(request, user)
+
+        assert exc_info.value.code == 403
+
+    def test_create_admin_skip_true_returns_none(self):
+        from codemie.rest_api.routers.assistant.management import _validate_integrations_or_response
+
+        user = self._make_user(is_admin=True)
+        request = self._make_create_request(skip=True)
+
+        result = _validate_integrations_or_response(request, user)
+
+        assert result is None
+
+    def test_create_maintainer_skip_true_returns_none(self):
+        from codemie.rest_api.routers.assistant.management import _validate_integrations_or_response
+
+        user = self._make_user(is_maintainer=True)
+        request = self._make_create_request(skip=True)
+
+        result = _validate_integrations_or_response(request, user)
+
+        assert result is None
+
+    @patch("codemie.rest_api.routers.assistant.management._validate_assistant_integrations")
+    def test_create_regular_user_skip_false_runs_validation(self, mock_validate):
+        from codemie.rest_api.routers.assistant.management import _validate_integrations_or_response
+        from codemie.rest_api.models.assistant import IntegrationValidationResult
+
+        mock_validate.return_value = IntegrationValidationResult(has_missing_integrations=False)
+        user = self._make_user()
+        request = self._make_create_request(skip=False)
+
+        result = _validate_integrations_or_response(request, user)
+
+        mock_validate.assert_called_once()
+        assert result is None
+
+    # ------------------------------------------------------------------
+    # update path (_update_validation_response)
+    # ------------------------------------------------------------------
+
+    def test_update_regular_user_skip_true_raises_403(self):
+        from codemie.rest_api.routers.assistant.management import _update_validation_response
+
+        user = self._make_user()
+        request = self._make_create_request(skip=True)
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            _update_validation_response(request, user, "asst-abc")
+
+        assert exc_info.value.code == 403
+
+    def test_update_admin_skip_true_returns_none(self):
+        from codemie.rest_api.routers.assistant.management import _update_validation_response
+
+        user = self._make_user(is_admin=True)
+        request = self._make_create_request(skip=True)
+
+        result = _update_validation_response(request, user, "asst-abc")
+
+        assert result is None
+
+    def test_update_maintainer_skip_true_returns_none(self):
+        from codemie.rest_api.routers.assistant.management import _update_validation_response
+
+        user = self._make_user(is_maintainer=True)
+        request = self._make_create_request(skip=True)
+
+        result = _update_validation_response(request, user, "asst-abc")
+
+        assert result is None
+
+    @patch("codemie.rest_api.routers.assistant.management._validate_assistant_integrations")
+    def test_update_regular_user_skip_false_runs_validation(self, mock_validate):
+        from codemie.rest_api.routers.assistant.management import _update_validation_response
+        from codemie.rest_api.models.assistant import IntegrationValidationResult
+
+        mock_validate.return_value = IntegrationValidationResult(has_missing_integrations=False)
+        user = self._make_user()
+        request = self._make_create_request(skip=False)
+
+        result = _update_validation_response(request, user, "asst-abc")
+
+        mock_validate.assert_called_once()
+        assert result is None

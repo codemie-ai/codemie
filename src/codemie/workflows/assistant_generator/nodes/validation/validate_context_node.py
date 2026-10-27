@@ -15,7 +15,8 @@
 """Context validation node with LLM-based intelligent analysis."""
 
 from codemie.configs.logger import logger
-from codemie.templates.agents.assistant_validation_prompts import CONTEXT_VALIDATION_TEMPLATE
+from codemie.configs.marketplace_management import is_approval_gate_armed
+from codemie.templates.agents.assistant_validation_prompts import get_validation_templates
 from codemie.workflows.assistant_generator.models.validation_models import ContextValidationResult
 from codemie.workflows.assistant_generator.models.validation_state import AssistantValidationState
 from codemie.workflows.assistant_generator.nodes.validation.base_validation_node import BaseValidationNode
@@ -66,7 +67,7 @@ class ValidateContextNode(BaseValidationNode):
         clarification = state.get("clarifications")
 
         # Build prompt with clarifications (focus on system prompt analysis, not tools)
-        prompt = CONTEXT_VALIDATION_TEMPLATE.format(
+        prompt = get_validation_templates(is_approval_gate_armed()).context.format(
             clarification_kb_summary=clarification.clarification_summary_markdown
             if clarification
             else "No clarification analysis available",

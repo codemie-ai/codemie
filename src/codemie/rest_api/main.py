@@ -131,6 +131,11 @@ from codemie.service.model_provider_readiness import (
 # User management routers (EPMCDME-10160)
 from codemie.rest_api.routers import local_auth_router
 from codemie.rest_api.routers import user_management_router
+from codemie.rest_api.routers.marketplace_management import router as marketplace_management_router
+from codemie.configs.marketplace_management import (
+    is_marketplace_management_enabled,
+    warn_marketplace_approval_gate_enabled,
+)
 from codemie.rest_api.routers import user_profile_router
 from codemie.rest_api.routers import user_preferences_router
 from codemie.rest_api.routers import user_profile_settings_router
@@ -703,6 +708,242 @@ def _setup_activity_events_retention_scheduler(app: FastAPI):
     )
 
 
+def _setup_marketplace_audit_reaper_scheduler(app: FastAPI):
+    """Sweep for audit runs whose worker died, under the same leader lock.
+
+    design-persistence.md 7, F4. The audit worker is a `daemon=True` bare
+    thread: it dies with its process, leaving a `mm_audit_run` row at `RUNNING`
+    that is indistinguishable from a live one. That row holds the partial unique
+    index `uq_mm_audit_run_active`, so until somebody clears it by hand **no
+    pod** can start another audit of that entity kind — the invariant that stops
+    two pods auditing at once becomes the thing that stops anyone auditing at
+    all.
+
+    Armed by default, unlike the retention purge. Retention deletes history and
+    so is opt-in; this only relabels a run whose owner is already gone, and the
+    cost of leaving it off is a deployment-wide deadlock after any pod restart
+    mid-audit — and `rollout.yaml` restarts pods mid-audit on every deploy.
+
+    The sweep also runs once at startup: the pod that just replaced the dead one
+    is exactly the process best placed to notice what it left behind.
+    """
+    if not config.MARKETPLACE_MANAGEMENT_ENABLED:
+        return
+    if config.MARKETPLACE_AUDIT_HEARTBEAT_TIMEOUT_MINUTES <= 0:
+        return
+
+    from datetime import datetime, timedelta, timezone
+
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+    from apscheduler.triggers.interval import IntervalTrigger
+
+    # Dedicated to this reaper: see MR !4070 review comment #15 — reusing
+    # 987654328 (stale-datasource job, active-project budget restore) silently
+    # starved those jobs whenever this one held the advisory lock.
+    _lock_id = 987654329
+
+    async def _reap():
+        from codemie.utils import leader_lock as leader_lock_module
+
+        async with leader_lock_module.async_leader_lock(_lock_id) as acquired:
+            if not acquired:
+                logger.debug("[marketplace_audit] reaper: not the leader, skipping")
+                return
+
+            stale_after = timedelta(minutes=config.MARKETPLACE_AUDIT_HEARTBEAT_TIMEOUT_MINUTES)
+
+            def _do_reap():
+                from codemie.service.marketplace_management import audit_service
+
+                return audit_service.reap_stale_audit_runs(stale_after=stale_after)
+
+            try:
+                reaped = await asyncio.to_thread(_do_reap)
+                if reaped:
+                    logger.warning(
+                        f"[marketplace_audit] reaper: failed {reaped} abandoned audit run(s) "
+                        f"with no heartbeat for {config.MARKETPLACE_AUDIT_HEARTBEAT_TIMEOUT_MINUTES} "
+                        "minute(s); their entity kind can be audited again"
+                    )
+            except Exception as exc:
+                # Log and continue, exactly as the retention purge does: a
+                # re-raise here would surface only under APScheduler's own
+                # logger name, where nobody is looking.
+                logger.error(f"[marketplace_audit] reaper sweep failed: {exc}", exc_info=True)
+
+    reaper_scheduler = AsyncIOScheduler()
+    reaper_scheduler.add_job(
+        _reap,
+        IntervalTrigger(minutes=config.MARKETPLACE_AUDIT_REAPER_INTERVAL_MINUTES),
+        id="marketplace_audit_reaper",
+        replace_existing=True,
+        # Sweep once on startup, then on the interval.
+        next_run_time=datetime.now(timezone.utc),
+    )
+    reaper_scheduler.start()
+    app.state.marketplace_audit_reaper_scheduler = reaper_scheduler
+
+
+def _setup_marketplace_audit_retention_scheduler(app: FastAPI):
+    """Schedule a daily purge of audit runs older than MARKETPLACE_AUDIT_RETENTION_DAYS.
+
+    Mirrors `_setup_activity_events_retention_scheduler` above: same daily cron,
+    same `async_leader_lock` guard so N pods do not all purge at once, same
+    log-and-continue on failure. The statement itself
+    (`design-persistence.md` 6.5) lives in
+    `service/marketplace_management/audit_retention.py` and never deletes the
+    newest SUCCEEDED run of an entity kind, whatever its age.
+
+    Deleting a run reclaims its verdicts, findings and similarity rows through
+    the `ON DELETE CASCADE` foreign keys migration `n1a2u3d4i5t6` installs, so
+    one statement per entity kind is the whole job.
+    """
+    if not config.MARKETPLACE_MANAGEMENT_ENABLED:
+        return
+    if config.MARKETPLACE_AUDIT_RETENTION_DAYS <= 0:
+        return
+
+    from datetime import datetime, timedelta, timezone
+
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+    from apscheduler.triggers.cron import CronTrigger
+
+    # Dedicated to this purge: see MR !4070 review comment #15 — reusing
+    # 987654327 (metrics rotation, inactive-cost-center budget stop) silently
+    # starved those jobs whenever this one held the advisory lock.
+    _lock_id = 987654330
+
+    async def _purge():
+        from codemie.utils import leader_lock as leader_lock_module
+
+        async with leader_lock_module.async_leader_lock(_lock_id) as acquired:
+            if not acquired:
+                logger.info("[marketplace_audit] retention purge: not the leader, skipping")
+                return
+
+            def _do_purge():
+                import sqlmodel
+
+                from codemie.clients.postgres import PostgresClient
+                from codemie.service.marketplace_management import audit_retention
+
+                cutoff = datetime.now(timezone.utc) - timedelta(days=config.MARKETPLACE_AUDIT_RETENTION_DAYS)
+                removed = 0
+                with sqlmodel.Session(PostgresClient.get_engine()) as session:
+                    for entity_kind in ("ASSISTANT", "WORKFLOW"):
+                        removed += audit_retention.marketplace_audit_retention_repository.delete_older_than(
+                            entity_kind=entity_kind, cutoff=cutoff, session=session
+                        )
+                    session.commit()
+                return removed, cutoff.date()
+
+            try:
+                removed, cutoff_date = await asyncio.to_thread(_do_purge)
+                logger.info(
+                    f"[marketplace_audit] retention purge: deleted {removed} audit run(s) "
+                    f"older than {cutoff_date} "
+                    f"(retention={config.MARKETPLACE_AUDIT_RETENTION_DAYS} days)"
+                )
+            except Exception as exc:
+                logger.error(f"[marketplace_audit] retention purge failed: {exc}", exc_info=True)
+
+    retention_scheduler = AsyncIOScheduler()
+    retention_scheduler.add_job(
+        _purge,
+        CronTrigger.from_crontab("30 2 * * *", timezone="UTC"),
+        id="marketplace_audit_retention_purge",
+        replace_existing=True,
+    )
+    retention_scheduler.start()
+    app.state.marketplace_audit_retention_scheduler = retention_scheduler
+    logger.info(
+        f"Marketplace audit retention scheduler started "
+        f"(retention={config.MARKETPLACE_AUDIT_RETENTION_DAYS} days, runs daily at 02:30 UTC)"
+    )
+
+
+def _setup_marketplace_moderation_purge_scheduler(app: FastAPI):
+    """Daily sweep of moderation data whose subject no longer exists (8.7; F-39, R12, S16).
+
+    Separate from `_setup_marketplace_audit_retention_scheduler` on purpose, and
+    NOT gated on `MARKETPLACE_AUDIT_RETENTION_DAYS`. The two jobs answer
+    different questions:
+
+      * retention asks "how much history do we keep?" -- destructive, reversible
+        only by not having run it, and therefore opt-in (it ships at 0 = keep
+        everything);
+      * this asks "may we still hold moderation data about content that has been
+        deleted?" -- and the answer does not depend on an operator preference.
+        Hiding it behind the retention switch would leave F-39 live on every
+        installation that never turns retention on, which is all of them by
+        default.
+
+    `Assistant._purge_marketplace_moderation_data` already runs the same purge
+    inline on every delete. This sweep exists for what that cannot reach: every
+    assistant deleted before 8.7 shipped, and any delete whose purge failed or
+    whose process died between the two statements.
+
+    Scoped to ASSISTANT because that is the only entity kind whose ids are
+    catalogued in `assistants`; a WORKFLOW verdict's `assistant_id` is a
+    workflow id and is *supposed* to be absent from that table.
+    """
+    if not config.MARKETPLACE_MANAGEMENT_ENABLED:
+        return
+
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+    from apscheduler.triggers.cron import CronTrigger
+
+    # Distinct from the retention lock (987654330) so the two jobs do not
+    # serialise behind one another on the same night, and from the reaper's
+    # lock (987654329) and every other job's lock — see MR !4070 review
+    # comment #15, which flagged this reusing 987654328 (stale-datasource job,
+    # active-project budget restore) and silently starving them.
+    _lock_id = 987654331
+
+    async def _sweep():
+        from codemie.utils import leader_lock as leader_lock_module
+
+        async with leader_lock_module.async_leader_lock(_lock_id) as acquired:
+            if not acquired:
+                logger.info("[marketplace_audit] moderation purge: not the leader, skipping")
+                return
+
+            def _do_sweep():
+                import sqlmodel
+
+                from codemie.clients.postgres import PostgresClient
+                from codemie.service.marketplace_management import audit_retention
+
+                with sqlmodel.Session(PostgresClient.get_engine()) as session:
+                    reclaimed = audit_retention.marketplace_moderation_purge_repository.purge_orphans(
+                        entity_kind="ASSISTANT", session=session
+                    )
+                    session.commit()
+                return reclaimed
+
+            try:
+                reclaimed = await asyncio.to_thread(_do_sweep)
+                logger.info(
+                    f"[marketplace_audit] moderation purge: reclaimed moderation data for "
+                    f"{reclaimed} deleted assistant(s)"
+                )
+            except Exception as exc:
+                logger.error(f"[marketplace_audit] moderation purge failed: {exc}", exc_info=True)
+
+    purge_scheduler = AsyncIOScheduler()
+    purge_scheduler.add_job(
+        _sweep,
+        # 03:10 UTC: after the 02:30 retention purge, so a night where both run
+        # sweeps a table retention has already shrunk.
+        CronTrigger.from_crontab("10 3 * * *", timezone="UTC"),
+        id="marketplace_moderation_purge",
+        replace_existing=True,
+    )
+    purge_scheduler.start()
+    app.state.marketplace_moderation_purge_scheduler = purge_scheduler
+    logger.info("Marketplace moderation purge scheduler started (runs daily at 03:10 UTC)")
+
+
 def _setup_metrics_rotation_scheduler(app: FastAPI):
     """Setup quarterly metrics index rotation scheduler."""
     if not config.METRICS_ROTATION_ENABLED:
@@ -802,6 +1043,13 @@ async def _shutdown_services(app: FastAPI, tasks: list):
     _stop_scheduler(
         app, 'activity_events_retention_scheduler', 'Activity events retention scheduler', method='shutdown'
     )
+    _stop_scheduler(
+        app, 'marketplace_audit_retention_scheduler', 'Marketplace audit retention scheduler', method='shutdown'
+    )
+    _stop_scheduler(
+        app, 'marketplace_moderation_purge_scheduler', 'Marketplace moderation purge scheduler', method='shutdown'
+    )
+    _stop_scheduler(app, 'marketplace_audit_reaper_scheduler', 'Marketplace audit reaper scheduler', method='shutdown')
     _stop_scheduler(app, 'metrics_rotation_scheduler', 'Metrics rotation scheduler')
 
     from codemie.service.usage_attribution.analysis import shutdown_analysis_service
@@ -935,6 +1183,7 @@ async def lifespan(app: FastAPI):
     assert_oauth_state_signing_secret_configured()
     assert_token_vault_available()
     warn_insecure_oauth_storage_for_enabled_providers()
+    warn_marketplace_approval_gate_enabled()
     await _check_model_provider_readiness(app)
     _initialize_deployment_version()
 
@@ -963,6 +1212,9 @@ async def lifespan(app: FastAPI):
     _setup_leaderboard_scheduler(app)
     _setup_stale_datasource_scheduler(app)
     _setup_activity_events_retention_scheduler(app)
+    _setup_marketplace_audit_retention_scheduler(app)
+    _setup_marketplace_moderation_purge_scheduler(app)
+    _setup_marketplace_audit_reaper_scheduler(app)
 
     _setup_metrics_rotation_scheduler(app)
     _schedule_budget_reconciliation(app, tasks)
@@ -1043,6 +1295,34 @@ app.add_middleware(SlowAPIMiddleware)
 if ElasticSearchClient.is_configured():
     StateImportService().import_indexes()
 
+
+def register_marketplace_management_router(target_app: FastAPI) -> bool:
+    """Mount the marketplace-management router unless the feature is switched off.
+
+    Kill switch for the moderation feature (MARKETPLACE_MANAGEMENT_ENABLED).
+    When off, the routes are never registered, so they 404 and do not appear in
+    the OpenAPI schema. Returns whether the router was mounted.
+
+    SYNC NOTE (CR-011): Two feature-flag mechanisms protect the marketplace
+    management surface:
+      1. This startup-time mount guard (here): the 16 /v1/marketplace-management
+         routes are only registered when the feature is enabled.
+      2. A runtime HTTPException guard in admin.py (POST /admin/marketplace/reindex):
+         that single admin endpoint lives on the admin router (always mounted) and
+         therefore needs its own per-request check.
+    Both guards call is_marketplace_management_enabled(). If you add a new
+    marketplace endpoint to the admin router rather than the marketplace_management
+    router, you MUST add the same runtime guard to that endpoint. If you switch
+    this mount guard to unconditional (runtime-dependency approach), remove the
+    runtime guard in admin.py at the same time.
+    """
+    if not is_marketplace_management_enabled():
+        logger.info("Marketplace management feature is disabled; router not mounted")
+        return False
+    target_app.include_router(marketplace_management_router)
+    return True
+
+
 app.include_router(a2a.router)
 app.include_router(assistant_mapping.router)
 app.include_router(assistant.router)
@@ -1053,6 +1333,7 @@ if ElasticSearchClient.is_configured():
 app.include_router(common.router)
 app.include_router(feedback.router)
 app.include_router(admin.router)
+register_marketplace_management_router(app)
 app.include_router(background_tasks.router)
 app.include_router(conversation.router)
 app.include_router(conversation_analysis.router)

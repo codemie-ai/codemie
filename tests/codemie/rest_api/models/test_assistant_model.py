@@ -982,6 +982,51 @@ class TestAssistantListResponse:
         assert 'shared' in data
         assert data['shared'] is False
 
+    def test_marketplace_fields_default_values(self):
+        response = AssistantListResponse(
+            id="a1",
+            name="Test",
+            slug="test",
+            type="codemie",
+            description="desc",
+        )
+        assert response.marketplace_status is None
+        assert response.marketplace_decision_reason is None
+        assert response.is_verified is False
+        data = response.model_dump()
+        assert data["marketplace_status"] is None
+        assert data["marketplace_decision_reason"] is None
+        assert data["is_verified"] is False
+
+    def test_marketplace_fields_explicit_values(self):
+        response = AssistantListResponse(
+            id="a2",
+            name="Verified",
+            slug="verified",
+            type="codemie",
+            description="desc",
+            marketplace_status="APPROVED",
+            marketplace_decision_reason=None,
+            is_verified=True,
+        )
+        assert response.marketplace_status == "APPROVED"
+        assert response.marketplace_decision_reason is None
+        assert response.is_verified is True
+
+        rejected = AssistantListResponse(
+            id="a3",
+            name="Rejected",
+            slug="rejected",
+            type="codemie",
+            description="desc",
+            marketplace_status="REJECTED",
+            marketplace_decision_reason="Too generic",
+            is_verified=False,
+        )
+        assert rejected.marketplace_status == "REJECTED"
+        assert rejected.marketplace_decision_reason == "Too generic"
+        assert rejected.is_verified is False
+
 
 class TestAssistantValidateMCPServerNames:
     def _make_assistant(self, mcp_servers=None):

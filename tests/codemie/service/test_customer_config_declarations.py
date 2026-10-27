@@ -210,3 +210,30 @@ def test_workspace_script_bridge_description_does_not_claim_pooled_only() -> Non
     description = WORKSPACE_SCRIPT_BRIDGE.description
     assert "pooled" not in description.lower()
     assert "Applies to runs that start after the change" in description
+
+
+def test_marketplace_threshold_defaults_match_the_python_defaults():
+    """Guards against the two default sources (this declaration and
+    configs/marketplace_management.py's _THRESHOLD_DEFAULTS) drifting apart."""
+    from codemie.configs.marketplace_management import _THRESHOLD_DEFAULTS
+
+    declaration = by_component_id("marketplaceThresholds")
+    declared = {field.name: field.default for field in declaration.fields}
+
+    assert declared == {json_key: str(default) for json_key, (_, default) in _THRESHOLD_DEFAULTS.items()}
+
+
+@pytest.mark.parametrize(
+    "component_id",
+    [
+        "marketplaceCoreGates",
+        "marketplacePolishGates",
+        "marketplaceSimilarity",
+    ],
+)
+def test_new_marketplace_declarations_registered(component_id):
+    from codemie.service.customer_config_declarations import _BY_COMPONENT_ID, _BY_KEY
+
+    assert component_id in _BY_COMPONENT_ID
+    assert any(d.component_id == component_id for d in DECLARATIONS)
+    assert _BY_COMPONENT_ID[component_id].key in _BY_KEY

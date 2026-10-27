@@ -79,6 +79,9 @@ class FieldDeclaration(BaseModel):
     pattern: str | None = None
     pattern_message: str | None = None
     markup: Markup = Markup.PLAIN
+    # Fallback value when neither YAML nor an override supplies one (e.g. a
+    # component with no YAML entry, whose real default lives in Python code).
+    default: str | bool | None = None
 
     @field_validator("pattern")
     @classmethod
@@ -105,8 +108,14 @@ class SettingDeclaration(BaseModel):
         return {field.name for field in self.fields}
 
     def empty_value(self) -> dict:
-        """Neutral value per declared field, used when YAML carries no such component."""
-        return {field.name: (False if field.type is FieldType.SWITCH else "") for field in self.fields}
+        """Value per field when YAML carries no such component: its own `default`, else a neutral placeholder."""
+
+        def _value(field: FieldDeclaration) -> str | bool:
+            if field.default is not None:
+                return field.default
+            return False if field.type is FieldType.SWITCH else ""
+
+        return {field.name: _value(field) for field in self.fields}
 
 
 CHAT_DISCLAIMER = SettingDeclaration(
@@ -179,6 +188,14 @@ RELEASE_NOTES_RECENT_COUNT = SettingDeclaration(
         ),
     ],
 )
+
+_POSITIVE_INT_PATTERN = r"^[1-9][0-9]*$"
+_POSITIVE_INT_MESSAGE = (
+    "Must be a positive integer (null is not accepted; use DELETE to restore the deployment default)"
+)
+
+_FLOAT_01_PATTERN = r"^(0(\.\d+)?|1(\.0*)?)$"
+_FLOAT_01_MESSAGE = "Must be a number between 0 and 1 (e.g. 0.85)"
 
 WEB_SEARCH = SettingDeclaration(
     component_id="features:webSearch",
@@ -264,6 +281,179 @@ WORKSPACE_SCRIPT_BRIDGE = SettingDeclaration(
     ],
 )
 
+# Defaults mirror configs/marketplace_management.py's _THRESHOLD_DEFAULTS (no YAML entry exists for this component).
+MARKETPLACE_THRESHOLDS = SettingDeclaration(
+    component_id="marketplaceThresholds",
+    label="Marketplace Thresholds",
+    fields=[
+        FieldDeclaration(
+            name="hotMinUsers",
+            type=FieldType.INPUT,
+            label="Hot tier min. users",
+            description="Minimum active users for the Hot tier.",
+            pattern=_POSITIVE_INT_PATTERN,
+            pattern_message=_POSITIVE_INT_MESSAGE,
+            default="50",
+        ),
+        FieldDeclaration(
+            name="warmMinUsers",
+            type=FieldType.INPUT,
+            label="Warm tier min. users",
+            description="Minimum active users for the Warm tier.",
+            pattern=_POSITIVE_INT_PATTERN,
+            pattern_message=_POSITIVE_INT_MESSAGE,
+            default="7",
+        ),
+        FieldDeclaration(
+            name="coldMinUsers",
+            type=FieldType.INPUT,
+            label="Cold tier min. users",
+            description="Minimum active users for the Cold tier.",
+            pattern=_POSITIVE_INT_PATTERN,
+            pattern_message=_POSITIVE_INT_MESSAGE,
+            default="3",
+        ),
+        FieldDeclaration(
+            name="graceDays",
+            type=FieldType.INPUT,
+            label="Cold grace period (days)",
+            description="Days in Cold tier before cleanup.",
+            pattern=_POSITIVE_INT_PATTERN,
+            pattern_message=_POSITIVE_INT_MESSAGE,
+            default="60",
+        ),
+        FieldDeclaration(
+            name="archiveDeadAfterDays",
+            type=FieldType.INPUT,
+            label="Dead grace period (days)",
+            description="Days in Dead tier before cleanup.",
+            pattern=_POSITIVE_INT_PATTERN,
+            pattern_message=_POSITIVE_INT_MESSAGE,
+            default="30",
+        ),
+    ],
+)
+
+MARKETPLACE_CORE_GATES = SettingDeclaration(
+    component_id="marketplaceCoreGates",
+    label="Core Gates",
+    fields=[
+        FieldDeclaration(
+            name="descriptionMin",
+            type=FieldType.INPUT,
+            label="Description min. length",
+            description="Minimum number of characters required in the assistant's description.",
+            default="100",
+            pattern=_POSITIVE_INT_PATTERN,
+            pattern_message=_POSITIVE_INT_MESSAGE,
+        ),
+        FieldDeclaration(
+            name="systemPromptMin",
+            type=FieldType.INPUT,
+            label="System prompt min. length",
+            description="Minimum number of characters required in the system prompt.",
+            default="200",
+            pattern=_POSITIVE_INT_PATTERN,
+            pattern_message=_POSITIVE_INT_MESSAGE,
+        ),
+        FieldDeclaration(
+            name="substancePromptAltMin",
+            type=FieldType.INPUT,
+            label="Substance-prompt alt min. length",
+            description="Minimum number of characters required in the substance/alternative prompt.",
+            default="500",
+            pattern=_POSITIVE_INT_PATTERN,
+            pattern_message=_POSITIVE_INT_MESSAGE,
+        ),
+    ],
+)
+
+MARKETPLACE_POLISH_GATES = SettingDeclaration(
+    component_id="marketplacePolishGates",
+    label="Polish Gates",
+    fields=[
+        FieldDeclaration(
+            name="descriptionMin",
+            type=FieldType.INPUT,
+            label="Description min. length",
+            description="Minimum number of characters required in the assistant's description for the polish check.",
+            default="250",
+            pattern=_POSITIVE_INT_PATTERN,
+            pattern_message=_POSITIVE_INT_MESSAGE,
+        ),
+        FieldDeclaration(
+            name="categoriesMin",
+            type=FieldType.INPUT,
+            label="Categories min. count",
+            description="Minimum number of categories the assistant must be assigned to.",
+            default="2",
+            pattern=_POSITIVE_INT_PATTERN,
+            pattern_message=_POSITIVE_INT_MESSAGE,
+        ),
+        FieldDeclaration(
+            name="requireIcon",
+            type=FieldType.SWITCH,
+            label="Require icon",
+            description="Whether the assistant must have an icon to pass the polish check.",
+            default=True,
+        ),
+        FieldDeclaration(
+            name="conversationStartersMin",
+            type=FieldType.INPUT,
+            label="Conversation starters min. count",
+            description="Minimum number of conversation starters the assistant must have.",
+            default="2",
+            pattern=_POSITIVE_INT_PATTERN,
+            pattern_message=_POSITIVE_INT_MESSAGE,
+        ),
+    ],
+)
+
+MARKETPLACE_SIMILARITY = SettingDeclaration(
+    component_id="marketplaceSimilarity",
+    label="Similarity",
+    fields=[
+        FieldDeclaration(
+            name="criticalThreshold",
+            type=FieldType.INPUT,
+            label="Critical threshold",
+            description="Similarity score (0–1) above which two assistants are treated as near-duplicates.",
+            default="0.70",
+            pattern=_FLOAT_01_PATTERN,
+            pattern_message=_FLOAT_01_MESSAGE,
+        ),
+        FieldDeclaration(
+            name="optionalThreshold",
+            type=FieldType.INPUT,
+            label="Optional threshold",
+            description="Similarity score (0–1) above which two assistants are flagged as worth reviewing for overlap.",
+            default="0.55",
+            pattern=_FLOAT_01_PATTERN,
+            pattern_message=_FLOAT_01_MESSAGE,
+        ),
+        FieldDeclaration(
+            name="reportThreshold",
+            type=FieldType.INPUT,
+            label="Report threshold",
+            description="Similarity score (0–1) above which a pair appears in similarity reports.",
+            default="0.40",
+            pattern=_FLOAT_01_PATTERN,
+            pattern_message=_FLOAT_01_MESSAGE,
+        ),
+        FieldDeclaration(
+            name="shortlistSize",
+            type=FieldType.INPUT,
+            label="Shortlist size",
+            description=(
+                "Maximum number of candidate assistants to compare against each assistant during a similarity check."
+            ),
+            default="10",
+            pattern=_POSITIVE_INT_PATTERN,
+            pattern_message=_POSITIVE_INT_MESSAGE,
+        ),
+    ],
+)
+
 DECLARATIONS: tuple[SettingDeclaration, ...] = (
     CHAT_DISCLAIMER,
     RELEASE_NOTES_RECENT_COUNT,
@@ -272,6 +462,10 @@ DECLARATIONS: tuple[SettingDeclaration, ...] = (
     SCHEDULERS,
     MCP_CUSTOM_SERVERS_DISABLED,
     WORKSPACE_SCRIPT_BRIDGE,
+    MARKETPLACE_THRESHOLDS,
+    MARKETPLACE_CORE_GATES,
+    MARKETPLACE_POLISH_GATES,
+    MARKETPLACE_SIMILARITY,
 )
 
 _BY_COMPONENT_ID = {declaration.component_id: declaration for declaration in DECLARATIONS}

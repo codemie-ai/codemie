@@ -42,6 +42,7 @@ def _app(*, elevated: bool) -> FastAPI:
 
     async def _authenticate(request: Request):
         request.state.user = SimpleNamespace(id="user-1", is_admin_or_maintainer=elevated)
+        return request.state.user
 
     app.dependency_overrides[authenticate] = _authenticate
 

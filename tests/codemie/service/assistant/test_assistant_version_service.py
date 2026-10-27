@@ -441,6 +441,55 @@ class TestRollbackToVersion:
         mock_assistant.update.assert_called_once()
         assert mock_assistant.version_count == 4
 
+    @pytest.mark.parametrize(
+        "gate_on, status, expect_re_submit",
+        [
+            (True, "APPROVED", True),
+            (True, "PENDING_REVIEW", True),
+            # An open submission is protected even if the gate was switched off meanwhile.
+            (False, "PENDING_REVIEW", True),
+            (True, "DRAFT", False),
+            (False, "APPROVED", False),
+        ],
+    )
+    @patch('codemie.service.marketplace_management.queue_service.MarketplaceQueueService')
+    @patch('codemie.service.assistant.assistant_version_service.AssistantConfiguration')
+    @patch.object(AssistantVersionService, 'get_version')
+    def test_rollback_re_submits_approved_with_gate_on_and_pending_always(
+        self,
+        mock_get_version,
+        mock_config_class,
+        mock_queue_cls,
+        gate_on,
+        status,
+        expect_re_submit,
+        mock_assistant,
+        mock_config,
+        mock_user,
+    ):
+        mock_assistant.version_count = 3
+        mock_assistant.marketplace_status = status
+        mock_assistant.marketplace_version = 7
+        mock_assistant.is_global = True
+        mock_get_version.return_value = mock_config
+
+        with patch('codemie.service.assistant.assistant_version_service.is_approval_gate_armed', return_value=gate_on):
+            AssistantVersionService.rollback_to_version(
+                assistant=mock_assistant, target_version_number=1, user=mock_user
+            )
+
+        # Visibility is never touched here; the queue service owns it.
+        assert mock_assistant.is_global is True
+        assert mock_assistant.marketplace_status == status
+        assert mock_assistant.marketplace_version == 7
+        mock_assistant.refresh_marketplace_columns_from_db.assert_called_once()
+        re_submit = mock_queue_cls.return_value.re_submit
+        if expect_re_submit:
+            re_submit.assert_called_once()
+            assert re_submit.call_args.kwargs["expected_version"] == 7
+        else:
+            re_submit.assert_not_called()
+
     @staticmethod
     def _toggle(restricted: bool) -> MagicMock:
         toggle = MagicMock()

@@ -170,35 +170,91 @@ def _raise_assistant_operation_error(operation: str, exception: Exception):
     ) from exception
 
 
-def _index_marketplace_assistant(assistant_id: str, user: User, is_update: bool = False):
+def _index_marketplace_assistant(assistant_id: str, user: User, is_update: bool = False) -> dict:
     """
     Background task to index or reindex a marketplace assistant in Elasticsearch.
 
-    This function runs asynchronously after publish/update operations complete,
-    ensuring the marketplace index stays in sync with PostgreSQL data without blocking API responses.
+    Runs after the publish/update response has already been sent, so it cannot
+    change that response. What it *can* do -- and what F-87 is about it not
+    doing -- is retry, and leave a trace when it gives up. This function used to
+    end in `except Exception: logger.error`, and the caller
+    (`background_tasks.add_task`) never looks at a return value, so an assistant
+    that failed to index was indistinguishable from one that indexed cleanly:
+    219 rows carry `is_global = true` while the marketplace index holds 19
+    documents, and nothing in the system said so.
+
+    `marketplace_index_sync` retries the write once and emits
+    `marketplace_index_failed` when it still does not land, so the gap becomes
+    attributable to a moment instead of being discovered later by counting two
+    databases against each other.
 
     Args:
         assistant_id: ID of the assistant to index
         user: User who triggered the operation (for cost tracking)
         is_update: If True, this is an update of existing document (won't increment progress counters).
                    If False, this is a new document (will increment progress counters).
+
+    Returns:
+        The indexing outcome as a dict (`action`, `state`, `attempts`, `error`).
+        Returned rather than swallowed so the call is testable and so a future
+        synchronous caller can surface it.
     """
-    from codemie.service.platform.platform_indexing_service import PlatformIndexingService
+    from codemie.service.marketplace_management import marketplace_index_sync
 
     from codemie.service.llm_service.utils import set_llm_context
 
     set_llm_context(None, user.current_project, user)
 
     operation = "reindexing" if is_update else "indexing"
-    try:
-        PlatformIndexingService.index_single_assistant(assistant_id, user=user, is_update=is_update)
+    outcome = marketplace_index_sync.index_assistant(assistant_id, user=user, is_update=is_update)
+    if outcome.ok:
         logger.info(
             f"Background {operation} completed for marketplace assistant {assistant_id}",
-            extra={"assistant_id": assistant_id, "is_update": is_update},
+            extra={"assistant_id": assistant_id, "is_update": is_update, "attempts": outcome.attempts},
         )
-    except Exception as index_error:
+    else:
         logger.error(
-            f"Background {operation} failed for marketplace assistant {assistant_id}: {index_error}",
-            extra={"assistant_id": assistant_id, "error": str(index_error), "is_update": is_update},
-            exc_info=True,
+            f"Background {operation} failed for marketplace assistant {assistant_id}: {outcome.error}",
+            extra={
+                "assistant_id": assistant_id,
+                "error": outcome.error,
+                "is_update": is_update,
+                "attempts": outcome.attempts,
+            },
         )
+    return outcome.as_dict()
+
+
+def _remove_marketplace_assistant(assistant_id: str, assistant_name: str, user: User) -> dict:
+    """
+    Background task to remove an unpublished assistant from Elasticsearch.
+
+    This function runs asynchronously after the assistant unpublish completes,
+    removing the assistant from the marketplace index without blocking the API response.
+
+    Args:
+        assistant_id: ID of the assistant to remove
+        assistant_name: Name of the assistant (for metadata tracking)
+        user: User who triggered the unpublish (for cost tracking)
+    """
+    from codemie.service.marketplace_management import marketplace_index_sync
+
+    from codemie.service.llm_service.utils import set_llm_context
+
+    set_llm_context(None, user.current_project, user)
+
+    outcome = marketplace_index_sync.remove_assistant(assistant_id, assistant_name, user=user)
+    if outcome.ok:
+        logger.info(
+            f"Background removal completed for unpublished assistant {assistant_id}",
+            extra={"assistant_id": assistant_id, "attempts": outcome.attempts},
+        )
+    else:
+        # An un-removed document keeps an unpublished assistant findable in
+        # marketplace search. Same silent-swallow shape as the index side, same
+        # fix: retried, then reported as `marketplace_index_failed`.
+        logger.error(
+            f"Background removal failed for unpublished assistant {assistant_id}: {outcome.error}",
+            extra={"assistant_id": assistant_id, "error": outcome.error, "attempts": outcome.attempts},
+        )
+    return outcome.as_dict()

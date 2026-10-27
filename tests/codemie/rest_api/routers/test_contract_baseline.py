@@ -417,6 +417,8 @@ def _assistant_update_patches(stack: ExitStack, assistant: Assistant):
     compare = "codemie.service.assistant.assistant_version_compare_service.AssistantVersionCompareService"
     stack.enter_context(patch(f"{compare}.has_configuration_changes", return_value=False))
     stack.enter_context(patch(f"{ASSISTANT}.get_assistant_by_id_or_raise", return_value=assistant))
+    # Reads the committed marketplace columns back from Postgres before `update()`; no database here.
+    stack.enter_context(patch.object(Assistant, "refresh_marketplace_columns_from_db"))
     return stack.enter_context(patch.object(Assistant, "update"))
 
 

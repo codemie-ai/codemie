@@ -18,6 +18,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from codemie.core.models import TokensUsage
+from codemie.rest_api.models.assistant_generator import RefineGeneratorResponse
 from codemie.service.analytics.metric_names import MetricName
 from codemie.service.monitoring.metrics_constants import (
     MARKETPLACE_ASSISTANT_VALIDATION_TOTAL_METRIC,
@@ -79,7 +80,7 @@ class TestValidateAssistantForPublishTokenMetrics(unittest.TestCase):
     def test_emits_token_attrs_on_success(self, mock_workflow_cls, mock_rsm_singleton, mock_send_metric, mock_rsm_svc):
         mock_rsm_singleton.get_summary.return_value = self.summary
         mock_workflow = MagicMock()
-        mock_workflow.validate.return_value = ("accept", [])
+        mock_workflow.validate.return_value = ("accept", RefineGeneratorResponse(fields=[], toolkits=[], context=[]))
         mock_workflow_cls.return_value = mock_workflow
 
         from codemie.service.assistant_generator_service import AssistantGeneratorService
@@ -105,7 +106,7 @@ class TestValidateAssistantForPublishTokenMetrics(unittest.TestCase):
     @patch(f"{_SVC}.AssistantValidationWorkflow")
     def test_clears_summary_in_finally_on_success(self, mock_workflow_cls, mock_emit, mock_rsm):
         mock_workflow = MagicMock()
-        mock_workflow.validate.return_value = ("accept", [])
+        mock_workflow.validate.return_value = ("accept", RefineGeneratorResponse(fields=[], toolkits=[], context=[]))
         mock_workflow_cls.return_value = mock_workflow
 
         from codemie.service.assistant_generator_service import AssistantGeneratorService
@@ -143,7 +144,7 @@ class TestValidateAssistantForPublishTokenMetrics(unittest.TestCase):
     @patch(f"{_SVC}.AssistantValidationWorkflow")
     def test_no_clear_when_request_id_none(self, mock_workflow_cls, mock_emit, mock_rsm):
         mock_workflow = MagicMock()
-        mock_workflow.validate.return_value = ("accept", [])
+        mock_workflow.validate.return_value = ("accept", RefineGeneratorResponse(fields=[], toolkits=[], context=[]))
         mock_workflow_cls.return_value = mock_workflow
 
         from codemie.service.assistant_generator_service import AssistantGeneratorService

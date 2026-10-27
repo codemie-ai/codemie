@@ -494,7 +494,8 @@ class AssistantRepository:
             Modified query with visibility filters applied
         """
         if user.is_admin:
-            # For admins: show all non-global assistants
+            # Admins see every private assistant here, pending included --
+            # no pending-specific carve-out for them.
             return query.where(Assistant.is_global == False)  # noqa
         else:
             # For regular users: show assistants they can access

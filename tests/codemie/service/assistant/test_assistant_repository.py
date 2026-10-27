@@ -139,8 +139,35 @@ def test_query_created_by_user(mock_session_class, mock_user, mock_assistant):
     assert result["pagination"]["total"] == 1
 
 
+@pytest.mark.parametrize(
+    "marketplace_status,is_verified,marketplace_decision_reason,expected_is_verified",
+    [
+        # Default state: DRAFT assistants are never verified.
+        ("DRAFT", False, None, False),
+        # PENDING_REVIEW: non-default status, is_verified remains False (not APPROVED).
+        ("PENDING_REVIEW", True, None, False),
+        # APPROVED: only state where is_verified=True is preserved.
+        ("APPROVED", True, None, True),
+        # REJECTED: reason string passes through; is_verified normalized to False.
+        ("REJECTED", False, "Some reason", False),
+        # Inconsistent DB row: is_verified=True with non-APPROVED status is normalized.
+        ("PENDING_REVIEW", True, "Some reason", False),
+    ],
+)
 @patch("codemie.service.assistant.assistant_repository.Session")
-def test_query_minimal_response(mock_session_class, mock_user, mock_assistant):
+def test_query_minimal_response(
+    mock_session_class,
+    mock_user,
+    mock_assistant,
+    marketplace_status,
+    is_verified,
+    marketplace_decision_reason,
+    expected_is_verified,
+):
+    mock_assistant.marketplace_status = marketplace_status
+    mock_assistant.is_verified = is_verified
+    mock_assistant.marketplace_decision_reason = marketplace_decision_reason
+
     mock_session = MagicMock()
     mock_session_class.return_value.__enter__.return_value = mock_session
     mock_session.exec.return_value.all.return_value = [mock_assistant]
@@ -158,6 +185,11 @@ def test_query_minimal_response(mock_session_class, mock_user, mock_assistant):
     assert isinstance(result["data"][0], AssistantListResponse)
     assert len(result["data"]) == 1
     assert result["pagination"]["total"] == 1
+    # Verify marketplace fields pass through from the source Assistant row.
+    row: AssistantListResponse = result["data"][0]
+    assert row.marketplace_status == marketplace_status
+    assert row.is_verified is expected_is_verified
+    assert row.marketplace_decision_reason == marketplace_decision_reason
 
 
 @patch("codemie.service.assistant.assistant_repository.Session")

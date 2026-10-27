@@ -1,0 +1,78 @@
+{
+  "schema": 1,
+  "gate_id": "code-review.final",
+  "decision": "approve",
+  "confidence": "medium",
+  "rationale": "Re-review after squash. Both prior MAJOR findings are resolved: CR-001 — GateFinding now carries model_config=ConfigDict(extra='ignore') at assistant.py:179, silently dropping any unknown keys from SimilarityPair-shaped dicts. CR-002 — spec.md now correctly documents CRITICAL findings → 422 with the same ExtendedHTTPException structure as publish; the contradictory '200+passed:false' note has been removed. All acceptance criteria pass. Standards pass. Diff is oversized (38634 lines, 129 files) covering the full feature branch including prior work; coverage is partial on the broader context but the gate-check feature itself (the diff core) is well-tested. Confidence kept at medium due to oversized diff.",
+  "risk_flags": [],
+  "business_review": [
+    {
+      "criterion": "Endpoint path matches spec",
+      "status": "pass",
+      "notes": "POST /assistants/{assistant_id}/marketplace/publish/gate-check — correct."
+    },
+    {
+      "criterion": "Auth: write access required",
+      "status": "pass",
+      "notes": "_check_user_can_access_assistant called with write/Action.WRITE as spec requires."
+    },
+    {
+      "criterion": "No side effects (no DB writes, no queue, no status change)",
+      "status": "pass",
+      "notes": "Handler mutates only a local in-memory object; no SQLAlchemy session flush (ES-backed model)."
+    },
+    {
+      "criterion": "GateCheckRequest: required categories, name, optional description/system_prompt",
+      "status": "pass",
+      "notes": "All gate-relevant fields present."
+    },
+    {
+      "criterion": "categories missing → 422",
+      "status": "pass",
+      "notes": "No default value triggers Pydantic 422 validation error."
+    },
+    {
+      "criterion": "CRITICAL gate failures → 422 with ExtendedHTTPException structure",
+      "status": "pass",
+      "notes": "Implementation raises ExtendedHTTPException(422) for CRITICAL findings; spec now correctly documents this."
+    },
+    {
+      "criterion": "200 passed:true when all gates pass",
+      "status": "pass",
+      "notes": "GateCheckResponse(passed=True, gate_findings=[...]) returned when no CRITICAL findings."
+    },
+    {
+      "criterion": "404 when assistant not found",
+      "status": "pass",
+      "notes": "_get_assistant_by_id_or_raise raises 404."
+    },
+    {
+      "criterion": "403/401 when insufficient permissions",
+      "status": "pass",
+      "notes": "_check_user_can_access_assistant raises 401 (consistent with existing auth pattern)."
+    },
+    {
+      "criterion": "Route registered before POST …/publish",
+      "status": "pass",
+      "notes": "gate-check handler added before publish handler, preventing Starlette path conflict."
+    }
+  ],
+  "standards_review": [
+    {
+      "standard": "git-workflow: commit format EPMCDME-####: Description",
+      "status": "pass",
+      "notes": "Squashed commit follows the required format."
+    },
+    {
+      "standard": "code-quality: ruff lint/format",
+      "status": "pass",
+      "notes": "make ruff passes clean."
+    },
+    {
+      "standard": "security: no secrets, no injection, no unsafe handling",
+      "status": "pass",
+      "notes": "No credentials, no raw SQL, no user-controlled strings interpolated unsafely. Gate finding messages are system-generated."
+    }
+  ],
+  "findings": []
+}

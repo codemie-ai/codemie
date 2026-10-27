@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "task": "Fix Alembic migrations to set marketplace_status to DRAFT and is_verified to false as defaults instead of APPROVED/automatic values",
+  "generated": "2026-09-21T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 12,
+  "size": "S",
+  "routing": "writing-plans",
+  "key_reasoning": [
+    {
+      "dimension": "technical_risk",
+      "reason": "Migration contains a data backfill UPDATE; backfill predicate in d3r4a5f6t7d8 must be carefully scoped to avoid demoting rows with real APPROVED history. Existing journal-based backfill pattern provides a direct template, but SQL predicate correctness is load-bearing and hard to reverse post-deploy."
+    },
+    {
+      "dimension": "component_scope",
+      "reason": "Changes confined to 1-2 Alembic migration files in src/external/alembic/versions/; no API, service, or repository layer touched."
+    }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from M to L: task requires data migration (backfill of existing rows to correct default values)",
+    "File Change Estimate bumped from XS to S: task requires data migration, adding or amending a migration file with backfill logic"
+  ],
+  "split_recommendation": null
+}

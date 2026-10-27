@@ -831,6 +831,47 @@ class Config(BaseSettings):
 
     MARKETPLACE_LLM_VALIDATION_ON_PUBLISH_ENABLED: bool = True
 
+    # Kill switch for the marketplace management (moderation) feature. When false the
+    # /v1/marketplace-management router is not mounted at all.
+    # Ships OFF so the feature is dark on first release; enable per environment.
+    MARKETPLACE_MANAGEMENT_ENABLED: bool = False
+    # Publish-time approval gate: when true, publishing an assistant to the marketplace
+    # runs the deterministic quality gates (a CRITICAL finding is a 422) and leaves the
+    # assistant PENDING_REVIEW and private until a moderator approves it.
+    #
+    # Ships OFF for the initial release (feature dark). With it off, publish self-approves
+    # straight to APPROVED + is_global on nothing more than write access to the assistant —
+    # there is no approval gate and no quality gate. Turn it ON (together with
+    # MARKETPLACE_MANAGEMENT_ENABLED) to roll the feature out. The gate is only armed when
+    # both are on (`is_approval_gate_armed()`): without management there is no route to
+    # approve a submission. `features:marketplaceApprovalGate` reports the armed state
+    # (see `CustomerConfig._get_runtime_config`).
+    # Ensure at least one user account with moderation rights exists before enabling, or
+    # PENDING_REVIEW assistants will accumulate with no reviewer.
+    MARKETPLACE_APPROVAL_GATE_ENABLED: bool = False
+    # Days of marketplace audit history to keep. 0 (the default) keeps everything:
+    # the purge is destructive and irreversible, so switching it on is a deliberate
+    # operator decision, not something an upgrade does on its own. Whatever the
+    # value, the newest SUCCEEDED run of each entity kind is never deleted -- it is
+    # what the Overview, Cleanup and facet endpoints are served from.
+    MARKETPLACE_AUDIT_RETENTION_DAYS: int = 0
+    # How long an audit run may go without a heartbeat before the reaper declares
+    # its worker dead, fails the run and releases `uq_mm_audit_run_active`
+    # (design-persistence.md 7, F4). The audit worker is a `daemon=True` thread, so
+    # it dies with its pod; without this, one crashed pod locks every pod out of
+    # auditing that entity kind forever. 0 disables the reaper.
+    #
+    # 60 minutes, not 10: see audit_service.AUDIT_HEARTBEAT_TIMEOUT for the
+    # worst-case wall-clock sizing this value must cover (engine scoring + ES
+    # knn_batch, both of which run before the first heartbeat is written). A
+    # shorter value here reaps audits that are still legitimately running
+    # (MR !4070 review comment #19) — this must stay aligned with that
+    # constant, not drift to a different number "for faster feedback".
+    MARKETPLACE_AUDIT_HEARTBEAT_TIMEOUT_MINUTES: int = 60
+    # How often each pod checks for abandoned runs. Only the pod holding the
+    # advisory lock issues the statement.
+    MARKETPLACE_AUDIT_REAPER_INTERVAL_MINUTES: int = 5
+
     # Memory profiling configuration
     MEMORY_PROFILING_ENABLED: bool = False  # Enable tracemalloc-based memory profiling
     MEMORY_PROFILING_INTERVAL_MINUTES: int = (

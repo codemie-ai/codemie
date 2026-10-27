@@ -23,6 +23,7 @@ from codemie.rest_api.models.assistant import Assistant
 from codemie.rest_api.models.assistant_generator import (
     FieldRecommendation,
     RecommendationAction,
+    RecommendationSeverity,
     RefineGeneratorResponse,
     ToolkitRecommendation,
     ToolRecommendation,
@@ -53,50 +54,79 @@ class MakeDecisionNode(BaseValidationNode):
     def __call__(self, state: AssistantValidationState) -> dict:
         """Execute decision logic.
 
+        Severity decides the outcome (LLM hardening appendix, spec P1-17):
+
+        * any finding with ``severity == CRITICAL`` rejects, and the CRITICAL
+          findings are returned to the caller for display;
+        * findings that are all OPTIONAL accept, and are returned anyway so the
+          caller can ask the user to acknowledge them;
+        * a validation phase that produced no result at all is treated as
+          CRITICAL - a gate must not approve what it could not judge.
+
         Args:
             state: Current workflow state
 
         Returns:
             Dictionary with only the fields updated by this node
         """
-        # Check if all validation phases passed
-        all_valid = self._all_phases_valid(state)
+        blocking = self._critical_findings(state)
+        recommendations = self._build_recommendations(state)
 
-        if all_valid:
-            logger.info("Validation decision: ACCEPT")
-            return {
-                "decision": "accept",
-                "recommendations": RefineGeneratorResponse(
-                    fields=[],
-                    toolkits=[],
-                    context=[],
-                ),
-            }
-        else:
+        if blocking:
+            logger.info(f"Validation decision: REJECT - critical findings: {', '.join(blocking)}")
             return {
                 "decision": "reject",
-                "recommendations": self._build_recommendations(state),
+                "recommendations": recommendations,
             }
 
-    def _all_phases_valid(self, state: AssistantValidationState) -> bool:
-        """Check if all validation phases are valid.
+        if self._has_recommendations(recommendations):
+            logger.info("Validation decision: ACCEPT with optional recommendations to acknowledge")
+        else:
+            logger.info("Validation decision: ACCEPT")
+
+        return {
+            "decision": "accept",
+            "recommendations": recommendations,
+        }
+
+    @staticmethod
+    def _blocking_metadata_findings(metadata_result) -> list[str]:
+        """Labels of CRITICAL metadata fields, or a not-validated marker when the phase is missing."""
+        if metadata_result is None:
+            return ["metadata:not-validated"]
+        # Categories never produce a recommendation (they are owned by the
+        # deterministic gate), so they must not silently block.
+        return [
+            f"metadata:{field.field_name}"
+            for field in metadata_result.fields
+            if not field.is_valid
+            and field.field_name != "categories"
+            and field.severity == RecommendationSeverity.CRITICAL
+        ]
+
+    def _critical_findings(self, state: AssistantValidationState) -> list[str]:
+        """Collect the findings that must block publication.
+
+        A finding blocks when its severity is CRITICAL. A phase whose result is
+        missing entirely also blocks: the phase did not run, so nothing has
+        judged it.
 
         Args:
             state: Current workflow state
 
         Returns:
-            True if all phases are valid, False otherwise
+            Human-readable labels of every blocking finding (empty if none)
         """
-        return bool(
-            state["metadata_result"]
-            and state["metadata_result"].is_valid
-            and state["system_prompt_result"]
-            and state["system_prompt_result"].is_valid
-            and state["tools_result"]
-            and state["tools_result"].is_valid
-            and state["context_result"]
-            and state["context_result"].is_valid
-        )
+        blocking: list[str] = self._blocking_metadata_findings(state.get("metadata_result"))
+
+        for phase in ("system_prompt_result", "tools_result", "context_result"):
+            result = state.get(phase)
+            if result is None:
+                blocking.append(f"{phase.removesuffix('_result')}:not-validated")
+            elif not result.is_valid and result.severity == RecommendationSeverity.CRITICAL:
+                blocking.append(phase.removesuffix("_result"))
+
+        return blocking
 
     def _build_recommendations(self, state: AssistantValidationState) -> RefineGeneratorResponse:
         """Build recommendations from validation results.

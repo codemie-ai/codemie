@@ -59,6 +59,14 @@ from codemie_tools.base.file_object import FileObject
 # =============================================================================
 
 
+@pytest.fixture(autouse=True)
+def _non_local_env(monkeypatch):
+    """Access-control tests need real (non-admin) users; ENV=local makes every User an admin."""
+    from codemie.configs import config
+
+    monkeypatch.setattr(config, "ENV", "dev")
+
+
 @pytest.fixture
 def mock_repository():
     """Mock SkillRepository for all tests"""

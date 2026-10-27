@@ -68,6 +68,9 @@ class TestComponent(unittest.TestCase):
 
 class TestCustomerConfig(unittest.TestCase):
     def setUp(self):
+        armed = patch("codemie.configs.marketplace_management.is_approval_gate_armed", return_value=False)
+        self.armed = armed.start()
+        self.addCleanup(armed.stop)
         self.valid_yaml = {
             'components': [
                 {
@@ -124,6 +127,7 @@ class TestCustomerConfig(unittest.TestCase):
             mock_config.GITLAB_OAUTH_ENABLED = False
             mock_config.JIRA_OAUTH_ENABLED = False
             mock_config.CONFLUENCE_OAUTH_ENABLED = False
+            mock_config.MARKETPLACE_APPROVAL_GATE_ENABLED = False
             mock_config.RETRIEVAL_BACKEND = "elasticsearch"
             mock_config.CONVERSATION_ANALYSIS_ENABLED = False
             mock_config.TOOL_SELECTION_ENABLED = False
@@ -298,6 +302,9 @@ class TestRuntimeFeatures(unittest.TestCase):
     """Test runtime-computed feature flags (enterpriseEdition, userManagement)"""
 
     def setUp(self):
+        armed = patch("codemie.configs.marketplace_management.is_approval_gate_armed", return_value=False)
+        self.armed = armed.start()
+        self.addCleanup(armed.stop)
         self.valid_yaml = {
             'components': [
                 {'id': 'component1', 'settings': {'enabled': True}},
@@ -321,6 +328,7 @@ class TestRuntimeFeatures(unittest.TestCase):
         mock_config.GITLAB_OAUTH_ENABLED = False
         mock_config.JIRA_OAUTH_ENABLED = False
         mock_config.CONFLUENCE_OAUTH_ENABLED = False
+        mock_config.MARKETPLACE_APPROVAL_GATE_ENABLED = False
         mock_config.RETRIEVAL_BACKEND = "elasticsearch"
         mock_config.CONVERSATION_ANALYSIS_ENABLED = False
         mock_config.TOOL_SELECTION_ENABLED = False
@@ -343,6 +351,42 @@ class TestRuntimeFeatures(unittest.TestCase):
         self.assertEqual(len(user_mgmt_components), 1)
         self.assertTrue(user_mgmt_components[0].settings.enabled)
 
+    @patch("codemie.configs.marketplace_management.is_marketplace_management_enabled", return_value=False)
+    @patch("codemie.configs.customer_config.Path.read_text")
+    @patch("codemie.configs.customer_config.config")
+    def test_runtime_marketplace_approval_gate_follows_armed_state(self, mock_config, mock_read_text, mock_is_enabled):
+        """The UI approval-gate flag reports the armed gate the backend enforces
+        (gate flag AND management), not the raw gate flag or the console switch."""
+        mock_read_text.return_value = yaml.dump(self.valid_yaml)
+        mock_config.ENABLE_USER_MANAGEMENT = False
+        mock_config.IDP_PROVIDER = "local"
+        mock_config.CALLBACK_API_BASE_URL = "http://localhost:8080"
+        mock_config.CHAT_CONTEXTUAL_NAMING_ENABLED = False
+        mock_config.BUDGET_SOFT_LIMIT_NOTIFICATION_ENABLED = False
+        mock_config.BUDGET_SOFT_LIMIT_EMAIL_ENABLED = False
+        mock_config.GITLAB_OAUTH_ENABLED = False
+        mock_config.JIRA_OAUTH_ENABLED = False
+        mock_config.CONFLUENCE_OAUTH_ENABLED = False
+
+        # gate armed (implies management on)
+        self.armed.return_value = True
+        mock_is_enabled.return_value = True
+        config = CustomerConfig()
+        self.assertTrue(config.is_component_enabled("features:marketplaceApprovalGate"))
+        self.assertTrue(config.is_component_enabled("features:marketplaceManagement"))
+
+        # management on, gate not armed
+        self.armed.return_value = False
+        config = CustomerConfig()
+        self.assertFalse(config.is_component_enabled("features:marketplaceApprovalGate"))
+        self.assertTrue(config.is_component_enabled("features:marketplaceManagement"))
+
+        # gate flag on but management off: not armed, so the UI must not show gate warnings
+        mock_is_enabled.return_value = False
+        config = CustomerConfig()
+        self.assertFalse(config.is_component_enabled("features:marketplaceApprovalGate"))
+        self.assertFalse(config.is_component_enabled("features:marketplaceManagement"))
+
     @patch("codemie.configs.customer_config.Path.read_text")
     @patch("codemie.enterprise.has_enterprise", new=lambda: False)
     @patch("codemie.clients.elasticsearch.ElasticSearchClient.is_configured", return_value=True)
@@ -359,6 +403,7 @@ class TestRuntimeFeatures(unittest.TestCase):
         mock_config.GITLAB_OAUTH_ENABLED = False
         mock_config.JIRA_OAUTH_ENABLED = False
         mock_config.CONFLUENCE_OAUTH_ENABLED = False
+        mock_config.MARKETPLACE_APPROVAL_GATE_ENABLED = False
         mock_config.RETRIEVAL_BACKEND = "elasticsearch"
         mock_config.CONVERSATION_ANALYSIS_ENABLED = False
         mock_config.TOOL_SELECTION_ENABLED = False
@@ -419,6 +464,7 @@ class TestRuntimeFeatures(unittest.TestCase):
         mock_config.GITLAB_OAUTH_ENABLED = False
         mock_config.JIRA_OAUTH_ENABLED = False
         mock_config.CONFLUENCE_OAUTH_ENABLED = False
+        mock_config.MARKETPLACE_APPROVAL_GATE_ENABLED = False
         mock_config.RETRIEVAL_BACKEND = "elasticsearch"
         mock_config.CONVERSATION_ANALYSIS_ENABLED = False
         mock_config.TOOL_SELECTION_ENABLED = False
@@ -475,6 +521,7 @@ class TestRuntimeFeatures(unittest.TestCase):
         mock_config.GITLAB_OAUTH_ENABLED = False
         mock_config.JIRA_OAUTH_ENABLED = False
         mock_config.CONFLUENCE_OAUTH_ENABLED = False
+        mock_config.MARKETPLACE_APPROVAL_GATE_ENABLED = False
         mock_config.RETRIEVAL_BACKEND = "none"
         mock_config.CONVERSATION_ANALYSIS_ENABLED = False
         mock_config.TOOL_SELECTION_ENABLED = False
@@ -528,6 +575,36 @@ class TestRuntimeFeatures(unittest.TestCase):
         self.assertIn("features:gitlabOauth", ids)
         self.assertIn("features:confluenceOauth", ids)
         self.assertNotIn("features:jiraOauth", ids)
+
+    @patch("codemie.configs.marketplace_management.is_marketplace_management_enabled")
+    @patch("codemie.configs.customer_config.Path.read_text")
+    @patch("codemie.configs.customer_config.config")
+    def test_runtime_marketplace_management_tracks_backend_flag(self, mock_config, mock_read_text, mock_is_enabled):
+        """MR !4070 comment #22: the UI flag must come from the same source of
+        truth as the backend gate (`is_marketplace_management_enabled()`),
+        not a separately-maintained YAML entry that can drift from it.
+        """
+        mock_read_text.return_value = yaml.dump(self.valid_yaml)
+        mock_config.ENABLE_USER_MANAGEMENT = False
+        mock_config.IDP_PROVIDER = "local"
+        mock_config.CALLBACK_API_BASE_URL = "http://localhost:8080"
+        mock_config.CHAT_CONTEXTUAL_NAMING_ENABLED = False
+        mock_config.BUDGET_SOFT_LIMIT_NOTIFICATION_ENABLED = False
+        mock_config.BUDGET_SOFT_LIMIT_EMAIL_ENABLED = False
+        mock_config.GITLAB_OAUTH_ENABLED = False
+        mock_config.JIRA_OAUTH_ENABLED = False
+        mock_config.CONFLUENCE_OAUTH_ENABLED = False
+        mock_config.MARKETPLACE_APPROVAL_GATE_ENABLED = False
+
+        mock_is_enabled.return_value = False
+        config = CustomerConfig()
+        self.assertFalse(config.is_component_enabled("features:marketplaceManagement"))
+        self.assertNotIn("features:marketplaceManagement", {c.id for c in config.get_enabled_components()})
+
+        mock_is_enabled.return_value = True
+        config = CustomerConfig()
+        self.assertTrue(config.is_component_enabled("features:marketplaceManagement"))
+        self.assertIn("features:marketplaceManagement", {c.id for c in config.get_enabled_components()})
 
     @patch("codemie.configs.customer_config.Path.read_text")
     @patch("codemie.enterprise.has_enterprise", new=lambda: False)

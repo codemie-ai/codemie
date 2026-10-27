@@ -23,9 +23,8 @@ from codemie.service.llm_service.llm_service import llm_service
 # Constants for field descriptions
 SEVERITY_DESCRIPTION = (
     "Severity level of this recommendation. "
-    "'critical' indicates serious issues that significantly impact quality; "
-    "'optional' indicates suggestions for improvement. "
-    "This is informational only - users can bypass all recommendations."
+    "'critical' blocks publication: the assistant cannot be published until it is addressed. "
+    "'optional' is advisory: the user acknowledges it and publication proceeds."
 )
 
 
@@ -161,12 +160,14 @@ class RecommendationAction(StrEnum):
 class RecommendationSeverity(StrEnum):
     """Severity level for validation recommendations during marketplace publishing.
 
-    This is informational only - helps users understand the importance of recommendations.
-    Both critical and optional recommendations can be bypassed via 'Publish Anyway' button.
+    Severity is enforced, not decorative (LLM hardening appendix, spec P1-17):
+    a single CRITICAL finding rejects the submission, while OPTIONAL findings
+    are advisory and only have to be acknowledged. Declining OPTIONAL findings
+    is a waiver reserved for admins and maintainers, not a skip button.
     """
 
-    CRITICAL = "critical"  # Serious issues that significantly impact quality
-    OPTIONAL = "optional"  # Suggestions for improvement, less critical
+    CRITICAL = "critical"  # Blocks publication until addressed
+    OPTIONAL = "optional"  # Advisory; the user acknowledges and proceeds
 
 
 class FieldRecommendation(BaseModel):

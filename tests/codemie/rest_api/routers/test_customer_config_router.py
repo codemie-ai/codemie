@@ -403,3 +403,41 @@ def test_get_config_uses_the_resolver(as_admin):
     assert response.status_code == 200
     assert response.json()[0]["id"] == "chatDisclaimer"
     resolver.assert_awaited_once()
+
+
+def test_marketplace_thresholds_component_declared():
+    """marketplaceThresholds must be present in DECLARATIONS with its five threshold fields."""
+    from codemie.service.customer_config_declarations import DECLARATIONS
+
+    declaration = next(
+        (d for d in DECLARATIONS if d.component_id == "marketplaceThresholds"),
+        None,
+    )
+
+    assert declaration is not None, "marketplaceThresholds not found in DECLARATIONS"
+    assert declaration.field_names == {
+        "hotMinUsers",
+        "warmMinUsers",
+        "coldMinUsers",
+        "graceDays",
+        "archiveDeadAfterDays",
+    }
+
+
+@pytest.mark.parametrize(
+    "component_id",
+    [
+        "marketplaceCoreGates",
+        "marketplacePolishGates",
+        "marketplaceSimilarity",
+    ],
+)
+@pytest.mark.asyncio
+async def test_handle_threshold_hook_fires_for_new_component_ids(mocker, component_id):
+    from codemie.rest_api.routers.customer_config import _handle_threshold_hook
+
+    mocker.patch("codemie.configs.marketplace_management.is_marketplace_management_enabled", return_value=True)
+    mock_update = mocker.patch("codemie.service.marketplace_management.audit_service.AUDIT_CACHE.update_config")
+    mocker.patch("codemie.rest_api.routers.customer_config._write_threshold_event")
+    await _handle_threshold_hook(component_id, "updated", "actor-1", {})
+    assert mock_update.called

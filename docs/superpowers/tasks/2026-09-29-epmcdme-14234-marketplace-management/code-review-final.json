@@ -1,0 +1,331 @@
+{
+  "schema": 1,
+  "gate_id": "code-review.final",
+  "decision": "approve",
+  "confidence": "high",
+  "rationale": "All 26 findings resolved. 23 fixed inline (CR-001 through CR-023, CR-024 through CR-026). CR-004 closed: Option A (alert + background sync) accepted by product owner. CR-005 closed: FORCE_PUBLISH from DRAFT bypassing gates is intentional by design. CR-006 closed: immediate de-list on RE_SUBMIT is intentional by design. Branch is clean, ruff passes.",
+  "risk_flags": ["security", "breaking-change"],
+  "business_review": [
+    {"criterion": "Phase 6.1-6.2: CAS UPDATE race safety", "status": "pass", "notes": "WHERE clause correctly gates on version AND status = ANY(allowed_from). Concurrency tests cover parallel approve+reject."},
+    {"criterion": "Phase 6.3: reject/withdraw de-indexes", "status": "pass", "notes": "TRANSITIONS shows deindex=True on REJECT and WITHDRAW."},
+    {"criterion": "Phase 6.4: Idempotent decisions (replayed withdraw → 409)", "status": "pass", "notes": "test_replayed_decision_is_byte_identical and test_disallowed_transitions_are_409 confirm the contract. Previously PARTIAL — now confirmed."},
+    {"criterion": "Phase 6.5: Actor from auth token, not request body", "status": "pass", "notes": "_actor_identity(user: User) derives actor from token-provided User object."},
+    {"criterion": "Phase 8.2: 5xx bodies return correlation_id, not stacktrace", "status": "pass", "notes": "SafeErrorRoute confirmed."},
+    {"criterion": "Phase 8.3: LLM assessor prompt injection mitigation", "status": "pass", "notes": "_neutralise(), _cap(), sentinels, ceiling all present."},
+    {"criterion": "Phase 8.5: Rate limits (5/min audit, 10/min assess)", "status": "pass", "notes": "AUDIT_RUN_RATE_LIMIT and ASSESS_RATE_LIMIT constants confirmed."},
+    {"criterion": "Phase 8.6: ReDoS bound on credential patterns", "status": "partial", "notes": "TimeoutError caught and pattern silently skipped — bypass possible. See CR-003. Test confirms no hang but does not confirm the timeout surfaces as an inconclusive result."},
+    {"criterion": "Phase 8.8: Validation prompts remove leniency language", "status": "pass", "notes": "Direct file read confirmed: 'When in doubt, be lenient' is absent. Prompt reads 'DO NOT use lenient no evidence of harm logic'. Phase 8.8 closed."},
+    {"criterion": "Phase 8.1: EntityReviewDetail no system_prompt/toolkits/mcp_servers leak", "status": "pass", "notes": "Direct file read confirmed: entity_adapter uses an allow-list projection — system_prompt, toolkits, mcp_servers excluded."},
+    {"criterion": "Phase D2: /overview.total is live count", "status": "cannot_verify", "notes": "Still not confirmed from file reads — AssistantAdapter.list_records not directly read."},
+    {"criterion": "Phase 0: MARKETPLACE_MANAGEMENT_ENABLED gates router", "status": "pass", "notes": "main.py confirmed: conditional import of marketplace_management router on flag. admin.py reindex guard confirmed correct."},
+    {"criterion": "Phase 8.7: Delete assistant purges moderation data (explicit job)", "status": "pass", "notes": "d1e2l3p4r4g5 migration confirmed: purge-on-delete uses SQLAlchemyMarketplaceAuditRetentionRepository, not FK cascade."},
+    {"criterion": "Phase 9.4: Metrics on every decision", "status": "pass", "notes": "observability.py confirmed: covers all 6 moderation decision types and audit run trigger. Best-effort emission (try/except)."},
+    {"criterion": "Phase 7.6: Gates run at publish time", "status": "pass", "notes": "D3 review confirmed: publish_to_marketplace calls deterministic gate check before CAS."},
+    {"criterion": "Phase 9.3: Activity events inside CAS transaction", "status": "cannot_verify", "notes": "activity_event_repository.insert not directly read in any domain pass."}
+  ],
+  "standards_review": [
+    {
+      "guide": "git-workflow",
+      "status": "partial",
+      "notes": "One commit (6811e45ff) uses EPMCDME-00000 placeholder ticket ID. All other commits follow the EPMCDME-NNNNN: format. Migration chain verified: 13 migrations form a single linear history, no forks."
+    },
+    {
+      "guide": "code-quality",
+      "status": "partial",
+      "notes": "(1) _CREDENTIAL_PATTERN_CACHE plain dict, no eviction. (2) _actor_identity() raises HTTPException in service helper. (3) AssessIn.llm_model: Optional[str] no validation. (4) ConfigUpdate dicts untyped. (5) PendingRow.gate_findings: List[Dict] — should be List[ReviewGateFinding]. (6) Double _open_run_row call in audit_service obscures row ownership."
+    },
+    {
+      "guide": "security",
+      "status": "fail",
+      "notes": "(1) llm_model no allowlist. (2) ConfigUpdate untyped dicts persisted to config store. (3) Credential scan timeout silently suppressed — no finding emitted. (4) MARKETPLACE_APPROVAL_GATE_ENABLED=False publish path writes no audit record — untracked bypass. (5) DB-unreachable path in marketplace_index_sync allows index write to proceed for an unpublished assistant."
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "severity": "critical",
+      "triage": "patch",
+      "sources": ["blind", "edge-case", "standards", "domain-3"],
+      "file": "src/codemie/rest_api/routers/marketplace_management.py",
+      "symbol": "AssessIn.llm_model",
+      "problem": "AssessIn.llm_model accepts an arbitrary admin-supplied string with no allowlist validation before being passed to the LLM chain via _resolve_model_name().",
+      "impact": "A compromised admin can route assessments to an attacker-controlled model endpoint or a model with weaker safety properties. No test covers the 422 path for invalid model IDs.",
+      "recommendation": "Constrain llm_model to a Literal or Enum of approved model IDs. Reject unknown values with a 422 before they reach _resolve_model_name(). Add test T-001 (test_assess_with_invalid_model_is_422)."
+    },
+    {
+      "id": "CR-002",
+      "severity": "critical",
+      "triage": "patch",
+      "sources": ["blind", "edge-case", "standards", "domain-3"],
+      "file": "src/codemie/rest_api/routers/marketplace_management.py",
+      "symbol": "ConfigUpdate / update_config",
+      "problem": "ConfigUpdate.gates, .similarity, and .usage_tiers are Optional[dict] — untyped. update_config merges them into config via from_dict(), which accepts integer thresholds of 0 or below (e.g. name_min=0, system_prompt_min=0), effectively disabling CRITICAL gates. No test covers adversarial unknown keys or zero-value thresholds.",
+      "impact": "An admin (or session-hijacking attacker) can zero out system_prompt_min and name_min. Assistants that should be blocked at publish time clear the deterministic gate and enter the marketplace without review.",
+      "recommendation": "Replace the three Optional[dict] fields with typed Pydantic models mirroring GatesConfig/SimilarityConfig/UsageTiersConfig already defined in models.py. Add Field(ge=1) on all integer thresholds that must be positive. Use model_config = ConfigDict(extra='forbid'). Add test T-002 (unknown key → 422, zero-value threshold → 422)."
+    },
+    {
+      "id": "CR-003",
+      "severity": "critical",
+      "triage": "patch",
+      "sources": ["blind", "edge-case", "acceptance", "standards", "domain-4"],
+      "file": "src/codemie/service/marketplace_management/validator/gates.py",
+      "symbol": "gate_no_inline_credentials",
+      "problem": "When a regex pattern times out during the credential scan, except TimeoutError: continue skips the pattern without emitting any finding or marking the result inconclusive. Existing test proves no hang but does not assert that a partial scan surfaces as uncertain.",
+      "impact": "An attacker who crafts a system_prompt that triggers catastrophic backtracking on specific credential patterns forces all patterns to time out, causing the gate to report zero credential findings — the assistant passes as clean.",
+      "recommendation": "On any TimeoutError, either (a) emit a CRITICAL finding of type 'scan_incomplete' requiring manual review, or (b) record the timed-out patterns in the assessment result so a human reviewer knows the scan was partial. Add test T-003 confirming partial scans do not produce a clean result."
+    },
+    {
+      "id": "CR-004",
+      "severity": "major",
+      "triage": "decision_needed",
+      "sources": ["edge-case", "domain-4"],
+      "file": "src/codemie/service/marketplace_management/queue_service.py",
+      "symbol": "decide / approve",
+      "problem": "If the CAS UPDATE commits (assistant → APPROVED) but the subsequent ES sync fails outside the transaction boundary, the assistant is APPROVED in DB but absent from the global index. Test test_a_failed_deindex_is_reported_rather_than_reported_as_success covers WITHDRAW+ES failure but the approve+ES failure path is not confirmed covered.",
+      "impact": "Live inconsistency between DB and ES — the approved assistant is invisible to users until the next sync cycle.",
+      "recommendation": "Confirm whether approve+ES-failure is also tested. Architectural decision: either drive ES sync via a transactional outbox/retry pattern, or emit an alert on any post-commit ES sync failure."
+    },
+    {
+      "id": "CR-005",
+      "severity": "major",
+      "triage": "decision_needed",
+      "sources": ["blind", "domain-4"],
+      "file": "src/codemie/service/marketplace_management/queue_service.py",
+      "symbol": "TRANSITIONS[FORCE_PUBLISH]",
+      "problem": "FORCE_PUBLISH lists DRAFT in allowed_from, allowing DRAFT → APPROVED in one CAS step, bypassing gate checks and LLM assessment. test_force_publish_not_blocked_by_critical_finding explicitly confirms gates are skipped by design — but no test covers FORCE_PUBLISH from DRAFT specifically with a credential-containing system_prompt.",
+      "impact": "If DRAFT inclusion is unintentional, credential-containing or low-quality assistants can be force-published without any review. If intentional, the design decision is not pinned in tests.",
+      "recommendation": "Confirm with product owner whether DRAFT is intentional. Add test T-004: FORCE_PUBLISH from DRAFT with inline credential — asserts either the credential gate fires or documents the bypass is intentional."
+    },
+    {
+      "id": "CR-006",
+      "severity": "major",
+      "triage": "decision_needed",
+      "sources": ["blind", "domain-4"],
+      "file": "src/codemie/service/marketplace_management/queue_service.py",
+      "symbol": "TRANSITIONS[RE_SUBMIT]",
+      "problem": "RE_SUBMIT atomically sets is_global=False and is_verified=False in the same CAS UPDATE that moves APPROVED → PENDING_REVIEW. Test confirms is_global=False after RE_SUBMIT — this is the current behavior, but the product intent (keep old version live during review vs. immediate de-list) is not documented.",
+      "impact": "If the intent is to keep the old version live during review, this causes an availability gap for all users of the approved assistant.",
+      "recommendation": "Confirm the intended UX with the product owner and add a comment in TRANSITIONS[RE_SUBMIT] documenting the deliberate de-list-on-submit semantics."
+    },
+    {
+      "id": "CR-007",
+      "severity": "major",
+      "triage": "patch",
+      "sources": ["blind", "standards"],
+      "file": "src/codemie/rest_api/routers/marketplace_management.py",
+      "symbol": "_actor_identity",
+      "problem": "_actor_identity() raises HTTPException(status_code=401) inside a service-level helper callable outside a FastAPI request context.",
+      "impact": "If called from a background audit worker or Celery task, the unhandled HTTPException crashes the worker process silently.",
+      "recommendation": "Raise a domain exception (e.g. MarketplaceAuthError) from this helper. Translate to HTTPException(401) only at the router boundary."
+    },
+    {
+      "id": "CR-008",
+      "severity": "major",
+      "triage": "patch",
+      "sources": ["blind", "standards"],
+      "file": "src/codemie/service/marketplace_management/validator/gates.py",
+      "symbol": "_CREDENTIAL_PATTERN_CACHE",
+      "problem": "Documented as 'bounded at 32 entries' but implemented as a plain dict with no eviction logic.",
+      "impact": "In a long-running process with per-tenant config variation, the cache grows without bound, causing memory exhaustion.",
+      "recommendation": "Replace with functools.lru_cache(maxsize=32) or an explicit LRU structure."
+    },
+    {
+      "id": "CR-009",
+      "severity": "major",
+      "triage": "patch",
+      "sources": ["edge-case", "domain-3", "domain-4"],
+      "file": "src/codemie/configs/marketplace_management.py",
+      "symbol": "MARKETPLACE_APPROVAL_GATE_ENABLED",
+      "problem": "MARKETPLACE_APPROVAL_GATE_ENABLED now defaults to true. Existing deployments that relied on the old default (false) will silently start routing all publishes to PENDING_REVIEW. No test pins the MARKETPLACE_APPROVAL_GATE_ENABLED=False path (publish → APPROVED directly).",
+      "impact": "Assistants that previously auto-approved sit in the review queue indefinitely if no moderation workflow is configured. Silent breaking change.",
+      "recommendation": "Document the default change in migration notes. Emit a startup WARNING when flag is true and no moderator accounts are configured. Add test T-005 pinning the gate-disabled publish path."
+    },
+    {
+      "id": "CR-010",
+      "severity": "major",
+      "triage": "patch",
+      "sources": ["edge-case"],
+      "file": "src/codemie/service/marketplace_management/queue_service.py",
+      "symbol": "_cas_conflict_error",
+      "problem": "When CAS UPDATE returns zero rows, a second SELECT reads current state to build ConflictError with no lock held between the two statements. A concurrent transition can change state between the failed CAS and the follow-up read.",
+      "impact": "If callers use the ConflictError payload's version/status to retry, they may retry against already-stale state.",
+      "recommendation": "Either use SELECT FOR UPDATE before the CAS, or return only 'conflict detected, please re-read' without embedding current state in the error payload."
+    },
+    {
+      "id": "CR-011",
+      "severity": "major",
+      "triage": "patch",
+      "sources": ["edge-case"],
+      "file": "src/codemie/rest_api/main.py",
+      "symbol": "app",
+      "problem": "marketplace_management router is conditionally mounted at startup; admin.py reindex route uses a runtime HTTPException 404 guard — two different mechanisms that diverge when flag changes between restarts.",
+      "impact": "After a flag change, some routes remain reachable while others block, creating an inconsistent security boundary.",
+      "recommendation": "Use a single consistent mechanism: all routes mounted with a runtime dependency guard (preferred), or all startup-gated with flag documented as requiring restart."
+    },
+    {
+      "id": "CR-012",
+      "severity": "major",
+      "triage": "patch",
+      "sources": ["domain-3"],
+      "file": "src/codemie/rest_api/routers/marketplace_management.py",
+      "symbol": "update_config",
+      "problem": "PUT /entities/{kind}/config writes only to AUDIT_CACHE._configs[kind] (in-process dict). It never persists to DynamicConfigService or the DB. On pod restart or cache eviction (_configs.pop(entity_kind)), _config_for re-reads get_marketplace_management_config() from DB and returns pre-PUT defaults.",
+      "impact": "An admin tightens gate thresholds via the Settings UI. The change takes effect for the running audit process but is silently lost on the next deploy. The Settings page shows the edited values until restart — admins cannot tell when changes expired.",
+      "recommendation": "Before writing to AUDIT_CACHE._configs, persist to DynamicConfigService using the build_key('marketplaceCoreGates') etc. keys that _read_*_overrides() already reads. Return 503 on write failure rather than silent 200."
+    },
+    {
+      "id": "CR-013",
+      "severity": "major",
+      "triage": "patch",
+      "sources": ["domain-3"],
+      "file": "src/codemie/rest_api/routers/assistant.py",
+      "symbol": "publish_to_marketplace",
+      "problem": "When MARKETPLACE_APPROVAL_GATE_ENABLED=False, the self-approve path executes for any user with write access to an assistant — not just admins. No MarketplaceReviewDecision row is written, so there is no audit trail that the assistant bypassed moderation.",
+      "impact": "The feature's entire purpose is auditable moderation. With the flag off, any authenticated user can bypass review with no record that it happened. This is exactly the privilege hole the feature exists to close.",
+      "recommendation": "Even when gate_armed=False, write a MarketplaceReviewDecision row with decision=FORCE_PUBLISH and override_notice='gate disabled by MARKETPLACE_APPROVAL_GATE_ENABLED=False' and log the actor. Alternatively, require a separate ops-only guard before the self-approve path runs."
+    },
+    {
+      "id": "CR-014",
+      "severity": "major",
+      "triage": "patch",
+      "sources": ["domain-3"],
+      "file": "src/codemie/service/marketplace_management/models.py",
+      "symbol": "PendingRow.gate_findings",
+      "problem": "PendingRow.gate_findings is declared as List[Dict[str, Any]] rather than List[ReviewGateFinding] (which is already defined in the same file). If Finding.to_dict() key names ever diverge from what the UI expects, the pending queue returns 200 with malformed rows.",
+      "impact": "A serialisation mismatch that drops all findings would make every assistant in the pending queue appear clean (gate_recompute_failed=False + gate_findings=[]), leading to approvals that bypass gate intent.",
+      "recommendation": "Replace List[Dict[str, Any]] with List[ReviewGateFinding]. Add a contract test that round-trips Finding → to_dict() → ReviewGateFinding without loss."
+    },
+    {
+      "id": "CR-015",
+      "severity": "major",
+      "triage": "patch",
+      "sources": ["domain-1"],
+      "file": "src/codemie/service/marketplace_management/audit_service.py",
+      "symbol": "AuditCache.run_audit / AuditCache._claim_run",
+      "problem": "The heartbeat is written once during _claim_run then not updated until _persist starts — after the entire Engine.audit() + ES similarity augmentation phase. For large corpora or a cold embedding backend, this window can exceed 10 minutes. reap_stale_audit_runs uses AUDIT_HEARTBEAT_TIMEOUT=10min and will promote the still-alive run to FAILED.",
+      "impact": "Reaper promotes the run to FAILED, releases the uq_mm_audit_run_active partial-unique-index claim, and a concurrent start_audit call wins the claim, starting a second full audit while the first is still running. Both races call _write_chunk and _close_run_row on the same run_id.",
+      "recommendation": "Emit a heartbeat bump at regular intervals during Engine.audit() and the knn_batch loop via a progress callback. Or increase AUDIT_HEARTBEAT_TIMEOUT to well above the measured worst-case wall-clock time (e.g. 30-60 min) with a documented comment."
+    },
+    {
+      "id": "CR-016",
+      "severity": "major",
+      "triage": "patch",
+      "sources": ["domain-1"],
+      "file": "src/external/alembic/versions/n1a2u3d4i5t6_marketplace_audit_model_v2.py",
+      "symbol": "upgrade (ix_mm_audit_run_kind_latest_ok)",
+      "problem": "Partial index predicate is WHERE status = 'SUCCEEDED' AND schema_version >= 2, but audit_read_repository.latest_succeeded_run_id queries WHERE status IN ('SUCCEEDED', 'PARTIAL'). PostgreSQL cannot use this index for PARTIAL runs.",
+      "impact": "In degraded-similarity environments where the newest run is PARTIAL, dashboard queries must fall back to the full-table index. Monitoring queries keyed to the partial index report 'no audit' even when a fresh PARTIAL run exists.",
+      "recommendation": "Redefine the index predicate to WHERE status IN ('SUCCEEDED', 'PARTIAL') AND schema_version >= 2. Add a follow-up migration that drops and recreates it CONCURRENTLY. Rename to ix_mm_audit_run_kind_latest_serveable."
+    },
+    {
+      "id": "CR-017",
+      "severity": "major",
+      "triage": "patch",
+      "sources": ["domain-2"],
+      "file": "src/codemie/service/marketplace_management/marketplace_index_sync.py",
+      "symbol": "_committed_state / _sync",
+      "problem": "When Postgres is unreachable, _committed_state yields None and _sync falls back to applying the requested action unchanged. The fallback correctly skips removal (unknown truth should not remove), but does NOT skip index writes — an 'index' task racing a withdrawal under DB instability can still write to ES.",
+      "impact": "A transient DB connection failure during a background index task allows an unpublished (withdrawn) assistant to be (re-)indexed in the marketplace, creating a ghost listing.",
+      "recommendation": "When DB cannot be consulted (published is None), treat an 'index' request identically to the removal case: skip the ES write entirely and emit WARNING. Only 'remove' requests are safe to skip in the degraded path; 'index' requests require DB ground truth."
+    },
+    {
+      "id": "CR-018",
+      "severity": "major",
+      "triage": "patch",
+      "sources": ["domain-2"],
+      "file": "src/codemie/service/marketplace_management/marketplace_index_sync.py",
+      "symbol": "_run_with_retry",
+      "problem": "_run_with_retry is documented 'Never raises' and always returns an IndexingOutcome. If any call site discards the return value (e.g. a BackgroundTask scheduling index_assistant()), ES failures are swallowed — reproducing the original F-87 defect the module was written to fix.",
+      "impact": "Approvals and withdrawals return HTTP 200 with no indication that the marketplace listing was not updated. Divergence accumulates silently.",
+      "recommendation": "Audit all call sites of index_assistant() and remove_assistant() to confirm IndexingOutcome.ok is always checked and surfaced. Consider a lint rule that disallows discarding the return value."
+    },
+    {
+      "id": "CR-019",
+      "severity": "major",
+      "triage": "patch",
+      "sources": ["domain-2"],
+      "file": "src/codemie/service/marketplace_management/es_similarity.py",
+      "symbol": "MarketplaceAssistantsIndex._similarity_degraded",
+      "problem": "_similarity_degraded and _last_error are class-level (shared across all instances). reset_similarity_circuit() is called at the start of each audit run. If two audit runs overlap, the reset clears the breaker while the first run's abandoned thread is still blocking in an embeddings socket call, spawning new threads into the broken endpoint.",
+      "impact": "Under repeated audit invocations against an unavailable embeddings endpoint, abandoned OS threads accumulate. Similarity health reads from one audit's perspective are not isolated from another audit's mutations.",
+      "recommendation": "Convert _similarity_degraded and _last_error to instance variables (or per-run-ID state) so each audit run has its own circuit breaker. If the class is intentionally a singleton, enforce serialization at the AuditCache level with an assertion."
+    },
+    {
+      "id": "CR-020",
+      "severity": "major",
+      "triage": "patch",
+      "sources": ["domain-router"],
+      "file": "src/codemie/rest_api/routers/marketplace_management.py",
+      "symbol": "bulk_unpublish",
+      "problem": "bulk_unpublish endpoint has no @limiter.limit decorator. It iterates over all assistants with status IN (APPROVED, PENDING_REVIEW) and runs a CAS UPDATE for each one — up to hundreds of writes per call. AUDIT_RUN_RATE_LIMIT and ASSESS_RATE_LIMIT are defined for other endpoints, but bulk_unpublish is completely unguarded.",
+      "impact": "Any admin can trigger a denial-of-service on the DB by rapidly calling bulk_unpublish in a loop, or accidentally drain the entire marketplace by running it repeatedly.",
+      "recommendation": "Add @limiter.limit('1/minute') or equivalent. Consider requiring an explicit confirmation token in the request body to prevent accidental bulk calls."
+    },
+    {
+      "id": "CR-021",
+      "severity": "major",
+      "triage": "patch",
+      "sources": ["domain-router"],
+      "file": "src/codemie/rest_api/routers/marketplace_management.py",
+      "symbol": "get_cleanup",
+      "problem": "get_cleanup accepts q, mcp, and category as Query() parameters with no max_length constraint. These strings are passed to ES queries without any length or content validation.",
+      "impact": "A very long q value generates an oversized ES query that can slow or crash the ES cluster. mcp and category with no validation allow injecting ES-specific syntax into queries.",
+      "recommendation": "Add max_length constraints: Query(max_length=200) for q, Query(max_length=100) for mcp and category. Add input sanitization before ES forwarding."
+    },
+    {
+      "id": "CR-022",
+      "severity": "major",
+      "triage": "patch",
+      "sources": ["domain-llm-queue"],
+      "file": "src/codemie/service/marketplace_management/queue_service.py",
+      "symbol": "decide / _emit_metric",
+      "problem": "track_marketplace_metric() is called after the CAS transaction commits, with no try/except guard. If the metrics backend is unavailable, the function raises and the HTTP response is a 500 — even though the moderation decision was successfully committed to the DB.",
+      "impact": "A metrics backend outage causes every approve/reject/withdraw call to return 500 to the caller. The DB state is correct but the caller sees an error and may retry, potentially hitting a 409 on the idempotent retry or confusing operators.",
+      "recommendation": "Wrap the track_marketplace_metric() call in try/except Exception and log a warning on failure. Metrics emission must never fail a committed business operation."
+    },
+    {
+      "id": "CR-023",
+      "severity": "major",
+      "triage": "patch",
+      "sources": ["domain-llm-queue"],
+      "file": "src/codemie/service/marketplace_management/queue_service.py",
+      "symbol": "_side_effects",
+      "problem": "_side_effects() (ES index/deindex sync) is called after the CAS commit with no exception boundary. If the ES client raises (connection refused, timeout, etc.), the exception propagates up and the endpoint returns 500 — even though the moderation decision was already committed.",
+      "impact": "ES unavailability turns every successful approve/reject into an HTTP 500 from the caller's perspective. This was the original F-87 defect pattern. The bare except Exception guard was deliberately removed, but no replacement boundary was added.",
+      "recommendation": "Wrap the _side_effects() call in try/except Exception. Log a WARNING with the assistant_id and outcome on failure. Return the committed decision payload with a status hint (e.g. 'es_sync_failed': true) rather than 500. Alternatively, push ES sync to a background task."
+    },
+    {
+      "id": "CR-024",
+      "severity": "major",
+      "triage": "patch",
+      "sources": ["domain-llm-queue"],
+      "file": "src/codemie/service/marketplace_management/llm_assessment_service.py",
+      "symbol": "_parse_llm_response / AssessmentCache",
+      "problem": "LLM-returned score fields (name_score, description_score, etc.) are stored in AssessmentCache without range validation. The deterministic fallback clips scores with max(0, ...) but the LLM path has no equivalent clamp. A hallucinated score of 150 would yield bucket=VERIFIED.",
+      "impact": "A misconfigured or hallucinating LLM can return out-of-range scores (0-100 expected) that produce incorrect bucket assignments (VERIFIED, NEEDS_REVIEW, NOT_SUITABLE). An assistant with a score of 150 passes as VERIFIED even if the real score is borderline.",
+      "recommendation": "After parsing the LLM response, clamp all score fields: score = max(0, min(100, raw_score)). Add a unit test with a score of 150 confirming it clamps to 100 before bucketing."
+    },
+    {
+      "id": "CR-025",
+      "severity": "major",
+      "triage": "patch",
+      "sources": ["domain-remaining"],
+      "file": "src/codemie/service/assistant_generator_service.py",
+      "symbol": "generate_refine_prompt",
+      "problem": "generate_refine_prompt accepts an _include_tools parameter but the implementation hardcodes chain.add_toolkits(user, True, ...) regardless of the parameter value. Callers passing include_tools=False silently get tools included.",
+      "impact": "Any caller that depends on tool exclusion for prompt refinement receives incorrect output. The parameter is a silent no-op, which is a broken API contract.",
+      "recommendation": "Replace the hardcoded True with _include_tools in the chain.add_toolkits() call. Add a test asserting that include_tools=False produces a prompt without toolkit content."
+    },
+    {
+      "id": "CR-026",
+      "severity": "major",
+      "triage": "patch",
+      "sources": ["domain-remaining"],
+      "file": "tests/codemie/rest_api/routers/test_bulk_unpublish.py",
+      "symbol": "module-level fixture overrides",
+      "problem": "The test module overrides both authenticate and admin_access_only at the module level, so every test in the file runs as an authenticated admin. No test exercises the non-admin rejection path (HTTP 403 from admin_access_only).",
+      "impact": "If admin_access_only is accidentally removed or misconfigured on bulk_unpublish, no test catches the regression. The admin-only enforcement is unpinned.",
+      "recommendation": "Add a test that makes the request WITHOUT the admin_access_only override and asserts HTTP 403. Alternatively, use the real authenticate dependency and a non-admin user fixture."
+    }
+  ]
+}

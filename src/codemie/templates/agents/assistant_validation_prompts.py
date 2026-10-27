@@ -19,17 +19,20 @@ This module contains all prompt templates used in the LangGraph-based validation
 workflow for marketplace assistant publication.
 """
 
+import re
+from typing import NamedTuple
+
 from langchain_core.prompts import PromptTemplate
 
 # =============================================================================
 # METADATA VALIDATION PROMPTS (Name, Description, Categories)
 # =============================================================================
 
-METADATA_VALIDATION_TEMPLATE = PromptTemplate.from_template(
+_METADATA_VALIDATION_BASE = PromptTemplate.from_template(
     """## Task
 Evaluate the assistant's Name and Description for quality, clarity, and marketplace readiness.
 
-## Context
+@@STRUCTURAL_NOTE@@## Context
 You are validating an AI assistant for publication in a marketplace. The metadata must be clear, professional, accurate, and help users understand what the assistant does.
 
 ## Input
@@ -41,13 +44,11 @@ You are validating an AI assistant for publication in a marketplace. The metadat
 
 ### 1. Name Validation
 - **Clarity**: Is the name clear and descriptive?
-- **Length**: Appropriate length (not too short, not too long - typically 2-5 words)?
 - **Abbreviations**: Technical abbreviations and acronyms are ACCEPTABLE and ENCOURAGED (e.g., "AWS", "K8s", "CI/CD", "ML", "API", "SDK"). Do NOT flag abbreviations as unclear for technical assistants.
 - **Product Names**: Names that reference the product (e.g., "CodeMie Onboarding Assistant", "AI/Run FAQ") are ACCEPTABLE when the assistant is specifically designed for that product.
 - **FAQ/Help Assistants**: Names like "FAQ", "Help", "Onboarding" are ACCEPTABLE and CLEAR when combined with context (e.g., "CodeMie FAQ", "Platform Onboarding").
 - **Professionalism**: Professional and marketplace-appropriate?
-- **Uniqueness**: Distinctive and not generic, EXCEPT when the assistant's purpose is intentionally generic (e.g., FAQ assistants, onboarding guides, help desks).
-- **Alignment**: Does it match the description and system prompt?
+@@META_NAME_STRUCTURE@@- **Alignment**: Does it match the description and system prompt?
 
 ### 2. Description Validation
 - **Technical Descriptions**: Technical terminology, jargon, and detailed technical descriptions are ACCEPTABLE and ENCOURAGED for technical assistants (e.g., engineering, DevOps, cloud, data science assistants). Do NOT flag technical language as unclear.
@@ -58,21 +59,19 @@ You are validating an AI assistant for publication in a marketplace. The metadat
 - **Alignment**: Does it match the name and system prompt?
 
 ## Severity Guidelines
-Determine the severity level for each invalid field. Use OPTIONAL for most common issues - reserve CRITICAL only for severe problems.
+Assign a severity to every invalid field. Judge the effect on a marketplace shopper, not the size of the edit.
 
-- **OPTIONAL**: Suggestions that improve quality but assistant is publishable
-  - Examples: Name could be more specific or descriptive (not generic, but could be clearer)
-  - Examples: Description lacks detail or context (understandable but could be enhanced)
-  - Examples: Minor alignment issues between name and description
-  - Examples: Could add more context or clarify terminology
-  - Examples: Wording improvements, style suggestions, formatting issues
-  - **Rule**: When in doubt between OPTIONAL and CRITICAL, choose OPTIONAL
+- **CRITICAL**: A marketplace shopper would be actively misled about what this assistant does
+@@META_CRITICAL_STRUCTURAL@@  - Examples: the description advertises AWS help but the assistant is Azure-focused
+  - Examples: the name says "Bug Fixer" while the described purpose is content writing
+  - Examples: the description contradicts the purpose stated in the system prompt
 
-- **CRITICAL**: Issues that make the assistant unusable or unpublishable
-  - Examples: Completely missing description
-  - Examples: Name is just "Bot", "Helper", or single generic word with no context
-  - Examples: Description is one word like "Helps" with no explanation
-  - Examples: Severe misalignment making assistant purpose completely unclear
+- **OPTIONAL**: The shopper can understand the purpose, but wording, tone, professionalism, or alignment could be improved
+  - Examples: description accurate but tone unprofessional
+  - Examples: name accurate but jargon-heavy
+  - Examples: minor mismatches between name and description that do not change the perceived purpose
+
+If you cannot determine what the assistant does from the metadata, that is CRITICAL, not OPTIONAL.
 
 ## Output Format
 {{
@@ -93,7 +92,7 @@ Determine the severity level for each invalid field. Use OPTIONAL for most commo
     }}
   ],
   "is_valid": true/false, // true only if ALL fields are valid
-  "overall_reasoning": "Brief summary of overall metadata quality"
+  "overall_reasoning": "Overall metadata quality. At most 2 sentences, 300 characters."
 }}
 
 ## Examples
@@ -124,89 +123,7 @@ Determine the severity level for each invalid field. Use OPTIONAL for most commo
   "overall_reasoning": "All metadata fields are clear, professional, and well-aligned with each other."
 }}
 
-### Example 2: Invalid Name and Description
-**Input**:
-- Name: "Bot"
-- Description: "Helps"
-- Categories: ["productivity"]
-
-**Output**:
-{{
-  "fields": [
-    {{
-      "field_name": "name",
-      "is_valid": false,
-      "issues": ["Too generic - 'Bot' doesn't describe what the assistant does", "Too short - not descriptive enough"],
-      "recommendation": "Task Assistant Bot",
-      "severity": "critical"
-    }},
-    {{
-      "field_name": "description",
-      "is_valid": false,
-      "issues": ["Extremely vague - doesn't explain what kind of help", "No value proposition or specific capabilities mentioned"],
-      "recommendation": "A versatile assistant that helps you manage tasks, organize information, and boost productivity with smart suggestions and reminders.",
-      "severity": "critical"
-    }}
-  ],
-  "is_valid": false,
-  "overall_reasoning": "Name and description are too vague and don't provide users with enough information about the assistant's capabilities."
-}}
-
-### Example 2b: Invalid Name and Description
-**Input**:
-- Name: "Helper Bot"
-- Description: "Helps users with tasks and answers questions."
-- Categories: ["productivity"]
-
-**Output**:
-{{
-  "fields": [
-    {{
-      "field_name": "name",
-      "is_valid": false,
-      "issues": ["Name could be more specific about what type of helper - lacks domain context"],
-      "recommendation": "Productivity Task Helper",
-      "severity": "optional"
-    }},
-    {{
-      "field_name": "description",
-      "is_valid": false,
-      "issues": ["Description is generic - could specify what tasks and types of questions"],
-      "recommendation": "Assists with productivity tasks like scheduling, reminders, and note-taking, and answers general knowledge questions to boost your efficiency.",
-      "severity": "optional"
-    }}
-  ],
-  "is_valid": false,
-  "overall_reasoning": "Name and description are understandable but could be more specific to help users understand the assistant's exact capabilities."
-}}
-
-### Example 3: Invalid Categories
-**Input**:
-- Name: "Research Assistant"
-- Description: "Helps with competitor analysis, SWOT analysis, and persona creation for businesses."
-- Categories: ["engineering", "invalid-category"]
-
-**Output**:
-{{
-  "fields": [
-    {{
-      "field_name": "name",
-      "is_valid": true,
-      "issues": [],
-      "recommendation": null
-    }},
-    {{
-      "field_name": "description",
-      "is_valid": true,
-      "issues": [],
-      "recommendation": null
-    }}
-  ],
-  "is_valid": false,
-  "overall_reasoning": "Name and description are good, but categories don't accurately reflect the business/marketing focus of the assistant."
-}}
-
-### Example 4: Valid Name with Abbreviations (Abbreviations are ACCEPTABLE)
+@@META_STRUCTURAL_EXAMPLE@@### Example 2: Valid Name with Abbreviations (Abbreviations are ACCEPTABLE)
 **Input**:
 - Name: "AWS CI/CD Pipeline Specialist"
 - Description: "Automates CI/CD pipelines on AWS using CodePipeline, CodeBuild, and CodeDeploy. Manages containerized deployments to ECS and EKS clusters."
@@ -229,10 +146,10 @@ Determine the severity level for each invalid field. Use OPTIONAL for most commo
     }}
   ],
   "is_valid": true,
-  "overall_reasoning": "Name with abbreviations (AWS, CI/CD) is VALID and APPROPRIATE for technical assistants. Technical abbreviations are expected and widely understood by the target audience. Description with acronyms (ECS, EKS) is also appropriate. Do NOT flag abbreviations or technical terminology as unclear."
+  "overall_reasoning": "Name with abbreviations (AWS, CI/CD) is VALID and APPROPRIATE for technical assistants. Technical abbreviations are expected and widely understood by the target audience."
 }}
 
-### Example 5: Valid Technical Description (Technical Language is ACCEPTABLE)
+### Example 3: Valid Technical Description (Technical Language is ACCEPTABLE)
 **Input**:
 - Name: "K8s DevOps Engineer"
 - Description: "Manages Kubernetes clusters, deploys containerized workloads using Helm charts, configures ingress controllers, and implements GitOps workflows with ArgoCD. Monitors cluster health with Prometheus and Grafana."
@@ -255,10 +172,10 @@ Determine the severity level for each invalid field. Use OPTIONAL for most commo
     }}
   ],
   "is_valid": true,
-  "overall_reasoning": "Name uses common abbreviation (K8s for Kubernetes) which is VALID and widely recognized in technical communities. Technical description is APPROPRIATE for a DevOps/engineering assistant. Technical terminology (Kubernetes, Helm, ArgoCD, Prometheus, Grafana, GitOps, ingress controllers) is expected and helpful for the target technical audience. Do NOT flag abbreviations or technical language as unclear."
+  "overall_reasoning": "Name uses common abbreviation (K8s for Kubernetes) which is VALID and widely recognized in technical communities. Technical description is APPROPRIATE for a DevOps/engineering assistant."
 }}
 
-### Example 6: Valid Description with Multiple Unexplained Abbreviations (MUST PASS)
+### Example 4: Valid Description with Multiple Unexplained Abbreviations (MUST PASS)
 **Input**:
 - Name: "BriAnnA"
 - Description: "Business Analyst Assistant - expert to work with Jira. Used for creating/getting/managing Jira tickets in EPM-CDME project (Epics, Stories, Tasks, and Bugs). Main role is to analyze requirements from the request, clarify additional questions if necessary, generate requirements with the description structure defined in the prompt and additional details from the request, and create tickets in EPM-CDME project Jira. The Assistant uses Generic Jira tool for Jira tickets creation."
@@ -281,10 +198,10 @@ Determine the severity level for each invalid field. Use OPTIONAL for most commo
     }}
   ],
   "is_valid": true,
-  "overall_reasoning": "Description is VALID and comprehensive. Contains multiple abbreviations (Jira, EPM-CDME, Epics, Stories, Tasks, Bugs) without explanation - this is ACCEPTABLE. Technical terminology and project-specific names do NOT need to be spelled out. The description clearly explains the assistant's purpose, capabilities, and workflow. Do NOT flag unexplained abbreviations or project names as issues."
+  "overall_reasoning": "Description is VALID and comprehensive. Contains multiple abbreviations (Jira, EPM-CDME, Epics, Stories, Tasks, Bugs) without explanation - this is ACCEPTABLE."
 }}
 
-### Example 7: Misalignment Between Fields
+### Example 5: Misalignment Between Fields
 **Input**:
 - Name: "Email Assistant"
 - Description: "Analyzes code repositories and provides architectural insights."
@@ -297,20 +214,22 @@ Determine the severity level for each invalid field. Use OPTIONAL for most commo
       "field_name": "name",
       "is_valid": false,
       "issues": ["Name suggests email functionality but description is about code analysis - misalignment"],
-      "recommendation": "Code Architecture Analyzer"
+      "recommendation": "Code Architecture Analyzer",
+      "severity": "critical"
     }},
     {{
       "field_name": "description",
       "is_valid": false,
       "issues": ["Description doesn't match name (email vs code)", "Misalignment with stated category (communication vs engineering)"],
-      "recommendation": "Helps you analyze code repositories, identify architectural patterns, and provide insights for better software design and structure."
+      "recommendation": "Helps you analyze code repositories, identify architectural patterns, and provide insights for better software design and structure.",
+      "severity": "critical"
     }}
   ],
   "is_valid": false,
   "overall_reasoning": "Severe misalignment between name, description, and categories. The assistant's actual purpose is unclear to users."
 }}
 
-### Example 8: Valid Onboarding/FAQ Assistant with Product Name (MUST PASS)
+### Example 6: Valid Onboarding/FAQ Assistant with Product Name (MUST PASS)
 **Input**:
 - Name: "AI/Run FAQ"
 - Description: "This is a smart CodeMie assistant which can help you with the onboarding process. CodeMie can answer all your questions about capabilities, usage, and more."
@@ -333,10 +252,10 @@ Determine the severity level for each invalid field. Use OPTIONAL for most commo
     }}
   ],
   "is_valid": true,
-  "overall_reasoning": "Name and description are VALID for an onboarding/FAQ assistant. Product references (CodeMie, AI/Run) provide necessary context. Description clearly states the assistant helps with onboarding and answers questions about capabilities and usage - this is specific and appropriate for an FAQ assistant. Do NOT flag as vague when the purpose is clearly stated as helping with onboarding/FAQ for a specific product."
+  "overall_reasoning": "Name and description are VALID for an onboarding/FAQ assistant. Product references (CodeMie, AI/Run) provide necessary context."
 }}
 
-### Example 9: Valid Onboarding Assistant (MUST PASS)
+### Example 7: Valid Onboarding Assistant (MUST PASS)
 **Input**:
 - Name: "CodeMie Onboarding Guide"
 - Description: "Guides new users through CodeMie platform setup, explains key features, and answers common questions about getting started."
@@ -359,7 +278,34 @@ Determine the severity level for each invalid field. Use OPTIONAL for most commo
     }}
   ],
   "is_valid": true,
-  "overall_reasoning": "Excellent metadata for an onboarding assistant. Name includes product context (CodeMie) which is helpful. Description clearly explains the onboarding role, mentioning setup, features, and common questions - this is appropriately specific for a help/onboarding assistant."
+  "overall_reasoning": "Excellent metadata for an onboarding assistant. Name includes product context (CodeMie) which is helpful."
+}}
+
+### Example 8: Accurate Description, Unprofessional Tone (OPTIONAL, not CRITICAL)
+**Input**:
+- Name: "Terraform Plan Reviewer"
+- Description: "yo this thing reads ur terraform plans n yells at u b4 u wreck prod"
+- System Prompt: "You review Terraform plans and flag destructive changes before apply."
+
+**Output**:
+{{
+  "fields": [
+    {{
+      "field_name": "name",
+      "is_valid": true,
+      "issues": [],
+      "recommendation": null
+    }},
+    {{
+      "field_name": "description",
+      "is_valid": false,
+      "issues": ["Tone is not marketplace-appropriate"],
+      "recommendation": "Reviews Terraform plans and flags destructive changes before they are applied, so risky infrastructure edits are caught in review.",
+      "severity": "optional"
+    }}
+  ],
+  "is_valid": false,
+  "overall_reasoning": "The purpose is clear and matches the system prompt, so a shopper is not misled. The tone problem is OPTIONAL, not CRITICAL."
 }}
 
 ---
@@ -371,11 +317,11 @@ Analyze the input metadata above and provide your assessment. Ensure all fields 
 # SYSTEM PROMPT VALIDATION PROMPTS
 # =============================================================================
 
-SYSTEM_PROMPT_VALIDATION_TEMPLATE = PromptTemplate.from_template(
+_SYSTEM_PROMPT_VALIDATION_BASE = PromptTemplate.from_template(
     """## Task
 Evaluate the system prompt for quality, structure, and marketplace readiness.
 
-## Context
+@@STRUCTURAL_NOTE@@## Context
 You are validating an AI assistant for publication in a marketplace. The assistant must be well-defined, professional, and useful to end users.
 
 ## Input
@@ -413,32 +359,30 @@ Assess the system prompt quality based on:
   * `{{context_name}}` - context name
   * `{{any_custom_variable}}` - any custom variable
 
-### 2. Keyword Duplication
-- **Keyword duplication and repetition in system prompts is ACCEPTABLE and VALID**
-- Repeating important keywords, concepts, or instructions for emphasis is a common and effective prompting technique
-- Do NOT flag repeated keywords, phrases, or concepts as redundant or issues
+### 2. Repetition
+- **Intentional emphasis via focused repetition is ACCEPTABLE** - repeating a tool name, a constraint or a key concept for emphasis is a normal prompting technique and must NOT be flagged
 - Examples of ACCEPTABLE repetition:
-  * Repeating tool names multiple times for clarity
+  * Repeating tool names for clarity
   * Repeating important constraints or rules
-  * Repeating key concepts for emphasis
   * Using similar phrasing in different sections for consistency
+- **Excessive repetition MAY indicate a prompt-engineering issue and should be flagged as OPTIONAL**:
+  * The same instruction appearing 5 or more times
+  * Long copy-pasted blocks repeated verbatim
 
 ## Severity Guidelines
-Determine the severity level for system prompt issues. Use OPTIONAL for most issues - reserve CRITICAL only for severe problems.
+Assign a severity based on whether the assistant's behavior is still defined.
 
-- **OPTIONAL**: Suggestions that improve quality but prompt is functional
-  - Examples: Prompt could be more detailed or structured (basic functionality is clear)
-  - Examples: Could add more examples, constraints, or guidelines
-  - Examples: Missing some sections but core role is defined
-  - Examples: Could clarify behavior or add more actionable instructions
-  - Examples: Minor structural improvements, formatting, or style suggestions
-  - **Rule**: When in doubt between OPTIONAL and CRITICAL, choose OPTIONAL
+- **CRITICAL**: The assistant's behavior is undefined, contradicted, or unsafe
+@@SYSTEM_CRITICAL_STRUCTURAL@@  - Examples: the prompt contradicts the stated purpose - name and description say one thing, the prompt does another
+  - Examples: the prompt contains harmful, inappropriate, or clearly unsafe content
+  - Examples: the prompt is so vague (e.g., "You help users") that the assistant's behavior is effectively undefined
 
-- **CRITICAL**: Issues that make the assistant unusable or dangerous
-  - Examples: System prompt is completely missing or empty
-  - Examples: Prompt is extremely vague (e.g., "You help users") with no other context
-  - Examples: Prompt contradicts the assistant's stated purpose entirely
-  - Examples: Prompt contains harmful, inappropriate, or unprofessional instructions
+- **OPTIONAL**: The prompt works, but could be better
+  - Examples: structure, clarity, examples, or output-format guidance could be improved
+  - Examples: excessive repetition of the same instruction
+  - Examples: minor formatting or style suggestions
+
+A prompt you cannot map to the stated purpose is CRITICAL, not OPTIONAL.
 
 ## Output Format
 {{
@@ -491,7 +435,7 @@ Determine the severity level for system prompt issues. Use OPTIONAL for most iss
   "recommendation": null
 }}
 
-**Reasoning**: Repeating "AWS" multiple times for emphasis and clarity is VALID prompting technique. Do NOT flag keyword repetition as redundant.
+**Reasoning**: Repeating "AWS" for emphasis and clarity is a VALID prompting technique. Focused repetition is not an issue; only excessive repetition (the same instruction 5+ times, or copy-pasted blocks) is worth flagging, and then only as OPTIONAL.
 
 ### Example 4: Invalid Prompt (Too Vague)
 **Input**:
@@ -516,7 +460,7 @@ Analyze the input above and provide your assessment.
 # TOOLS VALIDATION PROMPTS (RAG-BASED)
 # =============================================================================
 
-TOOLS_DECISION_TEMPLATE = PromptTemplate.from_template(
+_TOOLS_DECISION_BASE = PromptTemplate.from_template(
     """## Clarification Analysis (CRITICAL - Read This First!)
 
 {clarification_summary}
@@ -537,7 +481,7 @@ TOOLS_DECISION_TEMPLATE = PromptTemplate.from_template(
 ## Task
 Make FINAL decision on which tools to include/exclude for this assistant based on EXPLICIT capabilities mentioned in metadata AND clarification analysis above.
 
-## Context
+@@STRUCTURAL_NOTE@@## Context
 You are making the FINAL decision on tool selection. RAG provided candidate tools, but YOU decide which ones are actually relevant based on:
 1. The clarification analysis above (PRIMARY - use high-confidence decisions)
 2. The assistant's EXPLICITLY stated capabilities in metadata
@@ -624,10 +568,22 @@ Analyze ALL assistant metadata fields and identify ONLY capabilities that are **
 - If missing, add them to `tools_to_include` and set `should_retry=false` (you found them)
 - Only set `should_retry=true` if you can't find essential tools in available tools list
 
+## Severity Guidelines
+Rate how badly the current toolset fits the stated purpose.
+
+- **CRITICAL**: The configured toolset makes the stated purpose impossible
+  - Examples: an assistant described as "Jira ticket triage" with no Jira toolkit configured
+  - Examples: an assistant that promises database queries with no SQL or database tool available
+
+- **OPTIONAL**: Suggested additions or removals would improve fit, but the assistant can still perform its stated purpose with the current toolset
+
+If the assistant cannot do the thing it advertises with the tools it has, that is CRITICAL.
+
 ## Output Format
 {{
   "tools_to_include": ["tool1", "tool2"],  // Final approved list
   "tools_to_exclude": ["tool3", "tool4"],  // Rejected from RAG candidates
+  "severity": "critical" or "optional",  // REQUIRED - see Severity Guidelines above
   "reasoning": "Analyzed metadata: [capabilities found]. Including [tools] for [reasons]. Excluding [tools] because [not mentioned]. **If you need excluded tools, explicitly describe their use cases in the system prompt.**"
 }}
 
@@ -665,7 +621,7 @@ Analyze the assistant metadata carefully. Only include tools for EXPLICITLY ment
 # CONTEXT VALIDATION PROMPTS
 # =============================================================================
 
-CONTEXT_VALIDATION_TEMPLATE = PromptTemplate.from_template(
+_CONTEXT_VALIDATION_BASE = PromptTemplate.from_template(
     """## Clarification Analysis (CRITICAL - Use This First!)
 
 {clarification_kb_summary}
@@ -684,7 +640,7 @@ CONTEXT_VALIDATION_TEMPLATE = PromptTemplate.from_template(
 ---
 
 ## Task
-Validate the assistant's context (datasources/knowledge bases) configuration based on:
+@@STRUCTURAL_NOTE@@Validate the assistant's context (datasources/knowledge bases) configuration based on:
 1. **PRIMARY**: Clarification analysis above (if available with high/medium confidence)
    - High confidence clarifications = Evidence-based, MUST follow strictly
    - Medium confidence = Strong indicator, use unless contradicted
@@ -765,8 +721,7 @@ Analyze the system prompt for explicit context needs:
 
 **General Rule**:
 - Context is OPTIONAL unless system prompt EXPLICITLY mentions needing specific datasources
-- When in doubt, mark as valid (don't be overly strict)
-- Focus on what the system prompt SAYS, not what tools might theoretically benefit from
+@@CTX_GENERAL_RULE@@- Focus on what the system prompt SAYS, not what tools might theoretically benefit from
 
 ### 4. Missing Context Detection
 **CRITICAL**: Only recommend context from the "Available Context for User" list. NEVER suggest context names that don't exist.
@@ -780,10 +735,10 @@ Analyze the system prompt for explicit context needs:
 ### 5. Unnecessary Context Detection (CRITICAL - Check Description Quality First)
 **IMPORTANT**: Before marking context as "unnecessary", evaluate the datasource description quality:
 
-- **If description is EXTREMELY UNCLEAR/VAGUE** (completely meaningless or identical to the name):
+- **If the datasource description is EXTREMELY UNCLEAR/VAGUE** (completely meaningless, or a bare restatement of the datasource's own title):
   - **Extremely Vague Examples** (mark for update):
-    * Description exactly same as name"
-    * Single word"
+    * Description merely repeats the datasource's own title
+    * Single word
     * Placeholder text: "description x", "TODO", "temp"
   - **BE LENIENT**: If description provides ANY hint about what it is, accept it
 
@@ -791,34 +746,15 @@ Analyze the system prompt for explicit context needs:
   - Examples of clear: "AWS migration best practices documentation", "Customer support knowledge base", "Python codebase"
   - Check if it aligns with assistant's stated purpose
 
-**Key Rule**: Be lenient with descriptions. Only flag as needing update if they're completely meaningless (same as name or pure placeholder). Brief descriptions are acceptable if they give any indication of content/purpose.
+**Key Rule**: Judge datasource descriptions on whether they say what the datasource contains. Flag one as needing update only if it is completely meaningless - a bare restatement of the datasource's own title, or pure placeholder text. Brief descriptions are acceptable if they give any indication of content/purpose.
 
-## Decision Logic (BE LENIENT - Default to VALID)
-
-**VALID** (is_valid=true) when:
-- All configured context exists (no invalid_context)
-- Context is appropriate for the assistant's purpose (no unnecessary_context)
-- **Default to VALID** - context is optional for most assistants
-
-**INVALID** (is_valid=false) when:
-- **Invalid context exists** - configured context names that don't exist in database (invalid_context)
-- **Unnecessary context** - context is configured BUT system prompt does NOT mention needing datasources/knowledge base (unnecessary_context)
-  - Example: Knowledge base context configured but system prompt makes no mention of searching docs or using knowledge base
-  - Example: Code repository context configured but system prompt doesn't mention analyzing code or repositories
-- **RARELY**: System prompt EXPLICITLY requires specific datasources that exist but aren't configured (missing_context)
-
-**Key Rules**:
-- ✅ Missing context is OK - most tools work without context
-- ✅ Empty context is OK - most assistants don't need datasources
-- ✅ When in doubt, mark as VALID
-- ❌ Only mark invalid if there's clear evidence of a problem
-
-## Output Format
+@@CTX_DECISION_LOGIC@@## Output Format
 {{
   "is_valid": true/false,
   "context_to_update": ["context-name-1", "context-name-2"],  // All context that needs UPDATE/attention (invalid/wrong type/wrong content/unnecessary)
   "available_context": ["all", "available", "context", "names"],  // From input (do not modify)
-  "reasoning": "Detailed explanation of context validation results"
+  "severity": "critical" or "optional",  // REQUIRED if is_valid=false - see Severity Guidelines above
+  "reasoning": "Why the context is valid or not. At most 2 sentences, 300 characters."
 }}
 
 **CRITICAL RULES for context_to_update**:
@@ -847,6 +783,155 @@ Analyze the assistant's context configuration and provide your assessment based 
 # =============================================================================
 # FRIENDLY MESSAGE GENERATION PROMPT (Used by MakeDecisionNode)
 # =============================================================================
+
+
+# =============================================================================
+# GATE-STATE VARIANTS
+# =============================================================================
+# The templates above carry `@@TOKEN@@` markers, filled by `_render` from one of two
+# fragment sets, chosen by whether the approval gate is armed.
+#
+# Gate ARMED: the deterministic gates (name/description/system-prompt length, banned and
+# generic names, missing description, ...) run on every publish, so the LLM is told to
+# judge quality only and the structural criteria are left out.
+#
+# Gate NOT armed (the default): the deterministic gates do not run, so these prompts are
+# the only structural check a publish gets. The gate-off fragments restore the structural
+# criteria, the CRITICAL structural examples and the lenient context rule, so publishing
+# with the gate off behaves as it did before the gates existed.
+
+_STRUCTURAL_NOTE_ARMED = (
+    "Structural checks (length, presence, banned lists) are enforced separately. "
+    "Focus only on qualitative judgment: alignment, professionalism, coherence, and content appropriateness.\n\n"
+)
+
+_META_NAME_STRUCTURE_OFF = (
+    "- **Length**: Appropriate length (not too short, not too long - typically 2-5 words)?\n"
+    "- **Uniqueness**: Distinctive and not generic, EXCEPT when the assistant's purpose is intentionally generic "
+    "(e.g., FAQ assistants, onboarding guides, help desks).\n"
+)
+
+_META_CRITICAL_STRUCTURAL_OFF = (
+    "  - Examples: the description is completely missing\n"
+    '  - Examples: the name is just "Bot", "Helper", or a single generic word with no context\n'
+    '  - Examples: the description is one word like "Helps" with no explanation\n'
+)
+
+_META_STRUCTURAL_EXAMPLE_OFF = """### Example 1b: Invalid Name and Description (Too Generic and Too Short)
+**Input**:
+- Name: "Bot"
+- Description: "Helps"
+- Categories: ["productivity"]
+
+**Output**:
+{{
+  "fields": [
+    {{
+      "field_name": "name",
+      "is_valid": false,
+      "issues": ["Too generic - 'Bot' doesn't describe what the assistant does", "Too short - not descriptive enough"],
+      "recommendation": "Task Assistant Bot",
+      "severity": "critical"
+    }},
+    {{
+      "field_name": "description",
+      "is_valid": false,
+      "issues": ["Extremely vague - doesn't explain what kind of help", "No value proposition or specific capabilities mentioned"],
+      "recommendation": "A versatile assistant that helps you manage tasks, organize information, and boost productivity with smart suggestions and reminders.",
+      "severity": "critical"
+    }}
+  ],
+  "is_valid": false,
+  "overall_reasoning": "Name and description are too vague to tell a shopper what the assistant does."
+}}
+
+"""
+
+_SYSTEM_CRITICAL_STRUCTURAL_OFF = "  - Examples: the system prompt is completely missing or empty\n"
+
+_CTX_GENERAL_RULE_OFF = "- When in doubt, mark as valid (don't be overly strict)\n"
+
+_CTX_DECISION_LOGIC_OFF = """## Decision Logic (BE LENIENT - Default to VALID)
+
+**VALID** (is_valid=true) when:
+- All configured context exists (no invalid_context)
+- Context is appropriate for the assistant's purpose (no unnecessary_context)
+- **Default to VALID** - context is optional for most assistants
+
+**INVALID** (is_valid=false) when:
+- **Invalid context exists** - configured context names that don't exist in database (invalid_context)
+- **Unnecessary context** - context is configured BUT system prompt does NOT mention needing datasources/knowledge base (unnecessary_context)
+  - Example: Knowledge base context configured but system prompt makes no mention of searching docs or using knowledge base
+  - Example: Code repository context configured but system prompt doesn't mention analyzing code or repositories
+- **RARELY**: System prompt EXPLICITLY requires specific datasources that exist but aren't configured (missing_context)
+
+**Key Rules**:
+- ✅ Missing context is OK - most tools work without context
+- ✅ Empty context is OK - most assistants don't need datasources
+- ✅ When in doubt, mark as VALID
+- ❌ Only mark invalid if there's clear evidence of a problem
+
+## Severity Guidelines
+A finding means something that IS configured is wrong, so rate it CRITICAL: invalid, wrong-type, wrong-content or unnecessary context. Absence of context is never a finding here.
+
+"""
+
+_CTX_DECISION_LOGIC_ARMED = "## Decision Logic\n\n**VALID** (is_valid=true) when:\n- All configured context exists (no invalid_context)\n- Context is appropriate for the assistant's purpose (no unnecessary_context)\n- No context is configured and the stated purpose does not require domain knowledge\n\n**INVALID** (is_valid=false) when:\n- **Invalid context exists** - configured context names that don't exist in database (invalid_context)\n- **Wrong context** - the configured context is the wrong TYPE or the wrong CONTENT for the stated purpose\n- **Unnecessary context** - context is configured BUT system prompt does NOT mention needing datasources/knowledge base (unnecessary_context)\n  - Example: Knowledge base context configured but system prompt makes no mention of searching docs or using knowledge base\n  - Example: Code repository context configured but system prompt doesn't mention analyzing code or repositories\n- **Missing context** - the stated purpose requires domain knowledge the assistant has no source for\n\n## Severity Guidelines\nRate the finding by whether the assistant can answer its own subject matter.\n\n- **CRITICAL**: The configured knowledge base is empty AND the assistant's stated purpose clearly requires domain knowledge that cannot come from the LLM's general training\n  - Examples: a company-specific process assistant with no knowledge base attached\n  - Examples: a product-support assistant with no product docs indexed\n\n- **OPTIONAL**: Additional context sources would improve response quality, but the assistant is functional without them\n\nAn assistant that promises company- or product-specific answers with no source for them is CRITICAL.\n\n"
+
+_FRAGMENTS_ARMED = {
+    "STRUCTURAL_NOTE": _STRUCTURAL_NOTE_ARMED,
+    "META_NAME_STRUCTURE": "",
+    "META_CRITICAL_STRUCTURAL": "",
+    "META_STRUCTURAL_EXAMPLE": "",
+    "SYSTEM_CRITICAL_STRUCTURAL": "",
+    "CTX_GENERAL_RULE": "",
+    "CTX_DECISION_LOGIC": _CTX_DECISION_LOGIC_ARMED,
+}
+
+_FRAGMENTS_GATE_OFF = {
+    "STRUCTURAL_NOTE": "",
+    "META_NAME_STRUCTURE": _META_NAME_STRUCTURE_OFF,
+    "META_CRITICAL_STRUCTURAL": _META_CRITICAL_STRUCTURAL_OFF,
+    "META_STRUCTURAL_EXAMPLE": _META_STRUCTURAL_EXAMPLE_OFF,
+    "SYSTEM_CRITICAL_STRUCTURAL": _SYSTEM_CRITICAL_STRUCTURAL_OFF,
+    "CTX_GENERAL_RULE": _CTX_GENERAL_RULE_OFF,
+    "CTX_DECISION_LOGIC": _CTX_DECISION_LOGIC_OFF,
+}
+
+_TOKEN = re.compile(r"@@([A-Z_]+)@@")
+
+
+def _render(template: PromptTemplate, gate_armed: bool) -> PromptTemplate:
+    """Fill the gate-state tokens; fails loudly on a token with no fragment."""
+    fragments = _FRAGMENTS_ARMED if gate_armed else _FRAGMENTS_GATE_OFF
+    text = _TOKEN.sub(lambda m: fragments[m.group(1)], template.template)
+    return PromptTemplate.from_template(text)
+
+
+class ValidationTemplates(NamedTuple):
+    metadata: PromptTemplate
+    system_prompt: PromptTemplate
+    tools: PromptTemplate
+    context: PromptTemplate
+
+
+def get_validation_templates(gate_armed: bool) -> ValidationTemplates:
+    """The four validation prompts for the given gate state (`is_approval_gate_armed()`)."""
+    return ValidationTemplates(
+        metadata=_render(_METADATA_VALIDATION_BASE, gate_armed),
+        system_prompt=_render(_SYSTEM_PROMPT_VALIDATION_BASE, gate_armed),
+        tools=_render(_TOOLS_DECISION_BASE, gate_armed),
+        context=_render(_CONTEXT_VALIDATION_BASE, gate_armed),
+    )
+
+
+# Module-level names keep the gate-ARMED wording. Callers that run on a publish choose
+# by `is_approval_gate_armed()` via `get_validation_templates`.
+_ARMED = get_validation_templates(True)
+METADATA_VALIDATION_TEMPLATE = _ARMED.metadata
+SYSTEM_PROMPT_VALIDATION_TEMPLATE = _ARMED.system_prompt
+TOOLS_DECISION_TEMPLATE = _ARMED.tools
+CONTEXT_VALIDATION_TEMPLATE = _ARMED.context
 
 
 def _format_field_recommendations(field_recommendations: list) -> str:
@@ -1137,6 +1222,8 @@ def build_friendly_message_generation_prompt(
 
 # Export all templates
 __all__ = [
+    "ValidationTemplates",
+    "get_validation_templates",
     "METADATA_VALIDATION_TEMPLATE",
     "SYSTEM_PROMPT_VALIDATION_TEMPLATE",
     "TOOLS_DECISION_TEMPLATE",

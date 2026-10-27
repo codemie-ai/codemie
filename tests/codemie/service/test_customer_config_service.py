@@ -523,3 +523,21 @@ def test_smart_tool_selection_follows_config_flag(enabled):
     component = _find(runtime, "features:smartToolSelection")
     assert component is not None
     assert component.settings.enabled is enabled
+
+
+@pytest.mark.asyncio
+async def test_marketplace_thresholds_surfaces_python_defaults_not_zero(patched_yaml):
+    """marketplaceThresholds has no YAML entry (EPMCDME-14765); with no override,
+    /v1/config must surface the configs/marketplace_management.py defaults (50/6/90/30),
+    not the generic "" placeholder that the UI was rendering as 0."""
+    with _patch_rows([]):
+        settings = await list_settings()
+
+    value = next(s for s in settings if s["component_id"] == "marketplaceThresholds")["value"]
+    assert value == {
+        "hotMinUsers": "50",
+        "warmMinUsers": "7",
+        "coldMinUsers": "3",
+        "graceDays": "60",
+        "archiveDeadAfterDays": "30",
+    }

@@ -90,8 +90,8 @@ def test_build_creates_tool_class(tool_factory, tool_params):
     assert hasattr(instance, "invoke_headers")
 
 
-def test_build_creates_tool_class_incorrect_auth_type(tool_factory, tool_params):
-    config.ENV = "test"
+def test_build_creates_tool_class_incorrect_auth_type(tool_factory, tool_params, monkeypatch):
+    monkeypatch.setattr(config, "ENV", "test")
     tool_factory.provider_config.configuration.auth_type = "Basic"
 
     with pytest.raises(ValueError):

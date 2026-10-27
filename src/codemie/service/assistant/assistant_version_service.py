@@ -17,6 +17,7 @@
 from typing import Optional
 from datetime import datetime, UTC
 
+from codemie.configs.marketplace_management import is_approval_gate_armed
 from codemie.configs.logger import logger
 from codemie.rest_api.models.assistant import (
     Assistant,
@@ -308,11 +309,50 @@ class AssistantVersionService:
         assistant.version_count = new_version_number
         assistant.updated_date = datetime.now(UTC)
         cls.update_assistant_config_fields(assistant, target_config)
+
+        # Refresh first so this merge cannot overwrite a concurrent approve/withdraw
+        # with the marketplace columns this object was loaded with.
+        assistant.refresh_marketplace_columns_from_db()
         assistant.update()
+
+        # A rollback swaps the live content for an older snapshot, so with the
+        # approval gate on an APPROVED assistant goes back for review through the
+        # queue service, exactly as an edit does, and a PENDING_REVIEW one is
+        # re-submitted so a reviewer cannot approve content swapped under them.
+        # With the gate off, an approved assistant's visibility is left alone.
+        if (is_approval_gate_armed() and assistant.marketplace_status == "APPROVED") or (
+            assistant.marketplace_status == "PENDING_REVIEW"
+        ):
+            cls._re_submit_after_rollback(assistant, user)
 
         logger.info(f"Rollback complete. Created version {new_version_number} for assistant {assistant.id}")
 
         return new_config
+
+    @staticmethod
+    def _re_submit_after_rollback(assistant: Assistant, user: User) -> None:
+        """RE_SUBMIT an APPROVED or PENDING_REVIEW assistant after a rollback (content already committed)."""
+        from codemie.service.marketplace_management.queue_service import (
+            MarketplaceConflictError,
+            MarketplaceQueueService,
+        )
+
+        try:
+            MarketplaceQueueService().re_submit(
+                assistant_id=str(assistant.id),
+                actor=str(getattr(user, "email", None) or getattr(user, "id", "")),
+                expected_version=assistant.marketplace_version,
+                decided_by_id=str(user.id) if getattr(user, "id", None) else None,
+                decided_by_email=getattr(user, "email", None),
+            )
+        except MarketplaceConflictError as conflict:
+            logger.error(f"RE_SUBMIT conflict after rollback of assistant {assistant.id}: {conflict}")
+            raise ExtendedHTTPException(
+                code=status.HTTP_409_CONFLICT,
+                message="Assistant rolled back but marketplace re-review conflicted",
+                details=str(conflict),
+                help="Another process moved this assistant's marketplace status. Reload the assistant and retry.",
+            ) from conflict
 
     @classmethod
     def update_assistant_config_fields(cls, assistant: Assistant, config: AssistantConfiguration) -> None:

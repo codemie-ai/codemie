@@ -25,10 +25,8 @@ from langgraph.graph import END, StateGraph
 from codemie.rest_api.models.assistant import Assistant
 from codemie.rest_api.models.assistant_generator import RefineGeneratorResponse
 from codemie.rest_api.security.user import User
-from codemie.templates.agents.assistant_validation_prompts import (
-    METADATA_VALIDATION_TEMPLATE,
-    SYSTEM_PROMPT_VALIDATION_TEMPLATE,
-)
+from codemie.configs.marketplace_management import is_approval_gate_armed
+from codemie.templates.agents.assistant_validation_prompts import get_validation_templates
 from codemie.workflows.assistant_generator.models.validation_models import (
     MetadataValidationResult,
     ValidationResult,
@@ -87,6 +85,10 @@ class AssistantValidationWorkflow:
         # Initialize clarification analysis node (NEW)
         self.clarification_analysis_node = ClarificationAnalysisNode(llm_model, request_id)
 
+        # The structural criteria are only in the prompts while the deterministic gates
+        # that would otherwise enforce them are not armed.
+        templates = get_validation_templates(is_approval_gate_armed())
+
         # Initialize validation nodes
         self.validate_metadata_node = GenericValidationNode(
             llm_model=llm_model,
@@ -95,7 +97,7 @@ class AssistantValidationWorkflow:
             result_field="metadata_result",
             next_phase="decision",  # Go directly to decision after completion
             output_model=MetadataValidationResult,
-            prompt_template=METADATA_VALIDATION_TEMPLATE.template,
+            prompt_template=templates.metadata.template,
             prompt_formatter=format_metadata_validation_prompt,
         )
 
@@ -106,7 +108,7 @@ class AssistantValidationWorkflow:
             result_field="system_prompt_result",
             next_phase="decision",  # Go directly to decision after completion
             output_model=ValidationResult,
-            prompt_template=SYSTEM_PROMPT_VALIDATION_TEMPLATE.template,
+            prompt_template=templates.system_prompt.template,
             prompt_formatter=format_system_prompt_validation_prompt,
         )
 

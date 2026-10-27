@@ -309,6 +309,11 @@ class AssistantGeneratorService:
         try:
             chain = PromptGeneratorChain.from_prompt_template(REFINE_PROMPT_TEMPLATE, request_id, llm_model)
 
+            # Deliberately `True`, not `_include_tools`: the UI only sets
+            # `include_tools` when the assistant already has toolkits, so
+            # honouring the caller's flag here stops refine suggesting any
+            # toolkit at all for a toolkit-less assistant. The parameter is kept
+            # (underscore-prefixed) for the router's call signature only.
             chain.add_toolkits(user, True, REFINE_TOOLKITS_PROMPT_TEMPLATE, refine_details.toolkits)
             chain.add_context(user, project, refine_details.context)
             chain.add_categories(refine_details.categories, include_categories)
@@ -432,7 +437,7 @@ class AssistantGeneratorService:
             # Build QualityValidationResult from workflow output
             validation_result = QualityValidationResult(
                 decision=decision,
-                recommendations=recommendations if decision == "reject" else None,
+                recommendations=recommendations,
             )
 
             # Track metrics
@@ -746,6 +751,8 @@ class PromptGeneratorChain:
         self._base_template = base_template
         self._base_llm = base_llm
         self._chain_input = {}
+        self._model_options: dict[str, Any] = {}
+        self._client_options: dict[str, Any] = {}
 
     @classmethod
     def from_prompt_template(
@@ -763,6 +770,51 @@ class PromptGeneratorChain:
 
         return cls(prompt_template, llm)  # pyright: ignore
 
+    def bind_model_options(self, **options: Any) -> Self:
+        """Return a copy whose provider call carries these per-request options.
+
+        Used to put a wall-clock `timeout` and a `max_tokens` ceiling on a single
+        invocation without touching the shared model instance built by
+        `get_llm_by_credentials` (EXECUTION-PLAN 8.4, F-22). The options are
+        applied to the *structured-output* runnable rather than to the bare LLM,
+        because `RunnableBinding` does not expose `with_structured_output`; the
+        structured chain forwards invoke-time kwargs to its first step, which is
+        the model call.
+
+        Callers are responsible for passing only options the target model
+        accepts — see `llm_assessment_service._model_options`, which filters
+        against `LLMModel.features` the same way `dependecies.filter_params`
+        does at construction time.
+        """
+        bound = PromptGeneratorChain(self._base_template, self._base_llm)
+        bound._chain_input = dict(self._chain_input)
+        bound._model_options = {**self._model_options, **options}
+        bound._client_options = dict(self._client_options)
+        return bound  # pyright: ignore
+
+    def bind_client_options(self, **options: Any) -> Self:
+        """Return a copy whose provider client is re-configured for this chain only.
+
+        For options the OpenAI SDK reads at client level and not per request,
+        chiefly `max_retries`: the model instance is built with the deployment-wide
+        retry count (`AZURE_OPENAI_MAX_RETRIES`), which multiplies any per-request
+        timeout. The override is applied to a shallow copy of the model at invoke
+        time and is a no-op for models without an OpenAI-style `root_client`.
+        """
+        bound = PromptGeneratorChain(self._base_template, self._base_llm)
+        bound._chain_input = dict(self._chain_input)
+        bound._model_options = dict(self._model_options)
+        bound._client_options = {**self._client_options, **options}
+        return bound  # pyright: ignore
+
+    def _llm_with_client_options(self) -> BaseLanguageModel:
+        with_options = getattr(getattr(self._base_llm, "root_client", None), "with_options", None)
+        if not self._client_options or with_options is None:
+            return self._base_llm
+        llm = self._base_llm.model_copy()  # pyright: ignore
+        llm.root_client = with_options(**self._client_options)  # pyright: ignore
+        return llm
+
     def invoke_with_model[F: BaseModel](
         self,
         base_model: type[F],
@@ -770,7 +822,10 @@ class PromptGeneratorChain:
         config: RunnableConfig | None = None,
         **kwargs: Any,
     ) -> F:
-        chain = self._base_template | self._base_llm.with_structured_output(base_model)
+        structured = self._llm_with_client_options().with_structured_output(base_model)
+        if self._model_options:
+            structured = structured.bind(**self._model_options)
+        chain = self._base_template | structured
         result = chain.invoke({**self._chain_input, **input}, config, **kwargs)
         return result  # pyright: ignore
 

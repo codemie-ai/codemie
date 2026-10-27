@@ -93,6 +93,7 @@ def test_rollback_restores_flag_from_target_config():
     with (
         patch.object(AssistantVersionService, 'get_version', return_value=target),
         patch.object(AssistantConfiguration, 'save'),
+        patch.object(Assistant, 'refresh_marketplace_columns_from_db'),
         patch.object(Assistant, 'update'),
     ):
         new_config = AssistantVersionService.rollback_to_version(

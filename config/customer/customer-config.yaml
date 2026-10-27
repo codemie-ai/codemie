@@ -273,6 +273,7 @@ components:
       name: "Project Model Override"
       description: "Enable Project model override configuration."
 
+
   - id: "mcpAuthTimeoutSeconds"
     settings:
       enabled: true

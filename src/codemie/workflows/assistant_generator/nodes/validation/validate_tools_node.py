@@ -17,7 +17,8 @@
 from codemie.configs.logger import logger
 from codemie.rest_api.models.assistant import Assistant
 from codemie.service.tools.toolkit_lookup_service import ToolkitLookupService
-from codemie.templates.agents.assistant_validation_prompts import TOOLS_DECISION_TEMPLATE
+from codemie.configs.marketplace_management import is_approval_gate_armed
+from codemie.templates.agents.assistant_validation_prompts import get_validation_templates
 from codemie.workflows.assistant_generator.models.validation_models import (
     ToolsDecisionResult,
     ToolsValidationResult,
@@ -100,6 +101,9 @@ class ValidateToolsNode(BaseValidationNode):
             tools_to_keep=list(tools_to_keep),
             rag_query=query,
             reasoning=decision_result.reasoning,
+            # The severity the LLM judged, not the model default: a toolset that
+            # merely could be tidier is OPTIONAL and must not block publication.
+            severity=decision_result.severity,
         )
 
         logger.info(
@@ -133,8 +137,8 @@ class ValidateToolsNode(BaseValidationNode):
                 "No clarification analysis available - proceed with strict explicit capability analysis."
             )
 
-        # Build prompt using TOOLS_DECISION_TEMPLATE with clarifications
-        prompt = TOOLS_DECISION_TEMPLATE.format(
+        # Build prompt using the tools decision template with clarifications
+        prompt = get_validation_templates(is_approval_gate_armed()).tools.format(
             clarification_summary=clarification_summary,
             assistant_name=assistant.name,
             assistant_description=assistant.description,

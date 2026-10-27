@@ -33,6 +33,85 @@ from codemie.clients.elasticsearch import ElasticSearchClient
 from codemie.service.llm_service.llm_service import llm_service
 
 
+# The embedding models this platform uses (ada-002, titan, gecko) all cap their
+# input at 8 192 tokens. 24 000 characters is ~5 300-6 800 tokens at the 3.5-4.5
+# characters-per-token this corpus actually measures, which leaves headroom for
+# a token-dense document without truncating anything reasonable: across the 219
+# published assistants the median page_content is 1 670 characters and exactly
+# one exceeds this ceiling.
+EMBEDDING_MAX_CHARS = 24_000
+
+# Chunks are stored as '<entity id>_<chunk num>', so the Elasticsearch document _id is not the entity
+# id: every query that targets an entity's documents matches this metadata field instead.
+ENTITY_ID_FIELD = "metadata.id.keyword"
+
+
+def bound_documents_for_embedding(documents: List[Document]) -> List[Document]:
+    """Shorten any document whose text exceeds what the embedding model accepts.
+
+    Why this exists, and why here rather than in a loader:
+
+    A platform loader decides what goes into `page_content`. `AssistantLoader`
+    bounds the system prompt (`ASSISTANT_PROMPT_MAX_LENGTH = 1000`) and then
+    appends every toolkit and every tool description after it, unbounded. One
+    assistant in the live catalogue reached 50 636 characters that way. The
+    embeddings client is deliberately built with
+    `check_embedding_ctx_length=False` (`core/dependecies.py`), which disables
+    langchain's own split-and-average path, so that single document went to the
+    embeddings API raw and came back:
+
+        openai.BadRequestError: Error code: 400 - "This model's maximum context
+        length is 8192 tokens, however you requested 11126 tokens"
+
+    `add_documents` embeds the whole batch in one call, so that one document
+    failed the batch, the batch failed the sync, and a reindex of 219 published
+    assistants indexed **0** while logging "reindexing completed" (F-87).
+
+    Truncating is the right answer rather than skipping: an assistant that is
+    findable by its first 24 000 characters is far better than one that is not
+    in the marketplace at all, and dropping it would recreate the silent gap
+    from the other side. The truncation is logged with the entity's name so the
+    loader that produced it can be fixed rather than merely tolerated.
+    """
+    bounded: List[Document] = []
+    for doc in documents:
+        content = doc.page_content or ""
+        if len(content) <= EMBEDDING_MAX_CHARS:
+            bounded.append(doc)
+            continue
+        logger.warning(
+            "Document %r (%s) is %s characters; truncating to %s for embedding. "
+            "The loader that built it does not bound its page_content.",
+            (doc.metadata or {}).get("name", "unknown"),
+            (doc.metadata or {}).get("id", "unknown"),
+            len(content),
+            EMBEDDING_MAX_CHARS,
+            extra={
+                "entity_id": (doc.metadata or {}).get("id"),
+                "original_length": len(content),
+                "max_length": EMBEDDING_MAX_CHARS,
+            },
+        )
+        bounded.append(Document(page_content=content[:EMBEDDING_MAX_CHARS], metadata=doc.metadata))
+    return bounded
+
+
+def _is_document_absent(exc: BaseException) -> bool:
+    """True when *exc* is Elasticsearch reporting that the document is not there.
+
+    Duck-typed rather than `except NotFoundError` so this module keeps working
+    against any client version, and so a 404 that arrives wrapped by a different
+    layer is still recognised. None of these three signatures can be produced by
+    a connection error, a mapping conflict or an auth failure -- the cases that
+    must keep raising.
+    """
+    if type(exc).__name__ == "NotFoundError":
+        return True
+    if getattr(exc, "status_code", None) == 404:
+        return True
+    return getattr(getattr(exc, "meta", None), "status", None) == 404
+
+
 class BasePlatformDatasourceProcessor(BaseDatasourceProcessor):
     """
     Base processor for platform system resources (assistants, workflows, datasources).
@@ -157,6 +236,7 @@ class BasePlatformDatasourceProcessor(BaseDatasourceProcessor):
         chunks = self._split_entity_documents(documents)
         self._apply_guardrails_for_documents(chunks)
         self._add_documents(chunks)
+        self._prune_stale_documents({doc.metadata.get("id") for doc in documents if doc.metadata.get("id")})
 
         return len(documents)
 
@@ -186,6 +266,111 @@ class BasePlatformDatasourceProcessor(BaseDatasourceProcessor):
                 chunks.extend(entity_chunks)
         return chunks
 
+    def _prune_stale_documents(self, live_ids: set) -> int:
+        """Delete documents for entities the loader no longer returns.
+
+        A "full sync" used to only ever add: `_add_documents` upserts what the
+        loader produced and nothing removed anything, so the index could be
+        repaired when it was missing documents but never when it held too many.
+        Measured after the F-87 backfill: 219 assistants with `is_global = true`
+        in Postgres against **220** documents, the extra one belonging to an
+        assistant that had been published, indexed and then unpublished without
+        its document ever being removed. An unpublished assistant that is still
+        findable in marketplace search is the same defect as a published one
+        that is not, pointing the other way (design-persistence.md §7 F7 / V29).
+
+        Never called with an empty set: `_process` returns early when the loader
+        produced nothing, so a failed database read cannot be mistaken for
+        "nothing is published" and wipe marketplace search. The guard below
+        makes that explicit rather than relying on the caller.
+        """
+        if not live_ids:
+            logger.warning(
+                "Refusing to prune %s: the loader returned no ids, which is far more "
+                "likely to be a failed read than an empty catalogue",
+                self._index_name,
+            )
+            return 0
+
+        candidate_ids = self._find_candidate_stale_ids(live_ids)
+        if not candidate_ids:
+            return 0
+
+        # `live_ids` is a snapshot taken at the start of `_process`. An entity
+        # published between that snapshot and this point already has its
+        # document in the index but is still a `candidate_ids` member here --
+        # deleting it would remove a just-published, live document. Subclasses
+        # that can re-check an authoritative source (e.g. a Postgres row, under
+        # the same advisory lock the incremental index path uses) override
+        # `_delete_stale_ids` so the re-check and the delete happen together.
+        deleted = self._delete_stale_ids(candidate_ids)
+
+        if deleted:
+            logger.info(
+                "Pruned %s stale document(s) from %s; %s entities remain published",
+                deleted,
+                self._index_name,
+                len(live_ids),
+                extra={"deleted": deleted, "index_name": self._index_name},
+            )
+        return deleted
+
+    def _find_candidate_stale_ids(self, live_ids: set) -> set:
+        """Entity ids that have documents in the index but are absent from *live_ids*.
+
+        A plain search rather than `delete_by_query` directly, so the ids can
+        be re-checked (`_delete_stale_ids`) before anything is deleted.
+        Chunks are stored as '<entity id>_<chunk num>', so the document _id is not
+        the entity id: match on, and return, the entity id kept in the metadata.
+        """
+        from elasticsearch.helpers import scan
+
+        query = {"query": {"bool": {"must_not": [{"terms": {ENTITY_ID_FIELD: sorted(live_ids)}}]}}}
+        try:
+            return {
+                entity_id
+                for hit in scan(self.client, index=self._index_name, query=query, _source=["metadata.id"])
+                if (entity_id := ((hit.get("_source") or {}).get("metadata") or {}).get("id"))
+            }
+        except Exception as exc:  # noqa: BLE001 - a failed prune must not fail the sync
+            logger.error(
+                "Could not search for stale documents in %s: %s",
+                self._index_name,
+                exc,
+                exc_info=True,
+            )
+            return set()
+
+    def _delete_stale_ids(self, candidate_ids: set) -> int:
+        """Delete the documents of the entities *candidate_ids* and return how many documents went.
+
+        Default: no authoritative re-check is available, so every candidate is
+        treated as genuinely stale. Subclasses backed by a system of record that
+        can race with this sync (e.g. Postgres-backed publish/withdraw) override
+        this to re-check each id and delete it while still holding whatever
+        lock serialises writers, so a publish cannot land between the two.
+        """
+        return self._delete_ids_from_index(candidate_ids)
+
+    def _delete_ids_from_index(self, ids: set) -> int:
+        """One `delete_by_query` on the entity *ids* (all chunks); a failure is logged, nothing counts as deleted."""
+        try:
+            response = self.client.delete_by_query(
+                index=self._index_name,
+                body={"query": {"terms": {ENTITY_ID_FIELD: sorted(ids)}}},
+                refresh=True,
+                conflicts="proceed",
+            )
+            return int(response.get("deleted", 0) or 0)
+        except Exception as exc:  # noqa: BLE001 - a failed prune must not fail the sync
+            logger.error(
+                "Could not prune stale documents from %s: %s",
+                self._index_name,
+                exc,
+                exc_info=True,
+            )
+            return 0
+
     def _on_process_start(self):
         """Callback before processing starts."""
         if self.is_resume_indexing:
@@ -212,6 +397,11 @@ class BasePlatformDatasourceProcessor(BaseDatasourceProcessor):
         embeddings_model = llm_service.get_embedding_deployment_name(self.index.embeddings_model)
         store = self._get_store_by_index(self._index_name, embeddings_model)
         store._store._create_index_if_not_exists()
+
+        # Nothing may reach the embeddings API longer than the model accepts:
+        # one over-length document 400s the whole batch and therefore the whole
+        # sync (F-87). See `bound_documents_for_embedding`.
+        documents = bound_documents_for_embedding(documents)
 
         groups = self._group_by_entity(documents)
 
@@ -309,7 +499,7 @@ class BasePlatformDatasourceProcessor(BaseDatasourceProcessor):
                 body={
                     "query": {
                         "bool": {
-                            "filter": [{"terms": {"metadata.id.keyword": entity_ids}}],
+                            "filter": [{"terms": {ENTITY_ID_FIELD: entity_ids}}],
                             "must_not": [{"ids": {"values": keep_ids}}],
                         }
                     }
@@ -382,7 +572,7 @@ class BasePlatformDatasourceProcessor(BaseDatasourceProcessor):
             # Remove every chunk of the entity (and a legacy single document) by its metadata id
             response = self.client.delete_by_query(
                 index=self._index_name,
-                body={"query": {"term": {"metadata.id.keyword": entity_id}}},
+                body={"query": {"term": {ENTITY_ID_FIELD: entity_id}}},
                 conflicts="proceed",
                 refresh=True,
             )
@@ -404,6 +594,18 @@ class BasePlatformDatasourceProcessor(BaseDatasourceProcessor):
                 extra={"entity_id": entity_id, "chunks_count": deleted, "index_name": self._index_name},
             )
         except Exception as e:
+            if _is_document_absent(e):
+                # Removal states a desired end condition -- "this id must not be
+                # in the index" -- and Elasticsearch answering 404 means it
+                # already holds. Raising here made an unpublish of a
+                # never-indexed entity log a stack trace, get retried by the
+                # caller, and be reported as FAILED; the progress counter is
+                # deliberately left alone, because nothing was removed.
+                logger.info(
+                    f"Entity {entity_id} was already absent from the index; nothing to remove",
+                    extra={"entity_id": entity_id, "index_name": self._index_name},
+                )
+                return
             logger.error(
                 f"Failed to remove entity {entity_id}: {e}",
                 extra={"entity_id": entity_id, "error": str(e)},
