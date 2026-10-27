@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, Dict
+from typing import Annotated, Any, Dict, ForwardRef, get_args, get_origin
 
 from codemie_tools.base.models import ToolSet
 from codemie_tools.file_analysis.toolkit import FileAnalysisToolkit
@@ -20,6 +20,7 @@ from codemie_tools.git.toolkit import GitToolkit, CustomGitHubToolkit, CustomGit
 from codemie_tools.vision.tool_vars import IMAGE_TOOL
 from codemie_tools.vision.toolkit import VisionToolkit
 from langchain_core.tools import BaseTool, ToolException
+from langchain_core.utils.pydantic import TypeBaseModel, get_fields
 from pydantic import ValidationError
 
 from codemie.agents.tools import BaseToolkit
@@ -59,6 +60,19 @@ INVALID_SIGNATURE_ERROR = "Tool method arguments are not correct. Expected: {arg
 INVALID_ATTRIBUTES_ERROR = "Tool attributes are not correct. Expected: {args_desc}"
 
 
+def _format_annotation(annotation: Any) -> str:
+    # shortcut: keeps nested Annotated metadata; extend if needed.
+    if get_origin(annotation) is Annotated:
+        annotation = get_args(annotation)[0]
+    if isinstance(annotation, ForwardRef):
+        return annotation.__forward_arg__
+    return annotation.__name__ if isinstance(annotation, type) else str(annotation)
+
+
+def _build_signature(model: TypeBaseModel) -> dict[str, str]:
+    return {name: _format_annotation(field.annotation) for name, field in get_fields(model).items()}
+
+
 class ToolExecutionService:
     @classmethod
     def execute_tool(cls, tool: BaseTool, tool_args: Dict[str, Any]):
@@ -69,11 +83,10 @@ class ToolExecutionService:
 
     @classmethod
     def validate_tool_args(cls, tool: BaseTool, tool_args: Dict[str, Any]) -> BaseTool:
-        default_tool_input = {key: None for key in tool.args_schema.__annotations__ if key not in tool_args}
         try:
-            tool.args_schema(**tool_args, **default_tool_input)
+            tool.args_schema(**tool_args)
         except (ValidationError, TypeError):
-            signature = {k: v.__name__ for k, v in tool.args_schema.__annotations__.items()}
+            signature = _build_signature(tool.args_schema)
             raise ValueError(INVALID_SIGNATURE_ERROR.format(args_desc=signature))
         return tool
 
@@ -84,7 +97,7 @@ class ToolExecutionService:
             updated_state = {**current_state, **tool_attributes}
             return tool.model_validate(updated_state)
         except (ValidationError, TypeError) as e:
-            signature = {k: v.__name__ for k, v in tool.__annotations__.items()}
+            signature = _build_signature(type(tool))
             logger.error(f"Validation error: {e}", exc_info=True)
             raise ValueError(INVALID_ATTRIBUTES_ERROR.format(args_desc=signature))
 

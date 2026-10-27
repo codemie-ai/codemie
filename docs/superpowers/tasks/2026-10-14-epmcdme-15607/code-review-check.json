@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "record_type": "human-approved-review-fix",
+  "decision": "approve",
+  "source": "hitl",
+  "gate_id": "code-review.final",
+  "approval_at": "2026-10-15T07:18:30Z",
+  "rationale": "User approved updated formatter and service-local Exchange regression fix-up; requested committing outstanding task changes before QA.",
+  "original_review": "code-review-final.json",
+  "original_review_decision": "request-changes",
+  "original_fix_commit": "c9759059202f1980a017819b504db963cfaced03",
+  "rebased_fix_commit": "666b037d4275487495c6f0d8ed197077a8a76f83",
+  "checked_head": "968ab503e8f157cd5d6c11ccb0481ed56ce20b6c",
+  "created_at": "2026-10-15T09:49:44.715442+00:00",
+  "independent_automated_recheck": false,
+  "resolved_findings": [
+    {
+      "id": "CR-001",
+      "resolution": "Use existing LangChain get_fields and shared safe annotation formatter for both validation signatures; approved by the user after the fix."
+    }
+  ],
+  "evidence": {
+    "approval_ledger": "decisions.jsonl",
+    "implementation_and_tests_unchanged_by_rebase": true,
+    "unchanged_paths": [
+      "src/codemie/service/tools/tool_execution_service.py",
+      "tests/codemie/service/tools/test_tool_execution_validate.py"
+    ],
+    "post_rebase_tests": {
+      "command": "poetry run pytest -n 0 tests/codemie/service/tools/test_tool_execution_validate.py tests/codemie_tools/ms_exchange/test_tools.py",
+      "result": "74 passed, 2 warnings in 12.65s"
+    }
+  },
+  "limitations": "Records the existing human approval of the fix. Does not replace or change the original automated review and does not assert a second automated review occurred."
+}

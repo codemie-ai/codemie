@@ -1,0 +1,818 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15607_tool-validation-defaults",
+  "head": "c9759059202f1980a017819b504db963cfaced03",
+  "runner": "poetry",
+  "started_at": "2026-10-15T07:20:53.258162+00:00",
+  "completed_at": "2026-10-15T08:34:39.246822+00:00",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "command": "make ruff",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2509,
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "command": "make build",
+      "status": "PASS",
+      "exit_code": 0,
+      "duration_ms": 3961,
+      "notes": "User explicitly authorized normal dist/ artifacts; no dependency acquisition."
+    },
+    {
+      "id": "license",
+      "command": "make license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2037,
+      "exit_code": 0
+    },
+    {
+      "id": "secrets",
+      "command": "make gitleaks",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 13600,
+      "exit_code": 0
+    },
+    {
+      "id": "coverage",
+      "command": "make coverage",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "exit_code": null,
+      "notes": "Coverage was not requested and user explicitly forbids generating reports/coverage. No command executed."
+    },
+    {
+      "id": "sonar",
+      "command": "make sonar-local",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 215,
+      "exit_code": 0,
+      "notes": "Earlier make sonar-local self-skipped because SONAR_TOKEN was unset (exit 0). Token is now loaded from $HOME/.sonar/sonar-codemie.token and verified set without disclosure; SonarScanner CLI is unavailable. Guide permits environment skips. No scanner installed; no new coverage generated; no stale coverage claimed as current."
+    },
+    {
+      "id": "verify",
+      "command": "make verify",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "exit_code": null,
+      "notes": "No separate full-verification request; constituent ruff, license-check, gitleaks and full tests already ran individually. Avoid duplicate runs and mutating make license auto-fix."
+    },
+    {
+      "id": "test-harness",
+      "command": "make test-harness",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "exit_code": null,
+      "notes": "Guide permits skipping when no merge request is being opened; MR/push and browser actions are not authorized."
+    },
+    {
+      "id": "hook-staged-ruff",
+      "command": "bash scripts/git-hooks/_ruff_staged.sh",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 7,
+      "exit_code": 0,
+      "notes": "Self-skip: \"[pre-commit] No staged Python files - skipping Ruff format/fix check.\" Full-tree make ruff passed; index not modified."
+    },
+    {
+      "id": "hook-secrets",
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 4247,
+      "exit_code": 0,
+      "notes": "Self-skip: \"0 commits scanned.\" and \"scanned ~0 bytes\"; no staged changes. Full working-tree make gitleaks passed separately. No files staged or hook bypassed."
+    },
+    {
+      "id": "hook-commit-msg",
+      "command": "bash scripts/git-hooks/commit_msg.sh docs/superpowers/tasks/2026-10-14-epmcdme-15607/verify/head-commit-message.local.txt",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 9,
+      "exit_code": 0,
+      "notes": "Validated committed HEAD message using the existing hook, without committing or bypassing hooks."
+    },
+    {
+      "id": "hook-pre-push-unit",
+      "command": "poetry run pytest tests/ --ignore=tests/enterprise/ -W ignore::DeprecationWarning --cov --cov-report=xml:coverage.xml",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "exit_code": null,
+      "notes": "Pre-push heavy checks are opt-in; CODEMIE_PREPUSH_ENABLED=false. No push requested; coverage generation forbidden. make test full-suite results recorded separately; no bypass variable changed."
+    },
+    {
+      "id": "hook-pre-push-sonar",
+      "command": "SONAR_SKIP_TESTS=1 make sonar-local",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "exit_code": null,
+      "notes": "Pre-push heavy checks are opt-in and disabled in the existing environment. SonarScanner CLI unavailable; no install authorized. Token is set, not a current blocker."
+    },
+    {
+      "id": "ci-guard",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": null,
+      "exit_code": null,
+      "notes": "Current .gitlab-ci.yml includes external pre-ci-guard.yml and extends .wait-ci-init-template. Remote GitLab MR contexts and external template execution are unavailable locally; no local test command is defined. Guide claim of no pipeline is stale; this guard does not establish tests passed."
+    },
+    {
+      "id": "postgres-normal-rerun",
+      "command": "poetry run pytest -n 0 tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py",
+      "status": "PASS",
+      "exit_code": 0,
+      "duration_ms": 6006,
+      "counts": {
+        "passed": 7
+      },
+      "source": "guide",
+      "evidence": "docs/superpowers/tasks/2026-10-14-epmcdme-15607/verify/stage6-postgres-normal-rerun.local.log",
+      "notes": "Fresh on normal localhost:5432/postgres; disposable DSN overrides removed."
+    },
+    {
+      "id": "affected-normal-refresh",
+      "command": "poetry run pytest -n 0 tests/codemie/service/tools/test_tool_execution_validate.py tests/codemie_tools/ms_exchange/test_tools.py",
+      "status": "PASS",
+      "exit_code": 0,
+      "duration_ms": 14108,
+      "counts": {
+        "passed": 74,
+        "warnings": 2
+      },
+      "source": "guide",
+      "evidence": "docs/superpowers/tasks/2026-10-14-epmcdme-15607/verify/stage6-affected-normal-refresh.local.log",
+      "notes": "Fresh on normal localhost:5432/postgres; disposable DSN overrides removed."
+    },
+    {
+      "id": "filesystem-normal-refresh",
+      "command": "timeout --signal=TERM --kill-after=10s 180s poetry run pytest -n 0 tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_matplotlib_png_generation tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_openpyxl_to_save_workbook",
+      "status": "PASS",
+      "exit_code": 0,
+      "duration_ms": 5315,
+      "counts": {
+        "passed": 2
+      },
+      "source": "guide",
+      "evidence": "docs/superpowers/tasks/2026-10-14-epmcdme-15607/verify/stage6-filesystem-normal-refresh.local.log",
+      "notes": "Fresh on normal localhost:5432/postgres; disposable DSN overrides removed."
+    },
+    {
+      "id": "unit-available-normal",
+      "command": "poetry run pytest tests/ --ignore=tests/enterprise/ --deselect=tests/codemie/service/security/test_logout_token_cleanup_mock_tms.py::test_logout_removes_only_the_users_rows_and_pod_fallback --deselect=tests/codemie/rest_api/router_guards/test_openapi_snapshot.py::test_openapi_matches_baseline --deselect=tests/codemie/service/mcp/test_toolkit_service_auth_resolver.py::test_nfr23_discovered_pipeline_preserves_current_scope_and_invokes_tool_with_token --deselect=tests/codemie/service/mcp/test_toolkit_service_auth_resolver.py::test_prepare_server_config_falls_back_to_legacy_when_discovered_token_missing --deselect=tests/codemie/service/oauth/adapters/test_provider_adapters.py::test_gitlab_exchange_maps_enterprise_token_data --deselect=tests/codemie/service/oauth/adapters/test_provider_adapters.py::test_atlassian_exchange_maps_enterprise_token_data",
+      "status": "FAIL",
+      "exit_code": 1,
+      "duration_ms": 131129,
+      "counts": {
+        "passed": 19720,
+        "failed": 2,
+        "skipped": 186,
+        "warnings": 258
+      },
+      "source": "guide",
+      "evidence": "docs/superpowers/tasks/2026-10-14-epmcdme-15607/verify/stage6-unit-available-normal.local.log",
+      "notes": "User-authorized enterprise exclusions only; 19720 passed, two non-enterprise filesystem failures recur under broad xdist execution after isolated passes. No additional exclusions or fixes applied.",
+      "user_accepted_for_task": true,
+      "acceptance_evidence": "docs/superpowers/tasks/2026-10-14-epmcdme-15607/verify/stage6-user-accepted-verification.local.json"
+    },
+    {
+      "id": "enterprise-unavailable",
+      "source": "guide",
+      "command": null,
+      "status": "SKIPPED",
+      "exit_code": null,
+      "duration_ms": 0,
+      "notes": "User-authorized exclusion of tests/enterprise/ plus exactly six audited outside-directory enterprise-dependent nodes. The original 57 failing/error enterprise nodes are accounted for; package not acquired. Exclusions applied only after all nine non-enterprise nodes passed individually.",
+      "verified_original_failure_nodes": 57,
+      "ignored_paths": [
+        "tests/enterprise/"
+      ],
+      "deselected_nodes": [
+        "tests/codemie/service/security/test_logout_token_cleanup_mock_tms.py::test_logout_removes_only_the_users_rows_and_pod_fallback",
+        "tests/codemie/rest_api/router_guards/test_openapi_snapshot.py::test_openapi_matches_baseline",
+        "tests/codemie/service/mcp/test_toolkit_service_auth_resolver.py::test_nfr23_discovered_pipeline_preserves_current_scope_and_invokes_tool_with_token",
+        "tests/codemie/service/mcp/test_toolkit_service_auth_resolver.py::test_prepare_server_config_falls_back_to_legacy_when_discovered_token_missing",
+        "tests/codemie/service/oauth/adapters/test_provider_adapters.py::test_gitlab_exchange_maps_enterprise_token_data",
+        "tests/codemie/service/oauth/adapters/test_provider_adapters.py::test_atlassian_exchange_maps_enterprise_token_data"
+      ]
+    },
+    {
+      "id": "temporary-db-cleanup",
+      "source": "guide",
+      "command": "DROP DATABASE IF EXISTS \"codemie_stage6_c97590592\"",
+      "status": "PASS",
+      "exit_code": 0,
+      "duration_ms": null,
+      "notes": "Executed through existing PostgreSQL container tools with administrative connection asserted postgres. Only codemie_stage6_c97590592 removed; absence and original tables verified; no FORCE or session termination.",
+      "evidence": "docs/superpowers/tasks/2026-10-14-epmcdme-15607/verify/stage6-normal-db-cleanup.local.json"
+    }
+  ],
+  "failures": {
+    "unit-available-normal": "\ntests/codemie/service/settings/test_settings_transfer_service.py::TestSelectCandidatesFiltering::test_subsystem_managed_alias_in_list_raises_reserved_error\n  /home/dmytromelnyk4/work/projects/codemie-dev/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:229: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._select_candidates(\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestSelectCandidatesFiltering::test_alias_genuinely_absent_from_project_raises_422\n  /home/dmytromelnyk4/work/projects/codemie-dev/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:241: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._select_candidates(\"source\", {SettingType.PROJECT}, [\"ghost-alias\"])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestSelectCandidatesFiltering::test_empty_list_raises_422\n  /home/dmytromelnyk4/work/projects/codemie-dev/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:249: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._select_candidates(\"source\", {SettingType.PROJECT}, [])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestTransferNonTransferableInList::test_copy_blocked_alias_in_list_raises_422\n  /home/dmytromelnyk4/work/projects/codemie-dev/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:282: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService.transfer(\"source\", \"target\", TransferMode.COPY, _ALL_TYPES, [\"gitlab-hook\"])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestTransferBothFlagsFalse::test_both_flags_false_raises_422\n  /home/dmytromelnyk4/work/projects/codemie-dev/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:308: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService.transfer(\"source\", \"target\", TransferMode.MOVE, set(), None)\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestValidateProjects::test_rejects_same_source_and_target\n  /home/dmytromelnyk4/work/projects/codemie-dev/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:347: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._validate_projects(\"same\", \"same\")\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestValidateAliasesPresent::test_rejects_row_with_empty_alias\n  /home/dmytromelnyk4/work/projects/codemie-dev/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:391: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._validate_aliases_present([row])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestTransfer::test_null_alias_trigger_row_is_rejected_before_response_construction\n  /home/dmytromelnyk4/work/projects/codemie-dev/codemie/src/codemie/service/settings/settings_transfer_service.py:372: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    cls._validate_aliases_present(candidates)\n\ntests/codemie/service/test_mcp_config_service_auth_crud.py::test_update_rejects_auth_config_id_change_when_credentials_exist\n  /home/dmytromelnyk4/work/projects/codemie-dev/codemie/src/codemie/service/mcp_config_service.py:404: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    cls._apply_config_field_update(\n\ntests/codemie/service/test_mcp_config_service_auth_validation.py: 11 warnings\n  /home/dmytromelnyk4/work/projects/codemie-dev/codemie/src/codemie/service/mcp_config_service.py:281: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_auth_config_for_save(request.config)\n\ntests/codemie/service/test_mcp_config_service_auth_validation.py: 11 warnings\n  /home/dmytromelnyk4/work/projects/codemie-dev/codemie/src/codemie/service/mcp_config_service.py:473: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_auth_config_for_save(mcp_config.config, config_id=config_id)\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_matplotlib_png_generation\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_openpyxl_to_save_workbook\n==== 2 failed, 19720 passed, 186 skipped, 258 warnings in 127.50s (0:02:07) ===="
+  },
+  "dockerfile_sha256_before": "65764de19142269edf5d96a80f1c274534fb03cbb54e4464b0dcbc2d9687403e",
+  "dockerfile_sha256_after": "65764de19142269edf5d96a80f1c274534fb03cbb54e4464b0dcbc2d9687403e",
+  "head_after": "c9759059202f1980a017819b504db963cfaced03",
+  "needs_input": false,
+  "enterprise_cause_audit": {
+    "nodes_audited": 66,
+    "original_failures": 65,
+    "original_errors": 1,
+    "enterprise_related": 57,
+    "non_enterprise_related": 9,
+    "unclassified": 0,
+    "all_66_enterprise_related": false,
+    "exclusions_applied": [],
+    "evidence": "docs/superpowers/tasks/2026-10-14-epmcdme-15607/verify/stage6-enterprise-cause-audit.local.json"
+  },
+  "available_suite": {
+    "id": "unit-available-normal",
+    "head": "c9759059202f1980a017819b504db963cfaced03",
+    "command": "poetry run pytest tests/ --ignore=tests/enterprise/ --deselect=tests/codemie/service/security/test_logout_token_cleanup_mock_tms.py::test_logout_removes_only_the_users_rows_and_pod_fallback --deselect=tests/codemie/rest_api/router_guards/test_openapi_snapshot.py::test_openapi_matches_baseline --deselect=tests/codemie/service/mcp/test_toolkit_service_auth_resolver.py::test_nfr23_discovered_pipeline_preserves_current_scope_and_invokes_tool_with_token --deselect=tests/codemie/service/mcp/test_toolkit_service_auth_resolver.py::test_prepare_server_config_falls_back_to_legacy_when_discovered_token_missing --deselect=tests/codemie/service/oauth/adapters/test_provider_adapters.py::test_gitlab_exchange_maps_enterprise_token_data --deselect=tests/codemie/service/oauth/adapters/test_provider_adapters.py::test_atlassian_exchange_maps_enterprise_token_data",
+    "status": "FAIL",
+    "exit_code": 1,
+    "duration_ms": 131129,
+    "counts": {
+      "passed": 19720,
+      "failed": 2,
+      "skipped": 186,
+      "warnings": 258
+    },
+    "evidence_log": "docs/superpowers/tasks/2026-10-14-epmcdme-15607/verify/stage6-unit-available-normal.local.log",
+    "normal_database": "postgres",
+    "disposable_overrides_removed": true,
+    "completed_at": "2026-10-15T08:19:58.026512+00:00"
+  },
+  "non_enterprise_investigation": {
+    "postgres_normal_passed": 7,
+    "filesystem_isolated_passed": 2,
+    "filesystem_broad_failed": 2,
+    "product_defect_confirmed": false
+  },
+  "stage6_paused": false,
+  "handoff_ready": true,
+  "isolated_database": {
+    "database": "codemie_stage6_c97590592",
+    "dropped": true,
+    "retained": false,
+    "deletion_verified": true,
+    "existing_database_preserved": true
+  },
+  "historical_gate_runs": [
+    {
+      "id": "unit",
+      "command": "make test",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 130260,
+      "exit_code": 2,
+      "notes": "Original full-suite FAIL preserved: 65 failed, 20594 passed, 198 skipped, 259 warnings, 1 error. Complete audit: 57 enterprise-related nodes (56 failures + 1 error), nine non-enterprise failures. Conditional enterprise skip does not apply.",
+      "historical": true,
+      "outcome_applies": false
+    },
+    {
+      "id": "isolated-db-migrations",
+      "command": "CLI_ANALYTICS_PG_URL=\"$STAGE6_DISPOSABLE_PG_URL\" CLI_ANALYTICS_PG_SCHEMA=codemie_analytics poetry run python -c 'from urllib.parse import urlsplit; from codemie.configs.config import Config; from codemie.repository.cli_analytics.postgres.settings import AnalyticsPgSettings; from codemie.repository.cli_analytics.postgres.migrations import run_migrations; s = AnalyticsPgSettings.from_config(Config()); u = urlsplit(s.dsn); assert u.hostname == \"localhost\" and (u.port or 5432) == 5432 and u.path == \"/codemie_stage6_c97590592\" and s.schema == \"codemie_analytics\"; run_migrations(s)'",
+      "status": "PASS",
+      "exit_code": 0,
+      "duration_ms": 997,
+      "source": "guide",
+      "notes": "Approved existing migrations completed only in codemie_stage6_c97590592; actual database asserted before execution.",
+      "historical": true,
+      "outcome_applies": false
+    },
+    {
+      "id": "postgres-isolated-rerun",
+      "command": "CLI_ANALYTICS_PG_URL=\"$STAGE6_DISPOSABLE_PG_URL\" TEST_LOCAL_PG_URL=\"$STAGE6_DISPOSABLE_PG_URL\" CLI_ANALYTICS_PG_SCHEMA=codemie_analytics poetry run pytest -n 0 tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py",
+      "status": "FAIL",
+      "exit_code": 1,
+      "duration_ms": 4828,
+      "source": "guide",
+      "notes": "All 7 failed with CheckViolationError: spans has no child/default partitions. Target asserted; original full-suite failures preserved; no enterprise exclusions applied.",
+      "historical": true,
+      "outcome_applies": false
+    },
+    {
+      "id": "affected",
+      "command": "poetry run pytest -n 0 tests/codemie/service/tools/test_tool_execution_validate.py tests/codemie_tools/ms_exchange/test_tools.py",
+      "source": "guide",
+      "status": "PASS",
+      "exit_code": 0,
+      "duration_ms": 11463,
+      "notes": "Fresh focused refresh on current HEAD: 74 passed, 2 warnings in 6.33s. No exclusions, coverage, or report flags; not a full-suite pass.",
+      "historical": true,
+      "outcome_applies": false
+    },
+    {
+      "id": "filesystem-isolated-rerun",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 5513,
+      "command": "timeout --signal=TERM --kill-after=10s 180s poetry run pytest -n 0 tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_matplotlib_png_generation tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_openpyxl_to_save_workbook",
+      "exit_code": 0,
+      "notes": "Isolated rerun: 2 passed in 2.75s, classification rerun-pass. Original two full-suite failures retained; no confirmed product defect. No source/test changes.",
+      "historical": true,
+      "outcome_applies": false
+    }
+  ],
+  "historical_failures": {
+    "unit-original-full-suite": "FAILED tests/enterprise/mcp_auth/test_discovery_probe_bridge.py::test_discovered_auth_gate_registration_failures_return_config_error_payload[dcr_timeout-attempted_mechanisms1]\nFAILED tests/enterprise/mcp_auth/test_discovery_probe_bridge.py::test_discovered_auth_gate_registration_failures_return_config_error_payload[dcr_unavailable-attempted_mechanisms2]\nFAILED tests/enterprise/mcp_auth/test_insufficient_scope_recovery_bridge.py::test_bridge_maps_real_assistant_recovery_payload_snapshot\nFAILED tests/enterprise/mcp_auth/test_mcp_auth_status_bridge.py::test_build_discovered_auth_status_response_uses_flow_store_and_tms[False-authentication_required]\nFAILED tests/enterprise/mcp_auth/test_mcp_auth_status_bridge.py::test_build_discovered_auth_status_response_uses_flow_store_and_tms[True-authenticated]\nFAILED tests/enterprise/mcp_auth/test_mcp_auth_status_bridge.py::test_build_discovered_auth_status_response_returns_config_error_snapshot\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_raise_client_error_logs_warning_with_sanitized_details_before_raising\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_static_oauth2_initiate_logs_info_with_state_prefix_and_authorize_fields\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_static_oauth2_initiate_info_log_never_contains_full_state\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_saml_initiate_logs_info_with_state_prefix_and_authorize_fields\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_build_saml_initiate_passes_mcp_config_id_as_required_param\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_static_initiate_survives_malformed_authorize_url\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_returns_retry_header_after_successful_force_refresh\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_retry_401_and_does_not_force_refresh_twice\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-token_not_found]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-reauth_required0]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-tms_unavailable]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-tms_persistence_error0]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-token_refresh_error]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-reauth_required1]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-tms_persistence_error1]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-warning-token_not_found]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-warning-reauth_required0]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-error-tms_unavailable]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-error-tms_persistence_error0]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-error-token_refresh_error]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-warning-reauth_required1]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-error-tms_persistence_error1]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_without_calling_tms_for_no_refresh_decisions[None-missing_www_authenticate]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_without_calling_tms_for_no_refresh_decisions[Bearer error=\"invalid_request\"-unsupported_bearer_error]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_detects_configured_discovered_identity_conflict\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_non_oauth_config_without_oauth_payload\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_normalizes_or_rejects_refreshed_token_type[bearer-Bearer fresh-access-None]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_normalizes_or_rejects_refreshed_token_type[Basic-None-refresh_result_invalid]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_when_oauth2_identity_is_incomplete[execution_context0-missing_user_id]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_when_oauth2_identity_is_incomplete[execution_context1-missing_auth_config_id]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_uses_discovered_oauth2_identity_when_no_configured_id\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_rejects_env_delivered_oauth2_refresh\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_omits_initiate_url_for_workflow_payload\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_uses_live_discovered_snapshot_for_reauth_initiate_url\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_rebuilds_discovered_snapshot_from_exact_flow_config\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_discovered_snapshot_missing_without_exact_config_is_non_resumable\nFAILED tests/enterprise/mcp_auth/test_private_network_allowlist_bridge.py::test_private_network_allowlist_reader_output_passes_to_enterprise_as_discovery\nFAILED tests/enterprise/mcp_auth/test_discovery_probe_bridge.py::test_discovery_probe_bridge_does_not_await_async_db_engine_in_worker_loop\nFAILED tests/enterprise/mcp_auth/test_oauth2_callback_bridge.py::test_callback_entry_log_state_prefix_joins_to_initiate\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_initiate_route_recovery_attempt_three_returns_auth_required_envelope\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_build_oauth2_initiate_response_passes_canonical_resource_to_enterprise_builder\nERROR tests/codemie/service/security/test_logout_token_cleanup_mock_tms.py::test_logout_removes_only_the_users_rows_and_pod_fallback\n= 65 failed, 20594 passed, 198 skipped, 259 warnings, 1 error in 126.20s (0:02:06) =\nmake: *** [Makefile:31: test] Error 1",
+    "postgres-isolated-rerun": "        \"\"\"EPMCDME-15512 AC3: a subagent called after the previous one stopped starts after that bar ends.\"\"\"\n        engine = await _get_engine()\n        session_id = \"test-epmcdme-15512-live-sequential-windows\"\n        now = datetime.now(timezone.utc)\n        start = now - timedelta(minutes=10)\n        try:\n            await _cleanup(engine, session_id)\n            for tool_use_id, agent_id, offset_s, run_s in (\n                (\"tu-seq-a\", \"agentseqa\", 0, 20.6),\n                (\"tu-seq-b\", \"agentseqb\", 25, 20),\n            ):\n>               await _seed_agent(\n                    engine,\n                    session_id=session_id,\n                    ts=start + timedelta(seconds=offset_s),\n                    tool_use_id=tool_use_id,\n                    agent_id=agent_id,\n                    subagent_span_id=f\"sub-{agent_id}\".encode(),\n                    api_requests=[(0.01, 10, 10)],\n                )\n\ntests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py:493: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \ntests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py:99: in _seed_agent\n    await conn.execute(\n.venv/lib/python3.12/site-packages/asyncpg/connection.py:352: in execute\n    _, status, _ = await self._execute(\n.venv/lib/python3.12/site-packages/asyncpg/connection.py:1864: in _execute\n    result, _ = await self.__execute(\n.venv/lib/python3.12/site-packages/asyncpg/connection.py:1961: in __execute\n    result, stmt = await self._do_execute(\n.venv/lib/python3.12/site-packages/asyncpg/connection.py:2027: in _do_execute\n    result = await executor(stmt, timeout)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\n>   ???\nE   asyncpg.exceptions.CheckViolationError: no partition of relation \"spans\" found for row\nE   DETAIL:  Partition key of the failing row contains (ts) = (2026-10-15 07:39:10.433105+00).\n\nasyncpg/protocol/protocol.pyx:206: CheckViolationError\n=========================== short test summary info ============================\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py::test_two_parallel_agents_get_their_own_exact_totals_not_an_even_split\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py::test_a_dispatch_without_an_llm_group_has_no_cost_rather_than_a_guess\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py::test_a_dispatch_with_no_agent_id_falls_back_to_its_parent_span_from_its_start_on\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py::test_subagent_run_time_runs_from_its_call_start_to_its_stop_event_and_is_null_without_one\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py::test_a_foreground_agent_runs_from_its_call_start_to_its_stop_even_though_its_stop_precedes_the_result\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py::test_parallel_subagents_have_overlapping_windows\nFAILED tests/codemie/repository/cli_analytics/postgres/test_reader_live_dispatches.py::test_sequential_subagents_do_not_overlap\n============================== 7 failed in 2.13s ==============================="
+  },
+  "blocked_gate": "unit-available-normal",
+  "normal_database": {
+    "head": "c9759059202f1980a017819b504db963cfaced03",
+    "database": "postgres",
+    "host": "localhost",
+    "port": 5432,
+    "schema": "codemie_analytics",
+    "ready": true,
+    "tables_present": [
+      "hook_events",
+      "log_events",
+      "spans"
+    ],
+    "default_partitions_present": [
+      "hook_events",
+      "log_events",
+      "spans"
+    ],
+    "dated_partitions_present": [
+      "hook_events",
+      "log_events",
+      "spans"
+    ],
+    "migration_revision": "a1c1a0000006",
+    "temporary_database": "codemie_stage6_c97590592",
+    "temporary_database_absent": true,
+    "original_database_preserved": true,
+    "read_only": true,
+    "partitions": [
+      {
+        "parent": "hook_events",
+        "partition": "hook_events_default",
+        "partition_bound": "DEFAULT"
+      },
+      {
+        "parent": "hook_events",
+        "partition": "hook_events_w2026_29",
+        "partition_bound": "FOR VALUES FROM ('2026-07-13 00:00:00+00') TO ('2026-07-20 00:00:00+00')"
+      },
+      {
+        "parent": "hook_events",
+        "partition": "hook_events_w2026_30",
+        "partition_bound": "FOR VALUES FROM ('2026-07-20 00:00:00+00') TO ('2026-07-27 00:00:00+00')"
+      },
+      {
+        "parent": "hook_events",
+        "partition": "hook_events_w2026_31",
+        "partition_bound": "FOR VALUES FROM ('2026-07-27 00:00:00+00') TO ('2026-08-03 00:00:00+00')"
+      },
+      {
+        "parent": "hook_events",
+        "partition": "hook_events_w2026_32",
+        "partition_bound": "FOR VALUES FROM ('2026-08-03 00:00:00+00') TO ('2026-08-10 00:00:00+00')"
+      },
+      {
+        "parent": "hook_events",
+        "partition": "hook_events_w2026_33",
+        "partition_bound": "FOR VALUES FROM ('2026-08-10 00:00:00+00') TO ('2026-08-17 00:00:00+00')"
+      },
+      {
+        "parent": "hook_events",
+        "partition": "hook_events_w2026_34",
+        "partition_bound": "FOR VALUES FROM ('2026-08-17 00:00:00+00') TO ('2026-08-24 00:00:00+00')"
+      },
+      {
+        "parent": "hook_events",
+        "partition": "hook_events_w2026_35",
+        "partition_bound": "FOR VALUES FROM ('2026-08-24 00:00:00+00') TO ('2026-08-31 00:00:00+00')"
+      },
+      {
+        "parent": "hook_events",
+        "partition": "hook_events_w2026_36",
+        "partition_bound": "FOR VALUES FROM ('2026-08-31 00:00:00+00') TO ('2026-09-07 00:00:00+00')"
+      },
+      {
+        "parent": "hook_events",
+        "partition": "hook_events_w2026_37",
+        "partition_bound": "FOR VALUES FROM ('2026-09-07 00:00:00+00') TO ('2026-09-14 00:00:00+00')"
+      },
+      {
+        "parent": "hook_events",
+        "partition": "hook_events_w2026_38",
+        "partition_bound": "FOR VALUES FROM ('2026-09-14 00:00:00+00') TO ('2026-09-21 00:00:00+00')"
+      },
+      {
+        "parent": "hook_events",
+        "partition": "hook_events_w2026_39",
+        "partition_bound": "FOR VALUES FROM ('2026-09-21 00:00:00+00') TO ('2026-09-28 00:00:00+00')"
+      },
+      {
+        "parent": "hook_events",
+        "partition": "hook_events_w2026_40",
+        "partition_bound": "FOR VALUES FROM ('2026-09-28 00:00:00+00') TO ('2026-10-05 00:00:00+00')"
+      },
+      {
+        "parent": "hook_events",
+        "partition": "hook_events_w2026_41",
+        "partition_bound": "FOR VALUES FROM ('2026-10-05 00:00:00+00') TO ('2026-10-12 00:00:00+00')"
+      },
+      {
+        "parent": "hook_events",
+        "partition": "hook_events_w2026_42",
+        "partition_bound": "FOR VALUES FROM ('2026-10-12 00:00:00+00') TO ('2026-10-19 00:00:00+00')"
+      },
+      {
+        "parent": "hook_events",
+        "partition": "hook_events_w2026_43",
+        "partition_bound": "FOR VALUES FROM ('2026-10-19 00:00:00+00') TO ('2026-10-26 00:00:00+00')"
+      },
+      {
+        "parent": "hook_events",
+        "partition": "hook_events_w2026_44",
+        "partition_bound": "FOR VALUES FROM ('2026-10-26 00:00:00+00') TO ('2026-11-02 00:00:00+00')"
+      },
+      {
+        "parent": "hook_events",
+        "partition": "hook_events_w2026_45",
+        "partition_bound": "FOR VALUES FROM ('2026-11-02 00:00:00+00') TO ('2026-11-09 00:00:00+00')"
+      },
+      {
+        "parent": "hook_events",
+        "partition": "hook_events_w2026_46",
+        "partition_bound": "FOR VALUES FROM ('2026-11-09 00:00:00+00') TO ('2026-11-16 00:00:00+00')"
+      },
+      {
+        "parent": "log_events",
+        "partition": "log_events_default",
+        "partition_bound": "DEFAULT"
+      },
+      {
+        "parent": "log_events",
+        "partition": "log_events_w2026_29",
+        "partition_bound": "FOR VALUES FROM ('2026-07-13 00:00:00+00') TO ('2026-07-20 00:00:00+00')"
+      },
+      {
+        "parent": "log_events",
+        "partition": "log_events_w2026_30",
+        "partition_bound": "FOR VALUES FROM ('2026-07-20 00:00:00+00') TO ('2026-07-27 00:00:00+00')"
+      },
+      {
+        "parent": "log_events",
+        "partition": "log_events_w2026_31",
+        "partition_bound": "FOR VALUES FROM ('2026-07-27 00:00:00+00') TO ('2026-08-03 00:00:00+00')"
+      },
+      {
+        "parent": "log_events",
+        "partition": "log_events_w2026_32",
+        "partition_bound": "FOR VALUES FROM ('2026-08-03 00:00:00+00') TO ('2026-08-10 00:00:00+00')"
+      },
+      {
+        "parent": "log_events",
+        "partition": "log_events_w2026_33",
+        "partition_bound": "FOR VALUES FROM ('2026-08-10 00:00:00+00') TO ('2026-08-17 00:00:00+00')"
+      },
+      {
+        "parent": "log_events",
+        "partition": "log_events_w2026_34",
+        "partition_bound": "FOR VALUES FROM ('2026-08-17 00:00:00+00') TO ('2026-08-24 00:00:00+00')"
+      },
+      {
+        "parent": "log_events",
+        "partition": "log_events_w2026_35",
+        "partition_bound": "FOR VALUES FROM ('2026-08-24 00:00:00+00') TO ('2026-08-31 00:00:00+00')"
+      },
+      {
+        "parent": "log_events",
+        "partition": "log_events_w2026_36",
+        "partition_bound": "FOR VALUES FROM ('2026-08-31 00:00:00+00') TO ('2026-09-07 00:00:00+00')"
+      },
+      {
+        "parent": "log_events",
+        "partition": "log_events_w2026_37",
+        "partition_bound": "FOR VALUES FROM ('2026-09-07 00:00:00+00') TO ('2026-09-14 00:00:00+00')"
+      },
+      {
+        "parent": "log_events",
+        "partition": "log_events_w2026_38",
+        "partition_bound": "FOR VALUES FROM ('2026-09-14 00:00:00+00') TO ('2026-09-21 00:00:00+00')"
+      },
+      {
+        "parent": "log_events",
+        "partition": "log_events_w2026_39",
+        "partition_bound": "FOR VALUES FROM ('2026-09-21 00:00:00+00') TO ('2026-09-28 00:00:00+00')"
+      },
+      {
+        "parent": "log_events",
+        "partition": "log_events_w2026_40",
+        "partition_bound": "FOR VALUES FROM ('2026-09-28 00:00:00+00') TO ('2026-10-05 00:00:00+00')"
+      },
+      {
+        "parent": "log_events",
+        "partition": "log_events_w2026_41",
+        "partition_bound": "FOR VALUES FROM ('2026-10-05 00:00:00+00') TO ('2026-10-12 00:00:00+00')"
+      },
+      {
+        "parent": "log_events",
+        "partition": "log_events_w2026_42",
+        "partition_bound": "FOR VALUES FROM ('2026-10-12 00:00:00+00') TO ('2026-10-19 00:00:00+00')"
+      },
+      {
+        "parent": "log_events",
+        "partition": "log_events_w2026_43",
+        "partition_bound": "FOR VALUES FROM ('2026-10-19 00:00:00+00') TO ('2026-10-26 00:00:00+00')"
+      },
+      {
+        "parent": "log_events",
+        "partition": "log_events_w2026_44",
+        "partition_bound": "FOR VALUES FROM ('2026-10-26 00:00:00+00') TO ('2026-11-02 00:00:00+00')"
+      },
+      {
+        "parent": "log_events",
+        "partition": "log_events_w2026_45",
+        "partition_bound": "FOR VALUES FROM ('2026-11-02 00:00:00+00') TO ('2026-11-09 00:00:00+00')"
+      },
+      {
+        "parent": "log_events",
+        "partition": "log_events_w2026_46",
+        "partition_bound": "FOR VALUES FROM ('2026-11-09 00:00:00+00') TO ('2026-11-16 00:00:00+00')"
+      },
+      {
+        "parent": "spans",
+        "partition": "spans_default",
+        "partition_bound": "DEFAULT"
+      },
+      {
+        "parent": "spans",
+        "partition": "spans_w2026_29",
+        "partition_bound": "FOR VALUES FROM ('2026-07-13 00:00:00+00') TO ('2026-07-20 00:00:00+00')"
+      },
+      {
+        "parent": "spans",
+        "partition": "spans_w2026_30",
+        "partition_bound": "FOR VALUES FROM ('2026-07-20 00:00:00+00') TO ('2026-07-27 00:00:00+00')"
+      },
+      {
+        "parent": "spans",
+        "partition": "spans_w2026_31",
+        "partition_bound": "FOR VALUES FROM ('2026-07-27 00:00:00+00') TO ('2026-08-03 00:00:00+00')"
+      },
+      {
+        "parent": "spans",
+        "partition": "spans_w2026_32",
+        "partition_bound": "FOR VALUES FROM ('2026-08-03 00:00:00+00') TO ('2026-08-10 00:00:00+00')"
+      },
+      {
+        "parent": "spans",
+        "partition": "spans_w2026_33",
+        "partition_bound": "FOR VALUES FROM ('2026-08-10 00:00:00+00') TO ('2026-08-17 00:00:00+00')"
+      },
+      {
+        "parent": "spans",
+        "partition": "spans_w2026_34",
+        "partition_bound": "FOR VALUES FROM ('2026-08-17 00:00:00+00') TO ('2026-08-24 00:00:00+00')"
+      },
+      {
+        "parent": "spans",
+        "partition": "spans_w2026_35",
+        "partition_bound": "FOR VALUES FROM ('2026-08-24 00:00:00+00') TO ('2026-08-31 00:00:00+00')"
+      },
+      {
+        "parent": "spans",
+        "partition": "spans_w2026_36",
+        "partition_bound": "FOR VALUES FROM ('2026-08-31 00:00:00+00') TO ('2026-09-07 00:00:00+00')"
+      },
+      {
+        "parent": "spans",
+        "partition": "spans_w2026_37",
+        "partition_bound": "FOR VALUES FROM ('2026-09-07 00:00:00+00') TO ('2026-09-14 00:00:00+00')"
+      },
+      {
+        "parent": "spans",
+        "partition": "spans_w2026_38",
+        "partition_bound": "FOR VALUES FROM ('2026-09-14 00:00:00+00') TO ('2026-09-21 00:00:00+00')"
+      },
+      {
+        "parent": "spans",
+        "partition": "spans_w2026_39",
+        "partition_bound": "FOR VALUES FROM ('2026-09-21 00:00:00+00') TO ('2026-09-28 00:00:00+00')"
+      },
+      {
+        "parent": "spans",
+        "partition": "spans_w2026_40",
+        "partition_bound": "FOR VALUES FROM ('2026-09-28 00:00:00+00') TO ('2026-10-05 00:00:00+00')"
+      },
+      {
+        "parent": "spans",
+        "partition": "spans_w2026_41",
+        "partition_bound": "FOR VALUES FROM ('2026-10-05 00:00:00+00') TO ('2026-10-12 00:00:00+00')"
+      },
+      {
+        "parent": "spans",
+        "partition": "spans_w2026_42",
+        "partition_bound": "FOR VALUES FROM ('2026-10-12 00:00:00+00') TO ('2026-10-19 00:00:00+00')"
+      },
+      {
+        "parent": "spans",
+        "partition": "spans_w2026_43",
+        "partition_bound": "FOR VALUES FROM ('2026-10-19 00:00:00+00') TO ('2026-10-26 00:00:00+00')"
+      },
+      {
+        "parent": "spans",
+        "partition": "spans_w2026_44",
+        "partition_bound": "FOR VALUES FROM ('2026-10-26 00:00:00+00') TO ('2026-11-02 00:00:00+00')"
+      },
+      {
+        "parent": "spans",
+        "partition": "spans_w2026_45",
+        "partition_bound": "FOR VALUES FROM ('2026-11-02 00:00:00+00') TO ('2026-11-09 00:00:00+00')"
+      },
+      {
+        "parent": "spans",
+        "partition": "spans_w2026_46",
+        "partition_bound": "FOR VALUES FROM ('2026-11-09 00:00:00+00') TO ('2026-11-16 00:00:00+00')"
+      }
+    ]
+  },
+  "temporary_database_cleanup": {
+    "schema": 1,
+    "head": "c9759059202f1980a017819b504db963cfaced03",
+    "status": "PASS",
+    "exit_code": 0,
+    "container": "codemie-dev_postgres_1",
+    "administrative_database": "postgres",
+    "administrative_connection_asserted": true,
+    "exact_drop_target_asserted": true,
+    "drop_sql": "DROP DATABASE IF EXISTS \"codemie_stage6_c97590592\"",
+    "temporary_database": "codemie_stage6_c97590592",
+    "temporary_database_absent": true,
+    "normal_schema_present": true,
+    "normal_required_table_count": 3,
+    "force_used": false,
+    "sessions_terminated": false,
+    "other_databases_dropped": [],
+    "tests_attempted_before_cleanup": [
+      "postgres-normal-rerun",
+      "affected-normal-refresh",
+      "filesystem-normal-refresh",
+      "unit-available-normal"
+    ],
+    "authorization": "User explicitly authorized removal of this named temporary database only.",
+    "completed_at": "2026-10-15T08:19:03.089672+00:00"
+  },
+  "original_full_suite": {
+    "status": "FAIL",
+    "command": "make test",
+    "counts": {
+      "failed": 65,
+      "passed": 20594,
+      "skipped": 198,
+      "warnings": 259,
+      "errors": 1
+    },
+    "log_sha256": "88f799c82019e808ee656e7ffca59a0714fb0827e70613f8a2bba3246f581b6f",
+    "audit_nodes": 66,
+    "enterprise_nodes": 57,
+    "non_enterprise_nodes": 9,
+    "evidence": "docs/superpowers/tasks/2026-10-14-epmcdme-15607/verify/stage6-enterprise-cause-audit.local.json",
+    "outcome_applies": false
+  },
+  "enterprise_exclusions": {
+    "head": "c9759059202f1980a017819b504db963cfaced03",
+    "normal_database": "postgres",
+    "disposable_overrides_removed": true,
+    "ignored_paths": [
+      "tests/enterprise/"
+    ],
+    "deselected_verified_enterprise_nodes": [
+      "tests/codemie/service/security/test_logout_token_cleanup_mock_tms.py::test_logout_removes_only_the_users_rows_and_pod_fallback",
+      "tests/codemie/rest_api/router_guards/test_openapi_snapshot.py::test_openapi_matches_baseline",
+      "tests/codemie/service/mcp/test_toolkit_service_auth_resolver.py::test_nfr23_discovered_pipeline_preserves_current_scope_and_invokes_tool_with_token",
+      "tests/codemie/service/mcp/test_toolkit_service_auth_resolver.py::test_prepare_server_config_falls_back_to_legacy_when_discovered_token_missing",
+      "tests/codemie/service/oauth/adapters/test_provider_adapters.py::test_gitlab_exchange_maps_enterprise_token_data",
+      "tests/codemie/service/oauth/adapters/test_provider_adapters.py::test_atlassian_exchange_maps_enterprise_token_data"
+    ],
+    "verified_enterprise_original_nodes": 57,
+    "original_non_enterprise_nodes_to_resolve": 9,
+    "available_command": "poetry run pytest tests/ --ignore=tests/enterprise/ --deselect=tests/codemie/service/security/test_logout_token_cleanup_mock_tms.py::test_logout_removes_only_the_users_rows_and_pod_fallback --deselect=tests/codemie/rest_api/router_guards/test_openapi_snapshot.py::test_openapi_matches_baseline --deselect=tests/codemie/service/mcp/test_toolkit_service_auth_resolver.py::test_nfr23_discovered_pipeline_preserves_current_scope_and_invokes_tool_with_token --deselect=tests/codemie/service/mcp/test_toolkit_service_auth_resolver.py::test_prepare_server_config_falls_back_to_legacy_when_discovered_token_missing --deselect=tests/codemie/service/oauth/adapters/test_provider_adapters.py::test_gitlab_exchange_maps_enterprise_token_data --deselect=tests/codemie/service/oauth/adapters/test_provider_adapters.py::test_atlassian_exchange_maps_enterprise_token_data",
+    "scope_authorization": "Apply enterprise exclusions only after seven normal-DB PostgreSQL tests and two filesystem tests pass.",
+    "enterprise_exclusions_condition_met": true,
+    "resolved_non_enterprise_original_nodes": 9
+  },
+  "current_failures": {
+    "head": "c9759059202f1980a017819b504db963cfaced03",
+    "available_suite": "FAIL",
+    "failed": 2,
+    "nodes": [
+      {
+        "node_id": "tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_matplotlib_png_generation",
+        "status": "FAIL",
+        "enterprise_related": false,
+        "log_start_line": 298,
+        "log_end_line": 323,
+        "exception_evidence": [
+          {
+            "line": 320,
+            "text": "E       assert -2 == 0"
+          },
+          {
+            "line": 321,
+            "text": "E        +  where -2 = CompletedProcess(args=['/home/dmytromelnyk4/work/projects/codemie-dev/codemie/.venv/bin/python', '/tmp/pytest-of-dmytr..._matplotlib_p0/workspace/script.py\", line 843, in audit_hook\\n    def audit_hook(event, args):\\n\\nKeyboardInterrupt\\n').returncode"
+          }
+        ],
+        "complete_traceback": "_________________ test_guard_allows_matplotlib_png_generation __________________\n[gw2] linux -- Python 3.12.15 /home/dmytromelnyk4/work/projects/codemie-dev/codemie/.venv/bin/python\n\ntmp_path = PosixPath('/tmp/pytest-of-dmytromelnyk4/pytest-3/popen-gw2/test_guard_allows_matplotlib_p0')\n\n    def test_guard_allows_matplotlib_png_generation(tmp_path: Path) -> None:\n        \"\"\"matplotlib.pyplot.savefig must complete without filesystem denials when\n        MPLCONFIGDIR resolves to an absolute path inside the workspace.  Subprocess\n        denials for font-discovery tools (fc-list, system_profiler) are expected\n        and must not prevent the chart from being saved.\"\"\"\n        workspace = tmp_path / \"workspace\"\n        workspace.mkdir()\n        result = _run_guarded_as_file_in_workspace(\n            workspace,\n            \"import matplotlib\\n\"\n            \"matplotlib.use('Agg')\\n\"\n            \"import matplotlib.pyplot as plt\\n\"\n            \"plt.plot([1, 2, 3], [4, 5, 6])\\n\"\n            \"plt.savefig('chart.png')\\n\"\n            \"print('saved')\\n\",\n        )\n>       assert result.returncode == 0\nE       assert -2 == 0\nE        +  where -2 = CompletedProcess(args=['/home/dmytromelnyk4/work/projects/codemie-dev/codemie/.venv/bin/python', '/tmp/pytest-of-dmytr..._matplotlib_p0/workspace/script.py\", line 843, in audit_hook\\n    def audit_hook(event, args):\\n\\nKeyboardInterrupt\\n').returncode\n\ntests/codemie_tools/data_management/code_executor/test_filesystem_policy.py:731: AssertionError",
+        "isolated_rerun_pass": true,
+        "product_defect_confirmed": false
+      },
+      {
+        "node_id": "tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_openpyxl_to_save_workbook",
+        "status": "FAIL",
+        "enterprise_related": false,
+        "log_start_line": 324,
+        "log_end_line": 349,
+        "exception_evidence": [
+          {
+            "line": 346,
+            "text": "E       assert -2 == 0"
+          },
+          {
+            "line": 347,
+            "text": "E        +  where -2 = CompletedProcess(args=['/home/dmytromelnyk4/work/projects/codemie-dev/codemie/.venv/bin/python', '/tmp/pytest-of-dmytr..._openpyxl_to_0/workspace/script.py\", line 843, in audit_hook\\n    def audit_hook(event, args):\\n\\nKeyboardInterrupt\\n').returncode"
+          }
+        ],
+        "complete_traceback": "_________________ test_guard_allows_openpyxl_to_save_workbook __________________\n[gw2] linux -- Python 3.12.15 /home/dmytromelnyk4/work/projects/codemie-dev/codemie/.venv/bin/python\n\ntmp_path = PosixPath('/tmp/pytest-of-dmytromelnyk4/pytest-3/popen-gw2/test_guard_allows_openpyxl_to_0')\n\n    def test_guard_allows_openpyxl_to_save_workbook(tmp_path: Path) -> None:\n        \"\"\"openpyxl uses NamedTemporaryFile (absolute path in WORKSPACE_TMP) during\n        save and removes it in an atexit handler.  It also calls mimetypes which\n        probes /etc/mime.types with a read-only open.  Neither should produce denial\n        markers or crash the process.\"\"\"\n        workspace = tmp_path / \"workspace\"\n        workspace.mkdir()\n        result = _run_guarded_as_file_in_workspace(\n            workspace,\n            \"import openpyxl\\n\"\n            \"wb = openpyxl.Workbook()\\n\"\n            \"ws = wb.active\\n\"\n            \"ws['A1'] = 'test'\\n\"\n            \"wb.save('out.xlsx')\\n\"\n            \"print('saved')\\n\",\n        )\n>       assert result.returncode == 0\nE       assert -2 == 0\nE        +  where -2 = CompletedProcess(args=['/home/dmytromelnyk4/work/projects/codemie-dev/codemie/.venv/bin/python', '/tmp/pytest-of-dmytr..._openpyxl_to_0/workspace/script.py\", line 843, in audit_hook\\n    def audit_hook(event, args):\\n\\nKeyboardInterrupt\\n').returncode\n\ntests/codemie_tools/data_management/code_executor/test_filesystem_policy.py:755: AssertionError",
+        "isolated_rerun_pass": true,
+        "product_defect_confirmed": false
+      }
+    ],
+    "stopped_without_source_changes": true,
+    "note": "Both tests passed isolated but failed again in broad execution; no silent deselection or confirmed product-defect claim."
+  },
+  "effective_outcome": {
+    "status": "ACCEPTED_WITH_WARNING",
+    "passed": true,
+    "blocked_gate": null,
+    "source": "explicit-user-approval",
+    "scope": "Human-approved isolated verification for the two filesystem nodes, plus previously authorized enterprise exclusions.",
+    "acceptance_evidence": "docs/superpowers/tasks/2026-10-14-epmcdme-15607/verify/stage6-user-accepted-verification.local.json",
+    "mechanical_gate_status": "BLOCKED",
+    "mechanical_blocked_gate": "unit-available-normal",
+    "warning": "Accepted for THIS task only using the two isolated filesystem passes. The broad available suite remains FAIL; every original FAIL and failure trace is preserved."
+  },
+  "user_acceptance": {
+    "schema": 1,
+    "head": "c9759059202f1980a017819b504db963cfaced03",
+    "decision": "approve",
+    "source": "hitl",
+    "decision_gate": "feature.verification",
+    "decision_timestamp": "2026-10-15T08:27:51Z",
+    "decision_evidence": "docs/superpowers/tasks/2026-10-14-epmcdme-15607/decisions.jsonl",
+    "rationale": "User explicitly accepts the two filesystem tests based on their isolated passes for this task. Original broad-suite failures remain recorded; authorized enterprise exclusions remain. No claim that the original broad suite passed.",
+    "scope": "THIS task only: accept the two filesystem tests using their existing isolated passes; do not reclassify broad execution or generalize the waiver.",
+    "accepted_nodes": [
+      "tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_matplotlib_png_generation",
+      "tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_openpyxl_to_save_workbook"
+    ],
+    "isolated_result": {
+      "status": "PASS",
+      "passed": 2,
+      "command": "timeout --signal=TERM --kill-after=10s 180s poetry run pytest -n 0 tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_matplotlib_png_generation tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_openpyxl_to_save_workbook",
+      "evidence": "docs/superpowers/tasks/2026-10-14-epmcdme-15607/verify/stage6-filesystem-normal-refresh.local.log"
+    },
+    "broad_result": {
+      "status": "FAIL",
+      "counts": {
+        "passed": 19720,
+        "failed": 2,
+        "skipped": 186,
+        "warnings": 258
+      },
+      "command": "poetry run pytest tests/ --ignore=tests/enterprise/ --deselect=tests/codemie/service/security/test_logout_token_cleanup_mock_tms.py::test_logout_removes_only_the_users_rows_and_pod_fallback --deselect=tests/codemie/rest_api/router_guards/test_openapi_snapshot.py::test_openapi_matches_baseline --deselect=tests/codemie/service/mcp/test_toolkit_service_auth_resolver.py::test_nfr23_discovered_pipeline_preserves_current_scope_and_invokes_tool_with_token --deselect=tests/codemie/service/mcp/test_toolkit_service_auth_resolver.py::test_prepare_server_config_falls_back_to_legacy_when_discovered_token_missing --deselect=tests/codemie/service/oauth/adapters/test_provider_adapters.py::test_gitlab_exchange_maps_enterprise_token_data --deselect=tests/codemie/service/oauth/adapters/test_provider_adapters.py::test_atlassian_exchange_maps_enterprise_token_data",
+      "evidence": "docs/superpowers/tasks/2026-10-14-epmcdme-15607/verify/stage6-unit-available-normal.local.log",
+      "log_sha256": "da1d6e1505d691839e552e838293c6da79d0452aac1ed00a6ca1113a717a1583"
+    },
+    "effective_outcome": "ACCEPTED_WITH_WARNING",
+    "effective_passed": true,
+    "tests_rerun_for_acceptance": false,
+    "recorded_at": "2026-10-15T08:34:39.246822+00:00",
+    "warning": "The broad available suite still has two SIGINT/KeyboardInterrupt failures. Isolated passes are accepted by the user for this task; root cause remains unconfirmed.",
+    "scope_warning": "Accepted for THIS task only using the two isolated filesystem passes. The broad available suite remains FAIL; every original FAIL and failure trace is preserved."
+  },
+  "effective_passed": true,
+  "finalization_note": "Runner schema has no accepted-with-warning mechanical status. Raw BLOCKED/FAIL results are preserved; explicit effective_outcome records the user-authorized task acceptance without a test rerun."
+}
