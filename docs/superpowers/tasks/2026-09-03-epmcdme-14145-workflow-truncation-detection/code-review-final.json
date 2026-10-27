@@ -1,0 +1,82 @@
+{
+  "decision": "request-changes",
+  "rationale": "Three major correctness and safety defects found across blind and edge-case lenses. All four acceptance criteria pass. CR-001: _detect_terminal_truncation uses finish_reason or stop_reason short-circuit OR, diverging from _get_truncation_indicator's independent guards — a message with finish_reason='stop' and stop_reason='max_tokens' would set is_finish_reason_truncated=True but leave _last_truncated=False, producing a silent false negative. CR-002: the except Exception branch in invoke_task returns TaskResult.failed_result without finish_reason/truncated, losing any truncation signal already detected if _invoke_agent raises after detection runs. CR-003: _last_finish_reason/_last_truncated are mutable instance attributes mutated from streaming callbacks; concurrent invocations on a shared instance would corrupt the signal. Two findings dismissed (BL-2: streaming terminal messages have empty content so is_valid_ai_message returns False correctly; AC-001: intentional asymmetry, not a defect). One deferred (EC-004: no guard before _detect_terminal_truncation call on stop messages, latent risk only). Standards all pass.",
+  "confidence": "medium",
+  "risk_flags": [],
+  "business_review": [
+    {
+      "criterion": "Truncation detection runs on terminal messages (final assistant answers), not only tool-call messages.",
+      "status": "PASS",
+      "notes": "Verified: both parse_message_type and parse_supervisor_message_type widen their elif to is_finish_reason_stop OR is_finish_reason_truncated and call _detect_terminal_truncation before _on_llm_end."
+    },
+    {
+      "criterion": "The state output API exposes a truncation signal (finish_reason / truncated), not just a bare output string.",
+      "status": "PASS",
+      "notes": "WorkflowExecutionStateOutput gains both fields; router fetches the state row once and passes finish_reason/truncated through; Alembic migration adds both columns."
+    },
+    {
+      "criterion": "The LiteLLM proxy path's max_tokens behavior is confirmed and covered by a regression test.",
+      "status": "PASS",
+      "notes": "TestFilterLiteLLMParamsMaxTokensForwarding confirms existing behavior: max_tokens forwarded when feature enabled, filtered to None when disabled."
+    },
+    {
+      "criterion": "Regression tests cover the final-answer finish_reason=length / stop_reason=max_tokens case across providers (OpenAI/LiteLLM, native Claude, Bedrock).",
+      "status": "PASS",
+      "notes": "test_langgraph_truncation.py (TestDetectTerminalTruncation), test_langgraph_event_adapter.py (TestTerminalMessageTruncationDetection), and test_assistant_agent.py (TestInvokeTaskTruncationThreading) cover all three provider shapes for both primary and supervisor paths."
+    }
+  ],
+  "standards_review": [
+    {
+      "standard": "Commit format (EPMCDME-####: Description)",
+      "status": "pass",
+      "notes": "All 9 commits follow the required EPMCDME-14145: format."
+    },
+    {
+      "standard": "Code quality / Python types",
+      "status": "pass",
+      "notes": "New code uses Optional[str] consistent with existing file style; Ruff gates enforce autoformatting on commit."
+    },
+    {
+      "standard": "License headers",
+      "status": "pass",
+      "notes": "New test_base_node_truncation.py has Apache 2.0 header; Alembic migration in src/external/* is excluded from license check."
+    },
+    {
+      "standard": "Security patterns",
+      "status": "pass",
+      "notes": "No auth/secrets changes; API change is additive only with no breaking contract changes."
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "triage": "patch",
+      "severity": "major",
+      "file": "src/codemie/agents/langgraph_agent.py",
+      "line": 1259,
+      "problem": "_detect_terminal_truncation uses `finish_reason or stop_reason` short-circuit OR to compute raw_value, diverging from _get_truncation_indicator which checks both fields independently — a message where finish_reason is a truthy non-truncation value (e.g. 'stop') and stop_reason='max_tokens' will have is_finish_reason_truncated=True (enters the elif branch) but _detect_terminal_truncation silently leaves _last_truncated=False.",
+      "impact": "Truncation from providers that set both finish_reason and stop_reason fields with conflicting values is detected for routing but not recorded, producing a false-negative truncated=False / finish_reason=None in the API response for a genuinely truncated output.",
+      "recommendation": "Replace the short-circuit `finish_reason or stop_reason` logic in _detect_terminal_truncation with the same two independent guard pattern used by _get_truncation_indicator, or have _detect_terminal_truncation call _get_truncation_indicator directly to avoid the divergence entirely."
+    },
+    {
+      "id": "CR-002",
+      "triage": "patch",
+      "severity": "major",
+      "file": "src/codemie/agents/langgraph_agent.py",
+      "line": 649,
+      "problem": "The except Exception branch in invoke_task returns TaskResult.failed_result(message, original_exc=e), which carries no finish_reason or truncated fields — if _invoke_agent raises after _detect_terminal_truncation has already set _last_finish_reason/_last_truncated, those flags are silently discarded in the error path.",
+      "impact": "A response that was truncated and then hit a secondary error during graph post-processing will be persisted and surfaced via the API with truncated=False, masking the original truncation signal from callers.",
+      "recommendation": "Capture self._last_finish_reason / self._last_truncated before the try block (or read them in the except branch) and forward them into TaskResult.failed_result via optional kwargs, so the truncation metadata survives even when a secondary error occurs."
+    },
+    {
+      "id": "CR-003",
+      "triage": "patch",
+      "severity": "major",
+      "file": "src/codemie/agents/langgraph_agent.py",
+      "line": 189,
+      "problem": "_last_finish_reason and _last_truncated are mutable instance attributes written from _detect_terminal_truncation (invoked during streaming callbacks) and read in invoke_task after _invoke_agent returns; if the same LangGraphAgent instance is ever invoked concurrently (instance reuse or pooling), the reset-at-start / write-during-stream / read-at-end sequence is not thread-safe.",
+      "impact": "Concurrent invocations on a shared instance would non-deterministically report wrong truncation state — stale True from a prior invocation or flags reset by a concurrent new invocation before the streaming callback fires.",
+      "recommendation": "Use a per-invocation context object (e.g. a small dataclass created at the top of invoke_task and threaded through to the callbacks) instead of mutable instance attributes, or add a clear docstring and enforced assertion that one LangGraphAgent instance must never be invoked concurrently."
+    }
+  ]
+}

@@ -123,6 +123,116 @@ def test_from_agent_response_dict_with_no_known_key():
     assert result.success is False
 
 
+def test_from_agent_response_defaults_truncated():
+    response = make_generation_result(generated="some output", success=True)
+
+    result = TaskResult.from_agent_response(response)
+
+    assert result.truncated is False
+
+
+def test_from_agent_response_sets_truncated_when_passed():
+    response = make_generation_result(generated="partial output", success=True)
+
+    result = TaskResult.from_agent_response(response, truncated=True)
+
+    assert result.truncated is True
+
+
+def test_from_agent_response_dict_with_output_key_sets_truncation_signal():
+    response = {"output": "agent answer"}
+
+    result = TaskResult.from_agent_response(response, truncated=True)
+
+    assert result.truncated is True
+
+
+def test_from_agent_response_dict_with_generated_key_defaults_truncation_signal():
+    response = {"generated": "chain answer"}
+
+    result = TaskResult.from_agent_response(response)
+
+    assert result.truncated is False
+
+
+_AGENT_MOD_LANGGRAPH = "codemie.agents.langgraph_agent"
+
+
+class TestInvokeTaskTruncationThreading:
+    """EPMCDME-14145: invoke_task must thread _last_truncated into TaskResult."""
+
+    def _make_langgraph_agent(self):
+        from codemie.agents.langgraph_agent import LangGraphAgent
+
+        agent = LangGraphAgent.__new__(LangGraphAgent)
+        agent.llm_model = "gpt-4"
+        agent.agent_name = "test-agent"
+        agent.request_uuid = "test-uuid"
+        agent.assistant = MagicMock()
+        agent.user = MagicMock()
+        agent.conversation_id = "test-conversation-id"
+        agent._last_truncated = False
+        return agent
+
+    @patch(f"{_AGENT_MOD_LANGGRAPH}.set_llm_context")
+    def test_invoke_task_threads_truncation_signal_into_task_result(self, _mock_set_llm_context):
+        agent = self._make_langgraph_agent()
+
+        def fake_invoke_agent(inputs):
+            agent._last_truncated = True
+            return {"output": "partial answer"}
+
+        agent._invoke_agent = fake_invoke_agent
+        agent._get_inputs = MagicMock(return_value={})
+        agent._truncate_log_content = MagicMock(return_value="")
+        agent._serialize_messages_for_log = MagicMock(return_value="")
+        agent._filter_history = MagicMock(return_value=[])
+        agent._transform_history = MagicMock(return_value=[])
+
+        result = agent.invoke_task()
+
+        assert result.truncated is True
+
+    @patch(f"{_AGENT_MOD_LANGGRAPH}.set_llm_context")
+    def test_invoke_task_defaults_truncation_signal_when_not_truncated(self, _mock_set_llm_context):
+        agent = self._make_langgraph_agent()
+
+        def fake_invoke_agent(inputs):
+            return {"output": "complete answer"}
+
+        agent._invoke_agent = fake_invoke_agent
+        agent._get_inputs = MagicMock(return_value={})
+        agent._truncate_log_content = MagicMock(return_value="")
+        agent._serialize_messages_for_log = MagicMock(return_value="")
+        agent._filter_history = MagicMock(return_value=[])
+        agent._transform_history = MagicMock(return_value=[])
+
+        result = agent.invoke_task()
+
+        assert result.truncated is False
+
+    @patch(f"{_AGENT_MOD_LANGGRAPH}.set_llm_context")
+    def test_invoke_task_resets_truncation_signal_before_invoking(self, _mock_set_llm_context):
+        """A stale flag from a prior call must not leak into a fresh invoke_task call."""
+        agent = self._make_langgraph_agent()
+        agent._last_truncated = True
+
+        def fake_invoke_agent(inputs):
+            # Simulate a fresh graph run that does not hit truncation this time.
+            return {"output": "complete answer"}
+
+        agent._invoke_agent = fake_invoke_agent
+        agent._get_inputs = MagicMock(return_value={})
+        agent._truncate_log_content = MagicMock(return_value="")
+        agent._serialize_messages_for_log = MagicMock(return_value="")
+        agent._filter_history = MagicMock(return_value=[])
+        agent._transform_history = MagicMock(return_value=[])
+
+        result = agent.invoke_task()
+
+        assert result.truncated is False
+
+
 _AGENT_MOD = "codemie.agents.assistant_agent"
 
 

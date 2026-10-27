@@ -197,6 +197,7 @@ def _get_execution_thoughts(
                 "in_progress": run_is_live and state.status == WorkflowExecutionStatusEnum.IN_PROGRESS,
                 "interrupted": state.status == WorkflowExecutionStatusEnum.INTERRUPTED,
                 "aborted": state.status == WorkflowExecutionStatusEnum.ABORTED,
+                "truncated": state.truncated,
             }
             for state in states
             if state.output or state.status in _VISIBLE_WITHOUT_OUTPUT

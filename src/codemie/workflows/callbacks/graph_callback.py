@@ -88,13 +88,14 @@ class LanggraphNodeCallback(BaseCallback):
             ).model_dump_json()
         )
 
-    def on_node_end(self, output: str, *args, **kwargs):
+    def on_node_end(self, output: str, *args, truncated=False, **kwargs):
         state_id = kwargs.get('execution_state_id')
         message = f"{output} \n\n"
         if state_id in self._thoughts:
             current_thought = self._thoughts[state_id]
             current_thought.message = self._escape_message(message)
             current_thought.in_progress = False
+            current_thought.truncated = truncated
 
             self.gen.send(
                 StreamedGenerationResult(

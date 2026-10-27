@@ -210,7 +210,10 @@ class LangGraphEventAdapter:
 
         # Use a separate `if` (not `elif`) so that a chunk carrying both content
         # and a stop reason also triggers LLM-end finalization.
-        if self.agent.is_finish_reason_stop(message) and metadata.get("langgraph_node") == "agent":
+        if (
+            self.agent.is_finish_reason_stop(message) or self.agent.is_finish_reason_truncated(message)
+        ) and metadata.get("langgraph_node") == "agent":
+            self.agent._detect_terminal_truncation(message)
             self._restore_response_headers(message)
             self.agent._on_llm_end(response=message, run_id=message.id)
 
@@ -271,14 +274,17 @@ class LangGraphEventAdapter:
         chunks_collector: list[str],
         author: str | None = None,
     ) -> None:
-        message, _ = value
+        message, metadata = value
         self._remember_response_headers(message)
         if self.agent.is_valid_ai_message(message) and not message.response_metadata.get(METADATA_KEY_HANDOFF_BACK):
             token = extract_text_from_llm_output(message.content)
             self.agent._process_agent_streaming(token, chunks_collector, message.id, author=author)
 
         # Separate `if` so a chunk with both content and stop reason still finalizes.
-        if self.agent.is_finish_reason_stop(message):
+        if self.agent.is_finish_reason_stop(message) or self.agent.is_finish_reason_truncated(message):
+            # Only the agent node's answer sets the flag; a later structured-output stop must not reset it.
+            if metadata.get("langgraph_node") == "agent":
+                self.agent._detect_terminal_truncation(message)
             self._restore_response_headers(message)
             self.agent._on_llm_end(response=message, run_id=message.id, author=author)
 

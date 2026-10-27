@@ -703,7 +703,8 @@ def get_workflow_execution_state_output(
     if not Ability(user).can(Action.READ, workflow_config):
         raise_access_denied("view")
 
-    return WorkflowExecutionStateOutput(output=WorkflowExecutionState.get_by_id(state_id).output)
+    state = WorkflowExecutionState.get_by_id(state_id)
+    return WorkflowExecutionStateOutput(output=state.output, truncated=state.truncated)
 
 
 @router.post(

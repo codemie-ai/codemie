@@ -1,0 +1,93 @@
+{
+  "task": "Add truncation detection to terminal LangGraph messages, expose finish_reason/truncated on workflow state output API, and confirm LiteLLM max_tokens forwarding.",
+  "generated": "2026-09-04T00:00:00Z",
+  "dimensions": {
+    "component_scope": {
+      "score": 5,
+      "label": "XL",
+      "affected": "LangGraphAgent, TaskResult (assistant_agent), LangGraphEventAdapter, WorkflowStateEvent (chains/base), BaseWorkflowExecutionState+WorkflowExecutionStateOutput (workflow_execution model), WorkflowExecutionService, BaseNode, workflow_executions REST router",
+      "layers": "Agent-Tool, Workflow, Service, API, DB-Persistence"
+    },
+    "requirements_clarity": {
+      "score": 2,
+      "label": "S",
+      "status": "Clear",
+      "gaps": null
+    },
+    "technical_risk": {
+      "score": 3,
+      "label": "M",
+      "risk_factors": "threading.Lock non-blocking acquire pattern added to invoke_task; multi-provider LLM finish-reason format differences handled (OpenAI length/max_tokens vs Anthropic max_tokens vs Bedrock stopReason); optional fields propagated through 5 layers must be consistently nullable in DB and API",
+      "mitigation": "Fail-open pattern: _detect_terminal_truncation catches all exceptions and logs without raising; Lock released in finally block; DB migration adds nullable columns with safe defaults; existing _get_truncation_indicator reused to avoid duplicating provider-format logic"
+    },
+    "file_change_estimate": {
+      "score": 5,
+      "label": "XL",
+      "modified_files": 8,
+      "modified_file_list": [
+        "src/codemie/agents/assistant_agent.py",
+        "src/codemie/agents/langgraph_agent.py",
+        "src/codemie/agents/langgraph_event_adapter.py",
+        "src/codemie/chains/base.py",
+        "src/codemie/core/workflow_models/workflow_execution.py",
+        "src/codemie/service/workflow_execution/workflow_execution_service.py",
+        "src/codemie/workflows/nodes/base_node.py",
+        "src/codemie/rest_api/routers/workflow_executions.py"
+      ],
+      "new_files": 4,
+      "new_file_list": [
+        "src/external/alembic/versions/t1r2u3n4c5a6_add_finish_reason_truncated_to_workflow_execution_states.py",
+        "tests/codemie/agents/test_langgraph_truncation.py",
+        "tests/codemie/workflows/nodes/test_base_node_truncation.py",
+        "tests/codemie/service/llm_service/test_llm_service_litellm_integration.py (or confirmatory max_tokens test)"
+      ],
+      "affected_dirs": [
+        "src/codemie/agents",
+        "src/codemie/chains",
+        "src/codemie/core/workflow_models",
+        "src/codemie/service/workflow_execution",
+        "src/codemie/workflows/nodes",
+        "src/codemie/rest_api/routers",
+        "src/external/alembic/versions",
+        "tests/codemie/agents",
+        "tests/codemie/workflows/nodes"
+      ]
+    },
+    "dependencies": {
+      "score": 1,
+      "label": "XS",
+      "new_packages": [],
+      "version_changes": []
+    },
+    "affected_layers": {
+      "score": 5,
+      "label": "XL",
+      "layers_changed": ["API", "Service", "Agent-Tool", "Workflow", "DB-Persistence"],
+      "schema_migration": true,
+      "cross_system": false
+    }
+  },
+  "total": 21,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 12,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Eight production files across five distinct architectural layers (Agent-Tool, Workflow, Service, API, DB-Persistence). Three agent-layer files (langgraph_agent, assistant_agent, event_adapter), one shared chains base, one workflow node base class affecting all nodes, one service, one REST router, one DB model. Red flag applied: chains/base.py is a core shared utility used across all agent and workflow code, bumped from L (4) to XL (5)."
+    },
+    {
+      "dimension": "affected_layers",
+      "reason": "Five distinct layers all required changes for end-to-end propagation: DB-Persistence (WorkflowExecutionState model + Alembic migration adding finish_reason/truncated columns), Service (WorkflowExecutionService.finish_state), Workflow (BaseNode._run_success_path extracts fields from TaskResult), Agent-Tool (LangGraphAgent._detect_terminal_truncation + invoke_task, TaskResult model), API (workflow_executions router exposes WorkflowExecutionStateOutput with new fields). Schema migration present."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "Eight existing production files modified plus four new files (one Alembic migration + three test files: test_langgraph_truncation.py, test_base_node_truncation.py, LiteLLM confirmatory test), spanning nine directories across five subsystems. Meets XL criterion of 4+ new files affecting multiple subsystems."
+    }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L (4) to XL (5): chains/base.py is a core shared utility touched by the feature (WorkflowStateEvent gains finish_reason/truncated fields used by all streaming paths)"
+  ],
+  "split_recommendation": null
+}

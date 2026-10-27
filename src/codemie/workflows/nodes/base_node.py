@@ -318,8 +318,13 @@ class BaseNode(ABC, Generic[StateSchemaType]):
         else:
             status = WorkflowExecutionStatusEnum.SUCCEEDED
 
+        truncated = getattr(raw_output, "truncated", False)
+
         self.workflow_execution_service.finish_state(
-            execution_state_id=execution_state_id, output=processed_output, status=status
+            execution_state_id=execution_state_id,
+            output=processed_output,
+            status=status,
+            truncated=truncated,
         )
 
         for callback in self.callbacks:
@@ -327,6 +332,7 @@ class BaseNode(ABC, Generic[StateSchemaType]):
                 output=processed_output,
                 execution_state_id=execution_state_id,
                 execution_context=execution_context,
+                truncated=truncated,
             )
 
         final_state = self.finalize_and_update_state(

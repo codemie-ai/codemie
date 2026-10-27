@@ -62,6 +62,7 @@ def _mock_state(
     status: WorkflowExecutionStatusEnum = WorkflowExecutionStatusEnum.IN_PROGRESS,
     task: str | None = "Find changes to do in the document.",
     history_index: int | None = 1,
+    truncated: bool = False,
 ):
     state = MagicMock()
     state.id = state_id
@@ -70,6 +71,7 @@ def _mock_state(
     state.status = status
     state.task = task
     state.history_index = history_index
+    state.truncated = truncated
     return state
 
 
@@ -475,3 +477,45 @@ class TestMaterializeExecutionReferenceRunStatus:
         msg = result.history[0]
         assert msg.thoughts[0].in_progress is True
         assert msg.message == ""
+
+
+class TestGetExecutionThoughts:
+    """EPMCDME-14145: WorkflowState-authored thoughts surface truncated."""
+
+    def test_includes_truncated_from_state(self):
+        from codemie.service.conversation.history_materializer import _get_execution_thoughts
+
+        state = MagicMock()
+        state.id = "state-1"
+        state.name = "Some State"
+        state.output = "cut off output"
+        state.status = WorkflowExecutionStatusEnum.SUCCEEDED
+        state.history_index = None
+        state.truncated = True
+
+        with patch(
+            "codemie.core.workflow_models.WorkflowExecutionState.get_all_by_fields",
+            return_value=[state],
+        ):
+            thoughts = _get_execution_thoughts("exec-1")
+
+        assert thoughts[0]["truncated"] is True
+
+    def test_defaults_when_state_not_truncated(self):
+        from codemie.service.conversation.history_materializer import _get_execution_thoughts
+
+        state = MagicMock()
+        state.id = "state-1"
+        state.name = "Some State"
+        state.output = "complete output"
+        state.status = WorkflowExecutionStatusEnum.SUCCEEDED
+        state.history_index = None
+        state.truncated = False
+
+        with patch(
+            "codemie.core.workflow_models.WorkflowExecutionState.get_all_by_fields",
+            return_value=[state],
+        ):
+            thoughts = _get_execution_thoughts("exec-1")
+
+        assert thoughts[0]["truncated"] is False

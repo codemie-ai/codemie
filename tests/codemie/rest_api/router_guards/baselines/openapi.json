@@ -27355,6 +27355,18 @@
                 "type": "null"
               }
             ]
+          },
+          "truncated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": false,
+            "title": "Truncated"
           }
         },
         "required": [
@@ -27519,6 +27531,18 @@
                 "type": "null"
               }
             ]
+          },
+          "truncated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": false,
+            "title": "Truncated"
           }
         },
         "required": [
@@ -34215,6 +34239,11 @@
               }
             ],
             "title": "Output"
+          },
+          "truncated": {
+            "default": false,
+            "title": "Truncated",
+            "type": "boolean"
           }
         },
         "title": "WorkflowExecutionStateOutput",
@@ -34347,6 +34376,11 @@
             },
             "title": "Thoughts",
             "type": "array"
+          },
+          "truncated": {
+            "default": false,
+            "title": "Truncated",
+            "type": "boolean"
           },
           "update_date": {
             "anyOf": [

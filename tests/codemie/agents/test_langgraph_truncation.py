@@ -293,6 +293,92 @@ class TestTruncationHelperMethods:
         agent._safe_check_for_truncation(message)
 
 
+class TestDetectTerminalTruncation:
+    """Tests for the non-raising terminal-message truncation signal (EPMCDME-14145)."""
+
+    def test_is_finish_reason_truncated_openai_length(self):
+        agent = create_mock_agent(llm_model="gpt-4.1")
+        message = AIMessage(content="partial answer", response_metadata={"finish_reason": "length"})
+
+        assert agent.is_finish_reason_truncated(message) is True
+
+    def test_is_finish_reason_truncated_claude_stop_reason_max_tokens(self):
+        agent = create_mock_agent(llm_model="claude-3-5-sonnet")
+        message = AIMessage(content="partial answer", response_metadata={"stop_reason": "max_tokens"})
+
+        assert agent.is_finish_reason_truncated(message) is True
+
+    def test_is_finish_reason_truncated_bedrock_camel_case_stop_reason(self):
+        agent = create_mock_agent(llm_model="anthropic.claude-3-5-sonnet")
+        message = AIMessage(content="partial answer", response_metadata={"stopReason": "max_tokens"})
+
+        assert agent.is_finish_reason_truncated(message) is True
+
+    def test_is_finish_reason_truncated_false_for_normal_completion(self):
+        agent = create_mock_agent()
+        message = AIMessage(content="complete answer", response_metadata={"finish_reason": "stop"})
+
+        assert agent.is_finish_reason_truncated(message) is False
+
+    def test_is_finish_reason_truncated_false_for_empty_metadata(self):
+        agent = create_mock_agent()
+        message = AIMessage(content="complete answer", response_metadata={})
+
+        assert agent.is_finish_reason_truncated(message) is False
+
+    def test_detect_terminal_truncation_sets_flags_on_truncated_openai_message(self):
+        agent = create_mock_agent()
+        message = AIMessage(content="", response_metadata={"finish_reason": "length"})
+
+        agent._detect_terminal_truncation(message)
+
+        assert agent._last_truncated is True
+
+    def test_detect_terminal_truncation_sets_flags_on_truncated_claude_message(self):
+        agent = create_mock_agent()
+        message = AIMessage(content="", response_metadata={"stop_reason": "max_tokens"})
+
+        agent._detect_terminal_truncation(message)
+
+        assert agent._last_truncated is True
+
+    def test_detect_terminal_truncation_leaves_flags_unset_on_normal_completion(self):
+        agent = create_mock_agent()
+        agent._last_truncated = False
+        message = AIMessage(content="complete answer", response_metadata={"finish_reason": "stop"})
+
+        agent._detect_terminal_truncation(message)
+
+        assert agent._last_truncated is False
+
+    def test_detect_terminal_truncation_does_not_raise(self):
+        """Unlike _safe_check_for_truncation, this must never raise TokenLimitExceededException."""
+        agent = create_mock_agent()
+        message = AIMessage(content="", response_metadata={"finish_reason": "length"})
+
+        agent._detect_terminal_truncation(message)  # must not raise
+
+    def test_detect_terminal_truncation_resets_flags_for_later_non_truncated_turn(self):
+        """AC (spec.md:52): both attributes reset at the start of each invoke_task call *and* at
+        the start of each supervisor turn. _detect_terminal_truncation is the per-turn call site
+        (dispatched once per subagent author via parse_supervisor_message_type in supervisor
+        flows), so a truncated turn's flags must not survive into a later, non-truncated terminal
+        message processed within the same invoke_task call.
+        """
+        agent = create_mock_agent()
+        truncated_message = AIMessage(content="partial", response_metadata={"finish_reason": "length"})
+        complete_message = AIMessage(content="complete answer", response_metadata={"finish_reason": "stop"})
+
+        agent._detect_terminal_truncation(truncated_message)
+        assert agent._last_truncated is True  # sanity: the first (truncated) turn set the flags
+
+        agent._detect_terminal_truncation(complete_message)  # simulates the next supervisor turn
+
+        assert (
+            agent._last_truncated is False
+        ), "stale truncated=True from a prior turn leaked into a later, complete terminal message"
+
+
 class TestStaticMethods:
     """Test static helper methods in LangGraphAgent."""
 

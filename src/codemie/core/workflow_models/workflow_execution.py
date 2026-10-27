@@ -114,6 +114,7 @@ class BaseWorkflowExecutionState(CommonBaseModel):
     )
     iteration_number: Optional[int] = None
     history_index: Optional[int] = None
+    truncated: bool = False
 
 
 class WorkflowExecutionState(BaseModelWithSQLSupport, BaseWorkflowExecutionState, table=True):
@@ -375,6 +376,7 @@ class WorkflowExecutionStateResponse(BaseWorkflowExecutionState):
 
 class WorkflowExecutionStateOutput(BaseModel):
     output: Optional[str] = None
+    truncated: bool = False
 
 
 class WorkflowExecutionStateWithThougths(BaseWorkflowExecutionState):

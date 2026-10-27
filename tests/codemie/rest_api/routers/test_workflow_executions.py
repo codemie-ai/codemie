@@ -417,6 +417,70 @@ async def test_update_workflow_execution_output_no_permissions(
 @patch("codemie.rest_api.routers.workflow_executions.Ability")
 @patch("codemie.rest_api.security.authentication.authenticate")
 @patch("codemie.service.workflow_service.WorkflowService.get_workflow")
+@patch("codemie.rest_api.routers.workflow_executions.WorkflowExecutionState.get_by_id")
+@pytest.mark.asyncio
+async def test_get_workflow_execution_state_output_includes_truncation_signal(
+    mock_get_by_id,
+    _mock_get_workflow,
+    mock_ability,
+    mock_authentication,
+    request_headers,
+):
+    mock_authentication.authenticate.return_value = USER
+    mock_ability.return_value.can.return_value = True
+    mock_state = MagicMock()
+    mock_state.output = "cut off output"
+    mock_state.truncated = True
+    mock_get_by_id.return_value = mock_state
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.get(
+            f"{WORKFLOW_EXECUTIONS_URL}/{EXECUTION_ID}/states/{STATE_ID}/output",
+            headers=request_headers,
+        )
+
+    assert response.status_code == status.HTTP_200_OK
+    body = response.json()
+    assert body["output"] == "cut off output"
+    assert body["truncated"] is True
+
+
+@patch("codemie.rest_api.routers.workflow_executions.Ability")
+@patch("codemie.rest_api.security.authentication.authenticate")
+@patch("codemie.service.workflow_service.WorkflowService.get_workflow")
+@patch("codemie.rest_api.routers.workflow_executions.WorkflowExecutionState.get_by_id")
+@pytest.mark.asyncio
+async def test_get_workflow_execution_state_output_defaults_when_not_truncated(
+    mock_get_by_id,
+    _mock_get_workflow,
+    mock_ability,
+    mock_authentication,
+    request_headers,
+):
+    mock_authentication.authenticate.return_value = USER
+    mock_ability.return_value.can.return_value = True
+    mock_state = MagicMock()
+    mock_state.output = "complete output"
+    mock_state.truncated = False
+    mock_get_by_id.return_value = mock_state
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.get(
+            f"{WORKFLOW_EXECUTIONS_URL}/{EXECUTION_ID}/states/{STATE_ID}/output",
+            headers=request_headers,
+        )
+
+    assert response.status_code == status.HTTP_200_OK
+    body = response.json()
+    assert body["output"] == "complete output"
+    assert body["truncated"] is False
+
+
+@patch("codemie.rest_api.routers.workflow_executions.Ability")
+@patch("codemie.rest_api.security.authentication.authenticate")
+@patch("codemie.service.workflow_service.WorkflowService.get_workflow")
 @patch("codemie.service.workflow_execution.workflow_update_output_service.WorkflowUpdateOutputService.run")
 @pytest.mark.asyncio
 async def test_update_workflow_execution_output_error(

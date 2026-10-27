@@ -390,3 +390,115 @@ class TestGetTruncationIndicator:
         from codemie.agents.langgraph_event_adapter import get_truncation_indicator
 
         assert get_truncation_indicator(metadata) == expected
+
+
+class TestTerminalMessageTruncationDetection:
+    """EPMCDME-14145: terminal (non-tool-call) messages must also run the truncation detector."""
+
+    @pytest.fixture
+    def mock_agent(self):
+        agent = MagicMock()
+        agent.is_valid_ai_message.return_value = False
+        agent.is_finish_reason_stop.return_value = False
+        agent.is_finish_reason_truncated.return_value = False
+        agent._detect_terminal_truncation = MagicMock()
+        agent._on_llm_end = MagicMock()
+        return agent
+
+    def test_parse_message_type_detects_openai_truncated_terminal_message(self, mock_agent):
+        mock_agent.is_finish_reason_truncated.return_value = True
+        adapter = LangGraphEventAdapter(mock_agent)
+        message = AIMessage(content="", response_metadata={"finish_reason": "length"})
+
+        adapter.parse_message_type((message, {"langgraph_node": "agent"}), [])
+
+        mock_agent._detect_terminal_truncation.assert_called_once_with(message)
+        mock_agent._on_llm_end.assert_called_once_with(response=message, run_id=message.id)
+
+    def test_parse_message_type_detects_claude_truncated_terminal_message(self, mock_agent):
+        mock_agent.is_finish_reason_truncated.return_value = True
+        adapter = LangGraphEventAdapter(mock_agent)
+        message = AIMessage(content="", response_metadata={"stop_reason": "max_tokens"})
+
+        adapter.parse_message_type((message, {"langgraph_node": "agent"}), [])
+
+        mock_agent._detect_terminal_truncation.assert_called_once_with(message)
+
+    def test_parse_message_type_detects_bedrock_truncated_terminal_message(self, mock_agent):
+        mock_agent.is_finish_reason_truncated.return_value = True
+        adapter = LangGraphEventAdapter(mock_agent)
+        message = AIMessage(content="", response_metadata={"stopReason": "max_tokens"})
+
+        adapter.parse_message_type((message, {"langgraph_node": "agent"}), [])
+
+        mock_agent._detect_terminal_truncation.assert_called_once_with(message)
+
+    def test_parse_message_type_normal_completion_still_invokes_detector(self, mock_agent):
+        mock_agent.is_finish_reason_stop.return_value = True
+        adapter = LangGraphEventAdapter(mock_agent)
+        message = AIMessage(content="complete answer", response_metadata={"finish_reason": "stop"})
+
+        adapter.parse_message_type((message, {"langgraph_node": "agent"}), [])
+
+        mock_agent._detect_terminal_truncation.assert_called_once_with(message)
+        mock_agent._on_llm_end.assert_called_once_with(response=message, run_id=message.id)
+
+    def test_parse_message_type_skips_when_neither_condition_true(self, mock_agent):
+        adapter = LangGraphEventAdapter(mock_agent)
+        message = AIMessage(content="", response_metadata={})
+
+        adapter.parse_message_type((message, {"langgraph_node": "agent"}), [])
+
+        mock_agent._detect_terminal_truncation.assert_not_called()
+        mock_agent._on_llm_end.assert_not_called()
+
+    def test_parse_message_type_ignores_non_agent_node_terminal_message(self, mock_agent):
+        """A structured-output stop from a later node must not reset the agent's truncation flag."""
+        mock_agent.is_finish_reason_stop.return_value = True
+        adapter = LangGraphEventAdapter(mock_agent)
+        message = AIMessage(content="{}", response_metadata={"finish_reason": "stop"})
+
+        adapter.parse_message_type((message, {"langgraph_node": "generate_structured_response"}), [])
+
+        mock_agent._detect_terminal_truncation.assert_not_called()
+        mock_agent._on_llm_end.assert_not_called()
+
+    def test_parse_supervisor_message_type_detects_openai_truncated_terminal_message(self, mock_agent):
+        mock_agent.is_finish_reason_truncated.return_value = True
+        adapter = LangGraphEventAdapter(mock_agent)
+        message = AIMessage(content="", response_metadata={"finish_reason": "length"})
+
+        adapter.parse_supervisor_message_type((message, {"langgraph_node": "agent"}), [])
+
+        mock_agent._detect_terminal_truncation.assert_called_once_with(message)
+        mock_agent._on_llm_end.assert_called_once_with(response=message, run_id=message.id, author=None)
+
+    def test_parse_supervisor_message_type_detects_claude_truncated_terminal_message(self, mock_agent):
+        mock_agent.is_finish_reason_truncated.return_value = True
+        adapter = LangGraphEventAdapter(mock_agent)
+        message = AIMessage(content="", response_metadata={"stop_reason": "max_tokens"})
+
+        adapter.parse_supervisor_message_type((message, {"langgraph_node": "agent"}), [])
+
+        mock_agent._detect_terminal_truncation.assert_called_once_with(message)
+
+    def test_parse_supervisor_message_type_normal_completion_still_invokes_detector(self, mock_agent):
+        mock_agent.is_finish_reason_stop.return_value = True
+        adapter = LangGraphEventAdapter(mock_agent)
+        message = AIMessage(content="complete answer", response_metadata={"finish_reason": "stop"})
+
+        adapter.parse_supervisor_message_type((message, {"langgraph_node": "agent"}), [])
+
+        mock_agent._detect_terminal_truncation.assert_called_once_with(message)
+        mock_agent._on_llm_end.assert_called_once_with(response=message, run_id=message.id, author=None)
+
+    def test_parse_supervisor_message_type_ignores_structured_response_terminal_message(self, mock_agent):
+        """The supervisor's structured-output stop must not reset a truncated answer's flag."""
+        mock_agent.is_finish_reason_stop.return_value = True
+        adapter = LangGraphEventAdapter(mock_agent)
+        message = AIMessage(content="{}", response_metadata={"finish_reason": "stop"})
+
+        adapter.parse_supervisor_message_type((message, {"langgraph_node": "generate_structured_response"}), [])
+
+        mock_agent._detect_terminal_truncation.assert_not_called()
+        mock_agent._on_llm_end.assert_called_once_with(response=message, run_id=message.id, author=None)

@@ -99,13 +99,14 @@ class TaskResult(BaseModel):
     success: bool
     intermediate_steps: list = Field(default_factory=list)
     original_exc: Optional[Any] = None
+    truncated: bool = False
 
     @classmethod
-    def failed_result(cls, result: str, original_exc: Any):
-        return cls(result=result, success=False, original_exc=original_exc)
+    def failed_result(cls, result: str, original_exc: Any, truncated: bool = False):
+        return cls(result=result, success=False, original_exc=original_exc, truncated=truncated)
 
     @classmethod
-    def from_agent_response(cls, response):
+    def from_agent_response(cls, response, truncated: bool = False):
         if isinstance(response, GenerationResult):
             result = response.generated
             # Serialize objects from structured outputs as strings to pass to the next step.
@@ -113,21 +114,26 @@ class TaskResult(BaseModel):
                 result = json.dumps(response.generated)
             elif isinstance(response.generated, BaseModel):
                 result = response.generated.model_dump_json()
-            return cls(result=result or '', success=response.success)
+            return cls(result=result or '', success=response.success, truncated=truncated)
 
         # Determine the result and success
         if 'output' in response:
             result = extract_text_from_llm_output(response['output'])
             success = True
             if 'intermediate_steps' in response:
-                return cls(result=result, success=success, intermediate_steps=response['intermediate_steps'])
+                return cls(
+                    result=result,
+                    success=success,
+                    intermediate_steps=response['intermediate_steps'],
+                    truncated=truncated,
+                )
         elif 'generated' in response:
             result = response['generated']
             success = True
         else:
             result = ''
             success = False
-        return cls(result=result, success=success)
+        return cls(result=result, success=success, truncated=truncated)
 
 
 def get_react_json_prompt_template(system_prompt):

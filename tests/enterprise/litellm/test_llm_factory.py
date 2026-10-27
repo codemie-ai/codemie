@@ -1716,3 +1716,39 @@ class TestMaxOutputTokensForwarding:
         lines = self._create_logged(self._model_details(16384, base_name="gpt-4o-2024-11-20"))
 
         assert lines == ["llm_output_limit model=gpt-4o-2024-11-20 max_tokens=unset source=proxy_default"]
+
+
+class TestFilterLiteLLMParamsMaxTokensForwarding:
+    """EPMCDME-14145 criterion 3: confirm max_tokens forwarding through the LiteLLM proxy path."""
+
+    def test_max_tokens_forwarded_unchanged_when_feature_enabled(self):
+        from codemie.enterprise.litellm.llm_factory import _filter_litellm_params
+
+        mock_model_details = MagicMock()
+        mock_model_details.features.temperature = True
+        mock_model_details.features.parallel_tool_calls = True
+        mock_model_details.features.streaming = True
+        mock_model_details.features.max_tokens = True
+        mock_model_details.features.top_p = True
+
+        base_args = {"max_tokens": 4096, "temperature": 0.5}
+
+        filtered = _filter_litellm_params(base_args, mock_model_details)
+
+        assert filtered["max_tokens"] == 4096
+
+    def test_max_tokens_filtered_to_none_when_feature_disabled(self):
+        from codemie.enterprise.litellm.llm_factory import _filter_litellm_params
+
+        mock_model_details = MagicMock()
+        mock_model_details.features.temperature = True
+        mock_model_details.features.parallel_tool_calls = True
+        mock_model_details.features.streaming = True
+        mock_model_details.features.max_tokens = False
+        mock_model_details.features.top_p = True
+
+        base_args = {"max_tokens": 4096, "temperature": 0.5}
+
+        filtered = _filter_litellm_params(base_args, mock_model_details)
+
+        assert filtered["max_tokens"] is None

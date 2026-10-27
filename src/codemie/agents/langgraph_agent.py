@@ -197,6 +197,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
         self.override_global_checkpointer = override_global_checkpointer
         self.trace_context = trace_context
         self._current_llm_run_id: uuid.UUID | None = None  # tracks active LLM invocation
+        self._last_truncated: bool = False
         self._sub_assistant_name_mapping: dict[str, str] = {}
         self._last_subassistant_answer: str = ""
         self.history_compaction_pre_model_hook = (
@@ -675,6 +676,9 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
             args = {}
         if history is None:
             history = []
+        # No lock needed: AgentNode.generate_execution_context always builds a fresh instance per call
+        # (init_agent_node never passes assistant=), so _last_truncated is never shared across concurrent branches.
+        self._last_truncated = False
         set_llm_context(self.assistant, None, self.user, self.llm_model)
         logger.debug(
             f"Invoking workflow task. Agent={self.agent_name}, "
@@ -686,12 +690,16 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
             inputs.update(args)
             agent_response = self._invoke_agent(inputs)
 
-            return TaskResult.from_agent_response(agent_response)
+            return TaskResult.from_agent_response(agent_response, truncated=self._last_truncated)
         except MCPAuthenticationRequiredException:
             raise
         except Exception as e:
             record_exception_on_span(e)
-            return TaskResult.failed_result(self._get_user_error_message(e), original_exc=e)
+            return TaskResult.failed_result(
+                self._get_user_error_message(e),
+                original_exc=e,
+                truncated=self._last_truncated,
+            )
 
     @traced(
         "agent.generate",
@@ -1300,6 +1308,35 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
 
     def is_finish_reason_tool_calls(self, message: AIMessage) -> bool:
         return hasattr(message, "tool_calls") and bool(message.tool_calls)
+
+    def is_finish_reason_truncated(self, message: AIMessage) -> bool:
+        """True when the raw provider finish/stop reason indicates truncation.
+
+        Mirrors the raw-value lookup _get_truncation_indicator performs, but returns
+        a plain bool suitable for use as an adapter gating condition.
+        """
+        response_metadata = message.response_metadata
+        if not response_metadata:
+            return False
+        return self._get_truncation_indicator(response_metadata) is not None
+
+    def _detect_terminal_truncation(self, message: AIMessage) -> None:
+        """Non-raising terminal-message truncation signal (EPMCDME-14145).
+
+        Unlike _safe_check_for_truncation (tool-call path, raises TokenLimitExceededException
+        and fails the state), this records the truncation flag on an instance attribute
+        so the caller can persist it as metadata on an otherwise-SUCCEEDED result. Follows the
+        same fail-open pattern: unexpected errors are logged, never raised.
+        """
+        try:
+            response_metadata = message.response_metadata
+            if not response_metadata:
+                return
+            # Assigned on every terminal message, so a non-truncated message resets a prior
+            # truncated turn's flag (spec.md:52, per-supervisor-turn reset).
+            self._last_truncated = self._get_truncation_indicator(response_metadata) is not None
+        except Exception as e:
+            logger.error(f"Unexpected error during terminal truncation detection: {e}", exc_info=True)
 
     def _safe_check_for_truncation(self, message: AIMessage) -> None:
         """

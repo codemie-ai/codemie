@@ -858,6 +858,76 @@ class TestInterruptPropagatesCheckpointState:
         spy.assert_called_once_with("state_b", checkpoint)
 
 
+class TestFinishState:
+    @patch("codemie.service.workflow_execution.workflow_execution_service.WorkflowExecutionState.find_by_id")
+    def test_persists_truncated_on_state(self, mock_find_by_id, service):
+        state = MagicMock()
+        mock_find_by_id.return_value = state
+        service.thought_queue = None
+
+        service.finish_state(
+            execution_state_id="exec-state-1",
+            output="cut off output",
+            status=WorkflowExecutionStatusEnum.SUCCEEDED,
+            truncated=True,
+        )
+
+        assert state.output == "cut off output"
+        assert state.truncated is True
+        assert state.status == WorkflowExecutionStatusEnum.SUCCEEDED
+        state.save.assert_called_once()
+
+    @patch("codemie.service.workflow_execution.workflow_execution_service.WorkflowExecutionState.find_by_id")
+    def test_defaults_truncated_when_not_passed(self, mock_find_by_id, service):
+        state = MagicMock()
+        mock_find_by_id.return_value = state
+        service.thought_queue = None
+
+        service.finish_state(
+            execution_state_id="exec-state-2",
+            output="complete output",
+            status=WorkflowExecutionStatusEnum.SUCCEEDED,
+        )
+
+        assert state.truncated is False
+
+    @patch("codemie.service.workflow_execution.workflow_execution_service.WorkflowExecutionState.find_by_id")
+    def test_streams_truncated_on_workflow_state_event(self, mock_find_by_id, service):
+        state = MagicMock()
+        state.id = "exec-state-3"
+        state.name = "state_a"
+        state.task = "do something"
+        state.started_at = None
+        mock_find_by_id.return_value = state
+        mock_queue = MagicMock()
+        service.thought_queue = mock_queue
+
+        service.finish_state(
+            execution_state_id="exec-state-3",
+            output="cut off output",
+            status=WorkflowExecutionStatusEnum.SUCCEEDED,
+            truncated=True,
+        )
+
+        mock_queue.send.assert_called_once()
+        payload = json.loads(mock_queue.send.call_args[0][0])
+        assert payload["workflow_state"]["truncated"] is True
+
+    @patch("codemie.service.workflow_execution.workflow_execution_service.WorkflowExecutionState.find_by_id")
+    def test_returns_early_when_state_not_found(self, mock_find_by_id, service):
+        mock_find_by_id.return_value = None
+        service.thought_queue = MagicMock()
+
+        service.finish_state(
+            execution_state_id="missing-state",
+            output="output",
+            status=WorkflowExecutionStatusEnum.SUCCEEDED,
+            truncated=True,
+        )  # must not raise
+
+        service.thought_queue.send.assert_not_called()
+
+
 class TestWorkflowExecutionLockReentrant:
     def test_record_transition_does_not_deadlock_inside_lock(self, service):
         """record_transition must complete when called while workflow_execution_lock is already held."""

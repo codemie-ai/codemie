@@ -435,7 +435,13 @@ class WorkflowExecutionService:
         state.status = WorkflowExecutionStatusEnum.ABORTED
         state.save()
 
-    def finish_state(self, execution_state_id: str, output: str, status: WorkflowExecutionStatusEnum):
+    def finish_state(
+        self,
+        execution_state_id: str,
+        output: str,
+        status: WorkflowExecutionStatusEnum,
+        truncated: bool = False,
+    ):
         with self.workflow_execution_lock:
             self._refresh_workflow_execution()
             if self.workflow_execution:
@@ -459,6 +465,7 @@ class WorkflowExecutionService:
                 return
             state.output = output
             state.status = status
+            state.truncated = truncated
             completed_at = datetime.now()
             state.completed_at = completed_at
 
@@ -478,6 +485,7 @@ class WorkflowExecutionService:
                     event_type=WorkflowStateEventType.STATE_FINISH,
                     started_at=state.started_at.isoformat() if state.started_at else None,
                     completed_at=completed_at.isoformat(),
+                    truncated=truncated,
                 )
                 result = StreamedGenerationResult(workflow_state=state_event)
                 self.thought_queue.send(result.model_dump_json())

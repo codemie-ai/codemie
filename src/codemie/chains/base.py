@@ -52,6 +52,7 @@ class Thought(BaseModel):
     error: Optional[bool] = False
     interrupted: Optional[bool] = False
     aborted: Optional[bool] = False
+    truncated: Optional[bool] = False  # EPMCDME-14145: True when the terminal message was truncated
     children: List['Thought'] = Field(default_factory=list)
     routing: Optional[RoutingInfo] = None
 
@@ -119,6 +120,7 @@ class WorkflowStateEvent(BaseModel):
     event_type: WorkflowStateEventType
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
+    truncated: bool = False  # EPMCDME-14145: True when the terminal message was truncated
 
 
 class StreamedGenerationResult(BaseModel):

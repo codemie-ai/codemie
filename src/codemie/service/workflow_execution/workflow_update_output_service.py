@@ -48,6 +48,8 @@ class WorkflowUpdateOutputService:
         """Update the state output"""
         state = WorkflowExecutionState.get_by_id(self.state_id)
         state.output = self.new_output
+        # The user has replaced the output, so the "may be incomplete" marker no longer applies.
+        state.truncated = False
         state.save()
 
     def _update_thought(self):

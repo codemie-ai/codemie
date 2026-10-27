@@ -914,3 +914,66 @@ def test_tc_imr_018_single_level_iteration_output_unchanged(
         assert action.arg[TOTAL_ITERATIONS_KEY] == 3
         assert action.arg[OUTER_ITERATION_NODE_NUMBER_KEY] is None
         assert action.arg[OUTER_TOTAL_ITERATIONS_KEY] is None
+
+
+@patch('codemie.workflows.nodes.agent_node.initialize_assistant')
+@patch('codemie.workflows.workflow.WorkflowExecutionService')
+def test_tc_imr_019_send_reachable_node_never_caches_persistent_assistant(
+    mock_wf_exec_service, mock_initialize_assistant, mock_user, mock_thought_queue, basic_workflow_config
+):
+    """
+    TC_IMR_019: Send-Reachable Node Never Caches a Persistent Assistant
+
+    Regression guard for CR-001 (2026-09-08 workflow-truncation-detection review).
+    LangGraphAgent.invoke_task used to hold a threading.Lock guarding its
+    _last_truncated instance attribute against concurrent
+    invocation. That lock was removed on the premise that no node reachable via
+    continue_iteration's Send fan-out ever caches a persistent assistant: both
+    production call sites of WorkflowExecutor.init_agent_node
+    (_inject_user_context and initialize_node) always build it with assistant=None,
+    so AgentNode.generate_execution_context's `self.assistant or self.init_assistant(...)`
+    builds a fresh assistant on every call instead of caching one on the node.
+
+    If a future change ever passes a persistent assistant= into a node reachable
+    via Send, or caches the built assistant back onto the node, concurrent Send
+    branches into that same node id would share one assistant instance and its
+    per-invocation truncation state could leak between branches - exactly the
+    cross-contamination class the removed lock existed to catch. This test fails
+    loudly if either regresses.
+    """
+    # Arrange: a map node - i.e. one continue_iteration dispatches to via Send,
+    # so multiple concurrent branches can invoke the same compiled node instance.
+    workflow_state = WorkflowState(
+        id="map_node",
+        task="Process item",
+        next=WorkflowNextState(state_id="worker", iter_key="items"),
+        assistant_id="assistant_1",
+    )
+    basic_workflow_config.assistants = [Mock(id="assistant_1")]
+
+    executor = WorkflowExecutor(
+        workflow_config=basic_workflow_config,
+        user_input="test",
+        user=mock_user,
+        thought_queue=mock_thought_queue,
+        execution_id="exec_send_reachable",
+    )
+
+    # Act: build the node exactly as both production call sites do - neither ever
+    # passes assistant=.
+    node = executor.init_agent_node(workflow_state, map_states=["map_node"])
+
+    # Assert: no persistent assistant is cached on the node itself.
+    assert node.assistant is None
+
+    # A distinct assistant instance must be built on every call, even though the
+    # same AgentNode instance is what concurrent Send branches into "map_node"
+    # would all invoke.
+    mock_initialize_assistant.side_effect = lambda **kwargs: Mock(name="assistant_instance")
+
+    state_schema = {CONTEXT_STORE_VARIABLE: {}, MESSAGES_VARIABLE: []}
+    context_a = node.generate_execution_context(state_schema)
+    context_b = node.generate_execution_context(state_schema)
+
+    assert mock_initialize_assistant.call_count == 2
+    assert context_a["assistant"] is not context_b["assistant"]
