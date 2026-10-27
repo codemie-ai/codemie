@@ -35,11 +35,14 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
+from unittest.mock import MagicMock, patch
+
 import asyncpg
 import pytest
 import pytest_asyncio
 
 from codemie.configs.config import Config
+from codemie.configs.llm_config import CostConfig
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
 from codemie.repository.cli_analytics.postgres import migrations, rollups
 from codemie.repository.cli_analytics.postgres.maintenance import (
@@ -75,12 +78,17 @@ _SKILL_SPAN_SQL = """
          session_id, tool_name, tool_use_id, subagent_type, skill_name, status_code, resource_id)
     VALUES ($1, 1, $2, $3, $4, 1, 'claude_code.tool', $5, 'Skill', $6, NULL, $7, 0, 0)
 """
+# A request of `cost` USD: as many input tokens as that cost buys at _CATALOG's input price of 1 USD per MTok, so
+# the money the handler prices equals the cost the producer stored.
 _LOG_EVENTS_SQL = """
     INSERT INTO log_events
         (ts, session_id, event_kind, span_id, cost_usd, input_tokens, output_tokens,
          cache_read_tokens, cache_creation_tokens, severity, resource_id, model, user_email)
-    VALUES ($1, $2, $3, $4, $5, 0, 0, 0, 0, 0, 0, 'claude-sonnet-5-5', 'test@example.com')
+    VALUES ($1, $2, $3, $4, $5::float8, round($5::float8 * 1000000)::bigint, 0, 0, 0, 0, 0, 'claude-sonnet-5-5', 'test@example.com')
 """
+_CATALOG = [
+    MagicMock(base_name="claude-sonnet-5-5", deployment_name="claude-sonnet-5-5", cost=CostConfig(input=1e-6, output=0))
+]
 # The agent.tool.end hook event: fires only on a completed call, unlike agent.tool.denied/.error.
 _AGENT_TOOL_END_SQL = """
     INSERT INTO hook_events (ts, session_id, event_type, tool_name, tool_use_id)
@@ -125,7 +133,11 @@ async def engine():
     refresh recomputes the whole queue of the one shared database."""
     analytics = await _get_engine()
     async with live_rollup_lock(analytics):
-        yield analytics
+        with patch(
+            "codemie.service.analytics.handlers.coding_agent_pricing.llm_service.get_all_llm_model_info",
+            return_value=_CATALOG,
+        ):
+            yield analytics
     await analytics.close()
 
 
@@ -260,7 +272,7 @@ async def _rollup_skill_counts(engine: AnalyticsPgEngine, session_id: str, skill
 
 
 async def _api_detail(engine: AnalyticsPgEngine, session_id: str) -> dict[str, Any]:
-    detail, _ = await LocalAnalyticsHandler(PostgresCliAnalyticsReader(engine)).get_session_detail(session_id)
+    detail, _, _ = await LocalAnalyticsHandler(PostgresCliAnalyticsReader(engine)).get_session_detail(session_id)
     assert detail is not None, "the session must exist in the session rollups after the refresh"
     return detail
 
@@ -613,6 +625,8 @@ async def test_live_two_no_agent_id_dispatches_sharing_a_parent_split_cost_not_d
         assert costs_by_subtype["Explore"] is None
         assert costs_by_subtype["Review"] == pytest.approx(1.0)
         assert sum(c or 0 for c in costs_by_subtype.values()) == pytest.approx(detail["cost_usd"])
+        # The handler prices each window at the catalog: the 1.0 USD request at 1 USD per MTok of input.
+        assert _agent_costs(detail) == {"agent · Explore": None, "agent · Review": pytest.approx(1.0)}
     finally:
         await _cleanup(engine, session_id)
 
@@ -957,6 +971,11 @@ async def _seed_fork_request(engine: AnalyticsPgEngine, session_id: str, agent_i
             agent_id,
         )
         await conn.execute(_LOG_EVENTS_SQL, ts, session_id, int(EventKind.API_REQUEST), group, cost)
+
+
+def _agent_costs(detail: dict[str, Any]) -> dict[str, Any]:
+    """The handler's catalog money of each agent dispatch of the session-detail response, by label."""
+    return {d["label"]: d["cost_usd"] for d in detail["dispatches"] if d["kind"] == "agent"}
 
 
 def _dispatch_rows(detail: dict[str, Any]) -> list[tuple[Any, ...]]:
@@ -1770,6 +1789,11 @@ async def test_live_two_no_agent_id_dispatches_starting_together_split_their_win
 
         costs = {r["subagent_type"]: r["cost_usd"] for r in await _sql_agents(engine, session_id)}
         assert costs == {"Explore": pytest.approx(0.5), "Review": pytest.approx(0.5)}
+        # Each takes half of the window's catalog price, 1.0 USD.
+        assert _agent_costs(await _api_detail(engine, session_id)) == {
+            "agent · Explore": pytest.approx(0.5),
+            "agent · Review": pytest.approx(0.5),
+        }
     finally:
         await _cleanup(engine, session_id)
 
@@ -1808,6 +1832,10 @@ async def test_live_a_no_agent_id_dispatch_tied_with_a_known_agent_takes_its_who
 
         costs = {r["subagent_type"]: r["cost_usd"] for r in await _sql_agents(engine, session_id)}
         assert costs == {"Explore": pytest.approx(1.0), "Review": None}
+        assert _agent_costs(await _api_detail(engine, session_id)) == {
+            "agent · Explore": pytest.approx(1.0),
+            "agent · Review": None,
+        }
     finally:
         await _cleanup(engine, session_id)
 

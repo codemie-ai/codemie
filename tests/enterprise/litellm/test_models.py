@@ -292,6 +292,8 @@ class TestMapLiteLLMToLLMModel:
                 "input_cost_per_token": 0.00003,
                 "output_cost_per_token": 0.00006,
                 "cache_read_input_token_cost": 0.000015,
+                "cache_creation_input_token_cost": 0.0000375,
+                "cache_creation_input_token_cost_above_1hr": 0.00006,
             },
         }
 
@@ -304,6 +306,8 @@ class TestMapLiteLLMToLLMModel:
         assert result.cost.input == 0.00003
         assert result.cost.output == 0.00006
         assert result.cost.cache_read_input_token_cost == 0.000015
+        assert result.cost.cache_creation_input_token_cost == 0.0000375
+        assert result.cost.cache_creation_input_token_cost_above_1hr == 0.00006
 
     def test_handles_missing_cost_information(self):
         """Test handles missing cost information (returns None)."""

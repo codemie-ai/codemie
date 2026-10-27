@@ -320,7 +320,7 @@ async def test_project_unattributed_for_project_admin_selects_nothing():
 @pytest.mark.asyncio
 async def test_session_detail_project_scoping_reads_through_the_storage_reader(storage):
     handler = MagicMock()
-    handler.get_session_detail = AsyncMock(return_value=({"trace_id": "s1", "start_time": ""}, []))
+    handler.get_session_detail = AsyncMock(return_value=({"trace_id": "s1", "start_time": ""}, [], "yaml"))
     with (
         patch.object(router_module, "_ensure_enabled", return_value=None),
         patch.object(router_module, "_handler", return_value=handler),
@@ -370,7 +370,7 @@ async def test_windows_are_clamped_to_how_far_back_the_storage_keeps_raw_rows(st
 @pytest.mark.parametrize(("flag", "expected"), [(True, True), (False, False)])
 async def test_get_sessions_forwards_is_project_unattributed_to_the_resolved_filter(flag, expected):
     handler = MagicMock()
-    handler.get_sessions = AsyncMock(return_value=([], [], None))
+    handler.get_sessions = AsyncMock(return_value=([], MagicMock(unpriced=[], catalog_source="yaml"), None))
     captured: dict = {}
 
     async def fake_resolve(self, user, project_unattributed=False):
@@ -402,3 +402,103 @@ async def test_get_sessions_forwards_is_project_unattributed_to_the_resolved_fil
     assert captured["project_unattributed"] is expected
     resolved = handler.get_sessions.await_args.args[0]
     assert resolved.project_unattributed is expected
+
+
+@pytest.mark.asyncio
+async def test_users_and_repositories_metadata_carry_the_handler_pricing():
+    pricer = MagicMock(unpriced=["", "mystery-model"], catalog_source="litellm")
+    handler = MagicMock()
+    handler.get_users = AsyncMock(
+        return_value=({"rows": [], "avg_session_duration_ms": None, "total_count": 0}, pricer)
+    )
+    handler.get_repositories = AsyncMock(
+        return_value=(
+            {"rows": [], "pagination": {"page": 0, "per_page": 20, "total_count": 0, "has_more": False}},
+            pricer,
+        )
+    )
+    end = datetime(2026, 9, 23, tzinfo=timezone.utc)
+
+    async def fake_resolve(self, user, project_unattributed=False):
+        return router_module.LocalAnalyticsFilter(start_dt=end - timedelta(days=1), end_dt=end)
+
+    with (
+        patch.object(router_module, "_ensure_enabled", return_value=None),
+        patch.object(router_module, "_handler", return_value=handler),
+        patch.object(router_module.FilterParams, "resolve", fake_resolve),
+    ):
+        responses = [
+            await router_module.get_users(user=User(id="u1"), filters=_filter_params(), page=None, per_page=None),
+            await router_module.get_user_charts(user=User(id="u1"), filters=_filter_params()),
+            await router_module.get_repositories(
+                user=User(id="u1"), filters=_filter_params(), page=0, per_page=20, include_branches=False, search=None
+            ),
+        ]
+
+    for response in responses:
+        metadata = json.loads(response.body)["metadata"]
+        assert (metadata["unpriced_models"], metadata["catalog_source"]) == (["", "mystery-model"], "litellm")
+
+
+_PRICER = MagicMock(unpriced=["", "mystery-model"], catalog_source="litellm")
+_SESSIONS_KWARGS = {
+    "page": None,
+    "per_page": None,
+    "sort_by": "start_time",
+    "search": None,
+    "framework": None,
+    "is_unattributed": False,
+    "branch": None,
+    "is_project_unattributed": False,
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("route", "handler_method", "handler_result", "kwargs"),
+    [
+        ("get_overview", "get_overview", ({}, _PRICER, None), {}),
+        ("get_cost", "get_cost", ({}, _PRICER), {}),
+        ("get_efficiency", "get_efficiency", ({}, _PRICER), {}),
+        ("get_sessions", "get_sessions", ({}, _PRICER, None), _SESSIONS_KWARGS),
+    ],
+)
+async def test_filtered_money_routes_metadata_carry_the_handler_pricing(route, handler_method, handler_result, kwargs):
+    handler = MagicMock()
+    setattr(handler, handler_method, AsyncMock(return_value=handler_result))
+    end = datetime(2026, 9, 23, tzinfo=timezone.utc)
+
+    async def fake_resolve(self, user, project_unattributed=False):
+        return router_module.LocalAnalyticsFilter(start_dt=end - timedelta(days=1), end_dt=end)
+
+    # The handler returns no data, so the response model is bypassed and only the metadata is rendered.
+    with (
+        patch.object(router_module, "_ensure_enabled", return_value=None),
+        patch.object(router_module, "_handler", return_value=handler),
+        patch.object(router_module, "_respond", side_effect=lambda payload, _: JSONResponse(payload)),
+        patch.object(router_module.FilterParams, "resolve", fake_resolve),
+    ):
+        response = await getattr(router_module, route)(user=User(id="u1"), filters=_filter_params(), **kwargs)
+
+    metadata = json.loads(response.body)["metadata"]
+    assert (metadata["unpriced_models"], metadata["catalog_source"]) == (["", "mystery-model"], "litellm")
+
+
+@pytest.mark.asyncio
+async def test_session_detail_metadata_carries_the_handler_pricing():
+    handler = MagicMock()
+    handler.get_session_detail = AsyncMock(
+        return_value=({"start_time": "2026-09-23T00:00:00Z"}, ["", "mystery-model"], "litellm")
+    )
+
+    with (
+        patch.object(router_module, "_ensure_enabled", return_value=None),
+        patch.object(router_module, "_handler", return_value=handler),
+        patch.object(router_module, "_respond", side_effect=lambda payload, _: JSONResponse(payload)),
+        patch.object(router_module, "AccessFilter") as access,
+    ):
+        access.return_value.get_project_access_context.return_value = _context(is_admin=True, admin_projects=[])
+        response = await router_module.get_session_detail(user=User(id="u1"), trace_id="t1")
+
+    metadata = json.loads(response.body)["metadata"]
+    assert (metadata["unpriced_models"], metadata["catalog_source"]) == (["", "mystery-model"], "litellm")

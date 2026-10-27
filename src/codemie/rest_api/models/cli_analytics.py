@@ -38,9 +38,17 @@ class LocalAnalyticsResponseMetadata(BaseModel):
     unpriced_models: list[str] = Field(
         default_factory=list,
         description=(
-            "Models present in the result whose cache-read rate is absent from the active LLM cost config. "
-            "Their cache-read tokens contribute 0.0 to cache_read_cost_usd / bloat_pct. Diagnostic only - "
-            "the frontend contract ignores this field."
+            "Models present in the result with a token kind they used and no catalog price for it (or no "
+            "catalog entry at all; an empty model name is reported as \"\"). Their tokens of that kind contribute "
+            "0 to every money value. Diagnostic only - the frontend contract ignores this field."
+        ),
+    )
+    catalog_source: str | None = Field(
+        None,
+        description=(
+            "The catalog that priced the money of this response: 'litellm' (the LiteLLM proxy's model info) or "
+            "'yaml' (the LLM config files); named on every money endpoint, even when the selection is empty. "
+            "Null on an endpoint that returns no money (/tools, /activity)."
         ),
     )
 

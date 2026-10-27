@@ -133,6 +133,7 @@ def map_litellm_to_llm_model(litellm_model: dict[str, Any]) -> "LLMModel":
             output=output_cost,
             cache_read_input_token_cost=cache_read_cost,
             cache_creation_input_token_cost=cache_creation_cost,
+            cache_creation_input_token_cost_above_1hr=model_info.get("cache_creation_input_token_cost_above_1hr"),
         )
 
     # Extract default categories (core type)

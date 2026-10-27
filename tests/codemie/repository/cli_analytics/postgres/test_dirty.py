@@ -20,7 +20,7 @@ from datetime import date, datetime, time, timezone
 
 import pytest
 
-from codemie.repository.cli_analytics.postgres.dirty import RollupFamily, dirty_keys
+from codemie.repository.cli_analytics.postgres.dirty import RollupFamily, carries_lines, dirty_keys
 from codemie.repository.cli_analytics.postgres.otlp import DecodedBatch, decode_hook_events, decode_otlp
 from tests.codemie.repository.cli_analytics.support import hook_event_builders as hb
 from tests.codemie.repository.cli_analytics.support import otlp_builders as b
@@ -250,12 +250,23 @@ def test_a_subagent_usage_hook_marks_dimensions_usage_and_session() -> None:
 
 
 def test_a_tool_end_hook_marks_span_facts_on_its_day_and_the_hour_before() -> None:
-    batch = _hooks(hb.minimal("agent.tool.end", "s1", JUST_AFTER_MIDNIGHT.isoformat()))
+    with_lines = {**hb.minimal("agent.tool.end", "s2", NOON.isoformat()), "lines_added": 5, "lines_removed": 0}
+    batch = _hooks(hb.minimal("agent.tool.end", "s1", JUST_AFTER_MIDNIGHT.isoformat()), with_lines)
 
     assert dirty_keys(batch) == {
         (D, "s1"): 38,  # DIMENSIONS 2 + SPAN_FACTS 4 + SESSION 32
         (PREVIOUS, "s1"): 4,  # SPAN_FACTS only
+        (D, "s2"): 46,  # DIMENSIONS 2 + SPAN_FACTS 4 + METRIC_FACTS 8 (its lines) + SESSION 32
     }
+
+
+@pytest.mark.parametrize(
+    ("lines_added", "expected"), [(None, False), ("5", False), (True, False), (5, True), (0, True)]
+)
+def test_a_tool_end_carries_lines_only_when_lines_added_is_a_number(lines_added: object, expected: bool) -> None:
+    hook = _hooks({**hb.minimal("agent.tool.end", "s1", NOON.isoformat()), "lines_added": lines_added}).hooks[0]
+
+    assert carries_lines(hook) is expected
 
 
 @pytest.mark.parametrize(

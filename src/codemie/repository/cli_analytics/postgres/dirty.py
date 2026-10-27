@@ -20,6 +20,7 @@ recomputes those families for that slice from raw rows (see rollups.py).
 
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, time, timedelta, timezone
 from enum import IntFlag
 
@@ -170,6 +171,17 @@ def _mark_span_hook(keys: DirtyKeys, hook: HookRow) -> None:
         _mark_next_day_near_midnight(keys, hook.day, hook.ts, hook.session_id)
 
 
+def carries_lines(hook: HookRow) -> bool:
+    """An agent.tool.end with a numeric lines_added: its session takes its lines from these hook events."""
+    if hook.event_type != _TOOL_END or not hook.session_id or not hook.attrs:
+        return False
+    attrs = json.loads(hook.attrs)
+    if not isinstance(attrs, dict):
+        return False
+    lines = attrs.get("lines_added")
+    return isinstance(lines, (int, float)) and not isinstance(lines, bool)
+
+
 def _mark_hook(keys: DirtyKeys, hook: HookRow) -> None:
     if not hook.session_id:
         return
@@ -180,6 +192,8 @@ def _mark_hook(keys: DirtyKeys, hook: HookRow) -> None:
         _mark_near_midnight(keys, hook.day, hook.ts, hook.session_id, int(RollupFamily.SPAN_FACTS), _CROSS_MIDNIGHT)
     elif hook.event_type in _SPAN_HOOK_TYPES:
         _mark_span_hook(keys, hook)
+        if carries_lines(hook):
+            _mark(keys, hook.day, hook.session_id, RollupFamily.METRIC_FACTS)
     elif hook.event_type == _SUBAGENT_USAGE:
         _mark(keys, hook.day, hook.session_id, RollupFamily.USAGE_FACTS)
 

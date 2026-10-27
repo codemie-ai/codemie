@@ -278,15 +278,28 @@ _TRANSCRIPT_CACHE_WRITE = (
 # A request without a stop_reason that is not an is_api_error one is a partial transcript snapshot of
 # a streaming response, so a matched one takes the larger of the transcript and the OTel output.
 _MATCHED_OUTPUT = "CASE WHEN a.partial THEN greatest(a.output_tokens, b.output_tokens) ELSE a.output_tokens END"
+_TRANSCRIPT_CACHE = f"{_TRANSCRIPT_CACHE_WRITE}, a.cache_5m, a.cache_1h"
+# A matched request whose transcript has no 5m / 1h split takes the OTel record's cache write and split
+# whole, never one column from each source.
+_NO_TRANSCRIPT_SPLIT = "a.cache_5m IS NULL AND a.cache_1h IS NULL"
+_MATCHED_CACHE = ", ".join(
+    f"CASE WHEN {_NO_TRANSCRIPT_SPLIT} THEN b.{otel} ELSE {transcript} END"
+    for otel, transcript in (
+        ("cache_creation_tokens", _TRANSCRIPT_CACHE_WRITE),
+        ("cache_5m", "a.cache_5m"),
+        ("cache_1h", "a.cache_1h"),
+    )
+)
 
 
-def _transcript_columns(output: str) -> str:
-    """The columns a transcript request contributes to a row, `output` being the output-tokens expression."""
+def _transcript_columns(output: str, cache: str) -> str:
+    """The columns a transcript request contributes to a row, `output` being the output-tokens expression and
+    `cache` the cache-write total, 5m and 1h expressions."""
     return (
         "coalesce(a.speed, ''), coalesce(a.inference_geo, ''), coalesce(a.service_tier, ''), "
         "coalesce(a.scope_kind, ''), coalesce(a.scope_name, ''), coalesce(a.agent_id, ''), "
-        f"coalesce(a.agent_type, ''), a.input_tokens, {output}, a.cache_read_tokens, {_TRANSCRIPT_CACHE_WRITE}, "
-        "a.cache_5m, a.cache_1h, a.thinking_tokens, a.web_search_requests, a.web_fetch_requests"
+        f"coalesce(a.agent_type, ''), a.input_tokens, {output}, a.cache_read_tokens, {cache}, "
+        "a.thinking_tokens, a.web_search_requests, a.web_fetch_requests"
     )
 
 
@@ -457,6 +470,8 @@ o AS (
            CASE WHEN {_OTEL_SPEED} = 'normal' THEN 'standard' ELSE nullif({_OTEL_SPEED}, '') END AS speed,
            nullif({_bounded("l.attrs->>'agent.name'")}, '') AS agent_name,
            {_attr_ms("l", "duration_ms")} AS duration_ms, {_attr_ms("l", "ttft_ms")} AS ttft_ms,
+           {_attr_ms("l", "cache_creation_5m_tokens")} AS cache_5m,
+           {_attr_ms("l", "cache_creation_1h_tokens")} AS cache_1h,
            row_number() OVER (
                PARTITION BY r.day, r.session_id
                ORDER BY l.ts, l.request_id, l.model, l.user_email, l.query_source, l.input_tokens, l.output_tokens,
@@ -505,7 +520,7 @@ p AS (
 -- A matched request takes the day and hour of its transcript time, wherever its OTel record lies.
 SELECT a.day, date_trunc('hour', a.ts, 'UTC'), a.ts, a.session_id, 'matched', coalesce(a.model, ''),
        coalesce(b.model, ''), coalesce(b.user_email, ''), coalesce(b.query_source, ''),
-       {_transcript_columns(_MATCHED_OUTPUT)},
+       {_transcript_columns(_MATCHED_OUTPUT, _MATCHED_CACHE)},
        b.cost_usd, b.duration_ms, b.ttft_ms
 FROM p
 JOIN t a ON a.day = p.day AND a.session_id = p.session_id AND a.tid = p.tid
@@ -513,7 +528,8 @@ JOIN o b ON b.day = p.day AND b.session_id = p.session_id AND b.oid = p.oid
 WHERE a.t_day = a.day
 UNION ALL
 SELECT a.day, date_trunc('hour', a.ts, 'UTC'), a.ts, a.session_id, 'transcript', coalesce(a.model, ''),
-       coalesce(a.model_raw, ''), coalesce(a.user_email, ''), '', {_transcript_columns('a.output_tokens')},
+       coalesce(a.model_raw, ''), coalesce(a.user_email, ''), '',
+       {_transcript_columns('a.output_tokens', _TRANSCRIPT_CACHE)},
        NULL, NULL, NULL
 FROM t a
 WHERE a.t_day = a.day
@@ -530,8 +546,8 @@ SELECT b.day, date_trunc('hour', b.ts, 'UTC'), b.ts, b.session_id,
        coalesce(b.speed, ''), '', '',
        CASE WHEN r.plugin THEN 'service' WHEN b.agent_name IS NOT NULL THEN 'agent' ELSE '' END,
        CASE WHEN r.plugin THEN coalesce(b.query_source, '') ELSE coalesce(b.agent_name, '') END,
-       '', '', b.input_tokens, b.output_tokens, b.cache_read_tokens, b.cache_creation_tokens, NULL, NULL, NULL,
-       NULL, NULL, b.cost_usd, b.duration_ms, b.ttft_ms
+       '', '', b.input_tokens, b.output_tokens, b.cache_read_tokens, b.cache_creation_tokens, b.cache_5m, b.cache_1h,
+       NULL, NULL, NULL, b.cost_usd, b.duration_ms, b.ttft_ms
 FROM o b
 JOIN rk r ON r.day = b.day AND r.session_id = b.session_id
 WHERE b.o_day = b.day
@@ -724,7 +740,8 @@ def _cost_key(column: str) -> str:
 # holds each kind's identity: OTel model, sender and query source for matched and service requests,
 # model_raw, the transcript's sender and '' for transcript-only ones. An OTel-only day has
 # only 'otel_only' requests, which are exactly the day's OTel api_request records: grouped by the
-# original key, with the five new key columns '' and the 5m/1h split NULL. A missing cost counts as 0.
+# original key, with the five new key columns '' and the 5m/1h split from the records' attributes (NULL
+# without them). A missing cost counts as 0.
 _COST_DAILY = _replace_daily(
     "cost_daily",
     _LOG,
@@ -1626,6 +1643,33 @@ _COUNTED_SKILL_HOOK = (
 _HOOK_FILE_PATH = _json_text("h.attrs", "file_path")
 
 
+def _carries_lines(alias: str) -> str:
+    """An agent.tool.end row whose lines_added is a JSON number."""
+    return f"{alias}.event_type = {_literal(_TOOL_END)} AND jsonb_typeof({alias}.attrs->'lines_added') = 'number'"
+
+
+# A session takes its lines from one source: its agent.tool.end hook events when any of them carries a numeric
+# lines_added (exact per call), else the OTel lines metric (which counts a new file one line too many).
+_LINES_SESSION = f"EXISTS (SELECT 1 FROM hook_events x WHERE x.session_id = k.session_id AND {_carries_lines('x')})"
+# Among the agent.tool.end rows carrying lines, a re-sent one of a tool_use_id counts once (the earliest); one
+# without a tool_use_id counts as stored.
+_FIRST_TOOL_END = (
+    f"(coalesce(h.tool_use_id, '') = '' OR NOT EXISTS (SELECT 1 FROM hook_events p "
+    f"WHERE p.session_id = h.session_id AND {_carries_lines('p')} AND p.tool_use_id = h.tool_use_id "
+    f"AND (p.ts, p.ingest_seq) < (h.ts, h.ingest_seq)))"
+)
+
+
+def _hook_lines(key: str) -> str:
+    """A line count of an agent.tool.end: a non-negative JSON number in attrs; anything else counts 0."""
+    count = _json_count("h.attrs", key, len(str(_MAX_COUNTER)) - 1)
+    return f"coalesce(CASE WHEN jsonb_typeof(h.attrs->{_literal(key)}) = 'number' THEN {count} END, 0)"
+
+
+_HOOK_LINES_ADDED = _hook_lines("lines_added")
+_HOOK_LINES_REMOVED = _hook_lines("lines_removed")
+
+
 RECOMPUTE: list[str] = [
     # First: cost_daily and the session_usage tables read the requests it builds.
     _BUILD_REQUESTS,
@@ -1635,14 +1679,22 @@ RECOMPUTE: list[str] = [
     # Rows whose sums are all zero are not stored, in these two rollups.
     *_replace_daily(
         "lines_daily",
-        _METRICS,
+        _METRICS | _SPANS,
         f"""(day, session_id, user_email, model_name, lines_added, lines_removed)
         SELECT k.day, k.session_id, coalesce(m.user_email, ''), coalesce(m.model, ''),
                sum({_LINES_ADDED}), sum({_LINES_REMOVED})
         {_in_day("m", "metric_points")}
-        WHERE k.kinds & {_METRICS} <> 0 AND m.metric_name = ANY({_text_array(LINES_METRICS)})
+        WHERE k.kinds & {_METRICS | _SPANS} <> 0 AND m.metric_name = ANY({_text_array(LINES_METRICS)})
+          AND NOT {_LINES_SESSION}
         GROUP BY 1, 2, 3, 4
-        HAVING sum({_LINES_ADDED}) <> 0 OR sum({_LINES_REMOVED}) <> 0""",
+        HAVING sum({_LINES_ADDED}) <> 0 OR sum({_LINES_REMOVED}) <> 0
+        UNION ALL
+        SELECT k.day, k.session_id, coalesce(h.user_email, ''), '', sum({_HOOK_LINES_ADDED}), sum({_HOOK_LINES_REMOVED})
+        {_in_day("h", "hook_events")}
+        WHERE k.kinds & {_METRICS | _SPANS} <> 0 AND {_carries_lines("h")} AND {_FIRST_TOOL_END}
+          AND {_LINES_SESSION}
+        GROUP BY 1, 2, 3
+        HAVING sum({_HOOK_LINES_ADDED}) <> 0 OR sum({_HOOK_LINES_REMOVED}) <> 0""",
     ),
     *_replace_daily(
         "active_time_daily",
@@ -1996,6 +2048,8 @@ SELECT day, session_id, bit_or(kinds) & $3 FROM (
            {_DIMS} | {_SESSION}
              | CASE WHEN event_type IN ({_FALLBACK_HOOKS}) THEN {_SPANS} ELSE 0 END
              | CASE WHEN event_type = {_literal("agent.subagent.usage")} THEN {_USAGE} ELSE 0 END
+             | CASE WHEN event_type = {_literal(_TOOL_END)} AND jsonb_typeof(attrs->'lines_added') = 'number'
+                    THEN {_METRICS} ELSE 0 END
     FROM hook_events
     WHERE {_RANGE} AND session_id <> ''
     UNION ALL
@@ -2256,7 +2310,7 @@ _TRIGGER_BITS: dict[str, int] = {
     "cost_daily": _LOG,
     "session_usage": _USAGE,
     "session_usage_hourly": _USAGE,
-    "lines_daily": _METRICS,
+    "lines_daily": _METRICS | _SPANS,
     "active_time_daily": _METRICS,
     "turns_daily": _SPANS,
     "tool_facts_daily": _SPANS,

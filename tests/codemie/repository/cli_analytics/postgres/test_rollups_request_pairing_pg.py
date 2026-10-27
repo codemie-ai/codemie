@@ -19,7 +19,8 @@ Each test runs the statement in one transaction on throwaway copies of `usage_re
 `_cli_requests`, and rolls everything back: no existing table is read or written and nothing is left behind.
 Skipped (not failed) when the local Postgres or the analytics schema is unreachable. Run it with
 `poetry run pytest tests/codemie/repository/cli_analytics/postgres/test_rollups_request_pairing_pg.py`;
-TEST_LOCAL_PG_URL points it at another server (default: the docker-compose `postgres` service).
+TEST_LOCAL_PG_URL points it at another server (default: the docker-compose `postgres` service). The
+`test_live_` cache-write split tests run only with TEST_LOCAL_PG_URL and migrate the analytics schema there first.
 """
 
 from __future__ import annotations
@@ -37,12 +38,16 @@ import pytest
 
 from codemie.configs.config import Config
 from codemie.repository.cli_analytics.postgres import rollups
+from codemie.repository.cli_analytics.postgres.migrations import run_migrations
 from codemie.repository.cli_analytics.postgres.settings import AnalyticsPgSettings
 from codemie.repository.cli_analytics.vocabulary import EventKind
 
 # pytest.ini forces PG_URL to a dead port for the whole suite; TEST_LOCAL_PG_URL points this file at
 # a real local Postgres (default: the docker-compose `postgres` service's credentials).
 _LOCAL_PG_URL = os.environ.get("TEST_LOCAL_PG_URL", "postgresql://postgres:password@localhost:5432/postgres")
+_live = pytest.mark.skipif(
+    not os.environ.get("TEST_LOCAL_PG_URL"), reason="TEST_LOCAL_PG_URL is not set: no database to run against"
+)
 
 _DAY = date(2026, 3, 10)
 _NOON = datetime(2026, 3, 10, 12, 0, 0, tzinfo=timezone.utc)
@@ -51,17 +56,20 @@ _MODEL = "claude-opus-4-8"
 _INSERT_TRANSCRIPT = """
     INSERT INTO usage_requests (ts, session_id, request_id, model_raw, model, input_tokens, output_tokens,
                                 cache_read_tokens, stop_reason, is_api_error, agent_id, scope_kind, scope_name,
-                                agent_type)
-    VALUES ($1, $2, $3, $4, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                                agent_type, cache_creation_5m_tokens, cache_creation_1h_tokens)
+    VALUES ($1, $2, $3, $4, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 """
 _INSERT_OTEL = f"""
     INSERT INTO log_events (ts, session_id, event_kind, model, input_tokens, output_tokens, cache_read_tokens,
                             cache_creation_tokens, cost_usd, severity, resource_id, request_id, query_source, attrs)
-    VALUES ($1, $2, {int(EventKind.API_REQUEST)}, $3, $4, $5, $6, 0, $7, 9, 1, $8, $9, $10::jsonb)
+    VALUES ($1, $2, {int(EventKind.API_REQUEST)}, $3, $4, $5, $6, $11, $7, 9, 1, $8, $9, $10::jsonb)
 """
 _READ = (
     "SELECT req_kind, input_tokens, output_tokens, cost_usd FROM _cli_requests WHERE session_id = $1 "
     "ORDER BY ts, req_kind, output_tokens"
+)
+_READ_CACHE_WRITE = (
+    "SELECT req_kind, cache_creation_tokens, cache_5m, cache_1h FROM _cli_requests WHERE session_id = $1 ORDER BY ts"
 )
 _READ_DAYS = (
     "SELECT day, req_kind, output_tokens, cost_usd FROM _cli_requests WHERE session_id = $1 "
@@ -88,6 +96,8 @@ class _Db:
         scope_kind: str | None = None,
         scope_name: str | None = None,
         agent_type: str | None = None,
+        cache_5m: int | None = None,
+        cache_1h: int | None = None,
     ) -> None:
         await self.conn.execute(
             _INSERT_TRANSCRIPT,
@@ -104,6 +114,8 @@ class _Db:
             scope_kind,
             scope_name,
             agent_type,
+            cache_5m,
+            cache_1h,
         )
 
     async def otel(
@@ -118,6 +130,8 @@ class _Db:
         cost_usd: float = 0.5,
         query_source: str | None = None,
         agent_name: str | None = None,
+        cache_creation_tokens: int = 0,
+        attrs: dict | None = None,
     ) -> None:
         await self.conn.execute(
             _INSERT_OTEL,
@@ -130,7 +144,8 @@ class _Db:
             cost_usd,
             request_id,
             query_source,
-            json.dumps({"agent.name": agent_name} if agent_name else {}),
+            json.dumps(({"agent.name": agent_name} if agent_name else {}) | (attrs or {})),
+            cache_creation_tokens,
         )
 
     async def requests(self, session_id: str) -> list[tuple[str, int | None, int | None, float | None]]:
@@ -138,6 +153,12 @@ class _Db:
         await self.conn.execute(rollups._LOAD_KEYS, [_DAY], [session_id], [rollups._LOG | rollups._USAGE], [1])
         await self.conn.execute(rollups._BUILD_REQUESTS)
         return [tuple(r) for r in await self.conn.fetch(_READ, session_id)]
+
+    async def cache_writes(self, session_id: str) -> list[tuple[str, int | None, int | None, int | None]]:
+        """Run the statement for the session's day and return (req_kind, cache write, 5m, 1h) per request."""
+        await self.conn.execute(rollups._LOAD_KEYS, [_DAY], [session_id], [rollups._LOG | rollups._USAGE], [1])
+        await self.conn.execute(rollups._BUILD_REQUESTS)
+        return [tuple(r) for r in await self.conn.fetch(_READ_CACHE_WRITE, session_id)]
 
     async def requests_by_day(
         self, session_id: str, days: list[date]
@@ -179,6 +200,18 @@ async def _db() -> AsyncIterator[_Db]:
             await tx.rollback()  # the scratch schema, its tables and the temp tables' rows vanish with it
     finally:
         await conn.close()
+
+
+@asynccontextmanager
+async def _live_db() -> AsyncIterator[_Db]:
+    """`_db()` on TEST_LOCAL_PG_URL after migrating the analytics schema there, so a fresh server has the tables."""
+    try:
+        await (await asyncpg.connect(_LOCAL_PG_URL)).close()
+    except (OSError, asyncpg.PostgresError) as exc:  # no reachable database: skip before migrating, like _db()
+        pytest.skip(f"local Postgres is not reachable: {exc!r}")
+    run_migrations(AnalyticsPgSettings.from_config(Config(PG_URL=_LOCAL_PG_URL, CLI_ANALYTICS_PG_URL=_LOCAL_PG_URL)))
+    async with _db() as db:
+        yield db
 
 
 def _session() -> str:
@@ -401,3 +434,57 @@ async def test_tier_3_pairs_only_within_one_utc_day(transcript_s: int, otel_s: i
         await db.transcript(session_id, transcript_s, input_tokens=7, output_tokens=3)
         await db.otel(session_id, otel_s, input_tokens=9, output_tokens=4766)
         assert await db.requests_by_day(session_id, [_DAY, _DAY + timedelta(days=1)]) == expected
+
+
+_OTEL_SPLIT = {"cache_creation_5m_tokens": 300, "cache_creation_1h_tokens": 700}
+
+
+@_live
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("attrs", "expected"),
+    [(_OTEL_SPLIT, [("otel_only", 1000, 300, 700)]), (None, [("otel_only", 1000, None, None)])],
+)
+async def test_live_an_otel_only_request_takes_the_cache_write_split_from_its_attributes(attrs, expected) -> None:
+    session_id = _session()
+    async with _live_db() as db:
+        await db.otel(session_id, 0, input_tokens=10, output_tokens=5, cache_creation_tokens=1000, attrs=attrs)
+        assert await db.cache_writes(session_id) == expected
+
+
+@_live
+@pytest.mark.asyncio
+async def test_live_a_matched_request_keeps_the_transcript_cache_write_split() -> None:
+    session_id = _session()
+    async with _live_db() as db:
+        await db.transcript(
+            session_id, 0, input_tokens=10, output_tokens=5, request_id="req_1", stop_reason="end_turn", cache_5m=1000
+        )
+        await db.otel(
+            session_id,
+            1,
+            input_tokens=10,
+            output_tokens=5,
+            request_id="req_1",
+            cache_creation_tokens=1000,
+            attrs=_OTEL_SPLIT,
+        )
+        assert await db.cache_writes(session_id) == [("matched", 1000, 1000, None)]
+
+
+@_live
+@pytest.mark.asyncio
+async def test_live_a_matched_request_without_a_transcript_split_takes_the_otel_cache_write_split() -> None:
+    session_id = _session()
+    async with _live_db() as db:
+        await db.transcript(session_id, 0, input_tokens=10, output_tokens=5, request_id="req_1", stop_reason="end_turn")
+        await db.otel(
+            session_id,
+            1,
+            input_tokens=10,
+            output_tokens=5,
+            request_id="req_1",
+            cache_creation_tokens=1000,
+            attrs=_OTEL_SPLIT,
+        )
+        assert await db.cache_writes(session_id) == [("matched", 1000, 300, 700)]

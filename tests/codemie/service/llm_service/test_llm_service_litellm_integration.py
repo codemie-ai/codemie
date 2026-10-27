@@ -143,6 +143,19 @@ class TestLiteLLMModelFallback:
             # Should return YAML config models (LiteLLM not initialized)
             assert all(model.base_name != "litellm-gpt-4" for model in models)
 
+    @pytest.mark.parametrize(
+        ("proxy_enabled", "initialized", "expected"),
+        [(True, True, "litellm"), (True, False, "yaml"), (False, True, "yaml")],
+    )
+    def test_catalog_source(self, llm_service, mock_litellm_models, proxy_enabled, initialized, expected):
+        from codemie.configs.config import config
+
+        if initialized:
+            llm_service.initialize_default_litellm_models(mock_litellm_models)
+
+        with patch.object(config, "LLM_PROXY_ENABLED", proxy_enabled):
+            assert llm_service.catalog_source() == expected
+
     def test_get_all_embedding_model_info_uses_litellm_when_enabled(self, llm_service, mock_litellm_models):
         """Test that get_all_embedding_model_info returns LiteLLM embeddings when initialized."""
         from codemie.configs.config import config

@@ -30,6 +30,7 @@ class CostConfig(BaseModel):
     output_cost_per_token_batches: Optional[float] = None
     cache_read_input_token_cost: Optional[float] = None
     cache_creation_input_token_cost: Optional[float] = None
+    cache_creation_input_token_cost_above_1hr: float | None = None
 
 
 class LLMProvider(Enum):

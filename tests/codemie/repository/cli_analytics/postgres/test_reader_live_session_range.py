@@ -127,7 +127,7 @@ async def test_reported_range_covers_events_outside_the_hook_times():
 
         assert _naive(t - timedelta(seconds=12)) in [r["started_at"] for r in await reader.get_session_start_times(f)]
 
-        users = await LocalAnalyticsHandler(reader).get_users(
+        users, _ = await LocalAnalyticsHandler(reader).get_users(
             LocalAnalyticsFilter(start_dt=f.start_dt, end_dt=f.end_dt, users=[_EMAIL]), page=None, per_page=None
         )
         assert users["avg_session_duration_ms"] == 672_000
@@ -184,7 +184,7 @@ async def test_session_detail_reports_the_activity_range():
         await _cleanup(engine, _SESSION)
         await _seed_session(engine, _SESSION, t, otel=True)
 
-        detail, _ = await LocalAnalyticsHandler(PostgresCliAnalyticsReader(engine)).get_session_detail(_SESSION)
+        detail, _, _ = await LocalAnalyticsHandler(PostgresCliAnalyticsReader(engine)).get_session_detail(_SESSION)
 
         assert detail is not None
         start = datetime.fromisoformat(detail["start_time"])
@@ -208,7 +208,7 @@ async def test_session_detail_without_dims_starts_at_its_earliest_event():
             await conn.execute(_LOG_EVENTS_SQL, t, _HOOKS_ONLY)
             await conn.execute(_LOG_EVENTS_SQL, t + timedelta(seconds=30), _HOOKS_ONLY)
 
-        detail, _ = await LocalAnalyticsHandler(PostgresCliAnalyticsReader(engine)).get_session_detail(_HOOKS_ONLY)
+        detail, _, _ = await LocalAnalyticsHandler(PostgresCliAnalyticsReader(engine)).get_session_detail(_HOOKS_ONLY)
 
         assert detail is not None
         assert datetime.fromisoformat(detail["start_time"]) == t
@@ -235,7 +235,7 @@ async def test_list_and_detail_agree_on_a_row_more_than_a_day_out():
 
         data, _, _ = await handler.get_sessions(f, page=0, per_page=50, sort_by="start_time", search=None)
         listed = next(s for s in data["sessions"] if s["trace_id"] == _SESSION)
-        detail, _ = await handler.get_session_detail(_SESSION)
+        detail, _, _ = await handler.get_session_detail(_SESSION)
 
         assert detail is not None
         assert datetime.fromisoformat(listed["start_time"]) == t - timedelta(seconds=12)

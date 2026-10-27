@@ -34,7 +34,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import asyncpg
@@ -50,7 +50,7 @@ from codemie.repository.cli_analytics.ports import (
     TelemetryStorageUnavailableError,
     accepted_project,
 )
-from codemie.repository.cli_analytics.postgres.dirty import RollupFamily, dirty_keys
+from codemie.repository.cli_analytics.postgres.dirty import RollupFamily, carries_lines, dirty_keys
 from codemie.repository.cli_analytics.postgres.engine import AnalyticsPgEngine
 from codemie.repository.cli_analytics.postgres.fork_attribution import (
     FORK_DAYS_SQL,
@@ -70,6 +70,7 @@ from codemie.repository.cli_analytics.postgres.otlp import (
     decode_otlp,
     json_text,
 )
+from codemie.repository.cli_analytics.vocabulary import LINES_METRICS
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +177,30 @@ RETURNING day, h"""
 # Sorted, so two batches sharing sessions take their locks in one order and cannot deadlock.
 _SESSION_LOCKS_SQL = "SELECT pg_advisory_xact_lock(k) FROM unnest($1::bigint[]) AS k ORDER BY k"
 
+# Of these sessions, those that already take their lines from stored agent.tool.end hook events.
+_LINES_SOURCE_SQL = """
+SELECT s FROM unnest($1::text[]) AS s
+WHERE EXISTS (SELECT 1 FROM hook_events h WHERE h.session_id = s AND h.event_type = 'agent.tool.end'
+    AND jsonb_typeof(h.attrs->'lines_added') = 'number')"""
+
+# A session that has just switched to agent.tool.end lines takes its lines from them on every day, so each of its
+# days already holding lines, back to raw retention ($3: the oldest day kept), is rebuilt.
+_LINES_DAYS_SQL = """
+SELECT DISTINCT day, session_id FROM lines_daily
+WHERE session_id = ANY($1::text[]) AND day >= $3::date
+UNION
+SELECT DISTINCT (ts AT TIME ZONE 'UTC')::date, session_id FROM metric_points
+WHERE session_id = ANY($1::text[]) AND metric_name = ANY($2::text[])
+  AND ts >= $3::date::timestamp AT TIME ZONE 'UTC'"""
+
+# A tool_use_id counts its lines once, by its earliest copy: the other days holding a copy of a call this batch
+# brings are recomputed, so a copy dated earlier than one already counted takes the count from it.
+_LINES_COPY_DAYS_SQL = """
+SELECT DISTINCT (f.ts AT TIME ZONE 'UTC')::date AS day, f.session_id
+FROM unnest($1::text[], $2::text[], $3::date[]) AS u(s, t, d)
+JOIN hook_events f ON f.session_id = u.s AND f.event_type = 'agent.tool.end' AND f.tool_use_id = u.t
+    AND jsonb_typeof(f.attrs->'lines_added') = 'number' AND (f.ts AT TIME ZONE 'UTC')::date <> u.d"""
+
 # `version` changes with every mark, which tells the refresher that a key it recomputed
 # was marked again meanwhile (see rollups.py).
 _DIRTY_SQL = """
@@ -248,6 +273,48 @@ def _keep_fresh(batch: DecodedBatch, fresh: set[tuple]) -> DecodedBatch:
                 taken.add(key)
                 records.append((kind, row))
     return _subset(batch, records)
+
+
+async def _insert_rows(conn: asyncpg.Connection, stored: DecodedBatch, new_resources: list[tuple]) -> None:
+    if new_resources:
+        await conn.execute(_RESOURCES_SQL, *_columns([(None, None, *r) for r in new_resources]))
+    session_attrs = sorted(stored.session_attrs.items())
+    if session_attrs:
+        await conn.execute(_SESSION_ATTRS_SQL, [s for s, _ in session_attrs], [json_text(a) for _, a in session_attrs])
+    for attr, table, _ in _TABLES:
+        rows = getattr(stored, attr)
+        if rows:
+            await conn.execute(_INSERT_SQL[table], *_columns(rows))
+
+
+async def _switching_sessions(conn: asyncpg.Connection, lines_sessions: list[str]) -> list[str]:
+    if not lines_sessions:
+        return lines_sessions
+    on_hooks = {r["s"] for r in await conn.fetch(_LINES_SOURCE_SQL, lines_sessions)}
+    return [s for s in lines_sessions if s not in on_hooks]
+
+
+async def _mark_subagent_days(conn: asyncpg.Connection, marks: dict[tuple, int], forks, starts) -> None:
+    if forks:
+        columns = [s for s, _ in forks], [a for _, a in forks]
+        await _mark_days(conn, marks, RollupFamily.SPAN_FACTS, FORK_DAYS_SQL, *columns)
+    if starts:
+        columns = [s for s, _, _ in starts], [a for _, a, _ in starts], [t for _, _, t in starts]
+        await _mark_days(conn, marks, RollupFamily.SPAN_FACTS, LATER_START_DAYS_SQL, *columns)
+
+
+async def _write_dirty(conn: asyncpg.Connection, marks: dict[tuple, int]) -> None:
+    dirty = sorted(marks.items())
+    if dirty:
+        await conn.execute(_DIRTY_SQL, [k[0] for k, _ in dirty], [k[1] for k, _ in dirty], [f for _, f in dirty])
+
+
+async def _mark_days(
+    conn: asyncpg.Connection, marks: dict[tuple, int], family: RollupFamily, sql: str, *args: Any
+) -> None:
+    for row in await conn.fetch(sql, *args):
+        key = (row["day"], row["session_id"])
+        marks[key] = marks.get(key, 0) | int(family)
 
 
 def _attributed_to(batch: DecodedBatch, project: str | None) -> DecodedBatch:
@@ -388,44 +455,48 @@ class PostgresTelemetryIngestor:
             # The ledger first: a re-sent record (stored, or rejected before) brings nothing else.
             fresh_keys = await conn.fetch(_LEDGER_SQL, [k[0] for k in keys], [k[1] for k in keys])
             stored = _keep_fresh(batch, {(r["day"], r["h"]) for r in fresh_keys})
+            lines_sessions = sorted({h.session_id for h in stored.hooks if carries_lines(h)})
+            # Read before this batch's rows are inserted, so they do not count; a concurrent batch not yet
+            # committed is not seen either, which only runs the lookup below once more.
+            switching = await _switching_sessions(conn, lines_sessions)
             new_resources = sorted(
                 (rid, *v) for rid, v in stored.resources.items() if self._known_resources.get(rid) != today
             )
-            if new_resources:
-                await conn.execute(_RESOURCES_SQL, *_columns([(None, None, *r) for r in new_resources]))
-            session_attrs = sorted(stored.session_attrs.items())
-            if session_attrs:
-                await conn.execute(
-                    _SESSION_ATTRS_SQL, [s for s, _ in session_attrs], [json_text(a) for _, a in session_attrs]
-                )
-            for attr, table, _ in _TABLES:
-                rows = getattr(stored, attr)
-                if rows:
-                    await conn.execute(_INSERT_SQL[table], *_columns(rows))
+            await _insert_rows(conn, stored, new_resources)
             marks = dirty_keys(stored)
             forks = named_subagent_ids(stored.hooks)
             starts = keyed_subagent_starts(stored.hooks)
-            if sessions := {s for s, _ in forks} | {s for s, _, _ in starts}:
-                # Of two batches of one session the second to reach this lock waits for the first to commit,
-                # so its lookups below see the other's rows and re-queue the day the other made stale.
-                lock_keys = sorted(self._engine.lock_key(f"ingest-session:{s}") for s in sessions)
-                await conn.execute(_SESSION_LOCKS_SQL, lock_keys)
-            if forks:
-                for row in await conn.fetch(FORK_DAYS_SQL, [s for s, _ in forks], [a for _, a in forks]):
-                    key = (row["day"], row["session_id"])
-                    marks[key] = marks.get(key, 0) | int(RollupFamily.SPAN_FACTS)
-            if starts:
-                columns = [s for s, _, _ in starts], [a for _, a, _ in starts], [t for _, _, t in starts]
-                for row in await conn.fetch(LATER_START_DAYS_SQL, *columns):
-                    key = (row["day"], row["session_id"])
-                    marks[key] = marks.get(key, 0) | int(RollupFamily.SPAN_FACTS)
-            dirty = sorted(marks.items())
-            if dirty:
-                await conn.execute(
-                    _DIRTY_SQL, [k[0] for k, _ in dirty], [k[1] for k, _ in dirty], [f for _, f in dirty]
-                )
+            await self._lock_sessions(conn, stored, forks, starts, lines_sessions)
+            await _mark_subagent_days(conn, marks, forks, starts)
+            await self._mark_lines_days(conn, stored, marks, switching, today)
+            await _write_dirty(conn, marks)
         self._remember((rid for rid, *_ in new_resources), today)
         return stored.record_count
+
+    async def _lock_sessions(
+        self, conn: asyncpg.Connection, stored: DecodedBatch, forks, starts, lines_sessions: list[str]
+    ) -> None:
+        # A lines metric point waits for a running lines lookup of its session, so that lookup's batch
+        # commits first and this point's day is recomputed with its hook lines in view.
+        metric_lines = {m.session_id for m in stored.metrics if m.session_id and m.metric_name in LINES_METRICS}
+        if sessions := {s for s, _ in forks} | {s for s, _, _ in starts} | set(lines_sessions) | metric_lines:
+            # Of two batches of one session the second to reach this lock waits for the first to commit,
+            # so its lookups below see the other's rows and re-queue the day the other made stale.
+            lock_keys = sorted(self._engine.lock_key(f"ingest-session:{s}") for s in sessions)
+            await conn.execute(_SESSION_LOCKS_SQL, lock_keys)
+
+    async def _mark_lines_days(
+        self, conn: asyncpg.Connection, stored: DecodedBatch, marks: dict[tuple, int], switching: list[str], today: date
+    ) -> None:
+        if switching:
+            earliest = today - timedelta(days=self._engine.settings.raw_retention_days)
+            columns = switching, list(LINES_METRICS), earliest
+            await _mark_days(conn, marks, RollupFamily.METRIC_FACTS, _LINES_DAYS_SQL, *columns)
+        if copies := sorted(
+            {(h.session_id, h.tool_use_id, h.day) for h in stored.hooks if h.tool_use_id and carries_lines(h)}
+        ):
+            columns = [s for s, _, _ in copies], [t for _, t, _ in copies], [d for _, _, d in copies]
+            await _mark_days(conn, marks, RollupFamily.METRIC_FACTS, _LINES_COPY_DAYS_SQL, *columns)
 
     def _remember(self, resource_ids, today: date) -> None:
         if len(self._known_resources) > _KNOWN_RESOURCES_LIMIT:

@@ -82,6 +82,24 @@ def _write_yaml(tmp_path, body: str):
     return yaml_file
 
 
+def test_cost_parses_cache_creation_above_1hr(tmp_path):
+    body = '''
+llm_models:
+  - base_name: 'm'
+    deployment_name: 'm'
+    enabled: true
+    cost:
+      input: 0.000003
+      output: 0.000015
+      cache_creation_input_token_cost: 0.00000375
+      cache_creation_input_token_cost_above_1hr: 0.000006
+embeddings_models: []
+'''
+    cost = LLMConfig(yaml_file=_write_yaml(tmp_path, body)).llm_models[0].cost
+    assert cost.cache_creation_input_token_cost == 0.00000375
+    assert cost.cache_creation_input_token_cost_above_1hr == 0.000006
+
+
 def test_model_switchyard_field_parses(tmp_path):
     yaml_file = _write_yaml(
         tmp_path,

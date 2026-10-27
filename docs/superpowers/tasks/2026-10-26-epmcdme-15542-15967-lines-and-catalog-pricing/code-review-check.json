@@ -1,0 +1,43 @@
+{
+  "decision": "approve",
+  "rationale": "Evidence-only check round: the sole prior blocking finding, CR-001 (decision_needed), is resolved by an id-mapped product-owner decision to accept the documented deviation (no 1h price in the shipped YAML; 1h writes price at 0 and are listed in unpriced_models), with a non-empty rationale. business_review and standards_review are carried forward from the final round; AC7 UI consistency is still pending Stage 7. No new findings were looked for (targeted round); the brief is code-review-brief.local.md.",
+  "confidence": "high",
+  "risk_flags": ["public-api"],
+  "business_review": [
+    {"kind": "story-ac", "item": "EPMCDME-15542 AC1: one authoritative model-pricing source for CLI Analytics", "status": "pass", "notes": "CatalogPricer reads llm_service.get_all_llm_model_info only; litellm fallback removed; catalog_source in metadata"},
+    {"kind": "story-ac", "item": "EPMCDME-15542 AC2: COST and all cost-breakdown components use the same pricing basis", "status": "pass", "notes": "all handler money surfaces price get_session_model_costs token sums via price_session_models"},
+    {"kind": "story-ac", "item": "EPMCDME-15542 AC3: CACHE-READ COST reconciles with COST for the same model/session", "status": "pass", "notes": "cache_read priced with the same pricer and rows as total"},
+    {"kind": "story-ac", "item": "EPMCDME-15542 AC4: BLOAT % numerator and denominator from the same pricing basis", "status": "pass", "notes": "bloat_pct = _pct(money.cache_read, money.total) on overview/efficiency/detail/sessions"},
+    {"kind": "story-ac", "item": "EPMCDME-15542 AC5: Opus 5.5 and Sonnet 4.6 covered by automated tests", "status": "pass", "notes": "test_coding_agent_pricing.py, test_live_catalog_money.py, handler tests"},
+    {"kind": "story-ac", "item": "EPMCDME-15542 AC6: Haiku 4.5 remains correct", "status": "pass", "notes": "_HAIKU rates incl. 5m/1h split cases"},
+    {"kind": "story-ac", "item": "EPMCDME-15542 AC7: Overview, Efficiency and Session Detail show mutually consistent cost values", "status": "pending-stage-7", "notes": "API side implemented; UI consistency needs Stage 7 browser evidence"},
+    {"kind": "story-ac", "item": "EPMCDME-15542: same model and token usage never priced at different rates in one breakdown", "status": "pass", "notes": "single CatalogPricer per request, memoised per model"},
+    {"kind": "story-ac", "item": "EPMCDME-15967: 5-line Write + 1/1 Edit reports lines_added=6, lines_removed=1, net +5", "status": "pass", "notes": "lines_daily hook branch; test_live_lines_daily.py asserts (0, '', 6, 1)"},
+    {"kind": "spec", "item": "MR: every money value is token counts x platform catalog at read time", "status": "pass", "notes": "events, dispatches, dead sessions and totals priced via CatalogPricer"},
+    {"kind": "spec", "item": "MR: catalog is LiteLLM model_info when proxy on, else config/llms YAML", "status": "pass", "notes": "catalog_source and get_all_llm_model_info share the condition"},
+    {"kind": "spec", "item": "MR: CatalogPricer prices input, output, cache read, 5m and 1h write; new CostConfig.cache_creation_input_token_cost_above_1hr", "status": "pass", "notes": "llm_config.py field; litellm models.py mapping; price rate table"},
+    {"kind": "spec", "item": "MR: readers return token sums per (session, model); each row priced once", "status": "pass", "notes": "get_session_model_costs; SessionMoney.of_sessions/by_model"},
+    {"kind": "spec", "item": "MR: 5m/1h split from transcript, else OTel attrs, else whole write at 5m; split bounded by total", "status": "pass", "notes": "rollups split columns; CatalogPricer.price min() bounds"},
+    {"kind": "spec", "item": "MR: metadata names catalog_source and lists unpriced_models; warning logged", "status": "pass", "notes": "routers pass pricer.unpriced/catalog_source on money routes"},
+    {"kind": "spec", "item": "MR: lines_daily from agent.tool.end with numeric lines_added, else OTel metric, one source per session", "status": "pass", "notes": "_LINES_SESSION gating; null/string tests"},
+    {"kind": "spec", "item": "MR: ingest re-marks earlier days on first lines-carrying event under the per-session lock", "status": "pass", "notes": "_LINES_SOURCE_SQL, _LINES_DAYS_SQL, _LINES_COPY_DAYS_SQL"},
+    {"kind": "spec", "item": "MR: backfill marks bit 8 for agent.tool.end with numeric lines_added", "status": "pass", "notes": "backfill mark range CASE"},
+    {"kind": "spec", "item": "MR: contract docs updated (events and storage guides)", "status": "pass", "notes": "agent.tool.end section, Money section, rollout rows"},
+    {"kind": "spec", "item": "MR: litellm.get_model_info fallback of lookup_cost_config removed", "status": "pass", "notes": "returns None after the catalog loop"},
+    {"kind": "spec", "item": "MR: Users/Cost queries resolve one developer per session", "status": "pass", "notes": "_developer/_session_email; two-email live test"},
+    {"kind": "spec", "item": "MR: Sessions and Repositories price only returned sessions", "status": "pass", "notes": "session_model_rows filtered by returned ids"},
+    {"kind": "spec", "item": "MR: money-ordered lists re-sorted after pricing, before paging", "status": "pass", "notes": "handler sorts on priced cost before offset"},
+    {"kind": "spec", "item": "MR: test_live_session_duration_fallback.py refreshes under live_rollup_lock", "status": "pass", "notes": "changed per diff"},
+    {"kind": "spec", "item": "MR: OpenAPI baseline gains only catalog_source, unpriced_models description and the 1h CostConfig field", "status": "pass", "notes": "openapi.json hunk"},
+    {"kind": "spec", "item": "MR deviation: catalog without 1h price prices 1h tokens at 0 and lists the model unpriced", "status": "pass", "notes": "implemented as described; shipped YAML impact raised as CR-001"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "all 6 commit subjects in c4f5bd54..HEAD follow the git-workflow.md 'EPMCDME-####: Description' format (EPMCDME-15542: <Capitalised description> (EPMCDME-15967))"},
+    {"kind": "code-quality", "status": "pass", "notes": "new module session_money.py carries the Apache 2.0 header and from __future__ import annotations; added public functions/methods are typed with X | None and parameterized generics; llm_service.py only extends an existing typing import with Literal (pre-existing List/Optional not introduced by this change); session money was extracted into its own module (Module Cohesion) rather than grown in the handler, which shrank 1114->1098 lines; reader/rollups growth is SQL for their own read/rollup concern"},
+    {"kind": "security", "status": "pass", "notes": "no auth changes in routers/cli_analytics.py (only handler return-shape unpacking); added SQL f-strings in reader/rollups/ingestor interpolate only module constants and table aliases, session id is bound via $sid; the new logger.warning in session_money.py logs model names only, no credentials; no lossy input normalization introduced"}
+  ],
+  "findings": [],
+  "finding_status": [
+    {"id": "CR-001", "status": "resolved", "notes": "kind decision: fix_evidence maps CR-001 to the product-owner outcome 'accept the documented deviation' with a non-empty rationale (YAML cache prices unmaintained; deployments price from LiteLLM model_info, which has the 1h price; gap reported via unpriced_models)"}
+  ]
+}

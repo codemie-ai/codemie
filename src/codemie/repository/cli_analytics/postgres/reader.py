@@ -32,6 +32,7 @@ lands after the window end still counts as successful.
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -41,6 +42,7 @@ from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
 from codemie.repository.cli_analytics.ports import Rows
 from codemie.repository.cli_analytics.postgres.engine import AnalyticsPgEngine
 from codemie.repository.cli_analytics.postgres.otlp import MAX_KEY_BYTES
+from codemie.repository.cli_analytics.postgres.rollups import _attr_ms
 from codemie.repository.cli_analytics.postgres.fork_attribution import (
     dispatch_fork_candidate,
     executed_tool_span,
@@ -79,7 +81,34 @@ def _no_summary(column: str) -> str:
     return f"NOT EXISTS (SELECT 1 FROM session_dims sd WHERE sd.session_id = {column} AND sd.summary_ts IS NOT NULL)"
 
 
-_DEVELOPER = "coalesce(nullif(s.user_email, ''), nullif(c.user_email, ''), 'unknown')"
+def _row_email(alias: str) -> str:
+    """The smallest non-empty `user_email` of the `alias` rows, byte order; an aggregate, or a window with OVER."""
+    return f"min(nullif({alias}.user_email, '') {_C})"
+
+
+def _session_email(alias: str) -> str:
+    return f"{_row_email(alias)} OVER (PARTITION BY {alias}.session_id) AS session_email"
+
+
+def _developer(row_email: str) -> str:
+    """One developer per session: the session's email, else the smallest non-empty email of its rows, so a session
+    whose rows carry different emails is never split."""
+    return f"coalesce(nullif(s.user_email, ''), {row_email}, 'unknown')"
+
+
+_DEVELOPER = _developer("c.session_email")
+# The smallest non-empty cost_daily email of the session `s`, the first fallback of its developer.
+_COST_EMAIL = f"(SELECT {_row_email('c')} FROM cost_daily c WHERE c.session_id = s.session_id)"
+# The smallest non-empty lines_daily email of the session `s`.
+_LINES_EMAIL = f"(SELECT {_row_email('x')} FROM lines_daily x WHERE x.session_id = s.session_id)"
+
+
+def _session_developer(lines_email: str) -> str:
+    """The developer of session `s`: its email, else its smallest non-empty cost_daily email, else `lines_email`
+    (its smallest non-empty lines_daily email)."""
+    return _developer(f"coalesce({_COST_EMAIL}, {lines_email})")
+
+
 # The model of the row with the most calls, over the rows of the original grain of cost_daily:
 # (day, session, user, model, query_source). cost_daily now has several rows per
 # such key (speed, geo, scope, agent type), so their calls are summed back to that grain first (window
@@ -94,8 +123,12 @@ _TOP_MODEL = (
 
 
 def _cost_rows(where: str) -> str:
-    """`cost_daily` rows of the selection, each with the calls of its original grain (see _TOP_MODEL)."""
-    return f"(SELECT c.*, {_GRAIN_CALLS} FROM cost_daily c WHERE {where} WINDOW w AS (PARTITION BY {_GRAIN})) c"
+    """`cost_daily` rows of the selection, each with the calls of its original grain (see _TOP_MODEL) and its
+    session's row email (see _DEVELOPER)."""
+    return (
+        f"(SELECT c.*, {_GRAIN_CALLS}, {_session_email('c')} FROM cost_daily c WHERE {where} "
+        f"WINDOW w AS (PARTITION BY {_GRAIN})) c"
+    )
 
 
 def positional(sql: str, params: dict[str, Any]) -> tuple[str, list[Any]]:
@@ -149,6 +182,22 @@ def window_params(f: LocalAnalyticsFilter) -> dict[str, Any]:
 def _ms(column: str) -> str:
     """Epoch milliseconds, truncated: dateDiff('millisecond', a, b) is _ms(b) - _ms(a)."""
     return f"floor(extract(epoch FROM {column}) * 1000)::bigint"
+
+
+def _model_sums(requests: str) -> str:
+    """Token sums per model of the session's API requests `r` matching `requests`, as a JSON array of
+    objects with the column names of get_session_detail_model_costs; NULL when none matches."""
+    return f"""(SELECT jsonb_agg(m ORDER BY m.model_name {_C}) FROM (
+        SELECT coalesce(r.model, '') AS model_name,
+               sum(coalesce(r.input_tokens, 0)) AS input_tokens,
+               sum(coalesce(r.output_tokens, 0)) AS output_tokens,
+               sum(coalesce(r.cache_read_tokens, 0)) AS cache_read_tokens,
+               sum(coalesce(r.cache_creation_tokens, 0)) AS cache_creation_tokens,
+               sum({_attr_ms("r", "cache_creation_5m_tokens")}) AS cache_creation_5m_tokens,
+               sum({_attr_ms("r", "cache_creation_1h_tokens")}) AS cache_creation_1h_tokens
+        FROM log_events r
+        WHERE r.session_id = $sid::text AND r.event_kind = {_API_REQUEST} AND {requests}
+        GROUP BY 1) m)"""
 
 
 def _ns(column: str) -> str:
@@ -313,19 +362,24 @@ class PostgresCliAnalyticsReader:
         )
 
     async def get_session_model_costs(self, f: LocalAnalyticsFilter) -> Rows:
-        """Per-(session, model) cache cost rows, so a session's cache reads can be priced at each
-        model's own rate instead of one top model's (mirrors get_model_breakdown, scoped per session)."""
+        """Token sums per (session, raw model), the empty model kept, with the normalised model name: the rows
+        every money value is priced from. The 5m / 1h sums are NULL when no row of the group has a split."""
+        model_name = self._normalized_model_name("c.model_name")
         return await self._q(
             f"""
         WITH {self._sessions_cte(f)}
         SELECT c.session_id,
-               c.model_name                      AS model_name,
-               sum(c.cost_usd)                   AS cost_usd,
-               sum(c.cache_read_tokens)::bigint   AS cache_read_tokens
+               c.model_name                                 AS model_name,
+               {model_name}                                 AS normalized_model_name,
+               sum(c.input_tokens)::bigint                  AS input_tokens,
+               sum(c.output_tokens)::bigint                 AS output_tokens,
+               sum(c.cache_read_tokens)::bigint             AS cache_read_tokens,
+               sum(c.cache_creation_tokens)::bigint         AS cache_creation_tokens,
+               sum(c.cache_creation_5m_tokens)::bigint      AS cache_creation_5m_tokens,
+               sum(c.cache_creation_1h_tokens)::bigint      AS cache_creation_1h_tokens
         FROM cost_daily c
         WHERE true{self._scope(f, "c.session_id")}
-        GROUP BY c.session_id, c.model_name
-        HAVING c.model_name <> ''""",
+        GROUP BY c.session_id, c.model_name""",
             window_params(f),
         )
 
@@ -333,10 +387,10 @@ class PostgresCliAnalyticsReader:
         return await self._q(
             f"""
         WITH {self._sessions_cte(f)}
-        SELECT {_DEVELOPER} AS developer_name, sum(c.cost_usd) AS cost_usd
-        FROM cost_daily c JOIN sel s ON s.session_id = c.session_id
+        SELECT {_DEVELOPER} AS developer_name, array_agg(DISTINCT c.session_id) AS session_ids
+        FROM {_cost_rows("c.session_id IN (SELECT session_id FROM sel)")} JOIN sel s ON s.session_id = c.session_id
         GROUP BY 1
-        ORDER BY cost_usd DESC, ({_DEVELOPER}) {_C}""",
+        ORDER BY ({_DEVELOPER}) {_C}""",
             window_params(f),
         )
 
@@ -365,7 +419,7 @@ class PostgresCliAnalyticsReader:
             f"""
         WITH {self._sessions_cte(f)}
         SELECT {_DEVELOPER} AS developer_name, c.day AS day, count(DISTINCT c.session_id) AS session_count
-        FROM cost_daily c JOIN sel s ON s.session_id = c.session_id
+        FROM {_cost_rows("c.session_id IN (SELECT session_id FROM sel)")} JOIN sel s ON s.session_id = c.session_id
         GROUP BY 1, 2
         ORDER BY ({_DEVELOPER}) {_C}, c.day""",
             window_params(f),
@@ -382,8 +436,8 @@ class PostgresCliAnalyticsReader:
             f"""
         WITH {self._sessions_cte(f)},
         w AS (
-            SELECT s.user_email,
-                   d.developer_name,
+            SELECT {_session_developer(_LINES_EMAIL)}
+                       AS developer_name,
                    CASE WHEN d.last_event_at <= $end_dt::timestamptz THEN d.last_event_at
                         ELSE (SELECT max(h.ts) FROM hook_events h
                               WHERE h.session_id = s.session_id AND h.event_type = ANY({_DIM_TYPES})
@@ -391,8 +445,7 @@ class PostgresCliAnalyticsReader:
                    END AS last_in_window
             FROM sel s JOIN session_dims d ON d.session_id = s.session_id
         )
-        SELECT coalesce(nullif(user_email, ''), nullif(developer_name, ''), 'unknown') AS developer_name,
-               max(last_in_window) AS last_active
+        SELECT developer_name, max(last_in_window) AS last_active
         FROM w
         WHERE last_in_window IS NOT NULL
         GROUP BY 1""",
@@ -427,9 +480,11 @@ class PostgresCliAnalyticsReader:
         return await self._q(
             f"""
         WITH {self._sessions_cte(f)}
-        SELECT coalesce(nullif(s.user_email, ''), nullif(l.user_email, ''), 'unknown') AS developer_name,
-               (sum(l.lines_added) - sum(l.lines_removed))::bigint                  AS net_lines
-        FROM lines_daily l JOIN sel s ON s.session_id = l.session_id
+        SELECT {_session_developer("l.session_email")} AS developer_name,
+               (sum(l.lines_added) - sum(l.lines_removed))::bigint AS net_lines
+        FROM (SELECT l.*, {_session_email("l")} FROM lines_daily l
+              WHERE l.session_id IN (SELECT session_id FROM sel)) l
+             JOIN sel s ON s.session_id = l.session_id
         GROUP BY 1""",
             window_params(f),
         )
@@ -686,7 +741,6 @@ class PostgresCliAnalyticsReader:
         return await self._q(
             f"""
         SELECT {_TOP_MODEL}                         AS model_name,
-               sum(c.cost_usd)                      AS cost_usd,
                sum(c.input_tokens)::bigint          AS input_tokens,
                sum(c.output_tokens)::bigint         AS output_tokens,
                sum(c.cache_read_tokens)::bigint     AS cache_read_tokens,
@@ -696,17 +750,20 @@ class PostgresCliAnalyticsReader:
         )
 
     async def get_session_detail_model_costs(self, session_id: str) -> Rows:
-        """Per-model cache cost rows for one session (same table as get_session_detail_cost,
-        grouped by model instead of collapsed to the top one by _TOP_MODEL)."""
+        """Token sums per raw model of one session, the empty model kept: the rows its money is priced from.
+        The 5m / 1h sums are NULL when no row of the model has a split."""
         return await self._q(
             """
-        SELECT c.model_name                      AS model_name,
-               sum(c.cost_usd)                    AS cost_usd,
-               sum(c.cache_read_tokens)::bigint    AS cache_read_tokens
+        SELECT c.model_name                                 AS model_name,
+               sum(c.input_tokens)::bigint                  AS input_tokens,
+               sum(c.output_tokens)::bigint                 AS output_tokens,
+               sum(c.cache_read_tokens)::bigint             AS cache_read_tokens,
+               sum(c.cache_creation_tokens)::bigint         AS cache_creation_tokens,
+               sum(c.cache_creation_5m_tokens)::bigint      AS cache_creation_5m_tokens,
+               sum(c.cache_creation_1h_tokens)::bigint      AS cache_creation_1h_tokens
         FROM cost_daily c
         WHERE c.session_id = $sid::text
-        GROUP BY c.model_name
-        HAVING c.model_name <> ''""",
+        GROUP BY c.model_name""",
             {"sid": session_id},
         )
 
@@ -773,17 +830,21 @@ class PostgresCliAnalyticsReader:
         )
 
     async def get_session_detail_events(self, session_id: str) -> Rows:
-        """API requests and tool calls of a session, in time order."""
+        """API requests and tool calls of a session, in time order. A request's 5m / 1h cache-write split is NULL
+        when its attributes carry none."""
         return await self._q(
             f"""
         SELECT * FROM (
             SELECT ts AS timestamp, 'api_request' AS event_type, coalesce(model, '') AS model_name,
                    coalesce(input_tokens, 0) AS input_tokens, coalesce(output_tokens, 0) AS output_tokens,
-                   coalesce(cache_read_tokens, 0) AS cache_read_tokens, coalesce(cost_usd, 0)::float8 AS cost_usd,
+                   coalesce(cache_read_tokens, 0) AS cache_read_tokens,
+                   coalesce(cache_creation_tokens, 0) AS cache_creation_tokens,
+                   {_attr_ms("log_events", "cache_creation_5m_tokens")} AS cache_creation_5m_tokens,
+                   {_attr_ms("log_events", "cache_creation_1h_tokens")} AS cache_creation_1h_tokens,
                    '' AS tool_name
             FROM log_events WHERE session_id = $sid::text AND event_kind = {_API_REQUEST}
             UNION ALL
-            SELECT ts, 'tool_call', '', 0, 0, 0, 0::float8, tool_name
+            SELECT ts, 'tool_call', '', 0, 0, 0, 0, NULL, NULL, tool_name
             FROM spans WHERE session_id = $sid::text AND span_kind = {_TOOL} AND tool_name <> ''
         ) events
         ORDER BY timestamp, event_type {_C}, tool_name {_C}, model_name {_C}""",
@@ -815,8 +876,21 @@ class PostgresCliAnalyticsReader:
         undivided sum. An agent or fork whose
         agentId is known but has no API requests gets NULL: its parent span is the main thread, whose
         cost is not the subagent's.
+        Each row carries `models`, the per-model token sums of the API requests it is priced from (empty
+        when it has none), and a parent-window share its `ties`: how many dispatches split that money.
         """
-        return await self._q(
+
+        # each predicate selects the API requests `a` that both the token/cost sums and the per-model sums read
+        def agent_requests(a: str) -> str:
+            return f"{a}.span_id IN (SELECT ag.parent_span_id FROM agent_groups ag WHERE ag.agent_id = g.agent_id)"
+
+        def window_requests(a: str) -> str:
+            return (
+                f"{a}.span_id = w.parent_span_id AND {a}.ts >= w.start_ts"
+                f" AND (w.next_start IS NULL OR {a}.ts < w.next_start)"
+            )
+
+        rows = await self._q(
             f"""
         WITH t AS (
             SELECT coalesce(subagent_type, '') AS subagent_type, coalesce(skill_name, '') AS skill_name,
@@ -933,10 +1007,11 @@ class PostgresCliAnalyticsReader:
                    sum(coalesce(l.input_tokens, 0)) AS input_tokens,
                    sum(coalesce(l.output_tokens, 0)) AS output_tokens,
                    sum(coalesce(l.cache_read_tokens, 0)) AS cache_read_tokens,
-                   sum(coalesce(l.cache_creation_tokens, 0)) AS cache_creation_tokens
-            FROM agent_groups g
+                   sum(coalesce(l.cache_creation_tokens, 0)) AS cache_creation_tokens,
+                   {_model_sums(agent_requests("r"))} AS models
+            FROM (SELECT DISTINCT agent_id FROM agent_groups) g
             JOIN log_events l
-                 ON l.span_id = g.parent_span_id AND l.session_id = $sid::text AND l.event_kind = {_API_REQUEST}
+                 ON {agent_requests("l")} AND l.session_id = $sid::text AND l.event_kind = {_API_REQUEST}
             GROUP BY g.agent_id
         ), fallback_start AS (
             -- every dispatch's own start under its parent, agent or skill alike (same formula the
@@ -964,13 +1039,14 @@ class PostgresCliAnalyticsReader:
                    sum(coalesce(l.input_tokens, 0))::numeric / w.ties          AS input_tokens,
                    sum(coalesce(l.output_tokens, 0))::numeric / w.ties         AS output_tokens,
                    sum(coalesce(l.cache_read_tokens, 0))::numeric / w.ties     AS cache_read_tokens,
-                   sum(coalesce(l.cache_creation_tokens, 0))::numeric / w.ties AS cache_creation_tokens
+                   sum(coalesce(l.cache_creation_tokens, 0))::numeric / w.ties AS cache_creation_tokens,
+                   w.ties,
+                   {_model_sums(window_requests("r"))} AS models
             FROM sibling_window w
             JOIN log_events l
-                 ON l.span_id = w.parent_span_id AND l.session_id = $sid::text AND l.event_kind = {_API_REQUEST}
-                   AND l.ts >= w.start_ts AND (w.next_start IS NULL OR l.ts < w.next_start)
+                 ON {window_requests("l")} AND l.session_id = $sid::text AND l.event_kind = {_API_REQUEST}
             WHERE w.ties > 0
-            GROUP BY w.fallback_id, w.ties
+            GROUP BY w.fallback_id, w.ties, w.parent_span_id, w.start_ts, w.next_start
         )
         SELECT * FROM (
         SELECT t.subagent_type, t.skill_name, 0 AS is_slash_command,
@@ -992,7 +1068,9 @@ class PostgresCliAnalyticsReader:
                coalesce(au.input_tokens, pu.input_tokens)::bigint        AS input_tokens,
                coalesce(au.output_tokens, pu.output_tokens)::bigint      AS output_tokens,
                coalesce(au.cache_read_tokens, pu.cache_read_tokens)::bigint AS cache_read_tokens,
-               coalesce(au.cache_creation_tokens, pu.cache_creation_tokens)::bigint AS cache_creation_tokens
+               coalesce(au.cache_creation_tokens, pu.cache_creation_tokens)::bigint AS cache_creation_tokens,
+               coalesce(au.models, pu.models) AS models,
+               pu.ties
         FROM t
         LEFT JOIN ex ON ex.tool_use_id = t.tool_use_id AND t.tool_use_id <> ''
         LEFT JOIN ia ON ia.span_id = t.parent_span_id
@@ -1016,7 +1094,7 @@ class PostgresCliAnalyticsReader:
                     THEN (extract(epoch FROM st.ended_at - h.ts) * 1000)::bigint END AS subagent_duration_ms,
                au.cost_usd::float8 AS cost_usd, au.input_tokens::bigint AS input_tokens,
                au.output_tokens::bigint AS output_tokens, au.cache_read_tokens::bigint AS cache_read_tokens,
-               au.cache_creation_tokens::bigint AS cache_creation_tokens
+               au.cache_creation_tokens::bigint AS cache_creation_tokens, au.models, NULL
         FROM hook_events h
         LEFT JOIN stopped st ON st.agent_id = h.agent_id AND h.agent_id <> ''
         LEFT JOIN agent_usage au ON au.agent_id = h.agent_id AND h.agent_id <> ''
@@ -1040,7 +1118,8 @@ class PostgresCliAnalyticsReader:
                CASE WHEN df.agent_id IS NULL THEN 0 ELSE au.input_tokens END::bigint,
                CASE WHEN df.agent_id IS NULL THEN 0 ELSE au.output_tokens END::bigint,
                CASE WHEN df.agent_id IS NULL THEN 0 ELSE au.cache_read_tokens END::bigint,
-               CASE WHEN df.agent_id IS NULL THEN 0 ELSE au.cache_creation_tokens END::bigint
+               CASE WHEN df.agent_id IS NULL THEN 0 ELSE au.cache_creation_tokens END::bigint,
+               au.models, NULL
         FROM dispatch_fork df
         LEFT JOIN stopped st ON st.agent_id = df.agent_id
         LEFT JOIN agent_usage au ON au.agent_id = df.agent_id
@@ -1048,3 +1127,6 @@ class PostgresCliAnalyticsReader:
         ORDER BY dispatch_start, is_slash_command, subagent_type {_C}, skill_name {_C}""",
             {"sid": session_id},
         )
+        for row in rows:
+            row["models"] = json.loads(row["models"]) if row["models"] is not None else []
+        return rows

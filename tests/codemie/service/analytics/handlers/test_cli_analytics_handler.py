@@ -16,14 +16,13 @@ import pytest
 from datetime import date, datetime, timedelta, timezone
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
+from codemie.configs.llm_config import CostConfig
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
 from codemie.service.analytics.handlers.cli_analytics_handler import (
     LocalAnalyticsHandler,
     _count_dispatch_subtypes,
     _iso,
-    _pct,
 )
-from codemie.service.analytics.handlers.coding_agent_pricing import cache_read_cost
 
 
 def make_handler(cost_facts=None):
@@ -123,6 +122,7 @@ def make_repo_handler(cost_facts):
     repo.get_file_facts_by_session = AsyncMock(return_value=[])
     repo.get_tool_success_by_session = AsyncMock(return_value=[])
     repo.get_lines_by_session = AsyncMock(return_value=[])
+    repo.get_session_model_costs = AsyncMock(return_value=[])
     return LocalAnalyticsHandler(repo)
 
 
@@ -155,7 +155,7 @@ async def test_repositories_unattributed_bucket_when_plugin_absent():
         },
     ]
     handler = make_repo_handler(cost_facts)
-    data = await handler.get_repositories(make_filter(), page=0, per_page=50, include_branches=False)
+    data, _ = await handler.get_repositories(make_filter(), page=0, per_page=50, include_branches=False)
     repos = data["rows"]
     assert len(repos) == 2
     unattributed = next((r for r in repos if r["repository"] is None), None)
@@ -180,7 +180,7 @@ async def test_repositories_backend_rolls_up_branches_with_nested_tool_success_r
         ]
     )
 
-    nested_rows = (await handler.get_repositories(make_filter(), page=0, per_page=50, include_branches=True))["rows"]
+    nested_rows = (await handler.get_repositories(make_filter(), page=0, per_page=50, include_branches=True))[0]["rows"]
     repo_x = next(r for r in nested_rows if r["repository"] == "repo-x")
     assert (repo_x["tool_calls"], repo_x["tool_calls_success"]) == (4, 3)
     assert repo_x["tool_success_rate"] == 75.0
@@ -191,7 +191,7 @@ async def test_repositories_backend_rolls_up_branches_with_nested_tool_success_r
     assert (branches["sweep-cd-b"]["tool_calls"], branches["sweep-cd-b"]["tool_calls_success"]) == (3, 3)
     assert branches["sweep-cd-b"]["tool_success_rate"] == 100.0
 
-    flat_rows = (await handler.get_repositories(make_filter(), page=0, per_page=50, include_branches=False))["rows"]
+    flat_rows = (await handler.get_repositories(make_filter(), page=0, per_page=50, include_branches=False))[0]["rows"]
     repo_x_flat = next(r for r in flat_rows if r["repository"] == "repo-x")
     assert (repo_x_flat["tool_calls"], repo_x_flat["tool_calls_success"]) == (4, 3)
     assert repo_x_flat["tool_success_rate"] == 75.0
@@ -213,7 +213,7 @@ async def test_repositories_zero_call_branch_does_not_drag_rate_down():
         ]
     )
 
-    rows = (await handler.get_repositories(make_filter(), page=0, per_page=50, include_branches=True))["rows"]
+    rows = (await handler.get_repositories(make_filter(), page=0, per_page=50, include_branches=True))[0]["rows"]
     repo_y = next(r for r in rows if r["repository"] == "repo-y")
     assert repo_y["tool_success_rate"] == 100.0
     branches = {b["branch"]: b for b in repo_y["branches"]}
@@ -240,7 +240,7 @@ async def test_pct_tie_and_float_error_values(calls, success, expected_pct):
     handler._repo.get_tool_success_by_session = AsyncMock(
         return_value=[{"session_id": "s1", "tool_calls": calls, "tool_calls_success": success}]
     )
-    rows = (await handler.get_repositories(make_filter(), page=0, per_page=50, include_branches=False))["rows"]
+    rows = (await handler.get_repositories(make_filter(), page=0, per_page=50, include_branches=False))[0]["rows"]
     repo_z = next(r for r in rows if r["repository"] == "repo-z")
     assert repo_z["tool_success_rate"] == expected_pct
 
@@ -303,6 +303,7 @@ async def test_repositories_search_delegates_to_repository():
     repo.get_file_facts_by_session = AsyncMock(return_value=[])
     repo.get_tool_success_by_session = AsyncMock(return_value=[])
     repo.get_lines_by_session = AsyncMock(return_value=[])
+    repo.get_session_model_costs = AsyncMock(return_value=[])
     handler = LocalAnalyticsHandler(repo)
 
     await handler.get_repositories(make_filter(), page=0, per_page=50, include_branches=False, search="codem")
@@ -322,6 +323,7 @@ async def test_repositories_search_none_delegates_to_repository():
     repo.get_file_facts_by_session = AsyncMock(return_value=[])
     repo.get_tool_success_by_session = AsyncMock(return_value=[])
     repo.get_lines_by_session = AsyncMock(return_value=[])
+    repo.get_session_model_costs = AsyncMock(return_value=[])
     handler = LocalAnalyticsHandler(repo)
 
     await handler.get_repositories(make_filter(), page=0, per_page=50, include_branches=False, search=None)
@@ -380,7 +382,7 @@ async def test_a_branch_keeps_a_filter_that_denies_every_session_denying():
         repo.get_turns_by_session,
         repo.get_tool_success_by_session,
         repo.get_lines_by_session,
-        repo.get_model_breakdown,
+        repo.get_session_model_costs,
     ):
         call_filter = query.call_args.args[0]
         assert (call_filter.deny_all, call_filter.branch) == (True, "main")
@@ -423,120 +425,173 @@ def test_display_models_falls_back_when_no_per_model_rows():
     assert LocalAnalyticsHandler._display_models([], "claude-sonnet-5") == "claude-sonnet-5"
 
 
+def _two_model_catalog():
+    """The runtime catalog with claude-haiku and claude-opus-5 at different cache-read prices."""
+    models = []
+    for name, cache_read in (("claude-haiku", 0.1e-6), ("claude-opus-5", 0.5e-6)):
+        model = MagicMock()
+        model.base_name = name
+        model.cost = CostConfig(input=1e-6, output=5e-6, cache_read_input_token_cost=cache_read)
+        models.append(model)
+    return patch(
+        "codemie.service.analytics.handlers.coding_agent_pricing.llm_service.get_all_llm_model_info",
+        return_value=models,
+    )
+
+
 @pytest.mark.asyncio
 async def test_get_sessions_prices_cache_reads_per_model_and_lists_all_models():
     cost_facts = [{**BASE_COST_ROW, "model_name": "claude-haiku", "cache_read_tokens": 100_000, "cost_usd": 0.8}]
     model_costs = [
-        {"session_id": "s1", "model_name": "claude-haiku", "cost_usd": 0.1, "cache_read_tokens": 70_000},
-        {"session_id": "s1", "model_name": "claude-opus-5", "cost_usd": 0.7, "cache_read_tokens": 30_000},
+        {"session_id": "s1", "model_name": "claude-haiku", "input_tokens": 10_000, "cache_read_tokens": 70_000},
+        {"session_id": "s1", "model_name": "claude-opus-5", "input_tokens": 10_000, "cache_read_tokens": 30_000},
     ]
     repo = MagicMock()
     repo.get_session_cost_facts = AsyncMock(return_value=cost_facts)
     repo.get_turns_by_session = AsyncMock(return_value=[])
     repo.get_tool_success_by_session = AsyncMock(return_value=[])
     repo.get_lines_by_session = AsyncMock(return_value=[])
-    repo.get_model_breakdown = AsyncMock(return_value=[])
     repo.get_session_model_costs = AsyncMock(return_value=model_costs)
     repo.get_skill_names_by_session = AsyncMock(return_value=[])
     handler = LocalAnalyticsHandler(repo)
 
-    data, _, _ = await handler.get_sessions(make_filter(), page=0, per_page=20, sort_by="start_time", search=None)
+    with _two_model_catalog():
+        data, pricer, _ = await handler.get_sessions(
+            make_filter(), page=0, per_page=20, sort_by="start_time", search=None
+        )
     session = data["sessions"][0]
 
-    old_bloat = _pct(cache_read_cost("claude-haiku", 100_000), 0.8)
-    assert session["bloat_pct"] != old_bloat
+    # haiku 0.01 + 0.007, opus 0.01 + 0.015: cost 0.042, cache reads 0.022 -> 52.4 %
+    assert session["cost_usd"] == pytest.approx(0.042)
+    assert session["bloat_pct"] == 52.4
     assert session["model_name"] == "claude-haiku, claude-opus-5"
+    assert pricer.unpriced == []
+
+
+def _opus_events() -> list[dict]:
+    """The ticket's Opus 5.5 session split over three api_request events; their sums equal _OPUS_ROW."""
+    splits = (
+        (124, 22_161, 13_452_179, 629_636),
+        (125, 22_161, 13_452_179, 629_636),
+        (125, 22_161, 13_452_180, 629_636),
+    )
+    return [
+        {
+            "timestamp": datetime(2026, 1, 1, 0, i),
+            "event_type": "api_request",
+            "model_name": "claude-opus-5-5",
+            "input_tokens": inp,
+            "output_tokens": out,
+            "cache_read_tokens": read,
+            "cache_creation_tokens": write,
+            "cache_creation_5m_tokens": None,
+            "cache_creation_1h_tokens": write,
+            "tool_name": "",
+        }
+        for i, (inp, out, read, write) in enumerate(splits)
+    ]
+
+
+def _priced_detail_handler(model_rows, events=(), dispatches=()):
+    handler = make_detail_handler({"session_id": "s1", "started_at": datetime(2026, 1, 1), "duration_ms": 600_000})
+    handler._repo.get_session_detail_model_costs = AsyncMock(return_value=model_rows)
+    handler._repo.get_session_detail_events = AsyncMock(return_value=list(events))
+    handler._repo.get_session_detail_dispatches = AsyncMock(return_value=list(dispatches))
+    return handler
 
 
 @pytest.mark.asyncio
-async def test_get_session_detail_prices_cache_reads_per_model_and_lists_all_models():
-    repo = MagicMock()
-    repo.get_session_detail_meta = AsyncMock(return_value=[{"session_id": "s1"}])
-    repo.get_session_detail_cost = AsyncMock(
-        return_value=[
-            {
-                "model_name": "claude-haiku",
-                "cache_read_tokens": 100_000,
-                "cost_usd": 0.8,
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "cache_creation_tokens": 0,
-            }
-        ]
-    )
-    repo.get_session_detail_model_costs = AsyncMock(
-        return_value=[
-            {"model_name": "claude-haiku", "cost_usd": 0.1, "cache_read_tokens": 70_000},
-            {"model_name": "claude-opus-5", "cost_usd": 0.7, "cache_read_tokens": 30_000},
-        ]
-    )
-    repo.get_session_detail_scalars = AsyncMock(return_value=[{}])
-    repo.get_session_detail_tools = AsyncMock(return_value=[])
-    repo.get_session_detail_events = AsyncMock(return_value=[])
-    repo.get_session_detail_dispatches = AsyncMock(return_value=[])
-    repo.get_skill_names_by_session = AsyncMock(return_value=[{"skill_names": []}])
-    handler = LocalAnalyticsHandler(repo)
+async def test_get_session_detail_prices_the_session_and_each_event_at_the_catalog():
+    handler = _priced_detail_handler([_OPUS_ROW], events=_opus_events())
 
-    detail, _ = await handler.get_session_detail("s1")
+    detail, unpriced, catalog_source = await _priced(handler.get_session_detail("s1"))
 
-    old_crc = cache_read_cost("claude-haiku", 100_000)
-    assert detail["cache_read_cost_usd"] != old_crc
-    assert detail["model_name"] == "claude-haiku, claude-opus-5"
+    assert detail["cost_usd"] == pytest.approx(26.96510036, abs=1e-9)
+    assert detail["cache_read_cost_usd"] == pytest.approx(8.87843836, abs=1e-9)
+    assert detail["bloat_pct"] == 32.9
+    assert sum(e["cost_usd"] for e in detail["events"]) == pytest.approx(26.96510036, abs=1e-9)
+    assert detail["dispatches"][0]["cost_usd"] == pytest.approx(26.96510036, abs=1e-9)
+    assert detail["model_name"] == "claude-opus-5-5"
+    assert (unpriced, catalog_source) == ([], "litellm")
 
 
 @pytest.mark.asyncio
 async def test_get_session_detail_unpriced_model_contributes_zero_without_breaking_total():
-    """A model absent from pricing config among several model_cost_rows must contribute $0.0
-    to the summed cache-read cost, be reported in the unpriced list, and not raise."""
-    repo = MagicMock()
-    repo.get_session_detail_meta = AsyncMock(return_value=[{"session_id": "s1"}])
-    repo.get_session_detail_cost = AsyncMock(
-        return_value=[
-            {
-                "model_name": "claude-opus-5",
-                "cache_read_tokens": 130_000,
-                "cost_usd": 0.9,
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "cache_creation_tokens": 0,
-            }
-        ]
-    )
-    repo.get_session_detail_model_costs = AsyncMock(
-        return_value=[
-            {"model_name": "claude-opus-5", "cost_usd": 0.7, "cache_read_tokens": 30_000},
-            {"model_name": "definitely-not-a-real-model-xyz-9999", "cost_usd": 0.2, "cache_read_tokens": 100_000},
-        ]
-    )
-    repo.get_session_detail_scalars = AsyncMock(return_value=[{}])
-    repo.get_session_detail_tools = AsyncMock(return_value=[])
-    repo.get_session_detail_events = AsyncMock(return_value=[])
-    repo.get_session_detail_dispatches = AsyncMock(return_value=[])
-    repo.get_skill_names_by_session = AsyncMock(return_value=[{"skill_names": []}])
-    handler = LocalAnalyticsHandler(repo)
+    """A model absent from the runtime catalog among the session's model rows prices to $0.0, is reported
+    in the unpriced list, and the priced model keeps its money."""
+    mystery = {
+        "model_name": "definitely-not-a-real-model-xyz-9999",
+        "input_tokens": 1_000,
+        "cache_read_tokens": 100_000,
+    }
+    handler = _priced_detail_handler([_OPUS_ROW, mystery])
 
-    priced_rate = 0.000001
-
-    def fake_lookup(model):
-        return None if model == "definitely-not-a-real-model-xyz-9999" else MagicMock()
-
-    def fake_cache_read_cost(model, tokens):
-        return 0.0 if model == "definitely-not-a-real-model-xyz-9999" else tokens * priced_rate
-
-    with (
-        patch(
-            "codemie.service.analytics.handlers.cli_analytics_handler.lookup_cost_config",
-            side_effect=fake_lookup,
-        ),
-        patch(
-            "codemie.service.analytics.handlers.cli_analytics_handler.cache_read_cost",
-            side_effect=fake_cache_read_cost,
-        ),
-    ):
-        detail, unpriced = await handler.get_session_detail("s1")
+    detail, unpriced, _ = await _priced(handler.get_session_detail("s1"))
 
     assert unpriced == ["definitely-not-a-real-model-xyz-9999"]
-    assert detail["cache_read_cost_usd"] == pytest.approx(30_000 * priced_rate)
+    assert detail["cost_usd"] == pytest.approx(26.96510036, abs=1e-9)
+    assert detail["cache_read_cost_usd"] == pytest.approx(8.87843836, abs=1e-9)
+
+
+def _models_row(**counts) -> dict:
+    return {
+        "model_name": counts.pop("model_name"),
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_creation_tokens": 0,
+        "cache_creation_5m_tokens": None,
+        "cache_creation_1h_tokens": None,
+    } | counts
+
+
+@pytest.mark.asyncio
+async def test_get_session_detail_prices_each_dispatch_from_its_per_model_sums():
+    two_models = _dispatch_row(subagent_type="Explore", offset_s=5) | {
+        "subagent_duration_ms": 1000,
+        "models": [
+            _models_row(model_name="claude-opus-5-5", input_tokens=1_000),
+            _models_row(model_name="claude-haiku-4-5", input_tokens=1_000),
+        ],
+        "ties": None,
+    }
+    shared = {"models": [_models_row(model_name="claude-opus-5-5", input_tokens=1_000)], "ties": 2}
+    tied = [
+        _dispatch_row(skill_name="lint", offset_s=20) | shared,
+        _dispatch_row(skill_name="test", offset_s=20) | shared,
+    ]
+    handler = _priced_detail_handler([], dispatches=[two_models, *tied])
+
+    detail, unpriced, _ = await _priced(handler.get_session_detail("s1"))
+
+    costs = {d["label"]: d["cost_usd"] for d in detail["dispatches"][1:]}
+    assert costs == {
+        "agent · Explore": pytest.approx(0.0054, abs=1e-12),
+        "skill · lint": pytest.approx(0.0022, abs=1e-12),
+        "skill · test": pytest.approx(0.0022, abs=1e-12),
+    }
+    assert unpriced == []
+
+
+@pytest.mark.asyncio
+async def test_get_session_detail_edge_events_and_a_dispatch_without_requests():
+    unsplit = _opus_events()[0] | {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_creation_tokens": 1_000,
+        "cache_creation_5m_tokens": None,
+        "cache_creation_1h_tokens": None,
+    }
+    no_model = unsplit | {"model_name": "", "cache_creation_tokens": 0, "output_tokens": 5}
+    idle = _dispatch_row(subagent_type="Plan", offset_s=5) | {"subagent_duration_ms": 1000, "models": [], "ties": None}
+    handler = _priced_detail_handler([], events=[unsplit, no_model], dispatches=[idle])
+
+    detail, unpriced, _ = await _priced(handler.get_session_detail("s1"))
+
+    assert [e["cost_usd"] for e in detail["events"]] == [pytest.approx(0.0055, abs=1e-12), 0.0]
+    assert detail["dispatches"][1]["cost_usd"] is None
+    assert unpriced == [""]
 
 
 def _dispatch_row(
@@ -657,9 +712,9 @@ def test_dead_sessions_counts_a_session_with_no_successful_file_change_as_dead()
     """A priced session whose only file touches were rejected/failed (files_changed == 0, once
     rollups.py/reader.py gate it on success) must be classified dead with its cost wasted
     (EPMCDME-15583)."""
-    cost_facts = [{"session_id": "s1", "cost_usd": 2.0}]
+    session_money = {"s1": 2.0}
     files_by_session = {"s1": {"files_changed": 0}}
-    dead, wasted = LocalAnalyticsHandler._dead_sessions(cost_facts, files_by_session)
+    dead, wasted = LocalAnalyticsHandler._dead_sessions(session_money, files_by_session)
     assert dead == 1
     assert wasted == 2.0
 
@@ -668,9 +723,9 @@ def test_dead_sessions_excludes_a_session_with_a_successful_file_change():
     """A priced session with at least one genuinely successful Write/Edit (files_changed == 1)
     must not be classified dead, even though other calls in the session may have been rejected
     or failed."""
-    cost_facts = [{"session_id": "s1", "cost_usd": 2.0}]
+    session_money = {"s1": 2.0}
     files_by_session = {"s1": {"files_changed": 1}}
-    dead, wasted = LocalAnalyticsHandler._dead_sessions(cost_facts, files_by_session)
+    dead, wasted = LocalAnalyticsHandler._dead_sessions(session_money, files_by_session)
     assert dead == 0
     assert wasted == 0.0
 
@@ -678,9 +733,9 @@ def test_dead_sessions_excludes_a_session_with_a_successful_file_change():
 def test_dead_sessions_counts_a_prompt_only_session_as_dead():
     """A priced session with no tool-call rows at all (prompt-only - no entry in files_by_session,
     not just files_changed == 0) must still be classified dead with its cost wasted (EPMCDME-15448)."""
-    cost_facts = [{"session_id": "s1", "cost_usd": 2.0}]
+    session_money = {"s1": 2.0}
     files_by_session: dict[str, dict] = {}
-    dead, wasted = LocalAnalyticsHandler._dead_sessions(cost_facts, files_by_session)
+    dead, wasted = LocalAnalyticsHandler._dead_sessions(session_money, files_by_session)
     assert dead == 1
     assert wasted == 2.0
 
@@ -689,9 +744,9 @@ def test_dead_sessions_counts_a_read_only_session_as_dead():
     """A priced session that only read files (successfully or not) produces files_changed == 0,
     same as the rejected/failed-write case - a Read is never written/edited (EPMCDME-15448), so
     this must be classified dead with its cost wasted."""
-    cost_facts = [{"session_id": "s1", "cost_usd": 0.0426152}]
+    session_money = {"s1": 0.0426152}
     files_by_session = {"s1": {"files_changed": 0}}
-    dead, wasted = LocalAnalyticsHandler._dead_sessions(cost_facts, files_by_session)
+    dead, wasted = LocalAnalyticsHandler._dead_sessions(session_money, files_by_session)
     assert dead == 1
     assert wasted == 0.0426152
 
@@ -715,6 +770,7 @@ def _users_repo(user_rows):
         "get_turns_by_session",
         "get_file_facts_by_session",
         "get_tool_success_by_session",
+        "get_session_model_costs",
     ):
         setattr(repo, name, AsyncMock(return_value=[]))
     repo.get_users = AsyncMock(return_value=user_rows)
@@ -731,14 +787,14 @@ def _users_repo(user_rows):
 @pytest.mark.asyncio
 async def test_get_users_avg_duration_only_priced_sessions():
     repo = _users_repo([{"developer_name": "dev", "session_ids": ["s1", "s2"]}])
-    result = await LocalAnalyticsHandler(repo).get_users(make_filter(), page=None, per_page=None)
+    result, _ = await LocalAnalyticsHandler(repo).get_users(make_filter(), page=None, per_page=None)
     assert result["avg_session_duration_ms"] == 2000
 
 
 @pytest.mark.asyncio
 async def test_get_users_avg_duration_none_when_no_priced_sessions():
     repo = _users_repo([])
-    result = await LocalAnalyticsHandler(repo).get_users(make_filter(), page=None, per_page=None)
+    result, _ = await LocalAnalyticsHandler(repo).get_users(make_filter(), page=None, per_page=None)
     assert result["avg_session_duration_ms"] is None
 
 
@@ -822,7 +878,7 @@ async def test_rows_with_developer_name_also_carry_user_email() -> None:
         "get_lines_by_session",
     ):
         setattr(repo, name, AsyncMock(return_value=[]))
-    repo.get_cost_by_user = AsyncMock(return_value=[{"developer_name": email, "cost_usd": 2.0}])
+    repo.get_cost_by_user = AsyncMock(return_value=[{"developer_name": email, "session_ids": ["s1"]}])
     repo.get_session_cost_facts = AsyncMock(return_value=[{**BASE_COST_ROW, "developer_name": email}])
     repo.get_session_detail_meta = AsyncMock(
         return_value=[
@@ -836,10 +892,10 @@ async def test_rows_with_developer_name_also_carry_user_email() -> None:
     )
     handler = LocalAnalyticsHandler(repo)
 
-    users = await handler.get_users(make_filter(), page=None, per_page=None)
+    users, _ = await handler.get_users(make_filter(), page=None, per_page=None)
     cost, _ = await handler.get_cost(make_filter())
     sessions, _, _ = await handler.get_sessions(make_filter(), page=0, per_page=20, sort_by="start_time", search=None)
-    detail, _ = await handler.get_session_detail("s1")
+    detail, _, _ = await handler.get_session_detail("s1")
 
     dumped = [
         LocalAnalyticsUserRow(**users["rows"][0]).model_dump(by_alias=True),
@@ -884,6 +940,7 @@ async def test_overview_avg_context_per_call_divides_by_api_call_count():
     repo.get_file_facts_by_session = AsyncMock(return_value=[])
     repo.get_tool_success_by_session = AsyncMock(return_value=[])
     repo.get_session_durations = AsyncMock(return_value=[])
+    repo.get_session_model_costs = AsyncMock(return_value=[])
     repo.get_session_cost_facts = AsyncMock(return_value=[{**BASE_COST_ROW, "session_id": "s1"}])
     handler = LocalAnalyticsHandler(repo)
 
@@ -942,7 +999,7 @@ async def test_efficiency_worst_session_and_avg_use_api_call_count():
             }
         ]
     )
-    repo.get_model_breakdown = AsyncMock(return_value=[])
+    repo.get_session_model_costs = AsyncMock(return_value=[])
     repo.get_session_cost_facts = AsyncMock(return_value=[s1, s2])
     # turns-based ratio would make s2 (1000/5=200) "worse" than s1 (1000/100=10) — reversed.
     repo.get_turns_by_session = AsyncMock(
@@ -998,7 +1055,7 @@ def make_detail_handler(meta_row):
 @pytest.mark.asyncio
 async def test_session_detail_harness_name_is_humanized():
     handler = make_detail_handler({"session_id": "s1", "harness_service_name": "claude-code"})
-    detail, _ = await handler.get_session_detail("s1")
+    detail, _, _ = await handler.get_session_detail("s1")
     assert detail["harness_name"] == "Claude Code"
 
 
@@ -1013,7 +1070,7 @@ async def test_session_detail_places_an_agent_launched_before_the_first_hook():
     rows = [_dispatch_row(subagent_type="Explore", offset_s=5) | {"subagent_duration_ms": 1000}]
     handler._repo.get_session_detail_dispatches = AsyncMock(return_value=rows)
 
-    detail, _ = await handler.get_session_detail("s1")
+    detail, _, _ = await handler.get_session_detail("s1")
 
     agent = next(d for d in detail["dispatches"] if d["kind"] == "agent")
     assert agent["start_offset_ms"] == 5000
@@ -1023,7 +1080,7 @@ async def test_session_detail_places_an_agent_launched_before_the_first_hook():
 @pytest.mark.asyncio
 async def test_session_detail_harness_name_unknown_when_unresolved():
     handler = make_detail_handler({"session_id": "s1", "harness_service_name": None})
-    detail, _ = await handler.get_session_detail("s1")
+    detail, _, _ = await handler.get_session_detail("s1")
     assert detail["harness_name"] == "Unknown"
 
 
@@ -1100,3 +1157,227 @@ def test_sequential_agents_render_as_separate_bars():
     assert (first_start, first_end) == (13524, 34124)
     assert (second_start, second_end) == (40000, 55000)
     assert second_start >= first_end
+
+
+# ── Catalog money on the aggregate surfaces ──
+
+_MONEY_READS = (
+    "get_cost_kpis",
+    "get_model_breakdown",
+    "get_lines_totals",
+    "get_lines_daily",
+    "get_turns_by_session",
+    "get_file_facts_by_session",
+    "get_tool_success_by_session",
+    "get_session_durations",
+    "get_session_cost_facts",
+    "get_lines_by_session",
+    "get_skill_names_by_session",
+    "get_users_daily_activity",
+    "get_users_last_active",
+    "get_lines_by_user",
+    "get_cost_by_user",
+    "get_users",
+)
+
+# The ticket's sessions: Opus 5.5 with every cache write at 1h, Sonnet 4.6 likewise.
+_OPUS_ROW = {
+    "session_id": "s-opus",
+    "model_name": "claude-opus-5-5",
+    "normalized_model_name": "claude-opus-5-5",
+    "input_tokens": 374,
+    "output_tokens": 66_483,
+    "cache_read_tokens": 40_356_538,
+    "cache_creation_tokens": 1_888_908,
+    "cache_creation_5m_tokens": None,
+    "cache_creation_1h_tokens": 1_888_908,
+}
+_SONNET_ROW = {
+    "session_id": "s-sonnet",
+    "model_name": "us.anthropic.claude-sonnet-4-6",
+    "normalized_model_name": "claude-sonnet-4-6",
+    "input_tokens": 6,
+    "output_tokens": 708,
+    "cache_read_tokens": 107_215,
+    "cache_creation_tokens": 41_644,
+    "cache_creation_5m_tokens": 0,
+    "cache_creation_1h_tokens": 41_644,
+}
+
+
+def _ticket_catalog(source: str = "litellm"):
+    """The runtime catalog of the ticket: Opus 5.5 at 4.4 / 22 / 0.22 / 5.5 / 8.8 per MTok, Sonnet 4.6 × 0.75,
+    Haiku 4.5 at 1 / 5 / 0.1 / 1.25 / 2."""
+    models = []
+    for name, prices in (
+        ("claude-opus-5-5", (4.4e-6, 22e-6, 0.22e-6, 5.5e-6, 8.8e-6)),
+        ("claude-sonnet-4-6", (3.3e-6, 16.5e-6, 0.33e-6, 4.125e-6, 6.6e-6)),
+        ("claude-haiku-4-5", (1.0e-6, 5.0e-6, 0.10e-6, 1.25e-6, 2.0e-6)),
+    ):
+        model = MagicMock()
+        model.base_name = name
+        model.deployment_name = name
+        model.cost = CostConfig(
+            input=prices[0],
+            output=prices[1],
+            cache_read_input_token_cost=prices[2],
+            cache_creation_input_token_cost=prices[3],
+            cache_creation_input_token_cost_above_1hr=prices[4],
+        )
+        models.append(model)
+    module = "codemie.service.analytics.handlers.coding_agent_pricing.llm_service"
+    return (
+        patch(f"{module}.get_all_llm_model_info", return_value=models),
+        patch(f"{module}.catalog_source", return_value=source),
+    )
+
+
+def _money_handler(model_rows, **overrides):
+    repo = MagicMock()
+    for name in _MONEY_READS:
+        setattr(repo, name, AsyncMock(return_value=[]))
+    repo.get_session_model_costs = AsyncMock(return_value=model_rows)
+    for name, rows in overrides.items():
+        setattr(repo, name, AsyncMock(return_value=rows))
+    return LocalAnalyticsHandler(repo)
+
+
+async def _priced(call, source: str = "litellm"):
+    catalog, catalog_source = _ticket_catalog(source)
+    with catalog, catalog_source:
+        return await call
+
+
+@pytest.mark.asyncio
+async def test_overview_and_efficiency_price_money_at_the_catalog():
+    facts = [{**BASE_COST_ROW, "session_id": "s-opus", "cost_usd": 24.5}]
+    handler = _money_handler([_OPUS_ROW], get_session_cost_facts=facts)
+
+    overview, pricer, _ = await _priced(handler.get_overview(make_filter()))
+    efficiency, _ = await _priced(handler.get_efficiency(make_filter()))
+
+    for kpis in (overview["kpis"], efficiency["kpis"]):
+        assert kpis["total_cost_usd"] == pytest.approx(26.96510036, abs=1e-9)
+        assert kpis["cache_read_cost_usd"] == pytest.approx(8.87843836, abs=1e-9)
+        assert kpis["bloat_pct"] == 32.9
+    assert efficiency["dead_sessions"]["wasted_cost_usd"] == pytest.approx(26.96510036, abs=1e-9)
+    assert (pricer.unpriced, pricer.catalog_source) == ([], "litellm")
+
+
+@pytest.mark.asyncio
+async def test_cost_page_per_user_and_per_model_sum_to_the_priced_total():
+    handler = _money_handler(
+        [_OPUS_ROW, _SONNET_ROW],
+        get_cost_by_user=[
+            {"developer_name": "alice@example.com", "session_ids": ["s-sonnet"]},
+            {"developer_name": "bob@example.com", "session_ids": ["s-opus"]},
+        ],
+    )
+
+    data, _ = await _priced(handler.get_cost(make_filter()))
+    overview, _, _ = await _priced(handler.get_overview(make_filter()))
+
+    assert data["kpis"]["total_cost_usd"] == pytest.approx(27.28703351, abs=1e-9)
+    by_user = {r["developer_name"]: r["cost_usd"] for r in data["cost_by_user"]}
+    assert [r["developer_name"] for r in data["cost_by_user"]] == ["bob@example.com", "alice@example.com"]
+    assert by_user["alice@example.com"] == pytest.approx(0.32193315, abs=1e-9)
+    assert sum(by_user.values()) == pytest.approx(27.28703351, abs=1e-9)
+    by_model = {r["model_name"]: r["cost_usd"] for r in data["cost_by_model"]}
+    assert by_model == {
+        "claude-opus-5-5": pytest.approx(26.96510036, abs=1e-9),
+        "claude-sonnet-4-6": pytest.approx(0.32193315, abs=1e-9),
+    }
+    # Opus 8.87843836 + Sonnet 0.03538095
+    assert overview["kpis"]["cache_read_cost_usd"] == pytest.approx(8.91381931, abs=1e-9)
+
+
+@pytest.mark.asyncio
+async def test_users_are_ordered_and_paged_by_priced_money():
+    # The producer cost orders carol > alice > bob; the catalog orders bob > alice > carol.
+    model_rows = [
+        {**_SONNET_ROW, "session_id": "s-alice"},
+        {**_OPUS_ROW, "session_id": "s-bob"},
+    ]
+    user_rows = [
+        {"developer_name": "carol@example.com", "cost_usd": 30.0, "session_ids": ["s-carol"]},
+        {"developer_name": "alice@example.com", "cost_usd": 20.0, "session_ids": ["s-alice"]},
+        {"developer_name": "bob@example.com", "cost_usd": 10.0, "session_ids": ["s-bob"]},
+    ]
+    handler = _money_handler(model_rows, get_users=user_rows)
+
+    everyone, _ = await _priced(handler.get_users(make_filter(), page=None, per_page=None))
+    second, _ = await _priced(handler.get_users(make_filter(), page=1, per_page=1))
+
+    assert [(r["developer_name"], round(r["cost_usd"], 8)) for r in everyone["rows"]] == [
+        ("bob@example.com", 26.96510036),
+        ("alice@example.com", 0.32193315),
+        ("carol@example.com", 0.0),
+    ]
+    assert [r["developer_name"] for r in second["rows"]] == ["alice@example.com"]
+    assert second["total_count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_repositories_and_users_report_a_model_without_config_as_unpriced():
+    mystery = {**_OPUS_ROW, "model_name": "mystery-model", "normalized_model_name": "mystery-model"}
+    facts = [{**BASE_COST_FACT, "session_id": "s-opus", "repository": "repo"}]
+    handler = _money_handler(
+        [_OPUS_ROW, mystery],
+        get_session_cost_facts=facts,
+        get_users=[{"developer_name": "bob@example.com", "session_ids": ["s-opus"]}],
+    )
+
+    repos, repo_pricer = await _priced(handler.get_repositories(make_filter(), 0, 20, False))
+    users, user_pricer = await _priced(handler.get_users(make_filter(), page=None, per_page=None))
+
+    assert repos["rows"][0]["cost_usd"] == pytest.approx(26.96510036, abs=1e-9)
+    assert users["rows"][0]["cost_usd"] == pytest.approx(26.96510036, abs=1e-9)
+    assert repo_pricer.unpriced == user_pricer.unpriced == ["mystery-model"]
+
+
+@pytest.mark.asyncio
+async def test_repositories_and_sessions_price_only_the_sessions_they_return():
+    excluded = {**_SONNET_ROW, "session_id": "s-other", "model_name": "mystery-model"}
+    model_rows = [_OPUS_ROW, excluded]
+    repo_handler = _money_handler(
+        model_rows, get_session_cost_facts=[{**BASE_COST_FACT, "session_id": "s-opus", "repository": "repo"}]
+    )
+    session_handler = _money_handler(
+        model_rows,
+        get_session_cost_facts=[
+            {**BASE_COST_ROW, "session_id": "s-opus", "prompt": "fix the parser"},
+            {**BASE_COST_ROW, "session_id": "s-other", "prompt": "write the docs"},
+        ],
+    )
+
+    repos, repo_pricer = await _priced(repo_handler.get_repositories(make_filter(), 0, 20, False, search="repo"))
+    sessions, session_pricer, _ = await _priced(
+        session_handler.get_sessions(make_filter(), 0, 20, "cost_usd", "parser")
+    )
+
+    assert [r["cost_usd"] for r in repos["rows"]] == [pytest.approx(26.96510036, abs=1e-9)]
+    assert [(s["trace_id"], s["cost_usd"]) for s in sessions["sessions"]] == [
+        ("s-opus", pytest.approx(26.96510036, abs=1e-9))
+    ]
+    assert repo_pricer.unpriced == session_pricer.unpriced == []
+
+
+@pytest.mark.asyncio
+async def test_an_empty_selection_has_no_money():
+    overview, pricer, _ = await _priced(_money_handler([]).get_overview(make_filter()))
+
+    kpis = overview["kpis"]
+    assert (kpis["total_cost_usd"], kpis["cache_read_cost_usd"], kpis["bloat_pct"]) == (0.0, 0.0, 0.0)
+    assert pricer.unpriced == []
+
+
+@pytest.mark.asyncio
+async def test_a_row_without_a_model_is_unpriced_as_empty_and_the_yaml_source_is_reported():
+    nameless = {**_SONNET_ROW, "model_name": "", "normalized_model_name": ""}
+    handler = _money_handler([_SONNET_ROW, nameless])
+
+    data, pricer = await _priced(handler.get_cost(make_filter()), source="yaml")
+
+    assert data["kpis"]["total_cost_usd"] == pytest.approx(0.32193315, abs=1e-9)
+    assert [r["model_name"] for r in data["cost_by_model"]] == ["claude-sonnet-4-6"]
+    assert (pricer.unpriced, pricer.catalog_source) == ([""], "yaml")

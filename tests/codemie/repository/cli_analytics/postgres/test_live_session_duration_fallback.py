@@ -42,13 +42,13 @@ from codemie.repository.cli_analytics.postgres.engine import AnalyticsPgEngine
 from codemie.repository.cli_analytics.postgres.reader import PostgresCliAnalyticsReader
 from codemie.repository.cli_analytics.postgres.rollups import RollupRefresher
 from codemie.repository.cli_analytics.postgres.settings import AnalyticsPgSettings
+from tests.codemie.repository.cli_analytics.support.live_rollup_lock import live_rollup_lock
 
 _LOCAL_PG_URL = os.environ.get("TEST_LOCAL_PG_URL", "postgresql://postgres:password@localhost:5432/postgres")
 # A fixed, inert day (inside the default 90-day raw retention window but not "today"): isolates these
 # tests from any concurrently-refreshed live traffic in a shared dev analytics database.
 _DAY = date(2026, 8, 1)
 
-_REFRESH_LOCK_KEY = 1558415584  # arbitrary advisory-lock id shared by every refresh in this file
 
 _SUMMARY_HOOK_SQL = """
     INSERT INTO hook_events (ts, session_id, event_type, attrs)
@@ -142,18 +142,11 @@ def _window(start: datetime, now: datetime) -> LocalAnalyticsFilter:
 
 
 async def _refresh(engine: AnalyticsPgEngine, day) -> None:
-    # A refresh recomputes every dirty key of the shared database, other tests' sessions included, and
-    # two concurrent recomputes of one key (this suite runs under xdist) collide on cost_daily's primary
-    # key. A dedicated connection (not the pool) holds an advisory lock so refreshes run one at a time.
-    lock_conn = await asyncpg.connect(_LOCAL_PG_URL)
-    try:
-        await lock_conn.execute("SELECT pg_advisory_lock($1)", _REFRESH_LOCK_KEY)
+    async with live_rollup_lock(engine):
         refresher = RollupRefresher(engine, batch_size=100)
         async with engine.acquire() as conn:
             await refresher.mark_dirty(day, day, conn)
         await refresher.refresh()
-    finally:
-        await lock_conn.close()  # closing the session releases the advisory lock
 
 
 async def _session_dims_row(engine: AnalyticsPgEngine, session_id: str) -> asyncpg.Record | None:

@@ -326,12 +326,15 @@ class FilterParams:
         )
 
 
-def _metadata(start_ns: int, data_as_of: str | None, unpriced: list[str], fallback: datetime) -> dict:
+def _metadata(
+    start_ns: int, data_as_of: str | None, unpriced: list[str], catalog_source: str | None, fallback: datetime
+) -> dict[str, Any]:
     return {
         "timestamp": now_iso(),
         "data_as_of": data_as_of or fallback.date().isoformat(),
         "execution_time_ms": round((time.monotonic_ns() - start_ns) / 1_000_000, 2),
         "unpriced_models": unpriced,
+        "catalog_source": catalog_source,
     }
 
 
@@ -410,10 +413,9 @@ async def get_overview(
     _ensure_enabled()
     start_ns = time.monotonic_ns()
     f = await filters.resolve(user)
-    data, unpriced, data_as_of = await _handler().get_overview(f)
-    return _respond(
-        {"data": data, "metadata": _metadata(start_ns, data_as_of, unpriced, f.end_dt)}, LocalAnalyticsOverviewResponse
-    )
+    data, pricer, data_as_of = await _handler().get_overview(f)
+    metadata = _metadata(start_ns, data_as_of, pricer.unpriced, pricer.catalog_source, f.end_dt)
+    return _respond({"data": data, "metadata": metadata}, LocalAnalyticsOverviewResponse)
 
 
 @router.get(
@@ -430,10 +432,9 @@ async def get_cost(
     _ensure_enabled()
     start_ns = time.monotonic_ns()
     f = await filters.resolve(user)
-    data, unpriced = await _handler().get_cost(f)
-    return _respond(
-        {"data": data, "metadata": _metadata(start_ns, None, unpriced, f.end_dt)}, LocalAnalyticsCostResponse
-    )
+    data, pricer = await _handler().get_cost(f)
+    metadata = _metadata(start_ns, None, pricer.unpriced, pricer.catalog_source, f.end_dt)
+    return _respond({"data": data, "metadata": metadata}, LocalAnalyticsCostResponse)
 
 
 @router.get(
@@ -452,9 +453,10 @@ async def get_users(
     _ensure_enabled()
     start_ns = time.monotonic_ns()
     f = await filters.resolve(user)
-    data = await _handler().get_users(f, page, per_page)
+    data, pricer = await _handler().get_users(f, page, per_page)
     await _attach_user_ids(data["rows"])
-    return _respond({"data": data, "metadata": _metadata(start_ns, None, [], f.end_dt)}, LocalAnalyticsUsersResponse)
+    metadata = _metadata(start_ns, None, pricer.unpriced, pricer.catalog_source, f.end_dt)
+    return _respond({"data": data, "metadata": metadata}, LocalAnalyticsUsersResponse)
 
 
 @router.get(
@@ -471,10 +473,11 @@ async def get_user_charts(
     _ensure_enabled()
     start_ns = time.monotonic_ns()
     f = await filters.resolve(user)
-    data = await _handler().get_users(f, None, None)
+    data, pricer = await _handler().get_users(f, None, None)
     data["total_count"] = None  # unpaginated by contract
     await _attach_user_ids(data["rows"])
-    return _respond({"data": data, "metadata": _metadata(start_ns, None, [], f.end_dt)}, LocalAnalyticsUsersResponse)
+    metadata = _metadata(start_ns, None, pricer.unpriced, pricer.catalog_source, f.end_dt)
+    return _respond({"data": data, "metadata": metadata}, LocalAnalyticsUsersResponse)
 
 
 async def _attach_user_ids(rows: list[dict]) -> None:
@@ -522,10 +525,9 @@ async def get_repositories(
     else:
         resolved_page = page if page is not None else DEFAULT_PAGE
         resolved_per_page = per_page if per_page is not None else DEFAULT_PER_PAGE
-    data = await _handler().get_repositories(f, resolved_page, resolved_per_page, include_branches, search)
-    return _respond(
-        {"data": data, "metadata": _metadata(start_ns, None, [], f.end_dt)}, LocalAnalyticsRepositoriesResponse
-    )
+    data, pricer = await _handler().get_repositories(f, resolved_page, resolved_per_page, include_branches, search)
+    metadata = _metadata(start_ns, None, pricer.unpriced, pricer.catalog_source, f.end_dt)
+    return _respond({"data": data, "metadata": metadata}, LocalAnalyticsRepositoriesResponse)
 
 
 @router.get(
@@ -543,7 +545,9 @@ async def get_tools(
     start_ns = time.monotonic_ns()
     f = await filters.resolve(user)
     data = await _handler().get_tools(f)
-    return _respond({"data": data, "metadata": _metadata(start_ns, None, [], f.end_dt)}, LocalAnalyticsToolsResponse)
+    return _respond(
+        {"data": data, "metadata": _metadata(start_ns, None, [], None, f.end_dt)}, LocalAnalyticsToolsResponse
+    )
 
 
 @router.get(
@@ -561,7 +565,9 @@ async def get_activity(
     start_ns = time.monotonic_ns()
     f = await filters.resolve(user)
     data = await _handler().get_activity(f)
-    return _respond({"data": data, "metadata": _metadata(start_ns, None, [], f.end_dt)}, LocalAnalyticsActivityResponse)
+    return _respond(
+        {"data": data, "metadata": _metadata(start_ns, None, [], None, f.end_dt)}, LocalAnalyticsActivityResponse
+    )
 
 
 @router.get(
@@ -578,10 +584,9 @@ async def get_efficiency(
     _ensure_enabled()
     start_ns = time.monotonic_ns()
     f = await filters.resolve(user)
-    data, unpriced = await _handler().get_efficiency(f)
-    return _respond(
-        {"data": data, "metadata": _metadata(start_ns, None, unpriced, f.end_dt)}, LocalAnalyticsEfficiencyResponse
-    )
+    data, pricer = await _handler().get_efficiency(f)
+    metadata = _metadata(start_ns, None, pricer.unpriced, pricer.catalog_source, f.end_dt)
+    return _respond({"data": data, "metadata": metadata}, LocalAnalyticsEfficiencyResponse)
 
 
 @router.get(
@@ -620,12 +625,11 @@ async def get_sessions(
     f = await filters.resolve(user, project_unattributed=is_project_unattributed)
     resolved_page = page if page is not None else DEFAULT_PAGE
     resolved_per_page = per_page if per_page is not None else DEFAULT_PER_PAGE
-    data, unpriced, data_as_of = await _handler().get_sessions(
+    data, pricer, data_as_of = await _handler().get_sessions(
         f, resolved_page, resolved_per_page, sort_by, search, framework, is_unattributed, branch
     )
-    return _respond(
-        {"data": data, "metadata": _metadata(start_ns, data_as_of, unpriced, f.end_dt)}, LocalAnalyticsSessionsResponse
-    )
+    metadata = _metadata(start_ns, data_as_of, pricer.unpriced, pricer.catalog_source, f.end_dt)
+    return _respond({"data": data, "metadata": metadata}, LocalAnalyticsSessionsResponse)
 
 
 @router.get(
@@ -642,7 +646,7 @@ async def get_session_detail(
     # An unavailable ClickHouse is indistinguishable from a missing trace here; preserve the 404 contract.
     _ensure_enabled()
     start_ns = time.monotonic_ns()
-    detail, unpriced = await _handler().get_session_detail(trace_id)
+    detail, unpriced, catalog_source = await _handler().get_session_detail(trace_id)
     if detail is None:
         raise ExtendedHTTPException(
             code=status.HTTP_404_NOT_FOUND,
@@ -670,5 +674,6 @@ async def get_session_detail(
         "data_as_of": detail.get("start_time") or "",
         "execution_time_ms": round((time.monotonic_ns() - start_ns) / 1_000_000, 2),
         "unpriced_models": unpriced,
+        "catalog_source": catalog_source,
     }
     return _respond({"data": detail, "metadata": metadata}, LocalAnalyticsSessionDetailResponse)

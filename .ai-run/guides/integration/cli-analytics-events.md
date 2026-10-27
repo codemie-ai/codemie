@@ -1,6 +1,6 @@
 # CLI Analytics Event Contract
 
-The six events CodeMie CLI (formerly the `sdlc-analytics` plugin) sends on top of OTel telemetry and the 13 activity hook events: their JSON, where each field is stored, and the rules a sender must keep. The storage, the recalculation and the operations are in [`cli-analytics-storage.md`](cli-analytics-storage.md).
+The six events CodeMie CLI (formerly the `sdlc-analytics` plugin) sends on top of OTel telemetry and the 13 activity hook events (of these, the `lines_added` / `lines_removed` of `agent.tool.end`): their JSON, where each field is stored, and the rules a sender must keep. The storage, the recalculation and the operations are in [`cli-analytics-storage.md`](cli-analytics-storage.md).
 
 The server accepts these events. A change to a field name, a type or a rule on this page is a change to the contract: agree it before a sender or the server implements it.
 
@@ -290,7 +290,7 @@ Sent on every stop of the agent and at the end of the session. Each one is a sep
 | `turns` | int | user prompts | `turns` |
 | `api_calls` | int | requests to the model | `api_calls` |
 | `tool_calls`, `tool_results`, `tool_errors` | int | tool calls; tool results; results that are errors | same names |
-| `lines_added`, `lines_removed` | int | edit diffs | same names |
+| `lines_added`, `lines_removed` | int | edit diffs and the content lines of a new file | same names |
 | `files_changed`, `files_written`, `files_edited` | int | distinct files touched; written; edited | same names |
 | `primary_model` | string | the model with the most requests | `primary_model` |
 | `models` | array of strings, primary first | distinct normalised models | `models` |
@@ -383,6 +383,17 @@ A skill started by a slash command of the user. For a forked skill this event is
 
 - One invocation of a skill counts once, by its initiator: this event when a slash command starts the skill, the Skill tool call (its `TOOL` span, or `agent.tool.start` with `skill_name`) when the model starts it. A Claude Code Skill or `Agent` call counts only with evidence it ran, since a denied call gets only `agent.tool.denied`: its `TOOL` span (`span_name` starting with `claude_code.`) needs a `TOOL_EXECUTION` span or an `agent.tool.end` / `agent.tool.error` of that tool with its `tool_use_id`, from 1 hour before the call to 1 day after it, and a Skill call's `agent.tool.start` needs that end or error; a denied call is neither a skill nor an agent and has no timeline row. A call without a `tool_use_id`, and another client's span or `agent.tool.start`, count as they are; this event and the skill-tagged `agent.subagent.start` are not gated. A forked skill also sends the `agent.subagent.start` of its fork, joined to the initiator by an exact key: the fork's id the Skill call's `agent.tool.end` names, or the `prompt_id` of this event. A fork a Skill call names is never this event's fork; this event has a fork only when it is the only Claude Code `agent.skill.dispatch` of its session and `prompt_id` (the CLI sends one per prompt; with two or more, none of them has a fork and their forks count on their own); its fork is the earliest first start of an `agent_id` at or after it with its `prompt_id` and skill name, else, when none has the name, the earliest with its `prompt_id` and no skill name (a foreground fork) that no `Agent` call's `agentId` names (an ordinary subagent of the same turn), a start with an empty or absent `agent_id` never; one event, one fork; an event whose `skill_name` is over 256 bytes is not counted and has no fork, so its fork counts on its own. A joined fork is not counted again and is never an agent, with or without `skill_name`; a fork with no counted initiator counts on its own: with `skill_name` as a skill, without it as an agent on a fallback pair only; on a day with spans such a fork without `skill_name` is not counted, since agents there come from `Agent` `TOOL` spans. A fork continued by SendMessage sends another `agent.subagent.start` with the same `agent_id` (under the new turn's `prompt_id`): only the first start of an `agent_id` is counted, and only a first start can be this event's fork. On the session timeline the invocation is one row, the initiator's (the Skill call's `TOOL` span or this event), with the fork's run and cost; a Skill call without a `TOOL` span has no row, so its fork is its own `command` row when it carries `skill_name` and has no row when it does not. The joins by `agentId` and `prompt_id` read Claude Code events only; an event without `platform` counts as Claude Code, the hook rows the server stores from OTel logs included. A `skill_name` on a Claude Code `agent.subagent.start` marks a skill fork: such a start is a skill, never an agent; another client's tagged start counts as an agent, as its initiator is never paired. A fork named by a Skill call that is not itself counted (no `TOOL` span, no `skill_name` on its `agent.tool.start`) and without its own `skill_name` counts as an agent. The Skill call's `agent.tool.end` names the fork by its `fork_agent_id`, which the CLI reads out of the result before it cuts `tool_response` to 300 characters, else by the complete `agentId` in `tool_response` (it survives for skill names up to about 203 characters for a background fork, 221 for a foreground one); its typed `agent_id` is never the key, since on a call made inside a subagent it is the caller's id.
 - The arguments of the command are prompt text and are not sent.
+
+## `agent.tool.end`
+
+An activity hook event: a tool call that completed. Its line counts are the source of `lines_daily` for the session.
+
+| Field | Type | Goes to |
+|---|---|---|
+| `lines_added`, `lines_removed` | int; present on Edit, MultiEdit and Write; absent for NotebookEdit, Bash and every other tool (rule 4: absent, never 0) | `attrs` |
+
+- A new file counts its content lines (a trailing newline is not a line); an overwrite and an edit count the patch.
+- The server builds `lines_daily` from them for every session where any `agent.tool.end` carries a numeric `lines_added`. Only the `agent.tool.end` events that carry a numeric `lines_added` count, one per non-empty `tool_use_id` (the earliest of them); a line count that is not a non-negative number counts 0. A session without them, a `null` or string `lines_added` included, takes its lines from the OTel lines metric.
 
 ## `agent.git.snapshot`
 

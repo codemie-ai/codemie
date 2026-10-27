@@ -74,7 +74,8 @@ class TestLookupCostConfig:
     def test_returns_none_for_unknown_model(self):
         from codemie.service.analytics.handlers.coding_agent_pricing import lookup_cost_config
 
-        with _patch_config([]):
+        library_info = {"input_cost_per_token": 0.000001, "output_cost_per_token": 0.000002}
+        with _patch_config([]), patch("litellm.get_model_info", return_value=library_info):
             assert lookup_cost_config("definitely-not-a-real-model-xyz-9999") is None
 
     def test_returns_none_when_model_has_no_cost(self):
@@ -85,57 +86,108 @@ class TestLookupCostConfig:
             assert lookup_cost_config("no-cost-model-xyz-9999") is None
 
 
-class TestCacheReadCost:
-    def test_known_model_correct_usd_no_million_division(self):
-        # rate=0.00000033 USD/token (per-token, not per-1M); 1_000_000 tokens → 0.33 USD
-        from codemie.service.analytics.handlers.coding_agent_pricing import cache_read_cost
+def _priced_model(name: str, inp, out, read, write_5m, write_1h) -> MagicMock:
+    model = MagicMock()
+    model.base_name = name
+    model.cost = CostConfig(
+        input=inp,
+        output=out,
+        cache_read_input_token_cost=read,
+        cache_creation_input_token_cost=write_5m,
+        cache_creation_input_token_cost_above_1hr=write_1h,
+    )
+    return model
 
-        model = _make_llm_model("claude-sonnet-4-6", cache_read_rate=0.00000033)
-        with _patch_config([model]):
-            cost = cache_read_cost("claude-sonnet-4-6", 1_000_000)
-        assert abs(cost - 0.33) < 1e-9
 
-    def test_bedrock_prefixed_name_resolved(self):
-        from codemie.service.analytics.handlers.coding_agent_pricing import cache_read_cost
+_OPUS = _priced_model("claude-opus-5-5", 4.4e-6, 22e-6, 0.22e-6, 5.5e-6, 8.8e-6)
+_SONNET = _priced_model("claude-sonnet-4-6", 3.3e-6, 16.5e-6, 0.33e-6, 4.125e-6, 6.6e-6)
+_HAIKU = _priced_model("claude-haiku-4-5", 1.0e-6, 5.0e-6, 0.10e-6, 1.25e-6, 2.0e-6)
+_NO_1H = _priced_model("no-1h-model", 1.0e-6, 5.0e-6, 0.10e-6, 1.25e-6, None)
 
-        model = _make_llm_model("claude-sonnet-4-6", cache_read_rate=0.00000033)
-        with _patch_config([model]):
-            cost = cache_read_cost("us.anthropic.claude-sonnet-4-6", 1_000_000)
-        assert abs(cost - 0.33) < 1e-9
 
-    def test_unknown_model_returns_zero(self):
-        from codemie.service.analytics.handlers.coding_agent_pricing import cache_read_cost
+class TestCatalogPricer:
+    @pytest.mark.parametrize(
+        ("model", "counts", "expected"),
+        [
+            (
+                "claude-opus-5-5",
+                {
+                    "input": 374,
+                    "output": 66_483,
+                    "cache_read": 40_356_538,
+                    "cache_creation": 1_888_908,
+                    "cache_1h": 1_888_908,
+                },
+                26.96510036,
+            ),
+            ("claude-opus-5-5", {"cache_read": 40_356_538}, 8.87843836),
+            (
+                "claude-sonnet-4-6",
+                {"input": 6, "output": 708, "cache_read": 107_215, "cache_creation": 41_644, "cache_1h": 41_644},
+                0.32193315,
+            ),
+            (
+                "claude-haiku-4-5",
+                {"input": 10, "output": 100, "cache_read": 68_589, "cache_creation": 1_000, "cache_5m": 1_000},
+                0.0086189,
+            ),
+            ("claude-haiku-4-5", {"cache_creation": 1_000}, 0.00125),
+            ("claude-haiku-4-5", {"cache_creation": 1_000, "cache_1h": 400}, 0.00155),
+            ("claude-haiku-4-5", {"cache_creation": 1_000, "cache_5m": 1_000, "cache_1h": 1_000}, 0.002),
+            ("claude-haiku-4-5", {"cache_creation": 0, "cache_5m": 300, "cache_1h": 700}, 0.0),
+        ],
+    )
+    def test_prices_at_catalog(self, model, counts, expected):
+        from codemie.service.analytics.handlers.coding_agent_pricing import CatalogPricer, TokenCounts
+
+        with _patch_config([_OPUS, _SONNET, _HAIKU]):
+            pricer = CatalogPricer()
+            assert pricer.price(model, TokenCounts(**counts)) == pytest.approx(expected, abs=1e-12)
+            assert pricer.unpriced == []
+
+    def test_missing_1h_price_marks_unpriced_only_when_1h_tokens_used(self):
+        from codemie.service.analytics.handlers.coding_agent_pricing import CatalogPricer, TokenCounts
+
+        with _patch_config([_NO_1H]):
+            pricer = CatalogPricer()
+            assert pricer.price("no-1h-model", TokenCounts(input=10, cache_creation=1_000)) == pytest.approx(0.00126)
+            assert pricer.unpriced == []
+            assert pricer.price("no-1h-model", TokenCounts(cache_creation=100, cache_1h=100)) == 0.0
+            assert pricer.unpriced == ["no-1h-model"]
+
+    def test_empty_and_unknown_models_are_unpriced(self):
+        from codemie.service.analytics.handlers.coding_agent_pricing import CatalogPricer, TokenCounts
+
+        with _patch_config([_OPUS]):
+            pricer = CatalogPricer()
+            assert pricer.price("", TokenCounts(output=5)) == 0.0
+            assert pricer.unpriced == [""]
+            assert pricer.price("unknown-model", TokenCounts(input=5)) == 0.0
+            assert pricer.price("unknown-model", TokenCounts(input=5)) == 0.0
+            assert pricer.unpriced == ["", "unknown-model"]
+
+    def test_unknown_model_without_tokens_is_not_unpriced(self):
+        from codemie.service.analytics.handlers.coding_agent_pricing import CatalogPricer, TokenCounts
 
         with _patch_config([]):
-            assert cache_read_cost("definitely-not-a-real-model-xyz-9999", 1_000_000) == 0.0
+            pricer = CatalogPricer()
+            assert pricer.price("unknown-model", TokenCounts()) == 0.0
+            assert pricer.unpriced == []
 
-    def test_zero_tokens_returns_zero(self):
-        from codemie.service.analytics.handlers.coding_agent_pricing import cache_read_cost
+    def test_resolves_each_distinct_model_once(self):
+        from codemie.service.analytics.handlers.coding_agent_pricing import CatalogPricer, TokenCounts
 
-        model = _make_llm_model("claude-sonnet-4-6", cache_read_rate=0.00000033)
-        with _patch_config([model]):
-            assert cache_read_cost("claude-sonnet-4-6", 0) == 0.0
+        with _patch_config([_OPUS]):
+            pricer = CatalogPricer()
+            assert pricer.price("claude-opus-5-5", TokenCounts(input=1_000)) == pytest.approx(0.0044)
+            assert pricer.price("claude-sonnet-4-6", TokenCounts(input=1_000)) == 0.0
+        with _patch_config([_SONNET]):
+            assert pricer.price("claude-opus-5-5", TokenCounts(input=1_000)) == pytest.approx(0.0044)
+            assert pricer.price("claude-sonnet-4-6", TokenCounts(input=1_000)) == 0.0
+        assert pricer.unpriced == ["claude-sonnet-4-6"]
 
-    def test_model_without_cache_read_rate_returns_zero(self):
-        from codemie.service.analytics.handlers.coding_agent_pricing import cache_read_cost
+    def test_exposes_catalog_source(self):
+        from codemie.service.analytics.handlers.coding_agent_pricing import CatalogPricer
 
-        # Model in config but no cache_read_input_token_cost set
-        model = MagicMock()
-        model.base_name = "some-model"
-        model.cost = CostConfig(input=0.001, output=0.002)  # cache_read_input_token_cost defaults to None
-        with _patch_config([model]):
-            assert cache_read_cost("some-model", 1_000_000) == 0.0
-
-
-@pytest.mark.parametrize("model", ["claude-opus-5", "claude-sonnet-5"])
-def test_cache_read_cost_resolves_for_verification_session_models(model):
-    """Live-verified models from session c9b8c2a5-268b-42de-adbd-92b17f1ec5f0 (2026-10-07).
-
-    If this fails for a model, Tasks 4/5's per-model sum for that model silently
-    contributes 0.0 — not a Task 4/5 bug, but a pricing-config gap. claude-opus-5 and
-    claude-sonnet-5 resolve today via the litellm fallback in lookup_cost_config even
-    though neither appears in config/llms/llm-dial-config.yaml.
-    """
-    from codemie.service.analytics.handlers.coding_agent_pricing import cache_read_cost
-
-    assert cache_read_cost(model, 1000) > 0.0
+        with patch(f"{_MODULE}.llm_service.catalog_source", return_value="litellm"):
+            assert CatalogPricer().catalog_source == "litellm"

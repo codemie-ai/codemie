@@ -542,7 +542,17 @@ def test_aggregation_merges_session_count_and_cost_across_raw_name_variants():
 async def test_session_model_costs_groups_by_session_and_model():
     sql, _ = await _sql_of("get_session_model_costs")
     assert "GROUP BY c.session_id, c.model_name" in sql
-    assert "c.model_name <> ''" in sql
+    assert "<> ''" not in sql
+    for column in (
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_creation_tokens",
+        "cache_creation_5m_tokens",
+        "cache_creation_1h_tokens",
+    ):
+        assert f"sum(c.{column})::bigint AS {column}" in sql
+    assert f"{PostgresCliAnalyticsReader._normalized_model_name('c.model_name')} AS normalized_model_name" in sql
 
 
 @pytest.mark.asyncio
@@ -589,10 +599,7 @@ async def test_the_top_model_is_the_largest_row_of_the_original_cost_grain(metho
     assert "(array_agg(c.model_name ORDER BY c.grain_calls DESC, c.day, c.session_id" in sql
     assert "ORDER BY c.api_call_count" not in sql
     # cost_daily is read only inside that subquery: a plain `FROM cost_daily c` has no grain_calls column
-    assert (
-        sql.count("cost_daily") == 1
-        and "(SELECT c.*, sum(c.api_call_count) OVER w AS grain_calls FROM cost_daily c" in sql
-    )
+    assert sql.count("cost_daily") == 1 and "(SELECT c.*, sum(c.api_call_count) OVER w AS grain_calls, " in sql
 
 
 @pytest.mark.asyncio
@@ -1030,7 +1037,10 @@ async def test_agent_cost_is_summed_from_the_api_requests_of_its_llm_request_gro
     sql = await _dispatches_sql()
 
     assert "span_kind = 4" in sql and "attrs ? 'agent_id'" in sql
-    assert "l.span_id = g.parent_span_id" in sql
+    assert (
+        "FROM (SELECT DISTINCT agent_id FROM agent_groups) g JOIN log_events l ON l.span_id IN "
+        "(SELECT ag.parent_span_id FROM agent_groups ag WHERE ag.agent_id = g.agent_id) AND l.session_id" in sql
+    )
     assert "LEFT JOIN agent_usage au ON au.agent_id = coalesce(la.agent_id, sf.agent_id)" in sql
 
 

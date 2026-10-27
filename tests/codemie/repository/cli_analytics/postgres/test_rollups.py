@@ -920,6 +920,12 @@ def test_mark_range_yields_the_ingest_bits_per_source() -> None:
     )
     assert f"WHERE {rollups._RANGE_SHIFTED} AND span_kind IN (1, 2, 3)" in " ".join(shifted_spans[0].split())
     assert "'agent.subagent.usage'" in sql
+    # an agent.tool.end carrying a numeric lines_added marks METRIC_FACTS 8 on its day, as dirty_keys marks it
+    hook_own_day = next(b for b in inner.split("UNION ALL") if " FROM hook_events" in b and "2 | 32" in b)
+    assert (
+        "| CASE WHEN event_type = 'agent.tool.end' AND jsonb_typeof(attrs->'lines_added') = 'number' THEN 8 ELSE 0 END"
+        in " ".join(hook_own_day.split())
+    )
     # requested mask: default includes 16 and 32
     assert rollups._ALL_BITS & 16 and rollups._ALL_BITS & 32
     assert "& $3" in sql

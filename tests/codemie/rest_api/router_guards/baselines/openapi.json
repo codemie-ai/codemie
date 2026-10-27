@@ -7659,6 +7659,17 @@
             ],
             "title": "Cache Creation Input Token Cost"
           },
+          "cache_creation_input_token_cost_above_1hr": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cache Creation Input Token Cost Above 1Hr"
+          },
           "cache_read_input_token_cost": {
             "anyOf": [
               {
@@ -15866,6 +15877,18 @@
       },
       "LocalAnalyticsResponseMetadata": {
         "properties": {
+          "catalog_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The catalog that priced the money of this response: 'litellm' (the LiteLLM proxy's model info) or 'yaml' (the LLM config files); named on every money endpoint, even when the selection is empty. Null on an endpoint that returns no money (/tools, /activity).",
+            "title": "Catalog Source"
+          },
           "data_as_of": {
             "description": "ISO 8601 date/datetime of the most recent data included",
             "title": "Data As Of",
@@ -15882,7 +15905,7 @@
             "type": "string"
           },
           "unpriced_models": {
-            "description": "Models present in the result whose cache-read rate is absent from the active LLM cost config. Their cache-read tokens contribute 0.0 to cache_read_cost_usd / bloat_pct. Diagnostic only - the frontend contract ignores this field.",
+            "description": "Models present in the result with a token kind they used and no catalog price for it (or no catalog entry at all; an empty model name is reported as \"\"). Their tokens of that kind contribute 0 to every money value. Diagnostic only - the frontend contract ignores this field.",
             "items": {
               "type": "string"
             },

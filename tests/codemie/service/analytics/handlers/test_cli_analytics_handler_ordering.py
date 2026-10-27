@@ -22,10 +22,11 @@ from __future__ import annotations
 
 from datetime import datetime
 from itertools import permutations
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from codemie.configs.llm_config import CostConfig
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
 from codemie.service.analytics.handlers.cli_analytics_handler import LocalAnalyticsHandler, depth_bucket
 
@@ -101,13 +102,28 @@ async def test_sessions_with_equal_start_times_are_ordered_by_trace_id():
 
 @pytest.mark.asyncio
 async def test_sessions_with_equal_cost_are_ordered_by_trace_id():
+    # The producer cost_usd orders a = b > c; the catalog prices c at 0.001 and a = b at 0.00001 each.
     rows = [_cost_row("b", cost_usd=2.0), _cost_row("a", cost_usd=2.0), _cost_row("c", cost_usd=1.0)]
+    model_rows = [
+        {"session_id": sid, "model_name": "claude-sonnet", "output_tokens": tokens}
+        for sid, tokens in (("a", 10), ("b", 10), ("c", 1000))
+    ]
+    model = MagicMock(base_name="claude-sonnet", deployment_name="claude-sonnet", cost=CostConfig(input=0, output=1e-6))
     orders = set()
-    for perm in permutations(rows):
-        data, _, _ = await _handler(cost_facts=perm).get_sessions(_flt(), 0, 20, "cost_usd", None)
-        orders.add(tuple(s["trace_id"] for s in data["sessions"]))
+    with (
+        patch(
+            "codemie.service.analytics.handlers.coding_agent_pricing.llm_service.get_all_llm_model_info",
+            return_value=[model],
+        ),
+        patch("codemie.service.analytics.handlers.coding_agent_pricing.llm_service.catalog_source"),
+    ):
+        for perm in permutations(rows):
+            handler = _handler(cost_facts=perm)
+            handler._repo.get_session_model_costs = AsyncMock(return_value=model_rows)
+            data, _, _ = await handler.get_sessions(_flt(), 0, 20, "cost_usd", None)
+            orders.add(tuple(s["trace_id"] for s in data["sessions"]))
 
-    assert orders == {("a", "b", "c")}
+    assert orders == {("c", "a", "b")}
 
 
 @pytest.mark.asyncio
@@ -121,7 +137,7 @@ async def test_repositories_with_equal_sessions_and_cost_are_ordered_by_name_the
     ]
     orders = set()
     for perm in permutations(rows):
-        data = await _handler(cost_facts=perm).get_repositories(_flt(), 0, 20, True)
+        data, _ = await _handler(cost_facts=perm).get_repositories(_flt(), 0, 20, True)
         orders.add(tuple((r["repository"], tuple(b["branch"] for b in r["branches"])) for r in data["rows"]))
 
     assert orders == {(("repo-a", ("dev", "main")), ("repo-b", ("main",)))}
@@ -137,7 +153,7 @@ async def test_repository_only_mode_keeps_one_row_labelled_with_most_frequent_pr
     ]
     results = set()
     for perm in permutations(rows):
-        data = await _handler(cost_facts=perm).get_repositories(_flt(), 0, 20, False)
+        data, _ = await _handler(cost_facts=perm).get_repositories(_flt(), 0, 20, False)
         results.add(tuple((r["repository"], r["project_name"], r["session_count"]) for r in data["rows"]))
 
     assert results == {(("repo", "pA", 4),)}
@@ -149,7 +165,7 @@ async def test_repository_only_mode_project_tie_goes_to_alphabetically_first():
         _cost_row("s1", repository="repo", project_name="pB"),
         _cost_row("s2", repository="repo", project_name="pA"),
     ]
-    data = await _handler(cost_facts=rows).get_repositories(_flt(), 0, 20, False)
+    data, _ = await _handler(cost_facts=rows).get_repositories(_flt(), 0, 20, False)
 
     assert [(r["project_name"], r["session_count"]) for r in data["rows"]] == [("pA", 2)]
 
@@ -161,7 +177,7 @@ async def test_branch_mode_buckets_by_project_repository_and_branch():
         _cost_row("s2", repository="repo", branch="main", project_name="pB"),
         _cost_row("s3", repository="repo", branch="main", project_name=""),
     ]
-    data = await _handler(cost_facts=rows).get_repositories(_flt(), 0, 20, True)
+    data, _ = await _handler(cost_facts=rows).get_repositories(_flt(), 0, 20, True)
 
     assert sorted((r["project_name"] or "", r["session_count"]) for r in data["rows"]) == [
         ("", 1),

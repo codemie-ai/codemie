@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from enum import Enum
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, List, Literal, Optional
 
 from codemie.configs import config, logger
 from codemie.configs.customer_config import customer_config
@@ -57,11 +57,15 @@ class LLMService:
         returns models from LiteLLM. Otherwise, returns models from YAML config.
         """
         # If LiteLLM proxy is enabled and models are initialized, use them as source of truth
-        if config.LLM_PROXY_ENABLED and self._default_litellm_models:
+        if self.catalog_source() == "litellm":
             return self._default_litellm_models
 
         # Otherwise, use traditional YAML-based models
         return self.get_model_info(self.llm_config.llm_models)
+
+    def catalog_source(self) -> Literal["litellm", "yaml"]:
+        """Name the source get_all_llm_model_info reads the chat models from."""
+        return "litellm" if config.LLM_PROXY_ENABLED and self._default_litellm_models else "yaml"
 
     def get_all_embedding_model_info(self) -> List[LLMModel]:
         """Retrieve all labels and base names from embedding models across all providers.
