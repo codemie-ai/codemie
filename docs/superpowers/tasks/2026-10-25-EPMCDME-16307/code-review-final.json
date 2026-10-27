@@ -1,0 +1,13 @@
+{
+  "decision": "approve",
+  "rationale": "Only edge-case ran (compact profile; no spec so acceptance skipped, confidence low). Three edge-case reports dismissed as noise: the Poetry 2.1.2 vs 2.4.1 header and specifier rewrites are lock-format churn with no runtime effect (worth regenerating with 2.4.1), and the nbconvert dependency-set concern is speculative since the diff shows consistent hashes and content-hash. 0 deferred.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "commit-format", "status": "na", "notes": "Standards audit not expected for this profile." },
+    { "kind": "code-quality", "status": "na", "notes": "Standards audit not expected for this profile." },
+    { "kind": "security", "status": "na", "notes": "Standards audit not expected for this profile." }
+  ],
+  "findings": []
+}
