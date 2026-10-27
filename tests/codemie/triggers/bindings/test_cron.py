@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import threading
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
@@ -1074,17 +1075,34 @@ def test_tracked_run_sync_failure(mock_run_cls, mock_repo_cls):
 
 @patch("codemie.repository.scheduler_run_repository.SchedulerRunRepository")
 @patch("codemie.rest_api.models.scheduler_run.SchedulerRun")
-def test_tracked_run_sync_lock_skip_recorded_as_completed(mock_run_cls, mock_repo_cls):
-    """Lock-skip actors return None — should still produce a completed record."""
+def test_tracked_run_sync_skipped_outcome_recorded_as_skipped(mock_run_cls, mock_repo_cls):
     mock_repo = mock_repo_cls.return_value
-    mock_run = MagicMock(id="run-3")
-    mock_repo.create.return_value = mock_run
+    mock_repo.create.return_value = MagicMock(id="run-3")
 
-    actor = MagicMock(return_value=None)  # mimics lock-skip
-    _tracked_run_sync(actor, scheduler_id="sched-3")
+    actor = MagicMock(return_value={"status": "skipped", "reason": "lock held"})
+    _tracked_run_sync(actor, scheduler_id="sched-3", payload=MagicMock())
 
     update_fields = mock_repo.update.call_args[0][1]
-    assert update_fields["status"] == "completed"
+    assert update_fields["status"] == "skipped"
+    assert update_fields["result_data"] == {"content": "lock held"}
+    assert "finished_at" in update_fields
+    assert "duration_ms" in update_fields
+    assert "metrics" not in update_fields
+
+
+@patch("codemie.repository.scheduler_run_repository.SchedulerRunRepository")
+@patch("codemie.rest_api.models.scheduler_run.SchedulerRun")
+def test_tracked_run_sync_failed_outcome_recorded_as_failed(mock_run_cls, mock_repo_cls):
+    mock_repo = mock_repo_cls.return_value
+    mock_repo.create.return_value = MagicMock(id="run-3b")
+
+    actor = MagicMock(return_value={"status": "failed", "reason": "no credentials"})
+    _tracked_run_sync(actor, scheduler_id="sched-3b", payload=MagicMock())
+
+    update_fields = mock_repo.update.call_args[0][1]
+    assert update_fields["status"] == "failed"
+    assert update_fields["error_data"] == {"message": "no credentials", "type": "ReindexNotStarted"}
+    assert "duration_ms" in update_fields
 
 
 # ── _extract_datasource_metrics tests ───────────────────────────────────────
@@ -1274,3 +1292,89 @@ def test_knowledge_base_jobs_use_tracked_run_sync(index_type_str, actor_name, ta
     assert kwargs["actor_fn"].__name__ == actor_name
     assert kwargs["scheduler_id"] == "job-kb"
     assert kwargs["resource_id"] == "job-kb"
+
+
+# ── __on_job_event run-row tests ─────────────────────────────────────────────
+
+
+def _cron_with_job(job_id="job-1"):
+    cron = Cron()
+    cron.jobs[job_id] = MagicMock()
+    return cron
+
+
+def _fire(cron, event):
+    """Dispatch a listener event, then wait for the off-loop row write to finish."""
+    cron._Cron__on_job_event(event)
+    cron._dropped_run_executor.shutdown(wait=True)
+
+
+@pytest.mark.parametrize(
+    "event_code_name, content_word",
+    [("EVENT_JOB_MAX_INSTANCES", "in progress"), ("EVENT_JOB_MISSED", "missed")],
+)
+@patch("codemie.repository.scheduler_run_repository.SchedulerRunRepository")
+def test_job_event_dropped_run_creates_skipped_row(mock_repo_cls, event_code_name, content_word):
+    from apscheduler import events
+
+    scheduled_for = datetime(2026, 1, 1, 12, 0, tzinfo=pytz.utc)
+    event = MagicMock(code=getattr(events, event_code_name), job_id="job-1", scheduled_run_time=scheduled_for)
+
+    _fire(_cron_with_job(), event)
+
+    mock_repo_cls.return_value.create.assert_called_once()
+    run = mock_repo_cls.return_value.create.call_args[0][0]
+    assert run.status == "skipped"
+    assert run.trigger == "scheduled"
+    assert run.scheduler_id == "job-1"
+    assert run.input_data == {"resourceId": "job-1"}
+    assert run.duration_ms == 0
+    assert content_word in run.result_data["content"]
+    assert run.finished_at == run.started_at
+    if event_code_name == "EVENT_JOB_MISSED":
+        assert run.started_at == scheduled_for
+
+
+@pytest.mark.parametrize("job_id", ["unregistered", "internal-watch"])
+@patch("codemie.repository.scheduler_run_repository.SchedulerRunRepository")
+def test_job_event_for_job_not_in_registry_creates_no_row(mock_repo_cls, job_id):
+    from apscheduler.events import EVENT_JOB_MAX_INSTANCES
+
+    _fire(_cron_with_job(), MagicMock(code=EVENT_JOB_MAX_INSTANCES, job_id=job_id))
+
+    mock_repo_cls.return_value.create.assert_not_called()
+
+
+@patch("codemie.triggers.bindings.cron.logger")
+@patch("codemie.repository.scheduler_run_repository.SchedulerRunRepository")
+def test_job_event_swallows_repository_errors(mock_repo_cls, mock_logger):
+    from apscheduler.events import EVENT_JOB_MAX_INSTANCES
+
+    mock_repo_cls.return_value.create.side_effect = RuntimeError("db down")
+
+    _fire(_cron_with_job(), MagicMock(code=EVENT_JOB_MAX_INSTANCES, job_id="job-1"))
+
+    mock_logger.error.assert_called_once()
+
+
+@patch("codemie.repository.scheduler_run_repository.SchedulerRunRepository")
+def test_job_event_row_write_runs_off_the_listener_thread(mock_repo_cls):
+    from apscheduler.events import EVENT_JOB_MAX_INSTANCES
+
+    threads = []
+    mock_repo_cls.return_value.create.side_effect = lambda run: threads.append(threading.current_thread())
+
+    _fire(_cron_with_job(), MagicMock(code=EVENT_JOB_MAX_INSTANCES, job_id="job-1"))
+
+    assert threads
+    assert threads[0] is not threading.current_thread()
+
+
+@patch("codemie.repository.scheduler_run_repository.SchedulerRunRepository")
+def test_job_event_error_creates_no_row(mock_repo_cls):
+    from apscheduler.events import EVENT_JOB_ERROR
+
+    event = MagicMock(code=EVENT_JOB_ERROR, job_id="job-1", scheduled_run_time="00:00", exception=ValueError("x"))
+    _cron_with_job()._Cron__on_job_event(event)
+
+    mock_repo_cls.return_value.create.assert_not_called()

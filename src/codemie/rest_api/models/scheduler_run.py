@@ -32,6 +32,7 @@ class SchedulerRunStatus(StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    SKIPPED = "skipped"
 
 
 class SchedulerRun(SQLModel, table=True):

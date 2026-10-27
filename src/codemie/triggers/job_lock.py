@@ -92,6 +92,11 @@ def datasource_job_lock(datasource_id: str):
         yield lock.acquired
 
 
+def reindex_outcome(status: str, reason: str) -> dict:
+    """Outcome an actor returns when it did not reindex; ``_tracked_run_sync`` records it."""
+    return {"status": status, "reason": reason}
+
+
 def with_datasource_job_lock(func):
     """Run a datasource actor only if no other process is reindexing that datasource.
 
@@ -108,7 +113,7 @@ def with_datasource_job_lock(func):
                 "Skipping %s - Elasticsearch is not configured (RETRIEVAL_BACKEND=none or ELASTIC_URL unset)",
                 func.__name__,
             )
-            return None
+            return reindex_outcome("skipped", "Elasticsearch is not configured")
 
         # The scheduler dispatches reindex actors with a keyword argument
         # (kwargs={"payload": payload}) while the stale-indexing watchdog calls
@@ -131,7 +136,7 @@ def with_datasource_job_lock(func):
                     func.__name__,
                     datasource_id,
                 )
-                return None
+                return reindex_outcome("skipped", "Datasource is already being reindexed by another process")
 
             logger.info("Datasource job lock acquired: datasource_id=%s job=%s", datasource_id, func.__name__)
             return func(*args, **kwargs)

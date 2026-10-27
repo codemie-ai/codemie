@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "task": "Record silent no-op scheduled datasource reindex runs (job lock held, missing config/credentials, ES not configured) as skipped/failed instead of completed, and write scheduler_run rows for APScheduler max-instances/missed events.",
+  "generated": "2026-10-20T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 18,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Touches the cron binding (_tracked_run_sync and the APScheduler event listener), the shared with_datasource_job_lock decorator (about 13 decorated actors plus the stale-indexing watchdog), the datasource actors' early-return paths, and the SchedulerRun model/repository status handling. Shared utility involved, but no new subsystem." },
+    { "dimension": "technical_risk", "reason": "Closest pattern is _tracked_run's retval-dict enrichment, but it does not cover the skip signal on the shared decorator contract (every caller currently gets None for done and skipped alike). The listener-written DB row is a new execution context with no test, and the enumerated variant cases (lock held, missing creds, ES not configured, concurrency timeout, max-instances, missed) have no existing test template. Rollback is trivial (no schema change)." }
+  ],
+  "red_flags_applied": [
+    "Component Scope held at L: touches a core shared utility (with_datasource_job_lock) used by about 13 actors and the watchdog",
+    "Technical Risk at L: new DB write from the APScheduler event listener, and enumerated edge/error variants with no covering test template"
+  ],
+  "split_recommendation": null
+}

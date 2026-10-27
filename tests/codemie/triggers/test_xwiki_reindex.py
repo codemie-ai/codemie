@@ -70,7 +70,7 @@ def test_job_lock_is_applied_to_reindex_xwiki():
     ):
         result = reindex_xwiki(_payload())
 
-    assert result is None
+    assert result["status"] == "skipped"
     manager.run.assert_not_called()
 
 

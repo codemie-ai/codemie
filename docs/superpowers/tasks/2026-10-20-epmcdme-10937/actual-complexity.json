@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "generated": "2026-10-20T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 16,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 8,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Touches the shared job_lock decorator and reindex_outcome helper, all 11 datasource actors in triggers/actors/datasource.py, the _tracked_run_sync outcome handling and a new off-loop dropped-run recorder in the cron binding, plus the SchedulerRunStatus enum in the scheduler_run model." },
+    { "dimension": "file_change_estimate", "reason": "8 files changed (4 source, 4 test), all modifications, across src/codemie/triggers, src/codemie/rest_api/models and tests/codemie/triggers; diffstat 244 insertions, 42 deletions." }
+  ],
+  "red_flags_applied": [
+    "Component Scope held at L: touches core shared job_lock utility used by every datasource actor and the scheduler listener path"
+  ],
+  "split_recommendation": null
+}

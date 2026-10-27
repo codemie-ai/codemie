@@ -985,3 +985,53 @@ class TestReindexActorStampsTriggeredAt:
 
         mock_stamp.assert_called_once_with(payload.index_info.id)
         payload.index_info.update.assert_not_called()
+
+
+class TestEarlyReturnsReportFailedOutcome:
+    """Actors that cannot start return a failed outcome so the scheduler run is not recorded as completed."""
+
+    @staticmethod
+    def _payload(**index_overrides):
+        payload = MagicMock()
+        payload.index_info = MagicMock(id="idx-1", index_type="knowledge_base_confluence", **index_overrides)
+        payload.resource_id = "rid"
+        payload.project_name = "proj"
+        payload.resource_name = "res"
+        return payload
+
+    @patch.object(IndexInfo, "stamp_reindex_triggered_at")
+    def test_confluence_without_index_info_returns_failed(self, _stamp, mock_logger):
+        from codemie.triggers.actors.datasource import reindex_confluence
+
+        outcome = reindex_confluence.__wrapped__(self._payload(confluence=None))
+
+        assert outcome["status"] == "failed"
+        assert "Confluence index not found" in outcome["reason"]
+
+    @patch.object(IndexInfo, "stamp_reindex_triggered_at")
+    @patch("codemie.triggers.actors.datasource.SettingsService")
+    def test_confluence_without_creds_returns_failed_and_logs_five_args(self, mock_settings, _stamp, mock_logger):
+        from codemie.triggers.actors.datasource import REINDEX_FAILED_MSG, reindex_confluence
+
+        mock_settings.get_confluence_creds.return_value = None
+        payload = self._payload(confluence=MagicMock())
+
+        outcome = reindex_confluence.__wrapped__(payload)
+
+        assert outcome == {"status": "failed", "reason": "Confluence credentials not found for project 'proj'."}
+        args = mock_logger.error.call_args[0]
+        assert len(args) == 6
+        assert args[0] == REINDEX_FAILED_MSG
+        assert args[1] == payload.index_info.index_type
+
+    @patch.object(IndexInfo, "stamp_reindex_triggered_at")
+    @patch("codemie.triggers.actors.datasource.SVNRepo")
+    def test_svn_missing_repo_returns_failed(self, mock_svn_repo, _stamp, mock_logger):
+        from codemie.triggers.actors.datasource import reindex_svn
+
+        mock_svn_repo.get_by_fields.return_value = None
+
+        outcome = reindex_svn.__wrapped__(self._payload())
+
+        assert outcome["status"] == "failed"
+        assert "SVN repository" in outcome["reason"]

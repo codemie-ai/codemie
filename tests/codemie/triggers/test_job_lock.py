@@ -114,7 +114,8 @@ def test_actor_skipped_when_lock_held_elsewhere():
         result = reindex(payload=_payload())
 
     assert calls == [], "actor must not run when another process holds the lock"
-    assert result is None
+    assert result["status"] == "skipped"
+    assert result["reason"]
 
 
 def test_actor_accepts_keyword_dispatch():
@@ -235,7 +236,8 @@ def test_actor_skipped_when_retrieval_disabled():
                 result = reindex(payload=_payload())
 
     assert calls == [], "actor must not run when the retrieval backend is disabled"
-    assert result is None
+    assert result["status"] == "skipped"
+    assert result["reason"]
 
 
 def test_retrieval_guard_runs_before_the_lock_is_taken():
@@ -293,7 +295,7 @@ def test_retrieval_guard_covers_positional_index_info_dispatch():
                 result = resume(index_info)
 
     assert calls == []
-    assert result is None
+    assert result["status"] == "skipped"
 
 
 def test_retrieval_guard_takes_precedence_over_missing_datasource_id():
@@ -317,7 +319,7 @@ def test_retrieval_guard_takes_precedence_over_missing_datasource_id():
             result = reindex(payload=payload)
 
     assert calls == []
-    assert result is None
+    assert result["status"] == "skipped"
 
 
 # ---------------------------------------------------------------------------
@@ -334,7 +336,7 @@ def test_real_reindex_actor_skips_when_retrieval_disabled():
             with patch("codemie.triggers.job_lock.logger"):
                 result = actors.reindex_code(payload=_payload())
 
-    assert result is None
+    assert result["status"] == "skipped"
     index_info.stamp_reindex_triggered_at.assert_not_called()
 
 
@@ -351,7 +353,7 @@ def test_real_resume_stale_datasource_skips_when_retrieval_disabled():
             with patch("codemie.triggers.job_lock.logger"):
                 result = actors.resume_stale_datasource(index_info)
 
-    assert result is None
+    assert result["status"] == "skipped"
     patched_index_info.find_by_id.assert_not_called()
 
 
@@ -377,7 +379,7 @@ def test_actor_skipped_when_backend_selected_but_elastic_url_blank():
                     result = reindex(payload=_payload())
 
     assert calls == [], "actor must not run (and no ES client must be built) when ELASTIC_URL is blank"
-    assert result is None
+    assert result["status"] == "skipped"
 
 
 # ---------------------------------------------------------------------------

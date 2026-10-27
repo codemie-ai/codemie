@@ -46,7 +46,7 @@ from codemie.datasource.sharepoint.sharepoint_datasource_processor import (
 from codemie.rest_api.models.settings import SharePointCredentials
 from codemie.datasource.xray.xray_datasource_processor import XrayDatasourceProcessor
 from codemie.service.settings.settings import SettingsService
-from codemie.triggers.job_lock import with_datasource_job_lock
+from codemie.triggers.job_lock import reindex_outcome, with_datasource_job_lock
 from codemie.triggers.trigger_models import (
     AzureDevOpsWikiReindexTask,
     AzureDevOpsWorkItemReindexTask,
@@ -102,7 +102,7 @@ def reindex_code(payload: CodeReindexTask):
             payload.resource_name,
             error_msg,
         )
-        return
+        return reindex_outcome("failed", error_msg)
 
     processor = CodeDatasourceProcessor.create_processor(
         git_repo=app_repo,
@@ -151,7 +151,7 @@ def reindex_svn(payload: SVNReindexTask):
             payload.resource_name,
             error_msg,
         )
-        return
+        return reindex_outcome("failed", error_msg)
 
     processor = SVNDatasourceProcessor.create_processor(
         svn_repo=svn_repo,
@@ -205,7 +205,7 @@ def reindex_jira(payload: JiraReindexTask):
             payload.resource_name,
             error_msg,
         )
-        return
+        return reindex_outcome("failed", error_msg)
 
     processor = JiraDatasourceProcessor(
         datasource_name=payload.resource_name,
@@ -267,7 +267,7 @@ def reindex_confluence(payload: ConfluenceReindexTask):
             payload.resource_name,
             error_msg,
         )
-        return
+        return reindex_outcome("failed", error_msg)
 
     confluence_creds = SettingsService.get_confluence_creds(
         user_id=payload.user.id, project_name=payload.project_name, setting_id=payload.index_info.setting_id
@@ -276,12 +276,13 @@ def reindex_confluence(payload: ConfluenceReindexTask):
         error_msg = f"Confluence credentials not found for project '{payload.project_name}'."
         logger.error(
             REINDEX_FAILED_MSG,
+            payload.index_info.index_type,
             payload.resource_id,
             payload.project_name,
             payload.resource_name,
             error_msg,
         )
-        return
+        return reindex_outcome("failed", error_msg)
 
     index_kb_config = IndexKnowledgeBaseConfluenceConfig.from_confluence_index_info(confluence_index_info)
 
@@ -342,7 +343,7 @@ def reindex_google(payload: GoogleReindexTask):
             payload.resource_name,
             error_msg,
         )
-        return
+        return reindex_outcome("failed", error_msg)
 
     datasource_processor = GoogleDocDatasourceProcessor(
         datasource_name=payload.index_info.repo_name,
@@ -401,7 +402,7 @@ def reindex_git_faq(payload: GitFaqReindexTask):
             payload.resource_name,
             error_msg,
         )
-        return
+        return reindex_outcome("failed", error_msg)
 
     datasource_processor = GitFaqDatasourceProcessor(
         datasource_name=payload.index_info.repo_name,
@@ -464,7 +465,7 @@ def reindex_azure_devops_wiki(payload: AzureDevOpsWikiReindexTask):
             payload.resource_name,
             error_msg,
         )
-        return
+        return reindex_outcome("failed", error_msg)
 
     azure_devops_creds = SettingsService.get_azure_devops_creds(
         user_id=payload.user.id,
@@ -480,7 +481,7 @@ def reindex_azure_devops_wiki(payload: AzureDevOpsWikiReindexTask):
             payload.resource_name,
             error_msg,
         )
-        return
+        return reindex_outcome("failed", error_msg)
 
     processor = AzureDevOpsWikiDatasourceProcessor(
         datasource_name=payload.resource_name,
@@ -539,7 +540,7 @@ def reindex_azure_devops_work_item(payload: AzureDevOpsWorkItemReindexTask):
             payload.resource_name,
             error_msg,
         )
-        return
+        return reindex_outcome("failed", error_msg)
 
     azure_devops_creds = SettingsService.get_azure_devops_creds(
         user_id=payload.user.id,
@@ -555,7 +556,7 @@ def reindex_azure_devops_work_item(payload: AzureDevOpsWorkItemReindexTask):
             payload.resource_name,
             error_msg,
         )
-        return
+        return reindex_outcome("failed", error_msg)
 
     processor = AzureDevOpsWorkItemDatasourceProcessor(
         datasource_name=payload.resource_name,
@@ -609,7 +610,7 @@ def reindex_xray(payload: XrayReindexTask):
             payload.resource_name,
             error_msg,
         )
-        return
+        return reindex_outcome("failed", error_msg)
 
     processor = XrayDatasourceProcessor(
         datasource_name=payload.resource_name,
@@ -662,7 +663,7 @@ def reindex_sharepoint(payload: SharePointReindexTask):
             payload.resource_name,
             error_msg,
         )
-        return
+        return reindex_outcome("failed", error_msg)
 
     try:
         sharepoint_creds = SettingsService.get_sharepoint_creds(
@@ -680,7 +681,7 @@ def reindex_sharepoint(payload: SharePointReindexTask):
             payload.resource_name,
             error_msg,
         )
-        return
+        return reindex_outcome("failed", error_msg)
 
     processor = SharePointDatasourceProcessor(
         datasource_name=payload.resource_name,
@@ -746,7 +747,7 @@ def reindex_xwiki(payload: XWikiReindexTask):
             payload.resource_name,
             error_msg,
         )
-        return
+        return reindex_outcome("failed", error_msg)
 
     xwiki_creds = SettingsService.get_xwiki_creds(
         user_id=payload.user.id,
@@ -763,7 +764,7 @@ def reindex_xwiki(payload: XWikiReindexTask):
             payload.resource_name,
             error_msg,
         )
-        return
+        return reindex_outcome("failed", error_msg)
 
     processor = XWikiDatasourceProcessor(
         datasource_name=payload.resource_name,

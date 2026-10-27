@@ -1,0 +1,33 @@
+{
+  "decision": "approve",
+  "rationale": "CR-001 resolved: cron.py now only submits the scheduler_run insert to a single-worker ThreadPoolExecutor from the listener (submit wrapped in try/except, write wrapped in its own try/except, executor shut down in shutdown()), so the event loop no longer blocks; a new test asserts the write runs off the listener thread. No new findings discovered by design.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "story-ac", "item": "1. Held advisory lock recorded skipped with reason, not completed", "status": "pass", "notes": "job_lock.py + cron.py skipped branch; tested"},
+    {"kind": "story-ac", "item": "2. Elasticsearch not configured recorded skipped with reason", "status": "pass", "notes": "job_lock.py returns skipped outcome; tested"},
+    {"kind": "story-ac", "item": "3. Actor early return on missing info/credentials/repo recorded failed with reason", "status": "pass", "notes": "datasource.py returns reindex_outcome failed; error_data type ReindexNotStarted"},
+    {"kind": "story-ac", "item": "4. Normal scheduled run still completed with metrics", "status": "pass", "notes": "else-branch unchanged"},
+    {"kind": "story-ac", "item": "5. EVENT_JOB_MAX_INSTANCES creates skipped row with in-progress reason", "status": "pass", "notes": "cron.py __record_dropped_run; tested"},
+    {"kind": "story-ac", "item": "6. EVENT_JOB_MISSED creates skipped row with missed reason", "status": "pass", "notes": "started_at from scheduled_run_time; tested"},
+    {"kind": "story-ac", "item": "7. Unregistered/internal job ids create no row", "status": "pass", "notes": "early return when job_id not in self.jobs; tested"},
+    {"kind": "story-ac", "item": "8. DB failure in listener logged, not raised", "status": "pass", "notes": "try/except Exception with logger.error; tested"},
+    {"kind": "story-ac", "item": "9. reindex_confluence log call arity fixed", "status": "pass", "notes": "5 args for 5 placeholders; tested"},
+    {"kind": "story-ac", "item": "10. Stats, SchedulerRunStats and successRate unchanged", "status": "pass", "notes": "only SKIPPED enum added"},
+    {"kind": "story-ac", "item": "11. Manual reindex, watchdog, last_reindex_triggered_at unchanged", "status": "pass", "notes": "resume_* and manual paths untouched"},
+    {"kind": "spec", "item": "Outcome contract: None for ran, dict skipped|failed with reason", "status": "pass", "notes": "reindex_outcome helper"},
+    {"kind": "spec", "item": "_tracked_run_sync skipped/failed field writes", "status": "pass", "notes": "no metrics on skipped; ReindexNotStarted on failed"},
+    {"kind": "spec", "item": "Listener row fields", "status": "pass", "notes": "status skipped, trigger scheduled, duration_ms 0, resourceId input"},
+    {"kind": "spec", "item": "skipped added to SchedulerRunStatus, no migration", "status": "pass", "notes": "SKIPPED enum only"},
+    {"kind": "spec", "item": "Non-goals respected", "status": "pass", "notes": "no UI/API/stats/schema change"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "3 commit subjects in the review range all match the documented EPMCDME-####: Description format"},
+    {"kind": "code-quality", "status": "pass", "notes": "8 changed files checked against code-quality.md; new code is typed, run-tracking stays in cron.py, no new source files."},
+    {"kind": "security", "status": "pass", "notes": "No auth, input-parsing or secret handling touched; persisted reasons are fixed strings, actor messages, or str(exc)."}
+  ],
+  "findings": [],
+  "finding_status": [
+    {"id": "CR-001", "status": "resolved", "notes": "cron.py:282-310 listener only submits to _dropped_run_executor; DB insert runs in worker thread; errors logged not raised; test_job_event_row_write_runs_off_the_listener_thread added."}
+  ]
+}

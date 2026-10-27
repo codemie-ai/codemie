@@ -173,14 +173,19 @@ def _tracked_run_sync(actor_fn, scheduler_id: str, resource_id: str | None = Non
     run = repo.create(run)
 
     try:
-        actor_fn(**kwargs)
+        outcome = actor_fn(**kwargs)
         finished_at = datetime.now(timezone.utc)
         duration_ms = int((finished_at - started_at).total_seconds() * 1000)
-        metrics = _extract_datasource_metrics(kwargs.get("payload"))
-        repo.update(
-            run.id,
-            {"status": "completed", "finished_at": finished_at, "duration_ms": duration_ms, "metrics": metrics},
-        )
+        timing = {"finished_at": finished_at, "duration_ms": duration_ms}
+        outcome_status = outcome.get("status") if isinstance(outcome, dict) else None
+        if outcome_status == "skipped":
+            repo.update(run.id, {"status": "skipped", **timing, "result_data": {"content": outcome.get("reason")}})
+        elif outcome_status == "failed":
+            error_data = {"message": outcome.get("reason"), "type": "ReindexNotStarted"}
+            repo.update(run.id, {"status": "failed", **timing, "error_data": error_data})
+        else:
+            metrics = _extract_datasource_metrics(kwargs.get("payload"))
+            repo.update(run.id, {"status": "completed", **timing, "metrics": metrics})
     except Exception as exc:
         finished_at = datetime.now(timezone.utc)
         duration_ms = int((finished_at - started_at).total_seconds() * 1000)
@@ -238,6 +243,8 @@ class Cron:
         self._resuming_ids: set[str] = set()
         self._resuming_lock = threading.Lock()
         self._watchdog_executor = ThreadPoolExecutor(max_workers=5, thread_name_prefix="stale-watchdog")
+        # APScheduler listeners run on the event loop thread, so the DB insert is handed off.
+        self._dropped_run_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="dropped-run-recorder")
 
     async def start_async(self):
         """Start the trigger engine asynchronously"""
@@ -272,8 +279,37 @@ class Cron:
         if config.STALE_INDEXING_WATCHDOG_ENABLED:
             self.scheduler.add_job(self.__watch_stale_indexing, "interval", seconds=60)
 
-    @staticmethod
-    def __on_job_event(event):
+    def __record_dropped_run(self, event, reason: str):
+        """Queue a ``skipped`` scheduler_run row for a run APScheduler dropped; never raises or blocks."""
+        if event.job_id not in self.jobs:
+            return
+        try:
+            self._dropped_run_executor.submit(self.__write_dropped_run, event, reason)
+        except Exception as exc:  # e.g. executor already shut down
+            logger.error("Failed to record dropped scheduled run: job_id=%s error=%s", event.job_id, exc)
+
+    def __write_dropped_run(self, event, reason: str):
+        try:
+            from codemie.repository.scheduler_run_repository import SchedulerRunRepository
+            from codemie.rest_api.models.scheduler_run import SchedulerRun
+
+            started_at = getattr(event, "scheduled_run_time", None) or datetime.now(timezone.utc)
+            SchedulerRunRepository().create(
+                SchedulerRun(
+                    scheduler_id=event.job_id,
+                    status="skipped",
+                    trigger="scheduled",
+                    started_at=started_at,
+                    finished_at=started_at,
+                    duration_ms=0,
+                    input_data={"resourceId": event.job_id},
+                    result_data={"content": reason},
+                )
+            )
+        except Exception as exc:
+            logger.error("Failed to record dropped scheduled run: job_id=%s error=%s", event.job_id, exc)
+
+    def __on_job_event(self, event):
         """Report scheduled runs that did not happen.
 
         Without this, a run dropped because the pool was busy looked exactly like the
@@ -287,11 +323,13 @@ class Cron:
                 event.job_id,
                 event.scheduled_run_time,
             )
+            self.__record_dropped_run(event, "Scheduled run missed: dropped without running")
         elif event.code == EVENT_JOB_MAX_INSTANCES:
             logger.warning(
                 "Scheduled job SKIPPED - previous run still in progress: job_id=%s",
                 event.job_id,
             )
+            self.__record_dropped_run(event, "Skipped: previous run still in progress")
         elif event.code == EVENT_JOB_ERROR:
             # Deliberately no exc_info: LogFormatter replaces the message with the
             # traceback whenever it is set (configs/logger.py), which would hide the
@@ -332,6 +370,7 @@ class Cron:
                 in_flight,
             )
         self._watchdog_executor.shutdown(wait=False)
+        self._dropped_run_executor.shutdown(wait=False)
 
         # Shutdown scheduler
         try:
