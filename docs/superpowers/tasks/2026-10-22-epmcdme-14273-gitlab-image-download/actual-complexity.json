@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "generated": "2026-10-22T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 17,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 7,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Three components change: the GitlabTool execute and output pipeline, a new GitLab image_download module (GitlabMultimodalResponse, MIME detection, bounded read, signature check), and a new shared base image_constants module that the Jira tool now imports. Base M (3 components, one tool layer), bumped for touching a shared base utility." },
+    { "dimension": "technical_risk", "reason": "Closest pattern is the existing Jira tool image download. The new work adds security-sensitive aspects that pattern does not cover: a same-origin check on absolute URLs so the access token never reaches a foreign host, a streamed body capped at 5 MB, and magic-byte validation against the declared MIME. A content_and_artifact output-format change and edge-case test suites (oversized, empty, mismatched signature, extension fallback) also count toward L." },
+    { "dimension": "file_change_estimate", "reason": "Diffstat: 7 files, 654 insertions, 5 deletions. 3 modified (gitlab tools.py, gitlab tools_vars.py, jira tools.py) and 4 new (base/image_constants.py, gitlab/image_download.py, 2 test modules) across 4 directories. In actual mode, 7 files maps to L." },
+    { "dimension": "requirements_clarity", "reason": "The implementation reflects well-defined requirements: an explicit 5 MB limit, a fixed MIME allowlist and defined skip notices. Calibration: bundled M example epmcdme-10202 (agent with custom tool, total 15) agrees on the band. This change carries more risk but has clearer requirements." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from M to L: touches core shared utilities (new codemie_tools.base.image_constants consumed by Jira and GitLab tools)",
+    "Technical Risk bumped from M to L: security-sensitive work (access token origin check, bounded untrusted download, content signature validation)"
+  ],
+  "split_recommendation": null
+}

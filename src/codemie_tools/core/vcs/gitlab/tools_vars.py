@@ -51,6 +51,19 @@ GITLAB_TOOL = ToolMetadata(
 
         This format provides complete visibility into the HTTP transaction including status and response data.
 
+        IMAGE RESPONSES:
+        A successful GET whose response is an image (PNG, JPEG, GIF or WebP) returns the status line with
+        "Image downloaded (<mime type>, <size> bytes)" and attaches the image itself so you can view it.
+        Images larger than 5 MB are skipped with a notice instead. Use this to view images referenced in issues,
+        merge requests or wikis, through the API endpoint:
+        {"query": {"method": "GET", "url": "/api/v4/projects/:id/uploads/:secret/:filename"}}
+        Upload links in Markdown look like /<namespace>/<project>/uploads/<secret>/<filename> or
+        /-/project/<id>/uploads/<secret>/<filename>. Do not request the web upload link itself: the access token is
+        not accepted there and GitLab answers 404. Take <secret> and <filename> from the link and use the project
+        id, or the URL-encoded "<namespace>/<project>" path, as :id.
+        `url` may also be an absolute URL, but only on the same origin (scheme, host and port) as the configured
+        GitLab URL; absolute URLs on any other origin are rejected without a request.
+
         SECURITY:
         Authorization headers are automatically managed and cannot be overridden via custom_headers.
 
@@ -92,6 +105,11 @@ GITLAB_TOOL = ToolMetadata(
         - Complete HTTP transaction details including status codes
         - Full response body content for debugging and analysis
         - Automatic handling of different request types (GET vs POST/PUT/DELETE)
+
+        IMAGE RESPONSES:
+        - Images (PNG, JPEG, GIF, WebP) up to 5 MB, such as uploads attached to issues and merge requests, are downloaded so the assistant can view them
+        - Example: {"method": "GET", "url": "/api/v4/projects/:id/uploads/:secret/:filename"}; web upload links (/<namespace>/<project>/uploads/... or /-/project/<id>/uploads/...) are fetched through this API form
+        - Absolute URLs are accepted only on the same origin (scheme, host and port) as the configured GitLab URL; other origins are rejected without a request
 
         Use this tool when you need direct access to GitLab's REST API endpoints that may not be covered by other specialized GitLab tools.
         """.strip(),

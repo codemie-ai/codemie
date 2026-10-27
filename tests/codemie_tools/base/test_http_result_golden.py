@@ -273,9 +273,7 @@ class TestGitlabGolden:
         with patch("requests.request", return_value=_requests_response(200, "OK", JSON_BODY)):
             result = gitlab_tool.execute(query)
 
-        assert (
-            str(result) == 'HTTP: GET https://gitlab.example.com//api/v4/projects -> 200 OK {"id": 1, "name": "test"}'
-        )
+        assert str(result) == 'HTTP: GET https://gitlab.example.com/api/v4/projects -> 200 OK {"id": 1, "name": "test"}'
 
     def test_execute_structured_gives_parsed_body_and_status(self, gitlab_tool: GitlabTool) -> None:
         query = {"method": "GET", "url": "/api/v4/projects", "method_arguments": {}}

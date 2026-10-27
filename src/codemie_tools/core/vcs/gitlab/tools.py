@@ -15,6 +15,7 @@
 import json
 import logging
 from typing import Type, Any, Union
+from urllib.parse import urlparse
 
 import requests
 from langchain_core.tools import ToolException
@@ -23,6 +24,7 @@ from pydantic import BaseModel, Field
 from codemie_tools.base.codemie_tool import CodeMieTool
 from codemie_tools.base.http_result import HttpResult
 from codemie_tools.core.vcs.utils import _build_headers
+from .image_download import GitlabMultimodalResponse, build_image_response, detect_image_mime
 from .models import GitlabConfig
 from .tools_vars import GITLAB_TOOL
 
@@ -77,6 +79,7 @@ class GitlabInput(BaseModel):
 class GitlabTool(CodeMieTool):
     script_callable = True
     name: str = GITLAB_TOOL.name
+    response_format: str = "content_and_artifact"
     args_schema: Type[BaseModel] = GitlabInput
     config: GitlabConfig
     description: str = GITLAB_TOOL.description
@@ -94,7 +97,7 @@ class GitlabTool(CodeMieTool):
         return self._http_method_is_safe(query)
 
     def _make_request(
-        self, method: str, url: str, headers: dict[str, str], method_arguments: dict
+        self, method: str, url: str, headers: dict[str, str], method_arguments: dict, stream: bool = False
     ) -> requests.Response:
         """
         Make HTTP request with appropriate parameters based on method.
@@ -104,15 +107,37 @@ class GitlabTool(CodeMieTool):
             url: Request URL
             headers: Request headers
             method_arguments: Request parameters/data
+            stream: Defer reading a GET body, so an image body can be read with a size bound
 
         Returns:
             Response object
         """
         if method == "GET":
+            if stream:
+                return requests.request(method=method, url=url, headers=headers, params=method_arguments, stream=True)
             return requests.request(method=method, url=url, headers=headers, params=method_arguments)
         if method in {"POST", "PUT", "PATCH"}:
             return requests.request(method=method, url=url, headers=headers, json=method_arguments)
         return requests.request(method=method, url=url, headers=headers, data=method_arguments)
+
+    @staticmethod
+    def _origin_of(url: str) -> str:
+        parsed = urlparse(url)
+        return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
+
+    def _build_url(self, raw_url: str) -> str | None:
+        """Prefix a relative URL with the configured GitLab URL; accept an absolute one only on the same origin.
+
+        Returns ``None`` for an absolute URL whose scheme, host or port differs from the configured GitLab URL,
+        so the access token is never sent to a foreign origin.
+        """
+        if not str(raw_url).lower().startswith(("http://", "https://")):
+            return f"{self.config.url.rstrip('/')}/{str(raw_url).lstrip('/')}"
+        if self._origin_of(raw_url) != self._origin_of(self.config.url):
+            return None
+        parsed = urlparse(raw_url)
+        url = f"{self._origin_of(self.config.url)}{parsed.path}"
+        return f"{url}?{parsed.query}" if parsed.query else url
 
     def _validate_config(self) -> None:
         """Require `token` for PAT auth, but waive it for OAuth-backed configs.
@@ -182,13 +207,23 @@ class GitlabTool(CodeMieTool):
                 raise ToolException(
                     "GitLab tool: 'url' is required. Example: {\"method\": \"GET\", \"url\": \"/api/v4/user\", \"method_arguments\": {}}."
                 )
-            url = f"{self.config.url}/{query.get('url')}"
+            url = self._build_url(query.get('url'))
+            if url is None:
+                return (
+                    f"GitLab tool: absolute URL rejected, origin {self._origin_of(query.get('url'))} "
+                    f"does not match the configured GitLab origin {self._origin_of(self.config.url)}. "
+                    "Use a relative URL or an absolute URL on the configured GitLab host."
+                )
             method_arguments = query.get("method_arguments", {})
 
             custom_headers = query.get('custom_headers')
             access_token = self._resolve_access_token()
             headers = _build_headers(GITLAB_DEFAULT_HEADERS, access_token, custom_headers)
-            response = self._make_request(method, url, headers, method_arguments)
+            response = self._make_request(method, url, headers, method_arguments, stream=method == "GET")
+
+            image_mime = self._image_mime_for(method, response, url)
+            if image_mime:
+                return self._image_response(url, response, image_mime)
 
             http_result = HttpResult(method, url, response.status_code, response.reason, response.text, "spaced")
             logger.debug(str(http_result))
@@ -197,3 +232,30 @@ class GitlabTool(CodeMieTool):
         except (TypeError, json.JSONDecodeError) as e:
             logger.error(f"Failed to parse GitLab response: {e}")
             raise ToolException(f"Failed to parse GitLab response: {e}")
+
+    def _image_mime_for(self, method: str, response: requests.Response, url: str) -> str | None:
+        """The image MIME type of a successful GET response, or ``None`` when it is not an image."""
+        status_code = response.status_code
+        if method != "GET" or not isinstance(status_code, int) or not 200 <= status_code < 300:
+            return None
+        return detect_image_mime(response, url)
+
+    def _image_response(self, url: str, response: requests.Response, mime: str) -> GitlabMultimodalResponse:
+        """Wrap an image body as a base64 artifact, or a skip notice when it cannot be attached."""
+        status_line = f"HTTP: GET {url} -> {response.status_code} {response.reason}"
+        return build_image_response(status_line, response, mime)
+
+    def _limit_output_content(self, output: Any) -> Any:
+        """Token-limit only the text of an image response; the artifacts pass through unchanged."""
+        if isinstance(output, GitlabMultimodalResponse):
+            limited_text, token_count = super()._limit_output_content(output.text)
+            limited = GitlabMultimodalResponse(text=str(limited_text), image_artifacts=output.image_artifacts)
+            return limited, token_count
+        return super()._limit_output_content(output)
+
+    def _post_process_output_content(self, mcp_tool_output: Any, *args, **kwargs) -> Any:
+        """Return the ``(content, artifact)`` tuple that ``content_and_artifact`` requires."""
+        if isinstance(mcp_tool_output, GitlabMultimodalResponse):
+            text = super()._post_process_output_content(mcp_tool_output.text, *args, **kwargs)
+            return text, mcp_tool_output.image_artifacts or None
+        return super()._post_process_output_content(mcp_tool_output, *args, **kwargs), None

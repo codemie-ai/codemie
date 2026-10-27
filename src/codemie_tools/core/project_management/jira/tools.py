@@ -27,6 +27,7 @@ from langchain_core.language_models import BaseChatModel
 from codemie_tools.base.codemie_tool import CodeMieTool
 from codemie_tools.base.file_tool_mixin import FileToolMixin
 from codemie_tools.base.http_result import HttpResult
+from codemie_tools.base.image_constants import IMAGE_MIME_TYPES, MAX_IMAGE_SIZE_BYTES
 from codemie_tools.base.script_result import ScriptResult
 from codemie_tools.core.project_management.jira.attachment_mixin import JiraAttachmentMixin
 from codemie_tools.core.project_management.jira.models import JiraConfig
@@ -45,8 +46,6 @@ logger = logging.getLogger(__name__)
 JIRA_TEST_URL: str = "/rest/api/2/myself"
 JIRA_ERROR_MSG: str = "Access denied"
 
-IMAGE_MIME_TYPES: set[str] = {"image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"}
-MAX_IMAGE_SIZE_BYTES: int = 5 * 1024 * 1024  # 5 MB
 MAX_IMAGES_PER_RESPONSE: int = 5
 SINGLE_ISSUE_PATTERN: str = r"/rest/api/\d+/issue/[A-Za-z]+-\d+$"
 
