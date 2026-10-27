@@ -1,0 +1,13 @@
+{
+  "decision": "approve",
+  "rationale": "Lock-only pypdf bump 6.19.0 -> 6.21.2 verified against the diff; no spec existed so acceptance was skipped (low confidence). 4 edge-case candidates dismissed as noise: Poetry 2.1.2 header/specifier rewrites are PEP 440-equivalent, and the new pypdf brotli extra is optional and not requested by pyproject.toml.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "commit-format", "status": "na", "notes": "No standards audit expected for this profile." },
+    { "kind": "code-quality", "status": "na", "notes": "No standards audit expected for this profile." },
+    { "kind": "security", "status": "na", "notes": "No standards audit expected for this profile." }
+  ],
+  "findings": []
+}
