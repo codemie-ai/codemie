@@ -106,6 +106,7 @@ msgraph-sdk = "^1.0"
 exchangelib = "^5.5"
 boto3 = "^1.43.12"
 chardet = "^5.2.0"
+certifi = ">=2026.10.19"  # Security (EPMCDME-16205): GHSA-6q48-6c7w-9gw2 fixed in 2026.10.19
 elastic-transport = "8.17.1"
 elasticsearch = "8.19.3"
 gitpython = "~3.2.1"  # Security (EPMCDME-16305): pin ~3.2.1 to fix CVE-2026-114145 (GHSA-83vg-56qc-22m7; supersedes EPMCDME-15480 ~3.1.60 pin)

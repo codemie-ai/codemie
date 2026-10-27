@@ -1,0 +1,13 @@
+{
+  "decision": "approve",
+  "rationale": "Only the edge-case lens ran (compact profile, no spec, so acceptance was skipped and confidence is low). Its 3 findings were dismissed as noise: Poetry 2.1.2 lock header churn, cosmetic specifier rewrites, and an open-ended certifi lower bound that matches other entries in pyproject.toml. Nothing was deferred.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "commit-format", "status": "na", "notes": "Standards audit not part of this profile." },
+    { "kind": "code-quality", "status": "na", "notes": "Standards audit not part of this profile." },
+    { "kind": "security", "status": "na", "notes": "Standards audit not part of this profile." }
+  ],
+  "findings": []
+}
