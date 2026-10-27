@@ -809,7 +809,7 @@ _SESSION_DIMS_COLUMNS = (
     "git_commits", "tool_results", "schema_version", "activity_started_at", "summary_ts",
 )  # fmt: skip
 _NOT_ATTRS = (*_SESSION_DIMS_COLUMNS, "type", "timestamp", "session_id", "prompt_id", "event_id",
-              "counters_source", "identity_ts", "story_ts")  # fmt: skip
+              "counters_source", "tool_counters", "identity_ts", "story_ts")  # fmt: skip
 
 # Priority pairs, highest rank first; an unlisted value ranks lowest.
 _IDENTITY_RANKS = ("jwt", "git", "codemie_cli", "claude_account", "os")
@@ -1251,14 +1251,28 @@ _COUNTER_VALUES: tuple[tuple[str, str], ...] = (
 )  # fmt: skip
 
 
+# Tool counters a harvester adds subagent counts to: a fallback value includes the subagents, so a
+# summary that omits the field must not inherit it. The old value is kept only when the stored row
+# carries attrs.tool_counters = 'summary_only', written by a summary win under this rule: every value
+# then came from a summary. Rows stored earlier have no marker even when counters_source is 'summary'
+# (it can sit on fallback values), so their omitted fields become NULL and are not repaired here.
+_SUMMARY_ONLY_COUNTERS = ("tool_calls", "tool_errors", "tools")
+_STORED_FROM_SUMMARY = "(sd.attrs->>'tool_counters' = 'summary_only')"
+
+
 def _counter_set(column: str) -> str | None:
     """The merge of a counter column, or None for a column that is not one."""
     written = f"coalesce(EXCLUDED.{column}, sd.{column})"
-    if column in dict(_COUNTERS_FROM_ROLLUPS):
-        return f"{column} = CASE WHEN {_SUMMARY_WINS} OR {_FALLBACK_RUNS} THEN {written} ELSE sd.{column} END"
-    if column in dict(_COUNTERS_FROM_RAW):
+    on_summary = written
+    if column in _SUMMARY_ONLY_COUNTERS:
+        on_summary = f"coalesce(EXCLUDED.{column}, CASE WHEN {_STORED_FROM_SUMMARY} THEN sd.{column} END)"
+    raw = column in dict(_COUNTERS_FROM_RAW)
+    if raw or column in dict(_COUNTERS_FROM_ROLLUPS):
+        fallback = f"({_FALLBACK_RUNS} AND NOT {_PURGED_TAIL})" if raw else _FALLBACK_RUNS
+        if on_summary == written:
+            return f"{column} = CASE WHEN {_SUMMARY_WINS} OR {fallback} THEN {written} ELSE sd.{column} END"
         return (
-            f"{column} = CASE WHEN {_SUMMARY_WINS} OR ({_FALLBACK_RUNS} AND NOT {_PURGED_TAIL}) THEN {written} "
+            f"{column} = CASE WHEN {_SUMMARY_WINS} THEN {on_summary} WHEN {fallback} THEN {written} "
             f"ELSE sd.{column} END"
         )
     fallback = {
@@ -1314,7 +1328,9 @@ _SESSION_DIMS_VALUES: tuple[tuple[str, str], ...] = (
         f"nullif(coalesce({_booleans(f'(lv.v - {_text_array(_VALUE_KEYS)})')}, '{{}}'::jsonb) "
         f"|| jsonb_strip_nulls(jsonb_build_object("
         f"'identity_ts', {_ts_text('id.ts')}, 'story_ts', {_ts_text('st.ts')}, "
-        "'counters_source', CASE WHEN sm.ts IS NOT NULL THEN 'summary' WHEN cur.summary_ts IS NULL THEN 'fallback' END"
+        "'counters_source', CASE WHEN sm.ts IS NOT NULL THEN 'summary' "
+        "WHEN cur.summary_ts IS NULL THEN 'fallback' END, "
+        "'tool_counters', CASE WHEN sm.ts IS NOT NULL THEN 'summary_only' END"
         ")), '{}'::jsonb)",
     ),
 )
@@ -1343,8 +1359,10 @@ def _session_dims_set(column: str) -> str:
     if column == "attrs":  # key by key, newer over older, never removing a key
         return (
             "attrs = nullif(coalesce(sd.attrs, '{}'::jsonb) "
-            "|| coalesce(EXCLUDED.attrs - 'identity_ts' - 'story_ts' - 'counters_source', '{}'::jsonb) "
-            f"|| CASE WHEN {_SUMMARY_WINS} THEN jsonb_build_object('counters_source', 'summary') "
+            "|| coalesce(EXCLUDED.attrs - 'identity_ts' - 'story_ts' - 'counters_source' "
+            "- 'tool_counters', '{}'::jsonb) "
+            f"|| CASE WHEN {_SUMMARY_WINS} THEN jsonb_build_object('counters_source', 'summary', "
+            "'tool_counters', 'summary_only') "
             f"WHEN {_FALLBACK_RUNS} THEN jsonb_build_object('counters_source', 'fallback') ELSE '{{}}'::jsonb END "
             f"|| CASE WHEN {_identity_wins()} THEN jsonb_build_object('identity_ts', EXCLUDED.attrs->'identity_ts') "
             "ELSE '{}'::jsonb END "

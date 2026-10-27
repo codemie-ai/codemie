@@ -152,6 +152,7 @@ The setting is visible in the project API (`cli_analytics_enabled` on list, deta
 | accumulating | `sources`, fallback `client_versions` and `attrs` are merged with the stored value; an `attrs` key is never removed |
 | rollup-derived | `active_ms`, `source_cost_usd`, `delivery_framework`, `feature_id` are recomputed each time |
 
+- `tool_calls`, `tool_errors` and `tools` follow a stricter summary rule, because a fallback value includes subagent calls and a harvester adds the subagents' counts to a summary's. When a summary wins, a present value replaces the stored one (0 included); when the summary omits the field (absent, NULL, malformed or out of range), the stored value is kept only if the row carries `attrs.tool_counters = 'summary_only'`, else it becomes NULL. Every summary win writes that marker, a first insert of a session that already has a summary included (an older summary that loses never does), so on a marked row each of the three is a summary value or NULL. The marker is the compatibility signal: a harvester must add subagent counts only to a marked row, and treat an unmarked row (or a backend that never writes the marker) as not safe. Limits: a row stored before this rule has no marker even when `counters_source` is `summary` (the flag can sit on fallback values), so its next summary win NULLs the fields that summary omits, and its current values are not repaired. Repair is a backfill that marks the retained raw sessions dirty and recomputes them from the retained summary events (an equal `ts` wins); where raw summaries have expired, the per-field origin cannot be rebuilt and nothing is repaired. Deploy this backend before enabling the harvester, then backfill only the sessions that matter.
 - When the stored `activity_started_at` is earlier than the earliest raw record now present (raw rows were purged), fallback columns sourced from raw rows keep their stored value.
 - A `session_dims` row created by a backfill rebuild (`--now`) keeps `delivery_framework` NULL until the next recompute by the refresher: the command passes no classifier.
 
@@ -185,7 +186,7 @@ The window is the shared one (see Window Semantics): a session whose `started_at
 
 For whoever builds a report over `session_dims`, `session_usage`, `session_usage_hourly` and `subagent_invocations`. The dashboard endpoints of this API do not read them yet.
 
-**Where each `session_dims` column comes from.** A session either has a summary (`summary_ts` is not NULL) or is filled by the fallback; `attrs.counters_source` says which (`summary` or `fallback`). A fallback value taken from raw rows cannot be rebuilt once raw retention has purged them; the stored value is kept.
+**Where each `session_dims` column comes from.** A session either has a summary (`summary_ts` is not NULL) or is filled by the fallback; `attrs.counters_source` says which (`summary` or `fallback`); it is row-level and does not prove where each column came from (see `attrs.tool_counters` above). A fallback value taken from raw rows cannot be rebuilt once raw retention has purged them; the stored value is kept.
 
 | Column | With a summary | Without one (fallback) | Fallback lives |
 |---|---|---|---|

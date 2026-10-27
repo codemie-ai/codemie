@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "generated": "2026-10-23T14:13:51Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 15,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 5,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "technical_risk", "reason": "Data-correctness risk only, no new security surface. In rollups.py the session_dims merge changes in three places: _counter_set splits tool_calls/tool_errors/tools into a summary-win branch that keeps the stored value only when attrs.tool_counters = 'summary_only' (_STORED_FROM_SUMMARY), the attrs merge writes the marker on every summary win, and _NOT_ATTRS plus the marker in _SESSION_DIMS_VALUES keep clients from forging it. Rows stored before the marker are not repaired, and their omitted fields become NULL on the next summary win. Each field resolves independently (present value including 0, absent/NULL/malformed, equal-timestamp tie, losing older summary), and a wrong merge silently corrupts stored analytics. No exact precedent for per-field provenance in this file. The risk is bounded by the new live-Postgres suite (test_live_summary_counters.py, 9 async tests), a SQL-string contract test in test_rollups.py (test_a_partial_summary_never_inherits_a_fallback_tool_counter, no Postgres), and a code change that is easy to roll back, but legacy rows are not repaired and need a backfill." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk set to L: enumerated edge cases (partial, legacy, tie, malformed) and no existing provenance-marker precedent; data-correctness only"
+  ],
+  "split_recommendation": null
+}

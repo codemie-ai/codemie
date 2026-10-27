@@ -1275,6 +1275,38 @@ def test_the_summary_time_and_commands_are_stored_only_from_a_summary() -> None:
     assert summary_ts in upsert and commands in upsert
 
 
+def test_a_partial_summary_never_inherits_a_fallback_tool_counter() -> None:
+    # A fallback tool count includes subagents; a harvester adds the subagent counts to a summary's,
+    # so a summary that omits the field must not keep the fallback value. Contract check only: no
+    # PostgreSQL here, so the row-level outcomes are unverified.
+    wins, fallback, purged = rollups._SUMMARY_WINS, rollups._FALLBACK_RUNS, rollups._PURGED_TAIL
+    kept = "CASE WHEN (sd.attrs->>'tool_counters' = 'summary_only') THEN sd.{c} END"
+    for column in ("tool_calls", "tool_errors", "tools"):
+        on_summary = f"coalesce(EXCLUDED.{column}, {kept.format(c=column)})"  # present wins, NULL keeps proven only
+        old = f"coalesce(EXCLUDED.{column}, sd.{column})"
+        tail = fallback if column == "tool_calls" else f"({fallback} AND NOT {purged})"
+        expected = f"{column} = CASE WHEN {wins} THEN {on_summary} WHEN {tail} THEN {old} ELSE sd.{column} END"
+        assert rollups._counter_set(column) == expected  # fallback branch and older summary unchanged
+    # other counters keep the plain coalesce on a summary win
+    assert rollups._counter_set("turns") == (
+        f"turns = CASE WHEN {wins} OR {fallback} THEN coalesce(EXCLUDED.turns, sd.turns) ELSE sd.turns END"
+    )
+    assert rollups._counter_set("tool_results") == (
+        f"tool_results = CASE WHEN {wins} OR ({fallback} AND NOT {purged}) "
+        "THEN coalesce(EXCLUDED.tool_results, sd.tool_results) ELSE sd.tool_results END"
+    )
+    # the marker is written with a summary win, never from a client attrs key, and signals the rule
+    assert "'tool_counters', 'summary_only'" in rollups._session_dims_set("attrs")
+    assert "tool_counters" in rollups._NOT_ATTRS
+    # a first INSERT with a summary gets the marker too (its values are summary or NULL), none without one
+    insert_attrs = dict(rollups._SESSION_DIMS_VALUES)["attrs"]
+    assert "'tool_counters', CASE WHEN sm.ts IS NOT NULL THEN 'summary_only' END" in insert_attrs
+    # the update copies no marker from EXCLUDED.attrs: only a winning summary sets it, an older one cannot
+    update_attrs = rollups._session_dims_set("attrs")
+    assert "- 'counters_source' - 'tool_counters'" in update_attrs
+    assert update_attrs.index("- 'tool_counters'") < update_attrs.index(f"CASE WHEN {wins} THEN jsonb_build_object")
+
+
 def test_a_client_number_is_cast_only_with_a_bounded_fraction() -> None:
     # The text of a client number is cast to numeric, which holds at most 16,383 digits after the point:
     # a longer fraction would raise on the cast (class 22) and the key would be dropped with its rollups.
