@@ -106,7 +106,7 @@ boto3 = "^1.43.12"
 chardet = "^5.2.0"
 elastic-transport = "8.17.1"
 elasticsearch = "8.19.3"
-gitpython = "~3.1.60"  # Security (EPMCDME-15480): pin ~3.1.60 to fix CVE-2026-87817, CVE-2026-87819 (GitPython vulnerabilities; supersedes EPMCDME-14024 >=3.1.58 pin)
+gitpython = "~3.2.1"  # Security (EPMCDME-16305): pin ~3.2.1 to fix CVE-2026-114145 (GHSA-83vg-56qc-22m7; supersedes EPMCDME-15480 ~3.1.60 pin)
 google-api-python-client = "^2.137.0"
 googlemaps = "^4.10.0"
 httpx = "^0.28.1"
