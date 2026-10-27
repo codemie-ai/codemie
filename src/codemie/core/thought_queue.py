@@ -37,6 +37,7 @@ class ThoughtQueue:
         self.queue = queue.Queue()
         self.closed = False
         self.cancellation_reason: str | None = None
+        self.consumer_aborted = False
         self.context = ThoughtContext()
 
     def __iter__(self):
@@ -82,3 +83,9 @@ class ThoughtQueue:
 
     def is_closed(self):
         return self.closed
+
+    def mark_consumer_aborted(self) -> None:
+        self.consumer_aborted = True
+
+    def is_consumer_aborted(self) -> bool:
+        return self.consumer_aborted

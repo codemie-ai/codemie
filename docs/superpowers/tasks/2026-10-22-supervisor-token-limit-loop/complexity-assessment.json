@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "task": "Stop the supervisor/sub-assistant LangGraph subgraph from looping past agent_token_limit truncation (or client disconnect) by moving the stop into pre_model_hook on the supervisor and sub-agent nodes, plus a consumer-set abort flag.",
+  "generated": "2026-10-22T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 21,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Base L (new pre_model_hook in supervisor/pre_model_hooks.py, wiring into both _build_supervisor_agent and _build_single_agent, plus reconciling the two duplicated truncation-indicator implementations across langgraph_agent.py and langgraph_event_adapter.py) bumped to XL: the fix must apply uniformly to the supervisor node AND every sub-agent node, i.e. it changes behavior for multiple agents/workflows at once, not one self-contained component." },
+    { "dimension": "requirements_clarity", "reason": "Intent is well-specified (pre_model_hook + abort flag, no further LLM calls after truncation), and the technical-analysis document already resolved the exact extension points and files. But several genuine design decisions remain open per its Risk Indicators: how a pre_model_hook — which only sees the *next* call's input — detects that the *previous* appended AIMessage was truncated; whether an exception raised inside _compose_pre_model_hooks' per-hook merge loop propagates correctly (unverified); which of the two duplicated truncation-indicator implementations to keep; and the exact mechanism for threading ThreadedGenerator's abort state into a hook closure running in a third-party worker thread (new, no current hook does this)." },
+    { "dimension": "technical_risk", "reason": "Base L (no exact precedent — no current hook raises or reads disconnect state; detection logic itself is proven/unit-tested but the invocation point and exception-propagation path through langgraph_supervisor/langgraph internals are not) bumped to XL by the streaming/real-time red flag: the whole bug and fix live inside LangGraph's background-executor streaming model (stream_mode=['updates','messages'], subgraphs=True), which is exactly the kind of real-time/streaming execution context the rubric flags for a risk bump. Two related in-flight tickets (EPMCDME-14855 same files, EPMCDME-15638 recursion-limit 150->1000) add sequencing/collision risk needing a rollback plan." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L to XL: 'Affects multiple workflows or agents' — fix must apply identically to the supervisor node and every sub-agent node",
+    "Technical Risk bumped from L to XL: 'Real-time/Streaming requirements' — the loop, its fix point, and the abort-flag path all run inside LangGraph's background-executor streaming/worker-thread model"
+  ],
+  "split_recommendation": null
+}

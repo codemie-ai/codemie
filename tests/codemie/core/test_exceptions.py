@@ -14,7 +14,13 @@
 
 import pytest
 
-from codemie.core.exceptions import ExtendedHTTPException, InterruptedException, ModelNotAllowedException
+from codemie.core.exceptions import (
+    ExtendedHTTPException,
+    InterruptedException,
+    ModelNotAllowedException,
+    StreamAbortedException,
+    TokenLimitExceededException,
+)
 
 
 def test_model_not_allowed_exception_with_project():
@@ -69,3 +75,11 @@ def test_interrupted_exception_stores_checkpoint_state():
 def test_interrupted_exception_checkpoint_state_defaults_to_none():
     exc = InterruptedException(message="workflow paused", interrupted_state="state_b")
     assert exc.checkpoint_state is None
+
+
+def test_stream_aborted_exception_is_plain_exception_not_token_limit():
+    exc = StreamAbortedException("x")
+    assert isinstance(exc, Exception)
+    assert not isinstance(exc, TokenLimitExceededException)
+    assert not isinstance(exc, ValueError)
+    assert str(exc) == "x"

@@ -53,6 +53,10 @@ class MessageQueue(Protocol):
 
     def is_closed(self): ...
 
+    def mark_consumer_aborted(self) -> None: ...
+
+    def is_consumer_aborted(self) -> bool: ...
+
 
 class CancellationReason:
     """Known cancellation reasons for ThreadedGenerator.close()."""
@@ -72,6 +76,12 @@ class ThreadedGenerator:
         self.queue = queue.Queue()
         self.closed = False
         self.cancellation_reason: str | None = None
+        # EPMCDME-16233: set by the supervisor's _stream_graph when the chunk-consumption loop
+        # exits via an exception. Lives here, not on a LangGraphAgent instance, because every
+        # sub-agent in a run is its own separate LangGraphAgent built by AssistantFactory - this
+        # ThreadedGenerator is the one object already shared across all of them (see is_closed()),
+        # so it is what a sibling sub-agent's pre_model_hook can actually observe.
+        self.consumer_aborted = False
         self.request_uuid = request_uuid
         self.user_id = user_id
         self.conversation_id = conversation_id
@@ -205,6 +215,12 @@ class ThreadedGenerator:
 
     def is_closed(self):
         return self.closed
+
+    def mark_consumer_aborted(self) -> None:
+        self.consumer_aborted = True
+
+    def is_consumer_aborted(self) -> bool:
+        return self.consumer_aborted
 
     def _nest_to_thought(self, parent_id, thought_object):
         existing_thougt = next(filter(lambda th: th['id'] == parent_id, self.thoughts[::-1]), None)

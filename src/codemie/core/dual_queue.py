@@ -77,6 +77,14 @@ class DualQueue:
         """
         return self.persistence_queue.is_closed()
 
+    def mark_consumer_aborted(self) -> None:
+        """Mark both queues aborted, forwarding like close() does."""
+        self.streaming_queue.mark_consumer_aborted()
+        self.persistence_queue.mark_consumer_aborted()
+
+    def is_consumer_aborted(self) -> bool:
+        return self.persistence_queue.is_consumer_aborted()
+
     def __iter__(self):
         """
         Iterate over streaming queue messages.

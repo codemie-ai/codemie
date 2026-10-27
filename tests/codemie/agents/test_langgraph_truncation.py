@@ -15,11 +15,12 @@
 """Unit tests for token truncation detection and name truncation in LangGraphAgent."""
 
 import pytest
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from unittest.mock import Mock
 
 from codemie.agents.langgraph_agent import LangGraphAgent
-from codemie.core.exceptions import TokenLimitExceededException
+from codemie.agents.supervisor.pre_model_hooks import _build_truncation_abort_pre_model_hook
+from codemie.core.exceptions import StreamAbortedException, TokenLimitExceededException
 
 
 def create_mock_agent(llm_model="gpt-4"):
@@ -51,6 +52,11 @@ def create_mock_agent(llm_model="gpt-4"):
     agent.request_uuid = "test-uuid-123"
     agent.callbacks = []
     agent.tools = []
+    agent.thread_generator = Mock(
+        is_closed=Mock(return_value=False),
+        is_consumer_aborted=Mock(return_value=False),
+        cancellation_reason=None,
+    )
 
     return agent
 
@@ -646,3 +652,95 @@ class TestExtendedError:
         assert "finish_reason" not in result
         assert "claude-sonnet-5" not in result
         assert "max_output_tokens" not in result
+
+
+class TestTruncationAbortPreModelHook:
+    """Tests for _build_truncation_abort_pre_model_hook (EPMCDME-16233)."""
+
+    def test_truncation_abort_hook_raises_on_truncated_last_message(self):
+        agent = create_mock_agent(llm_model="gpt-4.1")
+        state = {
+            "messages": [
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "test_tool", "args": {"param": "value"}, "id": "call_123"}],
+                    response_metadata={"finish_reason": "length"},
+                )
+            ]
+        }
+
+        hook = _build_truncation_abort_pre_model_hook(agent)
+
+        with pytest.raises(TokenLimitExceededException):
+            hook(state)
+
+    def test_truncation_abort_hook_raises_on_closed_stream(self):
+        agent = create_mock_agent(llm_model="gpt-4.1")
+        agent.thread_generator = Mock(is_closed=Mock(return_value=True), cancellation_reason=None)
+        state = {"messages": [AIMessage(content="normal response")]}
+
+        hook = _build_truncation_abort_pre_model_hook(agent)
+
+        with pytest.raises(StreamAbortedException):
+            hook(state)
+
+    def test_truncation_abort_hook_noop_on_normal_open_stream(self):
+        agent = create_mock_agent(llm_model="gpt-4.1")
+        state = {"messages": [AIMessage(content="normal response")]}
+
+        hook = _build_truncation_abort_pre_model_hook(agent)
+
+        assert hook(state) is None
+
+    def test_truncation_abort_hook_noop_on_empty_messages(self):
+        agent = create_mock_agent(llm_model="gpt-4.1")
+        state = {"messages": []}
+
+        hook = _build_truncation_abort_pre_model_hook(agent)
+
+        assert hook(state) is None
+
+    def test_truncation_abort_hook_raises_when_truncated_ai_message_is_followed_by_tool_message(self):
+        """A truncated tool-call response that still executed (langgraph's default ToolNode
+        swallows tool errors into a ToolMessage rather than raising) must still be caught on
+        the next pre_model_hook pass, even though a ToolMessage now sits on top of it — this
+        is what actually stops the recursion-limit loop in a real compiled graph (EPMCDME-16233).
+        """
+        agent = create_mock_agent(llm_model="gpt-4.1")
+        state = {
+            "messages": [
+                HumanMessage(content="do something"),
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "test_tool", "args": {"param": "value"}, "id": "call_123"}],
+                    response_metadata={"finish_reason": "length"},
+                ),
+                ToolMessage(content="did value", name="test_tool", tool_call_id="call_123"),
+            ]
+        }
+
+        hook = _build_truncation_abort_pre_model_hook(agent)
+
+        with pytest.raises(TokenLimitExceededException):
+            hook(state)
+
+    def test_truncation_abort_hook_does_not_look_past_a_new_human_turn(self):
+        """A previous turn's truncated AIMessage must never fail a brand-new turn."""
+        agent = create_mock_agent(llm_model="gpt-4.1")
+        state = {
+            "messages": [
+                HumanMessage(content="first turn"),
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "test_tool", "args": {"param": "value"}, "id": "call_123"}],
+                    response_metadata={"finish_reason": "length"},
+                ),
+                ToolMessage(content="did value", name="test_tool", tool_call_id="call_123"),
+                AIMessage(content="here is the result"),
+                HumanMessage(content="second, unrelated turn"),
+            ]
+        }
+
+        hook = _build_truncation_abort_pre_model_hook(agent)
+
+        assert hook(state) is None

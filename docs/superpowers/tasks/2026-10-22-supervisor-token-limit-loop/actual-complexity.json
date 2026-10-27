@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "generated": "2026-10-22T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 16,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 7,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "The fix adds a new pre_model_hook factory (_build_truncation_abort_pre_model_hook, plus a new _find_last_turn_ai_message helper) in supervisor/pre_model_hooks.py and wires it into both LangGraphAgent builder paths (_build_supervisor_agent and _build_single_agent). pre_model_hooks.py is a shared utility already composed via _compose_pre_model_hooks across multiple agent construction paths, so the change touches a core shared utility from two call sites rather than a single self-contained spot." },
+    { "dimension": "technical_risk", "reason": "There is no exact existing precedent for aborting the tool-calling loop mid-turn on token-limit truncation; the hook reuses existing detection (_safe_check_for_truncation, _should_stop_streaming) but introduces new control-flow behavior in the production-critical agent streaming loop for both the supervisor's own node and arbitrary sub-agent nodes. Risk is tempered by thorough new test coverage (4 real-graph scenario tests plus 2 real-init wiring tests in test_langgraph_supervisor_truncation_stops_loop.py) but the behavioral change itself is novel enough to land at L rather than M/S." },
+    { "dimension": "file_change_estimate", "reason": "diffstat reports 7 files changed (612 insertions, 10 deletions): 2 production files modified (langgraph_agent.py, pre_model_hooks.py), exceptions.py touched, and 4 test files (one substantial new test file, test_langgraph_supervisor_truncation_stops_loop.py, plus 3 existing test files updated) across tests/codemie/agents/ and tests/codemie/core/ in addition to src/codemie/agents/ and src/codemie/agents/supervisor/ and src/codemie/core/ — 7 files maps to the L band (7-10) in the diffstat-to-score mapping." }
+  ],
+  "red_flags_applied": [
+    "Touches core shared utilities (pre_model_hooks.py composition used across supervisor and single-agent builders) -> bumped Component Scope"
+  ],
+  "split_recommendation": null
+}

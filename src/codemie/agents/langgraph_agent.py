@@ -41,6 +41,7 @@ from codemie.agents.supervisor.history import (
     _subagent_task_pre_model_hook,
 )
 from codemie.agents.supervisor.pre_model_hooks import (
+    _build_truncation_abort_pre_model_hook,
     _compose_pre_model_hooks,
     _image_artifact_pre_model_hook,
 )
@@ -113,7 +114,11 @@ from codemie.service.file_service.image_service import ImageService
 from codemie.service.llm_service.llm_service import LLMService
 from codemie.service.llm_service.utils import set_llm_context
 from codemie.templates.agents.assistant_base import markdown_response_prompt, supervisor_result_synthesis_prompt
-from codemie.core.exceptions import MCPAuthenticationRequiredException, TokenLimitExceededException
+from codemie.core.exceptions import (
+    MCPAuthenticationRequiredException,
+    StreamAbortedException,
+    TokenLimitExceededException,
+)
 from codemie.core.otel_tracing import get_otel_context_for_thread, propagated_span, record_exception_on_span, traced
 
 __all__ = ["LangGraphAgent", "_SupervisorChunkContext", "_SupervisorHandoffTracker"]
@@ -317,6 +322,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
             pre_model_hook=_compose_pre_model_hooks(
                 _strip_handoff_back_messages_pre_model_hook,
                 _strip_subagent_task_messages_pre_model_hook,
+                _build_truncation_abort_pre_model_hook(self),
             ),
         )
 
@@ -359,6 +365,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
                 # Runs for all agents, but does nothing unless a tool
                 # returns image artifacts (e.g. Jira with screenshots).
                 _image_artifact_pre_model_hook,
+                _build_truncation_abort_pre_model_hook(self),
             ),
         )
 
@@ -652,8 +659,16 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
             set_llm_context(self.assistant, None, self.user, self.llm_model)
             inputs = self._get_inputs(input, history)
             inputs.update(args)
-            output = self._invoke_agent(inputs).generated
-            return output
+            response = self._invoke_agent(inputs)
+            if not response.success:
+                # EPMCDME-16233: _invoke_agent already swallows StreamAbortedException (and any
+                # other exception) into a success=False GenerationResult instead of raising, so
+                # this must check the flag itself - the except Exception below never fires.
+                # A static fallback, not self._get_user_error_message(): that path classifies the
+                # error through handle_agent_exception -> emit_llm_error_log, which would fire a
+                # false-positive ELK error alert for what is only a benign, expected stream abort.
+                return response.generated or "The response could not be completed because the run was aborted."
+            return response.generated
         except MCPAuthenticationRequiredException:
             raise
         except Exception as e:
@@ -725,6 +740,22 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
             set_llm_context(self.assistant, None, self.user, self.llm_model)
             response = self._invoke_agent(self._get_inputs())
             output = response.generated
+
+            if not response.success:
+                # EPMCDME-16233: _invoke_agent already swallows StreamAbortedException (and any
+                # other exception) into a success=False GenerationResult rather than raising, so
+                # this branch must check the flag itself - the except Exception below never fires.
+                # Mirror invoke()/invoke_task(): no workspace-file persistence, no token count for
+                # output that was never really generated, and the background task recorded as
+                # FAILED rather than COMPLETED with an empty result. time_elapsed is measured
+                # here, before any of that skipped work, unlike the success path below.
+                time_elapsed = time() - start_time
+                if background_task_id:
+                    BackgroundTasksService().update(
+                        task_id=background_task_id, status=BackgroundTaskStatus.FAILED, final_output=output
+                    )
+                return self._build_generation_result(output, success=False, time_elapsed=time_elapsed)
+
             self._persist_generated_workspace_files(
                 response=output,
                 conversation_id=self.conversation_id,
@@ -733,8 +764,8 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
             )
 
             token_used = calculate_tokens(json.dumps(output))
-
             time_elapsed = time() - start_time
+
             if background_task_id:
                 BackgroundTasksService().update(
                     task_id=background_task_id, status=BackgroundTaskStatus.COMPLETED, final_output=output
@@ -826,6 +857,11 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
                 auth_required_error = e
                 self.thread_generator.close(e)
                 raise
+            except StreamAbortedException as e:
+                # EPMCDME-16233: the owning stream was already closed or hedging-cancelled
+                # when a node's pre_model_hook raised this; there is no listener left to
+                # send an error to.
+                logger.info(f"Stream for {self.agent_name} aborted: {e}")
             except Exception as e:
                 self._send_error_to_thread(e, execution_start, chunks_collector)
             finally:
@@ -887,8 +923,18 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
     def invoke_with_a2a_output(self, query: str = "") -> dict:
         try:
             inputs = self._get_inputs(query)
-            response = self._invoke_agent(inputs).generated
-            return {"is_task_complete": True, "require_user_input": False, "content": response}
+            response = self._invoke_agent(inputs)
+            if not response.success:
+                # EPMCDME-16233: _invoke_agent swallows StreamAbortedException (and any other
+                # exception) into a success=False GenerationResult instead of raising, so the
+                # except Exception below never fires - this must check the flag itself to avoid
+                # reporting an aborted/failed run as a completed task with empty content.
+                return {
+                    "is_task_complete": False,
+                    "require_user_input": True,
+                    "content": response.generated,
+                }
+            return {"is_task_complete": True, "require_user_input": False, "content": response.generated}
         except Exception as e:
             return {
                 "is_task_complete": False,
@@ -938,35 +984,49 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
         has_structured_response = False
 
         with suppress_stdout():
-            for chunk in stream:
-                if not chunk:
-                    continue
-
-                self.process_chunk(chunk, chunks_collector)
-                chunk = self._prepare_chunk_for_processing(chunk)
-                current_message = self._get_last_ai_message_content(chunk)
-
-                last_message, has_structured_response = self._update_last_message_if_needed(
-                    current_message, last_message, has_structured_response
-                )
-                if self._should_stop_streaming():
-                    cancelled_by_hedging = (
-                        self.thread_generator.cancellation_reason == HedgingCancellationReason.FAST_PATH_WON
+            try:
+                for chunk in stream:
+                    last_message, has_structured_response, should_stop = self._consume_stream_chunk(
+                        chunk, chunks_collector, last_message, has_structured_response
                     )
-                    # Demote BEFORE stream.close(): once the stream is closed, the
-                    # LangChain callback has ended its spans and the OTEL current-span
-                    # falls back to a non-recording NoOp span — at which point neither
-                    # set_current_trace_io nor span.set_attribute land on any real span.
-                    # GeneratorExit is registered as a Langfuse control-flow exception,
-                    # so on_chain_error writes DEFAULT level (not ERROR), meaning our
-                    # earlier DEFAULT-level update is not overwritten.
-                    if cancelled_by_hedging:
-                        mark_trace_cancelled_by_hedging(
-                            user_input=self.request.text,
-                            request_uuid=self.request_uuid,
-                        )
+                    if should_stop:
+                        stream.close()
+                        break
+            except Exception:
+                # EPMCDME-16233: mark the run aborted on the shared thread_generator - not a
+                # per-instance flag, since a sibling sub-agent is its own separate LangGraphAgent
+                # (built by AssistantFactory) and would never see one. Set here, while `stream`
+                # is still a live local - not in a `finally` elsewhere, where it would run only
+                # after the generator has already been torn down and its BackgroundExecutor has
+                # waited for every other running node (e.g. a sibling's in-flight handoff) to
+                # finish. A still-running sibling's next pre_model_hook call sees the flag before
+                # that sibling asks its model again.
+                #
+                # Deliberately `except Exception` (not a narrower StreamAbortedException-only
+                # catch): every exception that reaches here already ends the whole invocation -
+                # _invoke_agent's own except clauses either re-raise (MCPAuthenticationRequired)
+                # or swallow into a success=False result (everything else, including this
+                # ticket's own TokenLimitExceededException for a truncated tool call) - so there
+                # is no case where this fires without the overall turn also ending. Excluding
+                # TokenLimitExceededException specifically would silently reintroduce this
+                # ticket's own headline bug for a multi-sub-agent run.
+                # `except Exception`, not `BaseException`, is still correct: GeneratorExit is
+                # never raised out of a `next()` call to its caller (only thrown *into* a
+                # suspended generator via close()/throw()/GC) and `_stream_graph` is not itself a
+                # generator, so it cannot reach this clause through the `for chunk in stream`
+                # statement above.
+                if self.thread_generator is not None:
+                    self.thread_generator.mark_consumer_aborted()
+                # Close here too, not just in the should_stop branch above: otherwise this
+                # generator (and whatever LLM/tool connections it holds) is torn down only via
+                # GC, on whatever later turn finally drops the last reference to the exception's
+                # traceback. close() itself swallowed, not the original exception: the mark+raise
+                # above must still be what the caller sees.
+                import contextlib
+
+                with contextlib.suppress(Exception):
                     stream.close()
-                    break
+                raise
 
         if not last_message and self._last_subassistant_answer:
             # The supervisor's own final turn produced no text of its own after a handoff
@@ -982,6 +1042,50 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
                 return self._stream_graph(None, config, chunks_collector)
 
         return last_message
+
+    def _consume_stream_chunk(
+        self,
+        chunk,
+        chunks_collector: list[str],
+        last_message: str | dict | BaseModel,
+        has_structured_response: bool,
+    ) -> tuple[str | dict | BaseModel, bool, bool]:
+        """Process one chunk from the graph stream.
+
+        Returns (last_message, has_structured_response, should_stop) so the caller's loop
+        stays a flat dispatch on `should_stop` - the branching this used to hold is what pushed
+        _stream_graph's cognitive complexity over the limit.
+        """
+        if not chunk:
+            return last_message, has_structured_response, False
+
+        self.process_chunk(chunk, chunks_collector)
+        chunk = self._prepare_chunk_for_processing(chunk)
+        current_message = self._get_last_ai_message_content(chunk)
+
+        last_message, has_structured_response = self._update_last_message_if_needed(
+            current_message, last_message, has_structured_response
+        )
+        if not self._should_stop_streaming():
+            return last_message, has_structured_response, False
+
+        self._demote_trace_before_stream_close()
+        return last_message, has_structured_response, True
+
+    def _demote_trace_before_stream_close(self) -> None:
+        # Demote BEFORE stream.close(): once the stream is closed, the
+        # LangChain callback has ended its spans and the OTEL current-span
+        # falls back to a non-recording NoOp span — at which point neither
+        # set_current_trace_io nor span.set_attribute land on any real span.
+        # GeneratorExit is registered as a Langfuse control-flow exception,
+        # so on_chain_error writes DEFAULT level (not ERROR), meaning our
+        # earlier DEFAULT-level update is not overwritten.
+        cancelled_by_hedging = self.thread_generator.cancellation_reason == HedgingCancellationReason.FAST_PATH_WON
+        if cancelled_by_hedging:
+            mark_trace_cancelled_by_hedging(
+                user_input=self.request.text,
+                request_uuid=self.request_uuid,
+            )
 
     def _should_stop_streaming(self) -> bool:
         """Check if streaming should stop due to user disconnection or hedging cancellation."""
@@ -1086,6 +1190,13 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
             return response
         except MCPAuthenticationRequiredException:
             raise
+        except StreamAbortedException as e:
+            # EPMCDME-16233: mirrors stream()'s quiet swallow - the owning stream was
+            # already closed or hedging-cancelled, so there is no listener left to receive
+            # a user-facing error. invoke()/invoke_task()/generate()/invoke_with_a2a_output()
+            # all funnel through here, so fixing it here covers all of them at once.
+            logger.info(f"Agent {self.agent_name} invocation aborted: {e}")
+            return self._build_generation_result("", success=False)
         except Exception as e:
             return self._build_generation_result(self._get_user_error_message(e), success=False)
 

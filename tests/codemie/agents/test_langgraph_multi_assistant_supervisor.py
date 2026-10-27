@@ -33,7 +33,8 @@ from codemie.agents.langgraph_agent import (
 )
 from codemie.agents.supervisor.constants import METADATA_KEY_HANDOFF_BACK, METADATA_KEY_HANDOFF_DESTINATION
 from codemie.chains.base import ThoughtOutputFormat
-from codemie.core.exceptions import SubagentToolConfirmationUnsupportedException
+from codemie.core.constants import BackgroundTaskStatus
+from codemie.core.exceptions import StreamAbortedException, SubagentToolConfirmationUnsupportedException
 from codemie.core.models import AssistantChatRequest, ToolCallPolicy
 from codemie.core.thread import ThreadedGenerator
 
@@ -1059,3 +1060,89 @@ class TestSendErrorToThreadPreservesSuccessfulAnswer(TestLangGraphMultiAssistant
         sent_json = supervisor_agent.thread_generator.send.call_args[0][0]
         sent_payload = json.loads(sent_json)
         assert sent_payload["generated"] != ""
+
+
+class TestStreamAbortedExceptionIsSwallowed(TestLangGraphMultiAssistantSupervisor):
+    def test_stream_aborted_exception_sends_no_error_to_thread(self, supervisor_agent):
+        # EPMCDME-16233: a StreamAbortedException raised inside a graph node (the owning
+        # stream was closed or hedging-cancelled) must never reach _send_error_to_thread -
+        # that would mislabel a disconnect as agent_token_limit or another user-facing error.
+        supervisor_agent.thread_generator = MagicMock()
+        supervisor_agent._agent_streaming = MagicMock(side_effect=StreamAbortedException("stream closed"))
+        supervisor_agent._send_error_to_thread = MagicMock()
+
+        supervisor_agent.stream()
+
+        supervisor_agent._send_error_to_thread.assert_not_called()
+        supervisor_agent.thread_generator.close.assert_called_once_with()
+
+    def test_stream_aborted_exception_logs_a_signal(self, supervisor_agent):
+        # CR-003: the swallow must leave a trace, like _should_stop_streaming() already does
+        # for the same disconnect/hedging-cancel condition, instead of vanishing silently.
+        # The agent also logs an unrelated "Starting ... agent" info line before the
+        # exception, so the assertion must target a message naming the abort specifically.
+        supervisor_agent.thread_generator = MagicMock()
+        supervisor_agent._agent_streaming = MagicMock(side_effect=StreamAbortedException("stream closed"))
+        supervisor_agent._send_error_to_thread = MagicMock()
+
+        with patch("codemie.agents.langgraph_agent.logger") as mock_logger:
+            supervisor_agent.stream()
+
+            logged_messages = [
+                str(call.args[0]) if call.args else ""
+                for call in (mock_logger.info.call_args_list + mock_logger.debug.call_args_list)
+            ]
+            assert any("abort" in message.lower() for message in logged_messages)
+
+
+class TestInvokeAgentStreamAbortedIsQuiet(TestLangGraphMultiAssistantSupervisor):
+    def test_invoke_agent_returns_quiet_failure_on_stream_aborted(self, supervisor_agent):
+        # CR-002: StreamAbortedException reaching _invoke_agent - the shared call path for
+        # invoke(), invoke_task(), generate() and invoke_with_a2a_output() - must not be
+        # reported as a formatted user-facing error, mirroring stream()'s quiet swallow.
+        supervisor_agent._stream_graph = MagicMock(side_effect=StreamAbortedException("stream closed"))
+
+        result = supervisor_agent._invoke_agent({"messages": []})
+
+        assert result.success is False
+        assert result.generated == ""
+
+    def test_invoke_task_returns_quiet_failure_on_stream_aborted(self, supervisor_agent):
+        supervisor_agent._get_run_config = MagicMock(return_value={})
+        supervisor_agent._stream_graph = MagicMock(side_effect=StreamAbortedException("stream closed"))
+
+        result = supervisor_agent.invoke_task(workflow_input="do the thing")
+
+        assert result.success is False
+        assert result.result == ""
+
+    def test_generate_marks_background_task_failed_not_completed_on_stream_aborted(self, supervisor_agent):
+        # CR-002 check-round finding: generate() ignored _invoke_agent's success flag, so an
+        # aborted stream was still recorded as a COMPLETED background task with an empty output.
+        supervisor_agent._get_run_config = MagicMock(return_value={})
+        supervisor_agent._stream_graph = MagicMock(side_effect=StreamAbortedException("stream closed"))
+        supervisor_agent._persist_generated_workspace_files = MagicMock()
+
+        with patch("codemie.agents.langgraph_agent.BackgroundTasksService") as mock_service_cls:
+            mock_service = MagicMock()
+            mock_service_cls.return_value = mock_service
+
+            result = supervisor_agent.generate(background_task_id="bg-task-1")
+
+            assert result.success is False
+            assert result.generated == ""
+            mock_service.update.assert_called_once_with(
+                task_id="bg-task-1", status=BackgroundTaskStatus.FAILED, final_output=""
+            )
+            supervisor_agent._persist_generated_workspace_files.assert_not_called()
+
+    def test_invoke_with_a2a_output_returns_incomplete_on_stream_aborted(self, supervisor_agent):
+        # CR-002 check-round finding: invoke_with_a2a_output() ignored _invoke_agent's success
+        # flag, so an aborted stream was still reported as is_task_complete=True.
+        supervisor_agent._get_run_config = MagicMock(return_value={})
+        supervisor_agent._stream_graph = MagicMock(side_effect=StreamAbortedException("stream closed"))
+
+        result = supervisor_agent.invoke_with_a2a_output(query="do the thing")
+
+        assert result["is_task_complete"] is False
+        assert result["content"] == ""

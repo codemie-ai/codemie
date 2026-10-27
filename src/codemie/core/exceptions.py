@@ -333,6 +333,11 @@ class TokenLimitExceededException(ValueError):
         super().__init__(message)
 
 
+class StreamAbortedException(Exception):
+    """Raised from inside a graph node when the owning stream was closed or
+    hedging-cancelled; callers should stop without surfacing a user-facing error."""
+
+
 class ModelAvailabilityException(ExtendedHTTPException):
     """Base exception for model availability enforcement."""
 
