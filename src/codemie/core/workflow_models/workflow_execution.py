@@ -188,6 +188,14 @@ class WorkflowExecution(BaseModelWithSQLSupport, Owned, table=True):
         return cls.get_all_by_fields({"execution_id": execution_id})
 
     @classmethod
+    def get_in_progress_by_conversation_id(cls, conversation_id: str):
+        if not conversation_id:
+            return []
+        return cls.get_all_by_fields(
+            {"conversation_id": conversation_id, "overall_status": WorkflowExecutionStatusEnum.IN_PROGRESS}
+        )
+
+    @classmethod
     def _delete_executions_cascade(cls, session: Session, execution_ids: list[str]) -> None:
         """Delete child records for the given execution_ids in dependency order.
 

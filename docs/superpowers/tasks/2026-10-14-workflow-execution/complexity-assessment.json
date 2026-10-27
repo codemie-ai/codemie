@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "task": "Propagate chat Stop action to abort the underlying workflow execution when a workflow is started from chat (EPMCDME-11735).",
+  "generated": "2026-10-14T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 15,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Conversation abort router, WorkflowExecutionService.abort and possibly the stream disconnect handler in routers/utils.py; the runtime already honors ABORTED via DB polling." },
+    { "dimension": "requirements_clarity", "reason": "Which endpoint the chat Stop button calls and how conversation_id maps to execution_id is unverified; ABORTED vs FAILED interplay is open. Two to three design questions remain." },
+    { "dimension": "technical_risk", "reason": "Reuses existing abort machinery (no novel pattern), but cancellation is cooperative only, ABORTED may be overwritten by FAILED, and GenerationManager is per-pod. The AC list start/stop/completed cases, but the existing abort tests are a usable template." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

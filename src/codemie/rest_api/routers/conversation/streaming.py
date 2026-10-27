@@ -32,6 +32,7 @@ from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
 from codemie.service.assistant.tool_output_visibility import is_any_hidden, strip_stream
 from codemie.service.generation_manager import GenerationManager
+from codemie.service.workflow_execution.workflow_execution_service import WorkflowExecutionService
 
 
 router = APIRouter()
@@ -64,6 +65,15 @@ def abort_conversation_generation(conversation_id: str, user: User = Depends(aut
 
     aborted = GenerationManager().abort(conversation_id)
     logger.info(f"Explicitly aborted conversation generation for id={conversation_id}, aborted={aborted}")
+
+    try:
+        aborted_executions, failed_executions = WorkflowExecutionService.abort_by_conversation_id(conversation_id, user)
+        logger.info(
+            f"Aborted {aborted_executions} workflow execution(s), failed to abort {failed_executions}, "
+            f"for conversation id={conversation_id}"
+        )
+    except Exception as wf_exc:
+        logger.error(f"Error aborting workflow executions for conversation {conversation_id}: {str(wf_exc)}")
 
     try:
         from codemie.rest_api.models.base import ConversationStatus

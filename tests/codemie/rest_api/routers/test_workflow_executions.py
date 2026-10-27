@@ -1081,3 +1081,45 @@ async def test_resume_with_user_input_appends_to_conversation_history(
 
     assert response.status_code == 200
     mock_workflow_service.return_value.append_user_message_on_resume.assert_called_once()
+
+
+ABORT_URL = f"/v1/workflows/{WORKFLOW_ID}/executions/{EXECUTION_ID}/abort"
+
+
+@pytest.mark.asyncio
+async def test_abort_workflow_execution_success(
+    mock_authentication: MagicMock,
+    mock_ability: MagicMock,
+    mock_workflow_service: MagicMock,
+    request_headers: dict,
+) -> None:
+    mock_ability.return_value.can.return_value = True
+    mock_authentication.return_value = USER
+
+    with patch("codemie.rest_api.routers.workflow_executions.WorkflowExecutionService") as mock_exec_service:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.put(ABORT_URL, headers=request_headers)
+
+    assert response.status_code == 200
+    assert response.json()["message"] == "Workflow execution has been aborted"
+    mock_exec_service.return_value.abort.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_abort_workflow_execution_access_denied(
+    mock_authentication: MagicMock,
+    mock_ability: MagicMock,
+    mock_workflow_service: MagicMock,
+    request_headers: dict,
+) -> None:
+    mock_ability.return_value.can.return_value = False
+    mock_authentication.return_value = USER
+
+    with patch("codemie.rest_api.routers.workflow_executions.WorkflowExecutionService") as mock_exec_service:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.put(ABORT_URL, headers=request_headers)
+
+    assert response.status_code == 401
+    mock_exec_service.return_value.abort.assert_not_called()

@@ -1,0 +1,73 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-11735_workflow-execution",
+  "head": "ef23ded9996bb2f0a0aa724a3164747901768402",
+  "runner": "poetry",
+  "started_at": "2026-10-14T09:15:00Z",
+  "completed_at": "2026-10-14T09:25:00Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "ruff",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 4556,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 14000,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2000,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 15000,
+      "command": "make gitleaks",
+      "exit_code": 0,
+      "notes": "make target failed on Windows (docker path under make's sh, exit 2); equivalent docker run of the same gitleaks image/config exited 0, 'no leaks found'."
+    },
+    {
+      "id": "test",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 63000,
+      "command": "make test",
+      "exit_code": null,
+      "notes": "Native Windows env lacks module exchangelib; full suite not run. Scoped run in codemie-dev-codemie docker image (changed-area tests: core/workflow_models, rest_api/routers, service/workflow_execution, test_workflow_service) gave 2345 passed, 14 skipped, 5 errors all \"fixture 'httpx_mock' not found\" in unrelated test_sharepoint_oauth/test_oauth_redis_lazy_init (pytest-httpx not in ad-hoc container). Full suite owed; run in WSL/docker with dev deps."
+    },
+    {
+      "id": "sonar-local",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make sonar-local",
+      "exit_code": null,
+      "notes": "Not run: needs Sonar credentials/coverage.xml and Node runner; also in opt-in pre-push hook (CODEMIE_PREPUSH_ENABLED). Run locally with token to settle."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "exit_code": null,
+      "notes": "MR-only gate; requires docker stack up; not opening MR."
+    }
+  ],
+  "failures": {}
+}

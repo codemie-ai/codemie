@@ -40,6 +40,17 @@ _TERMINAL_STATUSES = {
 }
 
 
+def _load_workflow_config_for_abort(workflow_service, execution) -> Optional[WorkflowConfig]:
+    try:
+        return workflow_service.get_workflow(execution.workflow_id)
+    except Exception as exc:
+        logger.warning(
+            f"Workflow config {execution.workflow_id} unavailable for execution {execution.execution_id}; "
+            f"aborting without it: {exc}"
+        )
+        return None
+
+
 class WorkflowExecutionService:
     def __init__(
         self,
@@ -57,7 +68,18 @@ class WorkflowExecutionService:
         self._refresh_workflow_execution()
         self._current_history_index = self._compute_current_history_index()
 
+    def _is_aborted(self, action: str) -> bool:
+        """True when the refreshed execution is ABORTED, so a late status write must not overwrite it."""
+        if self.workflow_execution.overall_status != WorkflowExecutionStatusEnum.ABORTED:
+            return False
+        logger.info(
+            f"Execution ID: {self.workflow_execution.execution_id} is ABORTED; "
+            f"not overwriting status, skipped action = {action}"
+        )
+        return True
+
     def fail(self, error_class: str, error_message: str):
+        aborted = False
         with self.workflow_execution_lock:
             self._refresh_workflow_execution()
             if not self.workflow_execution:
@@ -65,6 +87,12 @@ class WorkflowExecutionService:
                     f"Workflow execution not found for execution_id: {self.workflow_execution_id}. "
                     "Cannot mark workflow as failed."
                 )
+            elif self.workflow_execution.overall_status == WorkflowExecutionStatusEnum.ABORTED:
+                logger.info(
+                    f"Execution ID: {self.workflow_execution.execution_id} is ABORTED; "
+                    f"not overwriting status with FAILED, Reason = {error_message}"
+                )
+                aborted = True
             else:
                 logger.warning(
                     f"Overall status for Execution ID: {self.workflow_execution.execution_id} "
@@ -81,6 +109,8 @@ class WorkflowExecutionService:
                 self.workflow_execution.update(refresh=True)
                 self._cleanup_inflight_states()
 
+        if aborted:
+            return
         if not self.workflow_execution:
             self._flush_llm_usage_metric(
                 WorkflowExecutionStatusEnum.FAILED,
@@ -156,6 +186,37 @@ class WorkflowExecutionService:
         request_summary_manager.clear_summary(self.workflow_execution_id)
         self._abort_active_sub_execution()
 
+    @staticmethod
+    def abort_by_conversation_id(conversation_id: str, user: User) -> tuple[int, int]:
+        """Abort all IN_PROGRESS workflow executions of a conversation; returns (aborted, failed) counts.
+
+        Failures are logged per execution so one failure does not skip the others.
+        If the workflow config cannot be loaded (e.g. the workflow was deleted) the execution is
+        still aborted, since abort() only needs the config for metrics.
+        Uses a deferred import of WorkflowService to avoid a circular dependency
+        between workflow_service and workflow_execution_service.
+        """
+        from codemie.service.workflow_service import WorkflowService  # deferred: avoids circular import
+
+        aborted = 0
+        failed = 0
+        for execution in WorkflowExecution.get_in_progress_by_conversation_id(conversation_id):
+            try:
+                workflow_config = _load_workflow_config_for_abort(WorkflowService(), execution)
+                WorkflowExecutionService(
+                    workflow_config=workflow_config,
+                    workflow_execution_id=execution.execution_id,
+                    user=user,
+                ).abort()
+                aborted += 1
+            except Exception as exc:
+                failed += 1
+                logger.error(
+                    f"Failed to abort workflow execution {execution.execution_id} "
+                    f"for conversation {conversation_id}: {exc}"
+                )
+        return aborted, failed
+
     def _abort_active_sub_execution(self) -> None:
         """Cascade abort to the active sub-workflow child execution, if one is running.
 
@@ -186,8 +247,7 @@ class WorkflowExecutionService:
                 user=self.user,
             ).abort()
             logger.info(
-                f"Cascade-aborted sub-workflow execution {child_execution_id} "
-                f"(parent: {self.workflow_execution_id})."
+                f"Cascade-aborted sub-workflow execution {child_execution_id} (parent: {self.workflow_execution_id})."
             )
         except Exception as exc:
             logger.error(
@@ -203,6 +263,9 @@ class WorkflowExecutionService:
                     f"Workflow execution not found for execution_id: {self.workflow_execution_id}. "
                     "Cannot interrupt workflow."
                 )
+                return
+
+            if self._is_aborted("interrupt"):
                 return
 
             self.workflow_execution.overall_status = WorkflowExecutionStatusEnum.INTERRUPTED
@@ -247,6 +310,9 @@ class WorkflowExecutionService:
                     f"Workflow execution not found for execution_id: {self.workflow_execution_id}. "
                     "Cannot mark workflow as authentication required."
                 )
+                return
+
+            if self._is_aborted("mark_authentication_required"):
                 return
 
             logger.info(

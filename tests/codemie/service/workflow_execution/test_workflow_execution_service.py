@@ -671,6 +671,170 @@ class TestFail:
         assert succeeded.status == WorkflowExecutionStatusEnum.SUCCEEDED
         succeeded.save.assert_not_called()
 
+    @patch("codemie.service.workflow_execution.workflow_execution_service.WorkflowExecutionState.get_all_by_fields")
+    @patch("codemie.service.workflow_execution.workflow_execution_service.WorkflowMonitoringService")
+    def test_fail_does_not_overwrite_aborted_status(self, mock_monitoring, mock_get_states, service):
+        """fail() must leave an ABORTED execution ABORTED and not persist anything."""
+        service.workflow_execution.overall_status = WorkflowExecutionStatusEnum.ABORTED
+
+        with patch.object(service, "_refresh_workflow_execution"):
+            service.fail(error_class="RuntimeError", error_message="boom")
+
+        assert service.workflow_execution.overall_status == WorkflowExecutionStatusEnum.ABORTED
+        service.workflow_execution.update.assert_not_called()
+
+    @patch("codemie.service.workflow_execution.workflow_execution_service.WorkflowExecutionState.get_all_by_fields")
+    @patch("codemie.service.workflow_execution.workflow_execution_service.WorkflowMonitoringService")
+    def test_fail_sets_failed_when_in_progress(self, mock_monitoring, mock_get_states, service):
+        mock_get_states.return_value = []
+        service.workflow_execution.overall_status = WorkflowExecutionStatusEnum.IN_PROGRESS
+
+        with patch.object(service, "_refresh_workflow_execution"):
+            with patch.object(service, "_calculate_tokens_usage", return_value={}):
+                with patch.object(service, "_update_assistant_response_in_history"):
+                    service.fail(error_class="RuntimeError", error_message="boom")
+
+        assert service.workflow_execution.overall_status == WorkflowExecutionStatusEnum.FAILED
+        service.workflow_execution.update.assert_called_once()
+
+
+class TestAbortByConversationId:
+    SVC = "codemie.service.workflow_execution.workflow_execution_service"
+
+    @staticmethod
+    def _execution(execution_id, status=WorkflowExecutionStatusEnum.IN_PROGRESS):
+        ex = MagicMock()
+        ex.execution_id = execution_id
+        ex.workflow_id = f"wf-{execution_id}"
+        ex.overall_status = status
+        return ex
+
+    def test_aborts_each_in_progress_execution(self):
+        executions = [self._execution("e1"), self._execution("e2")]
+        user = MagicMock()
+        with (
+            patch(f"{self.SVC}.WorkflowExecution.get_in_progress_by_conversation_id", return_value=executions),
+            patch("codemie.service.workflow_service.WorkflowService") as mock_wf_service,
+            patch(f"{self.SVC}.WorkflowExecutionService") as mock_service_cls,
+        ):
+            count = WorkflowExecutionService.abort_by_conversation_id("conv-1", user)
+
+        assert count == (2, 0)
+        assert mock_service_cls.call_count == 2
+        mock_service_cls.assert_any_call(
+            workflow_config=mock_wf_service.return_value.get_workflow.return_value,
+            workflow_execution_id="e1",
+            user=user,
+        )
+        assert mock_service_cls.return_value.abort.call_count == 2
+
+    def test_failure_of_one_does_not_skip_others(self):
+        executions = [self._execution("e1"), self._execution("e2")]
+        with (
+            patch(f"{self.SVC}.WorkflowExecution.get_in_progress_by_conversation_id", return_value=executions),
+            patch("codemie.service.workflow_service.WorkflowService"),
+            patch(f"{self.SVC}.WorkflowExecutionService") as mock_service_cls,
+        ):
+            mock_service_cls.return_value.abort.side_effect = [RuntimeError("boom"), None]
+            count = WorkflowExecutionService.abort_by_conversation_id("conv-1", MagicMock())
+
+        assert count == (1, 1)
+        assert mock_service_cls.return_value.abort.call_count == 2
+
+    def test_missing_workflow_config_still_aborts_execution(self):
+        with (
+            patch(
+                f"{self.SVC}.WorkflowExecution.get_in_progress_by_conversation_id", return_value=[self._execution("e1")]
+            ),
+            patch("codemie.service.workflow_service.WorkflowService") as mock_wf_service,
+            patch(f"{self.SVC}.WorkflowExecutionService") as mock_service_cls,
+        ):
+            mock_wf_service.return_value.get_workflow.side_effect = RuntimeError("workflow deleted")
+            count = WorkflowExecutionService.abort_by_conversation_id("conv-1", MagicMock())
+
+        assert count == (1, 0)
+        assert mock_service_cls.call_args.kwargs["workflow_config"] is None
+        mock_service_cls.return_value.abort.assert_called_once()
+
+    def test_no_executions_aborts_nothing(self):
+        with (
+            patch(f"{self.SVC}.WorkflowExecution.get_in_progress_by_conversation_id", return_value=[]),
+            patch(f"{self.SVC}.WorkflowExecutionService") as mock_service_cls,
+        ):
+            count = WorkflowExecutionService.abort_by_conversation_id("conv-1", MagicMock())
+
+        assert count == (0, 0)
+        mock_service_cls.assert_not_called()
+
+    def test_completed_executions_are_left_untouched(self):
+        """The lookup filters IN_PROGRESS in the query, so terminal executions never reach abort() (AC3)."""
+        with (
+            patch(
+                "codemie.core.workflow_models.workflow_execution.WorkflowExecution.get_all_by_fields",
+                return_value=[],
+            ) as mock_get_all,
+            patch(f"{self.SVC}.WorkflowExecutionService") as mock_service_cls,
+        ):
+            count = WorkflowExecutionService.abort_by_conversation_id("conv-1", MagicMock())
+
+        assert count == (0, 0)
+        mock_service_cls.assert_not_called()
+        mock_get_all.assert_called_once_with(
+            {"conversation_id": "conv-1", "overall_status": WorkflowExecutionStatusEnum.IN_PROGRESS}
+        )
+
+    def test_stop_marks_in_progress_execution_aborted(self, workflow_config):
+        """Stop with only the DB layer mocked: the real abort() flips the execution to ABORTED (AC1/AC7)."""
+        execution = MagicMock()
+        execution.execution_id = "e1"
+        execution.workflow_id = "wf-1"
+        execution.overall_status = WorkflowExecutionStatusEnum.IN_PROGRESS
+        execution.active_sub_execution_id = None
+
+        with (
+            patch(f"{self.SVC}.WorkflowExecution.get_in_progress_by_conversation_id", return_value=[execution]),
+            patch(f"{self.SVC}.WorkflowExecution.get_by_execution_id", return_value=[execution]),
+            patch("codemie.service.workflow_service.WorkflowService") as mock_wf_service,
+            patch(f"{self.SVC}.WorkflowExecutionState.get_all_by_fields", return_value=[]),
+            patch(f"{self.SVC}.WorkflowMonitoringService"),
+            patch(f"{self.SVC}.request_summary_manager") as mock_summary,
+        ):
+            mock_summary.get_summary.return_value = None
+            mock_wf_service.return_value.get_workflow.return_value = workflow_config
+            count = WorkflowExecutionService.abort_by_conversation_id("conv-1", MagicMock())
+
+        assert count == (1, 0)
+        assert execution.overall_status == WorkflowExecutionStatusEnum.ABORTED
+        execution.update.assert_called()
+
+
+class TestAbortedStatusIsNotOverwritten:
+    def test_mark_authentication_required_keeps_aborted(self, service):
+        execution = MagicMock()
+        execution.overall_status = WorkflowExecutionStatusEnum.ABORTED
+        service.workflow_execution = execution
+
+        with patch.object(service, "_refresh_workflow_execution"):
+            service.mark_authentication_required("auth payload")
+
+        assert execution.overall_status == WorkflowExecutionStatusEnum.ABORTED
+        execution.update.assert_not_called()
+
+    def test_interrupt_keeps_aborted(self, service):
+        execution = MagicMock()
+        execution.overall_status = WorkflowExecutionStatusEnum.ABORTED
+        service.workflow_execution = execution
+
+        with (
+            patch.object(service, "_refresh_workflow_execution"),
+            patch.object(service, "_send_interrupted_event") as mock_send,
+        ):
+            service.interrupt("state_b")
+
+        assert execution.overall_status == WorkflowExecutionStatusEnum.ABORTED
+        execution.update.assert_not_called()
+        mock_send.assert_not_called()
+
 
 class TestInterruptPropagatesCheckpointState:
     @patch("codemie.service.workflow_execution.workflow_execution_service.WorkflowExecutionState.get_all_by_fields")

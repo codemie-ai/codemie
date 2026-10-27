@@ -875,6 +875,30 @@ def test_create_workflow_execution_with_conversation_id(
     mock_save.assert_called_once_with(refresh=True)
 
 
+def test_create_workflow_execution_from_chat_is_in_progress_with_conversation(
+    workflow_service: WorkflowService,
+    workflow_config: WorkflowConfig,
+    user_model: UserEntity,
+):
+    """A chat-started workflow creates an IN_PROGRESS execution linked to the conversation (AC7 start)."""
+    conversation = MagicMock()
+    conversation.history = []
+
+    with (
+        patch.object(WorkflowService, '_get_or_create_conversation', return_value=("conv-1", conversation, 0, False)),
+        patch.object(WorkflowService, '_augment_user_input_with_history', return_value="input"),
+        patch('codemie.service.workflow_service.AgentWorkspaceService'),
+        patch.object(WorkflowExecution, 'save') as mock_save,
+    ):
+        result = workflow_service.create_workflow_execution(
+            workflow_config, user_model, user_input="hi", conversation_id="conv-1"
+        )
+
+    assert result.overall_status == WorkflowExecutionStatusEnum.IN_PROGRESS
+    assert result.conversation_id == "conv-1"
+    mock_save.assert_called_once_with(refresh=True)
+
+
 def test_create_workflow_execution_without_conversation_id(
     workflow_service: WorkflowService,
     workflow_config: WorkflowConfig,

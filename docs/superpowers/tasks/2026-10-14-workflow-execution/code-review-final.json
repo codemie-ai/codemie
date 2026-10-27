@@ -1,0 +1,41 @@
+{
+  "decision": "request-changes",
+  "rationale": "Acceptance AC7 is partial: no start (IN_PROGRESS) regression test and Stop tests mock abort(), so ABORTED is never asserted. 1 deferred (abort() lacks a status recheck, pre-existing; see code-review-deferred.md), 3 dismissed (fail() summary leak, deleted-workflow fallback, endpoint blocking: handled elsewhere or not defects). Blind and verification-gap lenses not part of the balanced profile.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "spec", "item": "Req 1: lookup by conversation_id returns only IN_PROGRESS executions via repository method", "status": "pass", "notes": "get_in_progress_by_conversation_id; tested"},
+    {"kind": "spec", "item": "Req 2: abort endpoint aborts each matching execution via WorkflowExecutionService", "status": "pass", "notes": "abort_by_conversation_id called after GenerationManager abort"},
+    {"kind": "spec", "item": "Req 3: only IN_PROGRESS executions touched", "status": "pass", "notes": "lookup filter; completed-untouched test"},
+    {"kind": "spec", "item": "Req 4: workflow abort failure logged, does not fail endpoint or skip INTERRUPTED marking", "status": "pass", "notes": "try/except in router and per-execution in service"},
+    {"kind": "spec", "item": "Req 5: permission unchanged (Action.WRITE)", "status": "pass", "notes": "no new access path"},
+    {"kind": "spec", "item": "Req 6: fail()/finish() must not turn ABORTED into SUCCEEDED/FAILED", "status": "pass", "notes": "fail() guard added; tested"},
+    {"kind": "spec", "item": "Req 7: Stop with no running workflow behaves as today", "status": "pass", "notes": "empty lookup is a no-op; tested"},
+    {"kind": "story-ac", "item": "AC1: Stop sets running execution to ABORTED", "status": "pass", "notes": "relies on existing abort()"},
+    {"kind": "story-ac", "item": "AC2: no further nodes start; execution not back to IN_PROGRESS or SUCCEEDED", "status": "pass", "notes": "fail() ABORTED guard"},
+    {"kind": "story-ac", "item": "AC3: Stop on finished execution leaves status unchanged", "status": "pass", "notes": "test_completed_executions_are_left_untouched"},
+    {"kind": "story-ac", "item": "AC4: Stop on non-workflow conversation unchanged", "status": "pass", "notes": "no-op tests"},
+    {"kind": "story-ac", "item": "AC5: abort raising still returns success and marks INTERRUPTED", "status": "pass", "notes": "router failure test"},
+    {"kind": "story-ac", "item": "AC6: active sub-workflow aborted via existing cascade", "status": "pass", "notes": "reuses abort() cascade; no cascade-specific test"},
+    {"kind": "story-ac", "item": "AC7: regression tests cover start, stop, completed, router test", "status": "partial", "notes": "no start (IN_PROGRESS creation) test; Stop tests mock abort() so ABORTED not asserted"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "3 commit subjects in range all match the documented EPMCDME-####: Description format"},
+    {"kind": "code-quality", "status": "pass", "notes": "New code is small, typed where needed, placed in the owning workflow execution model/service and the abort router; no documented rule broken. Deferred import is commented with its reason."},
+    {"kind": "security", "status": "pass", "notes": "Abort endpoint keeps the Ability WRITE check on the conversation before aborting workflow executions; no secrets logged, no untrusted-input parsing added."}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "tests/codemie/service/workflow_execution/test_workflow_execution_service.py",
+      "line": 701,
+      "title": "AC7 regression tests incomplete",
+      "problem": "Story AC7 requires regression tests for start (execution created, IN_PROGRESS), stop (ABORTED) and completed (unchanged). No start test exists, and TestAbortByConversationId mocks WorkflowExecutionService.abort(), so no test asserts an execution actually reaches ABORTED after Stop.",
+      "impact": "A required acceptance criterion is only partially met; a regression where Stop leaves the execution IN_PROGRESS would not be caught by tests.",
+      "recommendation": "Add a test that a chat-started workflow creates an IN_PROGRESS execution, and a Stop test that mocks only the DB layer (not abort()) and asserts overall_status becomes ABORTED."
+    }
+  ]
+}

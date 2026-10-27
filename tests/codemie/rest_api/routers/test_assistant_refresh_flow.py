@@ -89,6 +89,67 @@ def test_abort_endpoint_success(mock_ability, mock_find_by_id, authenticated_use
     assert conv.update.called is True
 
 
+@patch("codemie.rest_api.routers.conversation.streaming.WorkflowExecutionService.abort_by_conversation_id")
+@patch("codemie.rest_api.routers.conversation.streaming.Conversation.find_by_id")
+@patch("codemie.rest_api.routers.conversation.streaming.Ability")
+def test_abort_endpoint_aborts_workflow_executions(
+    mock_ability, mock_find_by_id, mock_abort_by_conv, authenticated_user
+):
+    conv = MagicMock(spec=Conversation)
+    conv.history = []
+    mock_find_by_id.return_value = conv
+    mock_ability.return_value.can.return_value = True
+    mock_abort_by_conv.return_value = (1, 0)
+
+    response = client.post("/v1/conversations/conv_wf_1/abort")
+
+    assert response.status_code == 200
+    assert response.json()["message"] == CONVERSATION_ABORTED_SUCCESS_MSG
+    mock_abort_by_conv.assert_called_once()
+    assert mock_abort_by_conv.call_args.args[0] == "conv_wf_1"
+
+
+@patch("codemie.rest_api.routers.conversation.streaming.WorkflowExecutionService.abort_by_conversation_id")
+@patch("codemie.rest_api.routers.conversation.streaming.Conversation.find_by_id")
+@patch("codemie.rest_api.routers.conversation.streaming.Ability")
+def test_abort_endpoint_workflow_abort_failure_still_marks_interrupted(
+    mock_ability, mock_find_by_id, mock_abort_by_conv, authenticated_user
+):
+    conv = MagicMock(spec=Conversation)
+    last_msg = MagicMock(spec=GeneratedMessage)
+    last_msg.in_progress = True
+    conv.history = [last_msg]
+    mock_find_by_id.return_value = conv
+    mock_ability.return_value.can.return_value = True
+    mock_abort_by_conv.side_effect = RuntimeError("db down")
+
+    response = client.post("/v1/conversations/conv_wf_2/abort")
+
+    assert response.status_code == 200
+    assert response.json()["message"] == CONVERSATION_ABORTED_SUCCESS_MSG
+    assert last_msg.in_progress is False
+    assert last_msg.status == ConversationStatus.INTERRUPTED.value
+    assert conv.update.called is True
+
+
+@patch("codemie.rest_api.routers.conversation.streaming.WorkflowExecutionService.abort_by_conversation_id")
+@patch("codemie.rest_api.routers.conversation.streaming.Conversation.find_by_id")
+@patch("codemie.rest_api.routers.conversation.streaming.Ability")
+def test_abort_endpoint_no_workflow_executions_unchanged(
+    mock_ability, mock_find_by_id, mock_abort_by_conv, authenticated_user
+):
+    conv = MagicMock(spec=Conversation)
+    conv.history = []
+    mock_find_by_id.return_value = conv
+    mock_ability.return_value.can.return_value = True
+    mock_abort_by_conv.return_value = (0, 0)
+
+    response = client.post("/v1/conversations/conv_wf_3/abort")
+
+    assert response.status_code == 200
+    assert response.json()["message"] == CONVERSATION_ABORTED_SUCCESS_MSG
+
+
 @patch("codemie.service.conversation_service.ConversationMonitoringService.send_conversation_metric")
 @patch("codemie.service.conversation_service.ConversationService._upsert_conversation_metrics")
 @patch("codemie.service.conversation_service.ConversationService._schedule_naming_background_task")

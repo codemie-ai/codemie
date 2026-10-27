@@ -111,6 +111,26 @@ class TestWorkflowExecution:
             assert result[0].id == mock_workflow_execution.id
             mock_get_all.assert_called_once_with({"execution_id": "exec_123"})
 
+    def test_get_in_progress_by_conversation_id_filters_in_query(self):
+        row = WorkflowExecution(
+            workflow_id='w',
+            execution_id='e0',
+            overall_status=WorkflowExecutionStatusEnum.IN_PROGRESS,
+            conversation_id='conv_1',
+        )
+        with patch.object(WorkflowExecution, 'get_all_by_fields', return_value=[row]) as mock_get_all:
+            result = WorkflowExecution.get_in_progress_by_conversation_id('conv_1')
+
+        assert result == [row]
+        mock_get_all.assert_called_once_with(
+            {"conversation_id": "conv_1", "overall_status": WorkflowExecutionStatusEnum.IN_PROGRESS}
+        )
+
+    def test_get_in_progress_by_conversation_id_empty_id(self):
+        with patch.object(WorkflowExecution, 'get_all_by_fields') as mock_get_all:
+            assert WorkflowExecution.get_in_progress_by_conversation_id('') == []
+        mock_get_all.assert_not_called()
+
     @patch('codemie.core.workflow_models.workflow_execution.Session')
     def test_delete(self, mock_session_class):
         mock_session = MagicMock()
