@@ -46,7 +46,7 @@ from codemie.rest_api.models.project_budget import (
 )
 from codemie.rest_api.models.servicenow_integration import ServiceNowBudgetAction, ServiceNowBudgetRequest
 from codemie.rest_api.security.user import User
-from codemie.rest_api.security.user_type_validator import SERVICE_ACCOUNT_USER_TYPE
+from codemie.rest_api.security.user_type_validator import is_service_account
 from codemie.service.budget.budget_enums import BudgetCategory
 from codemie.service.budget.budget_models import Budget
 from codemie.service.budget.project_budget_service import ProjectBudgetGroupFullResult, project_budget_service
@@ -389,7 +389,7 @@ class ServiceNowIntegrationService:
     def _list_projects_sync(cls, emails: list[str]) -> list[Application]:
         with get_session() as session:
             users = user_repository.get_by_emails(session, emails, active_only=True)
-            user_ids = [user.id for user in users.values() if user.user_type != SERVICE_ACCOUNT_USER_TYPE]
+            user_ids = [user.id for user in users.values() if not is_service_account(user)]
             if not user_ids:
                 return []
             return application_repository.list_shared_projects_for_users(session, user_ids)
@@ -513,7 +513,7 @@ class ServiceNowIntegrationService:
         resolved_ids: list[str] = []
         for email in emails:
             user = users_by_email.get(email.lower())
-            if user is None or user.user_type == SERVICE_ACCOUNT_USER_TYPE:
+            if user is None or is_service_account(user):
                 pending.append(email)
             else:
                 assigned.append(email)

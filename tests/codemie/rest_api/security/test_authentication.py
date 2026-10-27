@@ -588,7 +588,7 @@ class TestAuthenticateServiceNowScope:
 
     @pytest.mark.anyio
     async def test_service_account_on_blocked_route_is_403(self, mocker):
-        caller = User(id="sn-sa-1", user_type="service_account", project_names=[])
+        caller = User(id="sn-sa-1", project_names=[])
 
         with pytest.raises(ExtendedHTTPException) as exc_info:
             await self._authenticate_as(mocker, caller, "GET", "/v1/admin/project-budget-groups")
@@ -597,7 +597,7 @@ class TestAuthenticateServiceNowScope:
 
     @pytest.mark.anyio
     async def test_service_account_on_allowed_route_returns_user(self, mocker):
-        caller = User(id="sn-sa-1", user_type="service_account", project_names=[])
+        caller = User(id="sn-sa-1", project_names=[])
 
         result = await self._authenticate_as(mocker, caller, "POST", "/v1/integrations/servicenow/budgets")
 

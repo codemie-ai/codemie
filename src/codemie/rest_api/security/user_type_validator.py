@@ -19,12 +19,17 @@ Only 'regular', 'external', and 'service_account' values are accepted (case-inse
 missing defaults to 'regular', and invalid values reject authentication with 401.
 """
 
-from typing import Any, Optional
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any, Optional
 from fastapi import status
 
 from codemie.configs.logger import logger
 from codemie.core.exceptions import ExtendedHTTPException
 
+if TYPE_CHECKING:
+    from codemie.rest_api.models.user_management import UserDB
+    from codemie.rest_api.security.user import User
 
 SERVICE_ACCOUNT_USER_TYPE = "service_account"
 
@@ -35,6 +40,12 @@ PERSONAL_PROJECT_EXCLUDED_USER_TYPES = {"external", SERVICE_ACCOUNT_USER_TYPE}
 
 def is_personal_project_excluded(user_type: str) -> bool:
     return user_type in PERSONAL_PROJECT_EXCLUDED_USER_TYPES
+
+
+def is_service_account(user: User | UserDB) -> bool:
+    from codemie.rest_api.security.servicenow_access import is_servicenow_service_account
+
+    return user.user_type == SERVICE_ACCOUNT_USER_TYPE or is_servicenow_service_account(user)
 
 
 def _describe_valid_user_types() -> str:

@@ -282,7 +282,7 @@ SERVICE_ACCOUNT_ID = "sn-sa"
 
 
 def _http_service_account() -> User:
-    return User(id=SERVICE_ACCOUNT_ID, email="sn@svc.example.com", user_type="service_account")
+    return User(id=SERVICE_ACCOUNT_ID, email="sn@svc.example.com")
 
 
 def _http_regular_user() -> User:
@@ -489,7 +489,7 @@ class TestRealAuthenticateScope:
         servicenow_access._allowed_routes.cache_clear()
 
     def test_service_account_reaches_integration_routes_but_not_others(self, real_auth):
-        client = real_auth(User(id=SERVICE_ACCOUNT_ID, email="sn@svc.example.com", user_type="service_account"))
+        client = real_auth(User(id=SERVICE_ACCOUNT_ID, email="sn@svc.example.com"))
 
         projects = _get_projects(client, ["a@epam.com"])
         budgets = client.post(BUDGETS_URL, json=_payload(action="cancel", amounts=None))

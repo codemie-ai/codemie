@@ -118,6 +118,17 @@ def _user(email, user_id=None, user_type="regular"):
     return SimpleNamespace(id=user_id or f"id-{email}", email=email, user_type=user_type)
 
 
+SERVICENOW_ACCOUNT_ID = "sn-sa"
+
+
+@pytest.fixture
+def servicenow_account():
+    with patch("codemie.rest_api.security.servicenow_access.config") as mock_config:
+        mock_config.SERVICENOW_INTEGRATION_ENABLED = True
+        mock_config.SERVICENOW_SERVICE_ACCOUNT_ID = SERVICENOW_ACCOUNT_ID
+        yield _user("sn@svc.example.com", user_id=SERVICENOW_ACCOUNT_ID)
+
+
 def _app(name="epm-aimf", project_type="shared", deleted_at=None, cost_center_id=None):
     return SimpleNamespace(
         name=name, project_type=project_type, deleted_at=deleted_at, cost_center_id=cost_center_id, id=uuid4()
@@ -310,6 +321,20 @@ class TestAssignAdmins:
         assert (assigned, pending, changed) == ([], ["sa@epam.com", "ghost@epam.com"], [])
         assignment.bulk_assign_users_to_project.assert_not_called()
 
+    def test_servicenow_account_email_is_pending_regardless_of_user_type(self, session, actor, servicenow_account):
+        with (
+            _patch("user_repository") as users,
+            _patch("user_project_repository") as memberships,
+            _patch("ProjectAssignmentService") as assignment,
+        ):
+            users.get_by_emails.return_value = {servicenow_account.email: servicenow_account}
+            memberships.get_by_users_and_project.return_value = {}
+
+            assigned, pending, changed = Svc._assign_admins(session, actor, _app(), [servicenow_account.email])
+
+        assert (assigned, pending, changed) == ([], [servicenow_account.email], [])
+        assignment.bulk_assign_users_to_project.assert_not_called()
+
     def test_existing_admin_is_skipped_and_reported_assigned(self, session, actor):
         admin = _user("a@epam.com")
         with (
@@ -483,6 +508,20 @@ class TestListProjects:
         assert result == projects
         users.get_by_emails.assert_called_once_with(session, ["r@epam.com", "sa@epam.com"], active_only=True)
         apps.list_shared_projects_for_users.assert_called_once_with(session, [regular.id])
+
+    async def test_servicenow_account_contributes_no_projects(self, session, servicenow_account):
+        with (
+            _patch("get_session") as get_session,
+            _patch("user_repository") as users,
+            _patch("application_repository") as apps,
+        ):
+            get_session.return_value.__enter__.return_value = session
+            users.get_by_emails.return_value = {servicenow_account.email: servicenow_account}
+
+            result = await Svc.list_projects([servicenow_account.email])
+
+        assert result == []
+        apps.list_shared_projects_for_users.assert_not_called()
 
     async def test_no_matching_users_returns_empty_without_project_query(self, session):
         with (

@@ -1899,6 +1899,32 @@ class TestAuthenticateTeamsSender:
             assert exc_info.value.code == 401
 
     @pytest.mark.asyncio
+    async def test_raises_401_when_resolved_user_is_servicenow_account_of_regular_type(self):
+        mock_session = AsyncMock()
+        db_user = MagicMock(
+            id="sn-sa-1",
+            email="servicenow@example.com",
+            user_type="regular",
+            is_active=True,
+            deleted_at=None,
+        )
+
+        with (
+            patch("codemie.clients.postgres.get_async_session") as mock_get_session,
+            patch("codemie.service.user.authentication_service.user_repository") as mock_user_repo,
+            patch("codemie.rest_api.security.servicenow_access.config") as mock_config,
+        ):
+            mock_get_session.return_value = _make_async_session_cm(mock_session)
+            mock_user_repo.aget_by_email = AsyncMock(return_value=db_user)
+            mock_config.SERVICENOW_INTEGRATION_ENABLED = True
+            mock_config.SERVICENOW_SERVICE_ACCOUNT_ID = "sn-sa-1"
+
+            with pytest.raises(ExtendedHTTPException) as exc_info:
+                await AuthenticationService.authenticate_teams_sender("servicenow@example.com")
+
+            assert exc_info.value.code == 401
+
+    @pytest.mark.asyncio
     async def test_successful_resolution_returns_user_with_relationships(self):
         mock_session = AsyncMock()
         db_user = UserDB(

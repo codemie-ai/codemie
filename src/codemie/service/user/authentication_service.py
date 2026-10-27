@@ -41,7 +41,6 @@ from codemie.repository.user_kb_repository import user_kb_repository
 from codemie.repository.application_repository import application_repository
 from codemie.rest_api.models.user_management import UserDB, CodeMieUserDetail, ProjectInfo
 from codemie.rest_api.security import user as security_user
-from codemie.rest_api.security.user_type_validator import SERVICE_ACCOUNT_USER_TYPE
 from codemie.service.activity.activity_models import (
     ActivityDomain,
     ActivityEntityType,
@@ -614,6 +613,7 @@ class AuthenticationService:
                 non-deleted, non-service-account user
         """
         from codemie.clients.postgres import get_async_session
+        from codemie.rest_api.security.user_type_validator import is_service_account
 
         async with get_async_session() as session:
             db_user = await user_repository.aget_by_email(session, sender_email.lower())
@@ -622,7 +622,7 @@ class AuthenticationService:
                 db_user is None
                 or not db_user.is_active
                 or db_user.deleted_at is not None
-                or db_user.user_type == SERVICE_ACCOUNT_USER_TYPE
+                or is_service_account(db_user)
             ):
                 raise ExtendedHTTPException(
                     code=401,

@@ -55,7 +55,7 @@ def allowed_routes():
         yield mock_routes
 
 
-def _sa(user_id=SERVICE_ACCOUNT_ID, user_type="service_account", **extra):
+def _sa(user_id=SERVICE_ACCOUNT_ID, user_type="regular", **extra):
     return User(id=user_id, email="sn@svc.example.com", user_type=user_type, project_names=[], **extra)
 
 
@@ -67,8 +67,9 @@ def _request(method, path):
 
 
 class TestIsServiceNowServiceAccount:
-    def test_enabled_matching_id_and_service_account_type(self, servicenow_config):
-        assert is_servicenow_service_account(_sa()) is True
+    @pytest.mark.parametrize("user_type", ["regular", "service_account", None])
+    def test_enabled_matching_id_ignores_user_type(self, servicenow_config, user_type):
+        assert is_servicenow_service_account(_sa(user_type=user_type)) is True
 
     def test_disabled_integration(self, servicenow_config):
         servicenow_config.SERVICENOW_INTEGRATION_ENABLED = False
@@ -78,8 +79,8 @@ class TestIsServiceNowServiceAccount:
     def test_id_mismatch(self, servicenow_config):
         assert is_servicenow_service_account(_sa(user_id="someone-else")) is False
 
-    def test_regular_user_type(self, servicenow_config):
-        assert is_servicenow_service_account(_sa(user_type="regular")) is False
+    def test_service_account_type_with_other_id(self, servicenow_config):
+        assert is_servicenow_service_account(_sa(user_id="other-sa", user_type="service_account")) is False
 
     def test_empty_configured_id_never_matches_empty_user_id(self, servicenow_config):
         servicenow_config.SERVICENOW_SERVICE_ACCOUNT_ID = ""
@@ -132,8 +133,9 @@ class TestServiceNowIntegrationAccessOnly:
         return request
 
     @pytest.mark.anyio
-    async def test_service_account_passes(self, servicenow_config):
-        assert await servicenow_integration_access_only(self._guard_request(_sa())) is None
+    @pytest.mark.parametrize("user_type", ["regular", "service_account"])
+    async def test_service_account_passes(self, servicenow_config, user_type):
+        assert await servicenow_integration_access_only(self._guard_request(_sa(user_type=user_type))) is None
 
     @pytest.mark.anyio
     @pytest.mark.parametrize(
@@ -142,9 +144,8 @@ class TestServiceNowIntegrationAccessOnly:
             User(id="u1", username="regular", project_names=[]),
             User(id="admin-1", username="admin", is_admin=True, project_names=[]),
             User(id="other-sa", user_type="service_account", project_names=[]),
-            User(id=SERVICE_ACCOUNT_ID, user_type="regular", project_names=[]),
         ],
-        ids=["regular", "admin", "other_service_account", "right_id_wrong_type"],
+        ids=["regular", "admin", "other_service_account"],
     )
     async def test_other_callers_are_403(self, servicenow_config, user):
         with pytest.raises(ExtendedHTTPException) as exc_info:
