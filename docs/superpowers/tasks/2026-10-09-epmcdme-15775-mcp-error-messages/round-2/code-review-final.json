@@ -1,0 +1,48 @@
+{
+  "decision": "request-changes",
+  "rationale": "All lenses and the standards audit ran; two blockers. The name sanitizer misses C1 controls and bidi/zero-width characters that the spec requires removed, and restore of a catalogue server carrying a custom configuration has no test. 1 deferred (code-review-deferred.md: unescaped {e} in the resolve_catalog_config log, pre-existing), 11 dismissed; no old message text remains in src/ or tests/.",
+  "confidence": "high",
+  "risk_flags": ["security", "user-facing text"],
+  "business_review": [
+    {"kind": "story-ac", "item": "AC1: saving with a custom MCP server in restricted mode does not expose mcp_config_id", "status": "pass", "notes": "Message has no field name; tests assert absence"},
+    {"kind": "story-ac", "item": "AC2: the error still identifies the offending MCP server by name", "status": "pass", "notes": "Cleaned names listed via _labels"},
+    {"kind": "story-ac", "item": "AC3: regression tests cover this validation error for assistant and workflow saves", "status": "pass", "notes": "Route and unit tests added"},
+    {"kind": "spec", "item": "All restricted-mode refusals are user-actionable text with no internal field names", "status": "pass", "notes": "Custom, overridden and restore messages reworded"},
+    {"kind": "spec", "item": "Not found / inactive / not public merged into one message; reason and id logged only; duplicate message lists no ids", "status": "pass", "notes": "Logged via logger.warning; single user message"},
+    {"kind": "spec", "item": "Version-restore refusals say \"Can't restore this version: ...\" and advise another version", "status": "pass", "notes": "validate_on_restore wording asserted in tests"},
+    {"kind": "spec", "item": "Server names in messages: quotes, markup, control chars removed; whitespace collapsed; 60 chars; 'unnamed'; max 5 then 'and N more'", "status": "partial", "notes": "_NAME_UNSAFE misses C1 controls and Unicode format/bidi characters; other sub-rules implemented"},
+    {"kind": "spec", "item": "Server names and catalogue ids logged with repr()", "status": "pass", "notes": "All touched logger calls use !r; forge-line test present"},
+    {"kind": "spec", "item": "Same HTTP status (400) and same rules as before", "status": "pass", "notes": "Predicates equivalent to old per-server checks"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "3 commit subjects in the review range all match the documented EPMCDME-####: Description format (EPMCDME-15775 prefix, colon, capitalised description)"},
+    {"kind": "code-quality", "status": "pass", "notes": "access_control.py grows from 201 to 250 lines (under the ~500-line cohesion threshold); new helpers are typed and the module keeps the future import and license header"},
+    {"kind": "security", "status": "pass", "notes": "No credentials logged; names and ids logged with repr(); merged refusal message with reason only in the log; refusal logic unchanged"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/service/mcp/access_control.py",
+      "line": 45,
+      "title": "Name sanitizer leaves bidi and format characters",
+      "problem": "_NAME_UNSAFE only matches \\x00-\\x1f, \\x7f and < > ' \" & `. C1 controls (\\x80-\\x9f, except \\x85 which str.split already collapses), zero-width characters (U+200B-U+200F, U+FEFF) and bidi overrides (U+202A-U+202E, U+2066-U+2069) pass through _clean_name into the user-facing message. The spec requires control characters removed from names in messages; the test_server_name_is_cleaned cases cover only C0 characters. Separately, [:60] is applied after the whitespace join, so a cut-off name can end in a trailing space inside the quotes.",
+      "impact": "A crafted server name (user-supplied in the save payload; reachable via assistant, workflow and skill saves) can reorder or spoof text in the toast shown to the user. Reachability confirmed: _labels feeds every new restricted-mode, restore and catalogue refusal message.",
+      "recommendation": "Extend the character class to cover \\x80-\\x9f, \\u200b-\\u200f, \\u2028-\\u2029, \\u202a-\\u202e, \\u2066-\\u2069 and \\ufeff, strip the result after the 60-character cut, and add cases for these characters to test_server_name_is_cleaned."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/unit/service/mcp/test_access_control.py",
+      "line": 389,
+      "title": "Restore of overridden catalogue server is untested",
+      "problem": "validate_on_restore now builds blocked = custom + overridden from _restricted_violations. TestValidateOnRestore and the version-service rollback test only use a command-only server with no mcp_config_id, which lands in the custom branch. No test restores a catalogue server with use_custom_config=True or inline connection fields.",
+      "impact": "If the overridden list were dropped from the restore check, a rollback to a version holding a catalogue server with a custom configuration would silently succeed in restricted mode, bypassing the administrator policy, and every existing test would still pass. validate_on_restore has a single caller, assistant_version_service.py:264.",
+      "recommendation": "Add restricted-mode tests in TestValidateOnRestore for _server('cat', mcp_config_id='cfg-1', use_custom_config=True) and _server('cat', mcp_config_id='cfg-1', command='uvx'), each expecting a ValidationException matching \"Can't restore this version\" and naming 'cat'."
+    }
+  ]
+}

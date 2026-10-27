@@ -109,7 +109,7 @@ class TestValidateOnSaveOpenMode:
         servers = [_server("s1", mcp_config_id="missing")]
         with _open_mode():
             with patch(_GET_BY_IDS, return_value=[]):
-                with pytest.raises(ValidationException, match="not found"):
+                with pytest.raises(ValidationException, match="not available in the catalogue"):
                     MCPAccessControlService.validate_on_save(servers)
 
     def test_inactive_catalog_entry_raises(self):
@@ -117,7 +117,7 @@ class TestValidateOnSaveOpenMode:
         servers = [_server("s1", mcp_config_id="cat-1")]
         with _open_mode():
             with patch(_GET_BY_IDS, return_value=[entry]):
-                with pytest.raises(ValidationException, match="inactive"):
+                with pytest.raises(ValidationException, match="not available in the catalogue"):
                     MCPAccessControlService.validate_on_save(servers)
 
     def test_non_public_catalog_entry_raises(self):
@@ -125,7 +125,7 @@ class TestValidateOnSaveOpenMode:
         servers = [_server("s1", mcp_config_id="cat-1")]
         with _open_mode():
             with patch(_GET_BY_IDS, return_value=[entry]):
-                with pytest.raises(ValidationException, match="not public"):
+                with pytest.raises(ValidationException, match="not available in the catalogue"):
                     MCPAccessControlService.validate_on_save(servers)
 
     def test_disabled_server_with_invalid_catalog_still_raises(self):
@@ -133,7 +133,7 @@ class TestValidateOnSaveOpenMode:
         servers = [_server("s1", mcp_config_id="missing", enabled=False)]
         with _open_mode():
             with patch(_GET_BY_IDS, return_value=[]):
-                with pytest.raises(ValidationException, match="not found"):
+                with pytest.raises(ValidationException, match="not available in the catalogue"):
                     MCPAccessControlService.validate_on_save(servers)
 
 
@@ -144,32 +144,32 @@ class TestValidateOnSaveRestrictedMode:
     def test_inline_server_raises(self):
         servers = [_server("s1", command="npx")]
         with _restricted_mode():
-            with pytest.raises(ValidationException, match="Custom MCP servers are not allowed"):
+            with pytest.raises(ValidationException, match="custom server"):
                 MCPAccessControlService.validate_on_save(servers)
 
     def test_forbidden_field_config_raises(self):
         inline_cfg = MCPServerConfig(command="uvx")
         servers = [_server("s1", mcp_config_id="cat-1", config=inline_cfg)]
         with _restricted_mode():
-            with pytest.raises(ValidationException, match="not allowed when mcp_config_id is set"):
+            with pytest.raises(ValidationException, match="custom configuration"):
                 MCPAccessControlService.validate_on_save(servers)
 
     def test_forbidden_field_command_raises(self):
         servers = [_server("s1", mcp_config_id="cat-1", command="uvx")]
         with _restricted_mode():
-            with pytest.raises(ValidationException, match="not allowed when mcp_config_id is set"):
+            with pytest.raises(ValidationException, match="custom configuration"):
                 MCPAccessControlService.validate_on_save(servers)
 
     def test_forbidden_field_arguments_raises(self):
         servers = [_server("s1", mcp_config_id="cat-1", arguments="--arg")]
         with _restricted_mode():
-            with pytest.raises(ValidationException, match="not allowed when mcp_config_id is set"):
+            with pytest.raises(ValidationException, match="custom configuration"):
                 MCPAccessControlService.validate_on_save(servers)
 
     def test_forbidden_field_mcp_connect_url_raises(self):
         servers = [_server("s1", mcp_config_id="cat-1", mcp_connect_url="http://x")]
         with _restricted_mode():
-            with pytest.raises(ValidationException, match="not allowed when mcp_config_id is set"):
+            with pytest.raises(ValidationException, match="custom configuration"):
                 MCPAccessControlService.validate_on_save(servers)
 
     def test_inactive_catalog_raises_in_restricted_mode(self):
@@ -177,7 +177,7 @@ class TestValidateOnSaveRestrictedMode:
         servers = [_server("s1", mcp_config_id="cat-1")]
         with _restricted_mode():
             with patch(_GET_BY_IDS, return_value=[entry]):
-                with pytest.raises(ValidationException, match="inactive"):
+                with pytest.raises(ValidationException, match="not available in the catalogue"):
                     MCPAccessControlService.validate_on_save(servers)
 
     def test_non_public_catalog_raises_in_restricted_mode(self):
@@ -185,7 +185,7 @@ class TestValidateOnSaveRestrictedMode:
         servers = [_server("s1", mcp_config_id="cat-1")]
         with _restricted_mode():
             with patch(_GET_BY_IDS, return_value=[entry]):
-                with pytest.raises(ValidationException, match="not public"):
+                with pytest.raises(ValidationException, match="not available in the catalogue"):
                     MCPAccessControlService.validate_on_save(servers)
 
     def test_valid_catalog_ref_passes_in_restricted_mode(self):
@@ -199,14 +199,14 @@ class TestValidateOnSaveRestrictedMode:
         # All servers are checked regardless of enabled flag
         servers = [_server("s1", command="npx", enabled=False)]
         with _restricted_mode():
-            with pytest.raises(ValidationException, match="Custom MCP servers are not allowed"):
+            with pytest.raises(ValidationException, match="custom server"):
                 MCPAccessControlService.validate_on_save(servers)
 
     def test_use_custom_config_true_raises_in_restricted_mode(self):
         # AC3: declaring custom mode on a catalog-ref server is itself an override.
         servers = [_server("s1", mcp_config_id="cat-1", use_custom_config=True)]
         with _restricted_mode():
-            with pytest.raises(ValidationException, match="use_custom_config"):
+            with pytest.raises(ValidationException, match="custom configuration"):
                 MCPAccessControlService.validate_on_save(servers)
 
 
@@ -407,3 +407,134 @@ class TestValidateOnRestore:
     def test_open_mode_allows_inline_server(self):
         with _open_mode():
             MCPAccessControlService.validate_on_restore([_server("ok", command="npx")])
+
+
+# ── user-facing wording of the restricted-mode refusals ───────────────
+
+
+class TestRestrictedModeMessages:
+    """The messages end up in a toast: no internal field names, every offending server named once, safe name text."""
+
+    def test_names_every_custom_server_in_one_message(self):
+        servers = [_server("one", command="npx"), _server("two", command="uvx")]
+        with _restricted_mode():
+            with pytest.raises(ValidationException) as exc:
+                MCPAccessControlService.validate_on_save(servers)
+        assert "'one', 'two'" in str(exc.value)
+        assert "Remove them" in str(exc.value) and "are custom servers" in str(exc.value)
+
+    @pytest.mark.parametrize(
+        "server",
+        [
+            _server("x", command="npx"),
+            _server("x", mcp_config_id="cat-1", use_custom_config=True),
+            _server("x", mcp_config_id="cat-1", config=MCPServerConfig(command="uvx")),
+        ],
+    )
+    def test_message_has_no_internal_field_names(self, server):
+        with _restricted_mode():
+            with pytest.raises(ValidationException) as exc:
+                MCPAccessControlService.validate_on_save([server])
+        for internal in ("mcp_config_id", "use_custom_config", "'config'"):
+            assert internal not in str(exc.value)
+        assert "catalogue" in str(exc.value)
+
+    def test_server_name_is_stripped_of_markup_and_bounded(self):
+        servers = [_server("<img src=x onerror=alert(1)>" + "a" * 200, command="npx")]
+        with _restricted_mode():
+            with pytest.raises(ValidationException) as exc:
+                MCPAccessControlService.validate_on_save(servers)
+        message = str(exc.value)
+        assert "<" not in message and ">" not in message
+        assert "a" * 61 not in message
+
+    def test_duplicate_catalog_entries_message_has_no_ids(self):
+        servers = [_server("a", mcp_config_id="cat-secret-1"), _server("b", mcp_config_id="cat-secret-1")]
+        with _open_mode():
+            with pytest.raises(ValidationException) as exc:
+                MCPAccessControlService.validate_on_save(servers)
+        assert "added more than once" in str(exc.value)
+        assert "cat-secret-1" not in str(exc.value)
+
+    def test_restore_message_says_it_is_a_restore_and_gives_an_action_that_is_possible(self):
+        with _restricted_mode():
+            with pytest.raises(ValidationException, match="Can't restore this version") as exc:
+                MCPAccessControlService.validate_on_restore([_server("rogue", command="npx")])
+        assert "'rogue'" in str(exc.value)
+        assert "Choose a version without them" in str(exc.value)
+        assert "Remove it" not in str(exc.value)  # nothing can be removed from a stored version
+
+    def test_restore_refuses_catalog_server_with_custom_configuration(self):
+        """A catalogue server stored with a custom override must block a restore as well, not only custom servers."""
+        with _restricted_mode():
+            with pytest.raises(ValidationException, match="Can't restore this version") as exc:
+                MCPAccessControlService.validate_on_restore(
+                    [_server("cat", mcp_config_id="cat-1", use_custom_config=True)]
+                )
+        assert "'cat'" in str(exc.value)
+
+    @pytest.mark.parametrize(
+        ("name", "expected"),
+        [
+            ("", "'unnamed'"),
+            ("   ", "'unnamed'"),
+            ("a\nb\r\tc", "'a b c'"),
+            ("it's \"x\" &amp; `y`", "'it s x amp; y'"),
+            ("\x00\x1bhidden", "'hidden'"),
+            ("a\x85b", "'a b'"),  # C1 control (NEL)
+            ("x\u202ey", "'x y'"),  # bidi override
+            ("ze\u200bro\ufeff", "'ze ro'"),  # zero-width space, byte-order mark
+            ("l1\u2028l2\u2029l3", "'l1 l2 l3'"),  # line and paragraph separators
+            ("caf\u00e9 \u540d", "'caf\u00e9 \u540d'"),  # ordinary non-ASCII letters are kept
+        ],
+    )
+    def test_server_name_is_cleaned(self, name, expected):
+        from codemie.service.mcp.access_control import _clean_name
+
+        assert f"'{_clean_name(name)}'" == expected
+
+    def test_many_servers_are_summarised(self):
+        servers = [_server(f"s{i}", command="npx") for i in range(8)]
+        with _restricted_mode():
+            with pytest.raises(ValidationException) as exc:
+                MCPAccessControlService.validate_on_save(servers)
+        assert "'s0', 's1', 's2', 's3', 's4' and 3 more" in str(exc.value)
+        assert "s7" not in str(exc.value)
+
+    def test_logged_server_name_cannot_forge_log_lines(self):
+        servers = [_server("x\nERROR forged line", mcp_config_id="cat-1")]
+        with (
+            _open_mode(),
+            patch(_GET_BY_IDS, return_value=[]),
+            patch("codemie.service.mcp.access_control.logger") as log,
+        ):
+            with pytest.raises(ValidationException):
+                MCPAccessControlService.validate_on_save(servers)
+        logged = " ".join(str(c.args[0]) for c in log.warning.call_args_list)
+        assert "\n" not in logged
+        assert "\\n" in logged
+
+    @pytest.mark.parametrize(
+        ("entry", "reason"),
+        [
+            (None, "not found"),
+            (_catalog_entry("cat-secret-id", is_active=False), "inactive"),
+            (_catalog_entry("cat-secret-id", is_public=False), "not public"),
+        ],
+    )
+    def test_unavailable_catalog_entry_message_hides_id_and_reason(self, entry, reason):
+        """One identical message whatever the cause, so a user cannot probe entries; the cause goes to the log."""
+        servers = [_server("s1", mcp_config_id="cat-secret-id")]
+        with _open_mode(), patch(_GET_BY_IDS, return_value=[entry] if entry else []):
+            with patch("codemie.service.mcp.access_control.logger") as log:
+                with pytest.raises(ValidationException) as exc:
+                    MCPAccessControlService.validate_on_save(servers)
+        message = str(exc.value)
+        assert (
+            message
+            == "MCP server not available in the catalogue: 's1'. Choose another MCP server or ask your administrator."
+        )
+        assert "cat-secret-id" not in message
+        assert reason not in message
+        logged = " ".join(str(c.args[0]) for c in log.warning.call_args_list)
+        assert reason in logged and "cat-secret-id" in logged

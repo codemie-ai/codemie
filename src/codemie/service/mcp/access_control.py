@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import unicodedata
+
 from codemie.configs import logger
 from codemie.configs.customer_config import customer_config
 from codemie.core.exceptions import ValidationException
@@ -39,6 +41,43 @@ _CATALOG_REF_ALLOWED_FIELDS = frozenset(
 )
 
 
+_MAX_LABELS = 5
+_MARKUP_AND_QUOTES = str.maketrans(dict.fromkeys("<>'\"&`", " "))
+
+
+def _clean_name(value: object) -> str:
+    """A server name safe for a user-facing message: no markup, quotes or invisible characters; bounded; not empty."""
+    text = str(value or "").translate(_MARKUP_AND_QUOTES)
+    # Unicode categories C* (control, format such as bidi and zero-width, unassigned) and the line/paragraph
+    # separators Zl/Zp become spaces: no hand-maintained code point ranges.
+    text = "".join(
+        " " if unicodedata.category(c)[0] == "C" or unicodedata.category(c) in ("Zl", "Zp") else c for c in text
+    )
+    return " ".join(text.split())[:60] or "unnamed"
+
+
+def _labels(servers: list[MCPServerDetails]) -> str:
+    """Server names for a user-facing message: cleaned, at most _MAX_LABELS of them, then 'and N more'."""
+    names = ", ".join(f"'{_clean_name(s.name)}'" for s in servers[:_MAX_LABELS])
+    extra = len(servers) - _MAX_LABELS
+    return f"{names} and {extra} more" if extra > 0 else names
+
+
+def _restricted_violations(servers: list[MCPServerDetails]) -> tuple[list[MCPServerDetails], list[MCPServerDetails]]:
+    """(custom servers, catalogue servers that carry a custom configuration) among the given servers."""
+    custom = [s for s in servers if not s.mcp_config_id]
+    overridden = [s for s in servers if s.mcp_config_id and (s.use_custom_config or _has_inline_config(s))]
+    return custom, overridden
+
+
+def _has_inline_config(server: MCPServerDetails) -> bool:
+    """True when a catalog-ref server carries connection-level fields that must come from the catalog."""
+    return any(
+        f not in _CATALOG_REF_ALLOWED_FIELDS and getattr(server, f, None) is not None
+        for f in MCPServerDetails.model_fields
+    )
+
+
 def _build_catalog_map(mcp_servers: list[MCPServerDetails]) -> dict[str, MCPConfig]:
     catalog_ids = list({s.mcp_config_id for s in mcp_servers if s.mcp_config_id is not None})
     if not catalog_ids:
@@ -55,48 +94,55 @@ class MCPAccessControlService:
 
     @staticmethod
     def _validate_restricted_mode(servers: list[MCPServerDetails]) -> None:
-        for server in servers:
-            if not server.mcp_config_id:
-                raise ValidationException(
-                    f"Custom MCP servers are not allowed in restricted mode. "
-                    f"Server '{server.name}' must reference a catalog entry via mcp_config_id."
-                )
-            if server.use_custom_config:
-                raise ValidationException(
-                    f"Field 'use_custom_config' is not allowed when mcp_config_id is set "
-                    f"in restricted mode (server '{server.name}')."
-                )
-            for field in MCPServerDetails.model_fields:
-                if field not in _CATALOG_REF_ALLOWED_FIELDS and getattr(server, field, None) is not None:
-                    raise ValidationException(
-                        f"Field '{field}' is not allowed when mcp_config_id is set "
-                        f"in restricted mode (server '{server.name}')."
-                    )
+        custom, overridden = _restricted_violations(servers)
+        if custom:
+            many = len(custom) > 1
+            subject = (
+                f"MCP servers {_labels(custom)} are custom servers"
+                if many
+                else f"MCP server {_labels(custom)} is a custom server"
+            )
+            raise ValidationException(
+                f"{subject}. Custom servers are turned off by your administrator. "
+                f"Remove {'them' if many else 'it'}, then add {'servers' if many else 'a server'} from the catalogue."
+            )
+
+        if overridden:
+            many = len(overridden) > 1
+            subject = f"MCP servers {_labels(overridden)} have" if many else f"MCP server {_labels(overridden)} has"
+            raise ValidationException(
+                f"{subject} a custom configuration. Custom configuration is turned off by your administrator. "
+                f"Remove {'them' if many else 'the server'}, "
+                f"then add {'them' if many else 'it'} again from the catalogue."
+            )
 
     @staticmethod
     def _validate_catalog_entries(
         catalog_refs: list[MCPServerDetails],
         catalog_map: dict[str, MCPConfig],
     ) -> None:
+        unavailable: list[MCPServerDetails] = []
         for server in catalog_refs:
             config_id = server.mcp_config_id
             if not config_id:
                 continue
             entry = catalog_map.get(config_id)
             if entry is None:
-                raise ValidationException(
-                    f"MCP configuration not found for server '{server.name}' (mcp_config_id='{config_id}')."
-                )
-            if not entry.is_active:
-                raise ValidationException(
-                    f"MCP configuration is not available for server '{server.name}' "
-                    f"(mcp_config_id='{config_id}' is inactive)."
-                )
-            if not entry.is_public:
-                raise ValidationException(
-                    f"MCP configuration is not available for server '{server.name}' "
-                    f"(mcp_config_id='{config_id}' is not public)."
-                )
+                reason = "not found"
+            elif not entry.is_active:
+                reason = "inactive"
+            elif not entry.is_public:
+                reason = "not public"
+            else:
+                continue
+            # The exact reason stays in the log; users get one message, so they cannot probe which entries exist.
+            logger.warning(f"MCP server {server.name!r} refused: catalog entry {config_id!r} is {reason}")
+            unavailable.append(server)
+        if unavailable:
+            raise ValidationException(
+                f"MCP server not available in the catalogue: {_labels(unavailable)}. "
+                f"Choose another MCP server or ask your administrator."
+            )
 
     @staticmethod
     def validate_on_save(mcp_servers: list[MCPServerDetails]) -> None:
@@ -114,7 +160,8 @@ class MCPAccessControlService:
         all_config_ids = [s.mcp_config_id for s in catalog_refs]
         if len(all_config_ids) != len(set(all_config_ids)):
             duplicates = sorted({cid for cid in all_config_ids if all_config_ids.count(cid) > 1 and cid is not None})
-            raise ValidationException(f"Duplicate mcp_config_id values are not allowed: {duplicates}.")
+            logger.warning(f"Duplicate MCP catalog entries refused: {duplicates}")
+            raise ValidationException("The same MCP server from the catalogue was added more than once. Keep only one.")
 
         catalog_map = _build_catalog_map(catalog_refs)
         MCPAccessControlService._validate_catalog_entries(catalog_refs, catalog_map)
@@ -126,7 +173,14 @@ class MCPAccessControlService:
         Enforces restricted mode only; catalog availability is not re-checked, so open-mode restores are unchanged.
         """
         if mcp_servers and customer_config.is_component_enabled("mcpCustomServersDisabled"):
-            MCPAccessControlService._validate_restricted_mode(mcp_servers)
+            custom, overridden = _restricted_violations(mcp_servers)
+            blocked = custom + overridden
+            if blocked:
+                raise ValidationException(
+                    f"Can't restore this version: it contains MCP servers that your administrator no longer allows "
+                    f"({_labels(blocked)}). Custom servers and custom configuration are turned off. "
+                    f"Choose a version without them."
+                )
 
     @staticmethod
     def _strip_one(server: MCPServerDetails) -> MCPServerDetails:
@@ -159,11 +213,11 @@ class MCPAccessControlService:
         for server in mcp_servers:
             config_id = server.mcp_config_id
             if not config_id:
-                logger.warning(f"MCP server '{server.name}' skipped: no mcp_config_id in restricted mode")
+                logger.warning(f"MCP server {server.name!r} skipped: no mcp_config_id in restricted mode")
                 continue
             entry = catalog_map.get(config_id)
             if entry is None or not entry.is_active or not entry.is_public:
-                logger.warning(f"MCP server '{server.name}' skipped: catalog config {config_id} is unavailable")
+                logger.warning(f"MCP server {server.name!r} skipped: catalog config {config_id!r} is unavailable")
                 continue
             filtered.append(server)
 
@@ -176,7 +230,7 @@ class MCPAccessControlService:
         # If custom mode is enabled, use inline config
         if mcp_server.use_custom_config:
             if mcp_server.config is None:
-                logger.warning(f"MCP server '{mcp_server.name}': custom mode enabled but no config present")
+                logger.warning(f"MCP server {mcp_server.name!r}: custom mode enabled but no config present")
                 return None
             return mcp_server
 
@@ -187,7 +241,7 @@ class MCPAccessControlService:
 
         entry = MCPConfig.find_by_id(config_id)
         if entry is None or entry.config is None:
-            logger.warning(f"MCP server '{mcp_server.name}': catalog entry {config_id} unavailable at runtime")
+            logger.warning(f"MCP server {mcp_server.name!r}: catalog entry {config_id!r} unavailable at runtime")
             return None
 
         try:
@@ -195,7 +249,7 @@ class MCPAccessControlService:
             return mcp_server.model_copy(update={"config": resolved_config})
         except Exception as e:
             logger.warning(
-                f"MCP server '{mcp_server.name}': failed to resolve catalog config {config_id}: {e}",
+                f"MCP server {mcp_server.name!r}: failed to resolve catalog config {config_id!r}: {e}",
                 exc_info=True,
             )
             return None

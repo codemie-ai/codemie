@@ -1,0 +1,36 @@
+{
+  "decision": "request-changes",
+  "rationale": "All lenses and standards ran; both round-2 fixes verified correct, but the test meant to pin that the catalogue refusal reason is hidden never asserts it. 1 deferred (pre-existing unescaped {e} in resolve_catalog_config log, access_control.py:252, admin-authored text; backlog in code-review-deferred.md), 10 dismissed as cosmetic or by-design (e.g. non-C* blank fillers such as U+3164/U+2800 not mapped to 'unnamed', trailing space after truncation, lossy quote stripping).",
+  "confidence": "high",
+  "risk_flags": ["security"],
+  "business_review": [
+    {"kind": "story-ac", "item": "AC1: saving with a custom MCP server in restricted mode does not expose mcp_config_id in the error", "status": "pass", "notes": "Message has no field name; test_message_has_no_internal_field_names"},
+    {"kind": "story-ac", "item": "AC2: the error still identifies the offending MCP server by name", "status": "pass", "notes": "Cleaned quoted names via _labels; router tests match 'rogue'"},
+    {"kind": "story-ac", "item": "AC3: regression tests cover this validation error for both assistant and workflow saves", "status": "pass", "notes": "mcp_config_id absence asserted in test_assistant.py and test_workflow.py"},
+    {"kind": "spec", "item": "All restricted-mode refusals are user-actionable text with no internal field names", "status": "pass", "notes": "custom, overridden, restore, unavailable and duplicate messages reworded; parametrized field-name test"},
+    {"kind": "spec", "item": "not found / inactive / not public merged into ONE message; reason and id logged only; duplicate message lists no ids", "status": "pass", "notes": "Behaviour correct in source; hide-reason test is weak (CR-001)"},
+    {"kind": "spec", "item": "Version-restore refusals say \"Can't restore this version: ...\" and advise choosing another version", "status": "pass", "notes": "Covered in test_access_control.py and test_assistant_version_service.py"},
+    {"kind": "spec", "item": "Server names: markup/control chars removed, whitespace collapsed, 60 chars, 'unnamed' when empty, max 5 then 'and N more'", "status": "pass", "notes": "_clean_name and _labels implement all rules; parametrized cleaning tests"},
+    {"kind": "spec", "item": "Server names and catalogue ids are logged with repr()", "status": "pass", "notes": "All logger calls interpolating name/config_id use !r; forge-log test"},
+    {"kind": "spec", "item": "Same HTTP status (400) and same rules as before: text-only change", "status": "pass", "notes": "Conditions unchanged; only aggregation across offending servers differs"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "4 commit subjects in the range all match the documented EPMCDME-####: Description format"},
+    {"kind": "code-quality", "status": "pass", "notes": "access_control.py (255 lines, below the 500-line cohesion threshold) keeps modern type hints, from __future__ annotations, license header, and no line over the 120 limit from pyproject; no documented rule broken"},
+    {"kind": "security", "status": "pass", "notes": "restricted-mode and catalogue errors do not reveal which catalogue entries exist (exact reason only in logs); server names are cleaned before reaching user messages and logged with !r; no credentials logged in the changed lines; name cleaning is display-only and not a security decision"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/unit/service/mcp/test_access_control.py",
+      "line": 517,
+      "title": "Test does not pin that refusal reason is hidden",
+      "problem": "test_unavailable_catalog_entry_message_hides_id_and_reason asserts only that the catalogue id is absent and that 'Choose another MCP server' is present. It never asserts that 'not found', 'inactive' or 'not public' are absent from the message, nor that the exact reason reaches logger.warning. All other converted tests match only the shared phrase 'not available in the catalogue', so none distinguishes the three states.",
+      "impact": "The spec requirement that users cannot probe which catalogue entries exist (reason logged only) is a security property of the change. If the message is reverted to include the reason, for example '(inactive)', no test fails. Source is currently correct (reason chosen at access_control.py:130-135, logged at line 139, not in the raised message).",
+      "recommendation": "In the test, assert none of 'not found', 'inactive', 'not public' appears in str(exc.value) for each of the three entry states, and patch codemie.service.mcp.access_control.logger (as test_logged_server_name_cannot_forge_log_lines does) to assert the exact reason reaches logger.warning."
+    }
+  ]
+}

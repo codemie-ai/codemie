@@ -826,8 +826,9 @@ class TestAssistantMcpGovernance:
         mode = MagicMock()
         mode.is_component_enabled.return_value = True
         with patch("codemie.service.mcp.access_control.customer_config", mode):
-            with pytest.raises(ValidationException, match="rogue"):
+            with pytest.raises(ValidationException, match="rogue") as exc:
                 create_assistant(request, user=MagicMock(spec=User))
+            assert "mcp_config_id" not in str(exc.value)
 
     def test_create_admin_user_violating_payload_still_rejected(self):
         # AC7: admin/maintainer is not a bypass — set the flags explicitly on the mock.
@@ -842,8 +843,9 @@ class TestAssistantMcpGovernance:
         user.is_admin = True
         user.is_maintainer = True
         with patch("codemie.service.mcp.access_control.customer_config", mode):
-            with pytest.raises(ValidationException, match="rogue"):
+            with pytest.raises(ValidationException, match="rogue") as exc:
                 create_assistant(request, user=user)
+            assert "mcp_config_id" not in str(exc.value)
 
     def test_update_restricted_mode_rejects_handwritten_server(self):
         from codemie.rest_api.routers.assistant.management import update_assistant
@@ -862,8 +864,9 @@ class TestAssistantMcpGovernance:
             patch("codemie.rest_api.routers.assistant.management.check_user_can_access_assistant"),
             patch("codemie.rest_api.routers.assistant.management._validate_remote_entities_and_raise"),
         ):
-            with pytest.raises(ValidationException, match="rogue"):
+            with pytest.raises(ValidationException, match="rogue") as exc:
                 update_assistant("assistant-1", request, background_tasks=MagicMock(), user=MagicMock(spec=User))
+            assert "mcp_config_id" not in str(exc.value)
 
     def test_create_open_mode_allows_handwritten_server(self):
         # AC8: toggle off, same payload, save succeeds — reuses TestCreateAssistantSlug's
@@ -1213,8 +1216,9 @@ class TestAskVirtualAssistantMcpGovernance:
         user.name = "demo-user"
 
         with patch("codemie.service.mcp.access_control.customer_config", mode):
-            with pytest.raises(ValidationException, match="rogue"):
+            with pytest.raises(ValidationException, match="rogue") as exc:
                 await ask_virtual_assistant(raw_request, MagicMock(), request, user)
+            assert "mcp_config_id" not in str(exc.value)
 
     @pytest.mark.asyncio
     async def test_open_mode_allows_handwritten_server(self):

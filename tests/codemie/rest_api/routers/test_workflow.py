@@ -2396,6 +2396,7 @@ async def test_create_workflow_restricted_mode_rejects_handwritten_mcp_server(re
     assert response.status_code == status.HTTP_400_BAD_REQUEST
     # Same shape as update_workflow: the reason is in error.message, details is None.
     assert "rogue" in response.json()["error"]["message"]
+    assert "mcp_config_id" not in response.json()["error"]["message"]
     assert response.json()["error"]["details"] is None
 
 
@@ -2499,6 +2500,7 @@ async def test_create_workflow_restricted_mode_rejects_handwritten_assistant_ser
 
     assert response.status_code == status.HTTP_400_BAD_REQUEST
     assert "rogue" in response.json()["error"]["message"]
+    assert "mcp_config_id" not in response.json()["error"]["message"]
 
 
 @pytest.mark.asyncio
@@ -2510,6 +2512,7 @@ async def test_create_workflow_restricted_mode_rejects_handwritten_tool_server_d
 
     assert response.status_code == status.HTTP_400_BAD_REQUEST
     assert "rogue" in response.json()["error"]["message"]
+    assert "mcp_config_id" not in response.json()["error"]["message"]
 
 
 @pytest.mark.asyncio
@@ -2568,6 +2571,7 @@ async def test_update_workflow_restricted_mode_rejects_handwritten_mcp_server(re
     # global domain_validation_exception_handler unchanged, which puts the message in
     # error.message and leaves error.details as None (unlike create_workflow's wrapping).
     assert "rogue" in response.json()["error"]["message"]
+    assert "mcp_config_id" not in response.json()["error"]["message"]
 
 
 @pytest.mark.asyncio

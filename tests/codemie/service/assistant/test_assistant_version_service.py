@@ -461,11 +461,15 @@ class TestRollbackToVersion:
         mock_get_version.return_value = mock_config
 
         with patch("codemie.service.mcp.access_control.customer_config", self._toggle(True)):
-            with pytest.raises(ValidationException, match="rogue"):
+            with pytest.raises(ValidationException, match="rogue") as exc:
                 AssistantVersionService.rollback_to_version(
                     assistant=mock_assistant, target_version_number=1, user=mock_user
                 )
 
+        # The user cannot edit a stored version: the message must say so, not advise "remove it"
+        assert "Can't restore this version" in str(exc.value)
+        assert "Choose a version without them" in str(exc.value)
+        assert "mcp_config_id" not in str(exc.value)
         mock_config_class.assert_not_called()  # no new version row built
         mock_assistant.update.assert_not_called()  # master record untouched
         assert mock_assistant.version_count == 3
