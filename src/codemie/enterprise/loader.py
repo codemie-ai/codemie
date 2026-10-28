@@ -119,6 +119,22 @@ def has_litellm() -> bool:
     return HAS_LITELLM
 
 
+# Spend uploader imports
+try:
+    from codemie_enterprise.spend_uploader import SpendUploaderConfig, SpendUploaderService
+
+    HAS_SPEND_UPLOADER = True
+except ImportError:
+    SpendUploaderConfig = None  # type: ignore
+    SpendUploaderService = None  # type: ignore
+    HAS_SPEND_UPLOADER = False
+
+
+def has_spend_uploader() -> bool:
+    """Check if the LiteLLM spend uploader enterprise feature is available."""
+    return HAS_SPEND_UPLOADER
+
+
 # Plugin imports
 try:
     from codemie_enterprise.plugin import (
@@ -249,6 +265,11 @@ __all__ = [
     "LiteLLMService",
     "parse_usage_from_response",
     "has_litellm",
+    # Spend uploader
+    "HAS_SPEND_UPLOADER",
+    "SpendUploaderConfig",
+    "SpendUploaderService",
+    "has_spend_uploader",
     # Plugin
     "HAS_PLUGIN",
     "PluginConfig",

@@ -23,6 +23,7 @@ from .loader import (
     HAS_LLM_OBSERVABILITY,
     HAS_MCP_AUTH,
     HAS_PLUGIN,
+    HAS_SPEND_UPLOADER,
     LangFuseConfig,
     LangFuseService,
     LangfuseContextManager,
@@ -38,6 +39,8 @@ from .loader import (
     CustomerInfo,
     KeySpendingInfo,
     SpanContext,
+    SpendUploaderConfig,
+    SpendUploaderService,
     TraceContext,
     build_agent_metadata,
     build_workflow_metadata,
@@ -49,6 +52,7 @@ from .loader import (
     has_llm_observability,
     has_mcp_auth,
     has_plugin,
+    has_spend_uploader,
 )
 
 # LangFuse integration
@@ -147,6 +151,11 @@ __all__ = [
     "has_enterprise",
     "has_langfuse",  # kept for backward compatibility; prefer has_llm_observability
     "has_litellm",
+    # Spend uploader
+    "HAS_SPEND_UPLOADER",
+    "SpendUploaderConfig",
+    "SpendUploaderService",
+    "has_spend_uploader",
     "has_llm_observability",
     "has_plugin",
     # LangFuse functions

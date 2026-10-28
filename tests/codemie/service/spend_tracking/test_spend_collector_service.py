@@ -938,6 +938,7 @@ class TestSchedulerJobRegistration:
             mock_config.LITELLM_SPEND_COLLECTOR_ENABLED = False
             mock_config.LITELLM_SPEND_COLLECTOR_SCHEDULE = "30 0 * * *"
             mock_config.LITELLM_BUDGET_RESET_RECONCILIATION_ENABLED = False
+            mock_config.LITELLM_SPEND_UPLOADER_ENABLED = False
             mock_config.LITELLM_BUDGET_RESET_RECONCILIATION_SCHEDULE = "10 0 * * *"
 
             scheduler = SpendTrackingScheduler(scheduler=mock_scheduler)
@@ -961,6 +962,7 @@ class TestSchedulerJobRegistration:
             mock_config.LITELLM_SPEND_COLLECTOR_ENABLED = True
             mock_config.LITELLM_SPEND_COLLECTOR_SCHEDULE = "30 0 * * *"
             mock_config.LITELLM_BUDGET_RESET_RECONCILIATION_ENABLED = False
+            mock_config.LITELLM_SPEND_UPLOADER_ENABLED = False
             mock_config.LITELLM_BUDGET_RESET_RECONCILIATION_SCHEDULE = "10 0 * * *"
 
             scheduler = SpendTrackingScheduler(scheduler=mock_scheduler)
@@ -989,6 +991,7 @@ class TestSchedulerJobRegistration:
             mock_config.LITELLM_SPEND_COLLECTOR_SCHEDULE = "not a valid cron"
             mock_config.LITELLM_BUDGET_RESET_TRACKER_ENABLED = False
             mock_config.LITELLM_BUDGET_RESET_RECONCILIATION_ENABLED = False
+            mock_config.LITELLM_SPEND_UPLOADER_ENABLED = False
             mock_config.LITELLM_BUDGET_RESET_RECONCILIATION_SCHEDULE = "10 0 * * *"
 
             scheduler = SpendTrackingScheduler(scheduler=mock_scheduler)
@@ -1015,6 +1018,7 @@ class TestSchedulerJobRegistration:
             mock_config.LITELLM_BUDGET_RESET_TRACKER_ENABLED = True
             mock_config.LITELLM_BUDGET_RESET_TRACKER_SCHEDULE = "*/10 * * * *"
             mock_config.LITELLM_BUDGET_RESET_RECONCILIATION_ENABLED = False
+            mock_config.LITELLM_SPEND_UPLOADER_ENABLED = False
             mock_config.LITELLM_BUDGET_RESET_RECONCILIATION_SCHEDULE = "10 0 * * *"
 
             scheduler = SpendTrackingScheduler(scheduler=mock_scheduler)
@@ -1043,6 +1047,7 @@ class TestSchedulerJobRegistration:
             mock_config.LITELLM_BUDGET_RESET_TRACKER_ENABLED = True
             mock_config.LITELLM_BUDGET_RESET_TRACKER_SCHEDULE = "bad cron"
             mock_config.LITELLM_BUDGET_RESET_RECONCILIATION_ENABLED = False
+            mock_config.LITELLM_SPEND_UPLOADER_ENABLED = False
             mock_config.LITELLM_BUDGET_RESET_RECONCILIATION_SCHEDULE = "10 0 * * *"
 
             scheduler = SpendTrackingScheduler(scheduler=mock_scheduler)

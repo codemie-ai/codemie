@@ -21,6 +21,7 @@ from contextvars import ContextVar
 
 from pydantic.json import pydantic_encoder
 from sqlalchemy import text
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlmodel import Session, create_engine
 from urllib.parse import quote_plus
@@ -124,6 +125,19 @@ class PostgresClient:
 
         password = quote_plus(config.POSTGRES_PASSWORD)
         return f"postgresql{driver}://{user}:{password}@{host}:{port}/{database}"
+
+    @classmethod
+    def get_libpq_url(cls) -> str:
+        """A plain ``postgresql://`` URL for a driver that connects by itself rather than through an engine.
+
+        With ``PG_IAM_AUTH_PROVIDER`` the configured URL carries no password, so a fresh IAM token is embedded.
+        The token is valid for the connection about to be opened and must not be cached - build the URL per use.
+        """
+        url = make_url(cls._get_connection_string()).set(drivername="postgresql")
+        if config.PG_IAM_AUTH_PROVIDER:
+            url = url.set(password=_get_iam_token())
+        # SQLAlchemy leaves spaces in credentials unescaped, which libpq rejects; a raw space is never valid here.
+        return url.render_as_string(hide_password=False).replace(" ", "%20")
 
     @classmethod
     def get_engine(cls):

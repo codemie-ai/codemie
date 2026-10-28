@@ -556,6 +556,7 @@ def _setup_spend_tracking_scheduler(app: FastAPI):
         config.LITELLM_SPEND_COLLECTOR_ENABLED
         or config.LITELLM_BUDGET_RESET_TRACKER_ENABLED
         or config.LITELLM_BUDGET_RESET_RECONCILIATION_ENABLED
+        or config.LITELLM_SPEND_UPLOADER_ENABLED
     ):
         return
 

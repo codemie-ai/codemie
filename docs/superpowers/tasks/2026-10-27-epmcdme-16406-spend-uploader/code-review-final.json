@@ -1,0 +1,56 @@
+{
+  "decision": "approve",
+  "rationale": "The spend uploader is wired in as an opt-in, fail-open APScheduler job that follows the loader and adapter pattern. The blocking run goes to a worker thread, and the IAM-token URL is built fresh per run and never logged. No blocking defects found. The reviewer read the diff only and did not run tests; the end-to-end run against scratch Postgres databases is recorded in the MR description.",
+  "confidence": "medium",
+  "risk_flags": [],
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "Run the ETL in the backend scheduler as an opt-in job, every 2 minutes by default, with the three env vars",
+      "status": "pass",
+      "notes": "config.py adds LITELLM_SPEND_UPLOADER_ENABLED (default False), _SCHEDULE (default */2 * * * *) and _LITELLM_DB_URL. The job is registered in scheduler.py with max_instances=1 and coalesce=True."
+    },
+    {
+      "kind": "spec",
+      "item": "Fail-open when the package is absent",
+      "status": "pass",
+      "notes": "The loader catches ImportError. Registration skips with a warning when the package, the DB URL or the cron expression is missing or invalid. build_spend_uploader_service returns None on a configuration error."
+    },
+    {
+      "kind": "spec",
+      "item": "Scheduler starts when only the uploader is enabled",
+      "status": "pass",
+      "notes": "The _setup_spend_tracking_scheduler guard in main.py now includes LITELLM_SPEND_UPLOADER_ENABLED."
+    },
+    {
+      "kind": "spec",
+      "item": "Blocking run_feed does not block the event loop; failures are handled",
+      "status": "pass",
+      "notes": "asyncio.to_thread(service.run_feed) with a catch-all that logs the exception type. Skipping LeaderLockContext is documented and justified by the uploader's own session-level advisory lock."
+    },
+    {
+      "kind": "spec",
+      "item": "get_libpq_url builds a plain postgresql:// URL with a fresh IAM token",
+      "status": "pass",
+      "notes": "It uses make_url, sets drivername to postgresql, embeds _get_iam_token() when PG_IAM_AUTH_PROVIDER is set, and does not cache the result. The URL is built per run."
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "Both commits in origin/main..HEAD match 'EPMCDME-####: Capitalised description' (checked with a regex over git log)."
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "The change follows the existing loader and adapter pattern and uses the shared logger. Existing scheduler tests were updated for the new config attribute. No new tests cover the uploader job or get_libpq_url; the repo policy is tests on request, so this is not blocking."
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "LITELLM_SPEND_UPLOADER_LITELLM_DB_URL is added to the masked-secrets list. Config errors log only the exception type, and run failures log the exception type with a traceback. The IAM-token URL is never logged."
+    }
+  ],
+  "findings": []
+}

@@ -914,9 +914,7 @@ class Config(BaseSettings):
 
     # LiteLLM Spend Collector Configuration
     LITELLM_SPEND_COLLECTOR_ENABLED: bool = False  # Enables the spend collector APScheduler job
-    LITELLM_SPEND_COLLECTOR_SCHEDULE: str = (
-        "0 23 * * *"  # Cron schedule (UTC) for the spend collector — nightly at 11 PM
-    )
+    LITELLM_SPEND_COLLECTOR_SCHEDULE: str = "0 1 * * *"  # Cron schedule (UTC) for the spend collector — nightly at 1 AM
     LITELLM_BUDGET_RESET_TRACKER_ENABLED: bool = False  # Enables the member reset-window tracker job
     LITELLM_BUDGET_RESET_TRACKER_SCHEDULE: str = (
         "*/10 * * * *"  # Cron schedule (UTC) for the reset-window tracker — every 10 minutes
@@ -927,6 +925,20 @@ class Config(BaseSettings):
         "10 0 * * *"  # Cron schedule (UTC) for reset reconciliation — daily at 12:10 AM
     )
     LITELLM_BUDGET_RESET_RECONCILIATION_WINDOW_MINUTES: int = 10  # Allowed midnight UTC execution window
+    # LiteLLM Spend Uploader (enterprise): copies LiteLLM_SpendLogs rows into the litellm_spend_logs ledger
+    LITELLM_SPEND_UPLOADER_ENABLED: bool = False  # Enables the spend uploader APScheduler job
+    LITELLM_SPEND_UPLOADER_SCHEDULE: str = "*/2 * * * *"  # Cron schedule (UTC) for the spend uploader — every 2 minutes
+    LITELLM_SPEND_UPLOADER_LITELLM_DB_URL: str = (
+        ""  # postgresql:// URL of the LiteLLM database (read-only access); wins over the parts below
+    )
+    # The same database as separate parts, so the password can come from its own secret (special characters are
+    # percent-encoded when the URL is built). Used only when the URL above is empty.
+    LITELLM_SPEND_UPLOADER_LITELLM_DB_HOST: str = ""
+    LITELLM_SPEND_UPLOADER_LITELLM_DB_PORT: int = 5432
+    LITELLM_SPEND_UPLOADER_LITELLM_DB_NAME: str = "litellm"
+    LITELLM_SPEND_UPLOADER_LITELLM_DB_USER: str = ""
+    LITELLM_SPEND_UPLOADER_LITELLM_DB_PASSWORD: str = ""
+    LITELLM_SPEND_UPLOADER_LITELLM_DB_SSLMODE: str = ""  # libpq sslmode (e.g. require); empty keeps the driver default
     BUDGET_STOP_ENABLED: bool = False  # Master flag — enables all inactive budget stop and restore jobs
     INACTIVE_PROJECT_BUDGET_STOP_SCHEDULE: str = _CRON_DAILY_MIDNIGHT  # Cron schedule (UTC) — daily midnight
     INACTIVE_COST_CENTER_BUDGET_STOP_SCHEDULE: str = _CRON_DAILY_MIDNIGHT  # Cron schedule (UTC) — daily midnight
@@ -1142,6 +1154,7 @@ class Config(BaseSettings):
             "AZURE_STORAGE_CONNECTION_STRING",
             "PG_URL",
             "CLI_ANALYTICS_PG_URL",
+            "LITELLM_SPEND_UPLOADER_LITELLM_DB_URL",
             "ELASTIC_URL",
         ]
         config_dict = self.model_dump()
