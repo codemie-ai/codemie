@@ -37,29 +37,24 @@ SANDBOX_FILE_RE = re.compile(r"sandbox:/v1/files/[^\s)\]>\"']+")
 
 
 class AbstractAgent:
-    def extended_error(self, error_response: ErrorResponse, exception: Exception) -> str:
-        """Maintain original full error text for internal errors."""
+    def extended_error(self, error_response: ErrorResponse, exception: Exception, hide_raw: bool = False) -> str:
+        """Maintain original full error text for internal errors.
+
+        With hide_raw=True the raw exception text is never returned; the sanitized error message is used instead.
+        """
         err = error_response.get_error()
         error_code = err.error_code
         details = err.details or {}
 
-        if error_response.category == ErrorCategory.INTERNAL and isinstance(err, InternalError):
-            details = err.details or {}
+        if error_response.category == ErrorCategory.INTERNAL:
+            if hide_raw or not isinstance(err, InternalError):
+                return err.message
             exception_type = details.get("type", "Unknown")
             error_message = details.get("message", "")
             return f"AI Agent run failed with error: {exception_type}: {error_message}"
 
         if error_code in (ErrorCode.LITE_LLM_BUDGET_EXCEEDED_ERROR, ErrorCode.AGENT_BUDGET_EXCEEDED):
-            if CURRENT_COST_KEY in details and MAX_BUDGET_KEY in details:
-                context = (
-                    f"Budget has been exceeded: Your current spending: {details[CURRENT_COST_KEY]}, "
-                    f"available budget: {details[MAX_BUDGET_KEY]}"
-                )
-            elif details.get(BUDGET_MESSAGE_KEY):
-                context = details[BUDGET_MESSAGE_KEY]
-            else:
-                return str(exception)
-            return f"{err.message}\n{context}"
+            return self._budget_error_message(err, details, exception, hide_raw)
 
         if error_code == ErrorCode.LITE_LLM_BAD_REQUEST_ERROR and details.get("schema_validation_context"):
             return f"{err.message}\n{details['schema_validation_context']}"
@@ -67,7 +62,20 @@ class AbstractAgent:
         if error_code == ErrorCode.AGENT_TOKEN_LIMIT:
             return err.message
 
-        return str(exception)
+        return err.message if hide_raw else str(exception)
+
+    @staticmethod
+    def _budget_error_message(err, details: dict, exception: Exception, hide_raw: bool) -> str:
+        if CURRENT_COST_KEY in details and MAX_BUDGET_KEY in details:
+            context = (
+                f"Budget has been exceeded: Your current spending: {details[CURRENT_COST_KEY]}, "
+                f"available budget: {details[MAX_BUDGET_KEY]}"
+            )
+        elif details.get(BUDGET_MESSAGE_KEY):
+            context = details[BUDGET_MESSAGE_KEY]
+        else:
+            return err.message if hide_raw else str(exception)
+        return f"{err.message}\n{context}"
 
     def send_error_response(
         self,

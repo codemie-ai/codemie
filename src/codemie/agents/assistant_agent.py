@@ -14,7 +14,6 @@
 
 import contextlib
 import json
-import traceback
 from time import time
 from typing import Any, List, Optional, Sequence, Tuple
 
@@ -71,6 +70,7 @@ from codemie.core.constants import (
     OUTPUT_FORMAT,
 )
 from codemie.core.dependecies import get_llm_by_credentials
+from codemie.enterprise.litellm.proxy_router import handle_agent_exception
 from codemie.service.monitoring.run_ids import run_id_metadata
 from codemie.core.exceptions import MCPAuthenticationRequiredException
 from codemie.core.models import ChatMessage, AssistantChatRequest
@@ -497,10 +497,9 @@ class AIToolsAgent(WorkspaceAwareAgent):
             return response.get("output", "")
         except MCPAuthenticationRequiredException:
             raise
-        except Exception:
-            stacktrace = traceback.format_exc()
-            logger.error(f"AI Agent run failed with error: {stacktrace}", exc_info=True)
-            return f"AI Agent run failed with error: {stacktrace}"
+        except Exception as e:
+            logger.error(f"AI Agent run failed. Agent={self.agent_name}", exc_info=True)
+            return self._get_user_error_message(e)
 
     def invoke_task(self, workflow_input: str = "", history=None, args=None) -> TaskResult:
         if args is None:
@@ -628,10 +627,9 @@ class AIToolsAgent(WorkspaceAwareAgent):
             )
         except MCPAuthenticationRequiredException:
             raise
-        except Exception:
-            stacktrace = traceback.format_exc()
-            error_output = f"AI Agent run failed with error: {stacktrace}"
-            logger.error(error_output, exc_info=True)
+        except Exception as e:
+            logger.error(f"AI Agent run failed. Agent={self.agent_name}", exc_info=True)
+            error_output = self._get_user_error_message(e)
             time_elapsed = time() - start_time
             if background_task_id:
                 BackgroundTasksService().update(
@@ -793,6 +791,12 @@ class AIToolsAgent(WorkspaceAwareAgent):
     @property
     def _do_nothing(self):
         return lambda x: x
+
+    def _get_user_error_message(self, error: Exception) -> str:
+        error_response = handle_agent_exception(error)
+        if config.HIDE_AGENT_STREAMING_EXCEPTIONS:
+            return error_response.get_error().message
+        return self.extended_error(error_response, error, hide_raw=True)
 
     def _get_tool_errors(self):
         if not self.tool_error_callback or not self.tool_error_callback.has_errors():

@@ -15,7 +15,6 @@
 import asyncio
 import math
 import uuid
-import traceback
 import contextlib
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -1458,6 +1457,17 @@ async def configure_logging(request: Request, call_next):
     return await call_next(request)
 
 
+INTERNAL_ERROR_MESSAGE = "An internal error occurred. Please contact support."
+INTERNAL_ERROR_DETAILS = "An unexpected error occurred while processing the request."
+
+
+def _internal_error_details(request: Request) -> str:
+    details = INTERNAL_ERROR_DETAILS
+    if request_id := getattr(request.state, "uuid", None):
+        details += f" Request ID: {request_id}"
+    return details
+
+
 @app.middleware("http")
 async def handle_exceptions(request: Request, call_next):
     try:
@@ -1468,14 +1478,12 @@ async def handle_exceptions(request: Request, call_next):
         if config.is_local:
             raise e
 
-        trace = traceback.format_exc()[-2000:]
-
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={
                 "error": {
-                    "message": "Internal Server Error. <br> Stacktrace: {}".format(trace),
-                    "details": "An unexpected error occurred while processing the request.",
+                    "message": INTERNAL_ERROR_MESSAGE,
+                    "details": _internal_error_details(request),
                     "help": "Please try again later or contact support if the problem persists.",
                 }
             },
@@ -1497,12 +1505,13 @@ async def elastic_exception_handler(request: Request, exception: ApiError) -> JS
     """
     Handles Elastic-related exceptions
     """
+    logger.error(f"Elastic service error: {exception}", exc_info=True)
     return JSONResponse(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         content={
             "error": {
                 "message": "Elastic service unavailable",
-                "details": f"An error occurred while communicating with the Elastic service: {str(exception)}",
+                "details": _internal_error_details(request),
                 "help": "This is likely a temporary issue. Please try again later. If the problem persists, "
                 "contact the system administrator.",
             }
@@ -1542,6 +1551,13 @@ async def extended_http_exception_handler(request: Request, exc: ExtendedHTTPExc
     """
     if exc.code >= status.HTTP_500_INTERNAL_SERVER_ERROR:
         logger.error(exc.details, exc_info=True)
+        if exc.code == status.HTTP_500_INTERNAL_SERVER_ERROR:
+            return JSONResponse(
+                status_code=exc.code,
+                content={
+                    "error": {"message": exc.message, "details": _internal_error_details(request), "help": exc.help}
+                },
+            )
     else:
         msg = "Status: {exc.code}, Error: {exc.message}, Details: {exc.details}, Help: {exc.help}".format(exc=exc)
         logger.warning(msg)

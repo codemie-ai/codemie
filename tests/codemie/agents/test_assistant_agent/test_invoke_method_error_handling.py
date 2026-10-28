@@ -19,6 +19,7 @@ from typing import Any
 from langchain_core.tools import BaseTool
 
 from codemie.agents.assistant_agent import AIToolsAgent
+from codemie.configs import config
 from codemie.core.constants import ChatRole
 from codemie.core.models import AssistantChatRequest, ChatMessage
 from codemie.rest_api.security.user import User
@@ -84,20 +85,14 @@ def test_invoke_error_in_get_inputs(agent, test_data):
     """
     with patch.object(agent, '_get_inputs', side_effect=test_data["exception_to_raise"]) as mock_get_inputs:
         with patch.object(agent, '_invoke_agent') as mock_invoke_agent:
-            with patch('traceback.format_exc', return_value=test_data["mock_traceback"]) as mock_format_exc:
-                with patch('codemie.agents.assistant_agent.logger.error') as mock_logger:
-                    # Call the method being tested
-                    result = agent.invoke(test_data["input_text"], test_data["history"])
+            with patch('codemie.agents.assistant_agent.logger.error') as mock_logger:
+                result = agent.invoke(test_data["input_text"], test_data["history"])
 
-                    # Verify the results
-                    mock_get_inputs.assert_called_once_with(test_data["input_text"], test_data["history"])
-                    mock_invoke_agent.assert_not_called()
-                    mock_format_exc.assert_called_once()
-                    mock_logger.assert_called_once()
+                mock_get_inputs.assert_called_once_with(test_data["input_text"], test_data["history"])
+                mock_invoke_agent.assert_not_called()
+                assert mock_logger.call_args_list[0].kwargs["exc_info"] is True
 
-                    # Verify the returned result
-                    expected_result = f"AI Agent run failed with error: {test_data['mock_traceback']}"
-                    assert result == expected_result
+                assert result == config.GLOBAL_FALLBACK_MSG
 
 
 def test_invoke_error_in_invoke_agent(agent, test_data):
@@ -109,20 +104,14 @@ def test_invoke_error_in_invoke_agent(agent, test_data):
 
     with patch.object(agent, '_get_inputs', return_value=mock_inputs) as mock_get_inputs:
         with patch.object(agent, '_invoke_agent', side_effect=test_data["exception_to_raise"]) as mock_invoke_agent:
-            with patch('traceback.format_exc', return_value=test_data["mock_traceback"]) as mock_format_exc:
-                with patch('codemie.agents.assistant_agent.logger.error') as mock_logger:
-                    # Call the method being tested
-                    result = agent.invoke(test_data["input_text"], test_data["history"])
+            with patch('codemie.agents.assistant_agent.logger.error') as mock_logger:
+                result = agent.invoke(test_data["input_text"], test_data["history"])
 
-                    # Verify the results
-                    mock_get_inputs.assert_called_once_with(test_data["input_text"], test_data["history"])
-                    mock_invoke_agent.assert_called_once_with(mock_inputs)
-                    mock_format_exc.assert_called_once()
-                    mock_logger.assert_called_once()
+                mock_get_inputs.assert_called_once_with(test_data["input_text"], test_data["history"])
+                mock_invoke_agent.assert_called_once_with(mock_inputs)
+                assert mock_logger.call_args_list[0].kwargs["exc_info"] is True
 
-                    # Verify the returned result
-                    expected_result = f"AI Agent run failed with error: {test_data['mock_traceback']}"
-                    assert result == expected_result
+                assert result == config.GLOBAL_FALLBACK_MSG
 
 
 @pytest.mark.parametrize(
@@ -135,14 +124,11 @@ def test_invoke_with_different_exception_types(agent, test_data, exception):
     Test that the invoke method properly handles different types of exceptions.
     """
     with patch.object(agent, '_get_inputs', side_effect=exception):
-        with patch('traceback.format_exc', return_value=str(exception)):
-            with patch('codemie.agents.assistant_agent.logger.error'):
-                # Call the method being tested
-                result = agent.invoke(test_data["input_text"], test_data["history"])
+        with patch('codemie.agents.assistant_agent.logger.error'):
+            result = agent.invoke(test_data["input_text"], test_data["history"])
 
-                # Verify the returned result contains the exception information
-                assert str(exception) in result
-                assert "AI Agent run failed with error" in result
+            assert result == config.GLOBAL_FALLBACK_MSG
+            assert str(exception) not in result
 
 
 def test_invoke_with_empty_inputs(agent):

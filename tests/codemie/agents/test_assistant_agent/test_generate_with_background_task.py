@@ -20,6 +20,7 @@ from typing import Any, Dict
 
 from codemie.agents.assistant_agent import AIToolsAgent
 from codemie.chains.base import GenerationResult
+from codemie.configs import config
 from codemie.core.constants import BackgroundTaskStatus
 from codemie.core.models import AssistantChatRequest
 from codemie.core.thread import ThreadedGenerator
@@ -139,10 +140,8 @@ class TestGenerateWithBackgroundTask:
         )
 
     @patch('codemie.agents.assistant_agent.time')
-    @patch('codemie.agents.assistant_agent.traceback')
     def test_generate_with_background_task_error(
         self,
-        mock_traceback,
         mock_time,
         mock_thread_generator,
         mock_request,
@@ -154,7 +153,6 @@ class TestGenerateWithBackgroundTask:
 
         # Set up time mock for execution time measurement
         mock_time.side_effect = [100.0, 106.0]  # start_time and end_time for time elapsed calculation
-        mock_traceback.format_exc.return_value = "Traceback (most recent call last):\n  File 'example.py', line 123\nValueError: Simulated error in agent execution"
 
         # Create agent with appropriate patching to avoid init_agent execution
         with patch.object(AIToolsAgent, 'init_agent', return_value=MagicMock()):
@@ -180,9 +178,9 @@ class TestGenerateWithBackgroundTask:
 
         # Verify
         assert isinstance(result, GenerationResult)
-        assert "AI Agent run failed with error:" in result.generated
-        assert "ValueError: Simulated error in agent execution" in result.generated
-        assert "Traceback" in result.generated
+        assert result.generated == config.GLOBAL_FALLBACK_MSG
+        assert "Simulated error in agent execution" not in result.generated
+        assert "Traceback" not in result.generated
         assert result.time_elapsed == 6.0  # (106.0 - 100.0)
 
         # Verify background task service was updated correctly with error status
@@ -190,8 +188,8 @@ class TestGenerateWithBackgroundTask:
         update_args = mock_background_task_service.update.call_args[1]
         assert update_args["task_id"] == background_task_id
         assert update_args["status"] == BackgroundTaskStatus.FAILED
-        assert "AI Agent run failed with error:" in update_args["final_output"]
-        assert "ValueError: Simulated error in agent execution" in update_args["final_output"]
+        assert update_args["final_output"] == config.GLOBAL_FALLBACK_MSG
+        assert "Simulated error in agent execution" not in update_args["final_output"]
 
     @patch('codemie.agents.assistant_agent.time')
     @patch('codemie.agents.assistant_agent.calculate_tokens')

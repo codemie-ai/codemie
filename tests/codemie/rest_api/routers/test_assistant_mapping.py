@@ -161,7 +161,7 @@ async def test_create_or_update_mapping_failure(assistant_id, sample_mapping_req
         assert response.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
         response_data = response.json()
         assert response_data["error"]["message"] == "Failed to create or update mappings"
-        assert "An error occurred while trying to store mappings: Database error" in response_data["error"]["details"]
+        assert "Database error" not in response_data["error"]["details"]
 
 
 def test_validate_mapping_access_project_shared_rejects_cross_project(user):
@@ -327,9 +327,7 @@ async def test_get_assistant_mapping_error(assistant_id, user):
         assert response.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
         response_data = response.json()
         assert response_data["error"]["message"] == "Failed to get mappings"
-        assert (
-            "An error occurred while trying to retrieve mappings: Database error" in response_data["error"]["details"]
-        )
+        assert "Database error" not in response_data["error"]["details"]
 
 
 @pytest.mark.asyncio

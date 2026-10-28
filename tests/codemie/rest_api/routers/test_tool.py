@@ -134,7 +134,7 @@ def test_get_tools_configs_error(mock_auth_header, mock_authenticate):
         assert response.status_code == 500
         response_data = response.json()
         assert "Failed to retrieve tool configurations" in str(response_data)
-        assert "Failed to load configurations" in str(response_data)
+        assert "Failed to load configurations" not in str(response_data)
 
 
 def test_invoke_tool_success(mock_auth_header, mock_authenticate):

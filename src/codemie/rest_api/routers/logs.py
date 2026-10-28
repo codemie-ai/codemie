@@ -15,6 +15,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from codemie.configs.config import config
+from codemie.configs.logger import logger
 from codemie.rest_api.models.logs import LogEntry, LogRetrieveRequest
 from codemie.rest_api.security.authentication import admin_access_only, authenticate
 from codemie.service.logs import LogService
@@ -47,4 +48,5 @@ def get_logs_by_target_field(target_field: LogRetrieveRequest):
     try:
         return LogService.get_logs_by_target_field(target_field)
     except Exception as e:
-        raise ExtendedHTTPException(code=status.HTTP_500_INTERNAL_SERVER_ERROR, message=str(e))
+        logger.error(f"Failed to retrieve logs: {e}", exc_info=True)
+        raise ExtendedHTTPException(code=status.HTTP_500_INTERNAL_SERVER_ERROR, message="Failed to retrieve logs")

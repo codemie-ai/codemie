@@ -160,7 +160,7 @@ async def test_create_workflow_execution_internal_server_error(
     request_headers: dict,
     mock_workflow_executor: MagicMock,
 ):
-    expected_error_details = "An unexpected error occurred during workflow execution"
+    expected_error_details = "An unexpected error occurred while processing the request."
     mock_ability.can.return_value = True
     mock_authentication.authenticate.return_value = USER
     mock_workflow_executor.create_executor.side_effect = ValueError()

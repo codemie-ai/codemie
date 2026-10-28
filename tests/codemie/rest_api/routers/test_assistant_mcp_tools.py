@@ -308,4 +308,5 @@ class TestGetMCPTools:
             assert response.status_code == 500
             data = response.json()
             assert "Failed to retrieve MCP tools" in data["error"]["message"]
-            assert "Unexpected error" in data["error"]["details"]
+            assert "Unexpected error" not in data["error"]["details"]
+            assert "Request ID" in data["error"]["details"]

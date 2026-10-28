@@ -258,6 +258,26 @@ class TestRefreshToken:
 
     @patch("codemie.service.google_oauth.token_manager.Credentials")
     @patch("codemie.service.google_oauth.token_manager.Request")
+    def test_502_message_does_not_leak_raw_exception_text(
+        self, mock_request_class, mock_credentials_class, token_manager, mock_encryption
+    ):
+        """502 message must stay static; raw provider error text must not reach the client."""
+        mock_setting = MagicMock()
+        mock_setting.id = "setting_123"
+        encrypted_refresh = mock_encryption.encrypt("refresh_token")
+
+        mock_credentials = MagicMock()
+        mock_credentials.refresh.side_effect = Exception("secret internal detail: upstream connection refused")
+        mock_credentials_class.return_value = mock_credentials
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            token_manager._refresh_token(mock_setting, encrypted_refresh)
+
+        assert exc_info.value.code == 502
+        assert "secret internal detail" not in exc_info.value.message
+
+    @patch("codemie.service.google_oauth.token_manager.Credentials")
+    @patch("codemie.service.google_oauth.token_manager.Request")
     def test_updates_setting_credentials(
         self, mock_request_class, mock_credentials_class, token_manager, mock_encryption
     ):

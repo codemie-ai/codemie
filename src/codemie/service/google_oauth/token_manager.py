@@ -180,7 +180,7 @@ class GoogleOAuthTokenManager:
                 )
                 raise ExtendedHTTPException(400, "Google OAuth token has been revoked. Please re-authenticate.")
 
-            raise ExtendedHTTPException(502, f"Google OAuth API error (HTTP {status_code}): {error_details}")
+            raise ExtendedHTTPException(502, "Google OAuth token service failed to process credentials.")
         except Exception as exc:
             error_msg = str(exc)
             logger.error(f"Google OAuth: token refresh failed for setting {setting.id}: {exc}")
@@ -192,7 +192,7 @@ class GoogleOAuthTokenManager:
                 )
                 raise ExtendedHTTPException(400, "Google OAuth token has been revoked. Please re-authenticate.")
 
-            raise ExtendedHTTPException(502, f"Failed to refresh Google OAuth token: {error_msg}")
+            raise ExtendedHTTPException(502, "Failed to refresh Google OAuth token.")
 
         # Encrypt new tokens
         encrypted_new_access_token = self.encryption_service.encrypt(new_access_token)

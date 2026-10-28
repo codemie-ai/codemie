@@ -111,6 +111,19 @@ class TestExtendedError:
 
         assert result == "timed out"
 
+    def test_hide_raw_returns_sanitized_message_for_non_internal(self):
+        """extended_error with hide_raw=True never returns the raw exception text."""
+        agent = ConcreteAgent()
+        agent_error = AgentErrorDetails(
+            error_code=ErrorCode.AGENT_TIMEOUT,
+            message="The agent request timed out.",
+        )
+        error_response = ErrorResponse(category=ErrorCategory.AGENT, agent_error=agent_error)
+
+        result = agent.extended_error(error_response, TimeoutError("httpx secret detail"), hide_raw=True)
+
+        assert result == "The agent request timed out."
+
     def test_returns_enriched_message_for_lite_llm_budget_with_current_cost_max_budget(self):
         """extended_error enriches message when LITE_LLM_BUDGET_EXCEEDED_ERROR and details have current_cost, max_budget."""
         agent = ConcreteAgent()
