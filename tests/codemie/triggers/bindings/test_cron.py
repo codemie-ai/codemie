@@ -834,7 +834,7 @@ def test_datasource_and_assistant_triggers_are_built_alike(cron_instance):
     cron_instance.scheduler = MagicMock()
     captured = {}
 
-    def fake_trigger(cron_expression, timezone=None):
+    def fake_trigger(cron_expression, resource_id=None, timezone=None):
         captured[cron_expression] = timezone
         return MagicMock()
 
@@ -925,47 +925,6 @@ async def test_start_async_returns_while_scheduler_is_running(cron_instance):
 
     assert cron_instance.scheduler is mock_scheduler, "scheduler must be set after start_async"
     assert cron_instance.scheduler.running is True, "scheduler must still be running when start_async returns"
-
-
-# --- day_of_week translation (EPMCDME-13782) -------------------------------------------
-# APScheduler numbers weekdays 0=Monday, standard crontab numbers them 0=Sunday. These
-# tests use a real CronTrigger and assert on the weekday actually fired, since a mocked
-# trigger cannot catch an off-by-one in the value handed to it.
-
-
-@pytest.mark.parametrize(
-    "day_of_week,expected",
-    [
-        ("0", "sun"),
-        ("1", "mon"),
-        ("4", "thu"),
-        ("6", "sat"),
-        ("7", "sun"),  # crontab accepts both 0 and 7 for Sunday
-        ("1-5", "mon,tue,wed,thu,fri"),
-        ("0,6", "sun,sat"),
-        ("0-2", "sun,mon,tue"),
-        ("5-7", "fri,sat,sun"),  # range wrapping past Saturday
-        ("6-0", "sat,sun"),
-        ("0-6", "sun,mon,tue,wed,thu,fri,sat"),
-        ("0-7", "sun,mon,tue,wed,thu,fri,sat"),  # whole week, not an empty wrap
-        ("*/2", "sun,tue,thu,sat"),
-        ("1-5/2", "mon,wed,fri"),
-        ("2/3", "tue,fri"),  # lone number with a step runs to the end of the week
-        ("1/2", "mon,wed,fri,sun"),  # ...and that end is Sunday-as-7, not Saturday
-        ("0-3/2", "sun,tue"),
-        ("*", "*"),
-        ("mon-fri", "mon,tue,wed,thu,fri"),  # names expand the same way numbers do
-        ("MON-FRI", "mon,tue,wed,thu,fri"),
-        ("mon-fri/2", "mon,wed,fri"),  # APScheduler drops the step from a named range
-        ("sun", "sun"),
-        ("4#2", "4#2"),  # nth-weekday syntax - left for CronTrigger to parse
-        ("8", "8"),  # out of range - left for CronTrigger to reject
-        ("foo", "foo"),  # unknown name - left for CronTrigger to reject
-    ],
-)
-def test_normalize_day_of_week(day_of_week, expected):
-    """Crontab weekday numbers translate to the equivalent APScheduler weekday names."""
-    assert Cron._Cron__normalize_day_of_week(day_of_week) == expected
 
 
 @pytest.mark.parametrize(
@@ -1378,3 +1337,34 @@ def test_job_event_error_creates_no_row(mock_repo_cls):
     _cron_with_job()._Cron__on_job_event(event)
 
     mock_repo_cls.return_value.create.assert_not_called()
+
+
+def test_create_cron_trigger_applies_per_datasource_stagger():
+    """At least one of a handful of sample ids must shift off the raw "0 0"."""
+    shifted = False
+    for resource_id in ["ds-stagger-1", "ds-stagger-2", "ds-stagger-3", "ds-stagger-4", "ds-stagger-5"]:
+        trigger = Cron._Cron__create_cron_trigger("0 0 * * *", resource_id, timezone="UTC")
+        fields = {str(f.name): f for f in trigger.fields}
+        minute, hour = str(fields["minute"]), str(fields["hour"])
+        if (minute, hour) != ("0", "0"):
+            shifted = True
+    assert shifted, "expected at least one sample datasource id to resolve to a staggered minute/hour"
+
+
+def test_create_cron_trigger_non_wildcard_day_of_month_is_untouched():
+    trigger = Cron._Cron__create_cron_trigger("0 0 15 * *", "ds-stagger-1", timezone="UTC")
+    fields = {str(f.name): f for f in trigger.fields}
+    assert str(fields["minute"]) == "0"
+    assert str(fields["hour"]) == "0"
+
+
+def test_create_cron_trigger_full_week_range_day_of_week_still_staggers():
+    """ "0 0 * * 0-7" is semantically every day, just not spelled as a literal "*"."""
+    shifted = False
+    for resource_id in ["ds-stagger-1", "ds-stagger-2", "ds-stagger-3", "ds-stagger-4", "ds-stagger-5"]:
+        trigger = Cron._Cron__create_cron_trigger("0 0 * * 0-7", resource_id, timezone="UTC")
+        fields = {str(f.name): f for f in trigger.fields}
+        minute, hour = str(fields["minute"]), str(fields["hour"])
+        if (minute, hour) != ("0", "0"):
+            shifted = True
+    assert shifted, "expected a full-week day_of_week range to still be eligible for staggering"

@@ -16,7 +16,6 @@
 
 import asyncio
 import platform
-import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -32,6 +31,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from codemie.configs import logger, config
 from codemie.core.constants import CodeIndexType
+from codemie.triggers.bindings.cron_helpers import normalize_day_of_week
+from codemie.triggers.bindings.cron_stagger import stagger_cron
 from codemie.core.models import GitRepo, SVNRepo
 from codemie.rest_api.models.index import IndexInfo
 from codemie_tools.base.models import CredentialTypes
@@ -199,16 +200,6 @@ def _tracked_run_sync(actor_fn, scheduler_id: str, resource_id: str | None = Non
             },
         )
         raise
-
-
-# Index = crontab weekday number; crontab accepts both 0 and 7 for Sunday.
-CRONTAB_WEEKDAYS = ("sun", "mon", "tue", "wed", "thu", "fri", "sat", "sun")
-
-# One comma-separated term of a crontab day_of_week field: "4", "1-5", "*/2", "mon-fri/3".
-CRONTAB_WEEKDAY_TERM = re.compile(
-    r"(?P<start>\*|\d+|[a-z]+)(?:-(?P<end>\d+|[a-z]+))?(?:/(?P<step>\d+))?",
-    re.IGNORECASE,
-)
 
 
 def _to_index_type_str(index_type) -> str:
@@ -624,7 +615,7 @@ class Cron:
             self.__remove_disabled_job(job_id)
             return
 
-        cron_trigger = self.__create_cron_trigger(cron_expression, timezone=timezone)
+        cron_trigger = self.__create_cron_trigger(cron_expression, resource_id, timezone=timezone)
         instance = self.__schedule_job_by_type(
             resource_type,
             index_type,
@@ -660,94 +651,26 @@ class Cron:
             logger.debug("Job %s was already removed from the scheduler", job_id)
 
     @staticmethod
-    def __weekday_number(value: str) -> Optional[int]:
-        """Return the crontab weekday number for "4" or "thu", or None if unrecognised."""
-        if value.isdigit():
-            return int(value) if int(value) <= 7 else None
-        return CRONTAB_WEEKDAYS.index(value.lower()) if value.lower() in CRONTAB_WEEKDAYS else None
-
-    @staticmethod
-    def __expand_weekday_term(term: str) -> Optional[list[str]]:
-        """Expand one crontab day_of_week term ("4", "1-5", "*/2") to weekday names.
-
-        Returns None if the term is not something this understands, so the caller can
-        hand the field to CronTrigger untouched.
-        """
-        match = CRONTAB_WEEKDAY_TERM.fullmatch(term)
-        if not match:
-            return None
-
-        start, end, step = match.group("start"), match.group("end"), match.group("step")
-        if start == "*":
-            first, last = 0, 6
-        elif end:
-            first, last = Cron.__weekday_number(start), Cron.__weekday_number(end)
-        elif step:
-            # A lone weekday with a step runs through Sunday-as-7, because crontab counts
-            # Sunday at both ends of the week: "1/2" is Mon,Wed,Fri,Sun, not Mon,Wed,Fri.
-            first, last = Cron.__weekday_number(start), 7
-        else:
-            first = last = Cron.__weekday_number(start)
-
-        if first is None or last is None:
-            return None
-
-        # Ranges wrap around the week ("5-7" is Fri-Sun, "6-0" is Sat-Sun), except for
-        # "0-7", which spans the whole week rather than being an empty wrap.
-        span = 7 if (first, last) == (0, 7) else (last - first) % 7
-        return [CRONTAB_WEEKDAYS[(first + offset) % 7] for offset in range(0, span + 1, int(step or 1))]
-
-    @staticmethod
-    def __normalize_day_of_week(day_of_week: str) -> str:
-        """Translate a crontab day_of_week field into APScheduler weekday names.
-
-        APScheduler 3.x numbers weekdays 0=Monday while standard crontab numbers them
-        0=Sunday (7 is also Sunday), so passing the field through unchanged shifts every
-        numeric weekday by a day -- "* * * * 4" fires on Friday instead of Thursday.
-
-        Rather than renumber the field and have to reason about how ranges and steps
-        survive the shift, expand it to the plain list of weekdays it means and emit
-        those as names. Names carry the same meaning in both systems, so "4" becomes
-        "thu" and "1-5/2" becomes "mon,wed,fri" with no arithmetic left to get wrong.
-
-        Weekday names are accepted too, since APScheduler drops the step from a named
-        range ("mon-fri/2" silently fires every working day); expanding them here means
-        the step is applied before APScheduler ever sees the field.
-
-        Anything this cannot read -- nth-weekday syntax, unknown names, out-of-range
-        numbers -- is returned untouched so CronTrigger keeps applying its own parsing
-        and raises its usual ValueError for invalid input.
-        """
-        if day_of_week.strip() == "*":
-            return "*"
-
-        weekdays = []
-        for term in day_of_week.split(","):
-            expanded = Cron.__expand_weekday_term(term.strip())
-            if expanded is None:
-                return day_of_week
-            weekdays.extend(expanded)
-
-        # "0-7" and overlapping terms repeat days; dict.fromkeys drops repeats in order.
-        return ",".join(dict.fromkeys(weekdays))
-
-    @staticmethod
-    def __create_cron_trigger(cron_expression, timezone: Optional[str] = None):
+    def __create_cron_trigger(cron_expression, resource_id=None, timezone: Optional[str] = None):
         """Create cron trigger from expression
 
         Jobs fire at exactly the time the user asked for. Bursts of schedules sharing one
         expression are absorbed by the executor queue, not by spreading the fire times:
         CronTrigger's jitter picks the next slot after the previous jittered run, so a
         window wider than the schedule period silently skips runs.
+
+        What *is* spread is datasources that all happen to share the same expression
+        (e.g. everyone picking "Daily at midnight"): each gets a deterministic
+        per-datasource minute/hour offset from ``cron_stagger`` so they don't all land
+        in the reindex queue at the same instant.
         """
-        minute, hour, day_of_month, month, day_of_week = cron_expression.split()
-        day_of_week = Cron.__normalize_day_of_week(day_of_week)
+        minute, hour, day_of_month, month, day_of_week = stagger_cron(resource_id, cron_expression).split()
         return CronTrigger(
             minute=minute,
             hour=hour,
             day=day_of_month,
             month=month,
-            day_of_week=day_of_week,
+            day_of_week=normalize_day_of_week(day_of_week),
             timezone=timezone or config.TIMEZONE,
         )
 

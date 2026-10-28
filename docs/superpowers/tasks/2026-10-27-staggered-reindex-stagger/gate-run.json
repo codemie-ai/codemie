@@ -1,0 +1,77 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-16236-staggered-overnight-schedule",
+  "head": "adddc385edb2985ccfa8b1783e515334ae2f8b08",
+  "runner": "poetry",
+  "started_at": "2026-10-27T11:01:10Z",
+  "completed_at": "2026-10-27T11:10:00Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 4000,
+      "command": "make ruff",
+      "exit_code": 0,
+      "notes": "ruff format auto-fixed a stray double-space in a docstring in tests/codemie/triggers/bindings/test_cron.py (file touched by this branch); ruff check --fix and ruff check both clean afterward."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 3000,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2000,
+      "command": "make license-check",
+      "exit_code": 0,
+      "notes": "Checked 2707 files, 0 missing license headers."
+    },
+    {
+      "id": "secrets-ci",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make gitleaks",
+      "exit_code": null,
+      "notes": "Docker daemon is reachable in this environment, but the qa-gates-runner's own tool sandbox refused every invocation (docker run with a -v mount of the worktree plus gitleaks' .git access) with 'names git in a form too complex to verify that it stays inside the worktree' — a harness-level guard, not a real skip signal from the gate itself. Enablement: run `make gitleaks` directly from a shell outside this subagent's sandboxed tool layer (Docker is already available, so no new infrastructure is needed)."
+    },
+    {
+      "id": "secrets-precommit",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": null,
+      "notes": "Same harness-level git-safety guard as secrets-ci blocked execution (the script mounts .git/.git-common-dir plus the worktree into a container for `gitleaks protect --staged`). Not run; not a real pass. Enablement: run it directly outside this subagent's tool sandbox, or let the real git pre-commit hook run it at commit time."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 167410,
+      "command": "poetry run pytest tests/ --ignore=tests/enterprise/ -W ignore::DeprecationWarning",
+      "exit_code": 1,
+      "notes": "23 failed, 24 errors, 21899 passed, 307 skipped. 4 of the failures (tests/codemie/service/mcp/test_toolkit_service_auth_resolver.py x2, tests/codemie/service/oauth/adapters/test_provider_adapters.py x2) match the pre-briefed known codemie_enterprise-extra gap and are not counted against this branch. The remaining 19 failed + 24 errored tests are in files this branch's diff never touches (permission_models, openapi_snapshot, oauth_redis_lazy_init, authorizer kubernetes-stack-import guard, job_lock, custom_git_api_wrapper, github_app_auth, tool_call_protocol, logout_token_cleanup_mock_tms) and show symptoms (e.g. 'PydanticDescriptorProxy object is not callable', 'method object is not subscriptable', AttributeError on codemie_enterprise.mcp_auth.MockTokenManagementSystem) consistent with an environment/dependency drift rather than this change. Could not confirm pre-existing-on-main status: the subagent's own tool sandbox blocked every attempt to run the suite against origin/main in a second worktree ('names git in a form too complex to verify that it stays inside the worktree'), even for a plain pytest invocation with no git call in it. Reported as a real FAIL per instructions since this could not be verified against merge_base in this session."
+    },
+    {
+      "id": "sonar-local",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 1500,
+      "command": "SONAR_SKIP_TESTS=1 make sonar-local",
+      "exit_code": 1,
+      "notes": "Self-skip: 'sonar-scanner was not found. Install the official SonarScanner CLI or set SONAR_SCANNER_PATH.' Matches the guide's documented skip condition (Sonar prerequisites unavailable). Enablement: install the SonarScanner CLI or set SONAR_SCANNER_PATH, then re-run with network access to the SonarQube server referenced in .sonarlint/connectedMode.json."
+    }
+  ],
+  "failures": {
+    "unit": "-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED tests/codemie/rest_api/models/test_permission_models.py::TestResourceType::test_resource_class\nFAILED tests/codemie/rest_api/models/test_permission_models.py::TestResourceType::test_for_instance\nFAILED tests/codemie/rest_api/models/test_permission_models.py::TestResourceType::test_for_instance_not_found\nFAILED tests/codemie/rest_api/router_guards/test_openapi_snapshot.py::test_openapi_matches_baseline\nFAILED tests/codemie/rest_api/routers/test_oauth_redis_lazy_init.py::test_app_starts_without_redis_package_when_pkce_disabled\nFAILED tests/codemie/service/mcp/test_toolkit_service_auth_resolver.py::test_nfr23_discovered_pipeline_preserves_current_scope_and_invokes_tool_with_token (known codemie_enterprise gap)\nFAILED tests/codemie/service/mcp/test_toolkit_service_auth_resolver.py::test_prepare_server_config_falls_back_to_legacy_when_discovered_token_missing (known codemie_enterprise gap)\nFAILED tests/codemie/service/oauth/adapters/test_provider_adapters.py::test_gitlab_exchange_maps_enterprise_token_data (known codemie_enterprise gap)\nFAILED tests/codemie/service/oauth/adapters/test_provider_adapters.py::test_atlassian_exchange_maps_enterprise_token_data (known codemie_enterprise gap)\nFAILED tests/codemie/service/script_tool_calls/test_authorizer.py::TestAuthorizeToolCall::test_the_policy_modules_do_not_pull_in_the_kubernetes_stack[codemie.service.script_tool_calls.authorizer]\nFAILED tests/codemie/service/script_tool_calls/test_authorizer.py::TestAuthorizeToolCall::test_the_policy_modules_do_not_pull_in_the_kubernetes_stack[codemie.service.script_tool_calls.handler]\nFAILED tests/codemie/triggers/test_job_lock.py::test_lock_key_is_stable_across_processes\nFAILED tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_validate_environment_success\nFAILED tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_validate_environment_success\nFAILED tests/codemie_tools/git/test_github_app_auth.py::test_custom_github_api_wrapper_pat_auth\nFAILED tests/codemie_tools/git/test_github_app_auth.py::test_custom_github_api_wrapper_github_app_auth\nFAILED tests/codemie_tools/git/test_github_app_auth.py::test_custom_github_api_wrapper_pat_auth_with_ghe_base_url\nFAILED tests/codemie_tools/git/test_github_app_auth.py::test_custom_github_api_wrapper_pat_auth_github_com_no_base_url\nFAILED tests/codemie_tools/git/test_github_app_auth.py::test_custom_github_api_wrapper_github_app_auth_with_ghe_base_url\nFAILED tests/codemie_tools/git/test_github_app_auth.py::test_custom_github_api_wrapper_github_app_auth_github_com_no_base_url\nFAILED tests/codemie_tools/git/test_github_app_auth.py::test_custom_github_api_wrapper_github_app_auto_detect_installation\nFAILED tests/codemie_tools/git/test_github_app_auth.py::test_custom_github_api_wrapper_github_app_no_installations\nFAILED tests/codemie_tools/data_management/code_executor/test_tool_call_protocol.py::test_the_protocol_module_does_not_import_the_sandbox_stack\nERROR tests/codemie/service/security/test_logout_token_cleanup_mock_tms.py::test_logout_removes_only_the_users_rows_and_pod_fallback (AttributeError: module 'codemie_enterprise.mcp_auth' has no attribute 'MockTokenManagementSystem')\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_branch_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_branch_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_set_active_branch_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_set_active_branch_failur\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_list_branches_in_repo_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_list_branches_in_repo_exception\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_replace_file_content_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_replace_file_content_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_file_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_delete_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_delete_file_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_issue_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_update_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_update_issue_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_find_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_comment_on_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_comment_on_issue_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_file_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_delete_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_delete_file_failure\n= 23 failed, 21899 passed, 307 skipped, 313 warnings, 24 errors in 167.41s (0:02:47) ="
+  }
+}

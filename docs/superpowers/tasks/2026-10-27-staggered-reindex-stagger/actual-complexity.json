@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "generated": "2026-10-27T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 14,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 6,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Three components touched — new pure cron_stagger module, Cron trigger construction in cron.py, and SchedulerSettingsService's next-run display — across Service and scheduler/infrastructure layers, but the module is self-contained and consumed via a single function signature in both call sites." },
+    { "dimension": "technical_risk", "reason": "Follows an established precedent in the repo (job_lock.datasource_lock_key's BLAKE2b hashing) rather than inventing a new technique; deterministic and reversible (pure function, no stored state), but it is a new stagger algorithm with several wildcard/edge-case branches (hourly wildcard, day-of-week normalization) with no prior exact implementation to copy." },
+    { "dimension": "file_change_estimate", "reason": "6 files changed per diffstat: 3 modified (cron.py, scheduler_settings_service.py, test_cron.py) and 3 new (cron_stagger.py, test_cron_stagger.py, test_scheduler_settings_service_stagger.py) across 3 directories (triggers/, triggers/bindings/, service/settings/ and their test mirrors) — maps to the M band (4-6 files) by the diffstat-to-score mapping." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

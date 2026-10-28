@@ -1,0 +1,38 @@
+{
+  "decision": "request-changes",
+  "rationale": "No spec/story existed for this round (acceptance lens n/a — genuine no-spec), so confidence is capped at low; standards was not expected for the compact profile (na, no gap). 2 patch findings against the new cron_stagger module: day_of_week normalization order defeats the stagger match for full-week ranges (CR-001), and the digit-only minute/hour check leaves common hourly crons unstaggered (CR-002) — both introduced by this change and ambiguous enough in intended scope to need an explicit decision, so recommendation states the ambiguity. 1 candidate dismissed after verification: the resource_id falsiness mismatch between cron.py and scheduler_settings_service.py (None vs \"\") cannot actually desync behavior, because staggered_minute_hour's own `if not datasource_id` guard treats both as identical no-ops. 0 deferred.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "commit-format", "status": "na", "notes": "Standards audit not expected for the compact review profile." },
+    { "kind": "code-quality", "status": "na", "notes": "Standards audit not expected for the compact review profile." },
+    { "kind": "security", "status": "na", "notes": "Standards audit not expected for the compact review profile." }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/triggers/bindings/cron.py",
+      "line": 710,
+      "title": "day_of_week normalization defeats stagger match",
+      "problem": "__create_cron_trigger normalizes day_of_week into expanded weekday names (line 711) before calling staggered_minute_hour (line 712). A crontab field that is semantically a full week but not written as a literal \"*\" (e.g. \"0-7\") normalizes into a comma-separated weekday list, so the stagger check's literal (\"*\", \"*\", \"*\") comparison no longer matches.",
+      "impact": "Datasources whose day_of_week field expresses a full week via a range rather than the literal \"*\" silently skip staggering even though they fire effectively daily, leaving the simultaneous-firing collision this change exists to prevent unaddressed for that cron shape.",
+      "recommendation": "Evaluate the raw (pre-normalization) day_of_week field against \"*\" when deciding whether to stagger, or pass the raw value into staggered_minute_hour instead of the APScheduler-normalized one. Whether other functionally-full-week spellings should also count is a scope call worth confirming explicitly rather than inferring from this review alone."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/triggers/cron_stagger.py",
+      "line": 73,
+      "title": "hourly wildcard cron never staggered",
+      "problem": "staggered_minute_hour requires both minute and hour to be plain digit strings (line 73). Any cron with hour == \"*\" — the common hourly pattern, e.g. \"0 * * * *\" — fails the isdigit() check and is returned unchanged.",
+      "impact": "Datasources sharing an hourly cron still fire simultaneously every hour, reproducing the queue-timeout collision scenario this change targets, just on an hourly instead of daily cadence.",
+      "recommendation": "Decide explicitly whether hour == \"*\" crons are in scope for staggering. If so, derive and apply a minute-only offset in that case; if not, this review cannot settle that on its own — confirm the exclusion is intentional rather than an unnoticed gap."
+    }
+  ]
+}

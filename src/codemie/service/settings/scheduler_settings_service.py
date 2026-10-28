@@ -28,6 +28,7 @@ from codemie.configs.config import config
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.models.settings import CredentialValues, Settings, SettingType
 from codemie.service.settings.base_settings import BaseSettingsService, SearchFields
+from codemie.triggers.bindings.cron_stagger import stagger_cron
 from codemie_tools.base.models import CredentialTypes
 
 # Constants for scheduler resource types
@@ -416,7 +417,7 @@ class SchedulerSettingsService(BaseSettingsService):
                 from datetime import datetime
 
                 tz = ZoneInfo(tz_name)
-                itr = croniter(cron_expr, datetime.now(tz))
+                itr = croniter(stagger_cron(resource_id, cron_expr), datetime.now(tz))
                 next_run_at = itr.get_next(datetime).isoformat()
             except Exception:
                 pass
