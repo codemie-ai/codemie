@@ -71,8 +71,8 @@ from codemie.repository.cli_analytics.postgres.fork_attribution import (
 )
 from codemie.repository.cli_analytics.vocabulary import (
     ACTIVE_TIME_METRICS,
-    AUTO_PROMPT_PREFIX,
     BUILTIN_COMMAND_NAMES,
+    CLAUDE_CODE_AUTO_PROMPT_PREFIXES,
     DIMENSION_HOOK_TYPES,
     EDIT_TOOLS,
     LINES_METRICS,
@@ -1588,16 +1588,28 @@ _NO_SPAN_OF_KIND = (
     f"AND s.ts >= {_DAY_LO} AND s.ts < {_DAY_HI})"
 )
 _TOOL_START = "agent.tool.start"
-# A turn is an interaction the user started that talks to the model. An interaction span is not a turn when
-# its user_prompt is an auto prompt (the agent.prompt.submit hook of the same prompt_id starts with
-# AUTO_PROMPT_PREFIX: the user did not start it), or when it is a slash command with no api_request or
-# api_error on the same span (it never talked to the model). Only commands are tested for a request: an
-# interrupted typed prompt sends none and is still a turn. The rows are paired with the span within
+# A turn is an interaction the user started that talks to the model. An interaction span is not a turn when, in order:
+# 1. its user_prompt is an auto prompt: the agent.prompt.submit hook of the same prompt_id is a Claude Code hook
+#    whose body starts with one of CLAUDE_CODE_AUTO_PROMPT_PREFIXES (the user did not start it);
+# 2. it is a slash command with no api_request or api_error on the same span (it never talked to the model);
+# 3. it is a Claude Code span whose user_prompt has a prompt_id but no command, with no api_request or api_error,
+#    no agent.prompt.submit hook of that prompt_id, while the session has a prompt hook carrying a prompt_id within an
+#    hour of the span (the plugin is present): a message Claude Code injected without firing the prompt hook (a
+#    <task-notification> it never answered);
+# otherwise it is a turn. An interrupted typed prompt sends no request and is still a turn by its hook. Limits:
+# without plugin hooks an injected message stays a turn, as an auto prompt does; in a plugin session an interrupted
+# typed prompt whose hook is lost is not a turn until the hook arrives. The rows are paired with the span within
 # _CROSS_MIDNIGHT of its ts, the reach at which ingest marks a row's neighbouring day, and each lookup is
 # bounded by session_id and ts to use the (session_id, ts) indexes. NOT EXISTS, never a JOIN, so a
 # duplicated user_prompt row cannot count a span twice.
 _TURN_WINDOW = f"interval '{int(_CROSS_MIDNIGHT.total_seconds())} seconds'"
-_IS_AUTO_PROMPT = f"starts_with(ltrim(h.prompt_body, E' \\t\\r\\n'), {_literal(AUTO_PROMPT_PREFIX)})"
+_IS_AUTO_PROMPT = (
+    f"({is_claude_code('h')} AND ("
+    + " OR ".join(
+        f"starts_with(ltrim(h.prompt_body, E' \\t\\r\\n'), {_literal(p)})" for p in CLAUDE_CODE_AUTO_PROMPT_PREFIXES
+    )
+    + "))"
+)
 
 
 def _near_span(alias: str) -> str:
@@ -1609,14 +1621,26 @@ def _near_span(alias: str) -> str:
 
 
 _SPAN_PROMPT = f"AND l.span_id = s.span_id AND l.event_kind = {int(EventKind.USER_PROMPT)}"
+_NO_SPAN_REQUEST = (
+    f"NOT EXISTS (SELECT 1 FROM log_events r WHERE {_near_span('r')} AND r.span_id = s.span_id "
+    f"AND r.event_kind IN ({int(EventKind.API_REQUEST)}, {int(EventKind.API_ERROR)}))"
+)
+_IS_PROMPT_HOOK = f"h.event_type = {_literal(_PROMPT_SUBMIT)}"
 _REAL_TURN = (
     f"NOT EXISTS (SELECT 1 FROM log_events l WHERE {_near_span('l')} {_SPAN_PROMPT} AND l.prompt_id IS NOT NULL "
     f"AND EXISTS (SELECT 1 FROM hook_events h WHERE {_near_span('h')} "
-    f"AND h.event_type = {_literal(_PROMPT_SUBMIT)} AND h.prompt_id = l.prompt_id AND {_IS_AUTO_PROMPT})) "
+    f"AND {_IS_PROMPT_HOOK} AND h.prompt_id = l.prompt_id AND {_IS_AUTO_PROMPT})) "
     f"AND NOT EXISTS (SELECT 1 FROM log_events l WHERE {_near_span('l')} {_SPAN_PROMPT} "
     "AND btrim(l.command_name) <> '' "
-    f"AND NOT EXISTS (SELECT 1 FROM log_events r WHERE {_near_span('r')} AND r.span_id = s.span_id "
-    f"AND r.event_kind IN ({int(EventKind.API_REQUEST)}, {int(EventKind.API_ERROR)})))"
+    f"AND {_NO_SPAN_REQUEST}) "
+    "AND NOT EXISTS (SELECT 1 FROM log_events l WHERE starts_with(s.span_name, 'claude_code.') "
+    f"AND {_near_span('l')} {_SPAN_PROMPT} AND l.prompt_id IS NOT NULL "
+    "AND coalesce(btrim(l.command_name), '') = '' "
+    f"AND {_NO_SPAN_REQUEST} "
+    f"AND NOT EXISTS (SELECT 1 FROM hook_events h WHERE {_near_span('h')} "
+    f"AND {_IS_PROMPT_HOOK} AND h.prompt_id = l.prompt_id) "
+    f"AND EXISTS (SELECT 1 FROM hook_events h WHERE {_near_span('h')} "
+    f"AND {_IS_PROMPT_HOOK} AND h.prompt_id IS NOT NULL))"
 )
 _IS_TOOL_START = f"h.event_type = {_literal(_TOOL_START)}"
 _IS_SUBAGENT_START = f"h.event_type = {_literal(_SUBAGENT_START)}"

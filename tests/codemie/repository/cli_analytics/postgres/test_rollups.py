@@ -855,23 +855,39 @@ def test_sentinel_exact_is_the_first_prompt_list_only() -> None:
     assert SENTINEL_EXACT == ("/clear", "/resume", "/compact", "/exit", "/quit")
 
 
-def test_real_turn_excludes_auto_prompts_and_commands_without_a_model_request() -> None:
-    # The whole fragment, so a changed connective, a dropped filter or a wider window fails here: two NOT EXISTS
+def test_real_turn_excludes_auto_prompts_commands_and_injected_messages_without_a_model_request() -> None:
+    # The whole fragment, so a changed connective, a dropped filter or a wider window fails here: three NOT EXISTS
     # lookups (never a JOIN that could count a span twice), every one bounded by session and 1 h of the span's ts.
     w = "interval '3600 seconds'"
+    near = "s.session_id AND {a}.ts >= s.ts - " + w + " AND {a}.ts <= s.ts + " + w
+    no_request = (
+        f"NOT EXISTS (SELECT 1 FROM log_events r WHERE r.session_id = {near.format(a='r')} "
+        "AND r.span_id = s.span_id AND r.event_kind IN (1, 6))"
+    )
     expected = (
-        # an auto prompt: the span's user_prompt has the prompt_id of an agent.prompt.submit hook that starts with
-        # <task-notification> after leading whitespace
-        f"NOT EXISTS (SELECT 1 FROM log_events l WHERE l.session_id = s.session_id "
-        f"AND l.ts >= s.ts - {w} AND l.ts <= s.ts + {w} AND l.span_id = s.span_id AND l.event_kind = 2 "
-        f"AND l.prompt_id IS NOT NULL AND EXISTS (SELECT 1 FROM hook_events h WHERE h.session_id = s.session_id "
-        f"AND h.ts >= s.ts - {w} AND h.ts <= s.ts + {w} AND h.event_type = 'agent.prompt.submit' "
-        f"AND h.prompt_id = l.prompt_id AND starts_with(ltrim(h.prompt_body, E' \\t\\r\\n'), '<task-notification>'))) "
+        # an auto prompt: the span's user_prompt has the prompt_id of a Claude Code agent.prompt.submit hook that
+        # starts with <task-notification> or <agent-message after leading whitespace
+        f"NOT EXISTS (SELECT 1 FROM log_events l WHERE l.session_id = {near.format(a='l')} "
+        "AND l.span_id = s.span_id AND l.event_kind = 2 "
+        f"AND l.prompt_id IS NOT NULL AND EXISTS (SELECT 1 FROM hook_events h WHERE h.session_id = {near.format(a='h')} "
+        "AND h.event_type = 'agent.prompt.submit' AND h.prompt_id = l.prompt_id "
+        "AND (coalesce(h.attrs->>'platform', 'claude-code') = 'claude-code' "
+        "AND (starts_with(ltrim(h.prompt_body, E' \\t\\r\\n'), '<task-notification>') "
+        "OR starts_with(ltrim(h.prompt_body, E' \\t\\r\\n'), '<agent-message'))))) "
         # a slash command with no api_request (1) or api_error (6) on the same span
-        f"AND NOT EXISTS (SELECT 1 FROM log_events l WHERE l.session_id = s.session_id "
-        f"AND l.ts >= s.ts - {w} AND l.ts <= s.ts + {w} AND l.span_id = s.span_id AND l.event_kind = 2 "
-        f"AND btrim(l.command_name) <> '' AND NOT EXISTS (SELECT 1 FROM log_events r WHERE r.session_id = s.session_id "
-        f"AND r.ts >= s.ts - {w} AND r.ts <= s.ts + {w} AND r.span_id = s.span_id AND r.event_kind IN (1, 6)))"
+        f"AND NOT EXISTS (SELECT 1 FROM log_events l WHERE l.session_id = {near.format(a='l')} "
+        "AND l.span_id = s.span_id AND l.event_kind = 2 "
+        f"AND btrim(l.command_name) <> '' AND {no_request}) "
+        # an injected message: a Claude Code span whose prompt (no command) has no request and no prompt hook of
+        # its own, in a session with prompt hooks carrying a prompt_id
+        "AND NOT EXISTS (SELECT 1 FROM log_events l WHERE starts_with(s.span_name, 'claude_code.') "
+        f"AND l.session_id = {near.format(a='l')} AND l.span_id = s.span_id AND l.event_kind = 2 "
+        "AND l.prompt_id IS NOT NULL AND coalesce(btrim(l.command_name), '') = '' "
+        f"AND {no_request} "
+        f"AND NOT EXISTS (SELECT 1 FROM hook_events h WHERE h.session_id = {near.format(a='h')} "
+        "AND h.event_type = 'agent.prompt.submit' AND h.prompt_id = l.prompt_id) "
+        f"AND EXISTS (SELECT 1 FROM hook_events h WHERE h.session_id = {near.format(a='h')} "
+        "AND h.event_type = 'agent.prompt.submit' AND h.prompt_id IS NOT NULL))"
     )
     assert " ".join(rollups._REAL_TURN.split()) == expected
 
@@ -887,7 +903,10 @@ def test_turns_daily_branches_apply_the_turn_rule() -> None:
     assert f"s.span_kind = {rollups._INTERACTION}" in span_branch
     # a hook-only day counts every agent.prompt.submit but an auto prompt; a NULL prompt_body still counts
     assert rollups._NO_SPAN_OF_KIND in hook_branch
-    assert "AND starts_with(ltrim(h.prompt_body, E' \\t\\r\\n'), '<task-notification>') IS NOT TRUE" in hook_branch
+    assert f"AND {rollups._IS_AUTO_PROMPT} IS NOT TRUE" in hook_branch
+    assert "starts_with(ltrim(h.prompt_body, E' \\t\\r\\n'), '<task-notification>')" in hook_branch
+    assert "starts_with(ltrim(h.prompt_body, E' \\t\\r\\n'), '<agent-message')" in hook_branch
+    assert "coalesce(h.attrs->>'platform', 'claude-code') = 'claude-code'" in hook_branch
     assert "/clear" not in hook_branch
     assert "btrim(h.prompt_body) <> ''" not in hook_branch
     assert "'1 hour'" not in inserts["turns_daily"]

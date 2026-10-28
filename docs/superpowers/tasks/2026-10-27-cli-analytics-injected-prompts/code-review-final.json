@@ -1,0 +1,29 @@
+{
+  "decision": "approve",
+  "rationale": "All four lenses and the standards audit ran with parseable output; every story/spec criterion passes, with the live PostgreSQL 17/14 and sanity-api run pending-stage-7. 10 candidates dismissed after reading the code (dirty.py _mark_near_midnight always marks the hook's own day, no importer of the removed AUTO_PROMPT_PREFIX remains, lookups are session_id/ts bounded, the <agent-message prefix and lost-hook limit are the spec's documented design, the rest are cosmetic test/comment nits); 0 deferred.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "story-ac", "item": "Turns counts only user-started interactions; one prompt using a subagent shows TURNS = 1", "status": "pass", "notes": "hand-back excluded by <agent-message prefix; unanswered <task-notification> by third _REAL_TURN check; covered by live tests"},
+    {"kind": "story-ac", "item": "Treat the subagent hand-back (<agent-message) as an auto prompt", "status": "pass", "notes": "CLAUDE_CODE_AUTO_PROMPT_PREFIXES includes '<agent-message'; transcript lead-in deliberately not matched (documented)"},
+    {"kind": "story-ac", "item": "Do not rely only on the hook; exclude a span with no api_request that is not a typed prompt", "status": "pass", "notes": "third NOT EXISTS check in _REAL_TURN; user_prompt text not used because redacted (documented deviation)"},
+    {"kind": "spec", "item": "vocabulary.CLAUDE_CODE_AUTO_PROMPT_PREFIXES holds <task-notification> and <agent-message", "status": "pass", "notes": "AUTO_PROMPT_PREFIX removed, no remaining references"},
+    {"kind": "spec", "item": "Auto-prompt check matches hook body against either prefix in span and hook-only branches", "status": "pass", "notes": "_IS_AUTO_PROMPT ORs both prefixes; used in _REAL_TURN and hook branch; fragment test asserts it"},
+    {"kind": "spec", "item": "Auto-prompt check reads Claude Code hooks only", "status": "pass", "notes": "is_claude_code('h') in _IS_AUTO_PROMPT; test_another_clients_hooks_with_claude_code_prefixes_are_turns"},
+    {"kind": "spec", "item": "Third _REAL_TURN check: Claude Code span, prompt_id, no command, no request/error, no own hook, plugin hook within 1 h -> not a turn", "status": "pass", "notes": "each condition implemented; tests cover 61-minute boundary, no plugin hooks, hooks without prompt_id, interrupted prompt"},
+    {"kind": "spec", "item": "Another client's interaction span is never excluded by the third check", "status": "pass", "notes": "starts_with(s.span_name, 'claude_code.') guard; dedicated live test"},
+    {"kind": "spec", "item": "All lookups NOT EXISTS, bounded by session_id and +-1 h; no schema change", "status": "pass", "notes": "all subqueries use _near_span; fragment pinned in test_rollups.py; no migration"},
+    {"kind": "spec", "item": "'Another Claude session sent a message:' lead-in not matched; OTel prompt text and hook source not used", "status": "pass", "notes": "only '<agent-message' prefix added"},
+    {"kind": "spec", "item": "A late prompt hook re-counts its day", "status": "pass", "notes": "dirty.py _mark_hook marks SPAN_FACTS on own day and neighbour near midnight; 59-minute late-hook test"},
+    {"kind": "spec", "item": "Rollout: backfill over raw-retention window documented in guide operations table", "status": "pass", "notes": "row present in cli-analytics-storage.md (pre-existing)"},
+    {"kind": "spec", "item": "Turn rule in cli-analytics-storage.md guide updated", "status": "pass", "notes": "guide describes both prefixes, platform filter, third check and new limits"},
+    {"kind": "spec", "item": "Tests written/updated", "status": "pass", "notes": "11 live tests in test_live_turns_daily.py; fragment tests updated in test_rollups.py"},
+    {"kind": "spec", "item": "Test harness sanity-api and live turn tests pass on PostgreSQL 17 and 14", "status": "pending-stage-7", "notes": "execution evidence only; code and tests present in diff"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "all 3 subjects in 99fcd6a5..HEAD match the documented EPMCDME-####: Description format (git-workflow.md Commit Message Format)"},
+    {"kind": "code-quality", "status": "pass", "notes": "changed source hunks (rollups.py turn-filter SQL, vocabulary.py prefix tuple, dirty.py comment) keep explicit type hints (new _near_span(alias: str) -> str, tuple[str, ...]); no new .py source files so license-header rule not triggered; rollups.py is ~2.4k lines but the change edits its core turn-rollup SQL rather than appending a new concern, so the Module Cohesion rule is not broken; Ruff conformance not executed (no linters run by this reviewer)"},
+    {"kind": "security", "status": "pass", "notes": "no auth, secret-handling or untrusted-input parsing touched; f-string SQL in rollups.py is composed only from module constants, EventKind ints and _literal()-quoted vocabulary prefixes, with no request-derived values; no credentials logged"}
+  ],
+  "findings": []
+}

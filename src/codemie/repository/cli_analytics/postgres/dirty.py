@@ -187,8 +187,9 @@ def _mark_hook(keys: DirtyKeys, hook: HookRow) -> None:
         return
     _mark(keys, hook.day, hook.session_id, RollupFamily.DIMENSIONS | RollupFamily.SESSION)
     if hook.event_type == _PROMPT_SUBMIT:
-        # A late auto-prompt hook decides whether the interaction span of its prompt is a turn: it re-counts
-        # the span's day, on either side of midnight within the reach.
+        # A late prompt hook decides whether an interaction span of its session is a turn (an auto prompt, or the
+        # hook a prompt with no model request needs): it re-counts the span's day, on either side of midnight
+        # within the reach.
         _mark_near_midnight(keys, hook.day, hook.ts, hook.session_id, int(RollupFamily.SPAN_FACTS), _CROSS_MIDNIGHT)
     elif hook.event_type in _SPAN_HOOK_TYPES:
         _mark_span_hook(keys, hook)

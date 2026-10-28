@@ -88,21 +88,26 @@ def _session() -> str:
     return str(uuid.uuid4())
 
 
+# The default of prompt_submit's prompt_id: the interaction's own; None sends the hook without one.
+_OWN_PROMPT_ID = "<own>"
+
+
 @dataclass
 class _Interaction:
-    """One claude_code.interaction span and the ids its log records and hook events carry."""
+    """One interaction span (claude_code.interaction by default) and the ids its log records and hook events carry."""
 
     session_id: str
     ts: datetime = field(default_factory=lambda: datetime.now(timezone.utc) - timedelta(minutes=30))
     trace_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     span_id: str = field(default_factory=lambda: uuid.uuid4().hex[:16])
     prompt_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    name: str = "claude_code.interaction"
 
     def span(self) -> dict[str, object]:
         return {
             "traceId": self.trace_id,
             "spanId": self.span_id,
-            "name": "claude_code.interaction",
+            "name": self.name,
             "kind": 1,
             "startTimeUnixNano": _ns(self.ts),
             "endTimeUnixNano": _ns(self.ts + timedelta(seconds=20)),
@@ -166,20 +171,30 @@ class _Interaction:
             "api_error", 3, model="claude-sonnet-4-5", error="Request was aborted.", status_code="undefined"
         )
 
-    def prompt_submit(self, prompt_body: str) -> dict[str, object]:
-        return _prompt_submit(self.session_id, self.ts, self.prompt_id, prompt_body)
+    def prompt_submit(
+        self, prompt_body: str, platform: str | None = None, prompt_id: str | None = _OWN_PROMPT_ID
+    ) -> dict[str, object]:
+        own = prompt_id is _OWN_PROMPT_ID
+        return _prompt_submit(self.session_id, self.ts, self.prompt_id if own else prompt_id, prompt_body, platform)
 
 
-def _prompt_submit(session_id: str, ts: datetime, prompt_id: str, prompt_body: str) -> dict[str, object]:
-    return {
+def _prompt_submit(
+    session_id: str, ts: datetime, prompt_id: str | None, prompt_body: str, platform: str | None = None
+) -> dict[str, object]:
+    """An agent.prompt.submit hook event; a None prompt_id or platform leaves the key out."""
+    hook: dict[str, object] = {
         "type": "agent.prompt.submit",
         "timestamp": ts.isoformat().replace("+00:00", "Z"),
         "session_id": session_id,
-        "prompt_id": prompt_id,
         "prompt_body": prompt_body,
         "cwd": "/home/dev/project",
         "permission_mode": "default",
     }
+    if prompt_id is not None:
+        hook["prompt_id"] = prompt_id
+    if platform is not None:
+        hook["platform"] = platform
+    return hook
 
 
 def _traces(spans: list[dict[str, object]]) -> bytes:
@@ -440,3 +455,153 @@ async def test_a_hooks_only_prompt_with_an_empty_body_after_midnight_is_a_turn()
             )
         assert body_is_null is True
         assert await live.turns(session_id) == {session_id: 1}
+
+
+_HAND_BACK = '<agent-message from="a1">\n[Subagent hand-back] The folder holds three files.'
+_NOTIFICATION = "<task-notification><task-id>b7x2</task-id><status>completed</status></task-notification>"
+
+
+def _typed_and(second: _Interaction) -> _Interaction:
+    """A typed prompt (its hook and a request) one minute before `second`, in its session."""
+    return _Interaction(second.session_id, ts=second.ts - timedelta(minutes=1))
+
+
+@pytest.mark.asyncio
+async def test_a_subagent_hand_back_is_not_a_turn() -> None:
+    hand_back = _Interaction(_session())
+    typed = _typed_and(hand_back)
+    async with _live(hand_back.session_id) as live:
+        await live.ingest(
+            spans=[typed.span(), hand_back.span()],
+            logs=[typed.user_prompt(), typed.api_request(), hand_back.user_prompt(), hand_back.api_request()],
+            hooks=[typed.prompt_submit("list the files"), hand_back.prompt_submit(_HAND_BACK)],
+        )
+        assert await live.turns(hand_back.session_id) == {hand_back.session_id: 1}
+
+
+@pytest.mark.asyncio
+async def test_a_hand_back_after_leading_whitespace_is_not_a_turn() -> None:
+    hand_back = _Interaction(_session())
+    typed = _typed_and(hand_back)
+    async with _live(hand_back.session_id) as live:
+        await live.ingest(
+            spans=[typed.span(), hand_back.span()],
+            logs=[typed.user_prompt(), typed.api_request(), hand_back.user_prompt(), hand_back.api_request()],
+            hooks=[typed.prompt_submit("list the files"), hand_back.prompt_submit("\n" + _HAND_BACK)],
+        )
+        assert await live.turns(hand_back.session_id) == {hand_back.session_id: 1}
+
+
+@pytest.mark.asyncio
+async def test_a_hooks_only_hand_back_is_not_a_turn() -> None:
+    session_id = _session()
+    ts = datetime.now(timezone.utc) - timedelta(minutes=30)
+    async with _live(session_id) as live:
+        await live.ingest(
+            hooks=[
+                _prompt_submit(session_id, ts, str(uuid.uuid4()), "list the files"),
+                _prompt_submit(session_id, ts + timedelta(seconds=40), str(uuid.uuid4()), _HAND_BACK),
+            ]
+        )
+        assert await live.turns(session_id) == {session_id: 1}
+
+
+@pytest.mark.asyncio
+async def test_another_clients_hooks_with_claude_code_prefixes_are_turns() -> None:
+    session_id = _session()
+    ts = datetime.now(timezone.utc) - timedelta(minutes=30)
+    async with _live(session_id) as live:
+        await live.ingest(
+            hooks=[
+                _prompt_submit(session_id, ts, str(uuid.uuid4()), _HAND_BACK, platform="copilot-cli"),
+                _prompt_submit(
+                    session_id, ts + timedelta(seconds=40), str(uuid.uuid4()), _NOTIFICATION, platform="copilot-cli"
+                ),
+            ]
+        )
+        assert await live.turns(session_id) == {session_id: 2}
+
+
+@pytest.mark.asyncio
+async def test_an_injected_message_without_a_hook_or_request_is_not_a_turn() -> None:
+    injected = _Interaction(_session())
+    typed = _typed_and(injected)
+    async with _live(injected.session_id) as live:
+        await live.ingest(
+            spans=[typed.span(), injected.span()],
+            logs=[typed.user_prompt(), typed.api_request(), injected.user_prompt()],
+            hooks=[typed.prompt_submit("list the files")],
+        )
+        assert await live.turns(injected.session_id) == {injected.session_id: 1}
+
+
+@pytest.mark.asyncio
+async def test_an_injected_message_61_minutes_after_the_last_prompt_hook_stays_a_turn() -> None:
+    injected = _Interaction(_session(), ts=datetime.now(timezone.utc) - timedelta(minutes=5))
+    typed = _Interaction(injected.session_id, ts=injected.ts - timedelta(minutes=61))
+    async with _live(injected.session_id) as live:
+        await live.ingest(
+            spans=[typed.span(), injected.span()],
+            logs=[typed.user_prompt(), typed.api_request(), injected.user_prompt()],
+            hooks=[typed.prompt_submit("list the files")],
+        )
+        assert await live.turns(injected.session_id) == {injected.session_id: 2}
+
+
+@pytest.mark.asyncio
+async def test_without_plugin_hooks_an_injected_message_stays_a_turn() -> None:
+    injected = _Interaction(_session())
+    typed = _typed_and(injected)
+    async with _live(injected.session_id) as live:
+        await live.ingest(
+            spans=[typed.span(), injected.span()],
+            logs=[typed.user_prompt(), typed.api_request(), injected.user_prompt()],
+        )
+        assert await live.turns(injected.session_id) == {injected.session_id: 2}
+
+
+@pytest.mark.asyncio
+async def test_an_interrupted_typed_prompt_with_its_hook_is_a_turn() -> None:
+    turn = _Interaction(_session())
+    async with _live(turn.session_id) as live:
+        await live.ingest(
+            spans=[turn.span()], logs=[turn.user_prompt()], hooks=[turn.prompt_submit("Refactor the payment service")]
+        )
+        assert await live.turns(turn.session_id) == {turn.session_id: 1}
+
+
+@pytest.mark.asyncio
+async def test_hooks_without_a_prompt_id_keep_an_interrupted_prompt_a_turn() -> None:
+    turn = _Interaction(_session())
+    async with _live(turn.session_id) as live:
+        await live.ingest(
+            spans=[turn.span()],
+            logs=[turn.user_prompt()],
+            hooks=[turn.prompt_submit("Refactor the payment service", prompt_id=None)],
+        )
+        assert await live.turns(turn.session_id) == {turn.session_id: 1}
+
+
+@pytest.mark.asyncio
+async def test_another_clients_interaction_without_a_hook_or_request_is_a_turn() -> None:
+    cursor = _Interaction(_session(), name="cursor.interaction")
+    typed = _typed_and(cursor)
+    async with _live(cursor.session_id) as live:
+        await live.ingest(
+            spans=[typed.span(), cursor.span()],
+            logs=[typed.user_prompt(), typed.api_request(), cursor.user_prompt()],
+            hooks=[typed.prompt_submit("list the files")],
+        )
+        assert await live.turns(cursor.session_id) == {cursor.session_id: 2}
+
+
+@pytest.mark.asyncio
+async def test_an_interrupted_prompt_whose_hook_lands_59_minutes_later_is_a_turn() -> None:
+    turn = _Interaction(_session(), ts=datetime.now(timezone.utc) - timedelta(minutes=70))
+    async with _live(turn.session_id) as live:
+        await live.ingest(
+            spans=[turn.span()],
+            logs=[turn.user_prompt()],
+            hooks=[_prompt_submit(turn.session_id, turn.ts + timedelta(minutes=59), turn.prompt_id, "Refactor it")],
+        )
+        assert await live.turns(turn.session_id) == {turn.session_id: 1}

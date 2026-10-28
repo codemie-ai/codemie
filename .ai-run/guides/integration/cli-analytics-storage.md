@@ -158,7 +158,7 @@ The setting is visible in the project API (`cli_analytics_enabled` on list, deta
 
 ### Counter fallback
 
-A `(day, session)` pair is a fallback pair when it has no span of kind `TOOL`, `TOOL_EXECUTION` or `INTERACTION`; the test is by kind, never by name. Its `turns_daily`, `tool_facts_daily`, `invocations_hourly` and `session_files_daily` rows are counted from `hook_events` (`agent.prompt.submit`, `agent.tool.start`/`end`/`error`, `agent.skill.dispatch`, `agent.subagent.start`); a pair with spans uses spans. Tool calls, turns, files and agents have one source per pair, never both. Skills are read from spans and hooks on every pair, and each skill invocation counts once: an `agent.tool.start` of a call that has a `TOOL` span is left out, and so is a forked skill's `agent.subagent.start` joined to a counted initiator. An `agent.subagent.start` counts once per `agent_id`, by the first start of that `agent_id` in the session: SendMessage continues an agent or a fork under its `agent_id` with a new start, which is no new invocation; a start with an empty `agent_id` counts on its own. Skill and agent counts therefore also read the fork a Skill call's hook `agent.tool.end` names (its `fork_agent_id`, else the complete `agentId` in `tool_response`; never the typed `agent_id`, which on a call made inside a subagent is the caller's) and `agent.skill.dispatch` `prompt_id` (a slash command's fork, only when the dispatch is the one of its `prompt_id`: a start of its skill name, else a foreground one without a skill name that no `Agent` call names), on any day of the session, a day with spans included; these fork rules read Claude Code events only (`platform` `claude-code` or absent). `turns_daily` counts every `agent.prompt.submit` except a prompt starting with `<task-notification>`; an empty `prompt_body` still counts. `success` is an `agent.tool.end` with the same `tool_use_id`, counted on the day of the start. The reader has no fallback query of its own: it reads these rollups for the sessions of the window.
+A `(day, session)` pair is a fallback pair when it has no span of kind `TOOL`, `TOOL_EXECUTION` or `INTERACTION`; the test is by kind, never by name. Its `turns_daily`, `tool_facts_daily`, `invocations_hourly` and `session_files_daily` rows are counted from `hook_events` (`agent.prompt.submit`, `agent.tool.start`/`end`/`error`, `agent.skill.dispatch`, `agent.subagent.start`); a pair with spans uses spans. Tool calls, turns, files and agents have one source per pair, never both. Skills are read from spans and hooks on every pair, and each skill invocation counts once: an `agent.tool.start` of a call that has a `TOOL` span is left out, and so is a forked skill's `agent.subagent.start` joined to a counted initiator. An `agent.subagent.start` counts once per `agent_id`, by the first start of that `agent_id` in the session: SendMessage continues an agent or a fork under its `agent_id` with a new start, which is no new invocation; a start with an empty `agent_id` counts on its own. Skill and agent counts therefore also read the fork a Skill call's hook `agent.tool.end` names (its `fork_agent_id`, else the complete `agentId` in `tool_response`; never the typed `agent_id`, which on a call made inside a subagent is the caller's) and `agent.skill.dispatch` `prompt_id` (a slash command's fork, only when the dispatch is the one of its `prompt_id`: a start of its skill name, else a foreground one without a skill name that no `Agent` call names), on any day of the session, a day with spans included; these fork rules read Claude Code events only (`platform` `claude-code` or absent). `turns_daily` counts every `agent.prompt.submit` except a Claude Code hook's (`platform` `claude-code` or absent) prompt starting with `<task-notification>` or `<agent-message`; an empty `prompt_body` still counts. `success` is an `agent.tool.end` with the same `tool_use_id`, counted on the day of the start. The reader has no fallback query of its own: it reads these rollups for the sessions of the window.
 
 ### Slash commands (`get_invocations`, kind 4)
 
@@ -211,31 +211,41 @@ For whoever builds a report over `session_dims`, `session_usage`, `session_usage
 
 **Turn rule (`turns_daily`).** A turn is an interaction the user started that talks to the model: a typed
 prompt, or a slash command that made a model request. Auto prompts are not turns. A `claude_code.interaction`
-span counts unless one of two checks finds a row:
+span counts unless one of three checks, applied in order, finds a row:
 
 1. Auto prompt: a `user_prompt` log row (`event_kind = 2`) of the same session and `span_id` whose `prompt_id`
-   is the `prompt_id` of an `agent.prompt.submit` hook whose `prompt_body` starts with
-   `<task-notification>` (`vocabulary.AUTO_PROMPT_PREFIX`; leading whitespace, i.e. space, tab, CR and LF, is
-   ignored), the prompt Claude Code injects itself when a forked
-   skill, background agent or background command finishes. In OTel it looks like a typed prompt; only the hook
-   tells them apart.
+   is the `prompt_id` of a Claude Code `agent.prompt.submit` hook (`platform` `claude-code` or absent) whose
+   `prompt_body` starts with `<task-notification>` or `<agent-message`
+   (`vocabulary.CLAUDE_CODE_AUTO_PROMPT_PREFIXES`; leading whitespace, i.e. space, tab, CR and LF, is ignored):
+   the prompts Claude Code injects itself when a forked skill, background agent or background command finishes,
+   and when a subagent hands its result back or a peer session sends a message. In OTel it looks like a typed
+   prompt; only the hook tells them apart.
 2. Command without a model request: a `user_prompt` row of the same session and `span_id` with a non-empty
    `command_name`, and no `api_request` (`event_kind = 1`) or `api_error` (`event_kind = 6`) row with the same
    `span_id`. The test applies to slash commands only: a typed prompt interrupted with Esc sends no request and
    is still a turn.
+3. Injected message without a hook and a model request: on a Claude Code span (name starting `claude_code.`), a
+   `user_prompt` row of the same session and `span_id` with a `prompt_id` and no `command_name`, no `api_request`
+   or `api_error` row with the same `span_id`, no `agent.prompt.submit` hook with that `prompt_id`, while the
+   session has an `agent.prompt.submit` hook carrying a `prompt_id` within 1 hour of the span's `ts` (the plugin
+   is present). Claude Code injects a
+   `<task-notification>` that fires no `UserPromptSubmit` hook and makes no model call, so the auto-prompt check
+   cannot see it; a typed prompt fires its hook, so an Esc-interrupted one stays a turn. Another client's
+   interaction span is not tested.
 
 Every row is paired with the span within 1 hour of the span's `ts` on either side (`_CROSS_MIDNIGHT` in
 `dirty.py`, the reach at which ingest marks a neighbouring day), and every lookup is bounded by `session_id`
 and `ts`, so it reads the `(session_id, ts)` indexes of `log_events` and `hook_events`. The checks are
 `NOT EXISTS`, so a duplicated `user_prompt` row cannot count a span twice. A fallback pair counts its
-`agent.prompt.submit` hooks except the `<task-notification>` ones: built-in slash commands fire no `UserPromptSubmit`
+`agent.prompt.submit` hooks except Claude Code's `<task-notification>` and `<agent-message` ones: built-in slash commands fire no `UserPromptSubmit`
 hook (checked on Claude Code 2.1.302 with `/model`, `/effort`, `/context`, `/cost`, `/help`, `/status`, `/mcp`,
 `/clear`, `/compact` and `/exit`), so there is no command prompt to exclude there, while project and plugin skills
 fire it and are turns. The texts Claude Code writes into the transcript itself — "This session is being continued
 from a previous conversation…", "Caveat: The messages below were generated by the user while running local
 commands", `<command-name>` and `<local-command-stdout>` wrappers — reach neither a `user_prompt` log nor the
 prompt hook (checked after `/compact`, with `--continue` and with `--resume`), so they are never counted. Limits: a request more than 1 hour after its command is not seen, and the command is not
-counted; without the plugin hooks an auto prompt stays a turn.
+counted; without the plugin hooks an auto prompt or an injected message stays a turn; in a plugin session an
+Esc-interrupted typed prompt whose hook is lost (or not yet delivered) is not a turn — a late hook re-counts its day.
 
 **`ended_at`/`duration_ms` and a non-final summary.** `agent.session.summary` is sent on every Stop,
 not only at `SessionEnd`, each one marked `is_final`. A **final** summary (`is_final: true`, or the
