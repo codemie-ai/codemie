@@ -168,8 +168,8 @@ pyjwt = "^2.14.0"
 pyasn1 = "^0.6.4"
 setuptools = "^82.0.1"
 ecdsa = "^0.19.1"
-# Security (EPMCDME-13893): pin >=3.14.3 to fix GHSA-cq5v-8q36-5273 (aiohttp OOB heap read in HTTP parser)
-aiohttp = "~3.14.3"
+# Security (EPMCDME-13893, EPMCDME-16167): pin >=3.14.4 to fix GHSA-cq5v-8q36-5273 (aiohttp OOB heap read in HTTP parser) and CVE-2026-111064 / GHSA-2g87-pp6c-29x5 (aiohttp vulnerability; bounded to next-patch)
+aiohttp = "~3.14.4"
 # Security (EPMCDME-12868): pin >=48.0.1 to fix GHSA-537c-gmf6-5ccf (cryptography weak RSA key handling); Security (EPMCDME-13894): pin >=50.0.0 to fix GHSA-g6cj-pr64-35w5 and GHSA-jwv3-5hgf-82ww (PKCS#7 Bleichenbacher oracle + cert-chain path-building DoS)
 cryptography = "~50.0.0"
 pillow = "^13.0.0"

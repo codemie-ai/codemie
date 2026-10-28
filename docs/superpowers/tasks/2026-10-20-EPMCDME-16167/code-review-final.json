@@ -1,0 +1,13 @@
+{
+  "decision": "approve",
+  "rationale": "The edge-case lens returned no findings on the aiohttp/lockfile bump; acceptance was skipped (no spec) and standards were intentionally omitted for the compact profile, so confidence is low. 0 deferred, 0 dismissed.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "commit-format", "status": "na", "notes": "Standards audit not run for this profile." },
+    { "kind": "code-quality", "status": "na", "notes": "Standards audit not run for this profile." },
+    { "kind": "security", "status": "na", "notes": "Standards audit not run for this profile." }
+  ],
+  "findings": []
+}
