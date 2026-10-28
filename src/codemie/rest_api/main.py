@@ -1482,6 +1482,16 @@ async def handle_exceptions(request: Request, call_next):
         )
 
 
+HSTS_HEADER_VALUE = "max-age=31536000; includeSubDomains"
+
+
+@app.middleware("http")
+async def add_hsts_header(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["Strict-Transport-Security"] = HSTS_HEADER_VALUE
+    return response
+
+
 @app.exception_handler(ApiError)
 async def elastic_exception_handler(request: Request, exception: ApiError) -> JSONResponse:
     """
