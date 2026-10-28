@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import unicodedata
+from typing import TYPE_CHECKING
 
 from codemie.configs import logger
 from codemie.configs.customer_config import customer_config
@@ -22,6 +23,9 @@ from codemie.core.exceptions import ValidationException
 from codemie.rest_api.models.assistant import MCPServerDetails
 from codemie.rest_api.models.mcp_config import MCPConfig
 from codemie.service.mcp.models import MCPServerConfig
+
+if TYPE_CHECKING:
+    from codemie.core.workflow_models.workflow_config import WorkflowConfig
 
 # Fields allowed on a catalog-ref server (mcp_config_id set).
 # Anything not in this set is connection-level config that must come from the catalog.
@@ -197,6 +201,33 @@ class MCPAccessControlService:
         servers = mcp_servers or []
         cls.validate_on_save(servers)
         return list(servers)
+
+    @staticmethod
+    def collect_workflow_mcp_servers(workflow: WorkflowConfig) -> list[MCPServerDetails]:
+        """Collect all MCP server entries from a workflow's assistants and tools."""
+        servers: list[MCPServerDetails] = []
+        for assistant in workflow.assistants or []:
+            servers.extend(assistant.mcp_servers or [])
+        for tool in workflow.tools or []:
+            if tool.mcp_server:
+                servers.append(tool.mcp_server)
+        return servers
+
+    @classmethod
+    def validate_and_strip_workflow_mcp_servers(cls, workflow: WorkflowConfig) -> None:
+        """Validate a workflow's MCP servers before persisting, then strip inline overrides in-place."""
+        cls.validate_on_save(cls.collect_workflow_mcp_servers(workflow))
+        cls.strip_workflow_mcp_servers(workflow)
+
+    @classmethod
+    def strip_workflow_mcp_servers(cls, workflow: WorkflowConfig) -> None:
+        """Strip inline config fields from a workflow's catalog-ref MCP servers in-place."""
+        for assistant in workflow.assistants or []:
+            if assistant.mcp_servers:
+                assistant.mcp_servers = cls.strip_inline_config(assistant.mcp_servers)
+        for tool in workflow.tools or []:
+            if tool.mcp_server:
+                tool.mcp_server = cls._strip_one(tool.mcp_server)
 
     @staticmethod
     def filter_for_runtime(mcp_servers: list[MCPServerDetails]) -> list[MCPServerDetails]:

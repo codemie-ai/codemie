@@ -20,6 +20,7 @@ from uuid import uuid4
 
 from elasticsearch import Elasticsearch, NotFoundError
 from pydantic import BaseModel
+from pydantic_core import PydanticUndefined
 
 from codemie.clients.elasticsearch import ElasticSearchClient
 from codemie.rest_api.models.standard import PostResponse
@@ -369,6 +370,19 @@ MutableList.associate_with(PydanticListType)
 
 class BaseModelWithSQLSupport(CommonBaseModel):
     """Base class for SQL database models with common CRUD operations"""
+
+    def __new__(cls, *args, **kwargs):
+        new_object = super().__new__(cls, *args, **kwargs)
+        if new_object.__pydantic_private__ is None and cls.__private_attributes__:
+            defaults = {
+                name: attr.get_default(call_default_factory=True) for name, attr in cls.__private_attributes__.items()
+            }
+            object.__setattr__(
+                new_object,
+                "__pydantic_private__",
+                {name: value for name, value in defaults.items() if value is not PydanticUndefined},
+            )
+        return new_object
 
     @classmethod
     def get_engine(cls):

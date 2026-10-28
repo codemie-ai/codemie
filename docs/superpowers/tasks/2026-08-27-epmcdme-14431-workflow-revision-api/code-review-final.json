@@ -1,0 +1,67 @@
+{
+  "decision": "request-changes",
+  "confidence": "medium",
+  "rationale": "One critical runtime bug found: WorkflowConfig.update() does not accept yaml_config as a kwarg, so the rollback mutates history but silently drops the config change — every rollback call will either raise TypeError or no-op depending on SQLModel's **kwargs handling. Tests pass only because the workflow fixture is MagicMock. Fix is a one-liner. All other findings are deferred.",
+  "risk_flags": [],
+  "business_review": [
+    {
+      "criterion": "GET /v1/workflows/{id}/versions returns revision list with total_revisions, workflow_name, workflow_id",
+      "status": "pass",
+      "notes": "WorkflowVersionHistoryResponse carries all required fields."
+    },
+    {
+      "criterion": "POST /v1/workflows/{id}/versions/rollback rolls back to target revision using revision_index",
+      "status": "fail",
+      "notes": "Implementation calls workflow.update(yaml_config=...) which raises TypeError at runtime — yaml_config is not a parameter of WorkflowConfig.update(). The rollback never applies the target yaml_config."
+    },
+    {
+      "criterion": "Rollback prepends current config as new audit history entry (immutable-append)",
+      "status": "pass",
+      "notes": "new_history = [new_entry, *history] is correct."
+    },
+    {
+      "criterion": "Auth: READ for list, WRITE for rollback",
+      "status": "pass",
+      "notes": "Action.READ on GET, Action.WRITE on POST rollback; raise_access_denied when denied."
+    },
+    {
+      "criterion": "400 on empty history, 400 on out-of-range index",
+      "status": "pass",
+      "notes": "Both guard clauses present with informative messages."
+    }
+  ],
+  "standards_review": [
+    {
+      "standard": "Commit format",
+      "status": "pass",
+      "notes": "Both commits follow EPMCDME-####: Description. Range: EPMCDME-8827_workflow-versioning-clean..HEAD."
+    },
+    {
+      "standard": "License headers",
+      "status": "pass",
+      "notes": "Apache 2.0 header present on all 4 new/modified files."
+    },
+    {
+      "standard": "Type annotations",
+      "status": "partial",
+      "notes": "workflow_version_service.py uses typing.Optional[str] instead of str | None and lacks from __future__ import annotations. Code quality guide prefers the modern form. Not blocking — make ruff will flag if ruff UP007 is enabled."
+    },
+    {
+      "standard": "Security patterns",
+      "status": "pass",
+      "notes": "No secrets, no injection surface, no unsafe file/process handling introduced."
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "severity": "critical",
+      "triage": "patch",
+      "summary": "workflow.update(yaml_config=...) raises TypeError — yaml_config is not a valid kwarg",
+      "problem": "WorkflowVersionService.rollback_to_version calls workflow.update(yaml_config=target.yaml_config, yaml_config_history=new_history) at line 72 of workflow_version_service.py. WorkflowConfig.update() accepts only (refresh, validate, yaml_config_history) — it does not accept yaml_config. This raises TypeError at runtime on every rollback call.",
+      "impact": "Every POST /v1/workflows/{id}/versions/rollback call with a real WorkflowConfig object crashes with TypeError. Tests pass only because the workflow fixture is MagicMock which accepts arbitrary kwargs. The acceptance criterion 'rollback to specific revision' is not met.",
+      "recommendation": "Set workflow.yaml_config = target.yaml_config directly on the object before calling update(), matching the pattern in workflow_service.py lines 650-684. Change line 72 from:\n  workflow.update(yaml_config=target.yaml_config, yaml_config_history=new_history)\nto:\n  workflow.yaml_config = target.yaml_config\n  workflow.update(yaml_config_history=new_history)\nAlso update the test at line 131-133 which currently asserts yaml_config in call_kwargs — after the fix, update() will no longer receive yaml_config as a kwarg; instead assert workflow.yaml_config == 'old: yaml' directly on the mock after the call.",
+      "sources": ["blind", "edge-case", "acceptance"]
+    }
+  ]
+}

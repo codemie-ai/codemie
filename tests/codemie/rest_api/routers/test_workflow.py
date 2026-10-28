@@ -712,14 +712,11 @@ async def test_update_workflow(
     mock_get_wf.return_value = workflow_config
     mock_ability.return_value = True
 
-    from unittest.mock import AsyncMock
-
     with (
         patch("codemie.service.workflow_service.WorkflowService.get_workflow", return_value=workflow_config),
         patch("codemie.service.workflow_service.WorkflowService.update_workflow", return_value=workflow_config_data),
         patch(
             "codemie.service.workflow_service.WorkflowService.validate_for_update",
-            new_callable=AsyncMock,
         ) as mock_validate,
         patch("codemie.service.workflow_service.WorkflowService.save_workflow_schema"),
         patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
@@ -957,7 +954,7 @@ async def test_update_workflow_pins_id_from_path_param(
 
     captured: list = []
 
-    async def capture_validation(workflow, proposed, user, error_format, guardrail_assignments=None):
+    def capture_validation(workflow, proposed, user, error_format, guardrail_assignments=None):
         captured.append(proposed)
 
     with (
@@ -1002,7 +999,7 @@ async def test_update_workflow_ignores_mismatched_body_id(
 
     captured: list = []
 
-    async def capture_validation(workflow, proposed, user, error_format, guardrail_assignments=None):
+    def capture_validation(workflow, proposed, user, error_format, guardrail_assignments=None):
         captured.append(proposed)
 
     with (
@@ -1033,8 +1030,6 @@ async def test_update_workflow_ignores_mismatched_body_id(
 @patch("codemie.core.ability.Ability.can")
 @patch("codemie.service.workflow_service.WorkflowService.get_workflow")
 async def test_update_workflow_exception(mock_get_wf, mock_ability, update_workflow_request, request_header):
-    from unittest.mock import AsyncMock
-
     mock_get_wf.return_value = workflow_config_data
     mock_ability.return_value = True
 
@@ -1045,7 +1040,6 @@ async def test_update_workflow_exception(mock_get_wf, mock_ability, update_workf
         ),
         patch(
             "codemie.service.workflow_service.WorkflowService.validate_for_update",
-            new_callable=AsyncMock,
         ),
     ):
         transport = ASGITransport(app=app)
@@ -1067,7 +1061,6 @@ async def test_update_published_workflow_with_external_assistant_blocked(
     update_workflow_request: UpdateWorkflowRequest,
     request_header: dict[str, str],
 ) -> None:
-    from unittest.mock import AsyncMock
     from codemie.core.exceptions import ValidationException
 
     published_workflow = WorkflowConfig(
@@ -1083,7 +1076,6 @@ async def test_update_published_workflow_with_external_assistant_blocked(
 
     with patch(
         "codemie.service.workflow_service.WorkflowService.validate_for_update",
-        new_callable=AsyncMock,
         side_effect=ValidationException("Marketplace workflows cannot use external (non-virtual) assistants or skills"),
     ):
         transport = ASGITransport(app=app)
@@ -1112,13 +1104,11 @@ async def test_update_non_published_workflow_skips_marketplace_validation(
     update_workflow_request: UpdateWorkflowRequest,
     request_header: dict[str, str],
 ) -> None:
-    from unittest.mock import AsyncMock
-
     mock_get_guardrail_assignments.return_value = []
     mock_get_wf.return_value = workflow_config_data  # is_global=False
     mock_ability.return_value = True
 
-    mock_validate: AsyncMock = AsyncMock()
+    mock_validate: MagicMock = MagicMock()
 
     with (
         patch("codemie.service.workflow_service.WorkflowService.validate_for_update", mock_validate),
@@ -1674,15 +1664,12 @@ async def test_refine_workflow_not_found(request_header):
 @patch("codemie.core.ability.Ability.can")
 @patch("codemie.service.workflow_service.WorkflowService.get_workflow")
 async def test_validate_workflow_valid_config(mock_get_wf, mock_ability, update_workflow_request, request_header):
-    from unittest.mock import AsyncMock
-
     mock_get_wf.return_value = workflow_config_data
     mock_ability.return_value = True
 
     with (
         patch(
             "codemie.service.workflow_service.WorkflowService.validate_for_update",
-            new_callable=AsyncMock,
         ) as mock_validate,
         patch("codemie.service.workflow_service.WorkflowService.update_workflow") as mock_update,
         patch("codemie.rest_api.routers.workflow.project_access_check"),
@@ -1704,7 +1691,6 @@ async def test_validate_workflow_valid_config(mock_get_wf, mock_ability, update_
 @patch("codemie.core.ability.Ability.can")
 @patch("codemie.service.workflow_service.WorkflowService.get_workflow")
 async def test_validate_workflow_missing_assistant(mock_get_wf, mock_ability, update_workflow_request, request_header):
-    from unittest.mock import AsyncMock
     from codemie.core.exceptions import ValidationException
 
     mock_get_wf.return_value = workflow_config_data
@@ -1713,7 +1699,6 @@ async def test_validate_workflow_missing_assistant(mock_get_wf, mock_ability, up
     with (
         patch(
             "codemie.service.workflow_service.WorkflowService.validate_for_update",
-            new_callable=AsyncMock,
             side_effect=ValidationException("Assistant 'missing-id' does not exist"),
         ),
         patch("codemie.rest_api.routers.workflow.project_access_check"),
@@ -1793,8 +1778,6 @@ async def test_validate_workflow_load_error_not_mapped_to_404(
 async def test_validate_global_workflow_calls_validate_for_update(
     mock_get_wf, mock_ability, update_workflow_request, request_header
 ):
-    from unittest.mock import AsyncMock
-
     published_workflow = WorkflowConfig(
         id="workflow_123",
         name="Published Workflow",
@@ -1809,7 +1792,6 @@ async def test_validate_global_workflow_calls_validate_for_update(
     with (
         patch(
             "codemie.service.workflow_service.WorkflowService.validate_for_update",
-            new_callable=AsyncMock,
         ) as mock_validate,
         patch("codemie.rest_api.routers.workflow.project_access_check"),
     ):
@@ -1837,7 +1819,6 @@ async def test_update_workflow_guardrail_sync_403_wrapped_as_400(
     request_header,
 ):
     """GuardrailService 403/404 during sync must be wrapped as HTTP 400 (preserved update contract)."""
-    from unittest.mock import AsyncMock
     from fastapi import status as http_status
 
     mock_get_wf.return_value = workflow_config_data
@@ -1854,7 +1835,6 @@ async def test_update_workflow_guardrail_sync_403_wrapped_as_400(
         patch("codemie.service.workflow_service.WorkflowService.update_workflow", return_value=workflow_config_data),
         patch(
             "codemie.service.workflow_service.WorkflowService.validate_for_update",
-            new_callable=AsyncMock,
         ),
         patch(
             "codemie.service.guardrail.guardrail_service.GuardrailService.sync_guardrail_assignments_for_entity",
@@ -1885,7 +1865,7 @@ async def test_update_workflow_guardrail_dry_run_blocks_persist(
     request_header,
 ):
     """Guardrail dry-run failure must prevent update_workflow from being called."""
-    from unittest.mock import AsyncMock, MagicMock
+    from unittest.mock import MagicMock
 
     mock_get_wf.return_value = workflow_config_data
     mock_ability.return_value = True
@@ -1909,7 +1889,6 @@ async def test_update_workflow_guardrail_dry_run_blocks_persist(
         ),
         patch(
             "codemie.service.workflow_service.WorkflowService.validate_for_update",
-            new_callable=AsyncMock,
         ),
         patch("codemie.rest_api.routers.workflow.project_access_check"),
     ):
@@ -1944,7 +1923,7 @@ async def test_validate_workflow_proposed_id_set_from_path_param(
 
     captured: list = []
 
-    async def capture_validation(workflow, proposed, user, error_format, guardrail_assignments=None):
+    def capture_validation(workflow, proposed, user, error_format, guardrail_assignments=None):
         captured.append(proposed)
 
     with (
@@ -1992,7 +1971,6 @@ async def test_validate_workflow_returns_consumer_slot_warnings(
     with (
         patch(
             "codemie.service.workflow_service.WorkflowService.validate_for_update",
-            new_callable=AsyncMock,
         ),
         patch(
             "codemie.rest_api.routers.workflow._consumer_slot_warnings",
@@ -2028,7 +2006,7 @@ async def test_validate_workflow_ignores_mismatched_body_id(
 
     captured: list = []
 
-    async def capture_validation(workflow, proposed, user, error_format, guardrail_assignments=None):
+    def capture_validation(workflow, proposed, user, error_format, guardrail_assignments=None):
         captured.append(proposed)
 
     with (
@@ -2062,7 +2040,6 @@ async def test_validate_workflow_dry_runs_guardrail_assignment_checks(
     request_header,
 ):
     """Validate must run the same assignment checks as update without persisting them."""
-    from unittest.mock import AsyncMock
 
     mock_get_wf.return_value = workflow_config_data
     mock_ability.return_value = True
@@ -2075,7 +2052,6 @@ async def test_validate_workflow_dry_runs_guardrail_assignment_checks(
     with (
         patch(
             "codemie.service.workflow_service.WorkflowService.validate_for_update",
-            new_callable=AsyncMock,
         ),
         patch("codemie.service.workflow_service.WorkflowService.update_workflow") as mock_update,
         patch(
@@ -2111,7 +2087,6 @@ async def test_validate_workflow_guardrail_403_wrapped_as_400(
     request_header,
 ):
     """Guardrail dry-run 403/404 must fail validate the same way update wraps sync errors."""
-    from unittest.mock import AsyncMock
     from fastapi import status as http_status
 
     mock_get_wf.return_value = workflow_config_data
@@ -2132,7 +2107,6 @@ async def test_validate_workflow_guardrail_403_wrapped_as_400(
     with (
         patch(
             "codemie.service.workflow_service.WorkflowService.validate_for_update",
-            new_callable=AsyncMock,
         ),
         patch(
             "codemie.rest_api.routers.workflow.GuardrailService.sync_guardrail_assignments_for_entity",
@@ -2164,7 +2138,6 @@ async def test_pre_persist_guardrail_dry_run_uses_proposed_project_on_cross_proj
     guardrail permissions against the old project (workflow.project), allowing assignments that
     violate the new project's policy to pass the pre-persist check and reach the DB commit.
     """
-    from unittest.mock import AsyncMock
 
     new_project = "new-project"
     cross_project_request = UpdateWorkflowRequest(
@@ -2185,7 +2158,6 @@ async def test_pre_persist_guardrail_dry_run_uses_proposed_project_on_cross_proj
     with (
         patch(
             "codemie.service.workflow_service.WorkflowService.validate_for_update",
-            new_callable=AsyncMock,
         ),
         patch("codemie.service.workflow_service.WorkflowService.update_workflow") as mock_update,
         patch(
@@ -2783,8 +2755,6 @@ _SCRIPT_STEP_WARNING = {
 async def test_update_workflow_script_step_warning_uses_stored_global_state(
     mock_get_guardrail_assignments, mock_get_wf, _mock_ability, is_global, update_workflow_request, request_header
 ):
-    from unittest.mock import AsyncMock
-
     mock_get_guardrail_assignments.return_value = None
     existing = WorkflowConfig(
         id="workflow_123",
@@ -2798,7 +2768,7 @@ async def test_update_workflow_script_step_warning_uses_stored_global_state(
 
     with (
         patch("codemie.service.workflow_service.WorkflowService.update_workflow", return_value=workflow_config_data),
-        patch("codemie.service.workflow_service.WorkflowService.validate_for_update", new_callable=AsyncMock),
+        patch("codemie.service.workflow_service.WorkflowService.validate_for_update"),
         patch("codemie.service.workflow_service.WorkflowService.save_workflow_schema"),
         patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
         patch("codemie.rest_api.routers.workflow.project_access_check"),
@@ -2826,8 +2796,6 @@ async def test_update_workflow_script_step_warning_uses_stored_global_state(
 async def test_validate_workflow_script_step_warning_uses_stored_global_state(
     mock_get_wf, _mock_ability, is_global, update_workflow_request, request_header
 ):
-    from unittest.mock import AsyncMock
-
     existing = WorkflowConfig(
         id="workflow_123",
         name="Existing",
@@ -2839,7 +2807,7 @@ async def test_validate_workflow_script_step_warning_uses_stored_global_state(
     mock_get_wf.return_value = existing
 
     with (
-        patch("codemie.service.workflow_service.WorkflowService.validate_for_update", new_callable=AsyncMock),
+        patch("codemie.service.workflow_service.WorkflowService.validate_for_update"),
         patch("codemie.rest_api.routers.workflow.project_access_check"),
         patch("codemie.rest_api.routers.workflow.collect_consumer_slot_integration_warnings", return_value=[]),
         patch(

@@ -47,6 +47,7 @@ from codemie.rest_api.models.conversation import GeneratedMessage
 from codemie.rest_api.security.user import User
 from codemie.rest_api.utils.default_applications import ensure_application_exists
 from codemie.service.agent_workspace_service import AgentWorkspaceService
+from codemie.service.mcp.access_control import MCPAccessControlService
 from codemie.service.monitoring.workflow_monitoring_service import WorkflowMonitoringService
 from codemie.service.workflow_config.workflow_marketplace_service import WorkflowMarketplaceService
 
@@ -164,18 +165,20 @@ class WorkflowService:
             )
             raise e
 
-    async def validate_for_update(
+    def validate_for_update(
         self,
         workflow: WorkflowConfig,
         updated_config: WorkflowConfig,
         user: User,
-        error_format: WorkflowErrorFormat,
+        error_format: WorkflowErrorFormat = WorkflowErrorFormat.STRING,
     ) -> None:
+        """Validate a replacement config before it is persisted; strips inline MCP config from it in-place."""
         # Lazy import: workflows.workflow imports WorkflowService, causing a circular dependency at module level.
         from codemie.workflows.workflow import WorkflowExecutor
 
+        MCPAccessControlService.validate_and_strip_workflow_mcp_servers(updated_config)
         if workflow.is_global:
-            await _marketplace_service.validate(updated_config, user)
+            _marketplace_service.validate(updated_config, user)
         WorkflowExecutor.validate_workflow(workflow_config=updated_config, user=user, error_format=error_format)
 
     def update_workflow(self, stored_config: WorkflowConfig, updated_workflow_config: WorkflowConfig, user: User):

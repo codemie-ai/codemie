@@ -49,7 +49,7 @@ class WorkflowMarketplaceService:
         if invalid_ids:
             raise ValidationException(f"Invalid category IDs: {invalid_ids}")
 
-    async def validate(self, workflow: WorkflowConfig, user: User) -> WorkflowPublishValidationResponse:
+    def validate(self, workflow: WorkflowConfig, user: User) -> WorkflowPublishValidationResponse:
         """
         Validate a workflow for marketplace publication.
 
@@ -95,7 +95,7 @@ class WorkflowMarketplaceService:
         Blocks if external assistant or skill references are found.
         Validates categories and optionally checks inline credentials.
         """
-        await self.validate(workflow, user)
+        self.validate(workflow, user)
         self._validate_categories(request.categories)
 
         logger.info(f"Publishing workflow '{workflow.id}' to marketplace by user '{user.id}'")

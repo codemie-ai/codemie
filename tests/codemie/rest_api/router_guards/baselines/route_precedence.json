@@ -131,7 +131,17 @@
   },
   {
     "earlier": "/v1/workflows/prebuilt/{slug}",
+    "later": "/v1/workflows/{workflow_id}/versions",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/workflows/prebuilt/{slug}",
     "later": "/v1/workflows/{workflow_id}/executions",
+    "method": "GET"
+  },
+  {
+    "earlier": "/v1/workflows/id/{workflow_id}",
+    "later": "/v1/workflows/{workflow_id}/versions",
     "method": "GET"
   },
   {

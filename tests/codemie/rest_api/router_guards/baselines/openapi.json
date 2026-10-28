@@ -35302,6 +35302,31 @@
         "title": "WorkflowRetryPolicy",
         "type": "object"
       },
+      "WorkflowRollbackRequest": {
+        "properties": {
+          "change_notes": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Change Notes"
+          },
+          "revision_index": {
+            "title": "Revision Index",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision_index"
+        ],
+        "title": "WorkflowRollbackRequest",
+        "type": "object"
+      },
       "WorkflowSaveResponse": {
         "description": "Save response that can carry non-blocking notes about the saved configuration.",
         "properties": {
@@ -35726,6 +35751,37 @@
         "title": "WorkflowTool",
         "type": "object"
       },
+      "WorkflowVersionHistoryResponse": {
+        "properties": {
+          "revisions": {
+            "items": {
+              "$ref": "#/components/schemas/YamlConfigHistory"
+            },
+            "title": "Revisions",
+            "type": "array"
+          },
+          "total_revisions": {
+            "title": "Total Revisions",
+            "type": "integer"
+          },
+          "workflow_id": {
+            "title": "Workflow Id",
+            "type": "string"
+          },
+          "workflow_name": {
+            "title": "Workflow Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "revisions",
+          "total_revisions",
+          "workflow_name",
+          "workflow_id"
+        ],
+        "title": "WorkflowVersionHistoryResponse",
+        "type": "object"
+      },
       "WorkspaceDeleteFileResponse": {
         "properties": {
           "deleted": {
@@ -35985,6 +36041,17 @@
       },
       "YamlConfigHistory": {
         "properties": {
+          "change_notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Change Notes"
+          },
           "created_by": {
             "anyOf": [
               {
@@ -78931,6 +78998,118 @@
         "summary": "Validate Workflow",
         "tags": [
           "Workflow"
+        ]
+      }
+    },
+    "/v1/workflows/{workflow_id}/versions": {
+      "get": {
+        "operationId": "get_workflow_versions_v1_workflows__workflow_id__versions_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workflow_id",
+            "required": true,
+            "schema": {
+              "title": "Workflow Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowVersionHistoryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Get Workflow Versions",
+        "tags": [
+          "Workflow",
+          "Workflow Versioning"
+        ]
+      }
+    },
+    "/v1/workflows/{workflow_id}/versions/rollback": {
+      "post": {
+        "operationId": "rollback_workflow_version_v1_workflows__workflow_id__versions_rollback_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workflow_id",
+            "required": true,
+            "schema": {
+              "title": "Workflow Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkflowRollbackRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BaseResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Rollback Workflow Version",
+        "tags": [
+          "Workflow",
+          "Workflow Versioning"
         ]
       }
     },

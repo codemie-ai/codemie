@@ -55,15 +55,14 @@ def mock_user() -> MagicMock:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_validate_clean_workflow_returns_no_confirmation(
+def test_validate_clean_workflow_returns_no_confirmation(
     service: WorkflowMarketplaceService, mock_workflow: MagicMock, mock_user: MagicMock
 ) -> None:
     with (
         patch(_ENTITIES_PATCH, return_value=([], [])),
         patch(_CREDENTIALS_PATCH, return_value=[]),
     ):
-        result = await service.validate(mock_workflow, mock_user)
+        result = service.validate(mock_workflow, mock_user)
 
     assert result.inline_credentials == []
     assert result.workflow_id == "wf-1"
@@ -75,35 +74,32 @@ async def test_validate_clean_workflow_returns_no_confirmation(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_validate_raises_when_external_assistants_found(
+def test_validate_raises_when_external_assistants_found(
     service: WorkflowMarketplaceService, mock_workflow: MagicMock, mock_user: MagicMock
 ) -> None:
     external_assistant = MagicMock()
 
     with patch(_ENTITIES_PATCH, return_value=([external_assistant], [])):
         with pytest.raises(ValidationException):
-            await service.validate(mock_workflow, mock_user)
+            service.validate(mock_workflow, mock_user)
 
 
-@pytest.mark.asyncio
-async def test_validate_raises_when_external_skills_found(
+def test_validate_raises_when_external_skills_found(
     service: WorkflowMarketplaceService, mock_workflow: MagicMock, mock_user: MagicMock
 ) -> None:
     external_skill = MagicMock()
 
     with patch(_ENTITIES_PATCH, return_value=([], [external_skill])):
         with pytest.raises(ValidationException):
-            await service.validate(mock_workflow, mock_user)
+            service.validate(mock_workflow, mock_user)
 
 
-@pytest.mark.asyncio
-async def test_validate_raises_when_both_external_assistants_and_skills_found(
+def test_validate_raises_when_both_external_assistants_and_skills_found(
     service: WorkflowMarketplaceService, mock_workflow: MagicMock, mock_user: MagicMock
 ) -> None:
     with patch(_ENTITIES_PATCH, return_value=([MagicMock()], [MagicMock()])):
         with pytest.raises(ValidationException):
-            await service.validate(mock_workflow, mock_user)
+            service.validate(mock_workflow, mock_user)
 
 
 # ---------------------------------------------------------------------------
@@ -111,15 +107,14 @@ async def test_validate_raises_when_both_external_assistants_and_skills_found(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_validate_raises_validation_exception_when_collector_raises_not_found(
+def test_validate_raises_validation_exception_when_collector_raises_not_found(
     service: WorkflowMarketplaceService, mock_workflow: MagicMock, mock_user: MagicMock
 ) -> None:
     with (
         patch(_ENTITIES_PATCH, side_effect=NotFoundException("entity not found")),
         pytest.raises(ValidationException, match="entity not found"),
     ):
-        await service.validate(mock_workflow, mock_user)
+        service.validate(mock_workflow, mock_user)
 
 
 # ---------------------------------------------------------------------------
@@ -127,8 +122,7 @@ async def test_validate_raises_validation_exception_when_collector_raises_not_fo
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_validate_requires_confirmation_when_inline_mcp_credentials_present(
+def test_validate_requires_confirmation_when_inline_mcp_credentials_present(
     service: WorkflowMarketplaceService, mock_workflow: MagicMock, mock_user: MagicMock
 ) -> None:
     cred = InlineCredential(mcp_server="my-mcp", credential_type="mcp_environment_vars")
@@ -137,15 +131,14 @@ async def test_validate_requires_confirmation_when_inline_mcp_credentials_presen
         patch(_ENTITIES_PATCH, return_value=([], [])),
         patch(_CREDENTIALS_PATCH, return_value=[cred]),
     ):
-        result = await service.validate(mock_workflow, mock_user)
+        result = service.validate(mock_workflow, mock_user)
 
     assert len(result.inline_credentials) == 1
     assert result.inline_credentials[0].mcp_server == "my-mcp"
     assert "inline credentials" in result.message
 
 
-@pytest.mark.asyncio
-async def test_validate_requires_confirmation_when_integration_alias_present(
+def test_validate_requires_confirmation_when_integration_alias_present(
     service: WorkflowMarketplaceService, mock_workflow: MagicMock, mock_user: MagicMock
 ) -> None:
     cred = InlineCredential(tool="my-tool", integration_alias="my-alias", credential_type="tool_integration_alias")
@@ -154,13 +147,12 @@ async def test_validate_requires_confirmation_when_integration_alias_present(
         patch(_ENTITIES_PATCH, return_value=([], [])),
         patch(_CREDENTIALS_PATCH, return_value=[cred]),
     ):
-        result = await service.validate(mock_workflow, mock_user)
+        result = service.validate(mock_workflow, mock_user)
 
     assert result.inline_credentials[0].integration_alias == "my-alias"
 
 
-@pytest.mark.asyncio
-async def test_validate_returns_all_inline_credentials(
+def test_validate_returns_all_inline_credentials(
     service: WorkflowMarketplaceService, mock_workflow: MagicMock, mock_user: MagicMock
 ) -> None:
     creds = [
@@ -172,7 +164,7 @@ async def test_validate_returns_all_inline_credentials(
         patch(_ENTITIES_PATCH, return_value=([], [])),
         patch(_CREDENTIALS_PATCH, return_value=creds),
     ):
-        result = await service.validate(mock_workflow, mock_user)
+        result = service.validate(mock_workflow, mock_user)
 
     assert len(result.inline_credentials) == 2
 
@@ -182,8 +174,7 @@ async def test_validate_returns_all_inline_credentials(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_validate_workflow_id_matches_workflow(
+def test_validate_workflow_id_matches_workflow(
     service: WorkflowMarketplaceService, mock_workflow: MagicMock, mock_user: MagicMock
 ) -> None:
     mock_workflow.id = "wf-42"
@@ -192,7 +183,7 @@ async def test_validate_workflow_id_matches_workflow(
         patch(_ENTITIES_PATCH, return_value=([], [])),
         patch(_CREDENTIALS_PATCH, return_value=[]),
     ):
-        result = await service.validate(mock_workflow, mock_user)
+        result = service.validate(mock_workflow, mock_user)
 
     assert result.workflow_id == "wf-42"
 
@@ -303,8 +294,7 @@ async def test_publish_raises_when_external_skills_present(
         await service.publish(mock_workflow, request, mock_user)
 
 
-@pytest.mark.asyncio
-async def test_validate_confirmation_message_contains_credential_hint(
+def test_validate_confirmation_message_contains_credential_hint(
     service: WorkflowMarketplaceService, mock_workflow: MagicMock, mock_user: MagicMock
 ) -> None:
     cred = InlineCredential(mcp_server="s", credential_type="mcp_auth_token")
@@ -313,7 +303,7 @@ async def test_validate_confirmation_message_contains_credential_hint(
         patch(_ENTITIES_PATCH, return_value=([], [])),
         patch(_CREDENTIALS_PATCH, return_value=[cred]),
     ):
-        result = await service.validate(mock_workflow, mock_user)
+        result = service.validate(mock_workflow, mock_user)
 
     assert "confirm" in result.message.lower() or "inline credentials" in result.message.lower()
 
@@ -362,8 +352,7 @@ def test_track_usage_swallows_exception(
     service.track_usage(_WORKFLOW_ID, _USER_ID)
 
 
-@pytest.mark.asyncio
-async def test_validate_reports_script_step_aliases_as_inline_credentials(
+def test_validate_reports_script_step_aliases_as_inline_credentials(
     service: WorkflowMarketplaceService, mock_workflow: MagicMock, mock_user: MagicMock
 ) -> None:
     mock_workflow.tools = [
@@ -375,7 +364,7 @@ async def test_validate_reports_script_step_aliases_as_inline_credentials(
     ]
     mock_workflow.assistants = []
     with patch(_ENTITIES_PATCH, return_value=([], [])):
-        result = await service.validate(mock_workflow, mock_user)
+        result = service.validate(mock_workflow, mock_user)
 
     assert [(c.tool, c.integration_alias, c.credential_type) for c in result.inline_credentials] == [
         ("generic_jira_tool", "jira-a", "tool_integration_alias"),

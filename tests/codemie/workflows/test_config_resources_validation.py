@@ -1173,3 +1173,24 @@ def test_resource_error_lines_follow_the_source_yaml_not_the_rewritten_one(mock_
     [error] = exc.value.to_dict()["errors"]
     assert error["path"] == "tool_access.0.name"
     assert error["config_line"] == 5
+
+
+def test_resource_validation_accepts_workflow_loaded_from_db(mock_user):
+    from sqlalchemy.orm import configure_mappers
+
+    from codemie.core.workflow_models.workflow_config import WorkflowConfig
+    from codemie.workflows.validation.resources import validate_workflow_config_resources_availability
+
+    configure_mappers()
+    config = WorkflowConfig._sa_class_manager.new_instance()
+    config.yaml_config = "states: []\n"
+    with (
+        patch(f"{_RES}._validate_assistants_availability", return_value=[]),
+        patch(f"{_RES}._validate_tools_avaiability", return_value=[]),
+        patch(f"{_RES}._validate_tools_from_assistants_availability", return_value=([], [], [])),
+        patch(f"{_RES}._validate_referenced_assistants_integrations", return_value=[]),
+        patch(f"{_RES}._validate_datasources_availability", return_value=[]),
+        patch(f"{_RES}._validate_sub_workflow_availability", return_value=[]),
+        patch(f"{_RES}.validate_tool_access", return_value=[]),
+    ):
+        validate_workflow_config_resources_availability(config, mock_user)

@@ -33,7 +33,6 @@ from codemie.service.llm_service.llm_service import llm_service
 from codemie.configs import config, logger
 from codemie.configs.customer_config import customer_config
 from codemie.core.ability import Ability, Action
-from codemie.rest_api.models.assistant import MCPServerDetails
 from codemie.service.mcp.access_control import MCPAccessControlService
 from codemie.core.constants import MermaidMimeType
 from codemie.core.exceptions import (
@@ -71,6 +70,8 @@ from codemie.service.workflow_config.workflow_config_index_service import Exclud
 from codemie.service.assistant.category_service import category_service
 from codemie.service.workflow_service import WorkflowService
 from codemie.service.workflow_evaluation_service import WorkflowEvaluationService
+from codemie.rest_api.models.workflow_version import WorkflowRollbackRequest, WorkflowVersionHistoryResponse
+from codemie.service.workflow.workflow_version_service import WorkflowVersionService, WORKFLOW_CONFIGURATION_ERROR
 from codemie.workflows.custom_node_info import CustomNodeInfoService
 from codemie.core.workflow_models import CustomNodeSchemaResponse
 from codemie.workflows.workflow import WorkflowExecutor
@@ -84,7 +85,6 @@ workflow_service = WorkflowService()
 workflow_monitoring_service = WorkflowMonitoringService()
 
 WORKFLOW_STARTED_BG_MSG = "Workflow has been triggered in the background"
-WORKFLOW_CONFIGURATION_ERROR = "Workflow Configuration error"
 WORKFLOW_ERROR_FORMAT_DESCRIPTION = "Error format: 'string' or 'json'"
 
 
@@ -161,28 +161,7 @@ def _rewrite_yaml_config_from_objects(workflow_config: WorkflowConfig) -> None:
         workflow_config.yaml_config = yaml.safe_dump(original, sort_keys=False)
 
 
-def _collect_workflow_mcp_servers(workflow_config: WorkflowConfig) -> list[MCPServerDetails]:
-    """Collect all MCP server entries from workflow assistants and tools."""
-    servers: list[MCPServerDetails] = []
-    for assistant in workflow_config.assistants or []:
-        servers.extend(assistant.mcp_servers or [])
-    for tool in workflow_config.tools or []:
-        if tool.mcp_server:
-            servers.append(tool.mcp_server)
-    return servers
-
-
-def _strip_workflow_mcp_servers(workflow_config: WorkflowConfig) -> None:
-    """Strip inline config fields from catalog-ref MCP servers in-place."""
-    for assistant in workflow_config.assistants or []:
-        if assistant.mcp_servers:
-            assistant.mcp_servers = MCPAccessControlService.strip_inline_config(assistant.mcp_servers)
-    for tool in workflow_config.tools or []:
-        if tool.mcp_server:
-            tool.mcp_server = MCPAccessControlService._strip_one(tool.mcp_server)
-
-
-async def _run_pre_persist_update_validation(
+def _run_pre_persist_update_validation(
     workflow: WorkflowConfig,
     proposed: WorkflowConfig,
     user: User,
@@ -209,8 +188,6 @@ async def _run_pre_persist_update_validation(
             code=status.HTTP_400_BAD_REQUEST, message=WORKFLOW_CONFIGURATION_ERROR, details=details, help=""
         ) from guardrail_exc
     try:
-        MCPAccessControlService.validate_on_save(_collect_workflow_mcp_servers(proposed))
-        _strip_workflow_mcp_servers(proposed)
         if proposed.mode == WorkflowMode.AUTONOMOUS:
             raise ExtendedHTTPException(
                 code=status.HTTP_403_FORBIDDEN,
@@ -218,7 +195,7 @@ async def _run_pre_persist_update_validation(
                 details="Updating workflows to autonomous mode is not allowed. Only sequential workflows can be used.",
                 help="Please set the workflow mode to 'SEQUENTIAL' instead.",
             )
-        await workflow_service.validate_for_update(workflow, proposed, user, error_format)
+        workflow_service.validate_for_update(workflow, proposed, user, error_format)
     except (ValidationException, NotFoundException, ExtendedHTTPException):
         raise
     except Exception as e:
@@ -541,8 +518,8 @@ def _persist_and_finalize_new_workflow(
     # Outside the try: the generic except below would wrap the governance ValidationException
     # into "Workflow Configuration error" with the reason in details; update_workflow re-raises it as-is.
     for candidate in (raw_from_request, parsed_from_yaml):
-        MCPAccessControlService.validate_on_save(_collect_workflow_mcp_servers(candidate))
-    _strip_workflow_mcp_servers(workflow_config)
+        MCPAccessControlService.validate_on_save(MCPAccessControlService.collect_workflow_mcp_servers(candidate))
+    MCPAccessControlService.strip_workflow_mcp_servers(workflow_config)
     try:
         if request.categories is not None:
             # config was built from the request before validation, so dedupe it too
@@ -683,9 +660,7 @@ async def update_workflow(
     updated_config.id = workflow_id
     logger.debug(f"Update workflow. Request: {request}")
     was_global = bool(workflow.is_global)  # the request carries no is_global; the stored state decides
-    await _run_pre_persist_update_validation(
-        workflow, updated_config, user, error_format, request.guardrail_assignments
-    )
+    _run_pre_persist_update_validation(workflow, updated_config, user, error_format, request.guardrail_assignments)
     try:
         if request.categories is not None:
             updated_config.categories = request.categories = category_service.validate_category_ids(request.categories)
@@ -775,7 +750,7 @@ async def validate_workflow(
 
     proposed.id = workflow_id
 
-    await _run_pre_persist_update_validation(workflow, proposed, user, error_format, request.guardrail_assignments)
+    _run_pre_persist_update_validation(workflow, proposed, user, error_format, request.guardrail_assignments)
 
     warnings = await _consumer_slot_warnings(
         proposed, user, treat_as_global=bool(workflow.is_global) or bool(proposed.is_global)
@@ -976,3 +951,49 @@ if config.WORKFLOW_GENERATION_ENABLED:
                 details=exc.details,
                 help=exc.help,
             ) from exc
+
+
+def _load_workflow_record(workflow_id: str) -> WorkflowConfig:
+    """Load a workflow row without parsing the live yaml (needed to list/rollback a corrupt config)."""
+    try:
+        return WorkflowConfig.get_by_id(workflow_id)
+    except KeyError:
+        raise_not_found(resource_id=workflow_id, resource_type="Workflow")
+
+
+@router.get(
+    "/workflows/{workflow_id}/versions",
+    status_code=status.HTTP_200_OK,
+    response_model=WorkflowVersionHistoryResponse,
+    tags=["Workflow Versioning"],
+)
+def get_workflow_versions(workflow_id: str, user: User = Depends(authenticate)) -> WorkflowVersionHistoryResponse:
+    workflow = _load_workflow_record(workflow_id)
+    if not Ability(user).can(Action.READ, workflow):
+        raise_access_denied("view")
+    return WorkflowVersionService.get_version_history(workflow)
+
+
+@router.post(
+    "/workflows/{workflow_id}/versions/rollback",
+    status_code=status.HTTP_200_OK,
+    response_model=BaseResponse,
+    tags=["Workflow Versioning"],
+)
+def rollback_workflow_version(
+    workflow_id: str,
+    request: WorkflowRollbackRequest,
+    background_tasks: BackgroundTasks,
+    user: User = Depends(authenticate),
+) -> BaseResponse:
+    workflow = _load_workflow_record(workflow_id)
+    if not Ability(user).can(Action.WRITE, workflow):
+        raise_access_denied("update")
+    rolled_back = WorkflowVersionService.rollback_to_version(
+        workflow=workflow,
+        revision_index=request.revision_index,
+        user=user,
+        change_notes=request.change_notes,
+    )
+    background_tasks.add_task(run_in_thread_pool, update_workflow_schema, rolled_back, user)
+    return BaseResponse(message=f"Workflow {workflow_id} rolled back to revision {request.revision_index}.")

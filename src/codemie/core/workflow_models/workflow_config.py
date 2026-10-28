@@ -65,6 +65,7 @@ class YamlConfigHistory(BaseModel):
     yaml_config: str
     date: datetime
     created_by: Optional[UserEntity] = None
+    change_notes: str | None = None
 
 
 class BedrockFlowData(BaseModel):

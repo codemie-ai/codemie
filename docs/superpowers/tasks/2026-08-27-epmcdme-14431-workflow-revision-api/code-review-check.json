@@ -1,0 +1,63 @@
+{
+  "decision": "approve",
+  "confidence": "high",
+  "rationale": "Re-review after fixes. CR-001 resolved: rollback assigns workflow.yaml_config before update() and passes yaml_config_history in a single update() call; service and router tests cover list, rollback, validation, and auth. Follow-up commits removed the broken autouse fixture that patched non-existent WorkflowService._update_workflow_history (CI setup ERROR on 46f3bfd3). Rollback now re-parses execution config, validates MCP/marketplace/workflow before persist, and restores yaml_config on validation failure.",
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "resolved",
+      "notes": "workflow.yaml_config set from target revision; workflow.update(yaml_config_history=[new_entry, *history]) only; tests assert yaml_config on object and history kwargs."
+    }
+  ],
+  "business_review": [
+    {
+      "criterion": "GET /v1/workflows/{id}/versions returns revision list with total_revisions, workflow_name, workflow_id",
+      "status": "pass",
+      "notes": "WorkflowVersionHistoryResponse and router tests."
+    },
+    {
+      "criterion": "POST /v1/workflows/{id}/versions/rollback rolls back to target revision using revision_index",
+      "status": "pass",
+      "notes": "yaml_config restored from history entry; parse_execution_config and validation run before update()."
+    },
+    {
+      "criterion": "Rollback prepends current config as new audit history entry (immutable-append)",
+      "status": "pass",
+      "notes": "new_entry prepended via update(yaml_config_history=[new_entry, *history])."
+    },
+    {
+      "criterion": "Auth: READ for list, WRITE for rollback",
+      "status": "pass",
+      "notes": "Action.READ / Action.WRITE with raise_access_denied."
+    },
+    {
+      "criterion": "400 on empty history, 400 on out-of-range index",
+      "status": "pass",
+      "notes": "Guard clauses with ExtendedHTTPException 400."
+    }
+  ],
+  "standards_review": [
+    {
+      "standard": "Commit format",
+      "status": "pass",
+      "notes": "EPMCDME-14431 subjects on branch commits."
+    },
+    {
+      "standard": "License headers",
+      "status": "pass",
+      "notes": "Apache 2.0 on new and modified Python files."
+    },
+    {
+      "standard": "Type annotations",
+      "status": "pass",
+      "notes": "workflow_version_service uses from __future__ import annotations and str | None."
+    },
+    {
+      "standard": "Security patterns",
+      "status": "pass",
+      "notes": "Auth on endpoints; MCP access validation on restored config; no secrets introduced."
+    }
+  ],
+  "risk_flags": [],
+  "findings": []
+}

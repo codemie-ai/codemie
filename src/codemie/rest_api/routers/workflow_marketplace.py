@@ -66,7 +66,7 @@ async def validate_workflow_for_marketplace(
     user: User = Depends(authenticate),
 ) -> WorkflowPublishValidationResponse:
     workflow = _get_writable_workflow(workflow_id, user, action="publish")
-    return await _marketplace_service.validate(workflow, user)
+    return _marketplace_service.validate(workflow, user)
 
 
 @router.post(
