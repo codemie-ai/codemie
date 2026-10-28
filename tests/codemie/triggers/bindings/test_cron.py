@@ -1351,11 +1351,12 @@ def test_create_cron_trigger_applies_per_datasource_stagger():
     assert shifted, "expected at least one sample datasource id to resolve to a staggered minute/hour"
 
 
-def test_create_cron_trigger_non_wildcard_day_of_month_is_untouched():
+def test_create_cron_trigger_non_wildcard_day_of_month_still_staggers():
+    """A fixed day-of-month still collides across datasources every month, so it staggers too."""
     trigger = Cron._Cron__create_cron_trigger("0 0 15 * *", "ds-stagger-1", timezone="UTC")
     fields = {str(f.name): f for f in trigger.fields}
-    assert str(fields["minute"]) == "0"
-    assert str(fields["hour"]) == "0"
+    assert str(fields["day"]) == "15"
+    assert (str(fields["minute"]), str(fields["hour"])) != ("0", "0")
 
 
 def test_create_cron_trigger_full_week_range_day_of_week_still_staggers():

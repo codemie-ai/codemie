@@ -38,9 +38,33 @@ def test_day_wrap_stays_within_day():
     assert 0 <= int(hour) <= 23 and 0 <= int(minute) <= 59
 
 
-def test_wildcard_safety_rule_passes_through_non_wildcard():
-    assert stagger_cron("ds-1", "0 0 15 * *") == "0 0 15 * *"
-    assert stagger_cron("ds-1", "0 0 * * 1-5") == "0 0 * * 1-5"
+def test_non_wildcard_day_fields_still_stagger():
+    """A single weekday/day-of-month collides across datasources just like a daily cron."""
+    day_of_month_minute, day_of_month_hour = _minute_hour(stagger_cron("ds-1", "0 0 15 * *"))
+    assert stagger_cron("ds-1", "0 0 15 * *").split()[2:] == ["15", "*", "*"]
+    assert (day_of_month_minute, day_of_month_hour) != ("0", "0")
+
+    dow_minute, dow_hour = _minute_hour(stagger_cron("ds-1", "0 0 * * 1-5"))
+    assert stagger_cron("ds-1", "0 0 * * 1-5").split()[2:] == ["*", "*", "1-5"]
+    assert (dow_minute, dow_hour) != ("0", "0")
+
+
+def test_wildcard_safety_rule_passes_through_non_integer_hour_or_day_range():
+    # Hour itself is a list/range, not a plain integer -- left untouched.
+    assert stagger_cron("ds-1", "1 5,12 * * 1-5") == "1 5,12 * * 1-5"
+    assert stagger_cron("ds-1", "0 5-17 * * 1-5") == "0 5-17 * * 1-5"
+
+
+def test_specific_minute_on_concrete_hour_is_untouched():
+    """A deliberately chosen non-zero minute on a concrete hour is not a generic value."""
+    assert stagger_cron("ds-1", "30 16 * * *") == "30 16 * * *"
+    assert stagger_cron("ds-1", "38 22 * * *") == "38 22 * * *"
+
+
+def test_on_the_hour_daily_cron_still_staggers():
+    """minute == "0" on a concrete hour is the generic "top of the hour" value."""
+    minute, hour = _minute_hour(stagger_cron("ds-1", "0 9 * * *"))
+    assert (minute, hour) != ("0", "9")
 
 
 def test_non_integer_fields_pass_through():
