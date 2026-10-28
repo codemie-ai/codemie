@@ -273,7 +273,6 @@ def read_file(
         else:
             response = get_attachment_response(file_object.content, display_name)
 
-        response.headers["X-Content-Type-Options"] = "nosniff"
         return response
     except FileNotFoundError:
         _raise_file_not_found()

@@ -153,6 +153,7 @@ from codemie.service.customer_config_service import override_cache, refresh_over
 
 # Rate limiting imports (EPMCDME-10160)
 from slowapi.middleware import SlowAPIMiddleware
+from codemie.rest_api.middleware.security_headers import HSTS_HEADER_VALUE, SecurityHeadersMiddleware
 from slowapi.errors import RateLimitExceeded
 from codemie.rest_api.rate_limit import limiter
 from codemie.rest_api.litellm_models_recovery import (
@@ -1491,11 +1492,8 @@ async def handle_exceptions(request: Request, call_next):
         )
 
 
-HSTS_HEADER_VALUE = "max-age=31536000; includeSubDomains"
-
-
-@app.middleware("http")
 async def add_hsts_header(request: Request, call_next):
+    """Kept for backward compatibility; HSTS is now set by SecurityHeadersMiddleware."""
     response = await call_next(request)
     response.headers["Strict-Transport-Security"] = HSTS_HEADER_VALUE
     return response
@@ -1722,6 +1720,7 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["Content-Disposition"],
 )
+app.add_middleware(SecurityHeadersMiddleware)
 
 # Initialize OTEL at module level so that OTelMiddleware is included in the
 # middleware stack from its first compile (before the first HTTP request).

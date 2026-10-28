@@ -27,6 +27,7 @@ from fastapi.testclient import TestClient
 
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.main import extended_http_exception_handler
+from codemie.rest_api.middleware.security_headers import SecurityHeadersMiddleware
 from codemie.rest_api.routers import files
 from codemie.rest_api.security.user import User
 from codemie.rest_api.routers.files import router
@@ -35,6 +36,7 @@ import hashlib
 
 app = FastAPI()
 app.include_router(router)
+app.add_middleware(SecurityHeadersMiddleware)
 app.add_exception_handler(ExtendedHTTPException, extended_http_exception_handler)
 
 client = TestClient(app, base_url="http://testserver")
