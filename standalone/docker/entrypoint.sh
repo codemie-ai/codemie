@@ -100,12 +100,12 @@ else
 fi
 UVICORN_PID=$!
 
-# Poll uvicorn's healthcheck until it is ready (max 60s).
+# Poll uvicorn's healthcheck until it is ready (max 120s).
 i=0
 until curl -sf http://localhost:8000/v1/healthcheck >/dev/null 2>&1; do
     i=$((i + 1))
-    if [ "$i" -gt 60 ]; then
-        echo "ERROR: uvicorn did not become healthy within 60s" >&2
+    if [ "$i" -gt 120 ]; then
+        echo "ERROR: uvicorn did not become healthy within 120s" >&2
         kill "$UVICORN_PID" 2>/dev/null || true
         exit 1
     fi
