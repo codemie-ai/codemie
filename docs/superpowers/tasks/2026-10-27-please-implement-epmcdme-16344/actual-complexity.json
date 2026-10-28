@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "generated": "2026-10-27T14:09:26Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 1, "label": "XS" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 11,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 5,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "file_change_estimate", "reason": "5 files changed (3 source, 2 new test files), 275 insertions, mostly tests." },
+    { "dimension": "component_scope", "reason": "Single CIMD-disabled flag in config.py plus constants and discovery handling in the enterprise mcp_auth module; self-contained." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

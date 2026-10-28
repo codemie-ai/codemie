@@ -1,0 +1,4 @@
+{"ts":"2026-10-27T13:52:46Z","gate_id":"spec.approved","mode":"hitl","verdict":{"decision":"approve","rationale":"User approved spec","follow_ups":[],"confidence":"high","source":"hitl"},"escalated":false}
+{"ts":"2026-10-27T13:55:22Z","gate_id":"plan.approved","mode":"hitl","verdict":{"decision":"approve","rationale":"User approved plan","follow_ups":[],"confidence":"high","source":"hitl"},"escalated":false}
+{"ts":"2026-10-27T14:02:16Z","gate_id":"code-review.final","mode":"hitl","verdict":{"decision":"approve","rationale":"User approved; 0 findings","follow_ups":[],"confidence":"high","source":"hitl"},"escalated":false}
+{"ts":"2026-10-27T14:09:22Z","gate_id":"feature.verification","mode":"hitl","verdict":{"decision":"approve","rationale":"User accepted qa-gates failures as environmental (gitleaks on untracked local files; OpenBLAS thread limits in 3 unrelated tests)","follow_ups":[],"confidence":"high","source":"hitl"},"escalated":false}

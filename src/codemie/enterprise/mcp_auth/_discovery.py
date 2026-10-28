@@ -28,10 +28,13 @@ from ._common import (
     _build_discovered_initiate_url,
     _candidate_string,
     _get_discovery_candidate_field,
+    _get_discovery_result_field,
     _sanitize_log_field,
 )
 from ._constants import (
+    _CIMD_DISABLED_ACTION,
     _DISCOVERED_AUTH_RECOVERY_ACTION,
+    CIMD_ONLY_AND_DISABLED_FAILURE_REASON,
     DISCOVERY_BRIDGE_UNAVAILABLE_FAILURE_REASON,
 )
 from ._guards import is_mcp_auth_enabled
@@ -111,7 +114,7 @@ def _build_discovery_bridge_unavailable_results(candidates: Iterable[Mapping[str
 
 
 def _build_discovered_failure_payload(
-    candidate: Mapping[str, Any], server_name: Any, failure_reason: str
+    candidate: Mapping[str, Any], server_name: Any, failure_reason: str, action: str = _DISCOVERED_AUTH_RECOVERY_ACTION
 ) -> dict[str, Any]:
     return _build_discovered_config_error_payload(
         candidate,
@@ -119,9 +122,41 @@ def _build_discovered_failure_payload(
             "server_name": server_name or _candidate_string(candidate, "server_name") or "MCP server",
             "attempted_mechanisms": (),
             "failure_reasons": (failure_reason,),
-            "action": _DISCOVERED_AUTH_RECOVERY_ACTION,
+            "action": action,
         },
     )
+
+
+_CIMD_SUPPORTED_FIELD = "client_id_metadata_document_supported"
+
+
+def _build_cimd_disabled_payload(candidate: Mapping[str, Any], server_name: Any) -> dict[str, Any]:
+    payload = _build_discovered_failure_payload(
+        candidate, server_name, CIMD_ONLY_AND_DISABLED_FAILURE_REASON, action=_CIMD_DISABLED_ACTION
+    )
+    # The UI keeps error_context only when it is a string, so a dict would hide the message.
+    payload["error_context"] = _CIMD_DISABLED_ACTION
+    return payload
+
+
+def _apply_cimd_disabled(
+    result: Any, candidate: Mapping[str, Any], server_name: Any
+) -> tuple[Any, dict[str, Any] | None]:
+    """When CIMD is turned off, steer the resolver to DCR, or return a stop payload if CIMD is the only method."""
+    if not config.MCP_AUTH_CIMD_DISABLED:
+        return result, None
+    # The CIMD and DCR fields live in the nested authorization server metadata, not on the result itself.
+    as_metadata = _get_discovery_result_field(result, "authorization_server_metadata")
+    if not isinstance(as_metadata, Mapping) or not as_metadata.get(_CIMD_SUPPORTED_FIELD):
+        return result, None
+    endpoint = as_metadata.get("registration_endpoint")
+    if isinstance(endpoint, str) and endpoint.strip():
+        logger.info(f"MCP auth CIMD disabled: action=forced_dcr server={_sanitize_log_field(server_name)}")
+        return result.model_copy(
+            update={"authorization_server_metadata": {**as_metadata, _CIMD_SUPPORTED_FIELD: False}}
+        ), None
+    logger.info(f"MCP auth CIMD disabled: action=stopped_cimd_only server={_sanitize_log_field(server_name)}")
+    return result, _build_cimd_disabled_payload(candidate, server_name)
 
 
 def _prepare_discovered_flow_resolution_config(
@@ -208,6 +243,10 @@ async def _resolve_discovered_candidate_payload(
     mcp_config_name = _candidate_string(candidate, "mcp_config_name") or _candidate_string(candidate, "server_name")
     if not user_id or not session_binding_hash or not mcp_config_id or not mcp_config_name:
         return _build_discovered_failure_payload(candidate, mcp_config_name, "discovered_flow_binding_unavailable")
+
+    result, stop_payload = _apply_cimd_disabled(result, candidate, mcp_config_name)
+    if stop_payload is not None:
+        return stop_payload
 
     try:
         resolution = await resolve_discovered_oauth2_flow(

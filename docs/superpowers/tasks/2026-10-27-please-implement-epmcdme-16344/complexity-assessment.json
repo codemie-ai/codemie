@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "task": "Add an environment-wide default-off setting that disables CIMD for MCP OAuth, forcing DCR and stopping with a clear message when a server supports only CIMD (codemie repo only).",
+  "generated": "2026-10-27T13:50:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 17,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "technical_risk",
+      "reason": "Registration choice lives in the external codemie_enterprise resolver, which has no disable parameter and cannot be changed. Codemie must steer it indirectly (e.g. altering the discovery metadata it passes in). No exact precedent. The AC4 wording must avoid the resolver's native 'no supported mechanism' message. AC5 (DCR cache reuse) and AC6 (existing CIMD-registered tokens keep working) depend on enterprise behaviour not yet verified. Closest pattern is the existing config_error payload path in _discovery.py/_common.py. It does not cover the new steering approach, so risk is bumped to L."
+    }
+  ],
+  "red_flags_applied": [
+    "Technical Risk set to L: acceptance criteria enumerate variant cases (AC1-5, AC8 on/off matrix) and no registration-selection test template exists in this repo",
+    "Requirements Clarity held at M: ACs are well defined, but the steering design and the AC6 token impact are open"
+  ],
+  "split_recommendation": null
+}

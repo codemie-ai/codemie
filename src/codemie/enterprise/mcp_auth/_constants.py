@@ -97,6 +97,13 @@ DISCOVERY_BRIDGE_UNAVAILABLE_FAILURE_REASON = "discovery_bridge_unavailable"
 
 _DISCOVERED_AUTH_RECOVERY_ACTION = "Configure auth_config with pre-registered credentials for this server"
 
+CIMD_ONLY_AND_DISABLED_FAILURE_REASON = "cimd_only_and_disabled"
+
+_CIMD_DISABLED_ACTION = (
+    "This server supports only the client metadata document, which is turned off in this environment. "
+    "Configure auth_config with pre-registered credentials for this server"
+)
+
 _POST_AUTH_401_REFRESH_FAILURE_DESCRIPTIONS: dict[str, tuple[str, str]] = {
     "token_not_found": ("Stored credential missing for server.", "warning"),
     "reauth_required_expired": ("Refresh token expired, revoked, or requires user action.", "warning"),

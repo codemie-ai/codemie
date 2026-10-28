@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-16344",
+  "head": "2d3b09553611e33bbf19a961b8e1eb40bd4da31e",
+  "runner": "poetry",
+  "started_at": "2026-10-27T16:18:00+01:00",
+  "completed_at": "2026-10-27T16:26:45+01:00",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {"id": "lint", "source": "guide", "status": "PASS", "duration_ms": 2084, "command": "make ruff", "exit_code": 0},
+    {"id": "build", "source": "guide", "status": "PASS", "duration_ms": 9772, "command": "make build", "exit_code": 0},
+    {"id": "license-headers", "source": "guide", "status": "PASS", "duration_ms": 1248, "command": "make license-check", "exit_code": 0},
+    {"id": "secrets", "source": "guide", "status": "FAIL", "duration_ms": 45644, "command": "make gitleaks", "exit_code": 2, "notes": "8 leaks, all in untracked local files (.codex/config.toml, local/downloaded-logs-*.json, .mcp.json.lock, opencode.json, run_claude.sh); none in tracked files. Still FAIL per guide criteria."},
+    {"id": "unit", "source": "guide", "status": "FAIL", "duration_ms": 242079, "command": "OPENBLAS_NUM_THREADS=1 make test", "exit_code": 2, "notes": "2 failures in test_filesystem_policy.py (RuntimeError: can't start new thread; environmental thread limit, unrelated to diff)."},
+    {"id": "cli-analytics-live", "source": "guide", "status": "N/A", "command": "make test-cli-analytics-live", "notes": "Skip if: change does not touch src/codemie/repository/cli_analytics/postgres/."},
+    {"id": "sonar", "source": "hook", "status": "FAIL", "duration_ms": 210395, "command": "make sonar-local", "exit_code": 2, "notes": "Coverage generation exited 1: 3 failures in test_filesystem_policy.py (can't start new thread). Pre-push hook (opt-in) also runs pytest."}
+  ],
+  "failures": {
+    "secrets": "[gitleaks] leaks found: 8, in untracked files: .codex/config.toml, local/downloaded-logs-20260825-162017.json, .mcp.json.lock, opencode.json, run_claude.sh. make: *** [Makefile:73: gitleaks] Error 1",
+    "unit": "FAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_matplotlib_writes_single_and_multipage_pdf\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_matplotlib_png_generation\n==== 2 failed, 23555 passed, 565 skipped, 434 warnings in 237.89s ====\nmake: *** [Makefile:31: test] Error 1\n(cause: RuntimeError: can't start new thread)",
+    "sonar": "FAILED test_filesystem_policy.py::test_guard_matplotlib_writes_single_and_multipage_pdf\nFAILED ...::test_guard_allows_matplotlib_png_generation\nFAILED ...::test_guard_allows_openpyxl_to_save_workbook\n==== 3 failed, 23554 passed, 565 skipped ====\n[sonar-local] coverage generation exited with code 1\nmake: *** [Makefile:86: sonar-local] Error 1"
+  }
+}

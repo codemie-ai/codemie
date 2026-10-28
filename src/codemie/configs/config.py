@@ -574,6 +574,8 @@ class Config(BaseSettings):
     # Enforce HTTPS for all MCP auth redirect/callback URLs.
     MCP_AUTH_ENFORCE_HTTPS: bool = True
     MCP_AUTH_ALLOW_LOCAL_CLIENT_METADATA_URL: bool = False
+    # Turn off the client metadata document (CIMD) so MCP OAuth registration goes through DCR.
+    MCP_AUTH_CIMD_DISABLED: bool = False
     MCP_AUTH_DISCOVERY_CONCURRENCY_LIMIT: int = 5
     MCP_AUTH_AS_METADATA_DISCOVERY_TIMEOUT_SECONDS: float = 30.0
     MCP_AUTH_DCR_REGISTRATION_TIMEOUT_SECONDS: float = 30.0
