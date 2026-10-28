@@ -858,6 +858,7 @@ async def test_resync_member_allocation_syncs_litellm_for_equal_mode_members():
             "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository.update_provider_metadata",
             new=AsyncMock(),
         ),
+        patch.object(service, "_persist_child_budget_provider_state", new=AsyncMock()),
     ):
         result = await service._resync_member_allocation(
             session=session,

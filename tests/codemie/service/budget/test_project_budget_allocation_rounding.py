@@ -270,6 +270,7 @@ async def test_resync_logs_warning_when_equal_share_is_zero():
             new=AsyncMock(),
         ),
         patch.object(service, "_ensure_shared_child_budget", new=AsyncMock()) as mock_shared_child,
+        patch.object(service, "_persist_child_budget_provider_state", new=AsyncMock()),
         patch.object(SettingsService, "get_enforce_member_spend_limits", return_value=True),
         patch(f"{SERVICE_MODULE}.logger") as mock_logger,
     ):

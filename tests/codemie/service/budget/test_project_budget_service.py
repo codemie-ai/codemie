@@ -74,6 +74,7 @@ async def test_resync_member_allocations_updates_shared_child_budget_for_equal_m
             new=AsyncMock(),
         ) as mock_update_metadata,
         patch.object(service, "_ensure_shared_child_budget", new=AsyncMock()) as mock_ensure_shared_child_budget,
+        patch.object(service, "_persist_child_budget_provider_state", new=AsyncMock()),
         patch.object(SettingsService, "get_enforce_member_spend_limits", return_value=True),
     ):
         await service._resync_member_allocations(
@@ -96,6 +97,64 @@ async def test_resync_member_allocations_updates_shared_child_budget_for_equal_m
         per_member_soft_budget=20.0,
         per_member_max_budget=25.0,
     )
+
+
+@pytest.mark.asyncio
+async def test_resync_member_allocations_persists_reset_date_on_member_budget():
+    """An edit re-syncs members; LiteLLM's reset date must reach the member budget row, as on create."""
+    service = ProjectBudgetService()
+    session = AsyncMock()
+    budget = SimpleNamespace(budget_id="proj-budget-1", budget_duration="7d", budget_reset_at=None)
+    allocation = SimpleNamespace(
+        id="alloc-1",
+        user_id="user-1",
+        project_name="proj-a",
+        project_budget_id="proj-budget-1",
+        allocated_max_budget=25.0,
+        allocated_soft_budget=20.0,
+        allocation_mode="equal",
+    )
+    member_state = BudgetProviderMemberState(
+        provider="litellm",
+        provider_member_ref="member-ref-1",
+        provider_budget_id="proj-budget-1:shared",
+        budget_reset_at="2026-11-02T00:00:00Z",
+        sync_status=SyncStatus.OK,
+        metadata={},
+    )
+    provider = SimpleNamespace(sync_member_allocation=AsyncMock(return_value=member_state))
+
+    with (
+        patch(
+            "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository.get_active_by_budget_id",
+            new=AsyncMock(return_value=[allocation]),
+        ),
+        patch(
+            "codemie.service.budget.project_budget_service.project_budget_assignment_repository.get_active_by_budget_id",
+            new=AsyncMock(return_value=SimpleNamespace(project_name="proj-a")),
+        ),
+        patch(
+            "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository.update_allocation",
+            new=AsyncMock(return_value=allocation),
+        ),
+        patch(
+            "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository.update_provider_metadata",
+            new=AsyncMock(),
+        ),
+        patch.object(service, "_ensure_shared_child_budget", new=AsyncMock()),
+        patch.object(service, "_persist_child_budget_provider_state", new=AsyncMock()) as mock_persist,
+        patch.object(SettingsService, "get_enforce_member_spend_limits", return_value=True),
+    ):
+        await service._resync_member_allocations(
+            session=session,
+            budget_id="proj-budget-1",
+            budget=budget,
+            eff_max=25.0,
+            eff_soft=20.0,
+            provider=provider,
+        )
+
+    mock_persist.assert_awaited_once_with(session, budget_id="proj-budget-1:shared", member_state=member_state)
 
 
 @pytest.mark.asyncio
@@ -266,6 +325,7 @@ async def test_resync_member_allocations_respects_enforce_limit(
             new=AsyncMock(),
         ),
         patch.object(service, "_ensure_shared_child_budget", new=AsyncMock()) as mock_ensure_shared,
+        patch.object(service, "_persist_child_budget_provider_state", new=AsyncMock()),
         patch.object(SettingsService, "get_enforce_member_spend_limits", return_value=enforce_limit),
     ):
         await service._resync_member_allocations(

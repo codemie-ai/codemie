@@ -1150,12 +1150,17 @@ class ProjectBudgetService:
                 await self._sync_fixed_allocation(session, budget, updated, provider)
                 return None
 
-            await self._sync_member_allocation(
+            member_state = await self._sync_member_allocation(
                 session=session,
                 provider=provider,
                 allocation=updated,
                 budget=budget,
                 effective_max_budget=effective_max_budget,
+            )
+            await self._persist_child_budget_provider_state(
+                session,
+                budget_id=self._effective_member_budget_id(budget_id, updated),
+                member_state=member_state,
             )
 
             return (
