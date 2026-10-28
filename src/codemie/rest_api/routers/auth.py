@@ -61,6 +61,7 @@ async def login(request: Request, port: int = Path(..., ge=1, le=65535)):
             for cookie_name in request.cookies
             if cookie_name.startswith("_oauth2_proxy")
         }
+        token["authorization"] = request.headers.get(AUTHORIZATION_HEADER, "")
     token_str = base64.b64encode(json.dumps(token).encode("ascii")).decode("ascii")
     redirect_url = f"http://localhost:{port}/auth?token={token_str}"
     return RedirectResponse(redirect_url, status_code=status.HTTP_302_FOUND)

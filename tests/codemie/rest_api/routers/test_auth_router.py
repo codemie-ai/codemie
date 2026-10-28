@@ -106,3 +106,63 @@ def test_login_local_provider_accepts_bearer_header_when_cookie_missing(monkeypa
         "cookies": {"codemie_access_token": "header-token"},
     }
     validator.assert_called_once_with("header-token")
+
+
+def test_login_oauth_provider_forwards_oauth2_proxy_cookies_by_prefix(monkeypatch):
+    monkeypatch.setattr(auth_router.config, "IDP_PROVIDER", "keycloak")
+
+    client = _build_client()
+
+    response = client.get(
+        "/v1/auth/login/8123",
+        cookies={
+            "_oauth2_proxy": "proxy-session",
+            "_oauth2_proxy_0": "proxy-session-chunk",
+            "OauthHMAC-example": "hmac-value",
+            "OauthExpires-example": "expires-value",
+            "AccessToken-example": "access-value",
+            "RefreshToken-example": "refresh-value",
+            "unrelated_cookie": "should-not-be-forwarded",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    decoded = _decode_token_from_redirect(response.headers["location"])
+    assert decoded["provider"] == "keycloak"
+    assert decoded["cookies"] == {
+        "_oauth2_proxy": "proxy-session",
+        "_oauth2_proxy_0": "proxy-session-chunk",
+    }
+
+
+def test_login_oauth_provider_includes_authorization_header(monkeypatch):
+    monkeypatch.setattr(auth_router.config, "IDP_PROVIDER", "keycloak")
+
+    client = _build_client()
+
+    response = client.get(
+        "/v1/auth/login/8123",
+        headers={AUTHORIZATION_HEADER: "Bearer oauth-access-token"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    decoded = _decode_token_from_redirect(response.headers["location"])
+    assert decoded["authorization"] == "Bearer oauth-access-token"
+
+
+def test_login_oauth_provider_authorization_defaults_to_empty_string(monkeypatch):
+    monkeypatch.setattr(auth_router.config, "IDP_PROVIDER", "keycloak")
+
+    client = _build_client()
+
+    response = client.get(
+        "/v1/auth/login/8123",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    decoded = _decode_token_from_redirect(response.headers["location"])
+    assert decoded["authorization"] == ""
+    assert decoded["cookies"] == {}
