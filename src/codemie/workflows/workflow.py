@@ -43,7 +43,7 @@ from codemie.configs import logger, config
 from codemie.configs.customer_config import customer_config
 from codemie.enterprise.observability import get_observability_provider
 from codemie.core.exceptions import InterruptedException
-from codemie.workflows.exceptions import FeatureDisabledError
+from codemie.workflows.exceptions import FeatureDisabledError, IteratorInputNotFoundError
 from codemie.core.otel_tracing import get_otel_context_for_thread, propagated_span, record_exception_on_span
 from codemie.core.thought_queue import ThoughtQueue
 from codemie.core.thread import MessageQueue
@@ -706,7 +706,7 @@ class WorkflowExecutor:
         if isinstance(source, list):
             items_to_process = source
         elif isinstance(source, dict):
-            items_to_process = source.get(iter_key, [])
+            items_to_process = source[iter_key]
         else:
             items_to_process = [source]
         return items_to_process
@@ -740,10 +740,13 @@ class WorkflowExecutor:
         else:
             last_message_content = state_schema.get(ITER_SOURCE, "")
             result = parse_from_string_representation(last_message_content)
-            if iter_key.startswith('/'):
-                items_to_process = self.get_iterable_items_by_pointer(result, iter_key)
-            else:
-                items_to_process = self.get_iterable_items_by_key(result, iter_key)
+            try:
+                if iter_key.startswith('/'):
+                    items_to_process = self.get_iterable_items_by_pointer(result, iter_key)
+                else:
+                    items_to_process = self.get_iterable_items_by_key(result, iter_key)
+            except (KeyError, ValueError) as e:
+                raise IteratorInputNotFoundError(iter_key, send_to_node, str(e)) from e
         # Get iterations counters from schema if present.
         # Will be reused to maintain counters in further steps
         iter_number = state_schema.get(ITERATION_NODE_NUMBER_KEY)

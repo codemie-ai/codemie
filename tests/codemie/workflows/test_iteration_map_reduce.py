@@ -36,6 +36,7 @@ from unittest.mock import Mock, patch
 from langgraph.types import Send
 
 from codemie.workflows.workflow import WorkflowExecutor
+from codemie.workflows.exceptions import IteratorInputNotFoundError
 from codemie.workflows.constants import (
     CONTEXT_STORE_VARIABLE,
     MESSAGES_VARIABLE,
@@ -977,3 +978,148 @@ def test_tc_imr_019_send_reachable_node_never_caches_persistent_assistant(
 
     assert mock_initialize_assistant.call_count == 2
     assert context_a["assistant"] is not context_b["assistant"]
+
+
+@patch('codemie.workflows.workflow.WorkflowExecutionService')
+def test_tc_imr_020_missing_iter_key_raises_iterator_input_not_found(
+    mock_wf_exec_service, mock_user, mock_thought_queue, basic_workflow_config
+):
+    """TC_IMR_020: A missing iter_key in the ITER_SOURCE dict raises a descriptive error."""
+    workflow_state = WorkflowState(
+        id="missing_key",
+        task="Missing key",
+        next=WorkflowNextState(state_id="worker", iter_key="items"),
+        assistant_id="a1",
+    )
+    state_schema = {
+        CONTEXT_STORE_VARIABLE: {},
+        MESSAGES_VARIABLE: [],
+        ITER_SOURCE: '{"other": [1]}',
+    }
+    executor = WorkflowExecutor(
+        workflow_config=basic_workflow_config,
+        user_input="test",
+        user=mock_user,
+        thought_queue=mock_thought_queue,
+        execution_id="exec_missing_key",
+    )
+
+    with pytest.raises(IteratorInputNotFoundError) as exc_info:
+        executor.continue_iteration(state_schema, workflow_state)
+
+    assert "items" in str(exc_info.value)
+    assert "worker" in str(exc_info.value)
+
+
+@patch('codemie.workflows.workflow.WorkflowExecutionService')
+def test_tc_imr_021_missing_pointer_raises_iterator_input_not_found(
+    mock_wf_exec_service, mock_user, mock_thought_queue, basic_workflow_config
+):
+    """TC_IMR_021: A missing JSON pointer path raises a descriptive error."""
+    workflow_state = WorkflowState(
+        id="missing_pointer",
+        task="Missing pointer",
+        next=WorkflowNextState(state_id="worker", iter_key="/data/items"),
+        assistant_id="a1",
+    )
+    state_schema = {
+        CONTEXT_STORE_VARIABLE: {},
+        MESSAGES_VARIABLE: [],
+        ITER_SOURCE: '{"other": [1]}',
+    }
+    executor = WorkflowExecutor(
+        workflow_config=basic_workflow_config,
+        user_input="test",
+        user=mock_user,
+        thought_queue=mock_thought_queue,
+        execution_id="exec_missing_pointer",
+    )
+
+    with pytest.raises(IteratorInputNotFoundError) as exc_info:
+        executor.continue_iteration(state_schema, workflow_state)
+
+    assert "/data/items" in str(exc_info.value)
+    assert "worker" in str(exc_info.value)
+
+
+@patch('codemie.workflows.workflow.WorkflowExecutionService')
+def test_tc_imr_022_valid_list_returns_n_sends(
+    mock_wf_exec_service, mock_user, mock_thought_queue, basic_workflow_config
+):
+    """TC_IMR_022: A present iter_key with a valid list still returns N Sends."""
+    workflow_state = WorkflowState(
+        id="valid_list",
+        task="Valid list",
+        next=WorkflowNextState(state_id="worker", iter_key="items"),
+        assistant_id="a1",
+    )
+    state_schema = {
+        CONTEXT_STORE_VARIABLE: {},
+        MESSAGES_VARIABLE: [],
+        ITER_SOURCE: '{"items": ["a", "b", "c"]}',
+    }
+    executor = WorkflowExecutor(
+        workflow_config=basic_workflow_config,
+        user_input="test",
+        user=mock_user,
+        thought_queue=mock_thought_queue,
+        execution_id="exec_valid_list",
+    )
+
+    send_actions = executor.continue_iteration(state_schema, workflow_state)
+
+    assert len(send_actions) == 3
+
+
+@patch('codemie.workflows.workflow.WorkflowExecutionService')
+def test_tc_imr_023_non_json_string_returns_wrapped_source(
+    mock_wf_exec_service, mock_user, mock_thought_queue, basic_workflow_config
+):
+    """TC_IMR_023: A non-JSON ITER_SOURCE string still wraps the source as a single item."""
+    workflow_state = WorkflowState(
+        id="non_json",
+        task="Non-JSON source",
+        next=WorkflowNextState(state_id="worker", iter_key="items"),
+        assistant_id="a1",
+    )
+    state_schema = {
+        CONTEXT_STORE_VARIABLE: {},
+        MESSAGES_VARIABLE: [],
+        ITER_SOURCE: "plain text, not json",
+    }
+    executor = WorkflowExecutor(
+        workflow_config=basic_workflow_config,
+        user_input="test",
+        user=mock_user,
+        thought_queue=mock_thought_queue,
+        execution_id="exec_non_json",
+    )
+
+    send_actions = executor.continue_iteration(state_schema, workflow_state)
+
+    assert len(send_actions) == 1
+
+
+@patch('codemie.workflows.workflow.WorkflowExecutionService')
+def test_tc_imr_024_iterator_input_not_found_marks_execution_failed(
+    mock_wf_exec_service, mock_user, mock_thought_queue, basic_workflow_config
+):
+    """TC_IMR_024: An IteratorInputNotFoundError from the router surfaces as a FAILED execution."""
+    executor = WorkflowExecutor(
+        workflow_config=basic_workflow_config,
+        user_input="test",
+        user=mock_user,
+        thought_queue=mock_thought_queue,
+        execution_id="exec_failed_iterator",
+    )
+    executor.workflow_execution_service.start_state = Mock(return_value="state_1")
+
+    error = IteratorInputNotFoundError("items", "worker")
+
+    executor._handle_task_exception(error, [])
+
+    executor.workflow_execution_service.fail.assert_called_once()
+    _, kwargs = executor.workflow_execution_service.fail.call_args
+    assert "items" in kwargs["error_message"]
+    assert "worker" in kwargs["error_message"]
+    executor.workflow_execution_service.finish.assert_not_called()

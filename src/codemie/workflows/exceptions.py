@@ -28,6 +28,16 @@ class WorkflowNestingDepthExceededError(Exception):
         super().__init__(f"Nesting depth {current_depth} exceeds maximum allowed depth {max_depth}")
 
 
+class IteratorInputNotFoundError(Exception):
+    def __init__(self, iter_key: str, state_id: str, detail: str = ""):
+        self.iter_key = iter_key
+        self.state_id = state_id
+        super().__init__(
+            f"Iterator input list '{iter_key}' was not found in the input of state '{state_id}'. "
+            f"Check iter_key and the previous step output. {detail}"
+        )
+
+
 class SubWorkflowExecutionError(Exception):
     def __init__(self, execution_id: str, message: str = "Sub-workflow execution failed"):
         self.execution_id = execution_id

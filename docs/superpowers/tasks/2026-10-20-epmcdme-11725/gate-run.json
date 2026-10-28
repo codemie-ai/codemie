@@ -1,0 +1,65 @@
+{
+ "schema": 1,
+ "branch": "EPMCDME-11725",
+ "head": "936e219bfdb083d78f8d63d1dae4a51ca30a3ed8",
+ "runner": "poetry",
+ "started_at": "2026-10-20T13:26:42Z",
+ "completed_at": "2026-10-20T13:30:00Z",
+ "status": "BLOCKED",
+ "drift_detected": false,
+ "gates": [
+  {
+   "id": "lint",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 1380,
+   "command": "make ruff",
+   "exit_code": 0
+  },
+  {
+   "id": "build",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 8829,
+   "command": "make build",
+   "exit_code": 0
+  },
+  {
+   "id": "license",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 976,
+   "command": "make license-check",
+   "exit_code": 0
+  },
+  {
+   "id": "gitleaks",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 8065,
+   "command": "make gitleaks",
+   "exit_code": 0
+  },
+  {
+   "id": "unit",
+   "source": "guide",
+   "status": "FAIL",
+   "duration_ms": 122547,
+   "command": "make test",
+   "exit_code": 2,
+   "notes": "2 failed in tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py (files untouched by this branch; likely pre-existing/environmental)"
+  },
+  {
+   "id": "pre-push-sonar",
+   "source": "hook",
+   "status": "N/A",
+   "duration_ms": 0,
+   "command": "make sonar-local",
+   "exit_code": null,
+   "notes": "pre-push hook runs pytest+sonar-local; needs Sonar creds/network; only CI/push settles it"
+  }
+ ],
+ "failures": {
+  "unit": "tests/codemie/service/settings/test_settings_transfer_service.py::TestValidateAliasesPresent::test_rejects_row_with_empty_alias\n  /home/dmytromelnyk4/work/projects/codemie-dev/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:391: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._validate_aliases_present([row])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestTransfer::test_null_alias_trigger_row_is_rejected_before_response_construction\n  /home/dmytromelnyk4/work/projects/codemie-dev/codemie/src/codemie/service/settings/settings_transfer_service.py:372: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    cls._validate_aliases_present(candidates)\n\ntests/codemie/service/test_mcp_config_service_auth_crud.py::test_update_rejects_auth_config_id_change_when_credentials_exist\n  /home/dmytromelnyk4/work/projects/codemie-dev/codemie/src/codemie/service/mcp_config_service.py:404: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    cls._apply_config_field_update(\n\ntests/codemie/service/test_mcp_config_service_auth_validation.py: 11 warnings\n  /home/dmytromelnyk4/work/projects/codemie-dev/codemie/src/codemie/service/mcp_config_service.py:281: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_auth_config_for_save(request.config)\n\ntests/codemie/service/test_mcp_config_service_auth_validation.py: 11 warnings\n  /home/dmytromelnyk4/work/projects/codemie-dev/codemie/src/codemie/service/mcp_config_service.py:473: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_auth_config_for_save(mcp_config.config, config_id=config_id)\n\ntests/codemie/service/datasource/test_file_datasource_service.py::TestUploadAndPrepareFiles::test_combined_kept_and_new_over_limit_raises\n  /home/dmytromelnyk4/work/projects/codemie-dev/codemie/tests/codemie/service/datasource/test_file_datasource_service.py:297: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    FileDatasourceService.upload_and_prepare_files(\n\ntests/codemie/service/datasource/test_file_datasource_service.py::TestUploadAndPrepareFiles::test_raises_422_when_json_file_has_invalid_content\n  /home/dmytromelnyk4/work/projects/codemie-dev/codemie/src/codemie/service/datasource/file_datasource_service.py:287: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_json_file(file.filename, content)\n\ntests/codemie/service/datasource/test_file_datasource_service.py::TestValidateJsonFile::test_raises_422_on_missing_content_key\n  /home/dmytromelnyk4/work/projects/codemie-dev/codemie/tests/codemie/service/datasource/test_file_datasource_service.py:416: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_json_file(\"file.json\", content)\n\ntests/codemie/service/datasource/test_file_datasource_service.py::TestValidateJsonFile::test_raises_422_on_missing_metadata_key\n  /home/dmytromelnyk4/work/projects/codemie-dev/codemie/tests/codemie/service/datasource/test_file_datasource_service.py:422: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_json_file(\"file.json\", content)\n\ntests/codemie/service/datasource/test_file_datasource_service.py::TestValidateJsonFile::test_raises_422_on_invalid_json_bytes\n  /home/dmytromelnyk4/work/projects/codemie-dev/codemie/tests/codemie/service/datasource/test_file_datasource_service.py:427: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_json_file(\"file.json\", b\"not-json-content\")\n\ntests/codemie/service/datasource/test_file_datasource_service.py::TestUploadAndPrepareFilesZip::test_upload_and_prepare_files_zip_validates_json_entries\n  /home/dmytromelnyk4/work/projects/codemie-dev/codemie/src/codemie/service/datasource/file_datasource_service.py:214: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_json_file(name, content)\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_matplotlib_png_generation\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_openpyxl_to_save_workbook\n==== 2 failed, 19834 passed, 186 skipped, 258 warnings in 118.30s (0:01:58) ====\nmake: *** [Makefile:31: test] Error 1\n"
+ }
+}

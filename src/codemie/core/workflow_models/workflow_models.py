@@ -28,6 +28,7 @@ from pydantic import field_validator, model_validator
 from codemie_tools.base.errors import InvalidCredentialsError, TruncatedOutputError
 
 from codemie.core.exceptions import TaskException
+from codemie.workflows.exceptions import IteratorInputNotFoundError
 from codemie.rest_api.models.assistant import MCPServerDetails
 from codemie.rest_api.models.guardrail import GuardrailAssignmentItem
 
@@ -347,9 +348,9 @@ class WorkflowRetryPolicy(BaseModel):
         custom_retry_on = True
         if isinstance(exc, TaskException) and exc.original_exc is not None:
             exc = exc.original_exc
-        if isinstance(exc, (InvalidCredentialsError, TruncatedOutputError)):
-            return False
-        if isinstance(exc, LiteLLMBadRequestError):
+        if isinstance(
+            exc, (InvalidCredentialsError, TruncatedOutputError, IteratorInputNotFoundError, LiteLLMBadRequestError)
+        ):
             return False
         if isinstance(exc, httpx.HTTPStatusError):
             custom_retry_on = exc.response.status_code not in (401, 403, 404)

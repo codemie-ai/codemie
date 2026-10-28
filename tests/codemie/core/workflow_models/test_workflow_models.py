@@ -38,6 +38,7 @@ from codemie.core.workflow_models.workflow_models import (
     WorkflowTool,
 )
 from codemie.core.workflow_models.workflow_config import WorkflowConfig
+from codemie.workflows.exceptions import IteratorInputNotFoundError
 
 
 class TestWorkflowState:
@@ -128,7 +129,12 @@ def mock_default_retry_on(mocker) -> MagicMock:
 
 
 @pytest.mark.parametrize(
-    "exception_instance", [InvalidCredentialsError("Invalid Credentials"), TruncatedOutputError(" Truncated Error")]
+    "exception_instance",
+    [
+        InvalidCredentialsError("Invalid Credentials"),
+        TruncatedOutputError(" Truncated Error"),
+        IteratorInputNotFoundError("items", "state-1"),
+    ],
 )
 def test_custom_retry_on_retry_false_exceptions(mock_default_retry_on, exception_instance):
     expected_retry_decision = False
