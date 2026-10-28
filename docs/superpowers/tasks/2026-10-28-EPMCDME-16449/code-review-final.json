@@ -1,0 +1,13 @@
+{
+  "decision": "approve",
+  "rationale": "Lockfile-only bump; acceptance not run (no spec), so confidence is capped low. The single edge-case finding (lock regenerated with Poetry 2.1.2 instead of 2.5.1) was confirmed in the diff header but is cosmetic churn with no runtime effect and was dismissed (1 dismissed, 0 deferred).",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "commit-format", "status": "na", "notes": "No standards audit expected for this profile." },
+    { "kind": "code-quality", "status": "na", "notes": "No standards audit expected for this profile." },
+    { "kind": "security", "status": "na", "notes": "No standards audit expected for this profile." }
+  ],
+  "findings": []
+}
