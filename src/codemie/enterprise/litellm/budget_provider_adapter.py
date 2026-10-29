@@ -1564,6 +1564,121 @@ class LiteLLMBudgetEnforcementProvider:
     async def collect_project_budget_spend(self) -> list[ProjectBudgetSpendSnapshot]:
         return await self._load_project_key_spend_from_litellm()
 
+    async def collect_project_budget_spend_for_projects(
+        self,
+        project_names: list[str],
+    ) -> list[ProjectBudgetSpendSnapshot]:
+        if not project_names:
+            return []
+
+        service = self._get_service()
+        if service is None:
+            logger.debug(
+                f"budget_event=provider_unavailable component=litellm_budget_provider provider={_PROVIDER_NAME!r} "
+                f"operation=collect_project_key_spend_for_projects scope=project_key"
+            )
+            return []
+
+        try:
+            from sqlmodel import select
+
+            from codemie.clients.postgres import get_async_session
+            from codemie.service.budget.budget_models import Budget, ProjectBudgetAssignment
+
+            async with get_async_session() as session:
+                stmt = (
+                    select(ProjectBudgetAssignment, Budget)
+                    .join(Budget, Budget.budget_id == ProjectBudgetAssignment.budget_id)
+                    .where(ProjectBudgetAssignment.deleted_at.is_(None))
+                    .where(Budget.deleted_at.is_(None))
+                    .where(ProjectBudgetAssignment.project_name.in_(project_names))
+                )
+                result = await session.execute(stmt)
+                rows = list(result.all())
+        except Exception as exc:
+            logger.warning(
+                f"budget_event=spend_collection_failed component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} scope=project_key error={exc}"
+            )
+            return []
+
+        snapshots: list[ProjectBudgetSpendSnapshot] = []
+        for assignment, budget in rows:
+            try:
+                snapshot = await self._load_project_key_snapshot(service, assignment, budget)
+            except Exception as exc:
+                logger.warning(
+                    f"budget_event=spend_collection_row_failed component=litellm_budget_provider "
+                    f"provider={_PROVIDER_NAME!r} scope=project_key project_name={assignment.project_name!r} "
+                    f"budget_id={assignment.budget_id!r} error={exc}"
+                )
+                continue
+            if snapshot is not None:
+                snapshots.append(snapshot)
+
+        logger.info(
+            f"budget_event=spend_collection_completed component=litellm_budget_provider "
+            f"provider={_PROVIDER_NAME!r} scope=project_key project_snapshot_count={len(snapshots)}"
+        )
+        return snapshots
+
+    async def _load_project_key_snapshot(
+        self,
+        service: "LiteLLMService",
+        assignment: Any,
+        budget: Any,
+    ) -> ProjectBudgetSpendSnapshot | None:
+        from decimal import Decimal
+
+        from codemie.service.settings.settings import SettingsService
+
+        provider_metadata = budget.provider_metadata or {}
+        key_alias = _metadata_value(provider_metadata, "provider_budget_ref") or _metadata_value(
+            provider_metadata,
+            "key_alias",
+        )
+        if not isinstance(key_alias, str) or not key_alias:
+            logger.debug(
+                f"budget_event=spend_collection_row_skipped component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} scope=project_key project_name={assignment.project_name!r} "
+                f"budget_id={assignment.budget_id!r} budget_category={assignment.budget_category!r} "
+                f"reason=missing_key_alias"
+            )
+            return None
+
+        credentials = await asyncio.to_thread(
+            SettingsService.get_project_litellm_creds_by_alias, assignment.project_name, key_alias
+        )
+        if not credentials:
+            logger.debug(
+                f"budget_event=spend_collection_row_skipped component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} scope=project_key project_name={assignment.project_name!r} "
+                f"budget_id={assignment.budget_id!r} budget_category={assignment.budget_category!r} "
+                f"key_alias={key_alias!r} reason=missing_project_credentials"
+            )
+            return None
+
+        key_spend = await asyncio.to_thread(service.get_key_spending_info, credentials.api_key)
+        if not key_spend:
+            logger.debug(
+                f"budget_event=spend_collection_row_skipped component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} scope=project_key project_name={assignment.project_name!r} "
+                f"budget_id={assignment.budget_id!r} budget_category={assignment.budget_category!r} "
+                f"key_alias={key_alias!r} reason=missing_key_spend"
+            )
+            return None
+
+        spend = key_spend.get("total_spend", key_spend.get("spend", 0))
+        return ProjectBudgetSpendSnapshot(
+            project_name=assignment.project_name,
+            budget_category=BudgetCategory(assignment.budget_category),
+            budget_id=assignment.budget_id,
+            spend=Decimal(str(spend)),
+            budget_reset_at=key_spend.get("budget_reset_at") or budget.budget_reset_at,
+            provider_subject_id=_metadata_value(provider_metadata, "key_hash") or key_alias,
+            metadata={"key_alias": key_alias},
+        )
+
     async def collect_member_budget_spend(self) -> list[MemberBudgetSpendSnapshot]:
         member_snapshots, _ = await self._load_member_spend_from_litellm()
         return member_snapshots

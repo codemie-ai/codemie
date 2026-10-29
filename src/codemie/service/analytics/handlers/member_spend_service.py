@@ -17,26 +17,28 @@ from __future__ import annotations
 import asyncio
 
 from datetime import datetime, timezone
-from decimal import Decimal
 from typing import Any, Callable
-from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from codemie.configs import logger
 from codemie.repository.application_repository import application_repository
 from codemie.repository.budget_repository import budget_repository
-from codemie.repository.project_budget_repository import project_member_budget_assignment_repository
+from codemie.repository.project_budget_repository import (
+    project_budget_assignment_repository,
+    project_member_budget_assignment_repository,
+)
 from codemie.repository.project_spend_tracking_repository import project_spend_tracking_repository
 from codemie.repository.user_project_repository import user_project_repository
-from codemie.service.analytics.handlers.budget_usage_service import _compute_spend_delta
-from codemie.service.budget.budget_enums import BudgetCategory
+from codemie.service.analytics.handlers.project_total_refresh import (
+    latest_active_total_rows,
+    refresh_user_project_totals,
+)
+from codemie.service.analytics.handlers.spend_snapshot_rows import _is_stale, _rows_to_write, _snapshot_to_row
+from codemie.service.budget.budget_enums import AllocationMode, BudgetCategory
+from codemie.service.budget.budget_models import member_effective_max_budget
 from codemie.service.budget.project_budget_service import ProjectBudgetService
 from codemie.service.budget.provider_registry import get_active_provider
-from codemie.service.spend_tracking.spend_collector_service import (
-    InvalidSpendSnapshotError,
-    LiteLLMSpendCollectorService,
-)
 from codemie.service.spend_tracking.spend_models import ProjectSpendTracking
 
 _CATEGORY_LABELS = {
@@ -142,108 +144,31 @@ def _build_spend_rows(
     return rows
 
 
-def _snapshot_to_row(
-    snapshot: Any,
-    prev_row: Any | None,
-    budget: Any | None,
-    now: datetime,
-    *,
-    allow_zero: bool = False,
-) -> ProjectSpendTracking | None:
-    """Convert one provider snapshot into a member_budget row, or None to skip it.
-
-    ``allow_zero`` keeps a zero-delta row, which seeds the first row of a budget so the
-    user-scoped freshness check has a timestamp to read.
-    """
-    quantize = LiteLLMSpendCollectorService._quantize_spend
-    fresh_spend = quantize(snapshot.spend)
-    try:
-        daily_spend, cumulative_spend = _compute_spend_delta(fresh_spend, prev_row, budget, now)
-    except InvalidSpendSnapshotError as exc:
-        logger.warning(
-            f"Skipping invalid member snapshot for project={snapshot.project_name!r} "
-            f"user={snapshot.user_id!r} budget_id={snapshot.budget_id!r}: {exc}"
-        )
-        return None
-
-    if (
-        daily_spend == Decimal("0")
-        and not allow_zero
-        and not LiteLLMSpendCollectorService.is_reset_transition(prev_row, budget, fresh_spend, now)
-    ):
-        return None
-
-    return ProjectSpendTracking(
-        id=uuid4(),
-        project_name=snapshot.project_name,
-        spend_date=now,
-        daily_spend=daily_spend,
-        cumulative_spend=quantize(
-            snapshot.cumulative_spend if snapshot.cumulative_spend is not None else cumulative_spend
-        ),
-        budget_period_spend=fresh_spend,
-        budget_id=snapshot.budget_id,
-        budget_category=snapshot.budget_category.value,
-        user_id=snapshot.user_id,
-        provider_subject_id=snapshot.provider_subject_id,
-        spend_subject_type="member_budget",
-    )
-
-
-def _is_stale(timestamp: datetime | None) -> bool:
-    """Return True when there is no timestamp or it is older than the member spend TTL."""
-    from codemie.configs.config import config
-
-    if timestamp is None:
-        return True
-    if timestamp.tzinfo is None:
-        timestamp = timestamp.replace(tzinfo=timezone.utc)
-    age_ms = (datetime.now(timezone.utc) - timestamp).total_seconds() * 1000
-    return age_ms > config.BUDGET_MEMBER_SPEND_STALENESS_THRESHOLD_MS
-
-
 def _newest_spend_date(spend_map: dict[tuple[str, str], Any], project_names: set[str]) -> datetime | None:
     dates = [row.spend_date for (project_name, _), row in spend_map.items() if project_name in project_names]
     return max(dates, default=None)
 
 
-def _is_hidden_and_unchanged(prev_row: Any | None, snapshot: Any, cutoff: datetime | None) -> bool:
-    """Return True when the provider still reports a pre-reset value that the cutoff hides.
-
-    Writing anything here would date the old value after the cutoff and show it again,
-    so the row is left alone until the provider's counter moves.
-    """
-    if prev_row is None or cutoff is None:
-        return False
-    quantize = LiteLLMSpendCollectorService._quantize_spend
-    return quantize(prev_row.budget_period_spend) == quantize(snapshot.spend) and _as_utc(prev_row.spend_date) <= cutoff
-
-
-def _as_utc(value: datetime) -> datetime:
-    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
-
-
-def _is_unchanged_since(
-    prev_row: Any | None,
-    snapshot: Any,
-    budget: Any | None,
-    cutoff: datetime | None,
-    now: datetime,
-) -> bool:
-    """Return True when ``prev_row`` still holds the provider's current spend and may be touched.
-
-    A row at or before its reset cutoff is never touched: moving its spend_date past the
-    cutoff would bring pre-reset spend back on screen. Equal spend across a budget reset
-    is a new period, not an unchanged one.
-    """
-    if prev_row is None:
-        return False
-    quantize = LiteLLMSpendCollectorService._quantize_spend
-    if quantize(prev_row.budget_period_spend) != quantize(snapshot.spend):
-        return False
-    if cutoff is not None and _as_utc(prev_row.spend_date) <= cutoff:
-        return False
-    return not LiteLLMSpendCollectorService._did_budget_reset(prev_row, budget, now)
+def _apply_unenforced_limit(
+    row: dict[str, Any],
+    name: str,
+    budget: Any,
+    allocation: Any | None,
+    project_total: float,
+    with_reset: bool,
+) -> None:
+    """Set one category's limit, bar numerator and reset date on an enforcement-off project row."""
+    limit = member_effective_max_budget(allocation, budget, enforce_limit=False)
+    if getattr(allocation, "allocation_mode", None) == AllocationMode.FIXED.value:
+        project_cap = row[name] + max(0.0, budget.max_budget - project_total)
+        row[f"{name}_limit"] = min(limit, project_cap)
+        if with_reset and project_cap < limit:
+            row[f"{name}_reset_at"] = budget.budget_reset_at
+        return
+    row[f"{name}_limit"] = limit
+    row[f"{name}_percent_spend"] = project_total
+    if with_reset:
+        row[f"{name}_reset_at"] = budget.budget_reset_at
 
 
 class MemberSpendService:
@@ -277,11 +202,18 @@ class MemberSpendService:
         enforced_only: bool = False,
         with_reset: bool = False,
         user_scoped_refresh: bool = False,
+        effective_limits: bool = False,
     ) -> list[dict[str, Any]]:
         """Return one dict per shared project the user belongs to.
 
         With ``user_scoped_refresh`` only this user's member spend is refreshed, keyed on
         the newest of their own rows, instead of the global ``_ensure_fresh`` refresh.
+
+        Without ``effective_limits`` each limit is the stored member allocation. With it,
+        rows carry the limit the provider actually enforces, and the selection becomes the
+        enforcement-on projects plus the enforcement-off projects that have an active project
+        budget (``enforced_only`` is then ignored). Enforcement-on rows are unchanged. For an
+        enforcement-off project, see ``_apply_unenforced_limits``.
 
         Personal projects are always excluded. Their spend is metered against the user
         (spend_subject_type='budget', keyed by username) rather than the project, so a
@@ -300,22 +232,34 @@ class MemberSpendService:
         personal_projects = await application_repository.aget_personal_project_names(session, member_project_names)
         project_names = [name for name in member_project_names if name not in personal_projects]
 
-        if enforced_only and project_names:
+        enforced: set[str] = set()
+        if (enforced_only or effective_limits) and project_names:
             from codemie.service.settings.settings import SettingsService
 
             enforced = await asyncio.to_thread(
                 SettingsService.get_projects_enforcing_member_spend_limits, project_names
             )
+        unenforced_budget_ids: dict[tuple[str, str], str] = {}
+        if effective_limits:
+            unenforced_budget_ids = await self._active_project_budget_ids(
+                session, [name for name in project_names if name not in enforced]
+            )
+            budgeted = {project for project, _ in unenforced_budget_ids}
+            project_names = [name for name in project_names if name in enforced or name in budgeted]
+        elif enforced_only:
             project_names = [name for name in project_names if name in enforced]
         if not project_names:
             return []
 
         selected = set(project_names)
-        allocations = await self._selected_allocations(session, user_id, selected)
-        spend_map = await project_spend_tracking_repository.get_latest_member_rows_for_user(session, user_id)
         cutoffs_by_project = await project_spend_tracking_repository.get_project_reset_cutoffs_for_projects(
             session, project_names
         )
+        if user_scoped_refresh and unenforced_budget_ids and self._is_litellm_enabled():
+            await refresh_user_project_totals(session, unenforced_budget_ids, cutoffs_by_project)
+            await session.rollback()
+        allocations = await self._selected_allocations(session, user_id, selected)
+        spend_map = await project_spend_tracking_repository.get_latest_member_rows_for_user(session, user_id)
 
         if (
             user_scoped_refresh
@@ -333,7 +277,57 @@ class MemberSpendService:
         allocation_map = {(a.project_name, a.budget_category): a for a in allocations}
 
         reset_map = await self._reset_dates(session, allocation_map) if with_reset else None
-        return _build_spend_rows(project_names, "project_name", spend_map, allocation_map, reset_map)
+        rows = _build_spend_rows(project_names, "project_name", spend_map, allocation_map, reset_map)
+        if unenforced_budget_ids:
+            await self._apply_unenforced_limits(session, rows, unenforced_budget_ids, allocation_map, with_reset)
+        return rows
+
+    @staticmethod
+    async def _active_project_budget_ids(session: AsyncSession, project_names: list[str]) -> dict[tuple[str, str], str]:
+        """Return the active project budget id per (project, category).
+
+        Plain ids are returned so a later commit, which expires loaded ORM objects, cannot
+        invalidate them.
+        """
+        assignments = await project_budget_assignment_repository.get_active_for_projects(session, project_names)
+        return {(a.project_name, a.budget_category): a.budget_id for a in assignments}
+
+    @staticmethod
+    async def _apply_unenforced_limits(
+        session: AsyncSession,
+        rows: list[dict[str, Any]],
+        budget_ids: dict[tuple[str, str], str],
+        allocation_map: dict[tuple[str, str], Any],
+        with_reset: bool,
+    ) -> None:
+        """Replace the limits of enforcement-off project rows with the limit the provider enforces.
+
+        Without enforcement the provider stops a member only at the project budget, or at a
+        fixed override capped by what is left of the project budget. A category without an
+        active project budget has no limit. Non-override categories also get
+        ``{category}_percent_spend``, the project total that the project budget is measured
+        against. A project total row of any other budget than the active one counts as 0.
+        The reset date is the project budget's, unless a fixed override is itself the limit.
+        """
+        budgets_map = await budget_repository.get_by_ids(session, list(set(budget_ids.values())))
+        totals = {
+            (r.project_name, r.budget_category): float(r.budget_period_spend)
+            for r in await latest_active_total_rows(session, budget_ids)
+        }
+        budgeted = {project for project, _ in budget_ids}
+        for row in rows:
+            project = row["project_name"]
+            if project not in budgeted:
+                continue
+            for category in BudgetCategory:
+                key = (project, category.value)
+                budget = budgets_map.get(budget_ids.get(key))
+                if budget is None:
+                    row[f"{category.value}_limit"] = None
+                else:
+                    _apply_unenforced_limit(
+                        row, category.value, budget, allocation_map.get(key), totals.get(key, 0.0), with_reset
+                    )
 
     @staticmethod
     async def _selected_allocations(session: AsyncSession, user_id: str, project_names: set[str]) -> list[Any]:
@@ -373,21 +367,15 @@ class MemberSpendService:
                 session, [(s.project_name, s.budget_id, s.user_id) for s in snapshots], now
             )
             budgets_map = await budget_repository.get_by_ids(session, list({s.budget_id for s in snapshots}))
-
-            rows: list[ProjectSpendTracking] = []
-            touch_ids = []
-            for snapshot in snapshots:
-                prev_row = prev_rows.get((snapshot.project_name, snapshot.budget_id, snapshot.user_id))
-                budget = budgets_map.get(snapshot.budget_id)
-                cutoff = cutoffs_by_project.get(snapshot.project_name, {}).get(snapshot.budget_category.value)
-                if _is_hidden_and_unchanged(prev_row, snapshot, cutoff):
-                    continue
-                if _is_unchanged_since(prev_row, snapshot, budget, cutoff, now):
-                    touch_ids.append(prev_row.id)
-                    continue
-                row = _snapshot_to_row(snapshot, prev_row, budget, now, allow_zero=prev_row is None)
-                if row is not None:
-                    rows.append(row)
+            rows, touch_ids = _rows_to_write(
+                snapshots,
+                prev_rows,
+                lambda s: (s.project_name, s.budget_id, s.user_id),
+                budgets_map,
+                cutoffs_by_project,
+                now,
+                "member_budget",
+            )
 
             if rows:
                 await project_spend_tracking_repository.insert_member_budget_entries(session, rows)

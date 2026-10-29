@@ -149,7 +149,7 @@ async def get_user_spending(
     return _create_response(response_data, SummariesResponse)
 
 
-async def _resolve_admin_budget_subject(user: "User", user_id: str) -> tuple[str, str | None]:
+async def _resolve_admin_budget_subject(user: "User", user_id: str) -> tuple[str, str | None, str | None]:
     """Look up target user for admin budget view; raise if not found or not authorized."""
     if not config.ENABLE_USER_MANAGEMENT:
         raise ExtendedHTTPException(
@@ -183,7 +183,7 @@ async def _resolve_admin_budget_subject(user: "User", user_id: str) -> tuple[str
             help="Ensure the target user has a valid username configured.",
         )
     logger.info(f"Admin budget view: caller={user.id} viewing target={user_id}")
-    return str(target_user_db.id), subject_label
+    return str(target_user_db.id), subject_label, target_user_db.email
 
 
 @router.get(
@@ -224,10 +224,11 @@ async def get_user_budget_usage(
 
     # --- Resolve subject (target user or caller) ---
     if user_id is not None:
-        subject_user_id, subject_label = await _resolve_admin_budget_subject(user, user_id)
+        subject_user_id, subject_label, subject_email = await _resolve_admin_budget_subject(user, user_id)
     else:
         subject_user_id = user.id
         subject_label = user.username
+        subject_email = user.email
         if not subject_label:
             raise ExtendedHTTPException(
                 code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -238,7 +239,9 @@ async def get_user_budget_usage(
 
     try:
         async with get_async_session() as session:
-            columns, rows = await budget_usage_service.get_budget_usage(session, subject_user_id, subject_label)
+            columns, rows = await budget_usage_service.get_budget_usage(
+                session, subject_user_id, subject_label, subject_email
+            )
     except ExtendedHTTPException:
         raise
     except Exception as e:

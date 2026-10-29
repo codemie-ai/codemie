@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import hashlib
 from contextlib import asynccontextmanager
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -917,6 +917,183 @@ class TestCollectProviderProjectBudgets:
 
         assert count == 0
         service._tracking_repository.insert_member_budget_entries.assert_called_once_with(mock_session, [])
+
+    @pytest.mark.asyncio
+    async def test_global_refresh_lock_awaited_before_provider_collection_and_insert(
+        self,
+        mock_session,
+        async_session_ctx,
+        mock_budget_repo,
+        mock_provider,
+    ):
+        """The exclusive project-budget refresh lock is taken before any provider call and kept until insert."""
+        call_names: list[str] = []
+
+        def _record(name, result=None):
+            call_names.append(name)
+            return result
+
+        project_snapshot = ProjectBudgetSpendSnapshot(
+            project_name="proj-x",
+            budget_category=BudgetCategory.CLI,
+            budget_id="budget-1",
+            spend=Decimal("5.00"),
+        )
+        member_snapshot = MemberBudgetSpendSnapshot(
+            project_name="proj-x",
+            budget_category=BudgetCategory.CLI,
+            budget_id="budget-2",
+            user_id="user-42",
+            spend=Decimal("3.00"),
+            provider_subject_id="subj-42",
+        )
+
+        service = _make_service()
+        service._tracking_repository.lock_all_project_budget_refresh = AsyncMock(
+            side_effect=lambda session: _record("lock")
+        )
+        service._tracking_repository.get_latest_before_by_project_budget_ids = AsyncMock(return_value={})
+        service._tracking_repository.get_latest_before_by_member_budget_ids = AsyncMock(return_value={})
+        service._tracking_repository.insert_project_budget_entries = AsyncMock(
+            side_effect=lambda session, rows: _record("insert_projects")
+        )
+        service._tracking_repository.insert_member_budget_entries = AsyncMock(
+            side_effect=lambda session, rows: _record("insert_members")
+        )
+        mock_provider.return_value.collect_project_budget_spend = AsyncMock(
+            side_effect=lambda: _record("collect_projects", [project_snapshot])
+        )
+        mock_provider.return_value.collect_member_budget_spend = AsyncMock(
+            side_effect=lambda: _record("collect_members", [member_snapshot])
+        )
+
+        with patch(
+            "codemie.service.spend_tracking.spend_collector_service.get_async_session",
+            side_effect=lambda: async_session_ctx(),
+        ):
+            await service._collect_provider_project_budgets(
+                target_snapshot_at=datetime(2026, 4, 23, 10, 0, tzinfo=timezone.utc)
+            )
+
+        assert call_names == ["lock", "collect_projects", "collect_members", "insert_projects", "insert_members"]
+        service._tracking_repository.lock_all_project_budget_refresh.assert_awaited_once_with(mock_session)
+
+    @pytest.mark.asyncio
+    async def test_inserted_project_rows_unchanged_by_lock(
+        self,
+        mock_session,
+        async_session_ctx,
+        mock_budget_repo,
+        mock_provider,
+    ):
+        """Project rows written for a snapshot match the pre-lock behaviour."""
+        snapshot = ProjectBudgetSpendSnapshot(
+            project_name="proj-x",
+            budget_category=BudgetCategory.CLI,
+            budget_id="budget-1",
+            spend=Decimal("5.00"),
+            provider_subject_id="subj-1",
+        )
+        target = datetime(2026, 4, 23, 10, 0, tzinfo=timezone.utc)
+
+        service = _make_service()
+        service._tracking_repository.lock_all_project_budget_refresh = AsyncMock()
+        service._tracking_repository.get_latest_before_by_project_budget_ids = AsyncMock(return_value={})
+        service._tracking_repository.get_latest_before_by_member_budget_ids = AsyncMock(return_value={})
+        service._tracking_repository.insert_project_budget_entries = AsyncMock()
+        service._tracking_repository.insert_member_budget_entries = AsyncMock()
+        mock_budget_repo.get_all_keyed_by_id = AsyncMock(return_value={"budget-1": _make_budget("budget-1", "cli")})
+        mock_provider.return_value.collect_project_budget_spend = AsyncMock(return_value=[snapshot])
+
+        with patch(
+            "codemie.service.spend_tracking.spend_collector_service.get_async_session",
+            side_effect=lambda: async_session_ctx(),
+        ):
+            count = await service._collect_provider_project_budgets(target_snapshot_at=target)
+
+        assert count == 1
+        session_arg, rows = service._tracking_repository.insert_project_budget_entries.call_args.args
+        assert session_arg is mock_session
+        assert len(rows) == 1
+        row = rows[0]
+        assert (row.project_name, row.spend_date, row.budget_id, row.spend_subject_type) == (
+            "proj-x",
+            target,
+            "budget-1",
+            "project_budget",
+        )
+        assert (row.daily_spend, row.budget_period_spend, row.provider_subject_id) == (
+            Decimal("5.00"),
+            Decimal("5.00"),
+            "subj-1",
+        )
+
+    @pytest.mark.asyncio
+    async def test_project_budget_refreshed_live_after_snapshot_time_is_not_counted_again(
+        self,
+        mock_session,
+        async_session_ctx,
+        mock_budget_repo,
+        mock_provider,
+    ):
+        """A live refresh committed between the snapshot time and the lock already holds this spend."""
+        target = datetime(2026, 4, 23, 10, 0, tzinfo=timezone.utc)
+        live = _make_budget_prev_row("proj-x", "budget-1", Decimal("5.00"), "project_budget")
+        live.spend_date = target + timedelta(minutes=5)
+        snapshot = ProjectBudgetSpendSnapshot(
+            project_name="proj-x",
+            budget_category=BudgetCategory.CLI,
+            budget_id="budget-1",
+            spend=Decimal("7.00"),
+        )
+
+        service = _make_service()
+        service._tracking_repository.lock_all_project_budget_refresh = AsyncMock()
+        service._tracking_repository.get_latest_before_by_project_budget_ids = AsyncMock(
+            return_value={("proj-x", "budget-1"): live}
+        )
+        service._tracking_repository.get_latest_before_by_member_budget_ids = AsyncMock(return_value={})
+        service._tracking_repository.insert_project_budget_entries = AsyncMock()
+        service._tracking_repository.insert_member_budget_entries = AsyncMock()
+        mock_budget_repo.get_all_keyed_by_id = AsyncMock(return_value={"budget-1": _make_budget("budget-1", "cli")})
+        mock_provider.return_value.collect_project_budget_spend = AsyncMock(return_value=[snapshot])
+
+        with patch(
+            "codemie.service.spend_tracking.spend_collector_service.get_async_session",
+            side_effect=lambda: async_session_ctx(),
+        ):
+            count = await service._collect_provider_project_budgets(target_snapshot_at=target)
+
+        assert count == 0
+        service._tracking_repository.insert_project_budget_entries.assert_called_once_with(mock_session, [])
+        baseline_bound = service._tracking_repository.get_latest_before_by_project_budget_ids.await_args.args[2]
+        assert baseline_bound > target
+
+    @pytest.mark.asyncio
+    async def test_no_snapshots_returns_zero_without_inserting(
+        self,
+        mock_session,
+        async_session_ctx,
+        mock_budget_repo,
+        mock_provider,
+    ):
+        """Empty provider snapshots still short-circuit with nothing inserted."""
+        service = _make_service()
+        service._tracking_repository.lock_all_project_budget_refresh = AsyncMock()
+        service._tracking_repository.insert_project_budget_entries = AsyncMock()
+        service._tracking_repository.insert_member_budget_entries = AsyncMock()
+
+        with patch(
+            "codemie.service.spend_tracking.spend_collector_service.get_async_session",
+            side_effect=lambda: async_session_ctx(),
+        ):
+            count = await service._collect_provider_project_budgets(
+                target_snapshot_at=datetime(2026, 4, 23, 10, 0, tzinfo=timezone.utc)
+            )
+
+        assert count == 0
+        service._tracking_repository.insert_project_budget_entries.assert_not_called()
+        service._tracking_repository.insert_member_budget_entries.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

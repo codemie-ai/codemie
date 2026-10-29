@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "task": "Extend the personal spending panel (/v1/analytics/budget_usage and SpendingCard) with Default-project badges and ordering, enforcement-off and override project rows, and a live user-scoped, per-project-locked refresh of project_budget spend rows with touch-unchanged semantics, keeping admin spending endpoints unchanged.",
+  "generated": "2026-10-29T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 6, "label": "XXL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 5, "label": "XL" }
+  },
+  "total": 24,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Six components across two repos: spending router, BudgetUsageService (row assembly, ordering, percent), MemberSpendService.get_user_project_rows (enforcement filter, limit via member_effective_max_budget, refresh), ProjectSpendTrackingRepository (new project_budget touch + project advisory lock), provider protocol + no-op + LiteLLM adapter (new project-scoped spend method), and codemie-ui SpendingCard. Base XL; bumped because get_user_project_rows and project_budget rows are shared foundations read by admin endpoints, reset cutoffs, project list/detail spending and the nightly collector." },
+    { "dimension": "technical_risk", "reason": "Closest pattern is the merged _refresh_user_member_spend / collect_member_budget_spend_for_allocations / try_lock_member_refresh / touch_member_spend_dates path, which covers most mechanics, but it targets member_budget rows. Applying it to project_budget rows has no exact precedent: live writes and touched spend_dates shift get_project_reset_cutoffs_for_projects, the nightly collector baseline and lifetime spend, while admin endpoints must stay byte-identical and a prior attempt (EPMCDME-12991) was reverted for row growth. The AC edge cases (reset transition, InvalidSpendSnapshotError per project, touch-unchanged) are covered by the existing _patched / TestUserScopedRefresh harness, so no test-template bump. Project LiteLLM creds handling reuses the existing SettingsService path, so no security-gap bump." },
+    { "dimension": "file_change_estimate", "reason": "About 7-8 backend source files (spending router, budget_usage_service, member_spend_service, project_spend_tracking_repository, provider protocol, provider_registry, budget_provider_adapter, possibly project_budget_repository), 4-5 backend test files, SpendingCard.tsx plus a new SpendingCard test in codemie-ui. 11-15 modified across multiple subsystems in two repos." },
+    { "dimension": "affected_layers", "reason": "UI, API, Service, DB-Persistence (new project_budget write/touch and locking, no schema change) and the External LiteLLM /key/info integration, with cross-cutting freshness/consistency concerns across several layers." },
+    { "dimension": "requirements_clarity", "reason": "Requirements are detailed with a worked example, but design choices remain open: how the per-row default flag reaches the UI without breaking the '<email> (cli)' label, matching member rows (project_budget_id) to project totals (project_name, category), and how touched rows interact with reset cutoffs." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from XL to XXL: touches core shared utilities (get_user_project_rows and project_budget spend rows shared with admin endpoints, reset cutoffs, project spending pages and the nightly collector)"
+  ],
+  "split_recommendation": null
+}

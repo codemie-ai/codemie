@@ -793,3 +793,82 @@ class TestMemberRefreshLocks:
         stmt, params = session.execute.await_args.args
         assert "pg_advisory_xact_lock(hashtext(:key))" in str(stmt)
         assert params == {"key": "member_spend_refresh:all"}
+
+
+class TestTouchProjectBudgetSpendDates:
+    @pytest.mark.asyncio
+    async def test_touch_project_budget_spend_dates_noop_for_empty_ids(self):
+        session = AsyncMock()
+
+        await ProjectSpendTrackingRepository().touch_project_budget_spend_dates(session, [], datetime.now(timezone.utc))
+
+        session.execute.assert_not_awaited()
+        session.commit.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_touch_project_budget_spend_dates_updates_only_newest_given_project_budget_rows(self):
+        session = AsyncMock()
+        row_id = uuid4()
+
+        await ProjectSpendTrackingRepository().touch_project_budget_spend_dates(
+            session, [row_id], datetime(2026, 10, 27, 12, tzinfo=timezone.utc)
+        )
+
+        sql = _compile_sql(session.execute.await_args.args[0])
+        assert sql.startswith("UPDATE project_spend_tracking SET spend_date=")
+        assert f"project_spend_tracking.id IN ('{row_id.hex}')" in sql
+        assert "'project_budget'" in sql
+        assert "'member_budget'" not in sql
+        assert "NOT (EXISTS (" in sql
+        assert "newer.project_name = project_spend_tracking.project_name" in sql
+        assert "newer.budget_id = project_spend_tracking.budget_id" in sql
+        assert "newer.spend_date > project_spend_tracking.spend_date" in sql
+        session.commit.assert_not_awaited()
+
+
+class TestProjectBudgetRefreshLocks:
+    @staticmethod
+    def _session(*scalars):
+        results = []
+        for value in scalars:
+            result = MagicMock()
+            result.scalar_one.return_value = value
+            results.append(result)
+        session = AsyncMock()
+        session.execute = AsyncMock(side_effect=results)
+        return session
+
+    @pytest.mark.asyncio
+    async def test_try_lock_takes_shared_global_lock_then_project_lock(self):
+        session = self._session(True, True)
+
+        assert await ProjectSpendTrackingRepository().try_lock_project_budget_refresh(session, "proj-1") is True
+
+        (shared_stmt, shared_params), (project_stmt, project_params) = [c.args for c in session.execute.await_args_list]
+        assert "pg_try_advisory_xact_lock_shared(hashtext(:key))" in str(shared_stmt)
+        assert shared_params == {"key": "project_budget_refresh:all"}
+        assert "pg_try_advisory_xact_lock(hashtext(:key))" in str(project_stmt)
+        assert project_params == {"key": "project_budget_refresh:proj-1"}
+
+    @pytest.mark.asyncio
+    async def test_try_lock_gives_up_while_global_refresh_runs(self):
+        session = self._session(False)
+
+        assert await ProjectSpendTrackingRepository().try_lock_project_budget_refresh(session, "proj-1") is False
+        assert session.execute.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_try_lock_gives_up_while_same_project_refreshes(self):
+        session = self._session(True, False)
+
+        assert await ProjectSpendTrackingRepository().try_lock_project_budget_refresh(session, "proj-1") is False
+
+    @pytest.mark.asyncio
+    async def test_lock_all_project_budget_refresh_waits_for_exclusive_global_lock(self):
+        session = AsyncMock()
+
+        await ProjectSpendTrackingRepository().lock_all_project_budget_refresh(session)
+
+        stmt, params = session.execute.await_args.args
+        assert "pg_advisory_xact_lock(hashtext(:key))" in str(stmt)
+        assert params == {"key": "project_budget_refresh:all"}

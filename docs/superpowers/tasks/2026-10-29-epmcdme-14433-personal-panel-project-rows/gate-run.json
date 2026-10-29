@@ -1,0 +1,300 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-14433_personal-panel-project-rows",
+  "head": "aa652e19c39ed5662924ea21fd174b6d5bc5ac50",
+  "head_codemie_ui": "8b66cf24acafb0650e680d79371de912e46143bf",
+  "runner": "custom",
+  "started_at": "2026-10-29T13:36:52Z",
+  "completed_at": "2026-10-29T13:40:25Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "codemie:ruff-format",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1483,
+      "command": "poetry run ruff format src/codemie/enterprise/litellm/budget_provider_adapter.py src/codemie/repository/project_spend_tracking_repository.py src/codemie/rest_api/routers/analytics/spending.py src/codemie/service/analytics/handlers/budget_usage_service.py src/codemie/service/analytics/handlers/member_spend_service.py src/codemie/service/analytics/handlers/project_total_refresh.py src/codemie/service/analytics/handlers/spend_snapshot_rows.py src/codemie/service/budget/provider.py src/codemie/service/budget/provider_registry.py src/codemie/service/spend_tracking/spend_collector_service.py tests/codemie/repository/test_project_spend_tracking_repository.py tests/codemie/rest_api/routers/test_analytics.py tests/codemie/rest_api/routers/test_analytics_budget_usage_labels.py tests/codemie/service/analytics/handlers/test_budget_usage_service.py tests/codemie/service/analytics/handlers/test_member_spend_service.py tests/codemie/service/budget/test_provider_registry.py tests/codemie/service/spend_tracking/test_spend_collector_service.py tests/enterprise/litellm/test_budget_provider_adapter.py",
+      "exit_code": 0,
+      "notes": "18 files left unchanged."
+    },
+    {
+      "id": "codemie:ruff-fix",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1395,
+      "command": "poetry run ruff check --fix src/codemie/enterprise/litellm/budget_provider_adapter.py src/codemie/repository/project_spend_tracking_repository.py src/codemie/rest_api/routers/analytics/spending.py src/codemie/service/analytics/handlers/budget_usage_service.py src/codemie/service/analytics/handlers/member_spend_service.py src/codemie/service/analytics/handlers/project_total_refresh.py src/codemie/service/analytics/handlers/spend_snapshot_rows.py src/codemie/service/budget/provider.py src/codemie/service/budget/provider_registry.py src/codemie/service/spend_tracking/spend_collector_service.py tests/codemie/repository/test_project_spend_tracking_repository.py tests/codemie/rest_api/routers/test_analytics.py tests/codemie/rest_api/routers/test_analytics_budget_usage_labels.py tests/codemie/service/analytics/handlers/test_budget_usage_service.py tests/codemie/service/analytics/handlers/test_member_spend_service.py tests/codemie/service/budget/test_provider_registry.py tests/codemie/service/spend_tracking/test_spend_collector_service.py tests/enterprise/litellm/test_budget_provider_adapter.py",
+      "exit_code": 0,
+      "notes": "No fixes applied."
+    },
+    {
+      "id": "codemie:ruff-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1314,
+      "command": "poetry run ruff check src/codemie/enterprise/litellm/budget_provider_adapter.py src/codemie/repository/project_spend_tracking_repository.py src/codemie/rest_api/routers/analytics/spending.py src/codemie/service/analytics/handlers/budget_usage_service.py src/codemie/service/analytics/handlers/member_spend_service.py src/codemie/service/analytics/handlers/project_total_refresh.py src/codemie/service/analytics/handlers/spend_snapshot_rows.py src/codemie/service/budget/provider.py src/codemie/service/budget/provider_registry.py src/codemie/service/spend_tracking/spend_collector_service.py tests/codemie/repository/test_project_spend_tracking_repository.py tests/codemie/rest_api/routers/test_analytics.py tests/codemie/rest_api/routers/test_analytics_budget_usage_labels.py tests/codemie/service/analytics/handlers/test_budget_usage_service.py tests/codemie/service/analytics/handlers/test_member_spend_service.py tests/codemie/service/budget/test_provider_registry.py tests/codemie/service/spend_tracking/test_spend_collector_service.py tests/enterprise/litellm/test_budget_provider_adapter.py",
+      "exit_code": 0
+    },
+    {
+      "id": "codemie:license-check",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 1486,
+      "command": "make license-check FILE=\"src/codemie/enterprise/litellm/budget_provider_adapter.py src/codemie/repository/project_spend_tracking_repository.py src/codemie/rest_api/routers/analytics/spending.py src/codemie/service/analytics/handlers/budget_usage_service.py src/codemie/service/analytics/handlers/member_spend_service.py src/codemie/service/analytics/handlers/project_total_refresh.py src/codemie/service/analytics/handlers/spend_snapshot_rows.py src/codemie/service/budget/provider.py src/codemie/service/budget/provider_registry.py src/codemie/service/spend_tracking/spend_collector_service.py tests/codemie/repository/test_project_spend_tracking_repository.py tests/codemie/rest_api/routers/test_analytics.py tests/codemie/rest_api/routers/test_analytics_budget_usage_labels.py tests/codemie/service/analytics/handlers/test_budget_usage_service.py tests/codemie/service/analytics/handlers/test_member_spend_service.py tests/codemie/service/budget/test_provider_registry.py tests/codemie/service/spend_tracking/test_spend_collector_service.py tests/enterprise/litellm/test_budget_provider_adapter.py\"",
+      "exit_code": 0,
+      "notes": "Coordinator instruction mid-run: out of requested scope. Ran once before the instruction arrived and exited 0 (Checked 18 files, 0 missing license headers); not counted toward outcome."
+    },
+    {
+      "id": "codemie:unit-scoped",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 84491,
+      "command": ".venv/Scripts/python.exe -m pytest -q -p no:warnings tests/codemie/repository/test_project_spend_tracking_repository.py tests/codemie/rest_api/routers/test_analytics.py tests/codemie/rest_api/routers/test_analytics_budget_usage_labels.py tests/codemie/service/analytics/handlers/test_budget_usage_service.py tests/codemie/service/analytics/handlers/test_member_spend_service.py tests/codemie/service/budget/test_provider_registry.py tests/codemie/service/spend_tracking/test_spend_collector_service.py tests/enterprise/litellm/test_budget_provider_adapter.py tests/codemie/rest_api/test_main_enterprise_services.py tests/codemie/service/settings/test_settings_transfer_service.py tests/enterprise/litellm/test_unused_project_member_budget.py tests/codemie/rest_api/routers/test_projects_spending_wiring.py tests/codemie/service/budget/test_budget_service.py tests/codemie/service/project/test_project_assignment_service.py tests/codemie/service/project/test_project_spending_service.py tests/codemie/rest_api/routers/test_analytics_capability_guards.py tests/codemie/rest_api/routers/test_analytics_member_spending.py tests/codemie/rest_api/routers/test_analytics_spending_wiring.py tests/enterprise/litellm/test_premium_models_budget.py tests/codemie/service/budget/test_project_budget_allocation_rounding.py tests/codemie/service/budget/test_project_budget_service.py tests/codemie/service/budget/test_project_budget_service_lifecycle.py tests/codemie/service/user/test_user_management_service_create_local_user.py tests/enterprise/litellm/test_project_member_runtime_sync.py tests/codemie/rest_api/routers/test_admin_router.py",
+      "exit_code": 0,
+      "notes": "888 passed in 81.16s. 25 files: 8 changed test files + 17 test files importing the changed source modules."
+    },
+    {
+      "id": "codemie:build",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make build",
+      "notes": "Out of requested scope (qa-scope.local.md); not run."
+    },
+    {
+      "id": "codemie:test",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make test",
+      "notes": "Out of requested scope (qa-scope.local.md); not run. Full suite left to CI/pre-push."
+    },
+    {
+      "id": "codemie:test-cli-analytics-live",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make test-cli-analytics-live",
+      "notes": "Out of requested scope (qa-scope.local.md); not run. Change does not touch src/codemie/repository/cli_analytics/postgres/."
+    },
+    {
+      "id": "codemie:coverage",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make coverage",
+      "notes": "Out of requested scope (qa-scope.local.md); not run."
+    },
+    {
+      "id": "codemie:sonar-local",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make sonar-local",
+      "notes": "Out of requested scope (qa-scope.local.md); not run."
+    },
+    {
+      "id": "codemie:verify",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make verify",
+      "notes": "Out of requested scope (qa-scope.local.md); not run."
+    },
+    {
+      "id": "codemie:gitleaks",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make gitleaks",
+      "notes": "Out of requested scope (qa-scope.local.md); not run. Needs Docker/Podman."
+    },
+    {
+      "id": "codemie:test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "notes": "Out of requested scope (qa-scope.local.md); not run. Required in MR description; needs running stack and ~/.codemie/test-harness.json."
+    },
+    {
+      "id": "codemie:hook-pre-commit",
+      "source": "hook",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "bash scripts/git-hooks/pre_commit.sh",
+      "notes": "Out of requested scope (qa-scope.local.md); not run. Staged ruff format/check + license headers; ruff portion covered by scoped ruff gates."
+    },
+    {
+      "id": "codemie:hook-commit-msg",
+      "source": "hook",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "bash scripts/git-hooks/commit_msg.sh",
+      "notes": "Out of requested scope (qa-scope.local.md); not run."
+    },
+    {
+      "id": "codemie:hook-pre-push",
+      "source": "hook",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "bash scripts/git-hooks/pre_push.sh",
+      "notes": "Out of requested scope (qa-scope.local.md); not run. Full pytest + make sonar-local (opt-in via CODEMIE_PREPUSH_ENABLED=true)."
+    },
+    {
+      "id": "codemie:hook-gitleaks",
+      "source": "hook",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "notes": "Out of requested scope (qa-scope.local.md); not run. Needs a container engine."
+    },
+    {
+      "id": "codemie:ci-gitlab",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": ".gitlab-ci.yml (remote include; local jobs no-op/wait-ci-init)",
+      "notes": "Out of requested scope (qa-scope.local.md); not run. Mismatch: guide says no pipeline config exists, but .gitlab-ci.yml is present (remote include). Remote CI jobs are not reproducible locally."
+    },
+    {
+      "id": "codemie-ui:eslint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 4328,
+      "command": "npx eslint src/pages/settings/components/SpendingCard.tsx src/pages/settings/components/__tests__/SpendingCard.test.tsx",
+      "exit_code": 0
+    },
+    {
+      "id": "codemie-ui:vitest-changed",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 8333,
+      "command": "npx vitest run src/pages/settings/components/__tests__/SpendingCard.test.tsx",
+      "exit_code": 0,
+      "notes": "1 file, 2 tests passed."
+    },
+    {
+      "id": "codemie-ui:vitest-covering",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 9942,
+      "command": "npx vitest run src/pages/settings/administration/usersManagement/components/popups/__tests__/UserDetailsPopup",
+      "exit_code": 0,
+      "notes": "5 files, 16 tests passed. These files vi.mock SpendingCard, so they verify the parent popup, not SpendingCard itself."
+    },
+    {
+      "id": "codemie-ui:typecheck",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 23991,
+      "command": "npm run typecheck",
+      "exit_code": 0
+    },
+    {
+      "id": "codemie-ui:lint-full",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "npm run lint",
+      "notes": "Out of requested scope (qa-scope.local.md); not run. Scoped eslint on changed files ran instead."
+    },
+    {
+      "id": "codemie-ui:license-check",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "npm run license-check",
+      "notes": "Out of requested scope (qa-scope.local.md); not run."
+    },
+    {
+      "id": "codemie-ui:secrets-check",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "npm run secrets:check",
+      "notes": "Out of requested scope (qa-scope.local.md); not run."
+    },
+    {
+      "id": "codemie-ui:test-unit",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "npm run test:unit:slnt",
+      "notes": "Out of requested scope (qa-scope.local.md); not run."
+    },
+    {
+      "id": "codemie-ui:test-integration",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "npm run test:integration:slnt",
+      "notes": "Out of requested scope (qa-scope.local.md); not run."
+    },
+    {
+      "id": "codemie-ui:test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "npm run test-harness",
+      "notes": "Out of requested scope (qa-scope.local.md); not run."
+    },
+    {
+      "id": "codemie-ui:check-generated-types",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "npm run check:generated-types",
+      "notes": "Out of requested scope (qa-scope.local.md); not run."
+    },
+    {
+      "id": "codemie-ui:hook-lint-staged",
+      "source": "hook",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "npx lint-staged (prettier --write, eslint --fix, tsc --noEmit)",
+      "notes": "Out of requested scope (qa-scope.local.md); not run. Prettier not run; eslint and tsc covered by scoped gates."
+    },
+    {
+      "id": "codemie-ui:hook-license-headers",
+      "source": "hook",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "npm run license-headers:check",
+      "notes": "Out of requested scope (qa-scope.local.md); not run."
+    },
+    {
+      "id": "codemie-ui:hook-secrets",
+      "source": "hook",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "npm run secrets:check",
+      "notes": "Out of requested scope (qa-scope.local.md); not run."
+    },
+    {
+      "id": "codemie-ui:hook-sonar-local",
+      "source": "hook",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "npm run sonar-local",
+      "notes": "Out of requested scope (qa-scope.local.md); not run."
+    },
+    {
+      "id": "codemie-ui:ci-gitlab",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": ".gitlab-ci.yml (remote include)",
+      "notes": "Out of requested scope (qa-scope.local.md); not run. Remote CI jobs are not reproducible locally."
+    },
+    {
+      "id": "codemie-ui:ui",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "",
+      "notes": "UI surface changed (SpendingCard.tsx) but no UI/browser test script in scope; browser verification is a separate caller decision."
+    }
+  ],
+  "failures": {}
+}

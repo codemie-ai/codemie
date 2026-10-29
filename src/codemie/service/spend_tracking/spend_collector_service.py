@@ -29,7 +29,7 @@ from codemie.repository.budget_repository import budget_repository
 from codemie.repository.project_budget_repository import project_member_budget_assignment_repository
 from codemie.repository.project_spend_tracking_repository import ProjectSpendTrackingRepository
 from codemie.service.budget.budget_models import Budget
-from codemie.service.budget.provider import PersonalSpendEntry
+from codemie.service.budget.provider import PersonalSpendEntry, ProjectBudgetSpendSnapshot
 from codemie.service.budget.provider_registry import get_active_provider
 from codemie.service.spend_tracking.spend_models import ProjectSpendTracking
 
@@ -171,57 +171,39 @@ class LiteLLMSpendCollectorService:
             return len(rows_to_insert)
 
     async def _collect_provider_project_budgets(self, target_snapshot_at: datetime) -> int:
-        """Collect provider-neutral project/member budget snapshots."""
+        """Collect provider-neutral project/member budget snapshots.
+
+        A project budget whose newest row is dated at or after ``target_snapshot_at`` was
+        refreshed live before the lock was granted. That row already holds the spend, so the
+        snapshot is skipped rather than counted a second time.
+        """
         provider = get_active_provider()
-        project_snapshots = await provider.collect_project_budget_spend()
-        member_snapshots = await provider.collect_member_budget_spend()
-        if not project_snapshots and not member_snapshots:
-            return 0
 
         async with get_async_session() as session:
+            await self._tracking_repository.lock_all_project_budget_refresh(session)
+            project_snapshots = await provider.collect_project_budget_spend()
+            member_snapshots = await provider.collect_member_budget_spend()
+            if not project_snapshots and not member_snapshots:
+                return 0
+
             budgets_map = await budget_repository.get_all_keyed_by_id(session)
             project_rows: list[ProjectSpendTracking] = []
             project_pairs = [(s.project_name, s.budget_id) for s in project_snapshots]
             project_prev = await self._tracking_repository.get_latest_before_by_project_budget_ids(
                 session,
                 project_pairs,
-                target_snapshot_at,
+                datetime.now(timezone.utc),
                 spend_subject_type="project_budget",
             )
             for snapshot in project_snapshots:
-                budget = budgets_map.get(snapshot.budget_id)
-                prev_row = project_prev.get((snapshot.project_name, snapshot.budget_id))
-                daily_spend, cumulative_spend = self._compute_spend_snapshot(
-                    current_budget_period_spend=self._quantize_spend(snapshot.spend),
-                    prev_row=prev_row,
-                    snapshot_at=target_snapshot_at,
-                    budget=budget,
+                row = self._project_budget_row(
+                    snapshot,
+                    project_prev.get((snapshot.project_name, snapshot.budget_id)),
+                    budgets_map.get(snapshot.budget_id),
+                    target_snapshot_at,
                 )
-                effective_cumulative = self._quantize_spend(
-                    snapshot.cumulative_spend if snapshot.cumulative_spend is not None else cumulative_spend
-                )
-                if daily_spend == Decimal("0") and not self.is_reset_transition(
-                    prev_row, budget, self._quantize_spend(snapshot.spend), target_snapshot_at
-                ):
-                    logger.debug(
-                        f"Project '{snapshot.project_name}' budget_id={snapshot.budget_id!r} "
-                        f"has zero delta; skipping snapshot"
-                    )
-                    continue
-                project_rows.append(
-                    ProjectSpendTracking(
-                        id=uuid4(),
-                        project_name=snapshot.project_name,
-                        spend_date=target_snapshot_at,
-                        daily_spend=daily_spend,
-                        cumulative_spend=effective_cumulative,
-                        budget_period_spend=self._quantize_spend(snapshot.spend),
-                        budget_id=snapshot.budget_id,
-                        budget_category=snapshot.budget_category.value,
-                        provider_subject_id=snapshot.provider_subject_id,
-                        spend_subject_type="project_budget",
-                    )
-                )
+                if row is not None:
+                    project_rows.append(row)
 
             member_rows: list[ProjectSpendTracking] = []
             member_triples = [(s.project_name, s.budget_id, s.user_id) for s in member_snapshots]
@@ -267,6 +249,49 @@ class LiteLLMSpendCollectorService:
             await self._tracking_repository.insert_project_budget_entries(session, project_rows)
             await self._tracking_repository.insert_member_budget_entries(session, member_rows)
             return len(project_rows) + len(member_rows)
+
+    def _project_budget_row(
+        self,
+        snapshot: ProjectBudgetSpendSnapshot,
+        prev_row: ProjectSpendTracking | None,
+        budget: Budget | None,
+        target_snapshot_at: datetime,
+    ) -> ProjectSpendTracking | None:
+        """Return the project_budget row for one snapshot, or None when it must not be written."""
+        if prev_row is not None and self._as_utc(prev_row.spend_date) >= target_snapshot_at:
+            logger.debug(
+                f"Project '{snapshot.project_name}' budget_id={snapshot.budget_id!r} "
+                f"was refreshed after the snapshot time; skipping snapshot"
+            )
+            return None
+        daily_spend, cumulative_spend = self._compute_spend_snapshot(
+            current_budget_period_spend=self._quantize_spend(snapshot.spend),
+            prev_row=prev_row,
+            snapshot_at=target_snapshot_at,
+            budget=budget,
+        )
+        effective_cumulative = self._quantize_spend(
+            snapshot.cumulative_spend if snapshot.cumulative_spend is not None else cumulative_spend
+        )
+        if daily_spend == Decimal("0") and not self.is_reset_transition(
+            prev_row, budget, self._quantize_spend(snapshot.spend), target_snapshot_at
+        ):
+            logger.debug(
+                f"Project '{snapshot.project_name}' budget_id={snapshot.budget_id!r} has zero delta; skipping snapshot"
+            )
+            return None
+        return ProjectSpendTracking(
+            id=uuid4(),
+            project_name=snapshot.project_name,
+            spend_date=target_snapshot_at,
+            daily_spend=daily_spend,
+            cumulative_spend=effective_cumulative,
+            budget_period_spend=self._quantize_spend(snapshot.spend),
+            budget_id=snapshot.budget_id,
+            budget_category=snapshot.budget_category.value,
+            provider_subject_id=snapshot.provider_subject_id,
+            spend_subject_type="project_budget",
+        )
 
     async def _collect_budget_based(self, target_snapshot_at: datetime) -> int:
         """Run the budget-based spend collection path using /customer/list.
@@ -552,13 +577,14 @@ class LiteLLMSpendCollectorService:
             return False
 
         last_reset = next_reset - duration_delta
+        as_utc = LiteLLMSpendCollectorService._as_utc
 
-        prev_spend_date = prev_row.spend_date
-        if prev_spend_date.tzinfo is None:
-            prev_spend_date = prev_spend_date.replace(tzinfo=timezone.utc)
-        snap = snapshot_at if snapshot_at.tzinfo is not None else snapshot_at.replace(tzinfo=timezone.utc)
+        return as_utc(prev_row.spend_date) < last_reset <= as_utc(snapshot_at)
 
-        return prev_spend_date < last_reset <= snap
+    @staticmethod
+    def _as_utc(value: datetime) -> datetime:
+        """Return ``value`` as an aware datetime, reading a naive one as UTC."""
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
     @staticmethod
     def _extract_budget_period_spend(spending_payload: dict) -> Decimal:

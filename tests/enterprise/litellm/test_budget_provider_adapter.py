@@ -31,6 +31,7 @@ from codemie.service.budget.provider import (
     BudgetRuntimeContext,
     BudgetResetReconciliationTarget,
     MemberBudgetSpendSnapshot,
+    ProjectBudgetSpendSnapshot,
 )
 
 
@@ -171,6 +172,124 @@ async def test_collect_member_budget_spend_for_refs_returns_empty_for_empty_ref_
     result = await adapter.collect_member_budget_spend_for_refs(set())
 
     assert result == []
+
+
+def _project_budget_row(project_name: str, key_alias: str | None, budget_id: str = "budget-1"):
+    assignment = SimpleNamespace(project_name=project_name, budget_id=budget_id, budget_category="cli")
+    provider_metadata = {"provider_budget_ref": key_alias, "key_hash": f"hash-{project_name}"} if key_alias else {}
+    budget = SimpleNamespace(provider_metadata=provider_metadata, budget_reset_at="2026-04-23T10:10:00Z")
+    return assignment, budget
+
+
+def _session_cm_returning(rows):
+    session = AsyncMock()
+    result_mock = MagicMock()
+    result_mock.all.return_value = rows
+    session.execute = AsyncMock(return_value=result_mock)
+    session_cm = MagicMock()
+    session_cm.__aenter__ = AsyncMock(return_value=session)
+    session_cm.__aexit__ = AsyncMock(return_value=False)
+    return session_cm, session
+
+
+@pytest.mark.asyncio
+async def test_collect_project_budget_spend_for_projects_returns_empty_for_empty_input():
+    service = SimpleNamespace(get_key_spending_info=MagicMock())
+    adapter = LiteLLMBudgetEnforcementProvider(service=service)
+
+    assert await adapter.collect_project_budget_spend_for_projects([]) == []
+    service.get_key_spending_info.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_collect_project_budget_spend_for_projects_returns_empty_without_service():
+    adapter = LiteLLMBudgetEnforcementProvider(service=None)
+
+    with patch.object(adapter, "_get_service", return_value=None):
+        assert await adapter.collect_project_budget_spend_for_projects(["proj-a"]) == []
+
+
+@pytest.mark.asyncio
+async def test_collect_project_budget_spend_for_projects_builds_snapshot_with_creds_via_thread():
+    service = SimpleNamespace(
+        get_key_spending_info=MagicMock(return_value={"total_spend": 12.5, "budget_reset_at": "2026-05-01T00:00:00Z"})
+    )
+    adapter = LiteLLMBudgetEnforcementProvider(service=service)
+    session_cm, session = _session_cm_returning([_project_budget_row("proj-a", "alias-a")])
+    thread_calls = []
+
+    async def _to_thread(fn, *args):
+        thread_calls.append(fn)
+        return fn(*args)
+
+    creds = SimpleNamespace(api_key="sk-a")
+    get_creds = MagicMock(return_value=creds)
+
+    with (
+        patch("codemie.clients.postgres.get_async_session", return_value=session_cm),
+        patch(
+            "codemie.service.settings.settings.SettingsService.get_project_litellm_creds_by_alias",
+            get_creds,
+        ),
+        patch("codemie.enterprise.litellm.budget_provider_adapter.asyncio.to_thread", side_effect=_to_thread),
+    ):
+        snapshots = await adapter.collect_project_budget_spend_for_projects(["proj-a"])
+
+    assert get_creds in thread_calls
+    get_creds.assert_called_once_with("proj-a", "alias-a")
+    service.get_key_spending_info.assert_called_once_with("sk-a")
+    assert ["proj-a"] in session.execute.await_args.args[0].compile().params.values()
+    assert snapshots == [
+        ProjectBudgetSpendSnapshot(
+            project_name="proj-a",
+            budget_category=BudgetCategory.CLI,
+            budget_id="budget-1",
+            spend=Decimal("12.5"),
+            budget_reset_at="2026-05-01T00:00:00Z",
+            provider_subject_id="hash-proj-a",
+            metadata={"key_alias": "alias-a"},
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_collect_project_budget_spend_for_projects_skips_failing_and_unresolvable_rows():
+    def _key_spending_info(api_key):
+        if api_key == "sk-bad":
+            raise RuntimeError("litellm down")
+        return {"spend": 3}
+
+    service = SimpleNamespace(get_key_spending_info=MagicMock(side_effect=_key_spending_info))
+    adapter = LiteLLMBudgetEnforcementProvider(service=service)
+    rows = [
+        _project_budget_row("proj-bad", "alias-bad", "budget-bad"),
+        _project_budget_row("proj-no-alias", None, "budget-no-alias"),
+        _project_budget_row("proj-no-creds", "alias-nc", "budget-nc"),
+        _project_budget_row("proj-ok", "alias-ok", "budget-ok"),
+    ]
+    session_cm, _ = _session_cm_returning(rows)
+    creds_by_project = {
+        "proj-bad": SimpleNamespace(api_key="sk-bad"),
+        "proj-no-creds": None,
+        "proj-ok": SimpleNamespace(api_key="sk-ok"),
+    }
+
+    async def _to_thread(fn, *args):
+        return fn(*args)
+
+    with (
+        patch("codemie.clients.postgres.get_async_session", return_value=session_cm),
+        patch(
+            "codemie.service.settings.settings.SettingsService.get_project_litellm_creds_by_alias",
+            side_effect=lambda project_name, _alias: creds_by_project[project_name],
+        ),
+        patch("codemie.enterprise.litellm.budget_provider_adapter.asyncio.to_thread", side_effect=_to_thread),
+    ):
+        snapshots = await adapter.collect_project_budget_spend_for_projects(
+            ["proj-bad", "proj-no-alias", "proj-no-creds", "proj-ok"]
+        )
+
+    assert [(s.project_name, s.spend) for s in snapshots] == [("proj-ok", Decimal("3"))]
 
 
 def test_normalize_personal_budget_identifier_strips_non_platform_suffix():

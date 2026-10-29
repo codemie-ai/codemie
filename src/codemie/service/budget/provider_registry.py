@@ -260,6 +260,13 @@ class _NoopBudgetEnforcementProvider:
     async def collect_project_budget_spend(self) -> list[ProjectBudgetSpendSnapshot]:
         return []
 
+    async def collect_project_budget_spend_for_projects(
+        self,
+        project_names: list[str],
+    ) -> list[ProjectBudgetSpendSnapshot]:
+        _ = project_names
+        return []
+
     async def collect_member_budget_spend(self) -> list[MemberBudgetSpendSnapshot]:
         return []
 

@@ -31,6 +31,7 @@ from codemie.service.spend_tracking.spend_utils import quantize_spend
 
 _EXCLUDED_SUBJECT_TYPES_DEFAULT: frozenset[str] = frozenset({"project_budget"})
 _MEMBER_REFRESH_ALL_LOCK_KEY = "member_spend_refresh:all"
+_PROJECT_BUDGET_REFRESH_ALL_LOCK_KEY = "project_budget_refresh:all"
 
 
 class ProjectSpendTrackingRepository:
@@ -642,6 +643,69 @@ class ProjectSpendTrackingRepository:
         """
         await session.execute(
             text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": _MEMBER_REFRESH_ALL_LOCK_KEY}
+        )
+
+    async def touch_project_budget_spend_dates(
+        self,
+        session: AsyncSession,
+        row_ids: list[UUID],
+        now: datetime,
+    ) -> None:
+        """Update spend_date to ``now`` on the given project_budget rows without committing.
+
+        Called when LiteLLM confirms a project's spend is unchanged, so the freshness check
+        sees a fresh timestamp without inserting a duplicate row. The caller commits while
+        still holding its project refresh lock. A row that is no longer the newest for its
+        (project, budget) is left alone, so a row inserted by a concurrent refresh is never
+        overtaken by an older one.
+        """
+        if not row_ids:
+            return
+
+        newer = aliased(ProjectSpendTracking, name="newer")
+        newer_row_exists = (
+            select(newer.id)
+            .where(newer.project_name == ProjectSpendTracking.project_name)
+            .where(newer.budget_id == ProjectSpendTracking.budget_id)
+            .where(newer.spend_subject_type == "project_budget")
+            .where(newer.spend_date > ProjectSpendTracking.spend_date)
+            .exists()
+        )
+        stmt = (
+            update(ProjectSpendTracking)
+            .where(ProjectSpendTracking.id.in_(row_ids))
+            .where(ProjectSpendTracking.spend_subject_type == "project_budget")
+            .where(~newer_row_exists)
+            .values(spend_date=now)
+        )
+
+        await session.execute(stmt)
+
+    async def try_lock_project_budget_refresh(self, session: AsyncSession, project_name: str) -> bool:
+        """Try to take the locks for refreshing one project's budget spend in this transaction.
+
+        Takes the global project budget refresh lock in shared mode, so it never runs while
+        ``lock_all_project_budget_refresh`` holds it, then the project's own lock. Returns
+        False when either is held elsewhere. Both are released at the transaction's next
+        commit or rollback.
+        """
+        for statement, key in (
+            ("SELECT pg_try_advisory_xact_lock_shared(hashtext(:key))", _PROJECT_BUDGET_REFRESH_ALL_LOCK_KEY),
+            ("SELECT pg_try_advisory_xact_lock(hashtext(:key))", f"project_budget_refresh:{project_name}"),
+        ):
+            result = await session.execute(text(statement), {"key": key})
+            if not result.scalar_one():
+                return False
+        return True
+
+    async def lock_all_project_budget_refresh(self, session: AsyncSession) -> None:
+        """Wait for the global project budget refresh lock in exclusive mode for this transaction.
+
+        Held while every project's budget spend is refreshed, so no project-scoped refresh
+        writes alongside it. Released at the transaction's next commit or rollback.
+        """
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": _PROJECT_BUDGET_REFRESH_ALL_LOCK_KEY}
         )
 
     async def get_latest_by_budget_ids(

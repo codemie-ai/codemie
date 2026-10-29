@@ -689,7 +689,7 @@ class TestGetBudgetUsageWithProjectRows:
             await service.get_budget_usage(mock_session, "user-1", "user@test.com")
 
         mock_mss.get_user_project_rows.assert_awaited_once_with(
-            mock_session, "user-1", enforced_only=True, with_reset=True, user_scoped_refresh=True
+            mock_session, "user-1", effective_limits=True, with_reset=True, user_scoped_refresh=True
         )
 
     @pytest.mark.asyncio
@@ -774,6 +774,206 @@ class TestGetBudgetUsageWithProjectRows:
 
         names = [r["project_name"] for r in rows]
         assert names == ["alice", "alice (cli)", "alice (premium)"]
+
+
+_UPR = "codemie.repository.user_project_repository.user_project_repository"
+_APR = "codemie.repository.application_repository.application_repository"
+
+
+def _project_spend_row(name, **overrides):
+    base = {
+        "project_name": name,
+        "platform": 1.0,
+        "platform_limit": 10.0,
+        "cli": 0.0,
+        "cli_limit": None,
+        "premium_models": 0.0,
+        "premium_models_limit": None,
+    }
+    return {**base, **overrides}
+
+
+@pytest.fixture(autouse=True)
+def _no_memberships_by_default():
+    with patch(_UPR) as mock_upr, patch(_APR) as mock_apr:
+        mock_upr.aget_by_user_id = AsyncMock(return_value=[])
+        mock_apr.aget_personal_project_names = AsyncMock(return_value=set())
+        yield
+
+
+def _membership(name, is_default=False):
+    return SimpleNamespace(project_name=name, is_default=is_default)
+
+
+async def _run_get_budget_usage(project_rows, memberships, personal_names=(), email="alice@x.com", label="alice"):
+    service = BudgetUsageService()
+    session = AsyncMock()
+    assignment = SimpleNamespace(budget_id="bid-platform", category="platform")
+    budget = SimpleNamespace(max_budget=100.0, budget_reset_at=None)
+    with (
+        patch(_MSS) as mock_mss,
+        patch(_UPR) as mock_upr,
+        patch(_APR) as mock_apr,
+        patch.object(
+            service,
+            "_load_from_db",
+            new_callable=AsyncMock,
+            return_value=([assignment], {"bid-platform": budget}, {}, {}),
+        ),
+        patch.object(service, "_needs_refresh", return_value=False),
+    ):
+        mock_mss.get_user_project_rows = AsyncMock(return_value=project_rows)
+        mock_upr.aget_by_user_id = AsyncMock(return_value=memberships)
+        mock_apr.aget_personal_project_names = AsyncMock(return_value=set(personal_names))
+        return await service.get_budget_usage(session, "user-1", label, email)
+
+
+class TestGetBudgetUsageDefaultFlagAndOrdering:
+    @pytest.mark.asyncio
+    async def test_default_project_rows_first_and_flagged(self):
+        projects = [_project_spend_row("alpha"), _project_spend_row("zeta", cli=1.0, cli_limit=5.0)]
+        memberships = [_membership("alpha"), _membership("zeta", is_default=True)]
+
+        _, rows = await _run_get_budget_usage(projects, memberships)
+
+        assert [r["project_name"] for r in rows] == ["zeta", "zeta (cli)", "alice", "alpha"]
+        assert [r["is_default"] for r in rows] == [True, True, False, False]
+
+    @pytest.mark.asyncio
+    async def test_personal_default_puts_personal_rows_first_and_flagged(self):
+        projects = [_project_spend_row("alpha")]
+        memberships = [_membership("alpha"), _membership("alice@x.com", is_default=True)]
+
+        _, rows = await _run_get_budget_usage(projects, memberships, personal_names={"alice@x.com"})
+
+        assert [r["project_name"] for r in rows] == ["alice", "alpha"]
+        assert [r["is_default"] for r in rows] == [True, False]
+
+    @pytest.mark.asyncio
+    async def test_fallback_default_is_email_named_project_without_stored_flag(self):
+        projects = [_project_spend_row("alpha"), _project_spend_row("alice@x.com")]
+        memberships = [_membership("alpha"), _membership("alice@x.com")]
+
+        _, rows = await _run_get_budget_usage(projects, memberships, personal_names={"alice@x.com"})
+
+        assert [r["project_name"] for r in rows] == ["alice@x.com", "alice", "alpha"]
+        assert [r["is_default"] for r in rows] == [True, True, False]
+
+    @pytest.mark.asyncio
+    async def test_no_memberships_flags_nothing(self):
+        _, rows = await _run_get_budget_usage([_project_spend_row("alpha")], [])
+
+        assert [r["project_name"] for r in rows] == ["alice", "alpha"]
+        assert all(r["is_default"] is False for r in rows)
+
+    @pytest.mark.asyncio
+    async def test_missing_email_falls_back_to_first_project_by_name(self):
+        projects = [_project_spend_row("zeta"), _project_spend_row("alpha")]
+        memberships = [_membership("zeta"), _membership("alpha")]
+
+        _, rows = await _run_get_budget_usage(projects, memberships, email=None)
+
+        assert [(r["project_name"], r["is_default"]) for r in rows] == [
+            ("alpha", True),
+            ("alice", False),
+            ("zeta", False),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_default_resolution_failure_flags_nothing_and_still_returns_rows(self):
+        service = BudgetUsageService()
+        assignment = SimpleNamespace(budget_id="bid-platform", category="platform")
+        budget = SimpleNamespace(max_budget=100.0, budget_reset_at=None)
+        events: list[str] = []
+        session = AsyncMock()
+        session.rollback.side_effect = lambda: events.append("rollback")
+
+        def _project_rows(*_args, **_kwargs):
+            events.append("project_rows")
+            return [_project_spend_row("alpha")]
+
+        with (
+            patch(_MSS) as mock_mss,
+            patch(_UPR) as mock_upr,
+            patch.object(
+                service,
+                "_load_from_db",
+                new_callable=AsyncMock,
+                return_value=([assignment], {"bid-platform": budget}, {}, {}),
+            ),
+            patch.object(service, "_needs_refresh", return_value=False),
+        ):
+            mock_mss.get_user_project_rows = AsyncMock(side_effect=_project_rows)
+            mock_upr.aget_by_user_id = AsyncMock(side_effect=RuntimeError("db down"))
+            _, rows = await service.get_budget_usage(session, "user-1", "alice", "alice@x.com")
+
+        assert events == ["rollback", "project_rows"]
+        assert [r["project_name"] for r in rows] == ["alice", "alpha"]
+        assert all(r["is_default"] is False for r in rows)
+
+    @pytest.mark.asyncio
+    async def test_columns_do_not_include_is_default(self):
+        columns, _ = await _run_get_budget_usage([], [])
+
+        assert columns == _get_key_spending_columns()
+        assert "is_default" not in [c["id"] for c in columns]
+
+
+class TestExpandProjectRowsPercentAndDefault:
+    def test_percent_spend_is_numerator_when_present(self):
+        from codemie.service.analytics.handlers.budget_usage_service import _expand_project_rows
+
+        row = _project_spend_row("p", platform=10.0, platform_limit=100.0, platform_percent_spend=50.0)
+
+        (result,) = _expand_project_rows([row])
+
+        assert result["current_spending"] == 10.0
+        assert result["total"] == 50.0
+
+    def test_percent_numerator_falls_back_to_spend_when_absent(self):
+        from codemie.service.analytics.handlers.budget_usage_service import _expand_project_rows
+
+        row = _project_spend_row("p", platform=25.0, platform_limit=100.0)
+
+        (result,) = _expand_project_rows([row])
+
+        assert result["total"] == 25.0
+
+    def test_zero_limit_with_percent_spend_has_zero_total(self):
+        from codemie.service.analytics.handlers.budget_usage_service import _expand_project_rows
+
+        row = _project_spend_row("p", platform=10.0, platform_limit=0.0, platform_percent_spend=50.0)
+
+        (result,) = _expand_project_rows([row])
+
+        assert result["total"] == 0.0
+
+    def test_default_project_rows_are_flagged(self):
+        from codemie.service.analytics.handlers.budget_usage_service import _expand_project_rows
+
+        rows = _expand_project_rows([_project_spend_row("a"), _project_spend_row("B")], default_project="b")
+
+        assert [(r["project_name"], r["is_default"]) for r in rows] == [("a", False), ("B", True)]
+
+    def test_rows_not_flagged_without_default(self):
+        from codemie.service.analytics.handlers.budget_usage_service import _expand_project_rows
+
+        rows = _expand_project_rows([_project_spend_row("a")])
+
+        assert rows[0]["is_default"] is False
+
+
+class TestOffProjectTotalsForSharedBudget:
+    @pytest.mark.asyncio
+    async def test_both_members_see_project_wide_percent(self):
+        rows_for_x = [_project_spend_row("shared", platform=10.0, platform_limit=100.0, platform_percent_spend=50.0)]
+        rows_for_y = [_project_spend_row("shared", platform=40.0, platform_limit=100.0, platform_percent_spend=50.0)]
+
+        _, rows_x = await _run_get_budget_usage(rows_for_x, [])
+        _, rows_y = await _run_get_budget_usage(rows_for_y, [])
+
+        assert [r["total"] for r in rows_x if r["project_name"] == "shared"] == [50.0]
+        assert [r["total"] for r in rows_y if r["project_name"] == "shared"] == [50.0]
 
 
 class TestCollectSpendRowsBudgetReassignment:

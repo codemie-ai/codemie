@@ -147,9 +147,10 @@ def _calculate_time_until_reset(budget_reset_at: str | None) -> str | None:
         return None
 
 
-def _build_spending_row(label: str, spending: dict) -> dict[str, Any]:
+def _build_spending_row(label: str, spending: dict[str, Any], is_default: bool = False) -> dict[str, Any]:
     """Build a single spending table row from a spending dict."""
     current = spending.get("total_spend", 0.0)
+    percent_numerator = spending.get("percent_spend", current)
     limit = spending.get("max_budget")
     reset_at = spending.get("budget_reset_at") or None
     return {
@@ -158,7 +159,8 @@ def _build_spending_row(label: str, spending: dict) -> dict[str, Any]:
         "budget_reset_at": reset_at,
         "time_until_reset": _calculate_time_until_reset(reset_at) if reset_at else None,
         "budget_limit": round(limit, 2) if limit is not None else None,
-        "total": round(current / limit * 100, 2) if limit and limit > 0 else 0.0,
+        "total": round(percent_numerator / limit * 100, 2) if limit and limit > 0 else 0.0,
+        "is_default": is_default,
     }
 
 
@@ -175,23 +177,28 @@ def _category_label(base_label: str, category: str) -> str:
     return f"{base_label}{_CATEGORY_SUFFIX.get(category, f' ({category})')}"
 
 
-def _expand_project_rows(project_spend_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _expand_project_rows(
+    project_spend_rows: list[dict[str, Any]], default_project: str | None = None
+) -> list[dict[str, Any]]:
     """Expand columnar project-spend rows into one row per project per category."""
     rows = []
+    default_key = default_project.casefold() if default_project else None
     for project in sorted(project_spend_rows, key=lambda p: p["project_name"].casefold()):
+        is_default = default_key is not None and project["project_name"].casefold() == default_key
         for category in BudgetCategory:
             limit = project[f"{category.value}_limit"]
             if limit is None:
                 continue
+            spending = {
+                "total_spend": project[category.value],
+                "max_budget": limit,
+                "budget_reset_at": project.get(f"{category.value}_reset_at"),
+            }
+            percent_spend = project.get(f"{category.value}_percent_spend")
+            if percent_spend is not None:
+                spending["percent_spend"] = percent_spend
             rows.append(
-                _build_spending_row(
-                    _category_label(project["project_name"], category.value),
-                    {
-                        "total_spend": project[category.value],
-                        "max_budget": limit,
-                        "budget_reset_at": project.get(f"{category.value}_reset_at"),
-                    },
-                )
+                _build_spending_row(_category_label(project["project_name"], category.value), spending, is_default)
             )
     return rows
 
@@ -201,6 +208,7 @@ def _build_budget_usage_rows(
     assignments: list,
     budgets_map: dict,
     spend_map: dict,
+    is_default: bool = False,
 ) -> tuple[list[dict], list[dict]]:
     """Build tabular budget usage data from personal budget assignments."""
     rows = []
@@ -216,7 +224,7 @@ def _build_budget_usage_rows(
             "max_budget": budget.max_budget,
             "budget_reset_at": budget.budget_reset_at,
         }
-        rows.append(_build_spending_row(label, spending))
+        rows.append(_build_spending_row(label, spending, is_default))
 
     return _get_key_spending_columns(), rows
 
@@ -352,19 +360,26 @@ class BudgetUsageService:
         session: AsyncSession,
         subject_user_id: str,
         subject_label: str,
+        subject_email: str | None = None,
     ) -> tuple[list[dict], list[dict]]:
         """Return (columns, rows) for the budget usage tabular response.
 
         Performs a lazy refresh from LiteLLM if spend data is older than
         config.BUDGET_USAGE_STALENESS_THRESHOLD_MS milliseconds.
+        Rows are ordered default project, personal, then the remaining projects.
         """
         from codemie.service.analytics.handlers.member_spend_service import member_spend_service
+
+        default_project, default_is_personal = await self._resolve_default_project(
+            session, subject_user_id, subject_email
+        )
 
         try:
             project_rows = _expand_project_rows(
                 await member_spend_service.get_user_project_rows(
-                    session, subject_user_id, enforced_only=True, with_reset=True, user_scoped_refresh=True
-                )
+                    session, subject_user_id, effective_limits=True, with_reset=True, user_scoped_refresh=True
+                ),
+                default_project,
             )
         except Exception as e:
             logger.warning(
@@ -399,8 +414,36 @@ class BudgetUsageService:
             await session.rollback()
             assignments, budgets_map, _, __ = await self._load_from_db(session, subject_user_id, subject_label)
 
-        columns, personal_rows = _build_budget_usage_rows(subject_label, assignments, budgets_map, spend_map)
-        return columns, personal_rows + project_rows
+        columns, personal_rows = _build_budget_usage_rows(
+            subject_label, assignments, budgets_map, spend_map, default_is_personal
+        )
+        default_rows = [row for row in project_rows if row["is_default"]]
+        other_rows = [row for row in project_rows if not row["is_default"]]
+        return columns, default_rows + personal_rows + other_rows
+
+    @staticmethod
+    async def _resolve_default_project(
+        session: AsyncSession, subject_user_id: str, subject_email: str | None
+    ) -> tuple[str | None, bool]:
+        """Return (default project name, whether it is a personal project); (None, False) on any failure."""
+        from codemie.repository.application_repository import application_repository
+        from codemie.repository.user_project_repository import user_project_repository
+        from codemie.rest_api.security.user import resolve_membership_default
+
+        try:
+            memberships = await user_project_repository.aget_by_user_id(session, subject_user_id)
+            default_project = resolve_membership_default(memberships, subject_email)
+            if default_project is None:
+                return None, False
+            personal_names = await application_repository.aget_personal_project_names(session, [default_project])
+            return default_project, default_project in personal_names
+        except Exception as e:
+            logger.warning(f"Failed to resolve default project for user {subject_user_id}: {e}")
+            try:
+                await session.rollback()
+            except Exception as rollback_error:
+                logger.warning(f"Rollback after failed default project resolution also failed: {rollback_error}")
+            return None, False
 
     def _needs_refresh(self, spend_map: dict) -> bool:
         """Return True if spend_map is empty or the most recent row is older than the threshold."""

@@ -29,12 +29,12 @@ import pytest
 
 from codemie.service.analytics.handlers.member_spend_service import (
     MemberSpendService,
-    _is_stale,
     _build_row,
     _category_columns,
     _limit_value,
     _spend_value,
 )
+from codemie.service.analytics.handlers.spend_snapshot_rows import _is_stale
 from codemie.service.spend_tracking.spend_models import ProjectSpendTracking
 
 
@@ -665,7 +665,7 @@ class TestRefreshAllMemberSpend:
 
         with _patch_refresh_deps(snapshots, insert_mock=insert_mock):
             with patch(
-                "codemie.service.analytics.handlers.member_spend_service._compute_spend_delta",
+                "codemie.service.analytics.handlers.spend_snapshot_rows._compute_spend_delta",
                 side_effect=[InvalidSpendSnapshotError("cumulative regression"), (Decimal("5"), Decimal("5"))],
             ):
                 await service._refresh_all_member_spend(MagicMock())
@@ -1077,7 +1077,7 @@ def _member_snapshot(spend: str, *, project_name: str = "atlas", budget_id: str 
 
 class TestSnapshotToRowAllowZero:
     def test_snapshot_to_row_allow_zero_seeds_first_row(self):
-        from codemie.service.analytics.handlers.member_spend_service import _snapshot_to_row
+        from codemie.service.analytics.handlers.spend_snapshot_rows import _snapshot_to_row
 
         now = datetime(2026, 10, 27, 12, tzinfo=timezone.utc)
         snapshot = _member_snapshot("0")
@@ -1440,3 +1440,704 @@ class TestUserScopedRefresh:
 
         mocks.ensure_fresh.assert_awaited_once()
         mocks.provider.collect_member_budget_spend_for_allocations.assert_not_awaited()
+
+
+class TestEffectiveLimits:
+    """Rows built from the limit the provider enforces, including enforcement-off budgeted projects."""
+
+    @staticmethod
+    def _allocation(project: str = "atlas", mode: str = "equal", limit: float = 50.0, category: str = "platform"):
+        return SimpleNamespace(
+            project_name=project,
+            budget_category=category,
+            user_id="u-1",
+            project_budget_id=f"pb-{project}",
+            allocated_max_budget=limit,
+            allocation_mode=mode,
+            effective_budget_id=None,
+            override_budget_id=None,
+            shared_budget_id=None,
+            budget_reset_at=None,
+        )
+
+    @staticmethod
+    def _assignment(project: str = "atlas", budget_id: str = "pb-atlas", category: str = "platform"):
+        return SimpleNamespace(project_name=project, budget_category=category, budget_id=budget_id)
+
+    @staticmethod
+    def _project_row(total: str, project: str = "atlas", budget_id: str = "pb-atlas", category: str = "platform"):
+        return SimpleNamespace(
+            project_name=project,
+            budget_category=category,
+            budget_id=budget_id,
+            budget_period_spend=Decimal(total),
+        )
+
+    @staticmethod
+    def _member_spend(spend: str, project: str = "atlas", category: str = "platform"):
+        return {(project, category): _member_row(project, category, "u-1", spend, datetime.now(timezone.utc))}
+
+    @staticmethod
+    def _budget(max_budget: float = 100.0, reset: str | None = "2026-11-01T00:00:00Z"):
+        return SimpleNamespace(max_budget=max_budget, budget_reset_at=reset)
+
+    @staticmethod
+    def _patched(
+        service,
+        *,
+        projects=("atlas",),
+        enforced=(),
+        allocations=(),
+        assignments=(),
+        budgets=None,
+        project_rows=(),
+        member_spend=None,
+    ):
+        from codemie.repository.project_budget_repository import project_budget_assignment_repository
+        from codemie.service.analytics.handlers import member_spend_service as mss
+
+        tracking = mss.project_spend_tracking_repository
+        memberships = [SimpleNamespace(project_name=p, user_id="u-1") for p in projects]
+        mocks = SimpleNamespace(
+            assignments=AsyncMock(return_value=list(assignments)),
+            budgets=AsyncMock(return_value=budgets or {}),
+            project_rows=AsyncMock(return_value=list(project_rows)),
+        )
+        stack = ExitStack()
+        stack.enter_context(patch.object(service, "_ensure_fresh", new=AsyncMock()))
+        stack.enter_context(
+            patch.object(mss.user_project_repository, "aget_by_user_id", new=AsyncMock(return_value=memberships))
+        )
+        stack.enter_context(
+            patch.object(mss.application_repository, "aget_personal_project_names", new=AsyncMock(return_value=set()))
+        )
+        stack.enter_context(
+            patch(
+                "codemie.service.settings.settings.SettingsService.get_projects_enforcing_member_spend_limits",
+                return_value=set(enforced),
+            )
+        )
+        stack.enter_context(
+            patch.object(
+                mss.project_member_budget_assignment_repository,
+                "get_active_by_user",
+                new=AsyncMock(return_value=list(allocations)),
+            )
+        )
+        stack.enter_context(
+            patch.object(tracking, "get_latest_member_rows_for_user", new=AsyncMock(return_value=member_spend or {}))
+        )
+        stack.enter_context(
+            patch.object(tracking, "get_project_reset_cutoffs_for_projects", new=AsyncMock(return_value={}))
+        )
+        stack.enter_context(
+            patch.object(tracking, "get_latest_project_budget_rows_by_category", new=mocks.project_rows)
+        )
+        stack.enter_context(
+            patch.object(project_budget_assignment_repository, "get_active_for_projects", new=mocks.assignments)
+        )
+        stack.enter_context(patch.object(mss.budget_repository, "get_by_ids", new=mocks.budgets))
+        return stack, mocks
+
+    async def _off_row(self, *, allocation, member_spend: str, total: str, with_reset: bool = False):
+        service = MemberSpendService()
+        stack, _ = self._patched(
+            service,
+            allocations=[allocation] if allocation else [],
+            assignments=[self._assignment()],
+            budgets={"pb-atlas": self._budget()},
+            project_rows=[self._project_row(total)],
+            member_spend=self._member_spend(member_spend),
+        )
+        with stack:
+            rows = await service.get_user_project_rows(MagicMock(), "u-1", effective_limits=True, with_reset=with_reset)
+        assert [r["project_name"] for r in rows] == ["atlas"]
+        return rows[0]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("member_spend", ["50", "0"])
+    async def test_enforcement_off_member_gets_project_max_and_project_total(self, member_spend):
+        row = await self._off_row(allocation=self._allocation(), member_spend=member_spend, total="50")
+
+        assert row["platform"] == float(member_spend)
+        assert row["platform_limit"] == 100.0
+        assert row["platform_percent_spend"] == 50.0
+
+    @pytest.mark.asyncio
+    async def test_enforcement_off_member_without_allocation_gets_project_max(self):
+        row = await self._off_row(allocation=None, member_spend="0", total="30")
+
+        assert row["platform_limit"] == 100.0
+        assert row["platform_percent_spend"] == 30.0
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("member_spend", "total", "expected_limit"),
+        [
+            ("10", "90", 20.0),
+            ("10", "30", 40.0),
+            ("10", "120", 10.0),
+            ("0", "100", 0.0),
+        ],
+        ids=["binding", "non-binding", "over-budget", "zero"],
+    )
+    async def test_enforcement_off_fixed_override_is_capped_by_remaining_project_budget(
+        self, member_spend, total, expected_limit
+    ):
+        row = await self._off_row(
+            allocation=self._allocation(mode="fixed", limit=40.0), member_spend=member_spend, total=total
+        )
+
+        assert row["platform_limit"] == expected_limit
+        assert "platform_percent_spend" not in row
+
+    @pytest.mark.asyncio
+    async def test_enforcement_off_reset_date_comes_from_project_budget(self):
+        row = await self._off_row(allocation=self._allocation(), member_spend="5", total="5", with_reset=True)
+
+        assert row["platform_reset_at"] == "2026-11-01T00:00:00Z"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("total", "expected_limit", "expected_reset"),
+        [("10", 40.0, "override-reset"), ("95", 15.0, "project-reset")],
+        ids=["override-binds", "project-cap-binds"],
+    )
+    async def test_enforcement_off_fixed_reset_date_comes_from_the_binding_budget(
+        self, total, expected_limit, expected_reset
+    ):
+        service = MemberSpendService()
+        budgets = {
+            "pb-atlas": self._budget(reset="project-reset"),
+            "pb-atlas:user:u-1": self._budget(max_budget=40.0, reset="override-reset"),
+        }
+        stack, _ = self._patched(
+            service,
+            allocations=[self._allocation(mode="fixed", limit=40.0)],
+            assignments=[self._assignment()],
+            budgets=budgets,
+            project_rows=[self._project_row(total)],
+            member_spend=self._member_spend("10"),
+        )
+        with stack:
+            rows = await service.get_user_project_rows(MagicMock(), "u-1", effective_limits=True, with_reset=True)
+
+        assert rows[0]["platform_limit"] == expected_limit
+        assert rows[0]["platform_reset_at"] == expected_reset
+
+    @pytest.mark.asyncio
+    async def test_enforcement_off_project_without_budget_has_no_row(self):
+        service = MemberSpendService()
+        stack, _ = self._patched(
+            service,
+            projects=("atlas", "beta"),
+            assignments=[self._assignment()],
+            budgets={"pb-atlas": self._budget()},
+        )
+        with stack:
+            rows = await service.get_user_project_rows(MagicMock(), "u-1", effective_limits=True)
+
+        assert [r["project_name"] for r in rows] == ["atlas"]
+
+    @pytest.mark.asyncio
+    async def test_category_without_active_budget_has_no_limit(self):
+        service = MemberSpendService()
+        stack, _ = self._patched(
+            service,
+            allocations=[self._allocation(category="cli")],
+            assignments=[self._assignment()],
+            budgets={"pb-atlas": self._budget()},
+        )
+        with stack:
+            rows = await service.get_user_project_rows(MagicMock(), "u-1", effective_limits=True)
+
+        assert rows[0]["cli_limit"] is None
+        assert "cli_percent_spend" not in rows[0]
+
+    @pytest.mark.asyncio
+    async def test_project_row_of_a_replaced_budget_is_not_the_total(self):
+        service = MemberSpendService()
+        stack, _ = self._patched(
+            service,
+            allocations=[self._allocation()],
+            assignments=[self._assignment(budget_id="pb-new")],
+            budgets={"pb-new": self._budget()},
+            project_rows=[self._project_row("70", budget_id="pb-old")],
+        )
+        with stack:
+            rows = await service.get_user_project_rows(MagicMock(), "u-1", effective_limits=True)
+
+        assert rows[0]["platform_limit"] == 100.0
+        assert rows[0]["platform_percent_spend"] == 0
+
+    @pytest.mark.asyncio
+    async def test_enforced_fixed_override_keeps_allocated_limit(self):
+        service = MemberSpendService()
+        stack, mocks = self._patched(
+            service,
+            enforced={"atlas"},
+            allocations=[self._allocation(mode="fixed", limit=40.0)],
+            project_rows=[self._project_row("95")],
+            member_spend=self._member_spend("10"),
+        )
+        with stack:
+            rows = await service.get_user_project_rows(MagicMock(), "u-1", effective_limits=True)
+
+        assert rows[0]["platform_limit"] == 40.0
+        assert "platform_percent_spend" not in rows[0]
+        assert mocks.assignments.await_args.args[1] == []
+
+    @pytest.mark.asyncio
+    async def test_enforced_and_budgeted_off_projects_are_both_selected(self):
+        service = MemberSpendService()
+        stack, _ = self._patched(
+            service,
+            projects=("atlas", "beta", "gamma"),
+            enforced={"gamma"},
+            assignments=[self._assignment(project="beta", budget_id="pb-beta")],
+            budgets={"pb-beta": self._budget()},
+        )
+        with stack:
+            rows = await service.get_user_project_rows(MagicMock(), "u-1", effective_limits=True, enforced_only=True)
+
+        assert [r["project_name"] for r in rows] == ["beta", "gamma"]
+
+    @pytest.mark.asyncio
+    async def test_without_flag_rows_use_stored_allocation_and_skip_project_budgets(self):
+        service = MemberSpendService()
+        stack, mocks = self._patched(
+            service,
+            allocations=[self._allocation(mode="fixed", limit=40.0)],
+            assignments=[self._assignment()],
+            budgets={"pb-atlas": self._budget()},
+            project_rows=[self._project_row("90")],
+            member_spend=self._member_spend("10"),
+        )
+        with stack:
+            rows = await service.get_user_project_rows(MagicMock(), "u-1")
+
+        assert rows == [
+            {
+                "project_name": "atlas",
+                "platform": 10.0,
+                "platform_limit": 40.0,
+                "cli": 0,
+                "cli_limit": None,
+                "premium_models": 0,
+                "premium_models_limit": None,
+            }
+        ]
+        mocks.assignments.assert_not_awaited()
+        mocks.project_rows.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_member_refresh_covers_enforcement_off_allocations(self):
+        from codemie.repository.project_budget_repository import project_budget_assignment_repository
+        from codemie.service.analytics.handlers import member_spend_service as mss
+
+        service = MemberSpendService()
+        off = TestUserScopedRefresh._allocation("atlas")
+        stack, mocks = TestUserScopedRefresh._patched(service, latest=[{}], enforced=set(), allocations=[off])
+        with (
+            stack,
+            patch.object(
+                project_budget_assignment_repository,
+                "get_active_for_projects",
+                new=AsyncMock(return_value=[self._assignment()]),
+            ),
+            patch.object(
+                mss.project_spend_tracking_repository,
+                "get_latest_project_budget_rows_by_category",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch.object(
+                mss.project_spend_tracking_repository,
+                "try_lock_project_budget_refresh",
+                new=AsyncMock(return_value=False),
+            ),
+        ):
+            await service.get_user_project_rows(AsyncMock(), "u-1", user_scoped_refresh=True, effective_limits=True)
+
+        mocks.provider.collect_member_budget_spend_for_allocations.assert_awaited_once_with([off])
+
+
+def _project_snapshot(spend: str, *, project: str = "atlas", category: str = "platform"):
+    from codemie.service.budget.budget_enums import BudgetCategory
+    from codemie.service.budget.provider import ProjectBudgetSpendSnapshot
+
+    return ProjectBudgetSpendSnapshot(
+        project_name=project,
+        budget_category=BudgetCategory(category),
+        budget_id=f"pb-{project}" if category == "platform" else f"pb-{project}-{category}",
+        spend=Decimal(spend),
+        provider_subject_id=f"codemie:project:{project}:category:{category}",
+    )
+
+
+def _project_total_row(spend: str, spend_date: datetime, *, project: str = "atlas", category: str = "platform"):
+    return ProjectSpendTracking(
+        id=uuid4(),
+        project_name=project,
+        spend_date=spend_date,
+        daily_spend=Decimal(spend),
+        cumulative_spend=Decimal(spend),
+        budget_period_spend=Decimal(spend),
+        budget_id=f"pb-{project}" if category == "platform" else f"pb-{project}-{category}",
+        budget_category=category,
+        spend_subject_type="project_budget",
+    )
+
+
+def _newest_rows(store, key_of, include) -> dict[tuple[str, ...], ProjectSpendTracking]:
+    newest: dict[tuple[str, ...], ProjectSpendTracking] = {}
+    for row in filter(include, store):
+        key = key_of(row)
+        if key not in newest or row.spend_date > newest[key].spend_date:
+            newest[key] = row
+    return newest
+
+
+@pytest.mark.usefixtures("ten_minute_ttl")
+class TestProjectTotalRefresh:
+    """Personal page path: live refresh of stale enforcement-off project totals, one locked project at a time."""
+
+    @staticmethod
+    def _now() -> datetime:
+        return datetime.now(timezone.utc)
+
+    @staticmethod
+    def _assignment(project: str, category: str = "platform"):
+        budget_id = f"pb-{project}" if category == "platform" else f"pb-{project}-{category}"
+        return SimpleNamespace(project_name=project, budget_category=category, budget_id=budget_id)
+
+    @staticmethod
+    def _patched(
+        service,
+        *,
+        projects=("atlas",),
+        enforced=(),
+        assignments=None,
+        stored=None,
+        snapshots=None,
+        busy=(),
+        on_lock=None,
+        cutoffs=None,
+    ):
+        from codemie.repository.project_budget_repository import project_budget_assignment_repository
+        from codemie.service.analytics.handlers import member_spend_service as mss
+        from codemie.service.analytics.handlers import project_total_refresh
+
+        if assignments is None:
+            assignments = [TestProjectTotalRefresh._assignment(p) for p in projects]
+        budgets = {
+            a.budget_id: SimpleNamespace(max_budget=100.0, budget_reset_at=None, budget_duration=None)
+            for a in assignments
+        }
+        stack, member_mocks = TestUserScopedRefresh._patched(
+            service,
+            latest=[{}],
+            projects=projects,
+            enforced=set(enforced),
+            allocations=[],
+            budgets=budgets,
+            cutoffs=cutoffs,
+        )
+        store: list[ProjectSpendTracking] = list(stored or [])
+        snapshots = snapshots or {}
+        events: list[str] = []
+
+        async def _active_for_projects(_session, names):
+            return [a for a in assignments if a.project_name in names]
+
+        async def _latest_by_category(_session, names):
+            by_category = _newest_rows(
+                store, lambda r: (r.project_name, r.budget_category), lambda r: r.project_name in names
+            )
+            return list(by_category.values())
+
+        async def _latest_before(_session, pairs, before, spend_subject_type="budget"):
+            assert spend_subject_type == "project_budget"
+            return _newest_rows(
+                store,
+                lambda r: (r.project_name, r.budget_id),
+                lambda r: (r.project_name, r.budget_id) in pairs and r.spend_date < before,
+            )
+
+        async def _lock(_session, name):
+            events.append(f"lock:{name}")
+            if on_lock is not None:
+                on_lock(name, store)
+            return name not in busy
+
+        async def _collect(names):
+            events.append(f"collect:{','.join(names)}")
+            result = snapshots.get(names[0], [])
+            if isinstance(result, Exception):
+                raise result
+            return list(result)
+
+        async def _insert(_session, rows):
+            events.append("insert")
+            store.extend(rows)
+
+        async def _touch(_session, row_ids, now):
+            events.append("touch")
+            for row in store:
+                if row.id in row_ids:
+                    row.spend_date = now
+
+        session = AsyncMock()
+        session.rollback.side_effect = lambda: events.append("rollback")
+        session.commit.side_effect = lambda: events.append("commit")
+        mocks = SimpleNamespace(
+            collect=AsyncMock(side_effect=_collect),
+            insert=AsyncMock(side_effect=_insert),
+            touch=AsyncMock(side_effect=_touch),
+            store=store,
+            events=events,
+            session=session,
+        )
+        member_mocks.provider.collect_project_budget_spend_for_projects = mocks.collect
+        stack.enter_context(
+            patch.object(project_total_refresh, "get_active_provider", return_value=member_mocks.provider)
+        )
+        tracking = mss.project_spend_tracking_repository
+        stack.enter_context(
+            patch.object(
+                project_budget_assignment_repository,
+                "get_active_for_projects",
+                new=AsyncMock(side_effect=_active_for_projects),
+            )
+        )
+        stack.enter_context(
+            patch.object(
+                tracking, "get_latest_project_budget_rows_by_category", new=AsyncMock(side_effect=_latest_by_category)
+            )
+        )
+        stack.enter_context(
+            patch.object(tracking, "get_latest_before_by_project_budget_ids", new=AsyncMock(side_effect=_latest_before))
+        )
+        stack.enter_context(patch.object(tracking, "try_lock_project_budget_refresh", new=AsyncMock(side_effect=_lock)))
+        stack.enter_context(patch.object(tracking, "insert_project_budget_entries", new=mocks.insert))
+        stack.enter_context(patch.object(tracking, "touch_project_budget_spend_dates", new=mocks.touch))
+        return stack, mocks
+
+    @staticmethod
+    async def _run(service, mocks, **kwargs):
+        kwargs.setdefault("effective_limits", True)
+        return await service.get_user_project_rows(mocks.session, "u-1", user_scoped_refresh=True, **kwargs)
+
+    @pytest.mark.asyncio
+    async def test_only_stale_enforcement_off_budgeted_projects_are_fetched(self):
+        service = MemberSpendService()
+        stored = [
+            _project_total_row("5", self._now() - timedelta(hours=1), project="atlas"),
+            _project_total_row("5", self._now() - timedelta(minutes=1), project="beta"),
+        ]
+        stack, mocks = self._patched(
+            service,
+            projects=("atlas", "beta", "gamma"),
+            enforced={"gamma"},
+            stored=stored,
+            snapshots={"atlas": [_project_snapshot("5", project="atlas")]},
+        )
+
+        with stack:
+            await self._run(service, mocks)
+
+        assert [c.args[0] for c in mocks.collect.await_args_list] == [["atlas"]]
+
+    @pytest.mark.asyncio
+    async def test_project_without_any_total_row_is_fetched(self):
+        service = MemberSpendService()
+        stack, mocks = self._patched(service, snapshots={"atlas": [_project_snapshot("3")]})
+
+        with stack:
+            await self._run(service, mocks)
+
+        mocks.collect.assert_awaited_once_with(["atlas"])
+
+    @pytest.mark.asyncio
+    async def test_no_refresh_without_effective_limits(self):
+        service = MemberSpendService()
+        stack, mocks = self._patched(service, snapshots={"atlas": [_project_snapshot("3")]})
+
+        with stack:
+            await self._run(service, mocks, effective_limits=False)
+
+        mocks.collect.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_refresh_when_litellm_disabled(self):
+        service = MemberSpendService()
+        stack, mocks = self._patched(service, snapshots={"atlas": [_project_snapshot("3")]})
+
+        with stack, patch.object(MemberSpendService, "_is_litellm_enabled", return_value=False):
+            await self._run(service, mocks)
+
+        mocks.collect.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_busy_lock_skips_project_and_rolls_back_before_the_next(self):
+        service = MemberSpendService()
+        stack, mocks = self._patched(
+            service,
+            projects=("atlas", "beta"),
+            busy={"atlas"},
+            snapshots={
+                "atlas": [_project_snapshot("3", project="atlas")],
+                "beta": [_project_snapshot("4", project="beta")],
+            },
+        )
+
+        with stack:
+            await self._run(service, mocks)
+
+        assert mocks.events[: mocks.events.index("lock:beta") + 1] == ["lock:atlas", "rollback", "lock:beta"]
+        assert [c.args[0] for c in mocks.collect.await_args_list] == [["beta"]]
+        assert [r.project_name for r in mocks.store] == ["beta"]
+
+    @pytest.mark.asyncio
+    async def test_fresh_after_lock_recheck_skips_provider(self):
+        service = MemberSpendService()
+
+        def _concurrent_refresh(name, store):
+            store.append(_project_total_row("9", self._now(), project=name))
+
+        stack, mocks = self._patched(
+            service, snapshots={"atlas": [_project_snapshot("3")]}, on_lock=_concurrent_refresh
+        )
+
+        with stack:
+            await self._run(service, mocks)
+
+        mocks.collect.assert_not_awaited()
+        assert mocks.events[mocks.events.index("lock:atlas") + 1] == "rollback"
+
+    @pytest.mark.asyncio
+    async def test_unchanged_total_touches_latest_row_only(self):
+        service = MemberSpendService()
+        prev = _project_total_row("5", self._now() - timedelta(hours=1))
+        stack, mocks = self._patched(service, stored=[prev], snapshots={"atlas": [_project_snapshot("5.0000000000")]})
+
+        with stack:
+            await self._run(service, mocks)
+
+        assert mocks.touch.await_args.args[1] == [prev.id]
+        mocks.insert.assert_not_awaited()
+        assert mocks.events[mocks.events.index("touch") + 1] == "commit"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("spend", "daily", "period"), [("7", "2", "7"), ("0", "0", "0")], ids=["changed", "reset"])
+    async def test_changed_or_reset_total_inserts_row_read_as_the_total(self, spend, daily, period):
+        service = MemberSpendService()
+        prev = _project_total_row("5", self._now() - timedelta(hours=1))
+        stack, mocks = self._patched(service, stored=[prev], snapshots={"atlas": [_project_snapshot(spend)]})
+
+        with stack:
+            rows = await self._run(service, mocks)
+
+        inserted = mocks.insert.await_args.args[1]
+        assert [(r.daily_spend, r.budget_period_spend) for r in inserted] == [(Decimal(daily), Decimal(period))]
+        assert [(r.spend_subject_type, r.user_id) for r in inserted] == [("project_budget", None)]
+        mocks.touch.assert_not_awaited()
+        assert rows[0]["platform_percent_spend"] == float(period)
+
+    @pytest.mark.asyncio
+    async def test_first_total_is_inserted_at_zero(self):
+        service = MemberSpendService()
+        stack, mocks = self._patched(service, snapshots={"atlas": [_project_snapshot("0")]})
+
+        with stack:
+            await self._run(service, mocks)
+
+        inserted = mocks.insert.await_args.args[1]
+        assert [(r.daily_spend, r.budget_id) for r in inserted] == [(Decimal("0"), "pb-atlas")]
+
+    @pytest.mark.asyncio
+    async def test_failing_project_does_not_stop_the_next(self):
+        service = MemberSpendService()
+        stack, mocks = self._patched(
+            service,
+            projects=("atlas", "beta"),
+            snapshots={"atlas": RuntimeError("litellm down"), "beta": [_project_snapshot("4", project="beta")]},
+        )
+
+        with stack:
+            rows = await self._run(service, mocks)
+
+        assert mocks.events[: mocks.events.index("lock:beta") + 1] == [
+            "lock:atlas",
+            "collect:atlas",
+            "rollback",
+            "lock:beta",
+        ]
+        assert [r.project_name for r in mocks.store] == ["beta"]
+        assert [r["project_name"] for r in rows] == ["atlas", "beta"]
+
+    @pytest.mark.asyncio
+    async def test_invalid_snapshot_is_skipped_and_the_others_are_written(self):
+        from codemie.service.analytics.handlers import spend_snapshot_rows
+        from codemie.service.spend_tracking.spend_collector_service import InvalidSpendSnapshotError
+
+        service = MemberSpendService()
+        real_delta = spend_snapshot_rows._compute_spend_delta
+
+        def _delta(fresh, prev, budget, now):
+            if fresh == Decimal("6"):
+                raise InvalidSpendSnapshotError("cumulative spend decreased")
+            return real_delta(fresh, prev, budget, now)
+
+        stack, mocks = self._patched(
+            service,
+            assignments=[self._assignment("atlas"), self._assignment("atlas", "cli")],
+            snapshots={"atlas": [_project_snapshot("6"), _project_snapshot("2", category="cli")]},
+        )
+
+        with stack, patch.object(spend_snapshot_rows, "_compute_spend_delta", side_effect=_delta):
+            await self._run(service, mocks)
+
+        assert [r.budget_category for r in mocks.insert.await_args.args[1]] == ["cli"]
+
+    @pytest.mark.asyncio
+    async def test_empty_provider_result_keeps_stored_total_fresh_for_the_ttl(self):
+        service = MemberSpendService()
+        prev = _project_total_row("5", self._now() - timedelta(hours=1))
+        stack, mocks = self._patched(service, stored=[prev], snapshots={"atlas": []})
+
+        with stack:
+            await self._run(service, mocks)
+            await self._run(service, mocks)
+
+        mocks.collect.assert_awaited_once()
+        assert mocks.touch.await_args.args[1] == [prev.id]
+        mocks.insert.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_total_hidden_by_reset_cutoff_is_not_touched(self):
+        service = MemberSpendService()
+        prev = _project_total_row("5", self._now() - timedelta(days=2))
+        stack, mocks = self._patched(
+            service,
+            stored=[prev],
+            snapshots={"atlas": [_project_snapshot("5")]},
+            cutoffs={"atlas": {"platform": self._now() - timedelta(days=1)}},
+        )
+
+        with stack:
+            await self._run(service, mocks)
+
+        mocks.touch.assert_not_awaited()
+        mocks.insert.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_second_call_within_ttl_adds_no_rows(self):
+        service = MemberSpendService()
+        stack, mocks = self._patched(service, snapshots={"atlas": [_project_snapshot("3")]})
+
+        with stack:
+            await self._run(service, mocks)
+            await self._run(service, mocks)
+
+        assert len(mocks.store) == 1
+        mocks.collect.assert_awaited_once()

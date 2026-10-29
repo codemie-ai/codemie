@@ -370,6 +370,11 @@ class BudgetEnforcementProvider(Protocol):
 
     async def collect_project_budget_spend(self) -> list[ProjectBudgetSpendSnapshot]: ...
 
+    async def collect_project_budget_spend_for_projects(
+        self,
+        project_names: list[str],
+    ) -> list[ProjectBudgetSpendSnapshot]: ...
+
     async def collect_member_budget_spend(self) -> list[MemberBudgetSpendSnapshot]: ...
 
     async def collect_member_budget_spend_for_refs(

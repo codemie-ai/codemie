@@ -1706,7 +1706,7 @@ class TestGetUserKeySpending:
             patch(
                 "codemie.rest_api.routers.analytics.spending._resolve_admin_budget_subject",
                 new_callable=AsyncMock,
-                return_value=("target-user-id", "target-username"),
+                return_value=("target-user-id", "target-username", "target@corp.com"),
             ),
             patch("codemie.clients.postgres.get_async_session", return_value=self._mock_session_ctx()),
             patch(
