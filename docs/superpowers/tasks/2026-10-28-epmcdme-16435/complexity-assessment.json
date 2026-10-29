@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "task": "Add an STLC Factory framework label for CLI Analytics sessions started by STLC skills so they no longer show 'Pure chat', leaving SDLC/Superpowers/Pure chat labels unchanged (EPMCDME-16435).",
+  "generated": "2026-10-28T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 12,
+  "size": "S",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "requirements_clarity", "reason": "Acceptance criteria are clear, but open items remain: the exact skill_name emitted for the bare /stlc-feature (with or without the stlc-factory: prefix), the final label text (ticket says 'STLC Factory (QA factory)'), and the rule's position in the ordered list. The Jira hint about a SESSION_SOURCE_DETECTORS list does not match the code, which uses config-driven regex rules in customer-config.yaml. This is 1-2 small questions with minor assumptions, so M." },
+    { "dimension": "component_scope", "reason": "Single component: one new {regex,label} rule in the delivery-framework config consumed by classify_delivery_framework. No classifier code change; optional sync of the DEFAULT_FRAMEWORK_SKILL_REGEX constant in usage_attribution." },
+    { "dimension": "technical_risk", "reason": "The closest pattern is the existing sdlc-factory/superpowers rules, an exact copy-and-adapt. It has no security surface (a plain regex over skill names, label passed through as a string) and rollback is trivial. Existing test_delivery_framework.py tests cover this pattern. Minor caveat: deployed environments take rules from a ConfigMap outside this repo." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

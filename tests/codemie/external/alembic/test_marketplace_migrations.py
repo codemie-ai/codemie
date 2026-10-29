@@ -61,6 +61,8 @@ from pathlib import Path
 from typing import Iterator
 
 import pytest
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import text
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.exc import IntegrityError
@@ -75,7 +77,7 @@ _SCHEMA = "codemie"
 # The revision live on `main` before the squashed marketplace-management
 # migration lands. The fixture builds the disposable database up to exactly
 # this point, so `upgrade head` below is the one migration under test.
-PRE_SQUASH_REVISION = "c9d8e7f6a5b4"
+PRE_SQUASH_REVISION = "e7b3a91c4d58"
 SQUASHED_REVISION = "f3e2d1c0b9a8"
 
 _REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -237,6 +239,15 @@ def _alembic_ok(url: str, *args: str) -> str:
     return output
 
 
+def _script_head() -> str:
+    """The head of the migration chain on disk, read without running `env.py`."""
+    cfg = Config(str(_ALEMBIC_DIR / "alembic.ini"))
+    cfg.set_main_option("script_location", str(_ALEMBIC_DIR))
+    head = ScriptDirectory.from_config(cfg).get_current_head()
+    assert head is not None
+    return head
+
+
 @pytest.fixture(scope="module")
 def disposable_db() -> Iterator[str]:
     """A throwaway database migrated to the squashed migration's head, dropped on teardown."""
@@ -342,9 +353,9 @@ def test_upgrade_then_downgrade_then_upgrade_is_clean(disposable_db: str, engine
     """
     _alembic_ok(disposable_db, "upgrade", "head")
     head_revision = _current_revision(engine)
-    assert head_revision == SQUASHED_REVISION
+    assert head_revision == _script_head()
 
-    _alembic_ok(disposable_db, "downgrade", "-1")
+    _alembic_ok(disposable_db, "downgrade", PRE_SQUASH_REVISION)
     assert _current_revision(engine) == PRE_SQUASH_REVISION
 
     _alembic_ok(disposable_db, "upgrade", "head")
@@ -417,7 +428,7 @@ def test_downgrade_restores_the_pre_squash_shape(disposable_db: str, engine: Eng
     assert fk is None, "fk_mm_audit_verdict_run survived the downgrade"
 
     _alembic_ok(disposable_db, "upgrade", "head")
-    assert _current_revision(engine) == SQUASHED_REVISION
+    assert _current_revision(engine) == _script_head()
 
     # Same reseed as the other round-trip test, for the same reason: the
     # downgrade/upgrade cycle above wiped the `seeded` fixture's rows.

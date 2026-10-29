@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -25,6 +26,7 @@ import pytest
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.service.usage_attribution import handler as h
 from codemie.service.usage_attribution.analysis import AnalysisHandle, resolve_range
+from codemie.service.usage_attribution.constants import DEFAULT_FRAMEWORK_SKILL_REGEX
 from codemie.service.usage_attribution.sections import shard_of
 from codemie.service.usage_attribution.settings import SettingsError, build_defaults, build_effective, encode_overrides
 
@@ -371,6 +373,14 @@ class TestSettingsChecks:
             assert h.framework_regex() == "(sdlc-factory:|bmad-).*"
         with patch("codemie.configs.customer_config.CustomerConfig.get_feature_setting", return_value=None):
             assert h.framework_regex().startswith("(sdlc-factory:")
+
+    @pytest.mark.parametrize("name", ["stlc-factory:exploratory", "stlc-feature", "stlc-feature-x", "sdlc-factory:x"])
+    def test_default_framework_regex_matches_stlc_and_sdlc(self, name):
+        assert re.fullmatch(DEFAULT_FRAMEWORK_SKILL_REGEX, name)
+
+    @pytest.mark.parametrize("name", ["stlc-factory:suite-health", "stlc-feature"])
+    def test_framework_regex_from_real_config_matches_stlc(self, name):
+        assert re.fullmatch(h.framework_regex(), name)
 
 
 class TestWebWhoPaysInTotals:

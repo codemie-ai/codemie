@@ -14,7 +14,9 @@
 
 from __future__ import annotations
 
-from codemie.service.analytics.delivery_framework import classify_delivery_framework
+import pytest
+
+from codemie.service.analytics.delivery_framework import classify_delivery_framework, get_framework_labels
 
 
 def test_sdlc_factory_wins_over_superpowers():
@@ -54,3 +56,32 @@ def test_pure_chat_unknown_skill():
 
 def test_sdlc_factory_prefix_only():
     assert classify_delivery_framework(["sdlc-factory:anything"]) == "CodeMie AI Factory"
+
+
+@pytest.mark.parametrize(
+    "skill_name",
+    ["stlc-factory:exploratory", "stlc-feature", "stlc-factory:stlc-foundation", "stlc-factory:suite-health"],
+)
+def test_stlc_factory_skills(skill_name):
+    assert classify_delivery_framework([skill_name]) == "STLC Factory (QA factory)"
+
+
+@pytest.mark.parametrize("skill_name", ["stlc-feature", "stlc-feature-x"])
+def test_stlc_feature_is_an_open_prefix(skill_name):
+    # The open prefix (no "$" in the rule) is deliberate: a "$" would drop the rule from the Lucene framework_regex().
+    assert classify_delivery_framework([skill_name]) == "STLC Factory (QA factory)"
+
+
+def test_sdlc_factory_wins_over_stlc_factory():
+    assert classify_delivery_framework(["sdlc-factory:x", "stlc-factory:exploratory"]) == "CodeMie AI Factory"
+
+
+def test_stlc_factory_wins_over_superpowers():
+    result = classify_delivery_framework(["stlc-factory:exploratory", "superpowers:brainstorming"])
+    assert result == "STLC Factory (QA factory)"
+
+
+def test_framework_labels_include_stlc_factory_before_pure_chat():
+    labels = get_framework_labels()
+    assert "STLC Factory (QA factory)" in labels
+    assert labels[-1] == "Pure chat"

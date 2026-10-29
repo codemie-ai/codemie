@@ -43,6 +43,7 @@ from codemie.repository.cli_analytics.ports import Rows
 from codemie.repository.cli_analytics.postgres.engine import AnalyticsPgEngine
 from codemie.repository.cli_analytics.postgres.otlp import MAX_KEY_BYTES
 from codemie.repository.cli_analytics.postgres.rollups import _attr_ms
+from codemie.repository.cli_analytics.postgres.session_derived import SKILL_NAMES_SQL
 from codemie.repository.cli_analytics.postgres.fork_attribution import (
     dispatch_fork_candidate,
     executed_tool_span,
@@ -602,15 +603,17 @@ class PostgresCliAnalyticsReader:
         )
 
     async def get_skill_names_by_session(self, session_ids: list[str]) -> Rows:
-        """Distinct activated skills per session (session_skills), for any number of sessions."""
+        """Distinct skill names per session, for any number of sessions: the same ones the delivery framework
+        is derived from (`SKILL_NAMES_SQL`), so a session known only from hooks or a summary counts too.
+        A session without a skill name has an empty list."""
         if not session_ids:
             return []
         return await self._q(
             f"""
-        SELECT session_id, array_agg(skill_name ORDER BY skill_name {_C}) AS skill_names
-        FROM session_skills
-        WHERE session_id = ANY($session_ids::text[])
-        GROUP BY session_id""",
+        SELECT sd.session_id, coalesce({SKILL_NAMES_SQL}, ARRAY[]::text[]) AS skill_names
+        FROM session_dims sd
+        WHERE sd.session_id = ANY($session_ids::text[])
+        ORDER BY sd.session_id {_C}""",
             {"session_ids": list(dict.fromkeys(session_ids))},
         )
 

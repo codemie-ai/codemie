@@ -25,6 +25,8 @@ import pytest
 
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
 from codemie.repository.cli_analytics.ports import CliAnalyticsReader
+from codemie.repository.cli_analytics.postgres import session_derived
+from codemie.repository.cli_analytics.postgres.session_derived import SKILL_NAMES_SQL
 from codemie.repository.cli_analytics.postgres.fork_attribution import executed_tool_span, tool_response_agent_id
 from codemie.repository.cli_analytics.postgres.reader import (
     PostgresCliAnalyticsReader,
@@ -109,6 +111,40 @@ async def test_skill_names_for_no_session_run_no_query():
             yield
 
     assert await PostgresCliAnalyticsReader(NoEngine()).get_skill_names_by_session([]) == []  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_skill_names_read_session_dims_with_the_sql_of_the_classifier():
+    # The list and details views must see the skills the delivery framework column is derived from: a
+    # session known only from hooks has its skills in session_dims.skills, not in session_skills.
+    recorder = _SqlRecorder()
+
+    await PostgresCliAnalyticsReader(recorder).get_skill_names_by_session(["s1", "s2", "s1"])  # type: ignore[arg-type]
+
+    (sql,) = recorder.statements
+    text = " ".join(sql.split())
+    assert "FROM session_dims sd WHERE sd.session_id = ANY($1::text[])" in text
+    assert " ".join(SKILL_NAMES_SQL.split()) in text
+    assert " ".join(session_derived._READ.split()).count(" ".join(SKILL_NAMES_SQL.split())) == 1
+    skills = session_derived._SKILLS_OBJECT
+    with_summary, without_summary = " ".join(SKILL_NAMES_SQL.split()).split("THEN", 1)[1].split(" ELSE ", 1)
+    assert "session_skills" not in with_summary
+    assert f"FROM jsonb_object_keys({skills}) s (name) WHERE s.name <> ''" in with_summary
+    assert (
+        "FROM (SELECT ss.skill_name AS name FROM session_skills ss WHERE ss.session_id = sd.session_id "
+        f"UNION SELECT s.name FROM jsonb_object_keys({skills}) s (name)) x WHERE x.name <> ''"
+    ) in without_summary
+
+
+@pytest.mark.asyncio
+async def test_skill_names_bind_the_distinct_session_ids_and_answer_an_empty_list_for_none():
+    recorder = _ArgRecorder()
+
+    await PostgresCliAnalyticsReader(recorder).get_skill_names_by_session(["s2", "s1", "s2"])  # type: ignore[arg-type]
+
+    assert recorder.args == [(["s2", "s1"],)]
+    assert "coalesce(CASE WHEN sd.summary_ts" in recorder.statements[0]
+    assert "ARRAY[]::text[]) AS skill_names" in recorder.statements[0]
 
 
 def test_deny_all_selects_no_session():

@@ -364,7 +364,9 @@ def test_cold_cache_cleanup_row_has_nonzero_critical_count(db: Session, engine: 
 
     AuditCache().run_audit(EntityKind.ASSISTANT, include_es_similarity=False)
 
-    payload = mm._cleanup_payload(EntityKind.ASSISTANT, None, None, None, None, None, None, None, None, 1, 50)
+    payload = mm._cleanup_payload(
+        EntityKind.ASSISTANT, None, None, None, None, None, None, None, None, None, None, page=1, page_size=50
+    )
     assert payload["items"], "the cleanup page is empty for a catalogue that was just audited"
     assert any(row["critical_count"] > 0 for row in payload["items"]), (
         "every row reports critical_count=0 after a restart, " "although the audit recorded critical findings"

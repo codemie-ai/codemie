@@ -32,9 +32,9 @@ logger = logging.getLogger(__name__)
 # session's session_skills (OTel) together with the keys of the `skills` fallback, which also counts
 # the skills known from hooks. The keys are read only from an object, so no row can raise.
 _SKILLS_OBJECT = "CASE WHEN jsonb_typeof(sd.skills) = 'object' THEN sd.skills END"
-_READ = f"""
-SELECT sd.session_id, sd.branch_dominant,
-       CASE WHEN sd.summary_ts IS NOT NULL THEN
+# The expression of the skill names per session_dims row `sd`, one for the classifier below and for the
+# list and details views of the reader, so they cannot drift apart. NULL when the session has none.
+SKILL_NAMES_SQL = f"""CASE WHEN sd.summary_ts IS NOT NULL THEN
                 (SELECT array_agg(s.name ORDER BY s.name COLLATE "C") FROM jsonb_object_keys({_SKILLS_OBJECT}) s (name)
                  WHERE s.name <> '')
             ELSE (SELECT array_agg(x.name ORDER BY x.name COLLATE "C")
@@ -42,7 +42,10 @@ SELECT sd.session_id, sd.branch_dominant,
                         UNION
                         SELECT s.name FROM jsonb_object_keys({_SKILLS_OBJECT}) s (name)) x
                   WHERE x.name <> '')
-       END AS skill_names
+       END"""
+_READ = f"""
+SELECT sd.session_id, sd.branch_dominant,
+       {SKILL_NAMES_SQL} AS skill_names
 FROM session_dims sd
 WHERE sd.session_id = ANY($1::text[])
 ORDER BY sd.session_id"""

@@ -74,6 +74,34 @@ async def test_get_sessions_with_a_missing_reader_duration_reports_zero():
 
 
 @pytest.mark.asyncio
+async def test_get_sessions_classifies_a_hook_only_session_by_the_reader_skill_names():
+    """The reader answers the skill names of a session known only from hooks (no OTel skill rows): the STLC
+    Factory rule applies to it, a session with no skill name stays Pure chat."""
+    handler = make_handler(
+        cost_facts=[
+            {**BASE_COST_ROW, "session_id": "hooks"},
+            {**BASE_COST_ROW, "session_id": "empty"},
+            {**BASE_COST_ROW, "session_id": "absent"},
+        ]
+    )
+    handler._repo.get_skill_names_by_session = AsyncMock(
+        return_value=[
+            {"session_id": "hooks", "skill_names": ["stlc-factory:exploratory", "stlc-feature"]},
+            {"session_id": "empty", "skill_names": []},
+        ]
+    )
+
+    data, _, _ = await handler.get_sessions(make_filter(), page=0, per_page=20, sort_by="start_time", search=None)
+
+    frameworks = {s["trace_id"]: s["delivery_framework"] for s in data["sessions"]}
+    assert frameworks == {
+        "hooks": "STLC Factory (QA factory)",
+        "empty": "Pure chat",
+        "absent": "Pure chat",
+    }
+
+
+@pytest.mark.asyncio
 async def test_session_repository_none_when_plugin_absent():
     """Empty string from the reader for plugin-less session must become None."""
     row = {**BASE_COST_ROW, "repository": "", "branch": ""}
@@ -1057,6 +1085,28 @@ async def test_session_detail_harness_name_is_humanized():
     handler = make_detail_handler({"session_id": "s1", "harness_service_name": "claude-code"})
     detail, _, _ = await handler.get_session_detail("s1")
     assert detail["harness_name"] == "Claude Code"
+
+
+@pytest.mark.asyncio
+async def test_session_detail_classifies_a_hook_only_session_by_the_reader_skill_names():
+    handler = make_detail_handler({"session_id": "s1"})
+    handler._repo.get_skill_names_by_session = AsyncMock(
+        return_value=[{"session_id": "s1", "skill_names": ["stlc-factory:exploratory"]}]
+    )
+
+    detail, _, _ = await handler.get_session_detail("s1")
+
+    assert detail["delivery_framework"] == "STLC Factory (QA factory)"
+
+
+@pytest.mark.asyncio
+async def test_session_detail_without_skill_names_is_pure_chat():
+    handler = make_detail_handler({"session_id": "s1"})
+    handler._repo.get_skill_names_by_session = AsyncMock(return_value=[{"session_id": "s1", "skill_names": []}])
+
+    detail, _, _ = await handler.get_session_detail("s1")
+
+    assert detail["delivery_framework"] == "Pure chat"
 
 
 @pytest.mark.asyncio

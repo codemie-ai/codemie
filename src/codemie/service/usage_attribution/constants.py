@@ -77,7 +77,7 @@ MR_TOOL_PATTERNS = (
     "*createpullrequest*",
 )
 # Used when features:cliAnalytics.deliveryFramework has no usable rules (Lucene regexp syntax, anchored).
-DEFAULT_FRAMEWORK_SKILL_REGEX = "(sdlc-factory:|superpowers:|bmad-|opsx:|speckit\\.).*"
+DEFAULT_FRAMEWORK_SKILL_REGEX = "(sdlc-factory:|stlc-factory:|stlc-feature|superpowers:|bmad-|opsx:|speckit\\.).*"
 
 MAX_BUCKETS_DEFAULT = 65536
 # Members per project in the Web Platform funding aggregation (A9 and /totals).

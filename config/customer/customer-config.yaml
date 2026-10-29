@@ -126,6 +126,8 @@ components:
         rules:
           - regex: "^sdlc-factory:"
             label: "CodeMie AI Factory"
+          - regex: "^(stlc-factory:|stlc-feature)"
+            label: "STLC Factory (QA factory)"
           - regex: "^superpowers:"
             label: "Superpowers"
           - regex: "^bmad-"
