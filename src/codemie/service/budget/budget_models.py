@@ -41,6 +41,17 @@ def build_override_project_budget_id(main_budget_id: str, user_id: str) -> str:
     return f"{main_budget_id}:user:{user_id}"
 
 
+def member_effective_max_budget(allocation: Any, budget: Any, enforce_limit: bool) -> float:
+    """Return the hard limit to push to the provider for one project member.
+
+    A fixed override is the member's own cap whether or not equal shares are enforced; only
+    unenforced equal-share members get the whole project budget.
+    """
+    if enforce_limit or getattr(allocation, "allocation_mode", None) == AllocationMode.FIXED.value:
+        return allocation.allocated_max_budget
+    return budget.max_budget
+
+
 class BudgetProviderMetadata(BaseModel):
     """Opaque provider state stored alongside a Budget or member allocation.
 

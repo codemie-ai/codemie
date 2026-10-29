@@ -442,7 +442,8 @@ class MemberSpendService:
         spend_map = _drop_rows_before_cutoff(spend_map, lambda key: cutoffs.get(key[1]))
         allocations = await project_member_budget_assignment_repository.get_active_by_project(session, project_name)
 
-        user_ids = [m.user_id for m in members]
+        # The endpoint paginates, so rows need a stable order or pages skip and repeat members.
+        user_ids = sorted(m.user_id for m in members)
         allocation_map = {(a.user_id, a.budget_category): a for a in allocations}
         return columns, _build_spend_rows(user_ids, "user_id", spend_map, allocation_map)
 

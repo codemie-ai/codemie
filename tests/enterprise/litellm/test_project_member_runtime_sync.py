@@ -1297,3 +1297,98 @@ async def test_resync_does_not_recompute_equal_shares_when_enforcement_off(mock_
     provider.sync_member_allocation.assert_awaited_once_with(
         allocation=allocation, budget=budget, effective_max_budget=0.99
     )
+
+
+OVERRIDE_BUDGET_ID = f"{BUDGET_ID}:user:{USER_ID}"
+
+
+def _override_allocation():
+    return SimpleNamespace(
+        id=ALLOCATION_ID,
+        user_id=USER_ID,
+        project_budget_id=BUDGET_ID,
+        allocation_mode="fixed",
+        allocated_max_budget=500.0,
+        provider_metadata={
+            "raw": {"provider_member_ref": "member-ref-1", "provider_budget_id": OVERRIDE_BUDGET_ID},
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_runtime_sync_keeps_override_cap_when_enforcement_disabled():
+    """An override written by rebalance (no stored enforce_limit) must not be widened to the project max."""
+    session = AsyncMock()
+    resolved = ResolvedBudgetContext(
+        scope=BudgetScope.PROJECT,
+        project_name=PROJECT_NAME,
+        budget_category=BUDGET_CATEGORY,
+        budget_id=BUDGET_ID,
+        effective_budget_id=OVERRIDE_BUDGET_ID,
+        override_budget_id=OVERRIDE_BUDGET_ID,
+        member_allocation_id=ALLOCATION_ID,
+        member_provider_metadata=_override_allocation().provider_metadata,
+    )
+    allocation = _override_allocation()
+    budget = SimpleNamespace(budget_id=BUDGET_ID, budget_duration="30d", budget_reset_at=None, max_budget=5000.0)
+    provider = _ok_provider()
+
+    with (
+        patch(
+            "codemie.enterprise.litellm.project_member_runtime_sync.get_async_session",
+            return_value=_mock_session_ctx(session),
+        ),
+        patch(
+            "codemie.service.settings.settings.SettingsService.get_enforce_member_spend_limits",
+            return_value=False,
+        ),
+        patch(
+            "codemie.enterprise.litellm.project_member_runtime_sync.budget_resolution_service.resolve",
+            new=AsyncMock(return_value=resolved),
+        ),
+        patch(
+            "codemie.enterprise.litellm.project_member_runtime_sync"
+            ".project_member_budget_assignment_repository.get_active_by_project_category_user",
+            new=AsyncMock(return_value=allocation),
+        ),
+        patch(
+            "codemie.enterprise.litellm.project_member_runtime_sync.budget_repository.get_by_id",
+            new=AsyncMock(return_value=budget),
+        ),
+        patch(
+            "codemie.enterprise.litellm.project_member_runtime_sync"
+            ".project_member_budget_assignment_repository.update_provider_metadata",
+            new=AsyncMock(),
+        ),
+        patch(
+            "codemie.enterprise.litellm.project_member_runtime_sync.get_active_provider",
+            return_value=provider,
+        ),
+    ):
+        await ensure_project_member_runtime_ready(
+            user_id=USER_ID,
+            user_email=USER_EMAIL,
+            project_name=PROJECT_NAME,
+            budget_category=BUDGET_CATEGORY,
+        )
+
+    provider.sync_member_allocation.assert_awaited_once_with(
+        allocation=allocation, budget=budget, effective_max_budget=500.0
+    )
+
+
+@pytest.mark.asyncio
+async def test_resync_keeps_override_cap_when_enforcement_turned_off():
+    session = AsyncMock()
+    allocation = _override_allocation()
+    budget = SimpleNamespace(budget_id=BUDGET_ID, max_budget=5000.0, budget_reset_at=None)
+    provider = _ok_provider()
+
+    with ExitStack() as stack:
+        for item in _resync_patches(session, allocation, budget, provider):
+            stack.enter_context(item)
+        await resync_project_member_allocations(project_name=PROJECT_NAME, enforce_limit=False)
+
+    provider.sync_member_allocation.assert_awaited_once_with(
+        allocation=allocation, budget=budget, effective_max_budget=500.0
+    )

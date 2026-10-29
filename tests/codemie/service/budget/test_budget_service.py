@@ -1202,3 +1202,28 @@ class TestUpdateBudgetResetsSoftLimitNotifiedAt:
 
         primary = captured["calls"][0]
         assert "soft_limit_notified_at" not in primary
+
+
+@pytest.mark.asyncio
+async def test_sync_backfilled_member_allocations_keeps_override_cap_when_enforce_limit_false():
+    svc = _make_service()
+    allocation = SimpleNamespace(id="alloc-1", user_id="user-1", allocation_mode="fixed", allocated_max_budget=500.0)
+    budget = SimpleNamespace(budget_id="proj-budget-1", max_budget=5000.0)
+    member_state = SimpleNamespace(
+        provider="litellm", provider_member_ref="ref-1", sync_status="ok", metadata={}, budget_reset_at=None
+    )
+    provider = SimpleNamespace(sync_member_allocation=AsyncMock(return_value=member_state))
+
+    await svc._sync_backfilled_member_allocations(
+        session=AsyncMock(),
+        provider=provider,
+        budget=budget,
+        allocations=[allocation],
+        project_name="proj-a",
+        category="cli",
+        enforce_limit=False,
+        project_member_budget_assignment_repository=SimpleNamespace(update_provider_metadata=AsyncMock()),
+        project_budget_service=SimpleNamespace(_build_provider_metadata=MagicMock(return_value={})),
+    )
+
+    assert provider.sync_member_allocation.await_args.kwargs["effective_max_budget"] == 500.0

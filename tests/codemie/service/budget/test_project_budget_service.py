@@ -26,6 +26,13 @@ from codemie.service.budget.provider import BudgetProviderMemberState, BudgetPro
 from codemie.service.settings.settings import SettingsService
 
 
+@pytest.fixture(autouse=True)
+def enforce_member_spend_limits():
+    """Pin the project enforcement flag so tests never reach the real settings lookup."""
+    with patch.object(SettingsService, "get_enforce_member_spend_limits", return_value=False) as mock_enforce:
+        yield mock_enforce
+
+
 @pytest.mark.asyncio
 async def test_resync_member_allocations_updates_shared_child_budget_for_equal_members():
     service = ProjectBudgetService()
@@ -991,3 +998,99 @@ class TestEnsureProjectBudgetModelsParameter:
         provider.update_project_budget.assert_awaited_once()
         call_kwargs = provider.update_project_budget.await_args.kwargs
         assert call_kwargs["models"] is None
+
+
+@pytest.mark.asyncio
+async def test_sync_created_member_allocations_keeps_override_cap_when_enforce_limit_false():
+    service = ProjectBudgetService()
+    allocation = SimpleNamespace(id="alloc-1", user_id="user-1", allocation_mode="fixed", allocated_max_budget=500.0)
+    budget = SimpleNamespace(budget_id="proj-budget-1", max_budget=5000.0, budget_duration="30d", budget_reset_at=None)
+    member_state = BudgetProviderMemberState(
+        provider="litellm", provider_member_ref="ref-1", provider_budget_id="bud-1", sync_status=SyncStatus.OK
+    )
+    provider = SimpleNamespace(sync_member_allocation=AsyncMock(return_value=member_state))
+
+    with (
+        patch(
+            "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository.update_provider_metadata",
+            new=AsyncMock(),
+        ),
+        patch.object(service, "_persist_child_budget_provider_state", new=AsyncMock()),
+    ):
+        await service._sync_created_member_allocations(
+            session=AsyncMock(), provider=provider, budget=budget, allocations=[allocation], enforce_limit=False
+        )
+
+    assert provider.sync_member_allocation.await_args.kwargs["effective_max_budget"] == 500.0
+
+
+def _reset_provider():
+    return SimpleNamespace(
+        reset_project_budget_spend=AsyncMock(
+            return_value=SimpleNamespace(
+                provider="litellm",
+                provider_budget_ref="key-alias-1",
+                budget_reset_at="2026-04-22T10:00:00Z",
+                sync_status=SyncStatus.OK,
+                metadata={},
+            )
+        ),
+        sync_member_allocation=AsyncMock(
+            return_value=BudgetProviderMemberState(
+                provider="litellm",
+                provider_member_ref="member-ref-1",
+                provider_budget_id="member-budget-1",
+                sync_status=SyncStatus.OK,
+            )
+        ),
+        reset_project_member_spending=AsyncMock(),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("allocation_mode", "enforce_limit", "expected_max"),
+    [
+        # Unenforced equal members share the whole project budget; the reset must not shrink it to one share.
+        ("equal", False, 5000.0),
+        ("equal", True, 500.0),
+        ("fixed", False, 500.0),
+    ],
+)
+async def test_reset_project_budget_syncs_member_with_effective_cap(allocation_mode, enforce_limit, expected_max):
+    service = ProjectBudgetService()
+    budget = SimpleNamespace(
+        budget_id="proj-budget-1",
+        budget_type="project",
+        budget_category="cli",
+        budget_duration="30d",
+        budget_reset_at="2026-04-22T10:00:00Z",
+        provider_metadata={"provider": "litellm", "provider_budget_ref": "key-alias-1", "sync_status": "ok"},
+        soft_budget=4000.0,
+        max_budget=5000.0,
+    )
+    assignment = SimpleNamespace(project_name="proj-a", budget_category="cli")
+    allocation = SimpleNamespace(
+        id="alloc-1", user_id="user-1", allocation_mode=allocation_mode, allocated_max_budget=500.0
+    )
+    provider = _reset_provider()
+
+    with (
+        patch.object(service, "get_project_budget", new=AsyncMock(return_value=(budget, assignment, [allocation]))),
+        patch("codemie.service.budget.project_budget_service.get_active_provider", return_value=provider),
+        patch(
+            "codemie.service.budget.project_budget_service.budget_repository.update",
+            new=AsyncMock(return_value=budget),
+        ),
+        patch(
+            "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository.update_provider_metadata",
+            new=AsyncMock(),
+        ),
+        patch.object(service, "_persist_child_budget_provider_state", new=AsyncMock()),
+        patch.object(SettingsService, "get_enforce_member_spend_limits", return_value=enforce_limit),
+    ):
+        await service.reset_project_budget(session=AsyncMock(), budget_id="proj-budget-1", actor_id="actor-1")
+
+    provider.sync_member_allocation.assert_awaited_once_with(
+        allocation=allocation, budget=budget, effective_max_budget=expected_max
+    )

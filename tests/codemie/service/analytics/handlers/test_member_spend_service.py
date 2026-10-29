@@ -474,6 +474,38 @@ class TestGetProjectMemberSpend:
         assert rows[0]["premium_models"] == 0
         assert rows[0]["premium_models_limit"] is None
 
+    @pytest.mark.asyncio
+    async def test_rows_are_ordered_by_user_id(self):
+        """The endpoint paginates, so rows need a stable order or pages skip and repeat members."""
+        service = MemberSpendService()
+        members = [SimpleNamespace(user_id=user_id, project_name="atlas-core") for user_id in ("u-3", "u-1", "u-2")]
+
+        with (
+            patch.object(service, "_ensure_fresh", new=AsyncMock()),
+            patch(
+                "codemie.repository.user_project_repository.user_project_repository.aget_by_project_name",
+                new=AsyncMock(return_value=members),
+            ),
+            patch(
+                "codemie.repository.project_spend_tracking_repository.ProjectSpendTrackingRepository."
+                "get_latest_member_rows_for_project",
+                new=AsyncMock(return_value={}),
+            ),
+            patch(
+                "codemie.repository.project_spend_tracking_repository.ProjectSpendTrackingRepository."
+                "get_project_reset_cutoffs",
+                new=AsyncMock(return_value={}),
+            ),
+            patch(
+                "codemie.repository.project_budget_repository.project_member_budget_assignment_repository."
+                "get_active_by_project",
+                new=AsyncMock(return_value=[]),
+            ),
+        ):
+            _, rows = await service.get_project_member_spend(MagicMock(), "atlas-core")
+
+        assert [row["user_id"] for row in rows] == ["u-1", "u-2", "u-3"]
+
 
 def _snapshot(project_name="atlas-core", user_id="u-1", budget_id="b-1", spend="100", cumulative=None):
     from codemie.service.budget.budget_enums import BudgetCategory

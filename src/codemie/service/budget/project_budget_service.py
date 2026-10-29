@@ -46,6 +46,7 @@ from codemie.service.budget.budget_models import (
     ProjectMemberBudgetAssignment,
     build_override_project_budget_id,
     build_shared_project_budget_id,
+    member_effective_max_budget,
 )
 from codemie.service.activity.activity_models import (
     ActivityDomain,
@@ -567,7 +568,7 @@ class ProjectBudgetService:
                     f"allocated_max_budget={getattr(alloc, 'allocated_max_budget', None)!r} "
                     f"allocated_soft_budget={getattr(alloc, 'allocated_soft_budget', None)!r}"
                 )
-                effective_max_budget = alloc.allocated_max_budget if enforce_limit else budget.max_budget
+                effective_max_budget = member_effective_max_budget(alloc, budget, enforce_limit)
                 member_state = await self._sync_member_allocation(
                     session=session,
                     provider=provider,
@@ -1459,8 +1460,15 @@ class ProjectBudgetService:
                 ),
             },
         )
+        from codemie.service.settings.settings import SettingsService
+
+        enforce_limit = SettingsService.get_enforce_member_spend_limits(assignment.project_name)
         for allocation in allocations:
-            member_state = await provider.sync_member_allocation(allocation=allocation, budget=budget)
+            member_state = await provider.sync_member_allocation(
+                allocation=allocation,
+                budget=budget,
+                effective_max_budget=member_effective_max_budget(allocation, budget, enforce_limit),
+            )
             if not member_state.provider_member_ref:
                 logger.warning(
                     f"budget_event=project_member_spend_reset_skipped_no_ref component=project_budget_service "
@@ -1620,10 +1628,17 @@ class ProjectBudgetService:
         correct_max, correct_soft = await self._resolve_shared_child_budget_amounts(
             session, budget=budget, fallback_allocation=allocation
         )
+        from codemie.service.settings.settings import SettingsService
+
+        project_name = assignment.project_name if assignment else ""
+        # Unenforced equal members share the whole project budget; the shared child row can still
+        # hold a per-member share from a time enforcement was on.
+        if not SettingsService.get_enforce_member_spend_limits(project_name):
+            correct_max = budget.max_budget
         shared_budget = await self._ensure_shared_child_budget(
             session,
             main_budget=budget,
-            project_name=assignment.project_name if assignment else "",
+            project_name=project_name,
             actor_id=actor_id,
             per_member_soft_budget=correct_soft,
             per_member_max_budget=correct_max,

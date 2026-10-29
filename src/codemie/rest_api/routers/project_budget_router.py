@@ -49,6 +49,7 @@ from codemie.service.budget.budget_models import (
     ProjectBudgetAssignment,
     ProjectBudgetGroup,
     ProjectMemberBudgetAssignment,
+    member_effective_max_budget,
 )
 from codemie.service.budget.project_budget_service import (
     ProjectBudgetGroupFullResult,
@@ -72,10 +73,8 @@ router = APIRouter(
 def _displayed_member_max_budget(
     allocation: ProjectMemberBudgetAssignment, budget: Budget, enforce_limit: bool
 ) -> float:
-    """Return the member max to display: the stored amount when enforced or overridden, else the project max."""
-    if enforce_limit or allocation.allocation_mode == AllocationMode.FIXED.value:
-        return allocation.allocated_max_budget
-    return budget.max_budget
+    """Return the member max to display, which is the same limit pushed to the provider."""
+    return member_effective_max_budget(allocation, budget, enforce_limit)
 
 
 def _zero_limit_member_count(allocations: list[ProjectMemberBudgetAssignment], enforce_limit: bool) -> int:

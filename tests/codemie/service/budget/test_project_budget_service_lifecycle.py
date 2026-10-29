@@ -24,6 +24,15 @@ from codemie.core.exceptions import ExtendedHTTPException, ValidationException
 from codemie.service.budget.budget_enums import AllocationMode, SyncStatus
 from codemie.service.budget.project_budget_service import ProjectBudgetService
 from codemie.service.budget.provider import BudgetProviderMemberState, BudgetProviderState
+from codemie.service.settings.settings import SettingsService
+
+
+@pytest.fixture(autouse=True)
+def enforce_member_spend_limits():
+    """Pin the project enforcement flag so tests never reach the real settings lookup."""
+    with patch.object(SettingsService, "get_enforce_member_spend_limits", return_value=False) as mock_enforce:
+        yield mock_enforce
+
 
 SOFT_LIMIT_EXCEEDED_MESSAGE = "Personal soft limits of project members cannot exceed the project soft limit."
 HARD_LIMIT_EXCEEDED_MESSAGE = "Personal hard limits of project members cannot exceed the project hard limit."
@@ -590,8 +599,20 @@ def test_equal_amounts_with_fixed_overrides_shares_remainder_when_within_limits(
 
 
 @pytest.mark.asyncio
-async def test_clear_member_override_syncs_litellm_with_shared_child_value():
+@pytest.mark.parametrize(
+    ("enforce_limit", "expected_max"),
+    [
+        (True, 25.0),
+        # Unenforced equal members share the whole project budget, even if the shared child row
+        # still holds a per-member share from a time enforcement was on.
+        (False, 100.0),
+    ],
+)
+async def test_clear_member_override_syncs_litellm_with_shared_child_value(
+    enforce_member_spend_limits, enforce_limit, expected_max
+):
     """When shared child budget exists, provider receives its max_budget — not the stale override value."""
+    enforce_member_spend_limits.return_value = enforce_limit
     service = ProjectBudgetService()
     session = AsyncMock()
 
@@ -697,17 +718,17 @@ async def test_clear_member_override_syncs_litellm_with_shared_child_value():
     mock_logger.info.assert_called_once()
     assert "member_allocation_override_cleared" in mock_logger.info.call_args[0][0]
 
-    # Provider must receive the shared child value (25.0), NOT the stale override (50.0).
+    # Provider must receive the shared value, NOT the stale override (50.0).
     mock_provider.sync_member_allocation.assert_awaited_once()
     call_kwargs = mock_provider.sync_member_allocation.await_args.kwargs
     assert (
-        call_kwargs["effective_max_budget"] == 25.0
-    ), f"expected effective_max_budget=25.0 (shared child value), got {call_kwargs.get('effective_max_budget')}"
+        call_kwargs["effective_max_budget"] == expected_max
+    ), f"expected effective_max_budget={expected_max}, got {call_kwargs.get('effective_max_budget')}"
 
     # _ensure_shared_child_budget must also use the correct value.
     mock_ensure_shared.assert_awaited_once()
     ensure_kwargs = mock_ensure_shared.await_args.kwargs
-    assert ensure_kwargs["per_member_max_budget"] == 25.0
+    assert ensure_kwargs["per_member_max_budget"] == expected_max
     assert ensure_kwargs["per_member_soft_budget"] == 20.0
 
     # override_budget_id must be cleared — not carried over after clearing.
@@ -722,8 +743,12 @@ async def test_clear_member_override_syncs_litellm_with_shared_child_value():
 
 
 @pytest.mark.asyncio
-async def test_clear_member_override_falls_back_to_allocation_value_when_no_shared_child():
+@pytest.mark.parametrize(("enforce_limit", "expected_max"), [(True, 50.0), (False, 100.0)])
+async def test_clear_member_override_falls_back_to_allocation_value_when_no_shared_child(
+    enforce_member_spend_limits, enforce_limit, expected_max
+):
     """When no shared child budget exists yet, provider receives allocation.allocated_max_budget as fallback."""
+    enforce_member_spend_limits.return_value = enforce_limit
     service = ProjectBudgetService()
     session = AsyncMock()
 
@@ -810,9 +835,9 @@ async def test_clear_member_override_falls_back_to_allocation_value_when_no_shar
             actor_id="actor-1",
         )
 
-    # Fallback: must use allocation.allocated_max_budget when no shared child exists.
+    # Fallback: enforced members get allocation.allocated_max_budget when no shared child exists.
     call_kwargs = mock_provider.sync_member_allocation.await_args.kwargs
-    assert call_kwargs["effective_max_budget"] == 50.0
+    assert call_kwargs["effective_max_budget"] == expected_max
 
 
 @pytest.mark.asyncio

@@ -1,0 +1,113 @@
+{
+  "decision": "approve",
+  "confidence": "high",
+  "risk_flags": [],
+  "scope": {
+    "backend": {
+      "repo": "epm-cdme/codemie",
+      "merge_request": "https://gitbud.epam.com/epm-cdme/codemie/-/merge_requests/4667",
+      "reviewed_commit": "535e591925",
+      "fix_up_commit": "8a07aa2086"
+    },
+    "ui": {
+      "repo": "epm-cdme/codemie-ui",
+      "merge_request": "https://gitbud.epam.com/epm-cdme/codemie-ui/-/merge_requests/2214",
+      "reviewed_commit": "41fe0de97"
+    }
+  },
+  "business_review": [
+    {
+      "criterion": "AC1: with member spend limit enforcement off, a member with a fixed override keeps their own override cap in LiteLLM until the override is deleted",
+      "status": "met"
+    },
+    {
+      "criterion": "AC2: overrides already broken in production are repaired after deploy",
+      "status": "met",
+      "notes": "Changed after review by decision: the automatic cap_rule_version resync was removed. The 10 broken overrides, found with the SQL in the MR description, are repaired by hand after deploy by re-saving each override"
+    },
+    {
+      "criterion": "AC3: every project member's spend shows on the project members admin page",
+      "status": "met",
+      "notes": "UI fetches every page; backend orders members by user_id so pages are stable"
+    },
+    {
+      "criterion": "Equal-share members in a project with enforcement off can still use the whole project budget",
+      "status": "met"
+    }
+  ],
+  "standards_review": [
+    {
+      "standard": "Git Workflow (commit format)",
+      "status": "pass",
+      "notes": "Commit subjects in both repos follow EPMCDME-16529: Capital sentence"
+    },
+    {
+      "standard": "Testing (seam tests for policy helpers)",
+      "status": "pass",
+      "notes": "Each sync call site asserts effective_max_budget at the provider boundary; the new tests fail without the fix"
+    },
+    {
+      "standard": "Code Quality",
+      "status": "pass",
+      "notes": "make ruff clean; UI eslint, prettier and tsc clean"
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-1",
+      "problem": "clear_member_override pushed the shared child budget's stored amount, not the project max, when enforcement is off",
+      "impact": "After enforcement is switched on and off, the shared child row can still hold a per-member share; clearing an override then caps all equal members at one share until the following rebalance succeeds",
+      "recommendation": "With enforcement off, push the project max to the shared budget; with enforcement on, keep the shared share",
+      "severity": "minor",
+      "triage": "patch",
+      "sources": ["src/codemie/service/budget/project_budget_service.py (clear_member_override)"]
+    },
+    {
+      "id": "CR-2",
+      "problem": "The cap_rule_version gate forces one resync for every runtime-synced member after deploy, including equal-share members whose cap rule did not change",
+      "impact": "One extra provider sync on each member's first request per project and category after deploy; idempotent, no steady-state cost",
+      "recommendation": "Accept, or narrow the gate to fixed allocations, which needs the allocation mode in the resolved budget context",
+      "severity": "minor",
+      "triage": "accept",
+      "sources": ["src/codemie/enterprise/litellm/project_member_runtime_sync.py (ensure_project_member_runtime_ready)"]
+    },
+    {
+      "id": "CR-3",
+      "problem": "A stale multi-page fetch can abort a newer project member spending fetch",
+      "impact": "Only for projects with more than 1000 members: switching project mid-fetch can leave the new project's spend column empty until reload",
+      "recommendation": "Check the request generation between pages, or after response.json() in fetchWithState",
+      "severity": "minor",
+      "triage": "accept",
+      "sources": ["codemie-ui: src/store/analytics.ts (fetchProjectMemberSpending)"]
+    },
+    {
+      "id": "CR-4",
+      "problem": "Older reset tests did not stub the project enforcement lookup that reset_project_budget now calls",
+      "impact": "They passed only because the unstubbed lookup resolves to False in the test environment",
+      "recommendation": "Pin SettingsService.get_enforce_member_spend_limits in the project budget service tests",
+      "severity": "minor",
+      "triage": "patch",
+      "sources": [
+        "tests/codemie/service/budget/test_project_budget_service.py",
+        "tests/codemie/service/budget/test_project_budget_service_lifecycle.py"
+      ]
+    },
+    {
+      "id": "CR-5",
+      "problem": "Broken overrides repair only on the member's next request through the codemie proxy or LLM factory",
+      "impact": "A member who spends against LiteLLM outside those paths keeps the wrong cap until a rebalance or enforcement toggle",
+      "recommendation": "Accept; check the affected rows with the SQL in the MR description after deploy",
+      "severity": "minor",
+      "triage": "accept",
+      "sources": ["src/codemie/enterprise/litellm/project_member_runtime_sync.py"]
+    }
+  ],
+  "rationale": "The change fixes the production root cause: with enforcement off, every member sync pushed the project max, so a fixed override's LiteLLM budget was overwritten with the project cap. A single helper now decides the pushed cap at every sync call site, and the project members page fetches every page of spending. No high or medium findings; CR-1 and CR-4 were patched and confirmed in the follow-up check, CR-3 is accepted as a known limitation. After review, the automatic cap_rule_version resync was removed in favour of repairing the 10 known broken overrides by hand, which makes CR-2 and CR-5 obsolete.",
+  "finding_status": [
+    {"id": "CR-1", "status": "resolved", "commit": "8a07aa2086"},
+    {"id": "CR-2", "status": "obsolete", "note": "cap_rule_version removed after review"},
+    {"id": "CR-3", "status": "accepted"},
+    {"id": "CR-4", "status": "resolved", "commit": "8a07aa2086"},
+    {"id": "CR-5", "status": "obsolete", "note": "automatic repair removed; broken overrides are repaired by hand"}
+  ]
+}

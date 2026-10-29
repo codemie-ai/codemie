@@ -41,7 +41,7 @@ from codemie.service.activity.activity_models import (
 from codemie.service.activity.activity_repository import activity_event_repository
 from codemie.repository.project_spend_tracking_repository import project_spend_tracking_repository
 from codemie.service.budget.budget_enums import AllocationMode, BudgetCategory, BudgetType
-from codemie.service.budget.budget_models import Budget
+from codemie.service.budget.budget_models import Budget, member_effective_max_budget
 from codemie.service.budget.provider_registry import get_active_provider
 from codemie.service.spend_tracking.spend_models import ProjectSpendTracking
 
@@ -1473,7 +1473,7 @@ class BudgetService:
     ) -> None:
         for alloc in allocations:
             try:
-                effective_max_budget = alloc.allocated_max_budget if enforce_limit else budget.max_budget
+                effective_max_budget = member_effective_max_budget(alloc, budget, enforce_limit)
                 member_state = await provider.sync_member_allocation(
                     allocation=alloc, budget=budget, effective_max_budget=effective_max_budget
                 )

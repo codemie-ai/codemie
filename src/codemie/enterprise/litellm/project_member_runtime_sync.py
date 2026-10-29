@@ -26,7 +26,11 @@ from codemie.repository.project_budget_repository import (
     project_member_budget_assignment_repository,
 )
 from codemie.service.budget.budget_enums import BudgetCategory, BudgetScope, SyncStatus
-from codemie.service.budget.budget_models import build_override_project_budget_id, build_shared_project_budget_id
+from codemie.service.budget.budget_models import (
+    build_override_project_budget_id,
+    build_shared_project_budget_id,
+    member_effective_max_budget,
+)
 from codemie.service.budget.budget_resolution_service import _resolution_cache, budget_resolution_service
 from codemie.service.budget.provider import BudgetProviderMemberState
 from codemie.service.budget.provider_registry import get_active_provider
@@ -182,7 +186,7 @@ async def ensure_project_member_runtime_ready(
                 f"project={project_name!r}, budget_category={budget_category.value!r}, user_id={user_id!r}"
             )
 
-        effective_max_budget = allocation.allocated_max_budget if enforce_limit else budget.max_budget
+        effective_max_budget = member_effective_max_budget(allocation, budget, enforce_limit)
 
         effective_budget_id = _effective_budget_id_for_member(
             budget_id=resolved.budget_id,
@@ -292,7 +296,7 @@ async def resync_project_member_allocations(project_name: str, enforce_limit: bo
                     f"reason=budget_row_missing"
                 )
                 continue
-            effective_max_budget = allocation.allocated_max_budget if enforce_limit else budget.max_budget
+            effective_max_budget = member_effective_max_budget(allocation, budget, enforce_limit)
             try:
                 member_state = await provider.sync_member_allocation(
                     allocation=allocation,
