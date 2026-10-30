@@ -348,6 +348,9 @@ class WorkflowRetryPolicy(BaseModel):
         custom_retry_on = True
         if isinstance(exc, TaskException) and exc.original_exc is not None:
             exc = exc.original_exc
+        # Duck-typed marker: tool errors that must not be re-run (e.g. a write with an unknown outcome).
+        if getattr(exc, "RETRYABLE", True) is False:
+            return False
         if isinstance(
             exc, (InvalidCredentialsError, TruncatedOutputError, IteratorInputNotFoundError, LiteLLMBadRequestError)
         ):

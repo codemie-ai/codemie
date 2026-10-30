@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Read-only client contract shared by the Graph and EWS transports.
+"""Client contract shared by the Graph and EWS transports (reads and writes).
 
 Both implementations MUST return exactly these shapes (plain dicts, JSON-friendly):
 
@@ -36,6 +36,10 @@ Attachment (``list_attachments``)::
 raw ``bytes``; ``get_text_body`` returns ``str``; ``check_inbox`` returns None and
 raises a typed ``ExchangeError`` on failure (an empty Inbox is a success).
 
+Writes (``send``, ``forward``, ``move``, ``tag``, ``delete``) return a plain dict on confirmed
+success and otherwise raise an ``ExchangeError`` whose ``OUTCOME`` is ``"not_applied"`` or
+``"unknown"`` (messages start ``Not applied.`` / ``Unknown.``).
+
 All failures surface as ``codemie_tools.ms_exchange.errors.ExchangeError`` subclasses.
 """
 
@@ -44,6 +48,13 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 MAX_PAGE = 50
+
+# Result statuses of the writes and the soft-delete target, the same on both transports.
+SUBMITTED = "submitted"  # send and forward: accepted, not delivered
+MOVED = "moved"
+DELETED = "deleted"
+TAGGED = "tagged"
+DELETED_ITEMS = "deleteditems"
 
 FolderDict = dict[str, Any]
 MessageDict = dict[str, Any]
@@ -64,3 +75,13 @@ class ExchangeClient(Protocol):
     def list_attachments(self, message_id: str) -> list[AttachmentDict]: ...
 
     def get_attachment_bytes(self, message_id: str, attachment_id: str) -> bytes: ...
+
+    def send(self, to: list[str], subject: str, body: str, body_type: str = "text") -> dict[str, Any]: ...
+
+    def forward(self, message_id: str, to: list[str]) -> dict[str, Any]: ...
+
+    def move(self, message_id: str, target_folder: str) -> dict[str, Any]: ...
+
+    def tag(self, message_id: str, category: str) -> dict[str, Any]: ...
+
+    def delete(self, message_id: str, soft: bool = True) -> dict[str, Any]: ...

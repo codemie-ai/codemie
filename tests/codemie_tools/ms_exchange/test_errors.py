@@ -13,8 +13,10 @@
 # limitations under the License.
 """Tests for the Exchange typed error taxonomy and retry helper."""
 
+import logging
 import socket
 import ssl
+from unittest import mock
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -29,6 +31,7 @@ from codemie_tools.ms_exchange import errors as exch
 from codemie_tools.ms_exchange.retry import MAX_RETRIES, MAX_RETRY_AFTER_SECONDS, call_with_retry
 
 LEAK = "tenant-1234 https://login.example/x svc@corp.local msg-AAMk secret-xyz"
+LEAK_FRAGMENTS = ("tenant-1234", "login.example", "svc@corp.local", "msg-AAMk", "secret-xyz", "x.example")
 
 ALL = [
     exch.CredentialExpiredError,
@@ -68,6 +71,15 @@ def test_each_class_has_distinct_fixed_sentence():
     for c in ALL:
         assert issubclass(c, exch.ExchangeError) and issubclass(c, ToolException)
         assert str(c()) == c.MESSAGE and c.MESSAGE.endswith(".")
+
+
+def test_read_errors_stay_retryable_and_carry_no_outcome():
+    for c in ALL:
+        assert c.RETRYABLE is True, c
+        assert c.OUTCOME is None, c
+    assert exch.ExchangeError.RETRYABLE is True and exch.ExchangeError.OUTCOME is None
+    assert exch.map_graph_exception(_api(503)).RETRYABLE is True
+    assert exch.map_ews_exception(ews.ErrorServerBusy(LEAK)).OUTCOME is None
 
 
 def test_exact_sentences():
@@ -334,3 +346,99 @@ def test_never_retried(sleeps, exc):
         call_with_retry(fn)
     assert fn.call_count == 1
     sleeps.assert_not_called()
+
+
+# ---- read-path mapping is logged without the provider's exception text ----
+#
+# ``codemie_tools.ms_exchange.errors.logger`` is a descendant of the ``codemie_tools`` logger, which
+# dictConfig sets to ``propagate: False``, so pytest's ``caplog`` never sees these records (same precedent
+# as ``TestWriteMappingLogging`` in test_write_errors.py). The module logger is patched directly instead.
+
+
+class TestReadMappingLogging:
+    @staticmethod
+    def _logged_messages(mock_logger):
+        return [call.args for call in mock_logger.log.call_args_list]
+
+    @mock.patch("codemie_tools.ms_exchange.errors.logger")
+    def test_graph_server_error_is_logged_as_warning_without_the_secret(self, mock_logger):
+        mapped = exch.map_graph_exception(_api(503))
+
+        assert isinstance(mapped, exch.UnreachableError)
+        [(level, template, *args)] = self._logged_messages(mock_logger)
+        assert level == logging.WARNING
+        rendered = template % tuple(args)
+        assert "transport=graph" in rendered
+        assert "mapped=UnreachableError" in rendered
+        for fragment in LEAK_FRAGMENTS:
+            assert fragment not in rendered
+
+    @mock.patch("codemie_tools.ms_exchange.errors.logger")
+    def test_ews_server_error_is_logged_as_warning_without_the_secret(self, mock_logger):
+        mapped = exch.map_ews_exception(ews.ErrorInternalServerTransientError(LEAK))
+
+        assert isinstance(mapped, exch.TransientServerError)
+        [(level, template, *args)] = self._logged_messages(mock_logger)
+        assert level == logging.WARNING
+        rendered = template % tuple(args)
+        assert "transport=ews" in rendered
+        assert "mapped=TransientServerError" in rendered
+        for fragment in LEAK_FRAGMENTS:
+            assert fragment not in rendered
+
+    @mock.patch("codemie_tools.ms_exchange.errors.logger")
+    def test_message_not_found_is_logged_below_warning(self, mock_logger):
+        """MessageNotFound is an expected, routine outcome - too noisy for WARNING."""
+        mapped = exch.map_graph_exception(_api(404, "ErrorItemNotFound"))
+
+        assert isinstance(mapped, exch.MessageNotFoundError)
+        [(level, *_rest)] = self._logged_messages(mock_logger)
+        assert level < logging.WARNING
+
+    @mock.patch("codemie_tools.ms_exchange.errors.logger")
+    def test_access_denied_is_logged_below_warning(self, mock_logger):
+        mapped = exch.map_ews_exception(ews.ErrorAccessDenied(LEAK))
+
+        assert isinstance(mapped, exch.DelegateAccessError)
+        [(level, *_rest)] = self._logged_messages(mock_logger)
+        assert level < logging.WARNING
+
+    @mock.patch("codemie_tools.ms_exchange.errors.logger")
+    def test_passthrough_of_an_already_mapped_error_is_not_logged_again(self, mock_logger):
+        already_mapped = exch.FolderNotFoundError()
+
+        assert exch.map_graph_exception(already_mapped) is already_mapped
+        assert exch.map_ews_exception(already_mapped) is already_mapped
+        mock_logger.log.assert_not_called()
+
+
+# ---- retry attempts are logged without the provider's exception text ----
+
+
+class TestRetryLogging:
+    @mock.patch("codemie_tools.ms_exchange.retry.logger")
+    def test_retry_attempt_is_logged_without_the_secret(self, mock_logger, sleeps):
+        fn = MagicMock(side_effect=[_api(503), "ok"])
+        assert call_with_retry(fn) == "ok"
+
+        mock_logger.debug.assert_called_once()
+        template, *args = mock_logger.debug.call_args.args
+        rendered = template % tuple(args)
+        assert "exc_type=APIError" in rendered
+        assert "status=503" in rendered
+        assert LEAK not in rendered
+
+
+def test_open_time_twins_do_not_leak_into_post_submission_mapping():
+    """An unreachable host after a submission may have gone through: it must stay Unknown, never Not applied."""
+    mapped = exch.map_ews_write_exception(exch.UnreachableError(), "send")
+
+    assert mapped.OUTCOME == "unknown"
+
+
+def test_map_write_open_error_keeps_a_specific_cause_and_falls_back_for_the_rest():
+    assert type(exch.map_write_open_error(exch.BadEndpointError())) is exch.WriteBadEndpointError
+    assert type(exch.map_write_open_error(exch.UnreachableError())) is exch.WriteUnreachableError
+    assert type(exch.map_write_open_error(exch.InternalError())) is exch.PreMutationReadFailedError
+    already = exch.WriteRateLimitedError()
+    assert exch.map_write_open_error(already) is already

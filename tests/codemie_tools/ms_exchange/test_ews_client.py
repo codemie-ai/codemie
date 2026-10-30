@@ -22,6 +22,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from exchangelib import DELEGATE, NTLM, FileAttachment, ItemAttachment
 from exchangelib import errors as ews
+from exchangelib.folders import Folder
 
 from codemie_tools.ms_exchange import ews_client as ec
 from codemie_tools.ms_exchange.client_base import MAX_PAGE
@@ -103,8 +104,9 @@ def _item(**kw):
 
 
 def _client(account):
-    with patch.object(ec, "build_ews_client", return_value=account):
-        return ec.EwsExchangeClient(_config())
+    client = ec.EwsExchangeClient(_config())
+    client._account = account  # the read account is built lazily; hand the test its own
+    return client
 
 
 def _account(items=(), log=None):
@@ -252,10 +254,8 @@ def test_list_messages_inbox_resolution_transport_error_is_typed():
         _client(_InboxRaises(ews.RedirectError("https://login.example/secret"))).list_messages("inbox", 0, 5)
 
 
-def _folder(folder_id, name, container_class="IPF.Note", **kw):
-    return SimpleNamespace(
-        id=folder_id, name=name, container_class=container_class, total_count=4, unread_count=None, **kw
-    )
+def _folder(folder_id, name, folder_class: str | None = "IPF.Note", **kw):
+    return SimpleNamespace(id=folder_id, name=name, folder_class=folder_class, total_count=4, unread_count=None, **kw)
 
 
 def test_list_folders_shape():
@@ -273,6 +273,17 @@ def test_list_folders_keeps_only_mail_folders():
         _folder("f3", "Contacts", "IPF.Contact"),
         _folder("f4", "Tasks", "IPF.Task"),
         _folder("f5", "Generic", None),
+    ]
+
+    assert [f["name"] for f in _client(acc).list_folders()] == ["Inbox"]
+
+
+def test_list_folders_filters_on_real_exchangelib_folder_class_field():
+    """Fakes must not invent the attribute name: real ``Folder`` objects expose ``folder_class`` only."""
+    acc = _account()
+    acc.msg_folder_root.walk.return_value = [
+        Folder(id="f1", name="Inbox", folder_class="IPF.Note"),
+        Folder(id="f2", name="Calendar", folder_class="IPF.Appointment"),
     ]
 
     assert [f["name"] for f in _client(acc).list_folders()] == ["Inbox"]
@@ -484,6 +495,30 @@ def test_build_ews_client_rejects_internal_name_before_connecting():
     ):
         ec.build_ews_client(_config("https://internal-service.corp.local/EWS/Exchange.asmx"))
     account_cls.assert_not_called()
+
+
+def test_constructing_the_client_does_not_build_the_read_account():
+    with patch.object(ec, "build_ews_client") as build:
+        ec.EwsExchangeClient(_config())
+    build.assert_not_called()
+
+
+def test_a_read_still_gets_the_typed_endpoint_error():
+    client = ec.EwsExchangeClient(_config("https://internal-service.corp.local/EWS/Exchange.asmx"))
+
+    with patch.object(ec.socket, "getaddrinfo", _resolves("10.0.0.5")), pytest.raises(BadEndpointError) as exc:
+        client.list_folders()
+
+    assert str(exc.value) == BadEndpointError.MESSAGE
+
+
+def test_the_read_account_is_built_once():
+    client = ec.EwsExchangeClient(_config())
+    with patch.object(ec, "build_ews_client", return_value=MagicMock()) as build:
+        first, second = client._account, client._account
+
+    assert first is second
+    build.assert_called_once()
 
 
 @pytest.mark.parametrize("allowed", ["internal-service.corp.local", "INTERNAL-service.corp.local.", "10.0.0.0/8"])

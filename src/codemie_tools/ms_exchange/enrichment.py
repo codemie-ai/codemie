@@ -22,10 +22,13 @@ running-total caps are checked against it before any fetch (unknown size: fetch,
 
 from __future__ import annotations
 
+import logging
 from typing import Callable, Iterable
 
 from codemie_tools.file_analysis.pdf.processor import PdfProcessor
 from codemie_tools.file_analysis.workers.docx_workers import extract_docx_text
+
+logger = logging.getLogger(__name__)
 
 MAX_ATTACHMENTS = 10
 MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
@@ -104,7 +107,11 @@ def enrich(body: str, attachments: Iterable[AttachmentInput], ocr: Ocr | None) -
         total += max(len(data), declared or 0)
         try:
             text = _extract(kind, data, ocr)
-        except Exception:  # noqa: BLE001 - provider text must never surface
+        except Exception as exc:  # noqa: BLE001 - provider text must never surface
+            # DEBUG: an extraction failure on one attachment is a routine, per-file outcome (corrupt or
+            # unsupported content), not an operator alert. Only the exception type and attachment kind are
+            # logged, never the filename, mime, or any extracted/provider text.
+            logger.debug("Exchange attachment extraction failed: kind=%s exc_type=%s", kind, type(exc).__name__)
             text = ""
         if not text or not text.strip():
             parts.append(_skip(name, NOTE_EXTRACTION_FAILED))

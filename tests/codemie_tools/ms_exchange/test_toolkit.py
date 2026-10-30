@@ -69,12 +69,47 @@ def test_exchange_integration_is_configured_once_on_the_toolkit():
     assert all(t.config_class is ExchangeToolConfig for t in definition.tools)
 
 
+def test_exchange_toolkit_exposes_exactly_nine_tools():
+    """Four read tools plus the five write tools, with the exact names."""
+    definition = ExchangeToolkit.get_definition()
+
+    assert [t.name for t in definition.tools] == [
+        "exchange_retrieve_folders",
+        "exchange_read",
+        "exchange_retrieve_by_id",
+        "exchange_enrich_body",
+        "exchange_send",
+        "exchange_forward",
+        "exchange_move",
+        "exchange_tag",
+        "exchange_delete",
+    ]
+
+
+def test_exchange_write_tools_are_bound_to_write_classes_and_not_auto_safe():
+    from codemie_tools.ms_exchange import tools
+
+    expected = {
+        "exchange_send": tools.SendTool,
+        "exchange_forward": tools.ForwardTool,
+        "exchange_move": tools.MoveTool,
+        "exchange_tag": tools.TagTool,
+        "exchange_delete": tools.DeleteTool,
+    }
+    by_name = {t.name: t for t in ExchangeToolkit.get_definition().tools}
+
+    for name, cls in expected.items():
+        assert by_name[name].tool_class is cls
+        assert by_name[name].settings_config is False
+        assert by_name[name].config_class is ExchangeToolConfig
+
+
 def test_exchange_toolkit_ui_default_definition():
     """ExchangeToolkitUI carries the same toolkit/tools defaults directly."""
     ui = ExchangeToolkitUI()
 
     assert ui.toolkit == ToolSet.MS_EXCHANGE
-    assert len(ui.tools) >= 3
+    assert len(ui.tools) == 9
 
 
 def test_exchange_toolkit_is_autodiscovered():

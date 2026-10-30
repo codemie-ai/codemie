@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 from codemie_tools.ms_exchange.client_base import ExchangeClient
-from codemie_tools.ms_exchange.errors import ExchangeError, InternalError
+from codemie_tools.ms_exchange.errors import ExchangeError, InternalError, map_write_open_error
 from codemie_tools.ms_exchange.ews_client import EwsExchangeClient
 from codemie_tools.ms_exchange.graph_client import GraphExchangeClient
 from codemie_tools.ms_exchange.models import ExchangeAuthType, ExchangeToolConfig
@@ -37,3 +37,19 @@ def get_client(config: ExchangeToolConfig) -> ExchangeClient:
         raise
     except Exception:  # noqa: BLE001 - provider text (URLs, accounts) must not surface
         raise InternalError from None
+
+
+def get_write_client(config: ExchangeToolConfig) -> ExchangeClient:
+    """Construct the client for a write tool: a construction failure here means nothing was sent.
+
+    Graph builds its credential inside ``__init__`` itself, before ``get_client`` ever returns. EWS does no
+    such work there: its read account is built on first read access, and a write checks the endpoint (resolve
+    and DNS check) when its write session opens, where a failure is already reported as Not applied.
+    ``get_client`` reports a construction failure as a read error (no ``OUTCOME``, retryable), which is correct
+    for the read tools that also call it but wrong for a write: nothing was submitted, so it must be Not
+    applied, never silently retryable.
+    """
+    try:
+        return get_client(config)
+    except ExchangeError as exc:
+        raise map_write_open_error(exc) from None

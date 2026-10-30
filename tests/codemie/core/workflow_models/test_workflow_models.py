@@ -225,6 +225,68 @@ def test_custom_retry_on_retry_false_task_exception_wrapping_bad_request_error(m
     assert result is False
 
 
+class _NonRetryableMarkerError(Exception):
+    RETRYABLE = False
+
+
+class _UnmarkedError(Exception):
+    pass
+
+
+def test_custom_retry_on_retry_false_for_non_retryable_marker(mock_default_retry_on):
+    mock_default_retry_on.return_value = True
+
+    result = WorkflowRetryPolicy.custom_retry_on(_NonRetryableMarkerError("boom"))
+
+    assert result is False
+    mock_default_retry_on.assert_not_called()
+
+
+def test_custom_retry_on_retry_false_for_non_retryable_marker_wrapped_in_task_exception(mock_default_retry_on):
+    from codemie.core.exceptions import TaskException
+
+    mock_default_retry_on.return_value = True
+    exception_instance = TaskException("Graph node execution failed.", original_exc=_NonRetryableMarkerError("boom"))
+
+    result = WorkflowRetryPolicy.custom_retry_on(exception_instance)
+
+    assert result is False
+    mock_default_retry_on.assert_not_called()
+
+
+@pytest.mark.parametrize("default_retry_on_decision", (False, True))
+def test_custom_retry_on_unmarked_exception_defers_to_default_retry_on(
+    mock_default_retry_on, default_retry_on_decision
+):
+    mock_default_retry_on.return_value = default_retry_on_decision
+
+    result = WorkflowRetryPolicy.custom_retry_on(_UnmarkedError("boom"))
+
+    assert result is default_retry_on_decision
+    mock_default_retry_on.assert_called_once()
+
+
+def test_custom_retry_on_retry_false_for_real_exchange_write_error():
+    from codemie_tools.ms_exchange.errors import WriteUnknownError
+
+    assert WorkflowRetryPolicy.custom_retry_on(WriteUnknownError()) is False
+
+
+def test_custom_retry_on_retry_false_for_real_exchange_write_error_wrapped_in_task_exception():
+    from codemie.core.exceptions import TaskException
+    from codemie_tools.ms_exchange.errors import WriteRateLimitedError
+
+    exception_instance = TaskException("Graph node execution failed.", original_exc=WriteRateLimitedError())
+
+    assert WorkflowRetryPolicy.custom_retry_on(exception_instance) is False
+
+
+def test_custom_retry_on_retry_true_for_real_exchange_read_error():
+    from codemie_tools.ms_exchange.errors import FolderNotFoundError
+
+    assert WorkflowRetryPolicy.custom_retry_on(FolderNotFoundError()) is True
+
+
 class TestWorkflowAssistant:
     """Tests for WorkflowAssistant model skill_ids field."""
 

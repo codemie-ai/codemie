@@ -15,10 +15,13 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Callable, TypeVar
 
 from codemie_tools.ms_exchange.errors import graph_status
+
+logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
@@ -71,5 +74,14 @@ def call_with_retry(fn: Callable[[], T]) -> T:
             delay = min(hint if hint > 0 else BASE_BACKOFF_SECONDS * (2**attempt), MAX_RETRY_AFTER_SECONDS)
             if time.monotonic() - started + delay >= MAX_TOTAL_SECONDS:
                 raise
+            # DEBUG, not WARNING: a retried transient failure is expected traffic, not an operator-actionable
+            # condition. Only the exception type, HTTP status and computed wait are logged, never str(exc).
+            logger.debug(
+                "Exchange read retry: attempt=%s exc_type=%s status=%s wait=%.1f",
+                attempt + 1,
+                type(exc).__name__,
+                graph_status(exc),
+                delay,
+            )
             time.sleep(delay)
             attempt += 1

@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "generated": "2026-10-07T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 21,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 21,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Single ms_exchange subsystem but 4+ components: client_base contract, Graph and EWS clients, tools/toolkit/tools_vars, errors, plus two new abstractions (write_retry single retry owner with Deadline/Retry/Stop classifier, write_validation shared input checks). One workflow_models enum entry outside the package. Held at L because it stays inside one subsystem." },
+    { "dimension": "technical_risk", "reason": "Mutating, non-idempotent operations (send, forward, move, delete, tag) over two transports with outcome-aware errors (Not applied vs Unknown), proven-no-change retry classification, rate-limit handling and additive category tagging. No exact precedent: the read-side retry.py policy is deliberately separate. Input validation never echoes values (security-sensitive). Many enumerated edge and error cases, covered by purpose-built suites (write_errors, write_library_facts, write_validation)." },
+    { "dimension": "file_change_estimate", "reason": "21 files per diffstat (16+ maps to XXL): 11 source/doc files (2 new: write_retry, write_validation) and 10 test files (most new). 6663 insertions, mostly tests. Scored by the diffstat mapping; the source-only count (about 11) would be XL." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk raised: mutating operations with irreversible side effects (sent mail, deletion) and security-sensitive input validation",
+    "Edge/error-case enumeration in acceptance criteria with no pre-existing write-side test template: Technical Risk bumped"
+  ],
+  "split_recommendation": null
+}

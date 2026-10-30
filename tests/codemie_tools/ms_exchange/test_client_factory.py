@@ -52,12 +52,14 @@ def test_ntlm_dispatches_to_ews():
         assert type(cf.get_client(_ntlm())).__name__ == "EwsExchangeClient"
 
 
-def test_ews_construction_failure_is_typed_and_sanitised():
+def test_ews_read_account_failure_is_typed_and_sanitised():
+    """The EWS read account is built on first read access, so that is where a failure surfaces."""
     with patch(
         "codemie_tools.ms_exchange.ews_client.build_ews_client", side_effect=RuntimeError("https://secret.host")
     ):
+        client = cf.get_client(_ntlm())
         with pytest.raises(ExchangeError) as info:
-            cf.get_client(_ntlm())
+            client.check_inbox()
     assert "secret" not in str(info.value)
     assert info.value.__cause__ is None and info.value.__suppress_context__
 

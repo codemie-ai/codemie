@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "task": "Add five mutating Exchange mailbox operations (send, forward, move, tag, delete) to the ms_exchange toolkit on Graph and EWS transports with outcome-aware errors, a write-specific retry/deadline owner and additive category tagging.",
+  "generated": "2026-10-07T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 21,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Touches tools.py (new non-read-only tool classes), tools_vars.py, toolkit.py, client_base.py Protocol, graph_client.py, ews_client.py, plus a new write retry owner and an outcome-aware extension of the errors.py taxonomy (new abstractions). All inside the single ms_exchange package, so not cross-service." },
+    { "dimension": "technical_risk", "reason": "No exact precedent: closest pattern is the EPMCDME-15200 read retry (retry.py call_with_retry) and ExchangeError mapping, which diverge on attempt count, 5xx/timeout classification, Retry-After capping, jitter, deadline-bounded request timeouts and injectable clock/random. Outcome classification (Not applied vs Unknown), non-replayable sends and nested SDK retry surfaces add idempotency risk; permission advice, secret/provider-text hygiene through CodeMieTool._run, and enumerated edge/error AC with no existing parameterized write-test template add a defensive-pattern bump. Delegate/sender semantics on EWS cannot be proven by unit tests." },
+    { "dimension": "file_change_estimate", "reason": "About 8-10 modified source files (tools, tools_vars, toolkit, client_base, graph_client, ews_client, errors, possibly client_factory) and 1-2 new (write retry owner, possibly write tools module), plus extended per-module tests and a guide update across src, tests and .ai-run/guides directories." },
+    { "dimension": "requirements_clarity", "reason": "Ticket is detailed (scope table, outcome contracts, retry numbers, 14 AC) but leaves open questions on shared-mailbox sender permission, EWS delegate semantics and whether platform error surfaces must distinguish expired secrets." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk at XL: security-sensitive permission advice and credential/provider-text hygiene on a mutating, non-replayable send path",
+    "Technical Risk: enumerated edge/error acceptance cases with no existing write-test template (outcome, jitter, deadline tables) treated as a defensive-pattern gap",
+    "Calibrated against bundled example epmcdme-10401 (L, total 22): agrees with the band; no project examples exist"
+  ],
+  "split_recommendation": null
+}

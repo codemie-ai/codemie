@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import inspect
 import json
 from typing import Type, Any
 from functools import cached_property
@@ -266,9 +267,10 @@ class ToolNode(BaseNode[AgentMessages]):
             Any: The result from tool execution
 
         Raises:
-            ValueError: If tool arguments validation fails
-            ValidationError: If Pydantic model validation fails
-            TypeError: If tool signature validation fails
+            ValueError: If tool argument validation, or the call-time signature check,
+                fails before the tool is invoked.
+            Exception: Whatever ``tool.execute`` itself raises propagates unchanged,
+                with its original traceback, so bugs inside a tool stay diagnosable.
 
         Note:
             Missing parameters are set to None for execution. Only non-None values
@@ -280,15 +282,15 @@ class ToolNode(BaseNode[AgentMessages]):
         if not tool_args:
             tool_args = dict.fromkeys(annotations)
 
+        tool_input = self._get_tool_args(
+            tool_args=tool_args,
+            state_schema=state_schema,
+        )
+
+        # For validation, only include parameters that have non-None values
+        tool_input = {k: v for k, v in tool_input.items() if v is not None}
+
         try:
-            tool_input = self._get_tool_args(
-                tool_args=tool_args,
-                state_schema=state_schema,
-            )
-
-            # For validation, only include parameters that have non-None values
-            tool_input = {k: v for k, v in tool_input.items() if v is not None}
-
             # Validate only the parameters we have values for (exclude None values)
             if isinstance(tool.args_schema, dict) and is_json:
                 args_class = tool.model_args(tool.args_schema)
@@ -302,19 +304,83 @@ class ToolNode(BaseNode[AgentMessages]):
                     tool.args_schema(**tool_input)
                     # If it's a dict schema, we can't validate it directly, so skip validation
 
-            # Execute tool with passed parameters
-            result = tool.execute(**tool_input)
-
-            logger.debug(f"Tool node execution result: {result}")
-            return result
-
+            # Catch a call-time argument mismatch (e.g. an unexpected keyword argument) here,
+            # before it reaches tool.execute, where it would otherwise be indistinguishable
+            # from a real bug inside the tool. The bind TypeError message only ever contains
+            # parameter names, so it is safe to log.
+            inspect.signature(tool.execute).bind(**tool_input)
         except (ValidationError, TypeError) as e:
-            logger.error(f"Tool arguments validation failed with error: {e}")
-            if is_json:
-                signature = {k: prop.get('type', 'unknown') for k, prop in annotations.items()}
-            else:
-                signature = {k: v.__name__ for k, v in annotations.items()}
-            raise ValueError(INVALID_SIGNATURE_ERROR.format(args_desc=signature))
+            self._log_validation_failure(e)
+            signature = self._describe_args(tool.args_schema, annotations, is_json)
+            # `from None` drops the original (possibly value-bearing) exception from the chain
+            # so it isn't re-surfaced by callers that log traceback.format_exc().
+            raise ValueError(INVALID_SIGNATURE_ERROR.format(args_desc=signature)) from None
+
+        # Execute tool with passed parameters. Any error raised from inside the tool's own
+        # logic (including a ValidationError or TypeError the tool raises itself) propagates
+        # unchanged, with its original traceback, instead of being misreported as an invalid
+        # signature.
+        result = tool.execute(**tool_input)
+
+        logger.debug(f"Tool node execution result: {result}")
+        return result
+
+    @staticmethod
+    def _log_validation_failure(error: Exception) -> None:
+        """Log which fields failed and why, never the submitted values (pydantic embeds them in its message)."""
+        if isinstance(error, ValidationError):
+            problems = [(".".join(str(part) for part in err["loc"]), err["type"]) for err in error.errors()]
+            logger.error(f"Tool arguments validation failed: {problems}")
+        else:
+            logger.error(f"Tool arguments validation failed: {type(error).__name__}")
+
+    @staticmethod
+    def _describe_args(args_schema: Any, annotations: dict[str, Any], is_json: bool) -> dict[str, str]:
+        """Build a field -> expected type description for the validation error.
+
+        Annotations may be plain strings (modules using ``from __future__ import annotations``), so types are
+        read from the resolved JSON schema rather than from ``__annotations__``.
+        """
+        properties: dict[str, Any] = {}
+        required: list[str] = []
+        if is_json:
+            properties = annotations
+            required = args_schema.get('required', []) if isinstance(args_schema, dict) else []
+        elif hasattr(args_schema, 'model_json_schema'):
+            try:
+                json_schema = args_schema.model_json_schema()
+            except Exception:  # noqa: BLE001 - schema generation must never mask the validation error
+                json_schema = {}
+            properties = json_schema.get('properties', {})
+            required = json_schema.get('required', [])
+
+        if properties:
+            return {
+                name: ToolNode._schema_type_label(prop) + (" (required)" if name in required else "")
+                for name, prop in properties.items()
+            }
+        return {
+            name: getattr(annotation, '__name__', None) or str(annotation) for name, annotation in annotations.items()
+        }
+
+    @staticmethod
+    def _schema_type_label(prop: Any) -> str:
+        """Human-readable type of a JSON-schema property: handles $ref, anyOf/oneOf, unions and arrays."""
+        if not isinstance(prop, dict):
+            return 'unknown'
+        if '$ref' in prop:
+            return str(prop['$ref']).rsplit('/', 1)[-1]
+        variants = prop.get('anyOf') or prop.get('oneOf')
+        if variants:
+            labels = list(dict.fromkeys(ToolNode._schema_type_label(v) for v in variants))
+            return " or ".join(labels)
+        prop_type = prop.get('type')
+        if isinstance(prop_type, list):
+            return " or ".join(str(t) for t in prop_type)
+        if prop_type == 'array':
+            items = prop.get('items')
+            return f"array of {ToolNode._schema_type_label(items)}" if items else 'array'
+        return str(prop_type) if prop_type else 'unknown'
 
     @staticmethod
     def _get_annotations(tool_args: BaseModel | dict[str, Any]) -> tuple[dict[str, Any], bool]:
