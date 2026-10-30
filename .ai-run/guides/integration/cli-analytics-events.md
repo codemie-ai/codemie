@@ -57,6 +57,8 @@ If the project policy cannot be read the answer is 503 and nothing is written; t
 | 7 | Text taken from a prompt is cut by the sender to 200 characters, text taken from a tool or a description to 300 |
 | 8 | No field reuses a typed hook key with another meaning. The typed keys are `developer_name`, `codemie_project_name`, `cwd`, `git_branch`, `repo_remote`, `permission_mode`, `source`, `effort`, `tool_name`, `tool_use_id`, `tool_input`, `tool_output`, `error_message`, `error_type`, `reason`, `agent_id`, `agent_type`, `trigger`, `denial_reason`, `notification_type`, `prompt_body`, `skill_name`. A value under one of them is stored as text, so a nested value is never sent there |
 | 9 | Command names (`commands`, `primary_command`, `command_name`) carry no leading slash |
+| 10 | A prompt (`prompt_body` of `agent.prompt.submit`) may carry `<pasted_content ...>` tags that the client wraps around pasted text. The session's first prompt is the earliest prompt that is not empty and not a sentinel (`/clear`, `/resume`, `/compact`, `/exit`, `/quit`, a `<command-name>/clear` or `<command-name>/resume` start, or a continuation or local-command caveat message), taken after cleaning: the open, close and truncated pasted-content tags are removed, the pasted text between them is kept, and spaces, tabs, carriage returns, line feeds and no-break spaces (U+00A0) are trimmed at both ends. The sentinel tests read the cleaned text (the two continuation and caveat prefixes also read the prompt as sent), so a sentinel inside a paste block is skipped, and a prompt that is empty once cleaned is skipped |
+| 11 | `prompt_original` is not read: it is not stored as a column, not served and not searched, and the first prompt never comes from it |
 
 ## Where an event is stored
 
@@ -84,6 +86,7 @@ Any event may carry them; all are optional.
 | `developer_name`, `codemie_project_name`, `cwd` | string | typed columns of `hook_events` |
 | `identity_source` | string | the rank of the sender's identity in `session_dims` |
 | `story_id`, `story_source` | string | `session_dims.story_id`, `story_source` |
+| `session_title` | string | `session_dims.session_title`: the latest non-empty value, trimmed of spaces, tabs, carriage returns, line feeds and no-break spaces (U+00A0) and cut to 200 characters. It is a column of `session_dims` and never goes to `session_dims.attrs`. A value of only blanks is no value and does not replace an earlier name |
 | `agent_id`, `agent_type` | string, `""` outside a subagent | typed columns |
 
 The examples show `schema_version` and `event_id` and leave the other common fields out.
@@ -283,7 +286,7 @@ Sent on every stop of the agent and at the end of the session. Each one is a sep
 |---|---|---|---|
 | `timestamp` | string | the last transcript line the summary covers | `summary_ts`; decides which summary is the latest |
 | `is_final` | bool | `true` at the end of the session, `false` on a stop | `attrs` |
-| `title` | string, at most 200 characters | the session title | `title` |
+| `title` | string, at most 200 characters | the session's AI-generated title | `title`; stored, not served: the sessions list and the session detail never read it |
 | `started_at` | string | the first transcript line | `activity_started_at`, not `started_at` |
 | `ended_at` | string | the last transcript line | `ended_at` |
 | `duration_ms` | int | `ended_at − started_at` | `duration_ms` |

@@ -30,6 +30,11 @@ from codemie.repository.cli_analytics.postgres import dirty, rollups, session_de
 from codemie.repository.cli_analytics.postgres.dirty import RollupFamily
 from codemie.repository.cli_analytics.postgres.fork_attribution import executed_tool_span, executed_tool_start
 from codemie.repository.cli_analytics.postgres.rollups import RECOMPUTE, RollupRefresher
+from codemie.repository.cli_analytics.vocabulary import (
+    PASTED_CONTENT_TAG_SQL,
+    SENTINEL_PREFIX_RAW,
+    SENTINEL_PREFIX_TRIMMED,
+)
 
 
 class QueueConnection:
@@ -855,6 +860,63 @@ def test_sentinel_exact_is_the_first_prompt_list_only() -> None:
     assert SENTINEL_EXACT == ("/clear", "/resume", "/compact", "/exit", "/quit")
 
 
+def _session_dims_upsert() -> str:
+    return next(s for s in RECOMPUTE if s.lstrip().startswith("INSERT INTO session_dims AS sd"))
+
+
+def test_clean_prompt_strips_the_pasted_tags_then_trims_the_blank_characters() -> None:
+    assert rollups._clean_prompt("x") == (
+        "btrim(regexp_replace(x, " + rollups._literal(PASTED_CONTENT_TAG_SQL) + ", '', 'g'), E' \\t\\r\\n\\u00a0')"
+    )
+    assert rollups._clean_prompt("h.prompt_body") == rollups._CLEAN_PROMPT
+
+
+def test_first_prompt_sentinels_apply_to_the_cleaned_prompt_only() -> None:
+    ok = rollups._PROMPT_OK
+    assert "btrim(h.prompt_body)" not in ok
+    assert "c.cp <> ''" in ok
+    assert "lower(c.cp) <> ALL(" in ok
+    for prefix in SENTINEL_PREFIX_TRIMMED:
+        assert f"NOT starts_with(c.cp, {rollups._literal(prefix)})" in ok
+    assert "regexp_replace" not in ok
+    for prefix in SENTINEL_PREFIX_RAW:
+        assert f"NOT starts_with(h.prompt_body, {rollups._literal(prefix)})" in ok
+        assert f"NOT starts_with(c.cp, {rollups._literal(prefix)})" in ok
+
+
+def test_session_dims_upsert_aggregates_the_cleaned_first_prompt() -> None:
+    upsert = _session_dims_upsert()
+    assert "(array_agg(c.cp ORDER BY h.ts, h.ingest_seq) FILTER (WHERE " in upsert
+    assert "array_agg(h.prompt_body" not in upsert
+    # the cleaning runs once per hook row, in the LATERAL join, however many times the filter and the value read it
+    assert f"CROSS JOIN LATERAL (SELECT {rollups._CLEAN_PROMPT} AS cp) c" in upsert
+    assert upsert.count("regexp_replace") == 1
+    # the raw column keeps the empty-prompt filter, the cleaned value is only what is stored
+    assert f"h.prompt_body <> '' AND {rollups._PROMPT_OK}" in upsert
+
+
+def test_earliest_value_defaults_to_the_column() -> None:
+    assert rollups._earliest("cwd").startswith("(array_agg(h.cwd ORDER BY h.ts, h.ingest_seq) FILTER (")
+
+
+def test_merged_first_prompt_is_merged_like_every_earliest_column() -> None:
+    assert rollups._earliest_merged("first_prompt") == (
+        "CASE WHEN sd.started_at < EXCLUDED.started_at "
+        "THEN coalesce(nullif(sd.first_prompt, ''), nullif(EXCLUDED.first_prompt, '')) "
+        "ELSE coalesce(nullif(EXCLUDED.first_prompt, ''), nullif(sd.first_prompt, '')) END"
+    )
+    assert rollups._earliest_merged("branch") == (
+        "CASE WHEN sd.started_at < EXCLUDED.started_at THEN coalesce(sd.branch, EXCLUDED.branch) "
+        "ELSE coalesce(EXCLUDED.branch, sd.branch) END"
+    )
+
+
+def test_auto_prompt_rule_for_turns_reads_the_raw_prompt() -> None:
+    assert "regexp_replace" not in rollups._IS_AUTO_PROMPT
+    assert "ltrim(h.prompt_body, E' \\t\\r\\n')" in rollups._IS_AUTO_PROMPT
+    assert "\\u00a0" not in rollups._IS_AUTO_PROMPT
+
+
 def test_real_turn_excludes_auto_prompts_commands_and_injected_messages_without_a_model_request() -> None:
     # The whole fragment, so a changed connective, a dropped filter or a wider window fails here: three NOT EXISTS
     # lookups (never a JOIN that could count a span twice), every one bounded by session and 1 h of the span's ts.
@@ -1426,3 +1488,20 @@ def test_a_malformed_is_final_value_defaults_to_final_instead_of_raising() -> No
         f"CASE WHEN {rollups._IS_FINAL_TEXT} IN ('true', 'false') THEN {rollups._IS_FINAL_TEXT}::boolean ELSE true END"
     ) == rollups._IS_FINAL_SUMMARY
     assert "::boolean" not in rollups._IS_FINAL_TEXT  # the cast only ever happens inside the guard
+
+
+def test_session_title_is_a_latest_value_text_field_kept_out_of_attrs() -> None:
+    assert "session_title" in rollups._COMMON_TEXT
+    assert "session_title" in rollups._VALUE_KEYS
+    assert "session_title" in rollups._NOT_ATTRS
+
+
+def test_session_title_is_trimmed_cut_to_200_characters_and_empty_is_null() -> None:
+    values = dict(rollups._SESSION_DIMS_VALUES)
+    assert values["session_title"] == "left(nullif(btrim(lv.v->>'session_title', E' \\t\\r\\n\\u00a0'), ''), 200)"
+    assert sum(1 for column, _ in rollups._SESSION_DIMS_VALUES if column == "session_title") == 1
+
+
+def test_a_blank_session_title_never_becomes_the_latest_value() -> None:
+    assert "e.key = 'session_title'" in rollups._LATEST_VALUES
+    assert "btrim(e.value #>> '{}', E' \\t\\r\\n\\u00a0') = ''" in rollups._LATEST_VALUES

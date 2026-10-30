@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from codemie.repository.cli_analytics import vocabulary as v
 
 
@@ -97,3 +99,85 @@ def test_builtin_command_names_constant():
         raise AssertionError("Tuple should be immutable")
     except TypeError:
         pass
+
+
+PARITY_CORPUS: list[str] = [
+    '<pasted_content id="b23a">\nStep 1\nStep 2\n</pasted_content id="b23a">\n',
+    'Perform the test\n\n<pasted_content id="x1">\nA\n</pasted_content id="x1">\n',
+    '<pasted_content id="a">one</pasted_content id="a"> and <pasted_content id="b">two</pasted_content id="b">',
+    '<pasted_content id="b23a">\nunterminated text with no close',
+    'text</pasted_content id="zz">',
+    '<pasted_content id="trunc',
+    "<pasted_content",
+    "plain typed prompt",
+    '<pasted_contentx id="q">not ours</pasted_contentx>',
+    "a <pasted_content id=1> b",
+    "a <pasted_content\x1cid=1> b",
+    "a <pasted_content\x85id=1> b",
+    "Why does the title show <pasted_content id=b23a instead of my text?",
+    'Why does the title show <pasted_content id="b23a instead of my text?',
+    "see <pasted_content tag for details",
+    'a <pasted_content id="x"> b',
+    'a <pasted_content id="x" n="y"> b',
+    "a </pasted_content> b",
+    "a <pasted_content> b",
+    '<pasted_content id="a">',
+    'hello <pasted_content id="a',
+    "hello <pasted_content id=",
+    "hello <pasted_content id",
+    "hello <pasted_content ",
+    "hello <pasted_content",
+    "hello <pasted_content\n",
+    'hello <pasted_content id="a\n',
+]
+
+PARITY_EXPECTED: list[str] = [
+    "Step 1\nStep 2",
+    "Perform the test\n\n\nA",
+    "one and two",
+    "unterminated text with no close",
+    "text",
+    "",
+    "",
+    "plain typed prompt",
+    '<pasted_contentx id="q">not ours</pasted_contentx>',
+    "a <pasted_content id=1> b",
+    "a <pasted_content\x1cid=1> b",
+    "a <pasted_content\x85id=1> b",
+    "Why does the title show <pasted_content id=b23a instead of my text?",
+    'Why does the title show <pasted_content id="b23a instead of my text?',
+    "see <pasted_content tag for details",
+    "a  b",
+    "a  b",
+    "a  b",
+    "a  b",
+    "",
+    "hello",
+    "hello",
+    "hello",
+    "hello",
+    "hello",
+    "hello",
+    'hello <pasted_content id="a',  # the newline after the cut piece is not "the end": the piece stays; the trim drops \n
+]
+
+
+@pytest.mark.parametrize(("raw", "expected"), list(zip(PARITY_CORPUS, PARITY_EXPECTED, strict=True)))
+def test_strip_pasted_content_corpus(raw, expected):
+    assert v.strip_pasted_content(raw) == expected
+
+
+def test_strip_pasted_content_preserves_inner_newlines_byte_for_byte():
+    raw = '<pasted_content id="a">\r\n  line1\n\n\tline2  \n</pasted_content id="a">'
+    assert v.strip_pasted_content(raw) == "line1\n\n\tline2"
+
+
+def test_strip_pasted_content_empty_string():
+    assert v.strip_pasted_content("") == ""
+
+
+def test_pasted_content_tag_sql_is_the_are_pattern():
+    assert v.PASTED_CONTENT_TAG_SQL == (
+        r'</?pasted_content(?:[ \t\n\r\f\v]+[A-Za-z0-9_-]+="[^"<>\n]*")*'
+        r'(?:>|(?:[ \t\n\r\f\v]+(?:[A-Za-z0-9_-]+(?:=(?:"[^"<> \t\n\r\f\v]*)?)?)?)?$)'
+    )

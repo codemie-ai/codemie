@@ -358,7 +358,8 @@ class PostgresCliAnalyticsReader:
                        d.last_event_at,
                        d.activity_started_at,
                        d.ended_at,
-                       coalesce(d.first_prompt, '') AS first_prompt
+                       coalesce(d.first_prompt, '') AS first_prompt,
+                       coalesce(d.session_title, '') AS session_title
                 FROM session_dims d
                 WHERE d.started_at IS NOT NULL AND {_STARTED_IN_WINDOW}
             ) x{where}
@@ -741,6 +742,7 @@ class PostgresCliAnalyticsReader:
                max(s.branch)                                AS branch,
                max(s.project_name)                          AS project_name,
                max(s.first_prompt)                          AS prompt,
+               max(s.session_title)                         AS session_title,
                max(a.session_start)                         AS started_at,
                max(a.session_end)                           AS last_event_at,
                max(a.duration_ms)                           AS duration_ms,
@@ -873,6 +875,7 @@ class PostgresCliAnalyticsReader:
                nullif(d.branch, '')                                                   AS branch,
                nullif(d.project_name, '')                                             AS project_name,
                nullif(d.first_prompt, '')                                             AS prompt,
+               nullif(d.session_title, '')                                            AS session_title,
                coalesce(r.session_start, {_EPOCH})                                    AS started_at,  -- or 1970-01-01
                coalesce({_ms("r.session_end")} - {_ms("r.session_start")}, 0)         AS duration_ms,
                nullif(o.service_name, '')                                             AS harness_service_name

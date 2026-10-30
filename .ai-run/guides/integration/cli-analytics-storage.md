@@ -63,13 +63,14 @@ One revision adds the tables and columns that the six new events of CodeMie CLI 
 | Table | Objects |
 |---|---|
 | `usage_requests` (new raw table, `PARTITION BY RANGE (ts)`, weekly, no primary key) | ids, scope, model, speed, geo, tier, five token counts, web counts, `stop_reason`, `is_api_error`, `git_branch`, `attrs`; indexes `(session_id, ts)` and BRIN `ts`; `user_email`, `message_id`, `agent_type`, `thinking_tokens` |
-| `session_dims` | identity, platform, version, provider, story, model/command, duration, counters and `commands`/`skills`/`agents`/`tools`/`models` columns; indexes `(user_email, started_at)` and `(story_id)`; title, team, environment, space, plugin, host, account, git heads and other session context columns |
+| `session_dims` | identity, platform, version, provider, story, model/command, duration, counters and `commands`/`skills`/`agents`/`tools`/`models` columns; indexes `(user_email, started_at)` and `(story_id)`; title, session title, team, environment, space, plugin, host, account, git heads and other session context columns |
 | `cost_daily` | `speed`, `inference_geo`, `scope_kind`, `scope_name`, `agent_type` (`NOT NULL DEFAULT ''`) join the primary key, which is replaced; `cache_creation_5m_tokens`, `cache_creation_1h_tokens` |
 | `session_usage` (new) | per session, day, model, speed, geo, scope and agent; cache-creation total, thinking, web counts, API duration, TTFT sum, `attrs` |
 | `subagent_invocations` (new) | `(session_id, agent_id)` with type, description, tool use, workflow, worktree, depth, start, duration, attribution; model, call and line counters, `tools`/`skills`/`commands`/`compactions`, `ended_at`, `attrs` |
 | `session_usage_hourly` (new) | the whole table |
 | `log_events` | `request_id`, index `(session_id, request_id)` |
 
+- Revision `a1c1a0000009` adds the nullable `session_dims.session_title` text column (`ALTER TABLE ... ADD COLUMN`); its downgrade drops the column. The refresher fills it from the events' `session_title` (see merge kinds); a row stored before the revision keeps NULL until its session is recomputed.
 - The revision creates no partitions. `usage_requests` is in `RAW_TABLES` in `postgres/maintenance.py`, so `PartitionMaintainer` creates its partitions and the raw retention applies; the other partitioned-table lists derive from it.
 - Uniqueness of usage rows comes from the `ingest_dedup` ledger, as for the other raw tables.
 - Ingest writes only `usage_requests` and `log_events.request_id`; the refresher fills the other new tables and columns (see Rollup families 16 and 32 and Session tables).
@@ -151,6 +152,7 @@ Gate discards are visible as one INFO log line per discarded request (`codemie.r
 | fallback | The same columns for a session with no summary, computed from raw rows; written only while `summary_ts` is NULL |
 | priority | (`user_email`, `identity_source`) and (`story_id`, `story_source`) are replaced only by a higher rank, or the same rank and a later timestamp |
 | latest value | Columns from `agent.session.env`, `agent.git.snapshot`, common fields and `session_attributes`: the latest non-empty value |
+| latest session name | `session_title` is the latest non-empty `session_title` field of the session's events, trimmed of spaces, tabs, carriage returns, line feeds and no-break spaces (U+00A0) and cut to 200 characters; a blank value shadows nothing. It is a column of its own, never a key of `session_dims.attrs`, and is separate from the summary's AI-generated `title`, which is stored but not served |
 | accumulating | `sources`, fallback `client_versions` and `attrs` are merged with the stored value; an `attrs` key is never removed |
 | rollup-derived | `active_ms`, `source_cost_usd`, `delivery_framework` (classified from skill names and subagent types), `feature_id` are recomputed each time |
 
@@ -161,6 +163,10 @@ Gate discards are visible as one INFO log line per discarded request (`codemie.r
 ### Counter fallback
 
 A `(day, session)` pair is a fallback pair when it has no span of kind `TOOL`, `TOOL_EXECUTION` or `INTERACTION`; the test is by kind, never by name. Its `turns_daily`, `tool_facts_daily`, `invocations_hourly` and `session_files_daily` rows are counted from `hook_events` (`agent.prompt.submit`, `agent.tool.start`/`end`/`error`, `agent.skill.dispatch`, `agent.subagent.start`); a pair with spans uses spans. Tool calls, turns, files and agents have one source per pair, never both. Skills are read from spans and hooks on every pair, and each skill invocation counts once: an `agent.tool.start` of a call that has a `TOOL` span is left out, and so is a forked skill's `agent.subagent.start` joined to a counted initiator. An `agent.subagent.start` counts once per `agent_id`, by the first start of that `agent_id` in the session: SendMessage continues an agent or a fork under its `agent_id` with a new start, which is no new invocation; a start with an empty `agent_id` counts on its own. Skill and agent counts therefore also read the fork a Skill call's hook `agent.tool.end` names (its `fork_agent_id`, else the complete `agentId` in `tool_response`; never the typed `agent_id`, which on a call made inside a subagent is the caller's) and `agent.skill.dispatch` `prompt_id` (a slash command's fork, only when the dispatch is the one of its `prompt_id`: a start of its skill name, else a foreground one without a skill name that no `Agent` call names), on any day of the session, a day with spans included; these fork rules read Claude Code events only (`platform` `claude-code` or absent). `turns_daily` counts every `agent.prompt.submit` except a Claude Code hook's (`platform` `claude-code` or absent) prompt starting with `<task-notification>` or `<agent-message`; an empty `prompt_body` still counts. `success` is an `agent.tool.end` with the same `tool_use_id`, counted on the day of the start. The reader has no fallback query of its own: it reads these rollups for the sessions of the window.
+
+### Session prompt (`prompt` of the sessions list and the session detail)
+
+The served `prompt` is the session's name when `session_dims.session_title` is non-empty after trimming; otherwise it is the first prompt, cleaned again at read time (`strip_pasted_content`: the `<pasted_content ...>` and `</pasted_content>` tags removed, the pasted text kept, trimmed of spaces, tabs, carriage returns, line feeds and no-break spaces (U+00A0) at both ends; the tag's attributes are complete quoted `name="value"` pairs separated by ASCII whitespace (`[ \t\n\r\f\v]`, never the locale-dependent `\s`); a tag cut off at the very end of the text is removed too, while a stray `<pasted_content` followed by prose is left in the text). The read-time cleaning serves a `first_prompt` stored with the tags clean even when its raw rows are past retention and cannot be recomputed. When the cleaned first prompt is empty (an old-CLI prompt cut inside the open tag), the served `prompt` is the session's repository, else its branch, else an empty string; the fallback order is title, cleaned first prompt, repository, branch. Efficiency's `worst_session_prompt` uses the same label (truncated to the preview length; `null` when it is empty). The search term of the sessions list is matched against the served `prompt`, the cleaned first prompt, the repository and the branch. The summary's `title` is stored in `session_dims`, not read, served or searched. `prompt_original` and `session_title` are not copied into `session_dims.attrs` (`session_title` has a column of its own); both stay in `hook_events.attrs` until raw retention (`otlp.py`, the event keys outside `HOOK_KNOWN_KEYS`), and search matches the cleaned first prompt, not the stored one.
 
 ### Slash commands (`get_invocations`, kind 4)
 
@@ -204,6 +210,8 @@ For whoever builds a report over `session_dims`, `session_usage`, `session_usage
 | `files_changed`, `files_written`, `files_edited` | summary | distinct paths of `session_files_daily` by flag | rollup |
 | `models`, `primary_model` | summary | `cost_daily.model_name` by calls, the first is the primary; raw model names | rollup |
 | `commands`, `primary_command`, `title` | summary | NULL: nothing else carries them | — |
+| `first_prompt` | not from the summary | the earliest `agent.prompt.submit` `prompt_body` that is non-empty and not a sentinel after cleaning (pasted-content tags removed, pasted text kept, spaces, tabs, carriage returns, line feeds and no-break spaces (U+00A0) trimmed at both ends); an empty value never replaces or shadows a real one | raw |
+| `session_title` | latest `session_title` event field that is non-empty after trimming spaces, tabs, carriage returns, line feeds and no-break spaces (U+00A0), cut to 200 characters (the summary's `title` is another column) | the same | — |
 | `branch_dominant` | summary | the most frequent non-empty `hook_events.git_branch` | raw |
 | `compactions`, `compaction_count` | summary | OTel `compaction` events; without them, `agent.session.compact` events (start and trigger only) | raw |
 | `compaction_pre_tokens` | summary | NULL: the OTel value is kept inside `compactions` only | — |
@@ -218,7 +226,7 @@ span counts unless one of three checks, applied in order, finds a row:
 1. Auto prompt: a `user_prompt` log row (`event_kind = 2`) of the same session and `span_id` whose `prompt_id`
    is the `prompt_id` of a Claude Code `agent.prompt.submit` hook (`platform` `claude-code` or absent) whose
    `prompt_body` starts with `<task-notification>` or `<agent-message`
-   (`vocabulary.CLAUDE_CODE_AUTO_PROMPT_PREFIXES`; leading whitespace, i.e. space, tab, CR and LF, is ignored):
+   (`vocabulary.CLAUDE_CODE_AUTO_PROMPT_PREFIXES`; leading space, tab, CR and LF are ignored; this turn rule keeps its own trim set, not the blank set above):
    the prompts Claude Code injects itself when a forked skill, background agent or background command finishes,
    and when a subagent hands its result back or a peer session sends a message. In OTel it looks like a typed
    prompt; only the hook tells them apart.

@@ -1728,3 +1728,199 @@ async def test_a_row_without_a_model_is_unpriced_as_empty_and_the_yaml_source_is
     assert data["kpis"]["total_cost_usd"] == pytest.approx(0.32193315, abs=1e-9)
     assert [r["model_name"] for r in data["cost_by_model"]] == ["claude-sonnet-4-6"]
     assert (pricer.unpriced, pricer.catalog_source) == ([""], "yaml")
+
+
+_MARKUP = '<pasted_content id="b23a">\nStep 1: log in\n</pasted_content id="b23a">\n'
+_CLEAN = "Step 1: log in"
+
+
+async def _served_sessions(*rows, search=None):
+    handler = make_handler(cost_facts=[{**BASE_COST_ROW, **r} for r in rows])
+    # cost_usd is paged in Python, so the search runs over the handler's served rows, not in a stubbed SQL page.
+    data, _, _ = await handler.get_sessions(make_filter(), page=0, per_page=20, sort_by="cost_usd", search=search)
+    return data["sessions"]
+
+
+def _efficiency_handler(row):
+    repo = MagicMock()
+    repo.get_cost_kpis = AsyncMock(return_value=[{"total_sessions": 1, "total_api_calls": 10}])
+    repo.get_session_model_costs = AsyncMock(return_value=[])
+    repo.get_session_cost_facts = AsyncMock(return_value=[row])
+    repo.get_turns_by_session = AsyncMock(return_value=[])
+    repo.get_file_facts_by_session = AsyncMock(return_value=[])
+    repo.get_lines_totals = AsyncMock(return_value=[])
+    return LocalAnalyticsHandler(repo)
+
+
+@pytest.mark.asyncio
+async def test_a_named_session_is_served_under_its_name():
+    (row,) = await _served_sessions({"prompt": "first words", "session_title": "Release plan"})
+    assert row["prompt"] == "Release plan"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "Run the smoke test",
+        "Why does the title show <pasted_content id=b23a instead of my text?",  # a stray opener is typed text
+    ],
+)
+async def test_an_unnamed_session_is_served_under_its_typed_first_prompt(prompt):
+    (row,) = await _served_sessions({"prompt": prompt, "session_title": ""})
+    assert row["prompt"] == prompt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("title", [None, "", "   ", "\u00a0"])
+async def test_a_blank_or_missing_title_falls_back_to_the_first_prompt(title):
+    (row,) = await _served_sessions({"prompt": "Run the smoke test", "session_title": title})
+    assert row["prompt"] == "Run the smoke test"
+
+
+@pytest.mark.asyncio
+async def test_a_stored_first_prompt_that_still_holds_the_markup_is_served_clean():
+    (row,) = await _served_sessions({"prompt": "Do this\n\n" + _MARKUP, "session_title": ""})
+    assert "pasted_content" not in row["prompt"]
+    assert row["prompt"] == "Do this\n\n\n" + _CLEAN
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("repository", "branch", "expected"),
+    [
+        ("my-repo", "feature-x", "my-repo"),
+        ("", "feature-x", "feature-x"),
+        (None, None, ""),
+    ],
+)
+async def test_a_first_prompt_that_cleans_to_nothing_is_served_as_the_repository_then_the_branch(
+    repository, branch, expected
+):
+    (row,) = await _served_sessions(
+        {"prompt": '<pasted_content id="a', "session_title": "", "repository": repository, "branch": branch}
+    )
+    assert row["prompt"] == expected
+
+
+@pytest.mark.asyncio
+async def test_a_session_row_carries_no_first_prompt_key():
+    (row,) = await _served_sessions({"prompt": "x", "session_title": "Name"})
+    assert "first_prompt" not in row and "session_title" not in row
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("term", "expected"),
+    [
+        ("release", 1),  # a word of the name
+        ("smoke", 1),  # a word of the first prompt of a named session
+        ("my-repo", 1),
+        ("feature-x", 1),
+        ("pasted_content", 0),
+        ("nothing-like-this", 0),
+    ],
+)
+async def test_a_named_session_is_found_by_name_prompt_repository_and_branch(term, expected):
+    rows = await _served_sessions(
+        {
+            "prompt": "Run the smoke test\n\n" + _MARKUP,
+            "session_title": "Release plan",
+            "repository": "my-repo",
+            "branch": "feature-x",
+        },
+        search=term,
+    )
+    assert len(rows) == expected
+
+
+@pytest.mark.asyncio
+async def test_a_search_for_the_markup_name_finds_no_unnamed_session_either():
+    rows = await _served_sessions({"prompt": _MARKUP, "session_title": ""}, search="pasted_content")
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_session_detail_serves_the_name_when_set():
+    handler = make_detail_handler({"session_id": "s1", "prompt": "first words", "session_title": "Release plan"})
+    detail, _, _ = await handler.get_session_detail("s1")
+    assert detail["prompt"] == "Release plan"
+
+
+@pytest.mark.asyncio
+async def test_session_detail_serves_the_first_prompt_without_markup_when_unnamed():
+    handler = make_detail_handler({"session_id": "s1", "prompt": "Do this\n\n" + _MARKUP, "session_title": None})
+    detail, _, _ = await handler.get_session_detail("s1")
+    assert detail["prompt"] == "Do this\n\n\n" + _CLEAN
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("repository", "branch", "expected"),
+    [
+        ("my-repo", "feature-x", "my-repo"),
+        ("", "feature-x", "feature-x"),
+        (None, None, ""),
+    ],
+)
+async def test_session_detail_serves_the_repository_then_the_branch_for_a_markup_only_first_prompt(
+    repository, branch, expected
+):
+    handler = make_detail_handler(
+        {"session_id": "s1", "prompt": '<pasted_content id="a">', "repository": repository, "branch": branch}
+    )
+    detail, _, _ = await handler.get_session_detail("s1")
+    assert detail["prompt"] == expected
+
+
+@pytest.mark.asyncio
+async def test_efficiency_worst_session_prompt_is_the_session_title_when_named():
+    row = {**BASE_COST_ROW, "cache_read_tokens": 1000, "api_call_count": 10}
+    row |= {"prompt": "Do this\n\n" + _MARKUP, "session_title": "Release plan"}
+
+    data, _ = await _efficiency_handler(row).get_efficiency(make_filter())
+
+    assert data["kpis"]["worst_session_prompt"] == "Release plan"
+
+
+@pytest.mark.asyncio
+async def test_efficiency_worst_session_prompt_is_the_cleaned_first_prompt_when_unnamed():
+    row = {**BASE_COST_ROW, "cache_read_tokens": 1000, "api_call_count": 10}
+    row |= {"prompt": "Do this\n\n" + _MARKUP, "session_title": ""}
+
+    data, _ = await _efficiency_handler(row).get_efficiency(make_filter())
+
+    assert data["kpis"]["worst_session_prompt"] == "Do this\n\n\n" + _CLEAN
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("repository", "branch", "expected"),
+    [
+        ("my-repo", "feature-x", "my-repo"),
+        ("", "feature-x", "feature-x"),
+        (None, None, None),
+    ],
+)
+async def test_efficiency_worst_session_prompt_falls_back_to_the_repository_then_the_branch(
+    repository, branch, expected
+):
+    row = {**BASE_COST_ROW, "cache_read_tokens": 1000, "api_call_count": 10}
+    row |= {"prompt": '<pasted_content id="a', "session_title": "", "repository": repository, "branch": branch}
+
+    data, _ = await _efficiency_handler(row).get_efficiency(make_filter())
+
+    assert data["kpis"]["worst_session_prompt"] == expected
+
+
+@pytest.mark.asyncio
+async def test_efficiency_worst_session_prompt_is_truncated_after_cleaning():
+    from codemie.service.analytics.handlers.cli_analytics_handler import _PROMPT_PREVIEW_LEN
+
+    row = {**BASE_COST_ROW, "cache_read_tokens": 1000, "api_call_count": 10, "session_title": ""}
+    row["prompt"] = _MARKUP + "y" * (_PROMPT_PREVIEW_LEN * 2)
+
+    data, _ = await _efficiency_handler(row).get_efficiency(make_filter())
+
+    worst = data["kpis"]["worst_session_prompt"]
+    assert len(worst) == _PROMPT_PREVIEW_LEN and worst.startswith(_CLEAN)

@@ -424,6 +424,29 @@ async def test_session_detail_meta_resolves_the_earliest_service_name():
 
 
 @pytest.mark.asyncio
+async def test_the_selected_sessions_carry_the_session_title():
+    recorder = _SqlRecorder()
+
+    await PostgresCliAnalyticsReader(recorder).get_session_cost_facts(_flt())  # type: ignore[arg-type]
+
+    sql = " ".join(recorder.statements[0].split())
+    assert "coalesce(d.session_title, '') AS session_title" in sql
+    assert "max(s.session_title) AS session_title" in sql
+    assert "max(s.first_prompt) AS prompt" in sql
+
+
+@pytest.mark.asyncio
+async def test_session_detail_meta_reads_the_session_title_next_to_the_first_prompt():
+    recorder = _SqlRecorder()
+
+    await PostgresCliAnalyticsReader(recorder).get_session_detail_meta("s1")  # type: ignore[arg-type]
+
+    sql = " ".join(recorder.statements[0].split())
+    assert "nullif(d.session_title, '') AS session_title" in sql
+    assert "nullif(d.first_prompt, '') AS prompt" in sql
+
+
+@pytest.mark.asyncio
 async def test_session_detail_meta_reads_the_same_activity_range_as_the_list():
     # One definition: the same day-bounded probes, open-ended when the session has no session_dims row.
     recorder = _SqlRecorder()

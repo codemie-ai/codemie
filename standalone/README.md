@@ -291,7 +291,7 @@ stack's PostgreSQL. The default Compose stack (`codemie` and `postgres`) is all 
      psql -U postgres -c "SELECT version_num FROM codemie_analytics.cli_analytics_alembic_version"
    ```
 
-   Expect `a1c1a0000006`. Then make an authenticated read as an administrator. Log in with
+   Expect `a1c1a0000009`. Then make an authenticated read as an administrator. Log in with
    `SUPERADMIN_EMAIL` and `SUPERADMIN_PASSWORD` from `standalone/.env.standalone` (login is limited
    to 5 attempts per 15 minutes) and request the Overview:
 

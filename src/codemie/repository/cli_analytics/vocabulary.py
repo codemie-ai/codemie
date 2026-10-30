@@ -26,6 +26,7 @@ The hook constants define the hook types and the keys that have a typed column.
 
 from __future__ import annotations
 
+import re
 from enum import IntEnum
 
 
@@ -145,6 +146,41 @@ SENTINEL_PREFIX_RAW: tuple[str, ...] = (
 # Starts of the prompts Claude Code injects itself: "<task-notification>" when a forked skill, background agent or
 # background command ends; "<agent-message" for a subagent hand-back or a peer session's message.
 CLAUDE_CODE_AUTO_PROMPT_PREFIXES: tuple[str, ...] = ("<task-notification>", "<agent-message")
+
+# The characters trimmed from both ends of a prompt or a session title: space, tab, line breaks and no-break space.
+# The SQL twin is rollups._BLANKS; keep the two equal.
+BLANK_CHARS: str = " \t\r\n\u00a0"
+
+# The ASCII whitespace inside the tag (not `\s`: Python's is Unicode, Postgres' is locale-bound).
+_ASCII_SPACE_CHARS = r" \t\n\r\f\v"
+_ASCII_SPACE = f"[{_ASCII_SPACE_CHARS}]"
+# An attribute name: an explicit class, not `\w` (same Unicode/locale drift as above).
+_ATTR_NAME = r"[A-Za-z0-9_-]+"
+# A complete attribute, quoted value only: ` name="value"`.
+_ATTR = rf'{_ASCII_SPACE}+{_ATTR_NAME}="[^"<>\n]*"'
+# The old-CLI cut-off, valid only as the last thing in the text: optional ` name`, `=`, `"` and a partial value.
+_ATTR_CUT = rf'(?:{_ASCII_SPACE}+(?:{_ATTR_NAME}(?:=(?:"[^"<>{_ASCII_SPACE_CHARS}]*)?)?)?)?'
+
+
+def _pasted_content_tag(text_end: str) -> str:
+    """The tag pattern, common to Postgres ARE and Python `re`; `text_end` is each side's end-of-text anchor.
+
+    A tag is `<` or `</`, `pasted_content`, complete attributes, then `>` or the cut-off at the end of the text.
+    A stray opener ("<pasted_content id=b23a instead of my text") is not a tag and is left in place.
+    A cut inside the tag name is not recovered; "<pasted_contentx ...>" is not ours.
+    """
+    return rf"</?pasted_content(?:{_ATTR})*(?:>|{_ATTR_CUT}{text_end})"
+
+
+# Postgres ARE pattern for the tag Claude Code wraps around pasted text (open, close, or a tag cut off by truncation).
+PASTED_CONTENT_TAG_SQL: str = _pasted_content_tag("$")
+_PASTED_CONTENT_TAG_RE = re.compile(_pasted_content_tag(r"\Z"))
+
+
+def strip_pasted_content(text: str) -> str:
+    """Remove pasted-content tags, keep the enclosed text, and trim the blank characters at both ends."""
+    return _PASTED_CONTENT_TAG_RE.sub("", text).strip(BLANK_CHARS)
+
 
 # Raw otel_resources.service_name values needing a specific display label, rather
 # than the generic humanize fallback below.

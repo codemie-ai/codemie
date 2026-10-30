@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "task": "Strip Claude pasted_content wrapper tags from session_dims.first_prompt and the served session list/detail prompt, decide and implement title precedence for named sessions, repair stored rows, and add regression tests for typed, pasted and named sessions.",
+  "generated": "2026-10-29T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 20,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Touches the rollup SQL (session_dims upsert and its earliest-merge), a pure strip helper in vocabulary, the handler's three prompt sites (list, detail, efficiency worst prompt), a title-precedence source (hook_events attrs or a session_dims column), and a repair path for stored rows (backfill or one-off update). 3-4 components over 2-3 layers with a shared utility." },
+    { "dimension": "requirements_clarity", "reason": "Cleaning rules are well specified, but title precedence has no contract: session_title only sits in unindexed hook_events attrs, session_dims.title is the transcript ai-title and is not served, and earliest-vs-latest on /rename is unverified. Repair scope for rows past the 90-day raw retention, read-time vs rollup-time normalisation, and sentinel ordering are open design decisions." },
+    { "dimension": "technical_risk", "reason": "Closest pattern is the existing _earliest/_PROMPT_OK/_earliest_merged first_prompt derivation. It does not cover the coalesce-with-empty-string trap, regex handling of unterminated and orphan tags, or SQL/Python regex parity, so there is no exact precedent. Backfill clamps to 90 days and the stored value wins in the merge, so old rows need a new repair approach with no alembic data-migration precedent. Acceptance enumerates edge variants (mid-prompt, multiple, unterminated, orphan) and no first_prompt test template exists, which adds a bump. Turn classification was confirmed independent, so blast radius is limited." },
+    { "dimension": "file_change_estimate", "reason": "Roughly 4-6 source files (rollups.py, vocabulary.py or a new helper, handler, possibly reader, an alembic revision or backfill change) plus 4-6 test and doc files (rollup, live, handler tests, two cli-analytics guides). Estimated 8-10 modified and 2-3 new across several directories." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from M to L: acceptance criteria enumerate edge variants (mid-prompt, multiple, unterminated, orphan tags) and no existing first_prompt test template or parameterized edge-case table covers them",
+    "Technical Risk held at L: the closest pattern (first_prompt earliest-merge derivation) does not cover regex stripping of untrusted text, the empty-string merge trap or repair of rows past raw retention",
+    "Clarity red flag: title precedence is undefined, 'decide and implement' leaves design decisions open"
+  ],
+  "split_recommendation": null
+}

@@ -1,0 +1,76 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-16528_pasted-content-first-prompt",
+  "head": "786a2357fa41188d0f0552d2da51efb5e26025c1",
+  "runner": "poetry",
+  "started_at": "2026-10-29T21:30:00Z",
+  "completed_at": "2026-10-29T21:37:00Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2000,
+      "command": "poetry run ruff format --check && poetry run ruff check",
+      "exit_code": 0,
+      "notes": "Non-mutating instead of `make ruff`. 3137 files already formatted; all checks passed."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 4000,
+      "command": "make build",
+      "exit_code": 0,
+      "notes": "Built sdist and wheel into gitignored dist/."
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1000,
+      "command": "make license-check",
+      "exit_code": 0,
+      "notes": "Checked 2823 files, 0 missing license headers."
+    },
+    {
+      "id": "secrets",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make gitleaks",
+      "exit_code": null,
+      "notes": "Not run: make gitleaks needs docker run (forbidden by dispatch safety rules) and no local gitleaks binary exists. Only CI/pre-commit settles this."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 129000,
+      "command": "poetry run pytest tests/ --skip-enterprise --ignore=tests/codemie/repository/cli_analytics/postgres --ignore=tests/enterprise/mcp_auth/test_discovery_cimd_disabled.py",
+      "exit_code": 0,
+      "notes": "22190 passed, 1242 skipped, 0 failed, 0 errors. Extra --ignore of tests/enterprise/mcp_auth/test_discovery_cimd_disabled.py (module-level import of codemie_enterprise cannot be skipped by --skip-enterprise; file outside branch diff; user chose to skip enterprise tests). test_openapi_snapshot is skipped (marked enterprise) under --skip-enterprise, so it was NOT run. Log: make-test.local.log."
+    },
+    {
+      "id": "cli-analytics-live",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 78000,
+      "command": "poetry run pytest tests/codemie/repository/cli_analytics/postgres -q -n 0 -rs --skip-enterprise",
+      "exit_code": 0,
+      "notes": "1151 passed, 0 skipped, 0 failed, serial, TEST_LOCAL_PG_URL=postgresql://postgres:password@localhost:55432/postgres (pg-16528). Includes untracked test_live_hooks_only_money.py. One PG version only, not the PG 17+14 matrix of make test-cli-analytics-live. Log: test.local.log."
+    },
+    {
+      "id": "sonar",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make sonar-local",
+      "exit_code": null,
+      "notes": "Pre-push hook step, opt-in via CODEMIE_PREPUSH_ENABLED; needs Sonar token/network not available here. Owed to CI/push."
+    }
+  ],
+  "failures": {}
+}

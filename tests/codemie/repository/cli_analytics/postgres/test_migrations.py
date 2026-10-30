@@ -185,13 +185,14 @@ def test_schema_extension_avoids_forbidden_constructs(forbidden: str) -> None:
 
 
 INITIAL_SCHEMA = _load_revision("a1c1a0000001_cli_analytics_initial_schema.py")
+SESSION_TITLE = _load_revision("a1c1a0000009_cli_analytics_session_title.py")
 _INSERT_TARGET = re.compile(r"INSERT INTO (\w+)(?: AS \w+)? \(([^)]*)\)")
 
 
 def _declared_columns() -> dict[str, set[str]]:
-    """The columns of each table once both revisions ran, read from the text of their statements."""
+    """The columns of each table once all revisions ran, read from the text of their statements."""
     declared: dict[str, set[str]] = {}
-    for statement in [*INITIAL_SCHEMA.UPGRADE, *SCHEMA_EXTENSION.UPGRADE]:
+    for statement in [*INITIAL_SCHEMA.UPGRADE, *SCHEMA_EXTENSION.UPGRADE, *SESSION_TITLE.UPGRADE]:
         lines = statement.strip().splitlines()
         created = re.match(r"CREATE TABLE (\w+) \(", lines[0])
         if created:
@@ -213,7 +214,22 @@ def _written_columns(statement: str) -> tuple[str, set[str]]:
     return table, {name.strip() for name in names.split(",")}
 
 
-def test_the_declared_columns_are_read_from_both_revisions() -> None:
+def test_session_title_revision_follows_the_schema_extension() -> None:
+    assert SESSION_TITLE.revision == "a1c1a0000009"
+    assert SESSION_TITLE.down_revision == SCHEMA_EXTENSION.revision
+
+
+def test_session_title_revision_only_adds_a_nullable_column_and_downgrade_drops_it() -> None:
+    assert [_normalized(s) for s in SESSION_TITLE.UPGRADE] == ["ALTER TABLE session_dims ADD COLUMN session_title text"]
+    assert [_normalized(s) for s in SESSION_TITLE.DOWNGRADE] == ["ALTER TABLE session_dims DROP COLUMN session_title"]
+
+
+def test_the_session_title_column_is_declared_and_kept_out_of_session_dims_attrs() -> None:
+    assert "session_title" in _declared_columns()["session_dims"]
+    assert "session_title" in rollups._SESSION_DIMS_COLUMNS
+
+
+def test_the_declared_columns_are_read_from_all_revisions() -> None:
     declared = _declared_columns()
 
     assert {"ts", "session_id", "attrs", "request_id"} <= declared["log_events"]  # initial + ADD COLUMN

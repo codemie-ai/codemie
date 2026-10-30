@@ -76,6 +76,7 @@ from codemie.repository.cli_analytics.vocabulary import (
     DIMENSION_HOOK_TYPES,
     EDIT_TOOLS,
     LINES_METRICS,
+    PASTED_CONTENT_TAG_SQL,
     SENTINEL_EXACT,
     SENTINEL_PREFIX_RAW,
     SENTINEL_PREFIX_TRIMMED,
@@ -172,18 +173,38 @@ _LOG, _DIMS, _SPANS, _METRICS, _USAGE, _SESSION = (
 _TOOL, _EXEC, _INTERACTION = int(SpanKind.TOOL), int(SpanKind.TOOL_EXECUTION), int(SpanKind.INTERACTION)
 _DIM_TYPES = _text_array(DIMENSION_HOOK_TYPES)
 
-# A prompt that may become the session's first prompt (session_dims.first_prompt).
+
+# The characters trimmed from both ends of a prompt or a session title (vocabulary.BLANK_CHARS, as a SQL string).
+_BLANKS = "E' \\t\\r\\n\\u00a0'"
+
+
+def _clean_prompt(expr: str) -> str:
+    """SQL for a prompt without the pasted-content tags, trimmed of the blank characters at both ends."""
+    return f"btrim(regexp_replace({expr}, {_literal(PASTED_CONTENT_TAG_SQL)}, '', 'g'), {_BLANKS})"
+
+
+_CLEAN_PROMPT = _clean_prompt("h.prompt_body")
+# The cleaned prompt is computed once per row, by the LATERAL join of the session_dims upsert (alias `c`).
+_CLEANED = "c.cp"
+
+# A prompt that may become the session's first prompt (session_dims.first_prompt). The sentinel tests read the
+# cleaned prompt, so a sentinel wrapped in a paste block is skipped; the raw-prefix tests read the prompt as sent
+# and the cleaned prompt, so a continuation or caveat prompt wrapped in a paste block is skipped too.
 _PROMPT_OK = (
-    f"btrim(h.prompt_body) <> '' AND lower(btrim(h.prompt_body)) <> ALL({_text_array(SENTINEL_EXACT)})"
-    + "".join(f" AND NOT starts_with(btrim(h.prompt_body), {_literal(p)})" for p in SENTINEL_PREFIX_TRIMMED)
-    + "".join(f" AND NOT starts_with(h.prompt_body, {_literal(p)})" for p in SENTINEL_PREFIX_RAW)
+    f"{_CLEANED} <> '' AND lower({_CLEANED}) <> ALL({_text_array(SENTINEL_EXACT)})"
+    + "".join(f" AND NOT starts_with({_CLEANED}, {_literal(p)})" for p in SENTINEL_PREFIX_TRIMMED)
+    + "".join(
+        f" AND NOT starts_with(h.prompt_body, {_literal(p)}) AND NOT starts_with({_CLEANED}, {_literal(p)})"
+        for p in SENTINEL_PREFIX_RAW
+    )
 )
 
 
-def _earliest(column: str, condition: str = "") -> str:
-    """The earliest non-empty value of the column by ts, ties to the first ingested."""
+def _earliest(column: str, condition: str = "", value: str | None = None) -> str:
+    """The earliest non-empty value of the column by ts, ties to the first ingested. `value` is the aggregated
+    expression when it is not the column itself; the non-empty test stays on the column."""
     where = f"h.event_type = ANY({_DIM_TYPES}) AND h.{column} <> ''" + (f" AND {condition}" if condition else "")
-    return f"(array_agg(h.{column} ORDER BY h.ts, h.ingest_seq) FILTER (WHERE {where}))[1]"
+    return f"(array_agg({value or f'h.{column}'} ORDER BY h.ts, h.ingest_seq) FILTER (WHERE {where}))[1]"
 
 
 def _counter(condition: str, scale: int = 1) -> str:
@@ -206,10 +227,11 @@ _EARLIEST_COLUMNS = ("repository", "branch", "repo_remote", "project_name", "dev
 
 def _earliest_merged(column: str) -> str:
     """The stored earliest value unless the recompute reaches further back (see session_dims)."""
-    return (
-        f"CASE WHEN sd.started_at < EXCLUDED.started_at THEN coalesce(sd.{column}, EXCLUDED.{column}) "
-        f"ELSE coalesce(EXCLUDED.{column}, sd.{column}) END"
-    )
+    # An empty first_prompt never replaces a stored one; the other columns are never empty strings.
+    old, new = (f"sd.{column}", f"EXCLUDED.{column}")
+    if column == "first_prompt":
+        old, new = f"nullif({old}, '')", f"nullif({new}, '')"
+    return f"CASE WHEN sd.started_at < EXCLUDED.started_at THEN coalesce({old}, {new}) ELSE coalesce({new}, {old}) END"
 
 
 def _in_day(alias: str, table: str) -> str:
@@ -781,7 +803,7 @@ _USAGE_EVENT = "agent.usage.request"  # stored in usage_requests; its common fie
 # carry it. Common fields come from any event; the typed hook columns (effort, permission_mode, ...)
 # are read from their columns, never from attrs.
 _COMMON_TEXT = ("platform", "entrypoint", "client_version", "codemie_cli_version", "team", "environment", "space_id",
-                "space_source")  # fmt: skip
+                "space_source", "session_title")  # fmt: skip
 _ENV_EVENTS = (_ENV_EVENT, _SESSION_EVENT)
 _ENV_TEXT = ("provider", "api_host", "configured_model", "output_style", "os", "arch", "node_version", "timezone",
              "hostname_hash")  # fmt: skip
@@ -806,7 +828,7 @@ _SESSION_DIMS_COLUMNS = (
     "api_host", "configured_model", "effort", "output_style", "os", "arch", "node_version", "timezone",
     "permission_mode", "git_head_start", "git_head_end", "organization_id", "account_uuid", "account_id",
     "otel_user_id", "terminal_type", "sources", "attrs", "client_versions", "compactions", "plugins", "mcp_servers",
-    "git_commits", "tool_results", "schema_version", "activity_started_at", "summary_ts",
+    "git_commits", "tool_results", "schema_version", "activity_started_at", "summary_ts", "session_title",
 )  # fmt: skip
 _NOT_ATTRS = (*_SESSION_DIMS_COLUMNS, "type", "timestamp", "session_id", "prompt_id", "event_id",
               "counters_source", "tool_counters", "identity_ts", "story_ts")  # fmt: skip
@@ -874,6 +896,9 @@ def _story_wins(new: str = "EXCLUDED", old: str = "sd") -> str:
     )
 
 
+# A session_title of only blank characters is no value: it must not shadow an earlier real name.
+_BLANK_TITLE = f"(e.key = 'session_title' AND btrim(e.value #>> '{{}}', {_BLANKS}) = '')"
+
 # The latest non-empty value of every field the row takes from the events' attrs (by ts, then
 # ingest_seq; a hook event before a usage_requests row of the same time), as one jsonb object.
 _LATEST_FIELD = f"""(e.key = ANY({_text_array((*_COMMON_TEXT, "identity_source"))}) AND {_is_string("e.value")})
@@ -898,6 +923,7 @@ _LATEST_VALUES = f"""SELECT jsonb_object_agg(x.key, x.value) AS v
         ) r
         CROSS JOIN LATERAL jsonb_each(CASE WHEN jsonb_typeof(r.attrs) = 'object' THEN r.attrs END) e
         WHERE e.value NOT IN ('null'::jsonb, '""'::jsonb)
+          AND NOT {_BLANK_TITLE}
           AND ({_LATEST_FIELD})
         ORDER BY e.key, r.ts DESC, r.ingest_seq DESC NULLS LAST, e.value::text COLLATE "C" DESC
     ) x"""
@@ -1309,7 +1335,12 @@ _SESSION_DIMS_VALUES: tuple[tuple[str, str], ...] = (
     ("ingest_source", "CASE WHEN src.plugin THEN 'plugin' ELSE 'otel' END"),
     ("client_version", f"coalesce(lv.v->>'client_version', {_otel_session_text('app.version')})"),
     ("entrypoint", f"coalesce(lv.v->>'entrypoint', {_otel_session_text('app.entrypoint')})"),
-    *((c, f"lv.v->>{_literal(c)}") for c in _COMMON_TEXT if c not in ("platform", "client_version", "entrypoint")),
+    ("session_title", f"left(nullif(btrim(lv.v->>'session_title', {_BLANKS}), ''), 200)"),
+    *(
+        (c, f"lv.v->>{_literal(c)}")
+        for c in _COMMON_TEXT
+        if c not in ("platform", "client_version", "entrypoint", "session_title")
+    ),
     ("schema_version", "(lv.v->>'schema_version')::int"),
     *((c, f"lv.v->>{_literal(c)}") for c in _ENV_TEXT),
     ("plugins", "lv.v->'plugins'"),
@@ -1603,10 +1634,13 @@ _TOOL_START = "agent.tool.start"
 # bounded by session_id and ts to use the (session_id, ts) indexes. NOT EXISTS, never a JOIN, so a
 # duplicated user_prompt row cannot count a span twice.
 _TURN_WINDOW = f"interval '{int(_CROSS_MIDNIGHT.total_seconds())} seconds'"
+# Turn classification keeps its original trim set (not the shared blank set).
+_AUTO_PROMPT_TRIM = "E' \\t\\r\\n'"
 _IS_AUTO_PROMPT = (
     f"({is_claude_code('h')} AND ("
     + " OR ".join(
-        f"starts_with(ltrim(h.prompt_body, E' \\t\\r\\n'), {_literal(p)})" for p in CLAUDE_CODE_AUTO_PROMPT_PREFIXES
+        f"starts_with(ltrim(h.prompt_body, {_AUTO_PROMPT_TRIM}), {_literal(p)})"
+        for p in CLAUDE_CODE_AUTO_PROMPT_PREFIXES
     )
     + "))"
 )
@@ -1934,12 +1968,14 @@ RECOMPUTE: list[str] = [
            min(h.ts) FILTER (WHERE h.event_type = ANY({_DIM_TYPES})),
            max(h.ts) FILTER (WHERE h.event_type = ANY({_DIM_TYPES})),
            {_earliest("cwd")}, {_earliest("git_branch")}, {_earliest("repo_remote")},
-           {_earliest("codemie_project_name")}, {_earliest("developer_name")}, {_earliest("prompt_body", _PROMPT_OK)},
+           {_earliest("codemie_project_name")}, {_earliest("developer_name")},
+           {_earliest("prompt_body", _PROMPT_OK, value=_CLEANED)},
            max(h.user_email COLLATE "C") FILTER (WHERE h.user_email <> ''),
            max(h.developer_name COLLATE "C") FILTER (WHERE h.developer_name <> ''),
            now()
     FROM (SELECT DISTINCT session_id FROM {_KEYS} WHERE kinds & {_DIMS} <> 0 AND session_id <> '') k
     JOIN hook_events h ON h.session_id = k.session_id
+    CROSS JOIN LATERAL (SELECT {_CLEAN_PROMPT} AS cp) c
     GROUP BY h.session_id
     ON CONFLICT (session_id) DO UPDATE SET
         started_at = LEAST(sd.started_at, EXCLUDED.started_at),

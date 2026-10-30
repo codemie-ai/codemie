@@ -36,7 +36,7 @@ from typing import Any
 
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
 from codemie.repository.cli_analytics.ports import SESSION_PAGE_SORTS, CliAnalyticsReader
-from codemie.repository.cli_analytics.vocabulary import humanize_harness_name
+from codemie.repository.cli_analytics.vocabulary import BLANK_CHARS, humanize_harness_name, strip_pasted_content
 from codemie.service.analytics.delivery_framework import classify_delivery_framework
 from codemie.service.analytics.handlers.coding_agent_pricing import CatalogPricer
 from codemie.service.analytics.handlers.session_money import (
@@ -130,6 +130,15 @@ def _f(value: Any) -> float:
 
 def _s(value: Any) -> str:
     return "" if value is None else str(value)
+
+
+def _served_prompt(title: object, first_prompt: object, repository: object, branch: object) -> str:
+    """The session's name when it has one, else its first prompt without paste markup.
+
+    Rows stored before the rollup stripped the markup are cleaned here too. A first prompt that cleans to
+    nothing (an old-CLI prompt cut inside the open tag) is served as the repository, else the branch.
+    """
+    return _s(title).strip(BLANK_CHARS) or strip_pasted_content(_s(first_prompt)) or _s(repository) or _s(branch)
 
 
 def _iso(value: Any) -> str:
@@ -721,7 +730,9 @@ class LocalAnalyticsHandler:
             "user_email": _s(row.get("developer_name")),
             "repository": _s(row.get("repository")) or None,
             "branch": _s(row.get("branch")) or None,
-            "prompt": _s(row.get("prompt")),
+            "prompt": _served_prompt(
+                row.get("session_title"), row.get("prompt"), row.get("repository"), row.get("branch")
+            ),
             "start_time": _iso(started_at),
             "duration_ms": duration_ms,
             "model_name": LocalAnalyticsHandler._display_models(model_cost_rows, model),
@@ -738,13 +749,19 @@ class LocalAnalyticsHandler:
         }
 
     @staticmethod
-    def _filter_sessions(sessions: list[dict], search: str | None, framework: str | None) -> list[dict]:
+    def _filter_sessions(
+        sessions: list[dict],
+        search: str | None,
+        framework: str | None,
+        named_first_prompt: dict[str, str],
+    ) -> list[dict]:
         if search:
             term = search.strip().lower()
             sessions = [
                 s
                 for s in sessions
                 if term in s["prompt"].lower()
+                or term in named_first_prompt.get(s["trace_id"], "").lower()
                 or term in (s["repository"] or "").lower()
                 or term in (s["branch"] or "").lower()
             ]
@@ -838,7 +855,13 @@ class LocalAnalyticsHandler:
         ]
 
         if not in_sql:
-            sessions = self._filter_sessions(sessions, search, framework)
+            # A named session is also found by its first prompt; an unnamed one is served as that prompt already.
+            named_first_prompt = {
+                _s(r.get("session_id")): strip_pasted_content(_s(r.get("prompt")))
+                for r in cost_facts
+                if _s(r.get("session_title")).strip(BLANK_CHARS)
+            }
+            sessions = self._filter_sessions(sessions, search, framework, named_first_prompt)
 
         returned = {s["trace_id"] for s in sessions}
         money = price_session_models([r for r in session_model_rows if _s(r.get("session_id")) in returned], pricer)
@@ -950,7 +973,9 @@ class LocalAnalyticsHandler:
             "user_email": _s(meta.get("developer_name")),
             "repository": _s(meta.get("repository")) or None,
             "branch": _s(meta.get("branch")) or None,
-            "prompt": _s(meta.get("prompt")),
+            "prompt": _served_prompt(
+                meta.get("session_title"), meta.get("prompt"), meta.get("repository"), meta.get("branch")
+            ),
             "start_time": _iso(started_at),
             "duration_ms": duration_ms,
             "model_name": display_model,
@@ -1134,7 +1159,12 @@ class LocalAnalyticsHandler:
             # Highest ratio wins; a tie goes to the lowest session id, not to row order.
             if worst_ratio is None or ratio > worst_ratio or (ratio == worst_ratio and sid < worst_trace):
                 worst_ratio = ratio
-                worst_prompt = _s(row.get("prompt")) or None
+                worst_prompt = (
+                    _served_prompt(
+                        row.get("session_title"), row.get("prompt"), row.get("repository"), row.get("branch")
+                    )
+                    or None
+                )
                 worst_trace = sid
             depth_counts[depth_bucket(turns)] += 1
 
