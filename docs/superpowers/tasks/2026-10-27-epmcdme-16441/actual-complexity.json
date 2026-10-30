@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "generated": "2026-10-28T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 24,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 16,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Touches the analytics handler, project gate, new gate_discards module, repository ports, Postgres ingestor and reader, and the REST model: 4+ components including a new abstraction." },
+    { "dimension": "technical_risk", "reason": "Query-time pricing of subagent totals, cost-less sessions in the list, and discard logging with an HMAC user hash and counter (privacy/secret handling). No exact precedent for the hashing and counter, and many edge cases are enumerated in live tests." },
+    { "dimension": "file_change_estimate", "reason": "16 files changed (949 insertions, 75 deletions), including 5 test files, an OpenAPI baseline and a guide." },
+    { "dimension": "affected_layers", "reason": "API model and OpenAPI baseline, service/handler, repository/persistence reads and writes, and configuration. No schema migration." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped: user identifier hashing (HMAC) and secret-backed config key in discard logging",
+    "Technical Risk bumped: enumerated edge cases (empty user id hash, costless sessions, totals-only subagent tokens) need defensive tests"
+  ],
+  "split_recommendation": null
+}

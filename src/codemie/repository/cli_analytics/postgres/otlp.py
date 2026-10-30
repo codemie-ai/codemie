@@ -254,6 +254,11 @@ class DecodedBatch:
     def record_count(self) -> int:
         return len(self.logs) + len(self.hooks) + len(self.usage) + len(self.spans) + len(self.metrics)
 
+    def session_ids(self) -> set[str]:
+        """Non-empty session ids of the kept rows (read only on the discard path; `session_attrs` is not used)."""
+        rows = (*self.hooks, *self.usage, *self.logs, *self.spans, *self.metrics)
+        return {row.session_id for row in rows if row.session_id}
+
 
 # ── value rendering ───────────────────────────────────────────────────────────
 

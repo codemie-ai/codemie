@@ -31,6 +31,8 @@ from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
 
 Rows = list[dict[str, Any]]
 OtlpSignal = Literal["logs", "metrics", "traces"]
+# The session-list sorts `get_session_page` decides in SQL; the handler pages every other sort in Python.
+SESSION_PAGE_SORTS = ("start_time", "ctx_per_call")
 
 
 @dataclass(frozen=True)
@@ -82,7 +84,14 @@ class IngestResult:
 # (canonical) name, in a `canonical_project` attribute set when it answers None; read it with
 # `accepted_project`. The request may spell the project in another case than the stored name, and
 # attribution must follow the project that was found, not the spelling that was sent.
-IngestGate = Callable[[frozenset[str]], Awaitable[str | None]]
+#
+# `user_hash` is a short keyed hash of the sender for the discard log line, None when none is available.
+# It is read only when a discard is recorded, so a gate computes it lazily.
+class IngestGate(Protocol):
+    async def __call__(self, explicit: frozenset[str]) -> str | None: ...
+
+    @property
+    def user_hash(self) -> str | None: ...
 
 
 def accepted_project(gate: IngestGate | None) -> str | None:
@@ -185,7 +194,18 @@ class CliAnalyticsReader(Protocol):
         f: LocalAnalyticsFilter,
         search: str | None = None,
         is_unattributed: bool = False,
+        include_costless: bool = False,
     ) -> Rows: ...
+
+    async def get_session_page(
+        self,
+        f: LocalAnalyticsFilter,
+        sort_by: str,
+        page: int,
+        per_page: int,
+        search: str | None = None,
+        is_unattributed: bool = False,
+    ) -> tuple[int, list[str]]: ...
 
     async def get_session_start_times(self, f: LocalAnalyticsFilter) -> Rows: ...
 

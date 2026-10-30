@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from typing import Any
@@ -67,6 +68,20 @@ def token_counts(row: dict[str, Any]) -> TokenCounts:
         cache_5m=_optional_int(row.get("cache_creation_5m_tokens")),
         cache_1h=_optional_int(row.get("cache_creation_1h_tokens")),
     )
+
+
+def has_priced_model(models: Iterable[str], pricer: CatalogPricer) -> bool:
+    """True when at least one model name has a catalog price: the one rule behind `cost_available`, so a session
+    whose models are all missing from the catalog is not read as free."""
+    return any(pricer.is_priced(_s(model)) for model in models)
+
+
+def priced_session_ids(rows: list[dict[str, Any]], pricer: CatalogPricer) -> set[str]:
+    """Sessions with at least one (session, model) row whose model has a catalog price."""
+    models_by_session: dict[str, list[str]] = {}
+    for row in rows:
+        models_by_session.setdefault(_s(row.get("session_id")), []).append(_s(row.get("model_name")))
+    return {sid for sid, models in models_by_session.items() if has_priced_model(models, pricer)}
 
 
 def dispatch_money(pricer: CatalogPricer, row: dict[str, Any]) -> float:

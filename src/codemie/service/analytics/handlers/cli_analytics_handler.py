@@ -29,20 +29,29 @@ threshold at which this should move into a materialized fact table.
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 from datetime import date, datetime, timezone
 from typing import Any
 
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
-from codemie.repository.cli_analytics.ports import CliAnalyticsReader
+from codemie.repository.cli_analytics.ports import SESSION_PAGE_SORTS, CliAnalyticsReader
 from codemie.repository.cli_analytics.vocabulary import humanize_harness_name
 from codemie.service.analytics.delivery_framework import classify_delivery_framework
 from codemie.service.analytics.handlers.coding_agent_pricing import CatalogPricer
-from codemie.service.analytics.handlers.session_money import dispatch_money, price_session_models, token_counts
+from codemie.service.analytics.handlers.session_money import (
+    dispatch_money,
+    has_priced_model,
+    price_session_models,
+    priced_session_ids,
+    token_counts,
+)
 
 _DEPTH_BUCKETS = ("1", "2-5", "6-10", "11-25", "26-50", "50+")
 _MAX_INVOCATIONS = 10
 _PROMPT_PREVIEW_LEN = 50
+
+logger = logging.getLogger(__name__)
 
 
 def depth_bucket(turns: int) -> str:
@@ -674,6 +683,104 @@ class LocalAnalyticsHandler:
 
     # ── Sessions ─────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _log_unavailable_cost(
+        session_ids: list[str], model_rows_by_session: dict[str, list[dict]], priced_sessions: set[str]
+    ) -> None:
+        no_token_rows = sum(1 for sid in session_ids if sid not in model_rows_by_session)
+        unpriced_models = sum(1 for sid in session_ids if sid in model_rows_by_session and sid not in priced_sessions)
+        if no_token_rows or unpriced_models:
+            logger.info(
+                "cli_analytics: %d sessions listed with cost_available=false: no_token_rows=%d unpriced_models=%d",
+                no_token_rows + unpriced_models,
+                no_token_rows,
+                unpriced_models,
+            )
+
+    @staticmethod
+    def _session_row(
+        row: dict,
+        turns_by_session: dict[str, int],
+        success_by_session: dict[str, dict],
+        lines_by_session: dict[str, dict],
+        skills_by_session: dict[str, Any],
+        model_rows_by_session: dict[str, list[dict]],
+    ) -> dict:
+        sid = _s(row.get("session_id"))
+        model = _s(row.get("model_name"))
+        cache_read = _i(row.get("cache_read_tokens"))
+        turns = turns_by_session.get(sid, 0)
+        lines = lines_by_session.get(sid, {})
+        started_at = row.get("started_at")
+        # The reader's activity-range duration: the one Session Detail and Users Avg report too.
+        duration_ms = max(0, _i(row.get("duration_ms")))
+        model_cost_rows = model_rows_by_session.get(sid, [])
+        return {
+            "trace_id": sid,
+            "developer_name": _s(row.get("developer_name")),
+            "user_email": _s(row.get("developer_name")),
+            "repository": _s(row.get("repository")) or None,
+            "branch": _s(row.get("branch")) or None,
+            "prompt": _s(row.get("prompt")),
+            "start_time": _iso(started_at),
+            "duration_ms": duration_ms,
+            "model_name": LocalAnalyticsHandler._display_models(model_cost_rows, model),
+            "turns": turns,
+            "tool_call_count": _i(success_by_session.get(sid, {}).get("tool_calls")),
+            "api_call_count": _i(row.get("api_call_count")),
+            "input_tokens": _i(row.get("input_tokens")),
+            "output_tokens": _i(row.get("output_tokens")),
+            "cache_read_tokens": cache_read,
+            "cache_creation_tokens": _i(row.get("cache_creation_tokens")),
+            "net_lines": _i(lines.get("lines_added")) - _i(lines.get("lines_removed")),
+            "delivery_framework": classify_delivery_framework(skills_by_session.get(sid, [])),
+            "ctx_per_call": _ctx_per_call(row.get("cache_read_tokens"), row.get("api_call_count")),
+        }
+
+    @staticmethod
+    def _filter_sessions(sessions: list[dict], search: str | None, framework: str | None) -> list[dict]:
+        if search:
+            term = search.strip().lower()
+            sessions = [
+                s
+                for s in sessions
+                if term in s["prompt"].lower()
+                or term in (s["repository"] or "").lower()
+                or term in (s["branch"] or "").lower()
+            ]
+
+        if framework:
+            sessions = [s for s in sessions if s.get("delivery_framework") == framework]
+        return sessions
+
+    @staticmethod
+    def _page_sessions(
+        sessions: list[dict],
+        in_sql: bool,
+        sql_total: int,
+        page_ids: list[str],
+        sort_by: str,
+        page: int,
+        per_page: int,
+    ) -> tuple[list[dict], int]:
+        if in_sql:
+            # The reader already ordered, searched and paged; its page order is the response order.
+            position = {sid: i for i, sid in enumerate(page_ids)}
+            return sorted(sessions, key=lambda s: position[s["trace_id"]]), sql_total
+
+        sort_key = {
+            "start_time": lambda s: s["start_time"],
+            "cost_usd": lambda s: _float_sort_key(s["cost_usd"]),
+            "ctx_per_call": lambda s: _float_sort_key(s["ctx_per_call"]),
+        }.get(sort_by, lambda s: s["start_time"])
+        # Equal sort values (e.g. sessions without plugin data share one start time) keep
+        # a stable trace_id order, so pages neither repeat nor skip sessions.
+        sessions.sort(key=lambda s: s["trace_id"])
+        sessions.sort(key=sort_key, reverse=True)
+
+        offset = page * per_page
+        return sessions[offset : offset + per_page], len(sessions)
+
     async def get_sessions(
         self,
         f: LocalAnalyticsFilter,
@@ -686,8 +793,19 @@ class LocalAnalyticsHandler:
         branch: str | None = None,
     ) -> tuple[dict[str, Any], CatalogPricer, str | None]:
         f.branch = branch or None
+        # cost_usd sorts by catalog prices and framework filters by customer regex config: neither is
+        # expressible in SQL, so those requests are filtered, sorted and paged in Python over the whole window.
+        in_sql = sort_by in SESSION_PAGE_SORTS and not framework
+        sql_total = 0
+        page_ids: list[str] = []
+        if in_sql:
+            sql_total, page_ids = await self._repo.get_session_page(f, sort_by, page, per_page, search, is_unattributed)
+            if not page_ids:
+                return {"sessions": [], "page": page, "per_page": per_page, "total": sql_total}, CatalogPricer(), None
+            f = f.restricted_to(page_ids)
+
         cost_facts, turns_rows, success_rows, lines_rows, session_model_rows = await asyncio.gather(
-            self._repo.get_session_cost_facts(f, is_unattributed=is_unattributed),
+            self._repo.get_session_cost_facts(f, is_unattributed=is_unattributed, include_costless=True),
             self._repo.get_turns_by_session(f),
             self._repo.get_tool_success_by_session(f),
             self._repo.get_lines_by_session(f),
@@ -704,73 +822,33 @@ class LocalAnalyticsHandler:
 
         model_rows_by_session = self._group_by_session(session_model_rows)
 
-        sessions: list[dict] = []
-        for row in cost_facts:
-            sid = _s(row.get("session_id"))
-            model = _s(row.get("model_name"))
-            cache_read = _i(row.get("cache_read_tokens"))
-            turns = turns_by_session.get(sid, 0)
-            lines = lines_by_session.get(sid, {})
-            started_at = row.get("started_at")
-            # The reader's activity-range duration: the one Session Detail and Users Avg report too.
-            duration_ms = max(0, _i(row.get("duration_ms")))
-            model_cost_rows = model_rows_by_session.get(sid, [])
-            sessions.append(
-                {
-                    "trace_id": sid,
-                    "developer_name": _s(row.get("developer_name")),
-                    "user_email": _s(row.get("developer_name")),
-                    "repository": _s(row.get("repository")) or None,
-                    "branch": _s(row.get("branch")) or None,
-                    "prompt": _s(row.get("prompt")),
-                    "start_time": _iso(started_at),
-                    "duration_ms": duration_ms,
-                    "model_name": self._display_models(model_cost_rows, model),
-                    "turns": turns,
-                    "tool_call_count": _i(success_by_session.get(sid, {}).get("tool_calls")),
-                    "api_call_count": _i(row.get("api_call_count")),
-                    "input_tokens": _i(row.get("input_tokens")),
-                    "output_tokens": _i(row.get("output_tokens")),
-                    "cache_read_tokens": cache_read,
-                    "cache_creation_tokens": _i(row.get("cache_creation_tokens")),
-                    "net_lines": _i(lines.get("lines_added")) - _i(lines.get("lines_removed")),
-                    "delivery_framework": classify_delivery_framework(skills_by_session.get(sid, [])),
-                    "ctx_per_call": _ctx_per_call(row.get("cache_read_tokens"), row.get("api_call_count")),
-                }
+        pricer = CatalogPricer()
+        priced_sessions = priced_session_ids(session_model_rows, pricer)
+
+        sessions = [
+            self._session_row(
+                row,
+                turns_by_session,
+                success_by_session,
+                lines_by_session,
+                skills_by_session,
+                model_rows_by_session,
             )
+            for row in cost_facts
+        ]
 
-        if search:
-            term = search.strip().lower()
-            sessions = [
-                s
-                for s in sessions
-                if term in s["prompt"].lower()
-                or term in (s["repository"] or "").lower()
-                or term in (s["branch"] or "").lower()
-            ]
-
-        if framework:
-            sessions = [s for s in sessions if s.get("delivery_framework") == framework]
+        if not in_sql:
+            sessions = self._filter_sessions(sessions, search, framework)
 
         returned = {s["trace_id"] for s in sessions}
-        money = price_session_models([r for r in session_model_rows if _s(r.get("session_id")) in returned])
+        money = price_session_models([r for r in session_model_rows if _s(r.get("session_id")) in returned], pricer)
         for s in sessions:
             s["cost_usd"] = money.by_session.get(s["trace_id"], 0.0)
+            s["cost_available"] = s["trace_id"] in priced_sessions
             s["bloat_pct"] = _pct(money.cache_read_by_session.get(s["trace_id"], 0.0), s["cost_usd"])
 
-        sort_key = {
-            "start_time": lambda s: s["start_time"],
-            "cost_usd": lambda s: _float_sort_key(s["cost_usd"]),
-            "ctx_per_call": lambda s: _float_sort_key(s["ctx_per_call"]),
-        }.get(sort_by, lambda s: s["start_time"])
-        # Equal sort values (e.g. sessions without plugin data share one start time) keep
-        # a stable trace_id order, so pages neither repeat nor skip sessions.
-        sessions.sort(key=lambda s: s["trace_id"])
-        sessions.sort(key=sort_key, reverse=True)
-
-        total = len(sessions)
-        offset = page * per_page
-        page_rows = sessions[offset : offset + per_page]
+        page_rows, total = self._page_sessions(sessions, in_sql, sql_total, page_ids, sort_by, page, per_page)
+        self._log_unavailable_cost([s["trace_id"] for s in page_rows], model_rows_by_session, priced_sessions)
 
         data_as_of = max((s["start_time"] for s in page_rows), default=None)
         return {"sessions": page_rows, "page": page, "per_page": per_page, "total": total}, money.pricer, data_as_of
@@ -805,7 +883,11 @@ class LocalAnalyticsHandler:
         cost = _first(cost_rows)
         scalars = _first(scalar_rows)
         model = _s(cost.get("model_name"))
-        cache_read = _i(cost.get("cache_read_tokens"))
+        # Token columns come from the per-model rows, which add the totals-only subagent rows, as the list does.
+        input_tokens = sum(_i(row.get("input_tokens")) for row in model_cost_rows)
+        output_tokens = sum(_i(row.get("output_tokens")) for row in model_cost_rows)
+        cache_read = sum(_i(row.get("cache_read_tokens")) for row in model_cost_rows)
+        cache_creation = sum(_i(row.get("cache_creation_tokens")) for row in model_cost_rows)
         display_model = self._display_models(model_cost_rows, model)
 
         tools = []
@@ -853,10 +935,10 @@ class LocalAnalyticsHandler:
             started_at,
             duration_ms,
             cost_usd,
-            _i(cost.get("input_tokens")),
-            _i(cost.get("output_tokens")),
+            input_tokens,
+            output_tokens,
             cache_read,
-            _i(cost.get("cache_creation_tokens")),
+            cache_creation,
         )
 
         lines_added = _i(scalars.get("lines_added"))
@@ -874,11 +956,12 @@ class LocalAnalyticsHandler:
             "model_name": display_model,
             "turns": _i(scalars.get("turns")),
             "tool_call_count": _i(scalars.get("tool_call_count")),
-            "input_tokens": _i(cost.get("input_tokens")),
-            "output_tokens": _i(cost.get("output_tokens")),
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
             "cache_read_tokens": cache_read,
-            "cache_creation_tokens": _i(cost.get("cache_creation_tokens")),
+            "cache_creation_tokens": cache_creation,
             "cost_usd": cost_usd,
+            "cost_available": has_priced_model((_s(row.get("model_name")) for row in model_cost_rows), pricer),
             "net_lines": lines_added - lines_removed,
             "bloat_pct": _pct(crc, cost_usd),
             "events": events,

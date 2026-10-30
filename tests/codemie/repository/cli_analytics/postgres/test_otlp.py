@@ -1162,3 +1162,32 @@ def test_hooks_usage_request_keeps_a_non_empty_prompt_id_in_attrs() -> None:
     (row,) = _decode(event).usage
 
     assert json.loads(row.attrs) == {"prompt_id": "p-7"}
+
+
+def test_session_ids_collects_every_kept_row_kind_and_skips_empty_ids():
+    logs = decode_otlp(
+        "logs",
+        b.logs_request(
+            RESOURCE, [b.log_record(T, {"event.name": "api_request", "session.id": "s-log"})]
+        ).SerializeToString(),
+        "",
+    )
+    hooks = decode_hook_events([minimal("agent.tool.end", "s-hook", T.isoformat())], "", 0)
+    usage = decode_hook_events([usage_request(timestamp=T.isoformat(), session_id="s-usage")], "", 0)
+    lines = b.sum_metric("claude_code.lines_of_code.count", [b.number_point(T, 3, {"session.id": "s-metric"})])
+    metrics = decode_otlp("metrics", b.metrics_request({}, [lines]).SerializeToString(), "")
+    span = b.span(
+        "claude_code.tool", trace_id=bytes(16), span_id=bytes(8), start=T, end=T, attrs={"session.id": "s-span"}
+    )
+    spans = decode_otlp("traces", b.traces_request(RESOURCE, [span]).SerializeToString(), "")
+    batch = DecodedBatch(
+        logs=logs.logs + [logs.logs[0]._replace(session_id="")],
+        hooks=hooks.hooks,
+        usage=usage.usage,
+        spans=spans.spans,
+        metrics=metrics.metrics,
+        session_attrs={"never-read": {}},
+    )
+
+    assert batch.session_ids() == {"s-log", "s-hook", "s-usage", "s-metric", "s-span"}
+    assert DecodedBatch().session_ids() == set()

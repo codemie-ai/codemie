@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import copy
 from datetime import datetime
 
 
@@ -46,6 +47,14 @@ class LocalAnalyticsFilter:
         self.branch = branch or None
         self.deny_all = deny_all
         self.project_unattributed = project_unattributed
+        self.session_ids: list[str] | None = None
+
+    def restricted_to(self, session_ids: list[str]) -> LocalAnalyticsFilter:
+        """A copy that additionally requires `session_id` to be in `session_ids`. Every other filter stays in
+        force: the ids narrow the selection, they never replace the user / project scope."""
+        narrowed = copy.copy(self)
+        narrowed.session_ids = list(session_ids)
+        return narrowed
 
     @property
     def has_session_filter(self) -> bool:

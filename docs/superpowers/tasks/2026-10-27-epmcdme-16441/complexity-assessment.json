@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "task": "Price agent.subagent.usage totals into cost_daily for agents without request rows, log/count CLI analytics ingest project-gate discards with reason, and relax the cost_daily inner join in get_session_cost_facts, with live-DB tests.",
+  "generated": "2026-10-27T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 22,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Three independent changes: rollups (totals pricing into cost_daily, model-price lookup), ingestor/project gate (discard logging and counting), reader (get_session_cost_facts join). Plus storage guide update." },
+    { "dimension": "requirements_clarity", "reason": "Goals are named, but the pricing design is open: price source, how to avoid double counting with request rows, behaviour for cost_daily columns, backfill of existing totals, counter mechanism and what a session with no cost rows should show. Scope option (b) was called invasive by backend research." },
+    { "dimension": "technical_risk", "reason": "Closest pattern is the _LOG-family cost_daily build from _cli_requests, which has no precedent for token-priced totals. Mistakes double count cost on KPI dashboards, and rollups are SQL strings mostly asserted by string tests, so live-DB tests are needed. Relaxing the reader inner join changes the session list and developer/cost aggregation semantics. _totals_are_a_source must stay strict. No security-sensitive input handling; the gate-discard logging must avoid leaking project/user data." },
+    { "dimension": "file_change_estimate", "reason": "Estimated 8-10 modified (rollups.py, reader.py, ingestor.py, possibly gate/router, storage guide, existing tests) and 2-3 new live-DB test files, across 3+ directories." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped to XL: pricing/cost semantics change in shared rollups with double-count risk and no exact precedent",
+    "Requires data semantics change in cost_daily: affects existing rollup recompute/backfill"
+  ],
+  "split_recommendation": null
+}

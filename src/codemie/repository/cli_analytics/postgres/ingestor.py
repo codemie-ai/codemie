@@ -43,6 +43,7 @@ from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import ExportLogsSer
 from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import ExportMetricsServiceResponse
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceResponse
 
+from codemie.repository.cli_analytics.gate_discards import record_gate_discard
 from codemie.repository.cli_analytics.ports import (
     IngestGate,
     IngestResult,
@@ -364,6 +365,7 @@ class PostgresTelemetryIngestor:
     ) -> IngestResult:
         batch = await self._decode(lambda: decode_otlp(signal, body, content_type), len(body))
         if gate is not None and (reason := await gate(frozenset(batch.explicit_projects))):
+            record_gate_discard("otlp", reason, batch.wire_count, gate.user_hash, batch.session_ids())
             return _otlp_result(signal, content_type, batch.wire_count, 0, reason)
         stored, rejected = await self._store(_attributed_to(batch, accepted_project(gate)))
         return _otlp_result(signal, content_type, rejected, stored)
@@ -377,6 +379,7 @@ class PostgresTelemetryIngestor:
         else:
             batch = decode()
         if gate is not None and (reason := await gate(frozenset(batch.explicit_projects))):
+            record_gate_discard("hooks", reason, batch.wire_count, gate.user_hash, batch.session_ids())
             discarded = {"accepted": 0, "dropped": batch.wire_count, "reason": reason}
             return IngestResult(body=json_text(discarded).encode(), media_type=JSON_MEDIA_TYPE, accepted=0)
         stored, _rejected = await self._store(_attributed_to(batch, accepted_project(gate)))

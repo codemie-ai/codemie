@@ -23,6 +23,8 @@ lookup that fails raises, so the endpoint answers 503 and the CLI retries.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
 
 from codemie.clients.postgres import get_async_session
@@ -39,6 +41,15 @@ REASON_CONTEXT_REQUIRED = "project_context_required"
 REASON_CONTEXT_CONFLICT = "project_context_conflict"
 
 
+def _user_hash(user: User) -> str | None:
+    """A short keyed hash of the sender for the discard log line; None when no key is configured or the sender
+    has no id."""
+    key = config.CLI_ANALYTICS_LOG_HMAC_KEY
+    if not key or not user.id:
+        return None
+    return hmac.new(key.encode(), str(user.id).encode(), hashlib.sha256).hexdigest()[:16]
+
+
 class _ProjectIngestGate:
     """The gate of one request. When it accepts the request, `canonical_project` is the stored name of the
     project it was accepted for (the request may spell it in another case), so what is persisted follows the
@@ -48,6 +59,11 @@ class _ProjectIngestGate:
         self._user = user
         self._project = header_project or ""
         self.canonical_project: str | None = None
+
+    @property
+    def user_hash(self) -> str | None:
+        """Computed on access: only a recorded discard reads it, so an accepted request does no HMAC."""
+        return _user_hash(self._user)
 
     async def __call__(self, explicit: frozenset[str]) -> str | None:
         self.canonical_project = None

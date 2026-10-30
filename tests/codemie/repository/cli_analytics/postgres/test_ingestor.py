@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -671,9 +672,23 @@ def _gate(reason: str | None, canonical_project: str | None = None):
         return reason
 
     gate.seen = seen  # type: ignore[attr-defined]
+    gate.user_hash = None  # type: ignore[attr-defined]
     if canonical_project is not None:
         gate.canonical_project = canonical_project  # type: ignore[attr-defined]
     return gate
+
+
+DISCARD_LOGGER = "codemie.repository.cli_analytics.gate_discards"
+
+
+@pytest.fixture
+def discard_lines(caplog: pytest.LogCaptureFixture):
+    """The platform logger does not propagate to the root, so attach caplog's handler to the discard logger."""
+    logger = logging.getLogger(DISCARD_LOGGER)
+    logger.addHandler(caplog.handler)
+    caplog.set_level(logging.INFO, logger=DISCARD_LOGGER)
+    yield lambda: [r.getMessage() for r in caplog.records if r.name == DISCARD_LOGGER]
+    logger.removeHandler(caplog.handler)
 
 
 def _discard_requests():
@@ -702,7 +717,7 @@ def _discard_requests():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("as_json", [False, True], ids=["protobuf", "json"])
 @pytest.mark.parametrize("case", range(3), ids=["logs", "traces", "metrics"])
-async def test_a_discarding_gate_writes_nothing_and_reports_the_wire_count(case, as_json):
+async def test_a_discarding_gate_writes_nothing_and_reports_the_wire_count(case, as_json, discard_lines):
     signal, request, wire, response_type, field = _discard_requests()[case]
     engine = FakeEngine()
     gate = _gate("cli_analytics_disabled")
@@ -719,6 +734,13 @@ async def test_a_discarding_gate_writes_nothing_and_reports_the_wire_count(case,
     assert response.partial_success.error_message == "cli_analytics_disabled"
     assert result.media_type == content_type.split(";")[0]
 
+    (line,) = discard_lines()
+    if signal == "logs":
+        assert "session_count=1 session_ids=s1" in line
+    else:
+        assert "session_count=0" in line
+        assert "session_ids" not in line
+
 
 @pytest.mark.asyncio
 async def test_an_empty_otlp_request_that_is_discarded_is_the_plain_success_response():
@@ -732,7 +754,7 @@ async def test_an_empty_otlp_request_that_is_discarded_is_the_plain_success_resp
 
 
 @pytest.mark.asyncio
-async def test_a_discarding_gate_answers_hook_events_with_the_ndjson_body():
+async def test_a_discarding_gate_answers_hook_events_with_the_ndjson_body(discard_lines):
     engine = FakeEngine()
     events = [hb.minimal("agent.tool.end", "s1", "2026-09-29T10:59:41.512Z") for _ in range(3)]
 
@@ -744,6 +766,8 @@ async def test_a_discarding_gate_answers_hook_events_with_the_ndjson_body():
     assert json.loads(result.body) == {"accepted": 0, "dropped": 3, "reason": "project_context_required"}
     assert result.media_type == "application/json"
     assert result.accepted == 0
+    (line,) = discard_lines()
+    assert "dropped=3 session_count=1 session_ids=s1" in line
 
 
 @pytest.mark.asyncio

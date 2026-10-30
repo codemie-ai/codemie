@@ -39,11 +39,11 @@ from decimal import Decimal
 from typing import Any
 
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
-from codemie.repository.cli_analytics.ports import Rows
+from codemie.repository.cli_analytics.ports import SESSION_PAGE_SORTS, Rows
 from codemie.repository.cli_analytics.postgres.engine import AnalyticsPgEngine
 from codemie.repository.cli_analytics.postgres.otlp import MAX_KEY_BYTES
 from codemie.repository.cli_analytics.postgres.rollups import _attr_ms
-from codemie.repository.cli_analytics.postgres.session_derived import SKILL_NAMES_SQL
+from codemie.repository.cli_analytics.postgres.session_derived import CLASSIFIER_NAMES_SQL
 from codemie.repository.cli_analytics.postgres.fork_attribution import (
     dispatch_fork_candidate,
     executed_tool_span,
@@ -70,12 +70,18 @@ _API_REQUEST = int(EventKind.API_REQUEST)
 _LLM_REQUEST = int(SpanKind.LLM_REQUEST)
 _DIM_TYPES = "ARRAY[" + ", ".join(f"'{t}'" for t in DIMENSION_HOOK_TYPES) + "]::text[]"
 _C = 'COLLATE "C"'
+_MAX_PAGE_OFFSET = 2**62  # far below the int64 bound of `OFFSET $offset::bigint`, far beyond any real row count
 
 _STARTED_IN_WINDOW = "started_at BETWEEN $start_dt::timestamptz AND $end_dt::timestamptz"
 # Clips the raw hook events that decide a session's last dimension event (not session membership).
 _TS = "ts BETWEEN $start_dt::timestamptz AND $end_dt::timestamptz"
 # Slash commands have one source per session: a session with a summary counts only the `commands`
 # of its summary, so its OTel `user_prompt` records (kind 4 of the rollup) add nothing.
+
+
+def _escape_like(term: str) -> str:
+    """`term` with the LIKE wildcards and the escape character made literal (for `ESCAPE '\\'`)."""
+    return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _no_summary(column: str) -> str:
@@ -132,6 +138,70 @@ def _cost_rows(where: str) -> str:
     )
 
 
+_SEL_SESSIONS = ("c.session_id IN (SELECT session_id FROM sel)", "u.session_id IN (SELECT session_id FROM sel)")
+
+
+def _token_rows(session_where: str, usage_where: str) -> str:
+    """Token rows of the selected sessions: `cost_daily` plus the subagent totals-only rows of `session_usage`
+    (attrs.token_source = 'subagent_usage'), which are priced at query time. The writer guarantees a totals row
+    exists only when no request of that agent is kept, so nothing is counted twice. The 5m / 1h sums stay
+    NULL when no row carries a split; only the four base counts are coalesced.
+
+    Date, user, project, repository and branch filters need no copy here: both branches are scoped by
+    `session_id IN (SELECT session_id FROM sel)`, and `sel` (see `_sessions_cte`) is where the window and
+    every filter are decided."""
+    return (
+        "(SELECT t.session_id, t.model_name, t.input_tokens, t.output_tokens, t.cache_read_tokens,"
+        " t.cache_creation_tokens, t.cache_creation_5m_tokens, t.cache_creation_1h_tokens FROM ("
+        "SELECT c.session_id, c.model_name, c.input_tokens, c.output_tokens, c.cache_read_tokens,"
+        " c.cache_creation_tokens, c.cache_creation_5m_tokens, c.cache_creation_1h_tokens"
+        f" FROM cost_daily c WHERE {session_where}"
+        " UNION ALL "
+        "SELECT u.session_id, u.model, coalesce(u.input_tokens, 0), coalesce(u.output_tokens, 0),"
+        " coalesce(u.cache_read_tokens, 0), coalesce(u.cache_creation_tokens, 0),"
+        " u.cache_creation_5m_tokens, u.cache_creation_1h_tokens"
+        f" FROM session_usage u WHERE u.attrs->>'token_source' = 'subagent_usage' AND {usage_where}"
+        ") t) c"
+    )
+
+
+_TOTAL_COLUMNS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens")
+
+
+def _tokens(column: str, include_totals: bool) -> str:
+    """Session sum of a token `column` of cost_daily; with `include_totals` also the subagent totals-only rows of
+    `session_usage` (see _token_rows), so the list agrees with the detail view. The totals come from the join `t`
+    of `_facts_from`, constant per session, so they are taken with max, never summed over the cost rows."""
+    base = f"sum(c.{column})"
+    if not include_totals:
+        return f"{base}::bigint"
+    return f"(coalesce({base}, 0) + coalesce(max(t.{column}), 0))::bigint"
+
+
+def _totals_join() -> str:
+    """Subagent totals-only rows of `session_usage` summed to one row per selected session, so the join cannot
+    multiply the cost rows of the outer GROUP BY. Scoped to `sel`, otherwise it would scan all of session_usage."""
+    sums = ", ".join(f"sum(coalesce({c}, 0)) AS {c}" for c in _TOTAL_COLUMNS)
+    return (
+        f"(SELECT session_id, {sums} FROM session_usage "
+        "WHERE attrs->>'token_source' = 'subagent_usage' AND session_id IN (SELECT session_id FROM sel) "
+        "GROUP BY session_id) t"
+    )
+
+
+def _facts_from(include_costless: bool) -> str:
+    """FROM clause of `get_session_cost_facts`: sessions that have cost rows, or (opt-in) every selected session."""
+    cost = _cost_rows("c.session_id IN (SELECT session_id FROM sel)")
+    if include_costless:
+        return f"""sel s
+             JOIN act a ON a.session_id = s.session_id
+             LEFT JOIN {cost} ON c.session_id = s.session_id
+             LEFT JOIN {_totals_join()} ON t.session_id = s.session_id"""
+    return f"""{cost}
+             JOIN sel s ON s.session_id = c.session_id
+             JOIN act a ON a.session_id = c.session_id"""
+
+
 def positional(sql: str, params: dict[str, Any]) -> tuple[str, list[Any]]:
     """`$name` placeholders -> asyncpg's `$1, $2, ...`, with the values in the matching order."""
     names: list[str] = []
@@ -177,6 +247,8 @@ def window_params(f: LocalAnalyticsFilter) -> dict[str, Any]:
         params["repositories"] = list(f.repositories)
     if f.branch:
         params["branch"] = f.branch
+    if f.session_ids is not None:
+        params["session_ids"] = list(dict.fromkeys(f.session_ids))
     return params
 
 
@@ -269,6 +341,8 @@ class PostgresCliAnalyticsReader:
                 conditions.append("repository = ANY($repositories::text[])")
             if f.branch:
                 conditions.append("branch = $branch::text")
+            if f.session_ids is not None:
+                conditions.append("session_id = ANY($session_ids::text[])")
         where = ("\n            WHERE " + " AND ".join(conditions)) if conditions else ""
         return f"""
         sel AS (
@@ -378,8 +452,7 @@ class PostgresCliAnalyticsReader:
                sum(c.cache_creation_tokens)::bigint         AS cache_creation_tokens,
                sum(c.cache_creation_5m_tokens)::bigint      AS cache_creation_5m_tokens,
                sum(c.cache_creation_1h_tokens)::bigint      AS cache_creation_1h_tokens
-        FROM cost_daily c
-        WHERE true{self._scope(f, "c.session_id")}
+        FROM {_token_rows(*_SEL_SESSIONS)}
         GROUP BY c.session_id, c.model_name""",
             window_params(f),
         )
@@ -603,14 +676,15 @@ class PostgresCliAnalyticsReader:
         )
 
     async def get_skill_names_by_session(self, session_ids: list[str]) -> Rows:
-        """Distinct skill names per session, for any number of sessions: the same ones the delivery framework
-        is derived from (`SKILL_NAMES_SQL`), so a session known only from hooks or a summary counts too.
-        A session without a skill name has an empty list."""
+        """Distinct skill names and subagent types per session (the `skill_names` key), for any number of
+        sessions: the same names the delivery framework is derived from (`CLASSIFIER_NAMES_SQL`), so a session
+        known only from hooks or a summary, or one that only dispatched subagents, counts too.
+        A session without such a name has an empty list."""
         if not session_ids:
             return []
         return await self._q(
             f"""
-        SELECT sd.session_id, coalesce({SKILL_NAMES_SQL}, ARRAY[]::text[]) AS skill_names
+        SELECT sd.session_id, coalesce({CLASSIFIER_NAMES_SQL}, ARRAY[]::text[]) AS skill_names
         FROM session_dims sd
         WHERE sd.session_id = ANY($session_ids::text[])
         ORDER BY sd.session_id {_C}""",
@@ -644,7 +718,10 @@ class PostgresCliAnalyticsReader:
         f: LocalAnalyticsFilter,
         search: str | None = None,
         is_unattributed: bool = False,
+        include_costless: bool = False,
     ) -> Rows:
+        """Per-session facts. `include_costless` also lists sessions without any `cost_daily` row (their cost
+        columns are NULL); the default inner join keeps only sessions with cost rows."""
         having = []
         if search:
             having.append("nullif(max(s.repository), '') ILIKE $search::text")
@@ -654,10 +731,11 @@ class PostgresCliAnalyticsReader:
         params = window_params(f)
         if search:
             params["search"] = f"%{search.strip().lower()}%"
+        group_col = session_col = "s.session_id" if include_costless else "c.session_id"
         return await self._q(
             f"""
         WITH {self._sessions_cte(f)},{self._activity_cte()}
-        SELECT c.session_id,
+        SELECT {session_col} AS session_id,
                {_DEVELOPER}                                 AS developer_name,
                max(s.repository)                            AS repository,
                max(s.branch)                                AS branch,
@@ -668,17 +746,80 @@ class PostgresCliAnalyticsReader:
                max(a.duration_ms)                           AS duration_ms,
                {_TOP_MODEL}                                 AS model_name,
                sum(c.cost_usd)                              AS cost_usd,
-               sum(c.input_tokens)::bigint                  AS input_tokens,
-               sum(c.output_tokens)::bigint                 AS output_tokens,
-               sum(c.cache_read_tokens)::bigint             AS cache_read_tokens,
-               sum(c.cache_creation_tokens)::bigint         AS cache_creation_tokens,
+               {_tokens('input_tokens', include_costless)}                  AS input_tokens,
+               {_tokens('output_tokens', include_costless)}                 AS output_tokens,
+               {_tokens('cache_read_tokens', include_costless)}             AS cache_read_tokens,
+               {_tokens('cache_creation_tokens', include_costless)}         AS cache_creation_tokens,
                sum(c.api_call_count)::bigint                AS api_call_count
-        FROM {_cost_rows("c.session_id IN (SELECT session_id FROM sel)")}
-             JOIN sel s ON s.session_id = c.session_id
-             JOIN act a ON a.session_id = c.session_id
-        GROUP BY c.session_id, 2{having_sql}""",
+        FROM {_facts_from(include_costless)}
+        GROUP BY {group_col}, 2{having_sql}""",
             params,
         )
+
+    async def get_session_page(
+        self,
+        f: LocalAnalyticsFilter,
+        sort_by: str,
+        page: int,
+        per_page: int,
+        search: str | None = None,
+        is_unattributed: bool = False,
+    ) -> tuple[int, list[str]]:
+        """One page of the session list, decided in SQL: `(total, session_ids)` of the sessions of `sel` that
+        pass `search` (case-insensitive substring of the first prompt, repository or branch, `%`, `_` and `\\`
+        matched literally) and `is_unattributed`, ordered by the `sort_by` key DESC then session_id ASC.
+        `start_time` is the reported session start, `ctx_per_call` the cache-read tokens (totals-only subagent
+        rows included) per API call, 0 without calls. `total` counts every such session, not the page."""
+        if sort_by not in SESSION_PAGE_SORTS:
+            raise ValueError(f"get_session_page cannot sort by {sort_by!r}; sorts: {SESSION_PAGE_SORTS}")
+        if search and "\x00" in search:
+            return 0, []  # PostgreSQL text cannot hold a NUL, so no session matches; the driver would reject it
+        params = window_params(f)
+        params["limit"] = per_page
+        params["offset"] = min(page * per_page, _MAX_PAGE_OFFSET)
+        conditions = ["true"]
+        if search:
+            conditions.append(
+                "(s.first_prompt ILIKE $search::text ESCAPE '\\' OR s.repository ILIKE $search::text ESCAPE '\\'"
+                " OR s.branch ILIKE $search::text ESCAPE '\\')"
+            )
+            params["search"] = "%" + _escape_like(search.strip().lower()) + "%"
+        if is_unattributed:
+            conditions.append("s.repository = ''")
+        if sort_by == "start_time":
+            ctes = f"{self._sessions_cte(f)},{self._activity_cte()}"
+            joins = "JOIN act a ON a.session_id = s.session_id"
+            sort_key = "a.session_start"
+        else:
+            ctes = self._sessions_cte(f)
+            joins = f"""LEFT JOIN (SELECT session_id, sum(cache_read_tokens) AS cache_read, sum(api_call_count) AS calls
+                       FROM cost_daily WHERE session_id IN (SELECT session_id FROM sel) GROUP BY session_id) c
+                  ON c.session_id = s.session_id
+             LEFT JOIN {_totals_join()} ON t.session_id = s.session_id"""
+            sort_key = (
+                "CASE WHEN coalesce(c.calls, 0) = 0 THEN 0::numeric ELSE "
+                "round((coalesce(c.cache_read, 0) + coalesce(t.cache_read_tokens, 0)) / c.calls, 9) END"
+            )
+        rows = await self._q(
+            f"""
+        WITH {ctes},
+        filtered AS (
+            SELECT s.session_id, {sort_key} AS sort_key
+            FROM sel s
+                 {joins}
+            WHERE {" AND ".join(conditions)}
+        ),
+        page AS (
+            SELECT session_id, sort_key FROM filtered
+            ORDER BY sort_key DESC, session_id {_C}
+            LIMIT $limit::bigint OFFSET $offset::bigint
+        )
+        SELECT (SELECT count(*) FROM filtered)::bigint AS total,
+               coalesce((SELECT array_agg(session_id ORDER BY sort_key DESC, session_id {_C}) FROM page),
+                        ARRAY[]::text[]) AS session_ids""",
+            params,
+        )
+        return int(rows[0]["total"]), list(rows[0]["session_ids"])
 
     async def get_session_start_times(self, f: LocalAnalyticsFilter) -> Rows:
         return await self._q(
@@ -710,7 +851,13 @@ class PostgresCliAnalyticsReader:
         start, end = _activity_range("t")
         return await self._q(
             f"""
-        WITH c AS (SELECT DISTINCT session_id FROM cost_daily WHERE session_id = $sid::text),
+        WITH c AS (
+                 -- a session with dimension events but no cost row is listed with cost_available false, so its
+                 -- detail must resolve too
+                 SELECT session_id FROM cost_daily WHERE session_id = $sid::text
+                 UNION
+                 SELECT session_id FROM session_dims WHERE session_id = $sid::text AND started_at IS NOT NULL
+             ),
              h AS (
                  SELECT session_id, resource_id, ts FROM log_events WHERE session_id = $sid::text
                  UNION ALL
@@ -756,7 +903,7 @@ class PostgresCliAnalyticsReader:
         """Token sums per raw model of one session, the empty model kept: the rows its money is priced from.
         The 5m / 1h sums are NULL when no row of the model has a split."""
         return await self._q(
-            """
+            f"""
         SELECT c.model_name                                 AS model_name,
                sum(c.input_tokens)::bigint                  AS input_tokens,
                sum(c.output_tokens)::bigint                 AS output_tokens,
@@ -764,8 +911,7 @@ class PostgresCliAnalyticsReader:
                sum(c.cache_creation_tokens)::bigint         AS cache_creation_tokens,
                sum(c.cache_creation_5m_tokens)::bigint      AS cache_creation_5m_tokens,
                sum(c.cache_creation_1h_tokens)::bigint      AS cache_creation_1h_tokens
-        FROM cost_daily c
-        WHERE c.session_id = $sid::text
+        FROM {_token_rows("c.session_id = $sid::text", "u.session_id = $sid::text")}
         GROUP BY c.model_name""",
             {"sid": session_id},
         )

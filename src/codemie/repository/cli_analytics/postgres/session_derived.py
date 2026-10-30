@@ -28,24 +28,31 @@ import asyncpg
 
 logger = logging.getLogger(__name__)
 
-# The skill names the classifier reads: the keys of `skills` once a summary filled the row, else the
-# session's session_skills (OTel) together with the keys of the `skills` fallback, which also counts
-# the skills known from hooks. The keys are read only from an object, so no row can raise.
+# The names the classifier reads: skill names and subagent types. Skills: the keys of `skills` once a summary
+# filled the row, else the session's session_skills (OTel) together with the keys of the `skills` fallback,
+# which also counts the skills known from hooks. Subagent types: the keys of `agents`, since a subagent
+# start without `skill_name` is never a skill. The keys are read only from an object, so no row can raise.
 _SKILLS_OBJECT = "CASE WHEN jsonb_typeof(sd.skills) = 'object' THEN sd.skills END"
-# The expression of the skill names per session_dims row `sd`, one for the classifier below and for the
+_AGENTS_OBJECT = "CASE WHEN jsonb_typeof(sd.agents) = 'object' THEN sd.agents END"
+# The expression of the classifier names per session_dims row `sd`, one for the classifier below and for the
 # list and details views of the reader, so they cannot drift apart. NULL when the session has none.
-SKILL_NAMES_SQL = f"""CASE WHEN sd.summary_ts IS NOT NULL THEN
-                (SELECT array_agg(s.name ORDER BY s.name COLLATE "C") FROM jsonb_object_keys({_SKILLS_OBJECT}) s (name)
-                 WHERE s.name <> '')
+CLASSIFIER_NAMES_SQL = f"""CASE WHEN sd.summary_ts IS NOT NULL THEN
+                (SELECT array_agg(x.name ORDER BY x.name COLLATE "C")
+                 FROM (SELECT s.name FROM jsonb_object_keys({_SKILLS_OBJECT}) s (name)
+                       UNION
+                       SELECT a.name FROM jsonb_object_keys({_AGENTS_OBJECT}) a (name)) x
+                 WHERE x.name <> '')
             ELSE (SELECT array_agg(x.name ORDER BY x.name COLLATE "C")
                   FROM (SELECT ss.skill_name AS name FROM session_skills ss WHERE ss.session_id = sd.session_id
                         UNION
-                        SELECT s.name FROM jsonb_object_keys({_SKILLS_OBJECT}) s (name)) x
+                        SELECT s.name FROM jsonb_object_keys({_SKILLS_OBJECT}) s (name)
+                        UNION
+                        SELECT a.name FROM jsonb_object_keys({_AGENTS_OBJECT}) a (name)) x
                   WHERE x.name <> '')
        END"""
 _READ = f"""
 SELECT sd.session_id, sd.branch_dominant,
-       {SKILL_NAMES_SQL} AS skill_names
+       {CLASSIFIER_NAMES_SQL} AS skill_names
 FROM session_dims sd
 WHERE sd.session_id = ANY($1::text[])
 ORDER BY sd.session_id"""

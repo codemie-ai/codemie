@@ -222,6 +222,7 @@ class LocalAnalyticsSessionRow(BaseModel):
     cache_creation_tokens: int = 0
     ctx_per_call: float = 0.0
     cost_usd: float
+    cost_available: bool = True
     net_lines: int = 0
     bloat_pct: float = 0.0
     delivery_framework: str | None = Field(None, description="Detected delivery framework")

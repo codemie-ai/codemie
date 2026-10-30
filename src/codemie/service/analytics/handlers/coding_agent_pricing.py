@@ -80,6 +80,10 @@ class CatalogPricer:
             self._costs[model] = lookup_cost_config(model) if model else None
         return self._costs[model]
 
+    def is_priced(self, model: str) -> bool:
+        """True when the catalog has a price entry for the model, whatever the token counts; it records nothing."""
+        return self._cost(model) is not None
+
     def price(self, model: str, counts: TokenCounts) -> float:
         # The split never prices more than the cache write it splits.
         cache_1h = min(counts.cache_1h or 0, counts.cache_creation)

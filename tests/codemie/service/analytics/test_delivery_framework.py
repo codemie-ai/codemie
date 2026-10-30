@@ -81,6 +81,16 @@ def test_stlc_factory_wins_over_superpowers():
     assert result == "STLC Factory (QA factory)"
 
 
+def test_a_subagent_type_classifies_by_the_same_rule_as_a_skill_name():
+    assert classify_delivery_framework(["sdlc-factory:complexity-assessor"]) == "CodeMie AI Factory"
+    assert classify_delivery_framework(["superpowers:code-reviewer"]) == "Superpowers"
+
+
+@pytest.mark.parametrize("agent_type", ["Explore", "general-purpose", "Plan"])
+def test_a_builtin_subagent_type_stays_pure_chat(agent_type):
+    assert classify_delivery_framework([agent_type]) == "Pure chat"
+
+
 def test_framework_labels_include_stlc_factory_before_pure_chat():
     labels = get_framework_labels()
     assert "STLC Factory (QA factory)" in labels

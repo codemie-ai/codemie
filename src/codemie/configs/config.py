@@ -531,6 +531,8 @@ class Config(BaseSettings):
 
     MCP_AUTH_ENABLED: bool = False
     MCP_AUTH_HMAC_SECRET: str = ""
+    # Key for the short sender hash in the CLI analytics gate-discard log line. Empty: no hash is logged.
+    CLI_ANALYTICS_LOG_HMAC_KEY: str = ""
     REDIS_HOST: str = "localhost"
     REDIS_PORT: int = 6379
     REDIS_DB: int = 0

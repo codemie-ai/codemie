@@ -68,10 +68,11 @@ def get_framework_labels() -> list[str]:
 def classify_delivery_framework(skill_names: list[str]) -> str:
     """Return the primary delivery framework for a session based on configured regex rules.
 
-    Priority is positional in customer config — first match wins. Returns the configured
-    fallback label when no rule matches (including empty skill_names list).
+    The input is the session's skill names and subagent types (e.g. `sdlc-factory:complexity-assessor`):
+    the rules match both alike. Priority is positional in customer config — first match wins. Returns the
+    configured fallback label when no rule matches (including empty skill_names list).
 
-    To support additional signal types in future (e.g. agent_types, file markers),
+    To support additional signal types in future (e.g. file markers),
     introduce a SessionSignals dataclass carrying all inputs and update this signature.
     """
     rules, fallback_label = _get_delivery_framework_config()

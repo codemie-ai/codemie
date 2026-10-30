@@ -258,3 +258,83 @@ def test_a_plain_gate_names_no_project():
 
     assert accepted_project(plain) is None
     assert accepted_project(None) is None
+
+
+def _hash_of(user_id: str, key: str):
+    with patch.object(config, "CLI_ANALYTICS_LOG_HMAC_KEY", key, create=True):
+        with patch.object(config, "ENV", "dev"), patch.object(config, "ENABLE_USER_MANAGEMENT", True):
+            return build_ingest_gate(User(id=user_id, email="u@example.com"), "Proj-A").user_hash
+
+
+def test_user_hash_is_stable_per_user_and_differs_across_users():
+    first = _hash_of("u-1", "k")
+    assert first == _hash_of("u-1", "k")
+    assert first != _hash_of("u-2", "k")
+    assert len(first) == 16 and "u-1" not in first
+
+
+def test_user_hash_is_none_without_a_key():
+    assert _hash_of("u-1", "") is None
+
+
+@pytest.mark.parametrize("user_id", ["", None])
+def test_user_hash_is_none_for_an_empty_or_missing_user_id(user_id):
+    with patch.object(config, "CLI_ANALYTICS_LOG_HMAC_KEY", "k", create=True):
+        user = User(id="u-1", email="u@example.com")
+        user.id = user_id
+        assert build_ingest_gate(user, "Proj-A").user_hash is None
+
+
+# ── the sender hash is computed only for a discard ────────────────────────────
+
+HMAC_KEY = "test-hmac-key"
+
+
+def _expected_hash(user_id: str) -> str:
+    import hashlib
+    import hmac
+
+    return hmac.new(HMAC_KEY.encode(), user_id.encode(), hashlib.sha256).hexdigest()[:16]
+
+
+@pytest.mark.asyncio
+async def test_accepted_request_never_computes_the_user_hash(lookup):
+    with (
+        patch.object(config, "CLI_ANALYTICS_LOG_HMAC_KEY", HMAC_KEY),
+        patch(f"{MODULE}.hmac.new", side_effect=AssertionError("HMAC computed on the accepted path")),
+    ):
+        gate = build_ingest_gate(make_user(**MEMBER), "Proj-A")
+        assert await gate(frozenset()) is None
+
+
+@pytest.mark.asyncio
+async def test_discarded_request_logs_the_user_hash(lookup):
+    from codemie.repository.cli_analytics import gate_discards
+    from codemie.repository.cli_analytics.postgres import ingestor as ingestor_module
+    from codemie.repository.cli_analytics.postgres.ingestor import PostgresTelemetryIngestor
+    from types import SimpleNamespace
+
+    lookup.return_value = app(enabled=False)
+    gate = build_ingest_gate(make_user(**MEMBER), "Proj-A")
+    ingestor = PostgresTelemetryIngestor(object())
+    batch = SimpleNamespace(wire_count=2, explicit_projects=set(), session_ids=lambda: set())
+    with (
+        patch.object(config, "CLI_ANALYTICS_LOG_HMAC_KEY", HMAC_KEY),
+        patch.object(gate_discards, "logger") as log,
+        patch.object(ingestor_module, "decode_hook_events", return_value=batch),
+    ):
+        await ingestor.ingest_hook_events([{}], "u@example.com", 0, gate=gate)
+
+    line = log.info.call_args.args[0] % log.info.call_args.args[1:]
+    assert f"user_hash={_expected_hash('u-1')}" in line
+    assert "cli_analytics_disabled" in line
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key, user_id", [("", "u-1"), (HMAC_KEY, "")], ids=["empty-key", "empty-user-id"])
+async def test_no_hash_without_a_key_or_a_user_id(lookup, key, user_id):
+    user = make_user(**MEMBER)
+    user.id = user_id
+    gate = build_ingest_gate(user, "Proj-A")
+    with patch.object(config, "CLI_ANALYTICS_LOG_HMAC_KEY", key):
+        assert gate.user_hash is None

@@ -94,7 +94,10 @@ async def test_sessions_with_equal_start_times_are_ordered_by_trace_id():
     rows = [_cost_row("b"), _cost_row("a"), _cost_row("c", started_at=T1)]
     orders = set()
     for perm in permutations(rows):
-        data, _, _ = await _handler(cost_facts=perm).get_sessions(_flt(), 0, 20, "start_time", None)
+        handler = _handler(cost_facts=perm)
+        # start_time is ordered and paged by the reader (key DESC, session_id ASC); the handler keeps its page order.
+        handler._repo.get_session_page = AsyncMock(return_value=(3, ["c", "a", "b"]))
+        data, _, _ = await handler.get_sessions(_flt(), 0, 20, "start_time", None)
         orders.add(tuple(s["trace_id"] for s in data["sessions"]))
 
     assert orders == {("c", "a", "b")}

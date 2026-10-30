@@ -150,8 +150,21 @@ def test_without_a_summary_the_classifier_reads_the_skills_of_otel_and_of_hooks(
     assert skills == "CASE WHEN jsonb_typeof(sd.skills) = 'object' THEN sd.skills END"  # never the keys of a non-object
     with_summary, without_summary = read.split("CASE WHEN sd.summary_ts IS NOT NULL THEN", 1)[1].split(" ELSE ", 1)
     assert "session_skills" not in with_summary
-    assert f"FROM jsonb_object_keys({skills}) s (name) WHERE s.name <> ''" in with_summary
+    assert f"FROM (SELECT s.name FROM jsonb_object_keys({skills}) s (name) UNION" in with_summary
     assert (
         "FROM (SELECT ss.skill_name AS name FROM session_skills ss WHERE ss.session_id = sd.session_id "
-        f"UNION SELECT s.name FROM jsonb_object_keys({skills}) s (name)) x WHERE x.name <> ''"
+        f"UNION SELECT s.name FROM jsonb_object_keys({skills}) s (name) UNION"
     ) in without_summary
+
+
+def test_the_classifier_reads_the_subagent_types_in_both_branches() -> None:
+    # A subagent start without `skill_name` is never a skill: it lives only in the keys of `agents`. A session
+    # that only dispatches factory agents would stay "Pure chat" if the classifier read skills alone.
+    read = " ".join(session_derived._READ.split())
+    agents = session_derived._AGENTS_OBJECT
+    assert agents == "CASE WHEN jsonb_typeof(sd.agents) = 'object' THEN sd.agents END"  # never the keys of a non-object
+    with_summary, without_summary = read.split("CASE WHEN sd.summary_ts IS NOT NULL THEN", 1)[1].split(" ELSE ", 1)
+    keys = f"SELECT a.name FROM jsonb_object_keys({agents}) a (name)) x WHERE x.name <> ''"
+    assert keys in with_summary
+    assert keys in without_summary
+    assert "session_skills" not in with_summary

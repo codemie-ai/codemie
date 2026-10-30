@@ -23,6 +23,8 @@ unreachable.
 """
 
 import os
+import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 import asyncpg
@@ -39,9 +41,26 @@ from codemie.service.analytics.handlers.cli_analytics_handler import LocalAnalyt
 # a real local analytics Postgres (default: the docker-compose `postgres` service's credentials).
 _LOCAL_PG_URL = os.environ.get("TEST_LOCAL_PG_URL", "postgresql://postgres:password@localhost:5432/postgres")
 
-_EMAIL = "range@example.com"
-_SESSION = "test-epmcdme-15506-live-range"
-_HOOKS_ONLY = "test-epmcdme-15506-live-hooks-only"
+
+@dataclass(frozen=True)
+class _Ids:
+    """Per-test identity: the live suite runs under xdist against one shared database, so no two tests
+    (in this file or another) may share a session id or a user email."""
+
+    session: str
+    hooks_only: str
+    email: str
+
+
+@pytest.fixture
+def ids() -> _Ids:
+    suffix = uuid.uuid4().hex
+    return _Ids(
+        session=f"test-epmcdme-15506-live-range-{suffix}",
+        hooks_only=f"test-epmcdme-15506-live-hooks-only-{suffix}",
+        email=f"range-{suffix}@example.com",
+    )
+
 
 _SESSION_DIMS_SQL = """
     INSERT INTO session_dims (session_id, started_at, last_event_at, jwt_email, activity_started_at, ended_at)
@@ -91,11 +110,11 @@ def _hook_time() -> datetime:
     return datetime.now(timezone.utc).replace(microsecond=0) - timedelta(hours=1)
 
 
-async def _seed_session(engine: AnalyticsPgEngine, session_id: str, t: datetime, *, otel: bool) -> None:
+async def _seed_session(engine: AnalyticsPgEngine, session_id: str, email: str, t: datetime, *, otel: bool) -> None:
     """Dimension hooks at t and t+10 min; with `otel`, an api_request at t-12 s and a tool span at t+11 min."""
     async with engine.acquire() as conn:
-        await conn.execute(_SESSION_DIMS_SQL, session_id, t, t + timedelta(minutes=10), _EMAIL, None, None)
-        await conn.execute(_COST_DAILY_SQL, t.date(), session_id, _EMAIL)
+        await conn.execute(_SESSION_DIMS_SQL, session_id, t, t + timedelta(minutes=10), email, None, None)
+        await conn.execute(_COST_DAILY_SQL, t.date(), session_id, email)
         if otel:
             await conn.execute(_LOG_EVENTS_SQL, t - timedelta(seconds=12), session_id)
             await conn.execute(_SPANS_SQL, t + timedelta(minutes=11), session_id)
@@ -106,21 +125,23 @@ def _naive(value: datetime) -> datetime:
 
 
 @pytest.mark.asyncio
-async def test_reported_range_covers_events_outside_the_hook_times():
+async def test_reported_range_covers_events_outside_the_hook_times(ids: _Ids):
     """AC #1, #3, #4, #5: an api_request 12 s before the first hook moves the reported start, a tool span
     after the last hook moves the end, and every duration consumer (list, Users Avg) reports that range."""
     engine = await _get_engine()
     t = _hook_time()
-    f = LocalAnalyticsFilter(start_dt=_naive(t - timedelta(hours=1)), end_dt=_naive(t + timedelta(hours=1)))
+    f = LocalAnalyticsFilter(
+        start_dt=_naive(t - timedelta(hours=1)), end_dt=_naive(t + timedelta(hours=1)), users=[ids.email]
+    )
     try:
-        await _cleanup(engine, _SESSION)
-        await _seed_session(engine, _SESSION, t, otel=True)
+        await _cleanup(engine, ids.session)
+        await _seed_session(engine, ids.session, ids.email, t, otel=True)
         reader = PostgresCliAnalyticsReader(engine)
 
         durations = {r["session_id"]: r["duration_ms"] for r in await reader.get_session_durations(f)}
-        assert durations[_SESSION] == 672_000
+        assert durations[ids.session] == 672_000
 
-        facts = next(r for r in await reader.get_session_cost_facts(f) if r["session_id"] == _SESSION)
+        facts = next(r for r in await reader.get_session_cost_facts(f) if r["session_id"] == ids.session)
         assert facts["started_at"] == _naive(t - timedelta(seconds=12))
         assert facts["last_event_at"] == _naive(t + timedelta(minutes=11))
         assert facts["duration_ms"] == 672_000
@@ -128,63 +149,69 @@ async def test_reported_range_covers_events_outside_the_hook_times():
         assert _naive(t - timedelta(seconds=12)) in [r["started_at"] for r in await reader.get_session_start_times(f)]
 
         users, _ = await LocalAnalyticsHandler(reader).get_users(
-            LocalAnalyticsFilter(start_dt=f.start_dt, end_dt=f.end_dt, users=[_EMAIL]), page=None, per_page=None
+            LocalAnalyticsFilter(start_dt=f.start_dt, end_dt=f.end_dt, users=[ids.email]), page=None, per_page=None
         )
         assert users["avg_session_duration_ms"] == 672_000
     finally:
-        await _cleanup(engine, _SESSION)
+        await _cleanup(engine, ids.session)
         await engine.close()
 
 
 @pytest.mark.asyncio
-async def test_window_membership_still_follows_started_at():
+async def test_window_membership_still_follows_started_at(ids: _Ids):
     """The earlier reported start does not move the session into a window that ends before its first hook."""
     engine = await _get_engine()
     t = _hook_time()
     try:
-        await _cleanup(engine, _SESSION)
-        await _seed_session(engine, _SESSION, t, otel=True)
+        await _cleanup(engine, ids.session)
+        await _seed_session(engine, ids.session, ids.email, t, otel=True)
         reader = PostgresCliAnalyticsReader(engine)
 
-        inside = LocalAnalyticsFilter(start_dt=_naive(t - timedelta(seconds=6)), end_dt=_naive(t + timedelta(hours=1)))
-        before = LocalAnalyticsFilter(start_dt=_naive(t - timedelta(hours=1)), end_dt=_naive(t - timedelta(seconds=1)))
-        assert _SESSION in {r["session_id"] for r in await reader.get_session_durations(inside)}
-        assert _SESSION not in {r["session_id"] for r in await reader.get_session_durations(before)}
+        inside = LocalAnalyticsFilter(
+            start_dt=_naive(t - timedelta(seconds=6)), end_dt=_naive(t + timedelta(hours=1)), users=[ids.email]
+        )
+        before = LocalAnalyticsFilter(
+            start_dt=_naive(t - timedelta(hours=1)), end_dt=_naive(t - timedelta(seconds=1)), users=[ids.email]
+        )
+        assert ids.session in {r["session_id"] for r in await reader.get_session_durations(inside)}
+        assert ids.session not in {r["session_id"] for r in await reader.get_session_durations(before)}
     finally:
-        await _cleanup(engine, _SESSION)
+        await _cleanup(engine, ids.session)
         await engine.close()
 
 
 @pytest.mark.asyncio
-async def test_range_without_otel_rows_is_the_hook_times():
+async def test_range_without_otel_rows_is_the_hook_times(ids: _Ids):
     """No OTel row and no activity columns: the range is the hook times, NULLs never hide them."""
     engine = await _get_engine()
     t = _hook_time()
-    f = LocalAnalyticsFilter(start_dt=_naive(t - timedelta(hours=1)), end_dt=_naive(t + timedelta(hours=1)))
+    f = LocalAnalyticsFilter(
+        start_dt=_naive(t - timedelta(hours=1)), end_dt=_naive(t + timedelta(hours=1)), users=[ids.email]
+    )
     try:
-        await _cleanup(engine, _HOOKS_ONLY)
-        await _seed_session(engine, _HOOKS_ONLY, t, otel=False)
+        await _cleanup(engine, ids.hooks_only)
+        await _seed_session(engine, ids.hooks_only, ids.email, t, otel=False)
         reader = PostgresCliAnalyticsReader(engine)
 
         durations = {r["session_id"]: r["duration_ms"] for r in await reader.get_session_durations(f)}
-        assert durations[_HOOKS_ONLY] == 600_000
-        facts = next(r for r in await reader.get_session_cost_facts(f) if r["session_id"] == _HOOKS_ONLY)
+        assert durations[ids.hooks_only] == 600_000
+        facts = next(r for r in await reader.get_session_cost_facts(f) if r["session_id"] == ids.hooks_only)
         assert facts["started_at"] == _naive(t)
     finally:
-        await _cleanup(engine, _HOOKS_ONLY)
+        await _cleanup(engine, ids.hooks_only)
         await engine.close()
 
 
 @pytest.mark.asyncio
-async def test_session_detail_reports_the_activity_range():
+async def test_session_detail_reports_the_activity_range(ids: _Ids):
     """AC #1, #2: Session Detail starts no later than its own first timeline event and lasts the whole range."""
     engine = await _get_engine()
     t = _hook_time()
     try:
-        await _cleanup(engine, _SESSION)
-        await _seed_session(engine, _SESSION, t, otel=True)
+        await _cleanup(engine, ids.session)
+        await _seed_session(engine, ids.session, ids.email, t, otel=True)
 
-        detail, _, _ = await LocalAnalyticsHandler(PostgresCliAnalyticsReader(engine)).get_session_detail(_SESSION)
+        detail, _, _ = await LocalAnalyticsHandler(PostgresCliAnalyticsReader(engine)).get_session_detail(ids.session)
 
         assert detail is not None
         start = datetime.fromisoformat(detail["start_time"])
@@ -192,78 +219,84 @@ async def test_session_detail_reports_the_activity_range():
         assert detail["duration_ms"] == 672_000
         assert all(datetime.fromisoformat(e["timestamp"]) >= start for e in detail["events"])
     finally:
-        await _cleanup(engine, _SESSION)
+        await _cleanup(engine, ids.session)
         await engine.close()
 
 
 @pytest.mark.asyncio
-async def test_session_detail_without_dims_starts_at_its_earliest_event():
+async def test_session_detail_without_dims_starts_at_its_earliest_event(ids: _Ids):
     """A priced session whose dimension row is missing starts at its earliest OTel row, not at 1970-01-01."""
     engine = await _get_engine()
     t = _hook_time()
     try:
-        await _cleanup(engine, _HOOKS_ONLY)
+        await _cleanup(engine, ids.hooks_only)
         async with engine.acquire() as conn:
-            await conn.execute(_COST_DAILY_SQL, t.date(), _HOOKS_ONLY, _EMAIL)
-            await conn.execute(_LOG_EVENTS_SQL, t, _HOOKS_ONLY)
-            await conn.execute(_LOG_EVENTS_SQL, t + timedelta(seconds=30), _HOOKS_ONLY)
+            await conn.execute(_COST_DAILY_SQL, t.date(), ids.hooks_only, ids.email)
+            await conn.execute(_LOG_EVENTS_SQL, t, ids.hooks_only)
+            await conn.execute(_LOG_EVENTS_SQL, t + timedelta(seconds=30), ids.hooks_only)
 
-        detail, _, _ = await LocalAnalyticsHandler(PostgresCliAnalyticsReader(engine)).get_session_detail(_HOOKS_ONLY)
+        detail, _, _ = await LocalAnalyticsHandler(PostgresCliAnalyticsReader(engine)).get_session_detail(
+            ids.hooks_only
+        )
 
         assert detail is not None
         assert datetime.fromisoformat(detail["start_time"]) == t
         assert detail["duration_ms"] == 30_000
     finally:
-        await _cleanup(engine, _HOOKS_ONLY)
+        await _cleanup(engine, ids.hooks_only)
         await engine.close()
 
 
 @pytest.mark.asyncio
-async def test_list_and_detail_agree_on_a_row_more_than_a_day_out():
+async def test_list_and_detail_agree_on_a_row_more_than_a_day_out(ids: _Ids):
     """AC #2: one definition of the range. An OTel row two days before the first hook is outside the probe
     bound for every path, so the list, the durations and Session Detail report the same start and duration."""
     engine = await _get_engine()
     t = _hook_time()
-    f = LocalAnalyticsFilter(start_dt=_naive(t - timedelta(hours=1)), end_dt=_naive(t + timedelta(hours=1)))
+    f = LocalAnalyticsFilter(
+        start_dt=_naive(t - timedelta(hours=1)), end_dt=_naive(t + timedelta(hours=1)), users=[ids.email]
+    )
     try:
-        await _cleanup(engine, _SESSION)
-        await _seed_session(engine, _SESSION, t, otel=True)
+        await _cleanup(engine, ids.session)
+        await _seed_session(engine, ids.session, ids.email, t, otel=True)
         async with engine.acquire() as conn:
-            await conn.execute(_LOG_EVENTS_SQL, t - timedelta(days=2), _SESSION)
+            await conn.execute(_LOG_EVENTS_SQL, t - timedelta(days=2), ids.session)
         reader = PostgresCliAnalyticsReader(engine)
         handler = LocalAnalyticsHandler(reader)
 
         data, _, _ = await handler.get_sessions(f, page=0, per_page=50, sort_by="start_time", search=None)
-        listed = next(s for s in data["sessions"] if s["trace_id"] == _SESSION)
-        detail, _, _ = await handler.get_session_detail(_SESSION)
+        listed = next(s for s in data["sessions"] if s["trace_id"] == ids.session)
+        detail, _, _ = await handler.get_session_detail(ids.session)
 
         assert detail is not None
         assert datetime.fromisoformat(listed["start_time"]) == t - timedelta(seconds=12)
         assert detail["start_time"] == listed["start_time"]
         assert detail["duration_ms"] == listed["duration_ms"] == 672_000
     finally:
-        await _cleanup(engine, _SESSION)
+        await _cleanup(engine, ids.session)
         await engine.close()
 
 
 @pytest.mark.asyncio
-async def test_boundary_rows_at_exactly_cand_start_and_cand_end_do_not_widen_the_range():
+async def test_boundary_rows_at_exactly_cand_start_and_cand_end_do_not_widen_the_range(ids: _Ids):
     """reader.py:150-157 probes are strict (`<` / `>`) on purpose: a log_event at exactly cand_start
     and a span at exactly cand_end are "not earlier"/"not later" and must not shift the reported range."""
     engine = await _get_engine()
     t = _hook_time()
-    f = LocalAnalyticsFilter(start_dt=_naive(t - timedelta(hours=1)), end_dt=_naive(t + timedelta(hours=1)))
+    f = LocalAnalyticsFilter(
+        start_dt=_naive(t - timedelta(hours=1)), end_dt=_naive(t + timedelta(hours=1)), users=[ids.email]
+    )
     try:
-        await _cleanup(engine, _SESSION)
-        await _seed_session(engine, _SESSION, t, otel=False)
+        await _cleanup(engine, ids.session)
+        await _seed_session(engine, ids.session, ids.email, t, otel=False)
         async with engine.acquire() as conn:
-            await conn.execute(_LOG_EVENTS_SQL, t, _SESSION)
-            await conn.execute(_SPANS_SQL, t + timedelta(minutes=10), _SESSION)
+            await conn.execute(_LOG_EVENTS_SQL, t, ids.session)
+            await conn.execute(_SPANS_SQL, t + timedelta(minutes=10), ids.session)
         reader = PostgresCliAnalyticsReader(engine)
 
-        facts = next(r for r in await reader.get_session_cost_facts(f) if r["session_id"] == _SESSION)
+        facts = next(r for r in await reader.get_session_cost_facts(f) if r["session_id"] == ids.session)
         assert facts["started_at"] == _naive(t)
         assert facts["last_event_at"] == _naive(t + timedelta(minutes=10))
     finally:
-        await _cleanup(engine, _SESSION)
+        await _cleanup(engine, ids.session)
         await engine.close()

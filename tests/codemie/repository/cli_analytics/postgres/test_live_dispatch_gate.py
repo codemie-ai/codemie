@@ -56,6 +56,7 @@ from codemie.repository.cli_analytics.postgres.reader import PostgresCliAnalytic
 from codemie.repository.cli_analytics.postgres.settings import AnalyticsPgSettings
 from codemie.repository.cli_analytics.postgres.fork_attribution import tool_response_agent_id
 from codemie.repository.cli_analytics.vocabulary import EventKind
+from codemie.service.analytics.delivery_framework import classify_delivery_framework
 from codemie.service.analytics.handlers.cli_analytics_handler import LocalAnalyticsHandler
 from tests.codemie.repository.cli_analytics.support.live_rollup_lock import live_rollup_lock
 
@@ -550,6 +551,55 @@ async def test_live_hook_only_ordinary_agent_is_counted_not_dropped_by_null_skil
         agent_count, subtype_calls = await _rollup_agent_counts(engine, session_id, "general-purpose")
 
         assert (agent_count, subtype_calls) == (1, 1)
+    finally:
+        await _cleanup(engine, session_id)
+
+
+@pytest.mark.asyncio
+async def test_live_a_session_that_only_dispatches_a_factory_subagent_is_a_factory_session(engine):
+    """A subagent start without skill_name lands in `agents`, never in `skills`: the classifier must read the
+    subagent types too, or a session that only dispatches factory agents is labelled "Pure chat" (stored column,
+    list and detail)."""
+    session_id = "test-epmcdme-16441-live-agents-only-factory"
+    try:
+        await _cleanup(engine, session_id)
+        async with engine.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO hook_events (ts, session_id, event_type, agent_type, skill_name) "
+                "VALUES ($1, $2, 'agent.subagent.start', $3, NULL)",
+                _DAY + timedelta(minutes=5),
+                session_id,
+                "sdlc-factory:complexity-assessor",
+            )
+            await conn.execute(
+                _LOG_EVENTS_SQL,
+                _DAY + timedelta(minutes=1),
+                session_id,
+                int(EventKind.API_REQUEST),
+                None,
+                1.0,
+            )
+            refresher = rollups.RollupRefresher(
+                engine, batch_size=100, clock=lambda: _DAY.date(), classify=classify_delivery_framework
+            )
+            await refresher.mark_dirty(_DAY.date(), _DAY.date(), conn)
+            await refresher.refresh(conn)
+
+        async with engine.acquire() as conn:
+            # delivery_framework is a text column: _session_dims would json-decode it.
+            stored = await conn.fetchval(
+                "SELECT delivery_framework FROM codemie_analytics.session_dims WHERE session_id = $1", session_id
+            )
+        window = LocalAnalyticsFilter(start_dt=_DAY, end_dt=_DAY + timedelta(hours=1))
+        handler = LocalAnalyticsHandler(PostgresCliAnalyticsReader(engine))
+        listed, _, _ = await handler.get_sessions(window, 0, 1000, "start_time", None)
+        detail = await _api_detail(engine, session_id)
+
+        assert stored == "CodeMie AI Factory"
+        assert [s["delivery_framework"] for s in listed["sessions"] if s["trace_id"] == session_id] == [
+            "CodeMie AI Factory"
+        ]
+        assert detail["delivery_framework"] == "CodeMie AI Factory"
     finally:
         await _cleanup(engine, session_id)
 

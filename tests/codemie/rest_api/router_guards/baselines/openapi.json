@@ -16168,6 +16168,11 @@
             "title": "Cache Read Tokens",
             "type": "integer"
           },
+          "cost_available": {
+            "default": true,
+            "title": "Cost Available",
+            "type": "boolean"
+          },
           "cost_usd": {
             "title": "Cost Usd",
             "type": "number"
@@ -16448,6 +16453,11 @@
             "default": 0,
             "title": "Cache Read Tokens",
             "type": "integer"
+          },
+          "cost_available": {
+            "default": true,
+            "title": "Cost Available",
+            "type": "boolean"
           },
           "cost_usd": {
             "title": "Cost Usd",

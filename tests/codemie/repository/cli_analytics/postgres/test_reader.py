@@ -26,7 +26,7 @@ import pytest
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
 from codemie.repository.cli_analytics.ports import CliAnalyticsReader
 from codemie.repository.cli_analytics.postgres import session_derived
-from codemie.repository.cli_analytics.postgres.session_derived import SKILL_NAMES_SQL
+from codemie.repository.cli_analytics.postgres.session_derived import CLASSIFIER_NAMES_SQL
 from codemie.repository.cli_analytics.postgres.fork_attribution import executed_tool_span, tool_response_agent_id
 from codemie.repository.cli_analytics.postgres.reader import (
     PostgresCliAnalyticsReader,
@@ -124,15 +124,20 @@ async def test_skill_names_read_session_dims_with_the_sql_of_the_classifier():
     (sql,) = recorder.statements
     text = " ".join(sql.split())
     assert "FROM session_dims sd WHERE sd.session_id = ANY($1::text[])" in text
-    assert " ".join(SKILL_NAMES_SQL.split()) in text
-    assert " ".join(session_derived._READ.split()).count(" ".join(SKILL_NAMES_SQL.split())) == 1
+    assert " ".join(CLASSIFIER_NAMES_SQL.split()) in text
+    assert " ".join(session_derived._READ.split()).count(" ".join(CLASSIFIER_NAMES_SQL.split())) == 1
     skills = session_derived._SKILLS_OBJECT
-    with_summary, without_summary = " ".join(SKILL_NAMES_SQL.split()).split("THEN", 1)[1].split(" ELSE ", 1)
+    agents = session_derived._AGENTS_OBJECT
+    with_summary, without_summary = " ".join(CLASSIFIER_NAMES_SQL.split()).split("THEN", 1)[1].split(" ELSE ", 1)
     assert "session_skills" not in with_summary
-    assert f"FROM jsonb_object_keys({skills}) s (name) WHERE s.name <> ''" in with_summary
+    assert (
+        f"FROM (SELECT s.name FROM jsonb_object_keys({skills}) s (name) "
+        f"UNION SELECT a.name FROM jsonb_object_keys({agents}) a (name)) x WHERE x.name <> ''"
+    ) in with_summary
     assert (
         "FROM (SELECT ss.skill_name AS name FROM session_skills ss WHERE ss.session_id = sd.session_id "
-        f"UNION SELECT s.name FROM jsonb_object_keys({skills}) s (name)) x WHERE x.name <> ''"
+        f"UNION SELECT s.name FROM jsonb_object_keys({skills}) s (name) "
+        f"UNION SELECT a.name FROM jsonb_object_keys({agents}) a (name)) x WHERE x.name <> ''"
     ) in without_summary
 
 
@@ -180,6 +185,7 @@ def test_project_unattributed_wins_over_the_projects_filter():
 
 _FACT_TABLES = (
     "cost_daily",
+    "session_usage",
     "lines_daily",
     "active_time_daily",
     "turns_daily",
@@ -261,24 +267,50 @@ class _SqlRecorder:
         return []
 
 
-_WINDOWED = [
-    name
-    for name in port_methods(CliAnalyticsReader)
-    if not name.startswith("get_session_detail_") and name != "get_skill_names_by_session"
+_NOT_WINDOWED = ("get_skill_names_by_session", "get_session_page")  # plus the get_session_detail_* queries
+
+
+class _PageRecorder(_SqlRecorder):
+    """`get_session_page` reads the one row its aggregate always returns."""
+
+    async def fetch(self, sql, *args):
+        await super().fetch(sql, *args)
+        return [{"total": 0, "session_ids": []}]
+
+
+_PAGE = {"page": 1, "per_page": 20}
+# Every windowed query as the session list calls it: the plain ports, the cost-less facts and the SQL pages.
+_WINDOWED_CALLS = [
+    *[
+        pytest.param(name, {}, id=name)
+        for name in port_methods(CliAnalyticsReader)
+        if name not in _NOT_WINDOWED and not name.startswith("get_session_detail_")
+    ],
+    pytest.param("get_session_cost_facts", {"include_costless": True}, id="get_session_cost_facts-include_costless"),
+    pytest.param("get_session_page", {"sort_by": "start_time", **_PAGE}, id="get_session_page-start_time"),
+    pytest.param(
+        "get_session_page",
+        {"sort_by": "ctx_per_call", "search": "a%b", "is_unattributed": True, **_PAGE},
+        id="get_session_page-ctx_per_call",
+    ),
 ]
 
 
+async def _call(method: str, kwargs: dict, filters: dict) -> list[str]:
+    recorder = _PageRecorder() if method == "get_session_page" else _SqlRecorder()
+    await getattr(PostgresCliAnalyticsReader(recorder), method)(_flt(**filters), **kwargs)  # type: ignore[arg-type]
+    return recorder.statements
+
+
 @pytest.mark.parametrize("filters", [{"deny_all": True}, {"projects": ["p"]}], ids=["deny_all", "projects"])
-@pytest.mark.parametrize("method", _WINDOWED)
+@pytest.mark.parametrize(("method", "kwargs"), _WINDOWED_CALLS)
 @pytest.mark.asyncio
-async def test_every_fact_a_windowed_query_reads_is_scoped_to_the_selected_sessions(method, filters):
+async def test_every_fact_a_windowed_query_reads_is_scoped_to_the_selected_sessions(method, kwargs, filters):
     # Missing in one branch, a project admin would see other projects' facts there.
-    recorder = _SqlRecorder()
+    statements = await _call(method, kwargs, filters)
 
-    await getattr(PostgresCliAnalyticsReader(recorder), method)(_flt(**filters))  # type: ignore[arg-type]
-
-    assert recorder.statements
-    for sql in recorder.statements:
+    assert statements
+    for sql in statements:
         assert _unscoped_fact_branches(sql) == []
 
 
@@ -602,6 +634,154 @@ async def test_session_cost_facts_inner_join_sel_without_epoch_defaults():
 
 
 @pytest.mark.asyncio
+async def test_session_model_costs_scope_the_subagent_totals_branch_to_sel():
+    sql, _ = await _sql_of("get_session_model_costs")
+
+    assert "FROM cost_daily c WHERE c.session_id IN (SELECT session_id FROM sel)" in sql
+    assert (
+        "FROM session_usage u WHERE u.attrs->>'token_source' = 'subagent_usage' "
+        "AND u.session_id IN (SELECT session_id FROM sel)"
+    ) in sql
+
+
+_TOTALS_SUBQUERY = re.compile(
+    r"LEFT JOIN \(SELECT session_id, (?:sum\(coalesce\((\w+), 0\)\) AS \w+(?:, )?){4} FROM session_usage "
+    r"WHERE attrs->>'token_source' = 'subagent_usage' AND session_id IN \(SELECT session_id FROM sel\) "
+    r"GROUP BY session_id\) t ON t\.session_id = s\.session_id"
+)
+
+
+@pytest.mark.asyncio
+async def test_costless_session_facts_join_one_scoped_totals_row_per_session_and_never_sum_it():
+    sql, _ = await _sql_of("get_session_cost_facts", include_costless=True)
+
+    # The subagent totals are one row per selected session (GROUP BY session_id, scoped to sel) ...
+    assert _TOTALS_SUBQUERY.search(sql)
+    # ... so the outer GROUP BY takes them with max, never a sum that would multiply them by the cost rows.
+    for column in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens"):
+        assert f"max(t.{column})" in sql
+    assert "sum(t." not in sql
+    # Both the cost rows and the totals are optional, so a session without either is still listed.
+    assert re.search(r"sel s JOIN act a ON a\.session_id = s\.session_id LEFT JOIN \(SELECT c\.\*", sql)
+    assert ") c ON c.session_id = s.session_id LEFT JOIN (SELECT session_id, sum(coalesce(" in sql
+    assert re.findall(r"(?<!LEFT )JOIN \(", sql) == []
+
+
+class _PageArgRecorder(_PageRecorder):
+    def __init__(self) -> None:
+        super().__init__()
+        self.args: list[tuple] = []
+
+    async def fetch(self, sql, *args):
+        self.args.append(args)
+        return await super().fetch(sql, *args)
+
+
+async def _page_query(**kwargs) -> tuple[str, tuple]:
+    recorder = _PageArgRecorder()
+    await PostgresCliAnalyticsReader(recorder).get_session_page(_flt(), **kwargs)  # type: ignore[arg-type]
+    return " ".join(recorder.statements[0].split()), recorder.args[0]
+
+
+@pytest.mark.parametrize("sort_by", ["start_time", "ctx_per_call"])
+@pytest.mark.asyncio
+async def test_the_session_page_is_limited_and_offset_in_sql_over_sessions_ordered_by_key_then_id(sort_by):
+    sql, args = await _page_query(sort_by=sort_by, page=2, per_page=10)
+
+    assert re.search(r"LIMIT \$(\d+)::bigint OFFSET \$(\d+)::bigint", sql)
+    assert 10 in args and 20 in args  # per_page and page * per_page, bound, never interpolated
+    assert f'ORDER BY sort_key DESC, session_id {_C} LIMIT' in sql
+    assert "(SELECT count(*) FROM filtered)" in sql  # the total counts sessions, not the page
+    assert "sel s" in sql and "FROM sel" in sql  # the user / project scope stays in force
+
+
+@pytest.mark.asyncio
+async def test_a_huge_session_page_binds_a_clamped_offset_that_fits_bigint():
+    sql, args = await _page_query(sort_by="start_time", page=10**18, per_page=50)
+
+    assert re.search(r"LIMIT \$(\d+)::bigint OFFSET \$(\d+)::bigint", sql)
+    assert 4611686018427387904 in args  # 2**62, not 5 * 10**19 that overflows int64 in the driver
+    assert max(a for a in args if isinstance(a, int)) <= 2**63 - 1
+
+
+@pytest.mark.asyncio
+async def test_the_python_paged_session_facts_carry_no_limit_or_offset():
+    sql, _ = await _sql_of("get_session_cost_facts", include_costless=True)
+
+    assert "LIMIT" not in sql and "OFFSET" not in sql
+
+
+@pytest.mark.asyncio
+async def test_the_session_page_search_is_escaped_and_bound_never_interpolated():
+    sql, args = await _page_query(sort_by="start_time", page=0, per_page=5, search="  50%_A\\B ")
+
+    assert sql.count("ILIKE $") == 3 and sql.count("::text ESCAPE '\\'") == 3
+    assert "50" not in sql
+    assert "%50\\%\\_a\\\\b%" in args  # trimmed, lower-cased, % _ and \ made literal
+
+
+@pytest.mark.asyncio
+async def test_a_search_with_a_nul_character_matches_nothing_without_a_query():
+    recorder = _PageRecorder()
+
+    page = await PostgresCliAnalyticsReader(recorder).get_session_page(  # type: ignore[arg-type]
+        _flt(), "start_time", 0, 5, search="a\x00b"
+    )
+
+    assert page == (0, []) and recorder.statements == []
+
+
+@pytest.mark.asyncio
+async def test_the_session_page_without_search_binds_none():
+    sql, _ = await _page_query(sort_by="start_time", page=0, per_page=5)
+
+    assert "ILIKE" not in sql and "$search" not in sql
+
+
+@pytest.mark.asyncio
+async def test_the_session_page_unattributed_filter_is_applied_before_the_count_and_the_page():
+    sql, _ = await _page_query(sort_by="start_time", page=0, per_page=5, is_unattributed=True)
+
+    assert "WHERE true AND s.repository = ''" in sql
+    assert sql.index("s.repository = ''") < sql.index("page AS (")
+
+
+@pytest.mark.asyncio
+async def test_the_ctx_per_call_page_rounds_to_nine_decimals_and_is_zero_without_calls():
+    sql, _ = await _page_query(sort_by="ctx_per_call", page=0, per_page=5)
+
+    assert "WHEN coalesce(c.calls, 0) = 0 THEN 0::numeric" in sql
+    assert ", 9) END AS sort_key" in sql
+    assert "coalesce(t.cache_read_tokens, 0)" in sql  # the subagent totals count, as in the list row
+
+
+@pytest.mark.asyncio
+async def test_a_session_page_cannot_sort_by_a_python_only_key():
+    with pytest.raises(ValueError, match="cost_usd"):
+        await PostgresCliAnalyticsReader(_PageRecorder()).get_session_page(  # type: ignore[arg-type]
+            _flt(), "cost_usd", 0, 5
+        )
+
+
+def test_restricting_a_filter_to_session_ids_keeps_every_other_scope():
+    f = _flt(users=["Dev@X.com"], projects=["p"])
+    narrowed = f.restricted_to(["s1", "s2"])
+    cte = PostgresCliAnalyticsReader._sessions_cte(narrowed)
+
+    assert "lower(user_email) = ANY($users::text[])" in cte and "project_name = ANY($projects::text[])" in cte
+    assert "session_id = ANY($session_ids::text[])" in cte
+    assert window_params(narrowed)["session_ids"] == ["s1", "s2"]
+    assert (window_params(narrowed)["users"], window_params(narrowed)["projects"]) == (["dev@x.com"], ["p"])
+    assert f.session_ids is None and "session_ids" not in window_params(f)  # the original is untouched
+
+
+def test_session_ids_never_replace_a_filter_that_denies_every_session():
+    cte = PostgresCliAnalyticsReader._sessions_cte(_flt(deny_all=True).restricted_to(["s1"]))
+
+    assert "WHERE false" in cte
+
+
+@pytest.mark.asyncio
 async def test_cost_kpis_selects_total_api_calls():
     sql, _ = await _sql_of("get_cost_kpis")
     assert "sum(api_call_count)::bigint" in sql
@@ -646,7 +826,8 @@ async def test_session_detail_model_costs_groups_by_model_for_one_session():
     (statement,) = recorder.statements
     sql = " ".join(statement.split())
     assert "GROUP BY c.model_name" in sql
-    assert "c.session_id = $1" in sql.replace("$sid", "$1") or "session_id =" in sql
+    assert "FROM cost_daily c WHERE c.session_id = $1" in sql
+    assert "FROM session_usage u WHERE u.attrs->>'token_source' = 'subagent_usage' AND u.session_id = $1" in sql
 
 
 @pytest.mark.asyncio
@@ -744,15 +925,13 @@ _REMOVED_WINDOWS = ("day BETWEEN", "$d0", "$d1", "$h0", "$h1", "_EDGES", "_INNER
 
 
 @pytest.mark.parametrize("filters", _ALL_FILTERS, ids=["unfiltered", "deny_all", "projects"])
-@pytest.mark.parametrize("method", _WINDOWED)
+@pytest.mark.parametrize(("method", "kwargs"), _WINDOWED_CALLS)
 @pytest.mark.asyncio
-async def test_no_fact_query_carries_its_own_window_and_all_are_scoped_to_sel(method, filters):
-    recorder = _SqlRecorder()
+async def test_no_fact_query_carries_its_own_window_and_all_are_scoped_to_sel(method, kwargs, filters):
+    statements = await _call(method, kwargs, filters)
 
-    await getattr(PostgresCliAnalyticsReader(recorder), method)(_flt(**filters))  # type: ignore[arg-type]
-
-    assert recorder.statements
-    for sql in recorder.statements:
+    assert statements
+    for sql in statements:
         assert _unscoped_fact_branches(sql) == []
         for removed in _REMOVED_WINDOWS:
             assert removed not in sql
