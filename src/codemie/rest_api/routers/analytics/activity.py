@@ -24,6 +24,7 @@ from codemie.rest_api.models.analytics import (
     TabularResponse,
     UsersListResponse,
 )
+from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.routers.analytics._common import (
     CLIENT_SOURCE_FILTER_DESC,
     PROJECTS_FILTER_DESC,
@@ -36,6 +37,7 @@ from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.utils.client_context import ClientSource
 from codemie.rest_api.security.user import User
 from codemie.service.analytics.analytics_service import AnalyticsService
+from codemie.utils.datetime_utils import to_utc
 
 logger = logging.getLogger(__name__)
 
@@ -428,11 +430,14 @@ async def get_projects_unique_daily(
     - All date records are returned in a single response
     """
     # Validate time parameters
+    start_date = to_utc(start_date) if start_date else None
+    end_date = to_utc(end_date) if end_date else None
     if start_date and end_date and start_date > end_date:
-        from fastapi import HTTPException
-
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="start_date must be before or equal to end_date"
+        raise ExtendedHTTPException(
+            code=status.HTTP_400_BAD_REQUEST,
+            message="Invalid request parameters",
+            details="start_date must be before or equal to end_date",
+            help="Please check your start_date and end_date values.",
         )
 
     service = AnalyticsService(user)

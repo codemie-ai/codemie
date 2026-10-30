@@ -23,6 +23,8 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta, timezone
 
+from codemie.utils.datetime_utils import to_utc
+
 logger = logging.getLogger(__name__)
 
 
@@ -104,6 +106,8 @@ class TimeParser:
     def _parse_custom_range(start_date: datetime | None, end_date: datetime | None) -> tuple[datetime, datetime]:
         """Parse custom date range with defaults for missing values."""
         now = datetime.now(timezone.utc)
+        start_date = to_utc(start_date) if start_date else None
+        end_date = to_utc(end_date) if end_date else None
 
         # Calculate final_start with clear logic
         if start_date:

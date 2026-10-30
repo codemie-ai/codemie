@@ -90,6 +90,7 @@ from codemie.service.analytics.delivery_framework import get_framework_labels
 from codemie.service.analytics.handlers.cli_analytics_handler import LocalAnalyticsHandler, now_iso
 from codemie.service.analytics.handlers.user_identity_resolver import UserIdentityResolver
 from codemie.service.analytics.time_parser import TimeParser
+from codemie.utils.datetime_utils import to_utc
 
 logger = logging.getLogger(__name__)
 
@@ -263,8 +264,8 @@ class FilterParams:
         repositories: str | None = Query(None, description="Comma-separated repository names"),
     ) -> None:
         self.time_period = time_period
-        self.start_date = start_date
-        self.end_date = end_date
+        self.start_date = to_utc(start_date) if start_date else None
+        self.end_date = to_utc(end_date) if end_date else None
         self.users = users
         self.projects = projects
         self.repositories = repositories

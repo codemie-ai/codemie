@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "task": "Fix HTTP 500 on CLI Analytics endpoints by enforcing a consistent UTC timezone policy at the parameter acceptance boundary and the TimeParser utility to eliminate unhandled naive-vs-aware datetime comparisons.",
+  "generated": "2026-10-29T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 17,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Four source components must change — TimeParser._parse_custom_range (shared utility), AnalyticsFilterParams in _common.py, inline params in cli.py for /cli-summary, and FilterParams in cli_analytics.py (OTel path). TimeParser is called 20+ times across CLIHandler, BaseHandler, QueryPipeline, and CLIInsightsHandler; a shared-utility red flag bumped this from L to XL. Even though the fix at each site is small, the component surface is wider than a single-component bug fix."
+    },
+    {
+      "dimension": "requirements_clarity",
+      "reason": "Root cause and affected files are fully confirmed. The timezone-policy open question has since been resolved (normalize to UTC, stakeholder-confirmed 2026-10-29). analytics-cli.js (the CLI normalization counterpart cited in the task) is absent from this repository; its scope is out of scope for this story and tracked separately."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "The Pydantic @field_validator pattern is established in this codebase and the fix is backward compatible. However, a testing auto-bump applies: test_time_parser.py never supplies a naive datetime to _parse_custom_range, and test_analytics.py line 1072 explicitly asserts HTTP 500 for the broken behavior — it must be inverted to expect HTTP 200 (normalized) per the resolved policy. No existing test template covers this defensive naive-datetime path, requiring net-new edge-case assertions."
+    }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L(4) to XL(5): TimeParser is a core shared utility called 20+ times across CLIHandler, BaseHandler, QueryPipeline, and CLIInsightsHandler — 'Touches core shared utilities' red flag applied.",
+    "Technical Risk confirmed at M(3) via testing auto-bump: no existing test in test_time_parser.py exercises naive datetime inputs, and test_analytics.py line 1072 documents the broken HTTP 500 behavior and must be updated — no existing test template covers this defensive pattern."
+  ],
+  "split_recommendation": null
+}

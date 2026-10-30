@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "generated": "2026-10-29T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 17,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 12,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Naive-datetime-to-UTC normalization is centralized and applied consistently across src/codemie/rest_api/routers/analytics/_common.py (shared AnalyticsFilterParams/AnalyticsQueryParams, new field_validator), activity.py, cli.py, and cli_analytics.py (API layer, four router files), plus src/codemie/service/analytics/time_parser.py (service layer) and src/codemie/utils/datetime_utils.py (core shared utility, to_utc). This spans the API and Service layers and modifies a utility consumed by multiple call sites, so the 'touches core shared utilities' red flag bumped this from L to XL." },
+    { "dimension": "file_change_estimate", "reason": "diffstat reports 12 files changed (10 modified + 2 new test files: tests/codemie/rest_api/routers/analytics/__init__.py and test_common_filter_params.py), which maps to the 11-15 file XL band under the actual-mode file-count mapping." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L to XL: change touches the core shared datetime_utils.to_utc utility, consumed by multiple analytics routers and the service-layer time parser."
+  ],
+  "split_recommendation": null
+}

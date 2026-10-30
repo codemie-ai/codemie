@@ -27,7 +27,7 @@ from codemie.rest_api.routers.utils import (
     raise_not_found,
     raise_unprocessable_entity,
 )
-from codemie.utils.datetime_utils import get_timestamp_bounds
+from codemie.utils.datetime_utils import get_timestamp_bounds, to_utc
 
 
 def test_raise_access_denied():
@@ -154,6 +154,16 @@ def test_get_timestamp_bounds_dict_messages_no_dates():
         {"role": "Assistant", "message": "m2", "date": None},
     ]
     assert get_timestamp_bounds(history) == (None, None)
+
+
+def test_to_utc_normalizes_naive_and_preserves_aware():
+    """Naive datetimes get UTC tzinfo attached; aware datetimes pass through unchanged."""
+    naive = datetime(2026, 1, 1, 12, 0, 0)
+    assert to_utc(naive) == naive.replace(tzinfo=timezone.utc)
+
+    aware = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    assert to_utc(aware) == aware
+    assert to_utc(aware) is aware
 
 
 # ---------------------------------------------------------------------------

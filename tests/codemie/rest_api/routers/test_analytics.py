@@ -27,7 +27,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -583,8 +583,8 @@ class TestToolsUsageEndpoint:
         # Assert
         mock_service.get_tools_usage.assert_called_once_with(
             None,
-            datetime(2025, 1, 1),
-            datetime(2025, 1, 31),
+            datetime(2025, 1, 1, tzinfo=timezone.utc),
+            datetime(2025, 1, 31, tzinfo=timezone.utc),
             ["user1@example.com"],
             ["project1", "project2"],
             1,
@@ -772,6 +772,36 @@ class TestCliEndpoints:
 
         # Assert
         mock_service.get_cli_summary.assert_called_once_with("last_7_days", None, None, None, None)
+        assert isinstance(response, JSONResponse)
+        assert response.status_code == status.HTTP_200_OK
+
+    @pytest.mark.asyncio
+    @patch("codemie.rest_api.routers.analytics.cli.AnalyticsService")
+    async def test_get_cli_summary_normalizes_naive_dates(
+        self, mock_service_class, mock_user, sample_summaries_response_data
+    ):
+        """Naive start_date/end_date query params are normalized to UTC before reaching the service."""
+        # Arrange
+        from codemie.rest_api.routers.analytics.cli import get_cli_summary
+
+        mock_service = AsyncMock()
+        mock_service.get_cli_summary.return_value = sample_summaries_response_data
+        mock_service_class.return_value = mock_service
+
+        # Act
+        response = await get_cli_summary(
+            user=mock_user,
+            time_period=None,
+            start_date=datetime(2026, 1, 1),
+            end_date=datetime(2026, 1, 2),
+            users=None,
+            projects=None,
+        )
+
+        # Assert
+        call_args = mock_service.get_cli_summary.call_args
+        assert call_args.args[1].tzinfo == timezone.utc
+        assert call_args.args[2].tzinfo == timezone.utc
         assert isinstance(response, JSONResponse)
         assert response.status_code == status.HTTP_200_OK
 
@@ -1039,7 +1069,9 @@ class TestGetProjectsUniqueDaily:
         )
 
         # Assert
-        mock_service.get_projects_unique_daily.assert_called_once_with(None, start, end, None, None)
+        mock_service.get_projects_unique_daily.assert_called_once_with(
+            None, start.replace(tzinfo=timezone.utc), end.replace(tzinfo=timezone.utc), None, None
+        )
 
     @pytest.mark.asyncio
     @patch("codemie.rest_api.routers.analytics.activity.AnalyticsService")
@@ -1089,9 +1121,61 @@ class TestGetProjectsUniqueDaily:
                 projects=None,
             )
 
-        # Verify it's an HTTP 500 exception (HTTPException wrapped by error handler)
-        assert exc_info.value.code == status.HTTP_500_INTERNAL_SERVER_ERROR
+        # Verify it's a 400 (not masked as a 500 by the generic error handler)
+        assert exc_info.value.code == status.HTTP_400_BAD_REQUEST
         assert "start_date" in exc_info.value.details.lower() or "end_date" in exc_info.value.details.lower()
+
+    @pytest.mark.asyncio
+    @patch("codemie.rest_api.routers.analytics.activity.AnalyticsService")
+    async def test_get_projects_unique_daily_normalizes_naive_non_reversed_dates(
+        self, mock_service_class, mock_user, sample_projects_unique_daily_response_data
+    ):
+        """Naive, non-reversed start_date/end_date are normalized to UTC, not rejected or 500'd."""
+        # Arrange
+        from codemie.rest_api.routers.analytics.activity import get_projects_unique_daily
+
+        mock_service = AsyncMock()
+        mock_service.get_projects_unique_daily.return_value = sample_projects_unique_daily_response_data
+        mock_service_class.return_value = mock_service
+
+        start = datetime(2026, 1, 1)
+        end = datetime(2026, 1, 2)
+
+        # Act
+        response = await get_projects_unique_daily(
+            user=mock_user,
+            time_period=None,
+            start_date=start,
+            end_date=end,
+            users=None,
+            projects=None,
+        )
+
+        # Assert
+        call_args = mock_service.get_projects_unique_daily.call_args
+        assert call_args.args[1].tzinfo == timezone.utc
+        assert call_args.args[2].tzinfo == timezone.utc
+        assert response.status_code == status.HTTP_200_OK
+
+    def test_get_projects_unique_daily_malformed_date_string_returns_422(self, mock_user):
+        """An unparseable date string on this endpoint's query params still 422s via FastAPI coercion."""
+        # Arrange
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from codemie.rest_api.routers.analytics.activity import router
+        from codemie.rest_api.security.authentication import authenticate
+
+        app = FastAPI()
+        app.include_router(router, prefix="/v1/analytics")
+        app.dependency_overrides[authenticate] = lambda: mock_user
+        client = TestClient(app)
+
+        # Act
+        response = client.get("/v1/analytics/projects-unique-daily", params={"start_date": "not-a-date"})
+
+        # Assert
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
 
     @pytest.mark.asyncio
     @patch("codemie.rest_api.routers.analytics.activity.AnalyticsService")

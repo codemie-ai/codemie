@@ -272,6 +272,21 @@ def _filter_params(projects: str | None = None) -> router_module.FilterParams:
     )
 
 
+def test_filter_params_normalizes_naive_dates_to_utc():
+    """Naive start_date/end_date are normalized to UTC right in __init__, before resolve()."""
+    params = router_module.FilterParams(
+        time_period=None,
+        start_date=datetime(2026, 1, 1),
+        end_date=datetime(2026, 1, 2),
+        users=None,
+        projects=None,
+        repositories=None,
+    )
+
+    assert params.start_date.tzinfo == timezone.utc
+    assert params.end_date.tzinfo == timezone.utc
+
+
 @pytest.mark.asyncio
 async def test_project_admin_without_projects_gets_a_deny_all_filter_without_nul():
     params = _filter_params()

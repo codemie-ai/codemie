@@ -1,0 +1,123 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-16393/cli-analytics-naive-datetime-utc",
+  "head": "25c972d9ba740b5ddcebf5101c40adc64b9b7a6d",
+  "runner": "poetry",
+  "started_at": "2026-10-29T12:17:41Z",
+  "completed_at": "2026-10-29T12:36:38Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 12913,
+      "command": "make ruff",
+      "exit_code": 0,
+      "notes": "make binary is not installed on this host; ran the literal Makefile recipe instead: `poetry run ruff format && poetry run ruff check --fix && poetry run ruff check`. Output: 3130 files left unchanged, All checks passed! (format and fix steps made no changes)."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 31462,
+      "command": "make build",
+      "exit_code": 0,
+      "notes": "make binary is not installed on this host; ran the literal Makefile recipe instead: `poetry build`. Built codemie-0.8.0 sdist and wheel."
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 6130,
+      "command": "make license-check",
+      "exit_code": 0,
+      "notes": "make binary is not installed on this host; ran the literal Makefile recipe instead: `poetry run python scripts/license_headers/check_license_headers.py --check --quiet`. Checked 2819 files, 0 missing license headers."
+    },
+    {
+      "id": "secrets-full-tree",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 54758,
+      "command": "make gitleaks",
+      "exit_code": 0,
+      "notes": "make binary is not installed on this host; ran the literal Makefile recipe (`docker run --rm -v \"./:/workspace\" ghcr.io/gitleaks/gitleaks:v8.30.1 dir ...`) with MSYS_NO_PATHCONV=1 to stop Git-Bash from mangling the bind-mount path (first attempt without it failed with 'unable to load gitleaks config' due to the mangled path, an environment artifact unrelated to secrets). Result: scanned ~62.86 MB, no leaks found."
+    },
+    {
+      "id": "secrets-staged",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 7496,
+      "command": "bash scripts/git-hooks/validate_secrets.sh (codemie-gitleaks local pre-commit hook; gitleaks protect --staged)",
+      "exit_code": 0,
+      "notes": "Ran directly (hooks are not installed in .git/hooks on this checkout) against the index as found - all implementation changes for this task were already staged (git status showed 'Changes to be committed' for the full diff) before this run started; no staging was performed by this gate run. Docker engine via MSYS_NO_PATHCONV=1. Result: 0 commits scanned, no leaks found."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 703005,
+      "command": "make test",
+      "exit_code": 1,
+      "notes": "make binary is not installed on this host; ran the literal Makefile recipe instead: `poetry run pytest tests/`. 198 failed, 23661 passed, 326 skipped, 206 errors. None of the failures/errors are in the modules touched by this change (tests/codemie/service/analytics/test_time_parser.py, tests/codemie/rest_api/routers/test_analytics.py, tests/codemie/rest_api/routers/test_cli_analytics_storage_wiring.py, tests/codemie/rest_api/routers/test_routers_utils.py, tests/codemie/rest_api/routers/analytics/* all passed). Sampled failure causes point to pre-existing Windows-host environment gaps, not this diff: datetime.fromtimestamp OSError on extreme years in cli_analytics/postgres/otlp.py (Windows libc limitation, file not touched by this change), UnicodeDecodeError reading a migration file under the Windows default cp1252 codec, ModuleNotFoundError: No module named 'resource' (Unix-only stdlib module) in usage_attribution/worker.py, missing codemie_enterprise package, and a large block of marketplace-management test ERRORs likely from a shared fixture/setup gap. Per the guide's own Fail criteria ('environment prerequisite is missing' is explicitly listed as a Fail condition, not a Skip condition) this is recorded FAIL, not SKIPPED. The gate was not re-run against a clean checkout to formally separate pre-existing failures from the diff; the caller should treat this as a Windows-host signal and confirm on CI/Linux rather than assume it is a regression from this change."
+    },
+    {
+      "id": "cli-analytics-live-sql",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make test-cli-analytics-live",
+      "exit_code": null,
+      "notes": "Skip if: change does not touch CLI Analytics SQL (src/codemie/repository/cli_analytics/postgres/). Diff touches only src/codemie/rest_api/routers/analytics/*, src/codemie/rest_api/routers/cli_analytics.py, src/codemie/service/analytics/time_parser.py, src/codemie/utils/datetime_utils.py and their tests — none under the postgres SQL path. Not run."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make coverage",
+      "exit_code": null,
+      "notes": "Skip if: user did not request coverage. Not requested in this dispatch. Not run."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make sonar-local",
+      "exit_code": null,
+      "notes": "Skip if: Sonar configuration, network access, or required credentials are unavailable. No SONAR_TOKEN env var and no .env.local in this checkout; the script itself would self-skip with 'Skipping Sonar scan because SONAR_TOKEN is not set.' Not run (would be a self-skip, not a real pass). To enable locally: set SONAR_TOKEN (and SONAR host config) before running `make sonar-local`."
+    },
+    {
+      "id": "full-verify",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make verify",
+      "exit_code": null,
+      "notes": "Skip if: task scope does not call for full verification. This dispatch is a local gate pass ahead of the user's own single commit, not a full-verification/MR request; its constituents (ruff, license-check, gitleaks, test) were already run individually above with the same code, so a redundant aggregate re-run was not performed."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "exit_code": null,
+      "notes": "Skip if: not opening a merge request (local iteration only). No MR is being opened in this task. Not run."
+    },
+    {
+      "id": "pre-push-hook",
+      "source": "hook",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "scripts/git-hooks/pre_push.sh (pytest tests/ --ignore=tests/enterprise + sonar-local)",
+      "exit_code": null,
+      "notes": "Hook is opt-in and disabled by default (CODEMIE_PREPUSH_ENABLED=false unless set; not set here) and is not installed in .git/hooks on this checkout. Its component checks are already covered above: pytest by the 'unit' gate (FAIL) and sonar-local by the 'sonar' gate (SKIPPED, no SONAR_TOKEN)."
+    }
+  ],
+  "failures": {
+    "unit": "ERROR tests/codemie/rest_api/routers/test_marketplace_approval_negative.py::test_a_non_admin_is_403_on_every_moderation_route[reject]\nERROR tests/codemie/rest_api/routers/test_marketplace_approval_negative.py::test_a_non_admin_is_403_on_every_moderation_route[force-publish]\nERROR tests/codemie/rest_api/routers/test_marketplace_approval_negative.py::test_a_non_admin_is_403_on_every_moderation_route[withdraw]\nERROR tests/codemie/rest_api/routers/test_marketplace_approval_negative.py::test_an_unauthenticated_caller_is_401_on_every_moderation_route[approve]\nERROR tests/codemie/rest_api/routers/test_marketplace_approval_negative.py::test_an_unauthenticated_caller_is_401_on_every_moderation_route[reject]\nERROR tests/codemie/rest_api/routers/test_marketplace_approval_negative.py::test_an_unauthenticated_caller_is_401_on_every_moderation_route[force-publish]\nERROR tests/codemie/rest_api/routers/test_marketplace_approval_negative.py::test_an_unauthenticated_caller_is_401_on_every_moderation_route[withdraw]\nERROR tests/codemie/rest_api/routers/test_marketplace_approval_negative.py::test_the_recorded_actor_is_the_principal_not_a_body_field[approve]\nERROR tests/codemie/rest_api/routers/test_marketplace_approval_negative.py::test_the_recorded_actor_is_the_principal_not_a_body_field[reject]\nERROR tests/codemie/rest_api/routers/test_marketplace_approval_negative.py::test_the_recorded_actor_is_the_principal_not_a_body_field[force-publish]\nERROR tests/codemie/rest_api/routers/test_marketplace_approval_negative.py::test_the_recorded_actor_is_the_principal_not_a_body_field[withdraw]\nERROR tests/codemie/rest_api/routers/test_marketplace_approval_negative.py::test_an_owner_may_submit_for_review_but_cannot_reach_approved\nERROR tests/codemie/rest_api/routers/test_marketplace_approval_negative.py::test_overview_emits_cleanup_reasons_from_the_persisted_verdicts\nERROR tests/codemie/rest_api/routers/test_marketplace_approval_negative.py::test_a_second_audit_run_is_409_and_does_not_launch_a_competing_run\nERROR tests/codemie/rest_api/routers/test_marketplace_approval_negative.py::test_overview_stays_under_a_second_while_an_audit_is_running\nERROR tests/codemie/rest_api/routers/test_marketplace_approval_negative.py::test_a_rerun_is_idempotent_and_leaves_the_status_clean\nERROR tests/codemie/rest_api/routers/test_marketplace_approval_negative.py::test_an_audit_run_does_not_mutate_marketplace_status\nERROR tests/codemie/rest_api/routers/test_marketplace_draft_default.py::test_create_persists_draft_not_approved\nERROR tests/codemie/rest_api/routers/test_marketplace_draft_default.py::test_the_column_server_default_is_draft\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_cleanup_paginates_in_sql\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_cleanup_pages_do_not_overlap\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_cleanup_excludes_assistants_withdrawn_since_the_audit_ran\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_cleanup_excludes_assistants_rejected_since_the_audit_ran\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_catalogue_facet_scope_matches_the_adapter\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_facets_include_reason_tier_bucket_rule\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_facet_tiers_buckets_and_rules_are_filterable_too\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_cleanup_row_is_flat_for_the_frontend\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_bad_filter_value_is_422[bucket]\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_bad_filter_value_is_422[tier]\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_bad_filter_value_is_422[reason]\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_bad_filter_value_is_422[rule]\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_empty_bucket_still_means_no_bucket_filter\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_verified_bucket_included_in_all\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_actor_cannot_be_spoofed\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_actor_omitted_still_records_the_real_user\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_overview_emits_pending_block\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_adapter_scope_excludes_private_approved_rows\nERROR tests/codemie/rest_api/routers/test_publish_bypass.py::test_bypass_is_denied_for_non_admin_on_critical\nERROR tests/codemie/rest_api/routers/test_publish_bypass.py::test_bypass_never_skips_deterministic_gates\nERROR tests/codemie/rest_api/routers/test_publish_bypass.py::test_admin_bypass_waives_only_optional_findings\nERROR tests/codemie/rest_api/routers/test_publish_runs_deterministic_gates.py::test_critical_gate_blocks_publish\nERROR tests/codemie/rest_api/routers/test_publish_runs_deterministic_gates.py::test_optional_gate_does_not_block\nERROR tests/codemie/rest_api/routers/test_publish_runs_deterministic_gates.py::test_gate_results_are_persisted_with_the_submission\nERROR tests/codemie/rest_api/routers/test_publish_runs_deterministic_gates.py::test_pending_and_detail_agree_after_a_post_submit_edit\nERROR tests/codemie/rest_api/test_marketplace_cleanup_detail_field.py::test_cleanup_row_surfaces_detail_field\nERROR tests/codemie/rest_api/test_marketplace_entity_detail_verdict_fields.py::test_entity_detail_includes_verdict_fields_when_verdict_exists\nERROR tests/codemie/rest_api/test_marketplace_entity_detail_verdict_fields.py::test_entity_detail_verdict_fields_are_null_when_no_verdict\nERROR tests/codemie/rest_api/test_marketplace_entity_detail_verdict_fields.py::test_entity_detail_includes_bucket_reason_and_usage_tier\nERROR tests/codemie/rest_api/test_marketplace_entity_detail_verdict_fields.py::test_entity_detail_includes_polish_check_results\n= 198 failed, 23661 passed, 326 skipped, 433 warnings, 206 errors in 693.34s (0:11:33) ="
+  }
+}

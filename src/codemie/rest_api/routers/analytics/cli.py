@@ -33,6 +33,7 @@ from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.utils.client_context import ClientSource
 from codemie.rest_api.security.user import User
 from codemie.service.analytics.analytics_service import AnalyticsService
+from codemie.utils.datetime_utils import to_utc
 
 router = APIRouter()
 
@@ -53,6 +54,8 @@ async def get_cli_summary(
     projects: str | None = Query(None),
 ) -> JSONResponse:
     """Get CLI summary analytics."""
+    start_date = to_utc(start_date) if start_date else None
+    end_date = to_utc(end_date) if end_date else None
     service = AnalyticsService(user)
     data = await service.get_cli_summary(
         time_period,

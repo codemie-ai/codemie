@@ -24,10 +24,11 @@ from typing import Any
 
 from fastapi import Query, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from codemie.configs.config import config
 from codemie.core.exceptions import ExtendedHTTPException
+from codemie.utils.datetime_utils import to_utc
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +116,11 @@ class AnalyticsFilterParams(BaseModel):
     end_date: datetime | None = Query(None)
     users: str | None = Query(None, description="Comma-separated user emails")
     projects: str | None = Query(None, description="Comma-separated project names")
+
+    @field_validator("start_date", "end_date")
+    @classmethod
+    def _normalize_to_utc(cls, value: datetime | None) -> datetime | None:
+        return to_utc(value) if value is not None else value
 
     @property
     def users_list(self) -> list[str] | None:

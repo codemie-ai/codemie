@@ -163,6 +163,19 @@ class TestTimeParser:
         assert start == start_date
         assert end == end_date
 
+    def test_parse_custom_range_naive_start_and_end_normalized(self):
+        """Naive start/end datetimes are normalized to UTC instead of raising TypeError."""
+        # Arrange
+        start_date = datetime(2026, 1, 1)
+        end_date = datetime(2026, 1, 2)
+
+        # Act
+        start, end = TimeParser.parse(None, start_date, end_date)
+
+        # Assert
+        assert start.tzinfo == timezone.utc
+        assert end.tzinfo == timezone.utc
+
     def test_parse_custom_range_start_after_end_raises_value_error(self):
         """Verify start_date > end_date is rejected."""
         # Arrange
