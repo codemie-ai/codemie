@@ -1,0 +1,62 @@
+{
+  "decision": "request-changes",
+  "rationale": "CR-001 (Optional[bool] -> bool | None on assistant.py:199 and provider.py:335) and CR-002 (missing Alembic migration for Provider.allow_user_context) are both resolved and verified against current source and the migration chain. CR-003 (commit-format on pre-existing commit eba06a3a1) remains unresolved but is a known, intentional deferral per task brief until this task reaches phase:done, not an oversight of this fix-up; it is the sole reason this round stays request-changes.",
+  "confidence": "medium",
+  "risk_flags": ["breaking-change"],
+  "business_review": [],
+  "standards_review": [],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/models/assistant.py",
+      "line": 199,
+      "title": "New override fields use Optional[bool] not bool | None",
+      "problem": "MCPServerDetails.allow_user_context (assistant.py:199) and UpdateProviderRequest.allow_user_context (provider.py:335) are both typed `Optional[bool]`, using the typing.Optional style the project's code-quality guide documents as superseded.",
+      "impact": "Violates a documented, blocking project standard (code-quality.md 'Types And Imports'); inconsistent with the modern `X | None` style already used elsewhere in this same diff (client.py, mcp/models.py, user.py additions).",
+      "recommendation": "Change both annotations to `bool | None`."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/models/provider.py",
+      "line": 260,
+      "title": "Missing Alembic migration for new Provider column",
+      "problem": "`Provider(table=True)` (provider.py:267, via ProviderBase:260-264) gains a new `allow_user_context` boolean column, but no Alembic migration file was added under `src/external/alembic/versions/` in this diff or anywhere in the branch's commit range.",
+      "impact": "database-patterns.md requires Alembic migrations for runtime schema creation on persistent tables; without one, any environment that applies schema via the existing migration chain will hit a missing-column error on the first Provider create/update/select after deploy — a broken runtime path, not a cosmetic gap.",
+      "recommendation": "Add an Alembic revision under src/external/alembic/versions/ adding `allow_user_context BOOLEAN NOT NULL DEFAULT false` to the `providers` table, following the pattern of the existing single-column-add migrations in that directory."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "unknown",
+      "title": "Commit subject breaks the required EPMCDME-#### format",
+      "problem": "Commit `eba06a3a1` in the review range is subjected `epmcdme-13260-mcp-user-context: add planning artifacts` — a lowercase branch-name-style prefix and lowercase description, not the documented `EPMCDME-####: Description` format.",
+      "impact": "git-workflow.md's Merge Strategy section requires the ticket-prefixed format for commits in the merge range; a malformed subject breaks that documented, blocking convention.",
+      "recommendation": "Reword the commit subject to `EPMCDME-13260: Add planning artifacts` (via rebase, before merge)."
+    }
+  ],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "resolved",
+      "notes": "assistant.py:199 and provider.py:335 both now `bool | None` in current source; verified directly."
+    },
+    {
+      "id": "CR-002",
+      "status": "resolved",
+      "notes": "Migration 633929ee02fa adds allow_user_context BOOLEAN NOT NULL DEFAULT false to providers, chained cleanly off head a8032409ff23 with no branch conflict."
+    },
+    {
+      "id": "CR-003",
+      "status": "unresolved",
+      "notes": "Commit eba06a3a1 subject unchanged; intentionally deferred until phase:done per task brief to avoid corrupting sha-based SDLC state mid-flow, not an oversight of this fix-up."
+    }
+  ]
+}

@@ -1,0 +1,62 @@
+{
+  "decision": "request-changes",
+  "rationale": "Full lens roster (blind, edge-case, acceptance, verification-gap) and the standards audit ran cleanly with no coverage gaps; blocking is a missing Alembic migration for the new Provider.allow_user_context column (critical — DB writes/reads fail at runtime) plus two standards violations (commit-format on one commit subject, Optional[bool] vs bool | None on two new fields, both major). 3 findings deferred as pre-existing and out of this ticket's scope (list_tools() debug-log asymmetry since EPMCDME-13260; ProviderService.update()'s truthy-check bug left unfixed for non-allow_user_context fields, deliberately per task brief; no MCP-Connect version gate on the EPMCDME-13260 user_context un-exclusion). 3 findings dismissed as noise/below the emission floor (stale 'unconditionally' doc/docstring wording, a default-lineage concern verified correct by reading toolkit_service.py/access_control.py, and a trivial duplicate UserContext.from_user() call).",
+  "confidence": "high",
+  "risk_flags": ["breaking-change"],
+  "business_review": [
+    { "kind": "story-ac", "item": "MCP: no explicit allow_user_context anywhere -> user_context omitted", "status": "pass", "notes": "Defaults False (mcp_config.py:157, models.py); client.py drops user_context when disabled; tests confirm." },
+    { "kind": "story-ac", "item": "MCP: server default True, no assistant override -> sent, same shape as EPMCDME-13260", "status": "pass", "notes": "Catalog default carries via model_dump crossover; override-None leaves default standing; extra_attributes still stripped on wire." },
+    { "kind": "story-ac", "item": "MCP: assistant override True on server default False -> sent", "status": "pass", "notes": "toolkit_service.py:1578-1579 _build_mcp_server_config; verified correct in all resolve_catalog_config branches." },
+    { "kind": "story-ac", "item": "MCP: assistant override False on server default True -> omitted", "status": "pass", "notes": "Override flips default; client.py drop logic enforces on the wire." },
+    { "kind": "story-ac", "item": "MCP: masked_for_logging() in invoke_tool() fires only when user_context is actually sent", "status": "pass", "notes": "client.py:244-252 gates debug log on user_context present AND allow_user_context true." },
+    { "kind": "story-ac", "item": "DSP: provider with no explicit allow_user_context -> user_context omitted (default off)", "status": "pass", "notes": "ProviderBase.allow_user_context default False; provider_tool_factory.py gates kwarg on provider_config.allow_user_context." },
+    { "kind": "story-ac", "item": "DSP: provider with allow_user_context True -> user_context sent, same shape as today", "status": "pass", "notes": "Full model_dump(exclude_none=True) shape unchanged when enabled." },
+    { "kind": "story-ac", "item": "DSP: masked diagnostic log line only fires when user_context is actually being sent", "status": "pass", "notes": "provider_tool_factory.py:181-182 gates logger.debug on provider_config.allow_user_context." },
+    { "kind": "spec", "item": "DSP: provider previously enabled then updated to allow_user_context:False -> becomes omitted", "status": "pass", "notes": "provider_service.py:60-63 exclude_unset special-case for allow_user_context confirmed correct by reading." },
+    { "kind": "spec", "item": "Restricted mode still allows setting the per-assistant allow_user_context override on a catalog-referenced server", "status": "pass", "notes": "access_control.py:38 adds allow_user_context to _CATALOG_REF_ALLOWED_FIELDS." },
+    { "kind": "spec", "item": "Non-goal: no change to user_context's contents on either path, only whether it's sent", "status": "pass", "notes": "MCP wire still strips extra_attributes; DSP wire shape unchanged." },
+    { "kind": "spec", "item": "Non-goal: no broader fix to ProviderService.update()'s truthy-check semantics for other fields", "status": "pass", "notes": "Special-case scoped to allow_user_context only; deferred as deliberate per task brief." }
+  ],
+  "standards_review": [
+    { "kind": "commit-format", "status": "partial", "notes": "17/18 commit subjects match `EPMCDME-####: Description`; commit eba06a3a1 uses a lowercase branch-name-style prefix instead." },
+    { "kind": "code-quality", "status": "partial", "notes": "New allow_user_context override fields use Optional[bool] instead of the documented bool | None union (assistant.py:199, provider.py:335)." },
+    { "kind": "security", "status": "pass", "notes": "user_context logged only via masked_for_logging(); forwarding correctly gated end-to-end on allow_user_context on both MCP and DSP paths; auth_headers excluded from serialization." }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/models/assistant.py",
+      "line": 199,
+      "title": "New override fields use Optional[bool] not bool | None",
+      "problem": "MCPServerDetails.allow_user_context (assistant.py:199) and UpdateProviderRequest.allow_user_context (provider.py:335) are both typed `Optional[bool]`, using the typing.Optional style the project's code-quality guide documents as superseded.",
+      "impact": "Violates a documented, blocking project standard (code-quality.md 'Types And Imports'); inconsistent with the modern `X | None` style already used elsewhere in this same diff (client.py, mcp/models.py, user.py additions).",
+      "recommendation": "Change both annotations to `bool | None`."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/models/provider.py",
+      "line": 260,
+      "title": "Missing Alembic migration for new Provider column",
+      "problem": "`Provider(table=True)` (provider.py:267, via ProviderBase:260-264) gains a new `allow_user_context` boolean column, but no Alembic migration file was added under `src/external/alembic/versions/` in this diff or anywhere in the branch's commit range.",
+      "impact": "database-patterns.md requires Alembic migrations for runtime schema creation on persistent tables; without one, any environment that applies schema via the existing migration chain will hit a missing-column error on the first Provider create/update/select after deploy — a broken runtime path, not a cosmetic gap.",
+      "recommendation": "Add an Alembic revision under src/external/alembic/versions/ adding `allow_user_context BOOLEAN NOT NULL DEFAULT false` to the `providers` table, following the pattern of the existing single-column-add migrations in that directory."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "unknown",
+      "title": "Commit subject breaks the required EPMCDME-#### format",
+      "problem": "Commit `eba06a3a1` in the review range is subjected `epmcdme-13260-mcp-user-context: add planning artifacts` — a lowercase branch-name-style prefix and lowercase description, not the documented `EPMCDME-####: Description` format.",
+      "impact": "git-workflow.md's Merge Strategy section requires the ticket-prefixed format for commits in the merge range; a malformed subject breaks that documented, blocking convention.",
+      "recommendation": "Reword the commit subject to `EPMCDME-13260: Add planning artifacts` (via rebase, before merge)."
+    }
+  ]
+}

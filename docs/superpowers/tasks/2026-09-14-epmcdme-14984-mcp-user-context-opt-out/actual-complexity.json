@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "generated": "2026-09-14T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 20,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 15,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Toggle spans the MCP subsystem (MCPServerDetails model in assistant.py, access_control.py allow-list, client.py wire gating, toolkit_service.py precedence resolution) and the Provider/DSP subsystem (ProviderBase/CreateProviderRequest/UpdateProviderRequest in provider.py, provider_service.py update() bugfix, provider_tool_factory.py invocation gating) plus an Alembic migration — 8 components across 2 subsystems and 3 layers, following an established boolean-toggle pattern rather than introducing new abstractions." },
+    { "dimension": "technical_risk", "reason": "Extends the existing, established user_context-forwarding pattern from EPMCDME-13260 with an explicit opt-in gate defaulting to False (client.py drops user_context unless allow_user_context is set; provider_tool_factory.py only attaches user_context when provider_config.allow_user_context). Established pattern, but gates PII forwarded to external MCP servers and DSP providers, so bumped one level for the security/privacy-sensitivity red flag." },
+    { "dimension": "file_change_estimate", "reason": "15 files touched in this commit range (2446146d4..705ca5f5d): 13 modified plus 2 new (the 633929ee02fa Alembic migration and the new tests/codemie/service/mcp/test_toolkit_service_three_state.py), crossing the 11-15 XL threshold." },
+    { "dimension": "affected_layers", "reason": "Touches REST API/models (assistant.py, provider.py), Service (mcp/client.py, mcp/toolkit_service.py, mcp/access_control.py, provider/provider_service.py, provider/provider_tool_factory.py), DB-Persistence (Alembic migration adding the allow_user_context column with server_default false), and External (gates the payload forwarded to MCP-Connect and DSP provider tool invocations) — a 3-4 layer profile including a persistence migration." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from M to L: gates forwarding of user PII/context (email, name, roles, etc.) to external MCP servers and DSP providers — security/privacy-sensitive data flow."
+  ],
+  "split_recommendation": null
+}

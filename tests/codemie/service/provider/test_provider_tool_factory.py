@@ -387,6 +387,103 @@ def test_invoke_injects_traceparent_into_headers(
     assert call_kwargs["x_correlation_id"] == "corr-1"
 
 
+@patch("codemie.service.provider.provider_tool_factory.get_traceparent_headers", return_value={})
+@patch("codemie.clients.provider.client.Configuration", return_value=MagicMock())
+@patch("codemie.clients.provider.client.ApiClient", return_value=MagicMock())
+@patch("codemie.clients.provider.client.ToolInvocationManagementApi.invoke_tool")
+def test_invoke_emits_masked_user_context_debug_line_without_touching_wire(
+    mock_invoke_tool, _mock_api_client, _mock_api_config, _mock_tp, tool_factory, caplog
+):
+    """invoke() logs a masked user_context at DEBUG; the DSP wire payload is unchanged."""
+    import logging
+
+    mock_invoke_tool.return_value = MagicMock()
+    user = User(id="u1", email="john.doe@epam.com", extra_attributes={"x": "raw-secret-value"}, auth_token="tok")
+
+    caplog.set_level(logging.DEBUG, logger="codemie")
+    codemie_logger = logging.getLogger("codemie")
+    codemie_logger.addHandler(caplog.handler)
+    try:
+        tool_factory.invoke(
+            user=user,
+            project_id="proj-1",
+            request_uuid="req-1",
+            params={},
+            headers={"X-Correlation-Id": "corr-1"},
+        )
+    finally:
+        codemie_logger.removeHandler(caplog.handler)
+
+    debug_text = "\n".join(r.getMessage() for r in caplog.records if r.levelname == "DEBUG")
+    assert "j***@epam.com" in debug_text
+    assert "<redacted, 1 keys>" in debug_text
+    assert "john.doe@epam.com" not in debug_text
+    assert "raw-secret-value" not in debug_text
+
+    # DSP wire still forwards the full user_context, extra_attributes included (unchanged).
+    invocation_request = mock_invoke_tool.call_args.kwargs["tool_invocation_request"]
+    assert invocation_request.user_context == UserContext.from_user(user).model_dump(exclude_none=True)
+    assert invocation_request.user_context["extra_attributes"] == {"x": "raw-secret-value"}
+
+
+@patch("codemie.service.provider.provider_tool_factory.get_traceparent_headers", return_value={})
+@patch("codemie.clients.provider.client.Configuration", return_value=MagicMock())
+@patch("codemie.clients.provider.client.ApiClient", return_value=MagicMock())
+@patch("codemie.clients.provider.client.ToolInvocationManagementApi.invoke_tool")
+def test_invoke_omits_user_context_when_allow_user_context_false(
+    mock_invoke_tool, _mock_api_client, _mock_api_config, _mock_tp, tool_factory, caplog
+):
+    """provider_config.allow_user_context=False: no user_context kwarg on the wire request,
+    and no masked debug log (EPMCDME-14984)."""
+    import logging
+
+    mock_invoke_tool.return_value = MagicMock()
+    tool_factory.provider_config.allow_user_context = False
+    user = User(id="u1", email="john.doe@epam.com", auth_token="tok")
+
+    caplog.set_level(logging.DEBUG, logger="codemie")
+    codemie_logger = logging.getLogger("codemie")
+    codemie_logger.addHandler(caplog.handler)
+    try:
+        tool_factory.invoke(
+            user=user,
+            project_id="proj-1",
+            request_uuid="req-1",
+            params={},
+        )
+    finally:
+        codemie_logger.removeHandler(caplog.handler)
+
+    invocation_request = mock_invoke_tool.call_args.kwargs["tool_invocation_request"]
+    assert invocation_request.user_context is None
+
+    debug_text = "\n".join(r.getMessage() for r in caplog.records if r.levelname == "DEBUG")
+    assert "user context" not in debug_text.lower()
+
+
+@patch("codemie.service.provider.provider_tool_factory.get_traceparent_headers", return_value={})
+@patch("codemie.clients.provider.client.Configuration", return_value=MagicMock())
+@patch("codemie.clients.provider.client.ApiClient", return_value=MagicMock())
+@patch("codemie.clients.provider.client.ToolInvocationManagementApi.invoke_tool")
+def test_invoke_sends_user_context_when_allow_user_context_true(
+    mock_invoke_tool, _mock_api_client, _mock_api_config, _mock_tp, tool_factory
+):
+    """provider_config.allow_user_context=True: user_context is sent unchanged, same shape as today."""
+    mock_invoke_tool.return_value = MagicMock()
+    tool_factory.provider_config.allow_user_context = True
+    user = User(id="u1", email="john.doe@epam.com", auth_token="tok")
+
+    tool_factory.invoke(
+        user=user,
+        project_id="proj-1",
+        request_uuid="req-1",
+        params={},
+    )
+
+    invocation_request = mock_invoke_tool.call_args.kwargs["tool_invocation_request"]
+    assert invocation_request.user_context == UserContext.from_user(user).model_dump(exclude_none=True)
+
+
 @patch("codemie.clients.provider.client.Configuration", return_value=MagicMock())
 @patch("codemie.clients.provider.client.ApiClient", return_value=MagicMock())
 @patch("codemie.clients.provider.client.ToolInvocationManagementApi.invoke_tool")

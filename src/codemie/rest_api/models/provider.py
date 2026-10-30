@@ -257,6 +257,11 @@ class ProviderBase(CommonBaseModel):
     service_location_url: Annotated[HttpUrl, AfterValidator(str)] = SQLField(sa_type=String)
     configuration: ProviderConfiguration = SQLField(sa_column=Column(PydanticType(ProviderConfiguration)))
     provided_toolkits: List[ProviderToolkit] = SQLField(sa_column=Column(PydanticListType(ProviderToolkit)))
+    allow_user_context: bool = SQLField(
+        default=True,
+        description="When True, forwards the caller's user_context to this provider on tool "
+        "invocation. Defaults to on; set False to opt this provider out (EPMCDME-14984).",
+    )
 
 
 class Provider(BaseModelWithSQLSupport, ProviderBase, table=True):
@@ -284,6 +289,11 @@ class CreateProviderRequest(BaseModel):
     configuration: ProviderConfiguration = Field(..., description="Provider configuration settings")
     provided_toolkits: List[ProviderToolkit] = Field(
         ..., description="List of toolkits provided by this provider", min_length=1
+    )
+    allow_user_context: bool = Field(
+        default=True,
+        description="When True, forwards the caller's user_context to this provider on tool "
+        "invocation. Defaults to on; set False to opt this provider out (EPMCDME-14984).",
     )
 
     @model_validator(mode="before")
@@ -322,6 +332,11 @@ class UpdateProviderRequest(BaseModel):
     service_location_url: Optional[Annotated[HttpUrl, AfterValidator(str)]] = None
     configuration: Optional[ProviderConfiguration] = None
     provided_toolkits: Optional[List[ProviderToolkit]] = None
+    allow_user_context: bool | None = Field(
+        default=None,
+        description="When True, forwards the caller's user_context to this provider on tool "
+        "invocation. None leaves the current value unchanged (EPMCDME-14984).",
+    )
 
 
 class ProviderDataSourceTypeSchema(BaseModel):

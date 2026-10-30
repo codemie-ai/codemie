@@ -220,8 +220,10 @@ class TestMCPExecutionContextAuthHeaders:
             "project_name": "proj",
             "workflow_execution_id": "wf1",
             "request_headers": {"X-Req": "val"},
+            "user_context": None,
         }
-        assert "user_context" not in fields
+        assert fields["user_context"] is None
+        assert "extra_attributes" not in fields
 
     def test_to_request_fields_without_auth_headers_matches_previous_contract(self):
         """to_request_fields output is identical to the pre-1.2 contract when auth_headers is None."""
@@ -234,15 +236,18 @@ class TestMCPExecutionContextAuthHeaders:
         )
         fields = ctx.to_request_fields()
 
-        # Identical to what model_dump() produced before auth_headers was added
+        # Identical to the pre-1.2 contract, plus the EPMCDME-13260 user_context key
+        # (None here; dropped before the wire by exclude_none=True at client.py:128).
         assert fields == {
             "user_id": "u-123",
             "assistant_id": "a-456",
             "project_name": "proj",
             "workflow_execution_id": "wf-789",
             "request_headers": None,
+            "user_context": None,
         }
-        assert "user_context" not in fields
+        assert fields["user_context"] is None
+        assert "extra_attributes" not in fields
 
     def test_auth_headers_none_also_excluded_from_request_fields(self):
         """auth_headers=None is also excluded (not serialised as null)."""

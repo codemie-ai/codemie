@@ -895,6 +895,9 @@ class MCPToolkitFactory:
             "auth_token": getattr(server_config, "auth_token", None),
             "auth_config": getattr(server_config, "auth_config", None),
             "bucket_key": getattr(server_config, "bucket_key", None),
+            # Cached tools invoke with this config, and the client gates user_context on it —
+            # an opted-out assistant must never reuse an opted-in toolkit (EPMCDME-14984).
+            "allow_user_context": getattr(server_config, "allow_user_context", None),
         }
 
         # Convert to a stable JSON string (sorted keys for determinism)

@@ -94,6 +94,26 @@ def test_create(mock_save, mock_check_name, user):
 
 @patch("codemie.rest_api.models.provider.Provider.check_name_is_unique")
 @patch("codemie.rest_api.models.provider.Provider.save")
+def test_create_allow_user_context_defaults_true(mock_save, mock_check_name, user):
+    mock_check_name.return_value = True
+    request = CreateProviderRequest(**MOCK_PROVIDER_DATA)
+    result = ProviderService.create(user=user, request=request)
+
+    assert result.allow_user_context is True
+
+
+@patch("codemie.rest_api.models.provider.Provider.check_name_is_unique")
+@patch("codemie.rest_api.models.provider.Provider.save")
+def test_create_allow_user_context_explicit_true(mock_save, mock_check_name, user):
+    mock_check_name.return_value = True
+    request = CreateProviderRequest(**{**MOCK_PROVIDER_DATA, "allow_user_context": True})
+    result = ProviderService.create(user=user, request=request)
+
+    assert result.allow_user_context is True
+
+
+@patch("codemie.rest_api.models.provider.Provider.check_name_is_unique")
+@patch("codemie.rest_api.models.provider.Provider.save")
 def test_create_name_non_unique(mock_save, mock_check_name, user):
     mock_check_name.return_value = False
 
@@ -116,6 +136,56 @@ def test_update(mock_update, mock_find_by_id, mock_check_name, mock_provider, us
     mock_update.assert_called_once()
     assert isinstance(result, Provider)
     assert result.name == "new_name"
+
+
+@patch("codemie.rest_api.models.provider.Provider.check_name_is_unique")
+@patch("codemie.rest_api.models.provider.Provider.find_by_id")
+@patch("codemie.rest_api.models.provider.Provider.update")
+def test_update_explicit_false_flips_allow_user_context(mock_update, mock_find_by_id, mock_check_name, user):
+    """A provider previously enabled with allow_user_context=True, explicitly updated with
+    allow_user_context=False, must actually flip to False — the regression the exclude_unset
+    special-case fixes. The plain `if value:` loop silently no-ops on falsy explicit values."""
+    provider = Provider(**{**MOCK_PROVIDER_DATA, "allow_user_context": True})
+    mock_check_name.return_value = True
+    mock_find_by_id.return_value = provider
+    request = UpdateProviderRequest(allow_user_context=False)
+
+    result = ProviderService.update(user=user, provider_id="test_id", request=request)
+
+    assert result.allow_user_context is False
+
+
+@patch("codemie.rest_api.models.provider.Provider.check_name_is_unique")
+@patch("codemie.rest_api.models.provider.Provider.find_by_id")
+@patch("codemie.rest_api.models.provider.Provider.update")
+def test_update_omitted_allow_user_context_leaves_value_unchanged(mock_update, mock_find_by_id, mock_check_name, user):
+    """allow_user_context omitted from the request (not sent) leaves the persisted value alone."""
+    provider = Provider(**{**MOCK_PROVIDER_DATA, "allow_user_context": True})
+    mock_check_name.return_value = True
+    mock_find_by_id.return_value = provider
+    request = UpdateProviderRequest(name="new_name")
+
+    result = ProviderService.update(user=user, provider_id="test_id", request=request)
+
+    assert result.allow_user_context is True
+
+
+@patch("codemie.rest_api.models.provider.Provider.check_name_is_unique")
+@patch("codemie.rest_api.models.provider.Provider.find_by_id")
+@patch("codemie.rest_api.models.provider.Provider.update")
+def test_update_explicit_null_allow_user_context_leaves_value_unchanged(
+    mock_update, mock_find_by_id, mock_check_name, user
+):
+    """An explicit `"allow_user_context": null` in the request must not write None into the
+    NOT NULL column — None means "leave unchanged", whether omitted or sent."""
+    provider = Provider(**{**MOCK_PROVIDER_DATA, "allow_user_context": True})
+    mock_check_name.return_value = True
+    mock_find_by_id.return_value = provider
+    request = UpdateProviderRequest(allow_user_context=None)
+
+    result = ProviderService.update(user=user, provider_id="test_id", request=request)
+
+    assert result.allow_user_context is True
 
 
 @patch("codemie.rest_api.models.provider.Provider.find_by_id")

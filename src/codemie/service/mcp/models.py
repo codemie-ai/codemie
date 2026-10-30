@@ -157,9 +157,11 @@ class MCPExecutionContext(BaseModel):
         None,
         repr=False,
         description="Non-sensitive profile of the authenticated initiator, resolved from the request "
-        "context. Excluded from to_request_fields() serialization because the MCP-Connect server "
-        "rejects it as an extra forbidden field (EPMCDME-13546). May differ from user_id, "
-        "which can identify a resource owner.",
+        "context. Serialised by to_request_fields() and forwarded to MCP-Connect (EPMCDME-13260); "
+        "this requires an MCP-Connect release that accepts the field (EPMCDME-14847). Its "
+        "``extra_attributes`` member is deliberately stripped on this path — it has no MCP consumer, "
+        "carries deployment-variable raw IdP claims, and appears in no published contract. May differ "
+        "from user_id, which can identify a resource owner.",
     )
 
     def to_request_fields(self) -> dict[str, Any]:
@@ -170,19 +172,24 @@ class MCPExecutionContext(BaseModel):
             Dictionary with context fields ready to be unpacked into
             MCPToolInvocationRequest constructor
 
-        Note: ``user_context`` is excluded because the MCP-Connect server rejects it
-        as an extra forbidden field in both ``tools/list`` and ``tools/call`` requests
-        (EPMCDME-13546). The field remains accessible on the execution context for
-        local use.
+        Note: ``user_context`` IS serialised here (EPMCDME-13260), but MCPConnectClient
+        drops it from the outbound request unless the server's ``allow_user_context`` is
+        True (EPMCDME-14984, default on). When sent, it goes on both ``tools/list`` and
+        ``tools/call``; MCP-Connect only relays it to the tool on ``tools/call``. This depends
+        on an MCP-Connect release that accepts the field (EPMCDME-14847).
+        The nested ``user_context.extra_attributes`` member is excluded on this path
+        (no MCP consumer; deployment-variable raw IdP claims; in no published contract).
+        A ``user_context=None`` key is dropped before the wire by ``exclude_none=True``
+        in MCPConnectClient.
         """
         return self.model_dump(
             exclude={
-                "auth_headers",
-                "conversation_id",
-                "oauth2_token_data",
-                "oauth2_auth_config_id",
-                "oauth2_auth_config",
-                "user_context",
+                "auth_headers": True,
+                "conversation_id": True,
+                "oauth2_token_data": True,
+                "oauth2_auth_config_id": True,
+                "oauth2_auth_config": True,
+                "user_context": {"extra_attributes"},
             }
         )
 
@@ -274,6 +281,11 @@ class MCPServerConfig(BaseModel):
         description="When True, accepts an Authorization Server whose metadata returns a base issuer URL "
         "that is a URL prefix of the tenant-specific discovery URL (e.g. Atlassian Rovo). "
         "Only takes effect when auth_config is absent and OAuth2 auto-discovery is used.",
+    )
+    allow_user_context: bool = Field(
+        default=True,
+        description="When True, forwards the caller's user_context to this MCP server on invocation. "
+        "Defaults to on; set False to opt this server out. May be narrowed per-assistant (EPMCDME-14984).",
     )
     bucket_key: str | None = Field(
         None,

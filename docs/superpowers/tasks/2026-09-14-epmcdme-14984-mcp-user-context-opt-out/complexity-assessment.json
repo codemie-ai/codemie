@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "task": "Add a default-off allow_user_context opt-out on both the MCP path (two-level precedence: MCPServerConfigData server default overridden per-assistant on MCPServerDetails, enforced in MCPConnectClient._build_request_payload) and the DSP path (single flat boolean on Provider/ProviderBase, enforced in ProviderToolFactory.invoke()).",
+  "generated": "2026-09-14T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 24,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "4+ components across two sibling subsystems — MCP (MCPServerConfigData persistence, MCPServerDetails assistant config, MCPToolkitService/_build_request_payload runtime enforcement) and DSP (ProviderBase persistence, ProviderToolFactory.invoke() runtime enforcement) — plus a confirmed new abstraction needed: MCPExecutionContext is built once per get_mcp_server_tools call but enforcement must vary per server/per-assistant-tool." },
+    { "dimension": "technical_risk", "reason": "No in-family precedent for a boolean enable/disable gate on either model (closest MCP analog, headers/env, is an additive merge, not a toggle; DSP has no gating precedent at all). The field governs whether PII-bearing user_context (email, roles, admin flags) reaches an external MCP-Connect/DSP provider server, which is privacy/security-sensitive — Security red flag applied, bumping base L (4) to XL (5)." },
+    { "dimension": "file_change_estimate", "reason": "~7 source files (mcp_config.py, assistant.py, toolkit_service.py, mcp/models.py, client.py, provider.py, provider_tool_factory.py) plus a comparable set of test files (test_models.py, test_execution_context_integration.py, mcp_config_service tests, test_assistant_model.py, test_provider_tool_factory.py, test_provider_service.py) spanning rest_api/models, service/mcp, service/provider and tests/ — 3+ directories, no new files." },
+    { "dimension": "requirements_clarity", "reason": "Defaults and enforcement points are explicit for both paths, but three confirmed design gaps are open: the MCPServerDetails->MCPServerConfig translation step was never traced in research, the shared per-call MCPExecutionContext needs to become per-server-aware (no design decided), and ProviderService.update()'s truthy-only field-copy may silently drop an explicit False on update." },
+    { "dimension": "affected_layers", "reason": "API (config/assistant create-update-response models), Service (MCPToolkitService, ProviderToolFactory), DB-Persistence (MCPConfig and Provider JSONB columns), and External (the payload MCP-Connect and DSP providers receive changes) — 4 layers, backend-only, no UI layer." }
+  ],
+  "red_flags_applied": [
+    "Security requirement (gating PII-bearing user_context sent to external MCP-Connect/DSP provider servers) bumped Technical Risk from L (4) to XL (5)"
+  ],
+  "split_recommendation": null
+}

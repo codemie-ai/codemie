@@ -1,0 +1,46 @@
+{
+  "decision": "approve",
+  "rationale": "Check round verified the sole blocking finding CR-001 (kind: code) against current source at the reviewed HEAD. The fix-up adds TestMCPConnectClientUserContextWireBody in tests/codemie/service/mcp/test_client.py, asserting the POST json body's user_context equals the expected non-sensitive profile dict and that extra_attributes is absent, for both tools/call (invoke_tool) and tools/list (list_tools) - exactly the regression guard CR-001 requested; client.py builds post_body via to_request_fields() + model_dump(exclude_none=True) and posts it as json=, so the assertions are meaningful. CR-001 resolved, no new findings; business_review and standards_review carried forward from the prior verdict unchanged.",
+  "confidence": "high",
+  "risk_flags": ["security", "data-contract", "public-api", "breaking-change"],
+  "business_review": [
+    {"kind": "spec", "item": "user_context emitted on MCP wire when a user is present; key absent (exclude_none at client.py:128) when None", "status": "pass"},
+    {"kind": "spec", "item": "extra_attributes absent from MCP wire even when set; still on DSP wire; UserContext.from_user() unchanged", "status": "pass"},
+    {"kind": "spec", "item": "Both docstrings describe EPMCDME-13260; no stale EPMCDME-13546 rationale remains", "status": "pass"},
+    {"kind": "spec", "item": "to_request_fields() gains no exclude_none; client.py:128 unchanged", "status": "pass"},
+    {"kind": "spec", "item": "masked_for_logging() masks email/name/picture/username; keeps id/roles/is_*/user_type/project lists; count-only for extra_attributes + knowledge_bases", "status": "pass"},
+    {"kind": "spec", "item": "extra_attributes and knowledge_bases never appear raw in log output on either path", "status": "pass"},
+    {"kind": "spec", "item": "Dedicated logger.debug of masked context on the MCP invoke path and in provider_tool_factory.invoke(); existing info messages untouched", "status": "pass"},
+    {"kind": "spec", "item": "The two exclusion-locking tests are deleted, not inverted", "status": "pass"},
+    {"kind": "spec", "item": "Exact-dict-equality assertions on to_request_fields() updated for the new key set; extra_attributes not present", "status": "pass"},
+    {"kind": "spec", "item": "test_execution_context_integration.py and test_client.py reconciled", "status": "pass"},
+    {"kind": "spec", "item": "Positive tests listed in Requirement 4 exist and pass", "status": "pass"},
+    {"kind": "spec", "item": "docs/user-context-in-mcp-tool-invocations.md exists and covers every Requirement 5 point", "status": "pass"},
+    {"kind": "spec", "item": "MR description calls out EPMCDME-14847 rollout-before-merge sequencing, the two-release plan, and the /sanity request", "status": "pass"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass"},
+    {"kind": "code-quality", "status": "pass"},
+    {"kind": "security", "status": "pass"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/service/mcp/test_client.py",
+      "title": "No wire-body test that user_context reaches the MCP-Connect payload",
+      "problem": "The EPMCDME-13260 deliverable is that user_context (with extra_attributes stripped) is serialised into the JSON body POSTed to MCP-Connect on tools/call and tools/list. The new tests only assert MCPExecutionContext.to_request_fields() dict output (test_models.py) and masked DEBUG-log text (test_client.py TestMCPConnectClientUserContextDebugLog); none inspect post.call_args / the post_body built by _build_request_payload. MCPToolInvocationRequest.user_context (models.py:510) sits next to five sibling fields that all carry Field(exclude=True).",
+      "impact": "A regression that adds Field(exclude=True) to MCPToolInvocationRequest.user_context, or re-adds user_context to an exclude set at client.py:128, would stop the profile reaching MCP-Connect and silently turn EPMCDME-13260 into a no-op with the full test suite still green. The DSP path guards against the equivalent regression; the MCP path has no such assertion.",
+      "recommendation": "In tests/codemie/service/mcp/test_client.py, after invoke_tool(...) and list_tools(...) with an MCPExecutionContext whose user_context is set, assert post.call_args.kwargs['json']['user_context'] equals the expected non-sensitive profile dict and that 'extra_attributes' is not in it."
+    }
+  ],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "resolved",
+      "notes": "Fix-up adds TestMCPConnectClientUserContextWireBody in tests/codemie/service/mcp/test_client.py with test_invoke_tool_sends_user_context_without_extra_attributes (asserts wire_body['method']=='tools/call', wire_body['user_context'] equals the expected non-sensitive dict, 'extra_attributes' not in it) and test_list_tools_sends_user_context_without_extra_attributes (same for 'tools/list'). Verified against current source at HEAD: client.py builds post_body = request.model_dump(exclude_none=True) from to_request_fields() and posts client.post(mcp_url, json=post_body, ...) on both list_tools (line 167) and invoke_tool (line 246); fixtures sample_tools_response / sample_tool_invocation_response and the required mock imports are present. The requested regression guard now exists on the MCP path."
+    }
+  ]
+}

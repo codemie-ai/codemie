@@ -41,6 +41,7 @@ _CATALOG_REF_ALLOWED_FIELDS = frozenset(
         "settings",
         "integration_alias",
         "resolve_dynamic_values_in_arguments",
+        "allow_user_context",
     }
 )
 

@@ -82,9 +82,11 @@ class TestMCPExecutionContext:
             "project_name": None,
             "workflow_execution_id": None,
             "request_headers": None,
+            "user_context": None,
         }
         assert fields == expected
-        assert "user_context" not in fields
+        assert fields["user_context"] is None
+        assert "extra_attributes" not in fields
 
     def test_to_request_fields_all_set(self):
         """Test to_request_fields() with all values set."""
@@ -102,9 +104,11 @@ class TestMCPExecutionContext:
             "project_name": "test-project",
             "workflow_execution_id": "workflow-789",
             "request_headers": None,
+            "user_context": None,
         }
         assert fields == expected
-        assert "user_context" not in fields
+        assert fields["user_context"] is None
+        assert "extra_attributes" not in fields
 
     def test_conversation_id_is_local_only_retry_context(self):
         """conversation_id remains local-only and never enters MCP-Connect request fields."""
@@ -135,9 +139,11 @@ class TestMCPExecutionContext:
             "project_name": "test-project",
             "workflow_execution_id": None,
             "request_headers": None,
+            "user_context": None,
         }
         assert fields == expected
-        assert "user_context" not in fields
+        assert fields["user_context"] is None
+        assert "extra_attributes" not in fields
 
     def test_serialization_deserialization(self):
         """Test JSON serialization and deserialization."""
@@ -174,42 +180,58 @@ class TestMCPExecutionContext:
         assert fields["project_name"] == ""
         assert fields["workflow_execution_id"] is None
 
-    def test_to_request_fields_excludes_user_context_regardless_of_value(self):
-        """user_context is excluded from to_request_fields() even when set to a non-None value.
+    def test_to_request_fields_includes_user_context_when_set(self):
+        """user_context IS serialised into to_request_fields() output (EPMCDME-13260).
 
-        The MCP-Connect server rejects user_context as an extra forbidden field
-        (EPMCDME-13546). The field remains accessible on the execution context object
-        but must never appear in the serialised request payload.
+        MCP-Connect (EPMCDME-14847) now accepts the field; the backend forwards it
+        unconditionally. The value is a plain dict of the non-sensitive profile.
         """
         user_ctx = UserContext(id="u1", email="u1@example.com")
-        context = MCPExecutionContext(user_context=user_ctx)
+        context = MCPExecutionContext(user_id="user-123", user_context=user_ctx)
 
         fields = context.to_request_fields()
 
-        # Must not appear in the payload sent to MCP-Connect
-        assert "user_context" not in fields
-
-        # Still accessible locally on the context object
+        assert fields["user_context"] == {
+            "id": "u1",
+            "username": None,
+            "name": None,
+            "email": "u1@example.com",
+            "roles": None,
+            "is_admin": None,
+            "is_maintainer": None,
+            "is_auditor": None,
+            "user_type": None,
+            "project_names": None,
+            "admin_project_names": None,
+            "knowledge_bases": None,
+            "picture": None,
+        }
+        # The field also remains accessible on the context object itself
         assert context.user_context is user_ctx
-        assert context.user_context.id == "u1"
-        assert context.user_context.email == "u1@example.com"
 
-    def test_to_request_fields_never_includes_user_context(self):
-        """user_context must be excluded from to_request_fields() regardless of value."""
-        user_ctx = UserContext(id="u-abc", email="alice@example.com")
-        context = MCPExecutionContext(
-            user_id="user-123",
-            user_context=user_ctx,
+    def test_to_request_fields_excludes_extra_attributes_from_user_context(self):
+        """extra_attributes is deliberately dropped from the MCP wire (EPMCDME-13260).
+
+        It has no MCP consumer, carries deployment-variable raw IdP claims, and is in
+        no published contract. user_context itself is still forwarded.
+        """
+        user_ctx = UserContext(
+            id="u-abc",
+            email="alice@example.com",
+            extra_attributes={"department": "eng", "team_id": "backend"},
         )
+        context = MCPExecutionContext(user_id="user-123", user_context=user_ctx)
 
         fields = context.to_request_fields()
 
-        assert "user_context" not in fields, (
-            "user_context must be excluded from to_request_fields() so it is never sent "
-            "to the MCP-Connect server, which rejects it as an extra forbidden input"
-        )
-        # The field remains accessible on the context object itself
-        assert context.user_context is user_ctx
+        assert fields["user_context"] is not None
+        assert "extra_attributes" not in fields["user_context"]
+        # extra_attributes is still present on the source object
+        assert context.user_context.extra_attributes == {"department": "eng", "team_id": "backend"}
+
+    def test_user_context_never_carries_auth_token(self):
+        """A UserContext instance has no auth_token field at all (no credential surface)."""
+        assert "auth_token" not in UserContext(id="u1", email="u1@example.com").model_dump()
 
 
 class TestMCPServerConfig:

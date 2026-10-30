@@ -107,6 +107,11 @@ class MCPConnectClient:
     ) -> tuple[str, dict[str, Any], dict[str, str]]:
         """Build the POST URL, JSON body, and HTTP headers for an MCP-Connect request."""
         server_path = server_config.command or server_config.url
+        context_fields = execution_context.to_request_fields() if execution_context else {}
+        if not server_config.allow_user_context:
+            # Drop user_context from the outbound payload when this server (or the assistant
+            # using it) has opted out (EPMCDME-14984). Does not touch to_request_fields()'s own exclude mechanics.
+            context_fields.pop("user_context", None)
         request = MCPToolInvocationRequest(
             method=method,
             serverPath=server_path,
@@ -120,7 +125,7 @@ class MCPConnectClient:
             http_transport_type=server_config.type,
             single_usage=server_config.single_usage or False,
             # Inject execution context fields
-            **(execution_context.to_request_fields() if execution_context else {}),
+            **context_fields,
         )
         bucket_no = _get_bucket_no(server_config)
         http_headers = _get_headers(bucket_no, server_config)
@@ -236,6 +241,15 @@ class MCPConnectClient:
         )
         logger.info(f"Invoking MCP tool: {tool_name} on server: {server_config.command} {' '.join(server_config.args)}")
         logger.info(f"tools/call: Using MCP-Connect URL: {mcp_url}")
+        if (
+            execution_context is not None
+            and execution_context.user_context is not None
+            and server_config.allow_user_context
+        ):
+            logger.debug(
+                "MCP tool invocation user context: %s",
+                execution_context.user_context.masked_for_logging(),
+            )
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(mcp_url, json=post_body, headers=http_headers)

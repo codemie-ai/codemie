@@ -196,6 +196,14 @@ class MCPServerDetails(BaseModel):
         None, description="The MCP server configuration with command, args and environment variables"
     )
     use_custom_config: bool = Field(False, description="If True, use custom config; if False, use catalog reference")
+    allow_user_context: bool | None = Field(
+        None,
+        description="Per-assistant override of the server's allow_user_context default. "
+        "None defers to the server/catalog default. On a catalog-referenced server the catalog value is a "
+        "ceiling, so the assistant can only switch it off; on a custom/manual server the value wins "
+        "when set (EPMCDME-14984). "
+        "Top-level sibling of config — resolve_catalog_config() replaces config wholesale.",
+    )
     mcp_connect_url: Optional[str] = Field(None, description="URL of the MCP-Connect server")
     tools_tokens_size_limit: Optional[int] = Field(None, description="Maximum size of the tokens for the tools")
     command: Optional[str] = Field(

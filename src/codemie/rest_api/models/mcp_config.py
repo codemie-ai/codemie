@@ -161,6 +161,11 @@ class MCPServerConfigData(BaseModel):
         "that is a URL prefix of the tenant-specific discovery URL (e.g. Atlassian Rovo). "
         "Only takes effect when auth_config is absent and OAuth2 auto-discovery is used.",
     )
+    allow_user_context: bool = Field(
+        default=True,
+        description="When True, forwards the caller's user_context to this MCP server on invocation. "
+        "Defaults to on; set False to opt this server out. May be narrowed per-assistant (EPMCDME-14984).",
+    )
 
 
 class MCPTestStatus(str, Enum):

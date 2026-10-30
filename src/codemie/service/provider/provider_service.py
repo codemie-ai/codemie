@@ -58,8 +58,9 @@ class ProviderService:
         provider = cls._get_by_id(provider_id)
         cls._validate_name_is_unique(request.name, provider_id)
 
+        provided = request.dict(exclude_unset=True)  # fields the caller actually sent
         for field, value in request.dict().items():
-            if value:
+            if value or (field == "allow_user_context" and field in provided and value is not None):
                 setattr(provider, field, value)
 
         provider.update()

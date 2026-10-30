@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "task": "Re-enable the MCP wire user_context field, add a from-scratch masked_for_logging() helper at the MCP and DSP log sites, update ~8-12 user_context test assertions across 3-4 files, and write one net-new tool-owner doc.",
+  "generated": "2026-09-10T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 19,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Four components across 2-3 layers: MCPExecutionContext wire models (models.py), the MCP client (client.py), the DSP provider_tool_factory, plus a net-new shared masked_for_logging() utility consumed at two log sites in two modules with differing import styles (import-cycle risk noted)." },
+    { "dimension": "technical_risk", "reason": "PII-masking helper written from scratch with no precedent or guide in the codebase (sanitization-with-no-reusable-util floor of L); compliance driver is the EPMCDME-13546 AC (security/compliance red flag -> bump to XL); correctness is coupled to a separate-repo MCP-Connect release (EPMCDME-14847) that must be fully rolled out across all bridge buckets first, and a premature deploy recreates the exact platform-wide regression that reopened the ticket. No feature flag; deploy sequencing is the only control." },
+    { "dimension": "file_change_estimate", "reason": "~3 modified production files (models.py, client.py, provider_tool_factory.py), a new masking helper module, ~8-12 assertion edits across 3-4 test files (test_models.py, test_models_1_2_auth_config.py, test_user_context.py, test_provider_tool_factory.py; plus verify test_client.py / test_execution_context_integration.py), and one net-new tool-owner doc — roughly 8-10 files across 4+ directories, 2-3 new." },
+    { "dimension": "requirements_clarity", "reason": "Core change is pinned to file:line by an authoritative brief, but several small design decisions are open: helper placement (mcp vs security vs configs/logger), masking treatment of knowledge_bases and the unbounded IdP-populated extra_attributes dict (a potential fresh PII leak), exact DSP log-line location, and the new doc's path under docs/." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from L to XL: security/compliance masking requirement mandated by the EPMCDME-13546 acceptance criteria",
+    "Technical Risk held at floor of L (already exceeded): sanitization / PII-redaction work with no existing reusable masking utility in the codebase",
+    "Calibration note: nearest bundle L example (epmcdme-10401) scores Technical Risk L for cross-user config migration with feature-flagged mitigation; this task rates XL because the deploy-ordering regression is unmitigated (no feature flag) and re-breaks all MCP tool invocation platform-wide"
+  ],
+  "split_recommendation": null
+}

@@ -172,8 +172,14 @@ class ProviderToolFactory:
                 parameters=configuration_params,
             ),
             parameters=params,
-            user_context=UserContext.from_user(user).model_dump(exclude_none=True),
+            **(
+                {"user_context": UserContext.from_user(user).model_dump(exclude_none=True)}
+                if self.provider_config.allow_user_context
+                else {}
+            ),
         )
+        if self.provider_config.allow_user_context:
+            logger.debug("%s user context: %s", log_prefix, UserContext.from_user(user).masked_for_logging())
 
         merged_headers = {**(headers or {}), **get_traceparent_headers()}
         x_correlation_id = merged_headers.get(ProviderHeaderContext.HEADERS["CORRELATION_ID"]) or request_uuid

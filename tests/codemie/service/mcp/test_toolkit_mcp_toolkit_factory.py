@@ -271,6 +271,16 @@ class TestMCPToolkitFactory(unittest.TestCase):
         )
         self.assertEqual(factory._generate_cache_key(shared1), factory._generate_cache_key(shared2))
 
+    def test_generate_cache_key_isolates_allow_user_context(self):
+        """Cached toolkits carry the server config their tools invoke with, so two configs that
+        differ only by allow_user_context must not share a cache entry — otherwise an opted-out
+        assistant reuses an opted-in toolkit and forwards user_context (EPMCDME-14984)."""
+        factory = MCPToolkitFactory(mcp_client=self.mock_client)
+        opted_in = MCPServerConfig(url="https://mcp.example/sse", args=[], allow_user_context=True)
+        opted_out = MCPServerConfig(url="https://mcp.example/sse", args=[], allow_user_context=False)
+
+        self.assertNotEqual(factory._generate_cache_key(opted_in), factory._generate_cache_key(opted_out))
+
     async def test_cache_clearing_and_removal(self):
         """Test that cache clearing and specific toolkit removal works."""
         # Configure mocks

@@ -222,6 +222,27 @@ class TestMCPServerDetails:
         assert server.mcp_connect_auth_token is not None
         assert server.resolve_dynamic_values_in_arguments is True
 
+    def test_mcp_server_details_allow_user_context_default_none(self):
+        """allow_user_context defaults to None (server-catalog default applies)."""
+        server = MCPServerDetails(name="test_server", command="uvx")
+        assert server.allow_user_context is None
+
+    def test_mcp_server_details_allow_user_context_explicit_true(self):
+        server = MCPServerDetails(name="test_server", command="uvx", allow_user_context=True)
+        assert server.allow_user_context is True
+
+    def test_mcp_server_details_allow_user_context_explicit_false(self):
+        server = MCPServerDetails(name="test_server", command="uvx", allow_user_context=False)
+        assert server.allow_user_context is False
+
+    def test_mcp_server_details_allow_user_context_serializes_as_top_level_key(self):
+        """allow_user_context must serialize as a sibling of config, not nested inside it —
+        resolve_catalog_config()'s model_copy(update={"config": ...}) replaces config wholesale."""
+        server = MCPServerDetails(name="test_server", command="uvx", allow_user_context=True)
+        data = server.model_dump()
+        assert data["allow_user_context"] is True
+        assert "allow_user_context" not in (data.get("config") or {})
+
     def test_mcp_server_details_with_dynamic_args(self):
         """Test MCPServerDetails with dynamic arguments for template resolution."""
         server = MCPServerDetails(

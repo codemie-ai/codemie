@@ -8092,6 +8092,12 @@
       },
       "CreateProviderRequest": {
         "properties": {
+          "allow_user_context": {
+            "default": true,
+            "description": "When True, forwards the caller's user_context to this provider on tool invocation. Defaults to on; set False to opt this provider out (EPMCDME-14984).",
+            "title": "Allow User Context",
+            "type": "boolean"
+          },
           "configuration": {
             "$ref": "#/components/schemas/ProviderConfiguration",
             "description": "Provider configuration settings"
@@ -17578,6 +17584,12 @@
             "title": "Allow Issuer Prefix Match",
             "type": "boolean"
           },
+          "allow_user_context": {
+            "default": true,
+            "description": "When True, forwards the caller's user_context to this MCP server on invocation. Defaults to on; set False to opt this server out. May be narrowed per-assistant (EPMCDME-14984).",
+            "title": "Allow User Context",
+            "type": "boolean"
+          },
           "args": {
             "anyOf": [
               {
@@ -17813,6 +17825,12 @@
             "title": "Allow Issuer Prefix Match",
             "type": "boolean"
           },
+          "allow_user_context": {
+            "default": true,
+            "description": "When True, forwards the caller's user_context to this MCP server on invocation. Defaults to on; set False to opt this server out. May be narrowed per-assistant (EPMCDME-14984).",
+            "title": "Allow User Context",
+            "type": "boolean"
+          },
           "args": {
             "anyOf": [
               {
@@ -17982,6 +18000,12 @@
             "title": "Allow Issuer Prefix Match",
             "type": "boolean"
           },
+          "allow_user_context": {
+            "default": true,
+            "description": "When True, forwards the caller's user_context to this MCP server on invocation. Defaults to on; set False to opt this server out. May be narrowed per-assistant (EPMCDME-14984).",
+            "title": "Allow User Context",
+            "type": "boolean"
+          },
           "args": {
             "description": "Arguments for the command",
             "items": {
@@ -18140,6 +18164,18 @@
           }
         ],
         "properties": {
+          "allow_user_context": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Per-assistant override of the server's allow_user_context default. None defers to the server/catalog default. On a catalog-referenced server the catalog value is a ceiling, so the assistant can only switch it off; on a custom/manual server the value wins when set (EPMCDME-14984). Top-level sibling of config \u2014 resolve_catalog_config() replaces config wholesale.",
+            "title": "Allow User Context"
+          },
           "arguments": {
             "anyOf": [
               {
@@ -18336,6 +18372,18 @@
           }
         ],
         "properties": {
+          "allow_user_context": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Per-assistant override of the server's allow_user_context default. None defers to the server/catalog default. On a catalog-referenced server the catalog value is a ceiling, so the assistant can only switch it off; on a custom/manual server the value wins when set (EPMCDME-14984). Top-level sibling of config \u2014 resolve_catalog_config() replaces config wholesale.",
+            "title": "Allow User Context"
+          },
           "arguments": {
             "anyOf": [
               {
@@ -30450,6 +30498,18 @@
       },
       "UpdateProviderRequest": {
         "properties": {
+          "allow_user_context": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When True, forwards the caller's user_context to this provider on tool invocation. None leaves the current value unchanged (EPMCDME-14984).",
+            "title": "Allow User Context"
+          },
           "configuration": {
             "anyOf": [
               {

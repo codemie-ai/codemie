@@ -1639,3 +1639,228 @@ class TestMCPBridgeError:
                 await client.list_tools(server_config)
 
         assert exc_info.value.status_code == 502
+
+
+class TestMCPConnectClientUserContextDebugLog:
+    """Masked user_context diagnostic log on the invoke path (EPMCDME-13260)."""
+
+    @staticmethod
+    def _capture_codemie_debug(caplog):
+        import logging as _logging
+
+        caplog.set_level(_logging.DEBUG, logger="codemie")
+        codemie_logger = _logging.getLogger("codemie")
+        codemie_logger.addHandler(caplog.handler)
+        return codemie_logger
+
+    @pytest.mark.asyncio
+    async def test_invoke_tool_emits_masked_user_context_debug_line(
+        self, server_config, sample_tool_invocation_response, caplog
+    ):
+        from codemie.rest_api.security.user import UserContext
+
+        client = MCPConnectClient()
+        server_config = server_config.model_copy(update={"allow_user_context": True})
+        execution_context = MCPExecutionContext(
+            user_id="user-123",
+            user_context=UserContext(
+                id="user-123",
+                email="john.doe@epam.com",
+                name="John Doe",
+                extra_attributes={"x": "raw-secret-value"},
+            ),
+        )
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = sample_tool_invocation_response
+        mock_response.raise_for_status = MagicMock()
+
+        codemie_logger = self._capture_codemie_debug(caplog)
+        try:
+            with patch("codemie.service.mcp.client.httpx.AsyncClient") as mock_client:
+                mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
+                await client.invoke_tool(server_config, "test_tool", {"p": 1}, execution_context)
+        finally:
+            codemie_logger.removeHandler(caplog.handler)
+
+        debug_text = "\n".join(r.getMessage() for r in caplog.records if r.levelname == "DEBUG")
+        assert "j***@epam.com" in debug_text
+        assert "<redacted, 1 keys>" in debug_text
+        assert "john.doe@epam.com" not in debug_text
+        assert "John Doe" not in debug_text
+        assert "raw-secret-value" not in debug_text
+
+    @pytest.mark.asyncio
+    async def test_invoke_tool_no_user_context_debug_line_when_absent(
+        self, server_config, sample_tool_invocation_response, caplog
+    ):
+        client = MCPConnectClient()
+        execution_context = MCPExecutionContext(user_id="user-123")  # no user_context
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = sample_tool_invocation_response
+        mock_response.raise_for_status = MagicMock()
+
+        codemie_logger = self._capture_codemie_debug(caplog)
+        try:
+            with patch("codemie.service.mcp.client.httpx.AsyncClient") as mock_client:
+                mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
+                await client.invoke_tool(server_config, "test_tool", {"p": 1}, execution_context)
+        finally:
+            codemie_logger.removeHandler(caplog.handler)
+
+        debug_text = "\n".join(r.getMessage() for r in caplog.records if r.levelname == "DEBUG")
+        assert "user context" not in debug_text.lower()
+
+    @pytest.mark.asyncio
+    async def test_invoke_tool_no_debug_line_when_allow_user_context_false(
+        self, server_config, sample_tool_invocation_response, caplog
+    ):
+        """allow_user_context=False suppresses the debug log even though user_context is set
+        (EPMCDME-14984): the log must reflect what actually reaches the outbound payload."""
+        from codemie.rest_api.security.user import UserContext
+
+        client = MCPConnectClient()
+        server_config.allow_user_context = False  # opted out; the default is on
+        execution_context = MCPExecutionContext(
+            user_id="user-123",
+            user_context=UserContext(id="user-123", email="john.doe@epam.com"),
+        )
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = sample_tool_invocation_response
+        mock_response.raise_for_status = MagicMock()
+
+        codemie_logger = self._capture_codemie_debug(caplog)
+        try:
+            with patch("codemie.service.mcp.client.httpx.AsyncClient") as mock_client:
+                mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
+                await client.invoke_tool(server_config, "test_tool", {"p": 1}, execution_context)
+        finally:
+            codemie_logger.removeHandler(caplog.handler)
+
+        debug_text = "\n".join(r.getMessage() for r in caplog.records if r.levelname == "DEBUG")
+        assert "user context" not in debug_text.lower()
+
+
+class TestMCPConnectClientUserContextWireBody:
+    """user_context reaches the MCP-Connect POST body, minus extra_attributes (EPMCDME-13260)."""
+
+    @staticmethod
+    def _user_context():
+        from codemie.rest_api.security.user import UserContext
+
+        return UserContext(
+            id="user-123",
+            username="jdoe",
+            name="John Doe",
+            email="john.doe@epam.com",
+            roles=["developer"],
+            is_admin=True,
+            project_names=["proj-a"],
+            extra_attributes={"raw_idp_claim": "sensitive-value"},
+        )
+
+    @staticmethod
+    def _expected_wire_user_context():
+        return {
+            "id": "user-123",
+            "username": "jdoe",
+            "name": "John Doe",
+            "email": "john.doe@epam.com",
+            "roles": ["developer"],
+            "is_admin": True,
+            "project_names": ["proj-a"],
+        }
+
+    @pytest.mark.asyncio
+    async def test_invoke_tool_sends_user_context_without_extra_attributes(
+        self, server_config, sample_tool_invocation_response
+    ):
+        """tools/call: user_context is serialised to the wire body; extra_attributes is stripped."""
+        client = MCPConnectClient()
+        server_config = server_config.model_copy(update={"allow_user_context": True})
+        execution_context = MCPExecutionContext(user_id="user-123", user_context=self._user_context())
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = sample_tool_invocation_response
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("codemie.service.mcp.client.httpx.AsyncClient") as mock_client:
+            post = AsyncMock(return_value=mock_response)
+            mock_client.return_value.__aenter__.return_value.post = post
+
+            await client.invoke_tool(server_config, "test_tool", {"param1": "value1"}, execution_context)
+
+        wire_body = post.call_args.kwargs["json"]
+        assert wire_body["method"] == "tools/call"
+        assert wire_body["user_context"] == self._expected_wire_user_context()
+        assert "extra_attributes" not in wire_body["user_context"]
+
+    @pytest.mark.asyncio
+    async def test_list_tools_sends_user_context_without_extra_attributes(self, server_config, sample_tools_response):
+        """tools/list: user_context is serialised to the wire body; extra_attributes is stripped."""
+        client = MCPConnectClient()
+        server_config = server_config.model_copy(update={"allow_user_context": True})
+        execution_context = MCPExecutionContext(user_id="user-123", user_context=self._user_context())
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = sample_tools_response
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("codemie.service.mcp.client.httpx.AsyncClient") as mock_client:
+            post = AsyncMock(return_value=mock_response)
+            mock_client.return_value.__aenter__.return_value.post = post
+
+            await client.list_tools(server_config, execution_context)
+
+        wire_body = post.call_args.kwargs["json"]
+        assert wire_body["method"] == "tools/list"
+        assert wire_body["user_context"] == self._expected_wire_user_context()
+        assert "extra_attributes" not in wire_body["user_context"]
+
+    @pytest.mark.asyncio
+    async def test_invoke_tool_drops_user_context_when_allow_user_context_false(
+        self, server_config, sample_tool_invocation_response
+    ):
+        """allow_user_context=False (opted out) drops user_context from the tools/call wire body
+        even though execution_context.user_context is set (EPMCDME-14984)."""
+        client = MCPConnectClient()
+        server_config.allow_user_context = False  # opted out; the default is on
+        execution_context = MCPExecutionContext(user_id="user-123", user_context=self._user_context())
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = sample_tool_invocation_response
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("codemie.service.mcp.client.httpx.AsyncClient") as mock_client:
+            post = AsyncMock(return_value=mock_response)
+            mock_client.return_value.__aenter__.return_value.post = post
+
+            await client.invoke_tool(server_config, "test_tool", {"param1": "value1"}, execution_context)
+
+        wire_body = post.call_args.kwargs["json"]
+        assert "user_context" not in wire_body
+
+    @pytest.mark.asyncio
+    async def test_list_tools_drops_user_context_when_allow_user_context_false(
+        self, server_config, sample_tools_response
+    ):
+        """allow_user_context=False (opted out) drops user_context from the tools/list wire body
+        even though execution_context.user_context is set (EPMCDME-14984)."""
+        client = MCPConnectClient()
+        server_config.allow_user_context = False  # opted out; the default is on
+        execution_context = MCPExecutionContext(user_id="user-123", user_context=self._user_context())
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = sample_tools_response
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("codemie.service.mcp.client.httpx.AsyncClient") as mock_client:
+            post = AsyncMock(return_value=mock_response)
+            mock_client.return_value.__aenter__.return_value.post = post
+
+            await client.list_tools(server_config, execution_context)
+
+        wire_body = post.call_args.kwargs["json"]
+        assert "user_context" not in wire_body

@@ -143,6 +143,108 @@ class TestUserContext:
         assert ctx2 == ctx
 
 
+class TestMaskedForLogging:
+    """Test cases for UserContext.masked_for_logging() (EPMCDME-13260)."""
+
+    def _full_context(self) -> UserContext:
+        return UserContext(
+            id="u-001",
+            username="johndoe",
+            name="John Doe",
+            email="john.doe@epam.com",
+            roles=["admin", "viewer"],
+            is_admin=True,
+            is_maintainer=False,
+            is_auditor=False,
+            user_type="internal",
+            project_names=["proj-a", "proj-b"],
+            admin_project_names=["proj-a"],
+            knowledge_bases=["kb1"],
+            picture="https://example.com/avatar.png",
+            extra_attributes={"a": 1, "b": 2},
+        )
+
+    def test_email_is_masked_to_first_char_and_domain(self):
+        result = self._full_context().masked_for_logging()
+        assert result["email"] == "j***@epam.com"
+
+    def test_name_picture_username_are_masked(self):
+        ctx = self._full_context()
+        result = ctx.masked_for_logging()
+
+        for key in ("name", "picture", "username"):
+            assert result[key] != getattr(ctx, key), f"{key} must not appear verbatim"
+            assert result[key], f"{key} mask must be non-empty"
+
+    def test_readable_fields_pass_through_unchanged(self):
+        ctx = self._full_context()
+        result = ctx.masked_for_logging()
+
+        assert result["id"] == "u-001"
+        assert result["roles"] == ["admin", "viewer"]
+        assert result["is_admin"] is True
+        assert result["is_maintainer"] is False
+        assert result["is_auditor"] is False
+        assert result["user_type"] == "internal"
+        assert result["project_names"] == ["proj-a", "proj-b"]
+        assert result["admin_project_names"] == ["proj-a"]
+
+    def test_unbounded_fields_collapse_to_count_only_placeholder(self):
+        result = self._full_context().masked_for_logging()
+        assert result["extra_attributes"] == "<redacted, 2 keys>"
+        assert result["knowledge_bases"] == "<redacted, 1 items>"
+
+    def test_no_raw_pii_or_attribute_values_in_string_form(self):
+        rendered = str(self._full_context().masked_for_logging())
+        assert "john.doe@epam.com" not in rendered
+        assert "John Doe" not in rendered
+        assert "https://example.com/avatar.png" not in rendered
+        # raw extra_attributes contents never leak
+        assert "'a': 1" not in rendered
+        assert "'b': 2" not in rendered
+
+    def test_none_fields_are_omitted(self):
+        result = UserContext(id="only-id").masked_for_logging()
+        assert result == {"id": "only-id"}
+
+
+class TestMaskHelpers:
+    """Module-level _mask_value / _mask_email helpers in user.py."""
+
+    def test_mask_value_short_string_fully_masked(self):
+        from codemie.rest_api.security.user import _mask_value
+
+        assert _mask_value("ab") == "***"
+        assert _mask_value("a") == "***"
+
+    def test_mask_value_longer_string_keeps_two_char_prefix(self):
+        from codemie.rest_api.security.user import _mask_value
+
+        assert _mask_value("johndoe") == "jo***"
+
+    def test_mask_value_passes_through_falsy(self):
+        from codemie.rest_api.security.user import _mask_value
+
+        assert _mask_value(None) is None
+        assert _mask_value("") == ""
+
+    def test_mask_email_keeps_first_local_char_and_domain(self):
+        from codemie.rest_api.security.user import _mask_email
+
+        assert _mask_email("john.doe@epam.com") == "j***@epam.com"
+
+    def test_mask_email_without_at_falls_back_to_mask_value(self):
+        from codemie.rest_api.security.user import _mask_email
+
+        assert _mask_email("notanemail") == "no***"
+
+    def test_mask_email_passes_through_falsy(self):
+        from codemie.rest_api.security.user import _mask_email
+
+        assert _mask_email(None) is None
+        assert _mask_email("") == ""
+
+
 class TestClientAccessTokenContextVar:
     """Test cases for the client access token ContextVar trio"""
 

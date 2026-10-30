@@ -209,6 +209,15 @@ class TestValidateOnSaveRestrictedMode:
             with pytest.raises(ValidationException, match="custom configuration"):
                 MCPAccessControlService.validate_on_save(servers)
 
+    def test_catalog_ref_with_allow_user_context_override_passes_in_restricted_mode(self):
+        """allow_user_context is an assistant-level override, not connection-level config —
+        it must be allowed on a catalog-referenced server under restricted mode (EPMCDME-14984)."""
+        entry = _catalog_entry("cat-1")
+        server = MCPServerDetails(name="s1", mcp_config_id="cat-1", allow_user_context=True)
+        with _restricted_mode():
+            with patch(_GET_BY_IDS, return_value=[entry]):
+                MCPAccessControlService.validate_on_save([server])
+
 
 # ── strip_inline_config ───────────────────────────────────────────────
 
@@ -384,6 +393,24 @@ class TestResolveCatalogConfig:
         with patch(_FIND_BY_ID, return_value=entry):
             result = MCPAccessControlService.resolve_catalog_config(server)
         assert result is None
+
+    def test_catalog_allow_user_context_true_carries_onto_runtime_config(self):
+        """MCPServerConfigData.allow_user_context=True survives the model_dump()-based
+        MCPServerConfig(**entry.config.model_dump()) crossover in resolve_catalog_config()."""
+        catalog_config = MCPServerConfigData(command="uvx", allow_user_context=True)
+        entry = _catalog_entry("cat-1", config=catalog_config)
+        server = _server("s1", mcp_config_id="cat-1")
+        with patch(_FIND_BY_ID, return_value=entry):
+            result = MCPAccessControlService.resolve_catalog_config(server)
+        assert result.config.allow_user_context is True
+
+    def test_catalog_allow_user_context_defaults_true_on_runtime_config(self):
+        catalog_config = MCPServerConfigData(command="uvx")
+        entry = _catalog_entry("cat-1", config=catalog_config)
+        server = _server("s1", mcp_config_id="cat-1")
+        with patch(_FIND_BY_ID, return_value=entry):
+            result = MCPAccessControlService.resolve_catalog_config(server)
+        assert result.config.allow_user_context is True
 
 
 class TestValidateOnRestore:

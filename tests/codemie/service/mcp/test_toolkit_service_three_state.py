@@ -123,6 +123,107 @@ def test_explicit_integration_override_resolves_by_id():
     assert server_config.env["BASE"] == "1"
 
 
+# --- allow_user_context precedence -----------------------------------------------------------
+
+
+def test_server_config_sends_user_context_by_default():
+    """Both the runtime config and the catalog data model start opted in; opting out is explicit."""
+    from codemie.rest_api.models.mcp_config import MCPServerConfigData
+
+    assert MCPServerConfig(command="npx").allow_user_context is True
+    assert MCPServerConfigData(command="npx").allow_user_context is True
+
+
+def test_assistant_override_true_flips_server_default_false():
+    server_config = MCPServerConfig(command="npx", allow_user_context=False)
+    server = MCPServerDetails(name="srv", config=server_config, use_custom_config=True, allow_user_context=True)
+
+    result = MCPToolkitService._build_mcp_server_config(server, "user", "proj")
+
+    assert result.allow_user_context is True
+
+
+def test_assistant_override_false_flips_server_default_true():
+    server_config = MCPServerConfig(command="npx", allow_user_context=True)
+    server = MCPServerDetails(name="srv", config=server_config, use_custom_config=True, allow_user_context=False)
+
+    result = MCPToolkitService._build_mcp_server_config(server, "user", "proj")
+
+    assert result.allow_user_context is False
+
+
+def test_assistant_override_none_leaves_server_default_true_standing():
+    server_config = MCPServerConfig(command="npx", allow_user_context=True)
+    server = MCPServerDetails(name="srv", config=server_config, use_custom_config=True, allow_user_context=None)
+
+    result = MCPToolkitService._build_mcp_server_config(server, "user", "proj")
+
+    assert result.allow_user_context is True
+
+
+def test_assistant_override_none_leaves_server_default_false_standing():
+    server_config = MCPServerConfig(command="npx", allow_user_context=False)
+    server = MCPServerDetails(name="srv", config=server_config, use_custom_config=True, allow_user_context=None)
+
+    result = MCPToolkitService._build_mcp_server_config(server, "user", "proj")
+
+    assert result.allow_user_context is False
+
+
+# --- allow_user_context: the catalog value is a ceiling for catalog-referenced servers -------------
+
+
+def _catalog_ref_server(catalog_value: bool, override: bool | None, use_custom_config: bool = False):
+    """A server that references an admin-owned catalog entry whose config carries `catalog_value`."""
+    return MCPServerDetails(
+        name="srv",
+        mcp_config_id="catalog-1",
+        use_custom_config=use_custom_config,
+        config=MCPServerConfig(command="npx", allow_user_context=catalog_value),
+        allow_user_context=override,
+    )
+
+
+def _build_with_resolved(server: MCPServerDetails):
+    # resolve_catalog_config would load the catalog entry from the DB; the server above already
+    # carries the config it would have resolved.
+    with patch(
+        "codemie.service.mcp.access_control.MCPAccessControlService.resolve_catalog_config",
+        return_value=server,
+    ):
+        return MCPToolkitService._build_mcp_server_config(server, "user", "proj")
+
+
+def test_catalog_ref_assistant_cannot_turn_on_what_admin_left_off():
+    result = _build_with_resolved(_catalog_ref_server(catalog_value=False, override=True))
+
+    assert result.allow_user_context is False
+
+
+def test_catalog_ref_assistant_can_turn_off_what_admin_enabled():
+    result = _build_with_resolved(_catalog_ref_server(catalog_value=True, override=False))
+
+    assert result.allow_user_context is False
+
+
+def test_catalog_ref_override_true_keeps_admin_enabled_value():
+    result = _build_with_resolved(_catalog_ref_server(catalog_value=True, override=True))
+
+    assert result.allow_user_context is True
+
+
+def test_catalog_ref_override_none_inherits_catalog_value():
+    assert _build_with_resolved(_catalog_ref_server(catalog_value=True, override=None)).allow_user_context is True
+    assert _build_with_resolved(_catalog_ref_server(catalog_value=False, override=None)).allow_user_context is False
+
+
+def test_custom_config_with_catalog_id_is_not_capped_by_catalog():
+    """use_custom_config=True means the assistant owner supplies the whole config: no ceiling applies."""
+    result = _build_with_resolved(_catalog_ref_server(catalog_value=False, override=True, use_custom_config=True))
+
+    assert result.allow_user_context is True
+
+
 def test_default_absent_slot_applies_no_override():
     """DEFAULT is an absent slot: _apply_server_tools_config finds no entry and keeps the base env."""
     server = MCPServerDetails(name="srv")

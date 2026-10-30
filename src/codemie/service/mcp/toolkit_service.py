@@ -1572,6 +1572,18 @@ class MCPToolkitService:
         actual_config.env = env_vars
         actual_config.mcp_config_id = mcp_server.mcp_config_id
         actual_config.mcp_config_name = mcp_server.name
+
+        # Per-assistant override applies when set; otherwise the server/catalog default
+        # already carried on actual_config stands (EPMCDME-14984). For a catalog-referenced server
+        # (admin-owned config) the catalog value is a ceiling: an assistant owner can switch
+        # user_context off but never on, so an admin's "off" cannot be widened.
+        if mcp_server.allow_user_context is not None:
+            is_catalog_ref = bool(mcp_server.mcp_config_id) and not mcp_server.use_custom_config
+            if is_catalog_ref:
+                actual_config.allow_user_context = actual_config.allow_user_context and mcp_server.allow_user_context
+            else:
+                actual_config.allow_user_context = mcp_server.allow_user_context
+
         return actual_config
 
     @classmethod

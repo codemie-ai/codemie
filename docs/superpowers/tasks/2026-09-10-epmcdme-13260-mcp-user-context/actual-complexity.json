@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "generated": "2026-09-10T12:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 21,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 11,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "New shared UserContext model added to rest_api/security/user.py and consumed across two independent tool-invocation subsystems: MCP (service/mcp/client.py, service/mcp/models.py MCPExecutionContext + MCPToolInvocationRequest) and DSP provider (service/provider/provider_tool_factory.py). 4 source components across the security-model, service, and external-egress layers." },
+    { "dimension": "technical_risk", "reason": "PII (name/email/picture) is forwarded on a new external wire path to MCP-Connect and DSP provider tools, plus diagnostic logging of user context. Masking is hand-rolled (_mask_value, _mask_email, UserContext.masked_for_logging) with no pre-existing reusable util. Hard deploy-ordering dependency: cannot merge before MCP-Connect EPMCDME-14847 is fully rolled out across all bridge buckets, no feature flag, and the ticket was reopened after prior regression EPMCDME-13546. mr-notes.md requests a /sanity regression pass." },
+    { "dimension": "file_change_estimate", "reason": "diffstat reports 11 files changed, 547 insertions(+), 43 deletions(-): 4 source files, 5 test files (test_user_context.py, test_client.py, test_models.py, test_models_1_2_auth_config.py, test_provider_tool_factory.py), 2 docs (mr-notes.md, user-context-in-mcp-tool-invocations.md)." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from L (4) to XL (5): PII forwarded on a new external wire path to MCP-Connect and DSP provider tools, with a staged two-release rollout and no feature flag guarding it"
+  ],
+  "split_recommendation": null
+}

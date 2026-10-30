@@ -53,6 +53,31 @@ def resolve_membership_default(memberships: Iterable[Any], email: str | None) ->
     return resolve_default_project((row.project_name for row in rows), stored_default, email)
 
 
+def _mask_value(value: str | None) -> str | None:
+    """Partially mask a free-text value for diagnostic logs (EPMCDME-13260).
+
+    Falsy input (None / empty string) is returned unchanged. Values of two chars
+    or fewer collapse to ``***``; longer values keep a two-char prefix.
+    """
+    if not value:
+        return value
+    return "***" if len(value) <= 2 else f"{value[:2]}***"
+
+
+def _mask_email(value: str | None) -> str | None:
+    """Mask an email to ``<first-local-char>***@<domain>`` for diagnostic logs.
+
+    Falsy input is returned unchanged. A value with no ``@`` falls back to
+    :func:`_mask_value`.
+    """
+    if not value:
+        return value
+    local, sep, domain = value.partition("@")
+    if not sep:
+        return _mask_value(value)
+    return f"{(local[:1] or '')}***@{domain}"
+
+
 class User(BaseModel):
     """User model for authentication context
 
@@ -171,6 +196,41 @@ class UserContext(BaseModel):
     knowledge_bases: list[str] | None = None
     picture: str | None = None
     extra_attributes: dict[str, Any] | None = None
+
+    def masked_for_logging(self) -> dict[str, Any]:
+        """PII-safe view of this context for diagnostic logs (EPMCDME-13260).
+
+        email/name/picture/username are masked; extra_attributes and
+        knowledge_bases collapse to a count-only placeholder; every other
+        field passes through. None fields are omitted.
+        """
+        out: dict[str, Any] = {}
+        for key in (
+            "id",
+            "roles",
+            "is_admin",
+            "is_maintainer",
+            "is_auditor",
+            "user_type",
+            "project_names",
+            "admin_project_names",
+        ):
+            val = getattr(self, key)
+            if val is not None:
+                out[key] = val
+        if self.email is not None:
+            out["email"] = _mask_email(self.email)
+        if self.name is not None:
+            out["name"] = _mask_value(self.name)
+        if self.picture is not None:
+            out["picture"] = _mask_value(self.picture)
+        if self.username is not None:
+            out["username"] = _mask_value(self.username)
+        if self.extra_attributes is not None:
+            out["extra_attributes"] = f"<redacted, {len(self.extra_attributes)} keys>"
+        if self.knowledge_bases is not None:
+            out["knowledge_bases"] = f"<redacted, {len(self.knowledge_bases)} items>"
+        return out
 
     @classmethod
     def from_user(cls, user: "User") -> "UserContext":
