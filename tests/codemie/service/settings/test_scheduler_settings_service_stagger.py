@@ -15,11 +15,13 @@
 """Tests that _build_scheduler_item's nextRunAt agrees with the staggered cron trigger
 cron.py actually schedules (EPMCDME-16236)."""
 
+from codemie.rest_api.models.settings import CredentialValues, Settings, SettingType
 from codemie.service.settings.scheduler_settings_service import (
     RESOURCE_TYPE_DATASOURCE,
     SchedulerSettingsService,
 )
 from codemie.triggers.bindings.cron_stagger import stagger_cron
+from codemie_tools.base.models import CredentialTypes
 
 
 def _make_setting(resource_id, cron_expression="0 0 * * *", timezone="UTC"):
@@ -54,3 +56,28 @@ def test_description_keeps_the_raw_unstaggered_cron():
     item = SchedulerSettingsService._build_scheduler_item(setting)
 
     assert item.schedule.cron == "0 0 * * *"
+
+
+def test_next_run_at_is_not_staggered_for_assistant_resources():
+    """Only datasources collide on the reindex queue; assistant schedules fire exactly as set."""
+    setting = Settings(
+        id="setting-1",
+        user_id="u1",
+        project_name="p",
+        alias="assistant-schedule",
+        credential_type=CredentialTypes.SCHEDULER,
+        credential_values=[
+            CredentialValues(key="schedule", value="0 0 * * *"),
+            CredentialValues(key="resource_type", value="assistant"),
+            CredentialValues(key="resource_id", value="assistant-stagger-1"),
+            CredentialValues(key="is_enabled", value=True),
+            CredentialValues(key="timezone", value="UTC"),
+        ],
+        setting_type=SettingType.USER,
+        is_global=False,
+    )
+
+    item = SchedulerSettingsService._build_scheduler_item(setting)
+
+    assert item.schedule.nextRunAt is not None
+    assert "T00:00" in item.schedule.nextRunAt

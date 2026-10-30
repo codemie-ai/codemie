@@ -32,7 +32,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from codemie.configs import logger, config
 from codemie.core.constants import CodeIndexType
 from codemie.triggers.bindings.cron_helpers import normalize_day_of_week
-from codemie.triggers.bindings.cron_stagger import stagger_cron
+from codemie.triggers.bindings.cron_stagger import RESOURCE_TYPE_DATASOURCE, stagger_cron
 from codemie.core.models import GitRepo, SVNRepo
 from codemie.rest_api.models.index import IndexInfo
 from codemie_tools.base.models import CredentialTypes
@@ -615,7 +615,7 @@ class Cron:
             self.__remove_disabled_job(job_id)
             return
 
-        cron_trigger = self.__create_cron_trigger(cron_expression, resource_id, timezone=timezone)
+        cron_trigger = self.__create_cron_trigger(cron_expression, resource_id, resource_type, timezone=timezone)
         instance = self.__schedule_job_by_type(
             resource_type,
             index_type,
@@ -651,7 +651,9 @@ class Cron:
             logger.debug("Job %s was already removed from the scheduler", job_id)
 
     @staticmethod
-    def __create_cron_trigger(cron_expression, resource_id=None, timezone: Optional[str] = None):
+    def __create_cron_trigger(
+        cron_expression, resource_id=None, resource_type: str = RESOURCE_TYPE_DATASOURCE, timezone: Optional[str] = None
+    ):
         """Create cron trigger from expression
 
         Jobs fire at exactly the time the user asked for. Bursts of schedules sharing one
@@ -662,9 +664,13 @@ class Cron:
         What *is* spread is datasources that all happen to share the same expression
         (e.g. everyone picking "Daily at midnight"): each gets a deterministic
         per-datasource minute/hour offset from ``cron_stagger`` so they don't all land
-        in the reindex queue at the same instant.
+        in the reindex queue at the same instant. ``stagger_cron`` itself only staggers
+        when ``resource_type`` is "datasource" -- assistant/workflow schedules fire at
+        the exact time requested.
         """
-        minute, hour, day_of_month, month, day_of_week = stagger_cron(resource_id, cron_expression).split()
+        minute, hour, day_of_month, month, day_of_week = stagger_cron(
+            resource_id, cron_expression, resource_type
+        ).split()
         return CronTrigger(
             minute=minute,
             hour=hour,

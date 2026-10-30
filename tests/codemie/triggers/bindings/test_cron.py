@@ -834,7 +834,7 @@ def test_datasource_and_assistant_triggers_are_built_alike(cron_instance):
     cron_instance.scheduler = MagicMock()
     captured = {}
 
-    def fake_trigger(cron_expression, resource_id=None, timezone=None):
+    def fake_trigger(cron_expression, resource_id=None, resource_type=None, timezone=None):
         captured[cron_expression] = timezone
         return MagicMock()
 
@@ -1351,21 +1351,36 @@ def test_create_cron_trigger_applies_per_datasource_stagger():
     assert shifted, "expected at least one sample datasource id to resolve to a staggered minute/hour"
 
 
-def test_create_cron_trigger_non_wildcard_day_of_month_still_staggers():
-    """A fixed day-of-month still collides across datasources every month, so it staggers too."""
+def test_create_cron_trigger_non_preset_day_of_month_is_untouched():
+    """Day-of-month 15 isn't the monthly preset's day 1, so it's left as the user set it."""
     trigger = Cron._Cron__create_cron_trigger("0 0 15 * *", "ds-stagger-1", timezone="UTC")
     fields = {str(f.name): f for f in trigger.fields}
     assert str(fields["day"]) == "15"
-    assert (str(fields["minute"]), str(fields["hour"])) != ("0", "0")
+    assert (str(fields["minute"]), str(fields["hour"])) == ("0", "0")
 
 
-def test_create_cron_trigger_full_week_range_day_of_week_still_staggers():
-    """ "0 0 * * 0-7" is semantically every day, just not spelled as a literal "*"."""
-    shifted = False
+def test_create_cron_trigger_non_preset_day_of_week_is_untouched():
+    """A weekday range isn't the weekly preset's literal Sunday, so it's left untouched."""
     for resource_id in ["ds-stagger-1", "ds-stagger-2", "ds-stagger-3", "ds-stagger-4", "ds-stagger-5"]:
         trigger = Cron._Cron__create_cron_trigger("0 0 * * 0-7", resource_id, timezone="UTC")
         fields = {str(f.name): f for f in trigger.fields}
         minute, hour = str(fields["minute"]), str(fields["hour"])
-        if (minute, hour) != ("0", "0"):
+        assert (minute, hour) == ("0", "0")
+
+
+def test_create_cron_trigger_hourly_preset_staggers():
+    """ "0 * * * *" is the hourly preset and is eligible for staggering."""
+    shifted = False
+    for resource_id in ["ds-stagger-1", "ds-stagger-2", "ds-stagger-3", "ds-stagger-4", "ds-stagger-5"]:
+        trigger = Cron._Cron__create_cron_trigger("0 * * * *", resource_id, timezone="UTC")
+        fields = {str(f.name): f for f in trigger.fields}
+        if str(fields["minute"]) != "0":
             shifted = True
-    assert shifted, "expected a full-week day_of_week range to still be eligible for staggering"
+    assert shifted, "expected at least one sample datasource id to resolve to a staggered minute"
+
+
+def test_create_cron_trigger_without_resource_id_is_never_staggered():
+    """Assistant/workflow jobs call this without a resource_id and must fire exactly as scheduled."""
+    trigger = Cron._Cron__create_cron_trigger("0 0 * * *", timezone="UTC")
+    fields = {str(f.name): f for f in trigger.fields}
+    assert (str(fields["minute"]), str(fields["hour"])) == ("0", "0")

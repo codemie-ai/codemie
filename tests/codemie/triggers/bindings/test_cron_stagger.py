@@ -38,33 +38,45 @@ def test_day_wrap_stays_within_day():
     assert 0 <= int(hour) <= 23 and 0 <= int(minute) <= 59
 
 
-def test_non_wildcard_day_fields_still_stagger():
-    """A single weekday/day-of-month collides across datasources just like a daily cron."""
-    day_of_month_minute, day_of_month_hour = _minute_hour(stagger_cron("ds-1", "0 0 15 * *"))
-    assert stagger_cron("ds-1", "0 0 15 * *").split()[2:] == ["15", "*", "*"]
-    assert (day_of_month_minute, day_of_month_hour) != ("0", "0")
-
-    dow_minute, dow_hour = _minute_hour(stagger_cron("ds-1", "0 0 * * 1-5"))
-    assert stagger_cron("ds-1", "0 0 * * 1-5").split()[2:] == ["*", "*", "1-5"]
-    assert (dow_minute, dow_hour) != ("0", "0")
+def test_hourly_preset_staggers():
+    results = {stagger_cron(f"ds-{i}", "0 * * * *") for i in range(50)}
+    assert len(results) > 1
+    assert all(_minute_hour(r)[1] == "*" for r in results)
+    assert all(0 <= int(_minute_hour(r)[0]) <= 59 for r in results)
 
 
-def test_wildcard_safety_rule_passes_through_non_integer_hour_or_day_range():
-    # Hour itself is a list/range, not a plain integer -- left untouched.
-    assert stagger_cron("ds-1", "1 5,12 * * 1-5") == "1 5,12 * * 1-5"
-    assert stagger_cron("ds-1", "0 5-17 * * 1-5") == "0 5-17 * * 1-5"
+def test_weekly_preset_staggers():
+    minute, hour = _minute_hour(stagger_cron("ds-1", "0 0 * * 0"))
+    assert stagger_cron("ds-1", "0 0 * * 0").split()[2:] == ["*", "*", "0"]
+    assert (minute, hour) != ("0", "0")
+
+
+def test_monthly_preset_staggers():
+    minute, hour = _minute_hour(stagger_cron("ds-1", "0 0 1 * *"))
+    assert stagger_cron("ds-1", "0 0 1 * *").split()[2:] == ["1", "*", "*"]
+    assert (minute, hour) != ("0", "0")
+
+
+def test_non_preset_day_of_month_is_untouched():
+    """Day-of-month 15 isn't the monthly preset's day 1, so it's a deliberate choice."""
+    assert stagger_cron("ds-1", "0 0 15 * *") == "0 0 15 * *"
+
+
+def test_non_preset_day_of_week_is_untouched():
+    """A weekday range isn't the weekly preset's literal Sunday, so it's left alone."""
+    assert stagger_cron("ds-1", "0 0 * * 1-5") == "0 0 * * 1-5"
 
 
 def test_specific_minute_on_concrete_hour_is_untouched():
-    """A deliberately chosen non-zero minute on a concrete hour is not a generic value."""
+    """A deliberately chosen non-zero minute/hour is not a preset value."""
     assert stagger_cron("ds-1", "30 16 * * *") == "30 16 * * *"
     assert stagger_cron("ds-1", "38 22 * * *") == "38 22 * * *"
+    assert stagger_cron("ds-1", "0 9 * * *") == "0 9 * * *"
 
 
-def test_on_the_hour_daily_cron_still_staggers():
-    """minute == "0" on a concrete hour is the generic "top of the hour" value."""
-    minute, hour = _minute_hour(stagger_cron("ds-1", "0 9 * * *"))
-    assert (minute, hour) != ("0", "9")
+def test_non_zero_minute_hourly_cron_is_untouched():
+    """ "15 * * * *" isn't the hourly preset's minute 0, so it's a deliberate choice."""
+    assert stagger_cron("ds-1", "15 * * * *") == "15 * * * *"
 
 
 def test_non_integer_fields_pass_through():
@@ -74,28 +86,3 @@ def test_non_integer_fields_pass_through():
 def test_missing_datasource_id_passes_through():
     assert stagger_cron(None, "0 0 * * *") == "0 0 * * *"
     assert stagger_cron("", "0 0 * * *") == "0 0 * * *"
-
-
-def test_hourly_wildcard_hour_stays_wildcard_but_minute_staggers():
-    minute, hour = _minute_hour(stagger_cron("ds-1", "15 * * * *"))
-    assert hour == "*"
-    assert 0 <= int(minute) <= 59
-
-
-def test_hourly_wildcard_hour_is_deterministic_per_id():
-    a = stagger_cron("ds-1", "15 * * * *")
-    b = stagger_cron("ds-1", "15 * * * *")
-    assert a == b
-
-
-def test_hourly_wildcard_hour_distinct_across_ids():
-    results = {stagger_cron(f"ds-{i}", "15 * * * *") for i in range(50)}
-    assert len(results) > 1
-    assert all(_minute_hour(r)[1] == "*" for r in results)
-
-
-def test_hourly_wildcard_hour_minute_wraps_mod_60():
-    for i in range(50):
-        minute, hour = _minute_hour(stagger_cron(f"ds-{i}", "45 * * * *"))
-        assert hour == "*"
-        assert 0 <= int(minute) <= 59
