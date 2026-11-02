@@ -870,48 +870,7 @@ class CLIHandler(CLIBaseHandler):
         repo_buckets = result.get("aggregations", {}).get("paginated_results", {}).get("buckets", [])
 
         for repo_bucket in repo_buckets:
-            repo_name = repo_bucket["key"]
-            branch_buckets = repo_bucket.get("branches", {}).get("buckets", [])
-
-            for branch_bucket in branch_buckets:
-                branch_name = branch_bucket["key"]
-                user_buckets = branch_bucket.get("users", {}).get("buckets", [])
-
-                for user_bucket in user_buckets:
-                    user_name = user_bucket["key"]
-
-                    # Extract token data from NEW metric (filtered aggregation)
-                    token_data = user_bucket.get("token_data", {})
-                    input_tokens = int(token_data.get("input_tokens", {}).get("value", 0))
-                    output_tokens = int(token_data.get("output_tokens", {}).get("value", 0))
-                    cache_read_tokens = int(token_data.get("cache_read_tokens", {}).get("value", 0))
-                    cache_creation_tokens = int(token_data.get("cache_creation_tokens", {}).get("value", 0))
-
-                    # Extract session data from CLI_TOOL_USAGE_TOTAL (filtered aggregation)
-                    session_data = user_bucket.get("session_data", {})
-                    session_doc_count = int(session_data.get("doc_count", 0))
-
-                    # Skip rows with no real CLI sessions — these are noise from LLM proxy
-                    # metrics (e.g. Claude Desktop ping requests) with no corresponding
-                    # cli_tool_usage_total document.
-                    if session_doc_count == 0:
-                        continue
-
-                    session_duration = int(session_data.get("session_duration", {}).get("value", 0))
-                    total_lines_added = int(session_data.get("total_lines_added", {}).get("value", 0))
-
-                    row = {
-                        "repository": repo_name,
-                        "branch": branch_name,
-                        "user_name": user_name,
-                        "input_tokens": input_tokens,
-                        "cache_creation_tokens": cache_creation_tokens,
-                        "cache_read_tokens": cache_read_tokens,
-                        "output_tokens": output_tokens,
-                        "session_duration": session_duration,
-                        "total_lines_added": total_lines_added,
-                    }
-                    rows.append(row)
+            rows.extend(self._parse_cli_repository_bucket(repo_bucket))
 
         # Sorting removed - now handled by pipeline for consistent pagination across pages
 
@@ -919,6 +878,87 @@ class CLIHandler(CLIBaseHandler):
             f"Parsed cli-repositories result: total_repo_buckets={len(repo_buckets)}, total_rows_flattened={len(rows)}"
         )
         return rows
+
+    def _parse_cli_repository_bucket(self, repo_bucket: dict) -> list[dict]:
+        """Flatten one repository bucket (branches -> users) into rows."""
+        repo_name = repo_bucket["key"]
+        rows: dict[tuple[str, str], dict] = {}
+        users_with_sessions: set[str] = set()
+        unbranched_tokens_by_user: dict[str, dict[str, int]] = {}
+
+        for branch_bucket in repo_bucket.get("branches", {}).get("buckets", []):
+            branch_name = self._normalize_cli_repository_branch(branch_bucket["key"])
+
+            for user_bucket in branch_bucket.get("users", {}).get("buckets", []):
+                user_name = user_bucket["key"]
+                session_data = user_bucket.get("session_data", {})
+                tokens = self._extract_cli_repository_tokens(user_bucket)
+
+                # Rows with no real CLI session are noise from LLM proxy metrics (e.g. Claude
+                # Desktop ping requests) — except proxy tokens recorded without a branch (no
+                # X-CodeMie-Branch sent: unborn or detached HEAD, older CLI). Those are kept as an
+                # unattributed row once the repository is parsed.
+                if int(session_data.get("doc_count", 0)) == 0:
+                    if branch_name == "":
+                        self._add_cli_repository_values(unbranched_tokens_by_user.setdefault(user_name, {}), tokens)
+                    continue
+
+                row = rows.setdefault(
+                    (branch_name, user_name), self._new_cli_repository_row(repo_name, branch_name, user_name)
+                )
+                self._add_cli_repository_values(
+                    row,
+                    {
+                        **tokens,
+                        "session_duration": int(session_data.get("session_duration", {}).get("value", 0)),
+                        "total_lines_added": int(session_data.get("total_lines_added", {}).get("value", 0)),
+                    },
+                )
+                users_with_sessions.add(user_name)
+
+        # Which session owns branch-less usage cannot be told from repository/user alone, so it is
+        # never added to a branch row: it is shown on the row with branch "".
+        for user_name, tokens in unbranched_tokens_by_user.items():
+            if user_name in users_with_sessions and any(tokens.values()):
+                row = rows.setdefault(("", user_name), self._new_cli_repository_row(repo_name, "", user_name))
+                self._add_cli_repository_values(row, tokens)
+
+        return list(rows.values())
+
+    @staticmethod
+    def _normalize_cli_repository_branch(raw: str) -> str:
+        """A detached HEAD has no branch: Claude Code reports "HEAD", Copilot CLI "detached@<sha>"."""
+        return "" if raw == "HEAD" or raw.startswith("detached@") else raw
+
+    @staticmethod
+    def _new_cli_repository_row(repository: str, branch: str, user_name: str) -> dict:
+        return {
+            "repository": repository,
+            "branch": branch,
+            "user_name": user_name,
+            "input_tokens": 0,
+            "cache_creation_tokens": 0,
+            "cache_read_tokens": 0,
+            "output_tokens": 0,
+            "session_duration": 0,
+            "total_lines_added": 0,
+        }
+
+    @staticmethod
+    def _add_cli_repository_values(target: dict, values: dict[str, int]) -> None:
+        for field, value in values.items():
+            target[field] = target.get(field, 0) + value
+
+    @staticmethod
+    def _extract_cli_repository_tokens(user_bucket: dict) -> dict[str, int]:
+        """Token sums from CLI_LLM_USAGE_TOTAL (filtered aggregation) for one user bucket."""
+        token_data = user_bucket.get("token_data", {})
+        return {
+            "input_tokens": int(token_data.get("input_tokens", {}).get("value", 0)),
+            "cache_creation_tokens": int(token_data.get("cache_creation_tokens", {}).get("value", 0)),
+            "cache_read_tokens": int(token_data.get("cache_read_tokens", {}).get("value", 0)),
+            "output_tokens": int(token_data.get("output_tokens", {}).get("value", 0)),
+        }
 
     def _get_cli_repositories_columns(self) -> list[dict]:
         """Get column definitions for CLI repositories stats."""

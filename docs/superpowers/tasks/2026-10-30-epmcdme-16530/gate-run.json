@@ -1,0 +1,108 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-16530_cli-repositories-unbranched-tokens",
+  "head": "36da05eb02e90f485a185cc876ad99f7ae178af7",
+  "runner": "poetry",
+  "started_at": "2026-10-30T15:00:14Z",
+  "completed_at": "2026-10-30T15:05:18.260013Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2159,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 11313,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1793,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "secrets",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 206000,
+      "command": "make gitleaks",
+      "exit_code": 0
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 282720,
+      "command": "make test",
+      "exit_code": 0,
+      "notes": "23935 passed, 585 skipped (individual tests), 0 failed"
+    },
+    {
+      "id": "cli-analytics-live",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make test-cli-analytics-live",
+      "exit_code": null,
+      "notes": "Diff does not touch src/codemie/repository/cli_analytics/postgres/"
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make coverage",
+      "exit_code": null,
+      "notes": "Coverage not requested"
+    },
+    {
+      "id": "sonar",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make sonar-local",
+      "exit_code": null,
+      "notes": "Pre-push hook runs pytest + sonar-local only when CODEMIE_PREPUSH_ENABLED=true; Sonar credentials/network not verified locally. Only CI/pre-push can settle Sonar quality gate. Pytest part covered by unit gate."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "exit_code": null,
+      "notes": "Not opening an MR in this run; needs docker stack + superadmin fixtures"
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make verify",
+      "exit_code": null,
+      "notes": "Composite of ruff, license, gitleaks, test, each run individually"
+    },
+    {
+      "id": "commit-msg",
+      "source": "hook",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "bash scripts/git-hooks/commit_msg.sh",
+      "exit_code": null,
+      "notes": "Commit-time hook; no commit made by this runner"
+    }
+  ],
+  "failures": {}
+}

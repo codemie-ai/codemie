@@ -51,6 +51,44 @@ def handler(mock_user, mock_repository):
     return CLIHandler(mock_user, mock_repository)
 
 
+def _repo_user_bucket(user: str, tokens: tuple[int, int, int, int], session_docs: int, duration: int = 0) -> dict:
+    """ES user bucket for cli-repositories; tokens = (input, output, cache_creation, cache_read)."""
+    input_tokens, output_tokens, cache_creation, cache_read = tokens
+    return {
+        "key": user,
+        "token_data": {
+            "input_tokens": {"value": input_tokens},
+            "output_tokens": {"value": output_tokens},
+            "cache_creation_tokens": {"value": cache_creation},
+            "cache_read_tokens": {"value": cache_read},
+        },
+        "session_data": {
+            "doc_count": session_docs,
+            "session_duration": {"value": duration},
+            "total_lines_added": {"value": 0},
+        },
+    }
+
+
+def _repo_result(repository: str, branches: dict[str, list[dict]]) -> dict:
+    return {
+        "aggregations": {
+            "paginated_results": {
+                "buckets": [
+                    {
+                        "key": repository,
+                        "branches": {
+                            "buckets": [
+                                {"key": branch, "users": {"buckets": users}} for branch, users in branches.items()
+                            ]
+                        },
+                    }
+                ]
+            }
+        }
+    }
+
+
 class TestCLISummary:
     """Tests for CLI summary metrics."""
 
@@ -588,6 +626,161 @@ class TestCLIRepositories:
 
         # Should return empty rows since no users exist
         assert len(rows) == 0
+
+    def test_parse_cli_repositories_keeps_unbranched_tokens_as_own_row(self, handler):
+        """EPMCDME-16530: unborn-HEAD repo — proxy tokens have branch "", the session has "master"."""
+        result = _repo_result(
+            "qa-h1/tok-nocommit",
+            {
+                "": [_repo_user_bucket("u1", (2, 4, 28222, 0), session_docs=0)],
+                "master": [_repo_user_bucket("u1", (0, 0, 0, 0), session_docs=1, duration=9947)],
+            },
+        )
+
+        rows = handler._parse_cli_repositories_result(result)
+
+        assert rows == [
+            {
+                "repository": "qa-h1/tok-nocommit",
+                "branch": "master",
+                "user_name": "u1",
+                "input_tokens": 0,
+                "cache_creation_tokens": 0,
+                "cache_read_tokens": 0,
+                "output_tokens": 0,
+                "session_duration": 9947,
+                "total_lines_added": 0,
+            },
+            {
+                "repository": "qa-h1/tok-nocommit",
+                "branch": "",
+                "user_name": "u1",
+                "input_tokens": 2,
+                "cache_creation_tokens": 28222,
+                "cache_read_tokens": 0,
+                "output_tokens": 4,
+                "session_duration": 0,
+                "total_lines_added": 0,
+            },
+        ]
+
+    def test_parse_cli_repositories_does_not_inflate_session_row_with_unbranched_tokens(self, handler):
+        """Repository/user equality does not prove ownership: a session row keeps only its own tokens."""
+        result = _repo_result(
+            "org/repo",
+            {
+                "main": [_repo_user_bucket("u1", (5, 0, 0, 0), session_docs=1, duration=10)],
+                "": [_repo_user_bucket("u1", (100, 0, 0, 0), session_docs=0)],
+            },
+        )
+
+        rows = handler._parse_cli_repositories_result(result)
+
+        assert [(r["branch"], r["input_tokens"]) for r in rows] == [("main", 5), ("", 100)]
+
+    def test_parse_cli_repositories_keeps_unbranched_row_next_to_several_session_rows(self, handler):
+        """Two session branches for the user: the branch-less usage stays on its own row, not guessed."""
+        result = _repo_result(
+            "org/repo",
+            {
+                "main": [_repo_user_bucket("u1", (5, 5, 0, 0), session_docs=1, duration=10)],
+                "dev": [_repo_user_bucket("u1", (7, 7, 0, 0), session_docs=1, duration=20)],
+                "": [_repo_user_bucket("u1", (1, 2, 3, 4), session_docs=0)],
+            },
+        )
+
+        rows = handler._parse_cli_repositories_result(result)
+
+        assert [(r["branch"], r["input_tokens"]) for r in rows] == [("main", 5), ("dev", 7), ("", 1)]
+        unbranched = rows[2]
+        assert (unbranched["session_duration"], unbranched["total_lines_added"]) == (0, 0)
+        assert (unbranched["output_tokens"], unbranched["cache_creation_tokens"], unbranched["cache_read_tokens"]) == (
+            2,
+            3,
+            4,
+        )
+
+    def test_parse_cli_repositories_skips_zero_token_unbranched_bucket(self, handler):
+        """An all-zero "" bucket (e.g. proxy pings) must not add a noise row next to a session row."""
+        result = _repo_result(
+            "org/repo",
+            {
+                "main": [_repo_user_bucket("u1", (5, 5, 0, 0), session_docs=1, duration=10)],
+                "": [_repo_user_bucket("u1", (0, 0, 0, 0), session_docs=0)],
+            },
+        )
+
+        rows = handler._parse_cli_repositories_result(result)
+
+        assert [(r["branch"], r["input_tokens"]) for r in rows] == [("main", 5)]
+
+    def test_parse_cli_repositories_merges_detached_head_branches_into_one_row(self, handler):
+        """Claude Code "HEAD" and Copilot CLI "detached@<sha>" are the same thing: no branch."""
+        result = _repo_result(
+            "org/repo",
+            {
+                "HEAD": [_repo_user_bucket("u1", (1, 1, 0, 0), session_docs=1, duration=10)],
+                "detached@4d432ed": [_repo_user_bucket("u1", (2, 2, 0, 0), session_docs=1, duration=20)],
+                "detached@9af01bc": [_repo_user_bucket("u1", (4, 4, 0, 0), session_docs=1, duration=30)],
+                "main": [_repo_user_bucket("u1", (8, 8, 0, 0), session_docs=1, duration=40)],
+            },
+        )
+
+        rows = handler._parse_cli_repositories_result(result)
+
+        assert [(r["branch"], r["input_tokens"], r["session_duration"]) for r in rows] == [
+            ("", 7, 60),
+            ("main", 8, 40),
+        ]
+
+    def test_parse_cli_repositories_treats_token_only_detached_head_as_unbranched(self, handler):
+        """Detached-HEAD proxy tokens without a session doc land on the "" row, like branch-less ones."""
+        result = _repo_result(
+            "org/repo",
+            {
+                "": [_repo_user_bucket("u1", (0, 0, 0, 0), session_docs=1, duration=10)],
+                "HEAD": [_repo_user_bucket("u1", (3, 3, 0, 0), session_docs=0)],
+                "detached@4d432ed": [_repo_user_bucket("u1", (4, 4, 0, 0), session_docs=0)],
+            },
+        )
+
+        rows = handler._parse_cli_repositories_result(result)
+
+        assert [(r["branch"], r["input_tokens"], r["session_duration"]) for r in rows] == [("", 7, 10)]
+
+    def test_parse_cli_repositories_drops_unbranched_tokens_without_any_session(self, handler):
+        """EPMCDME-12687 noise filter: proxy-only usage (e.g. Claude Desktop pings) stays hidden."""
+        result = _repo_result("org/repo", {"": [_repo_user_bucket("u1", (9, 9, 9, 9), session_docs=0)]})
+
+        assert handler._parse_cli_repositories_result(result) == []
+
+    def test_parse_cli_repositories_does_not_attach_unbranched_tokens_across_users(self, handler):
+        """u2's unbranched tokens have no u2 session in the repository, so they stay dropped."""
+        result = _repo_result(
+            "org/repo",
+            {
+                "main": [_repo_user_bucket("u1", (0, 0, 0, 0), session_docs=1)],
+                "": [_repo_user_bucket("u2", (9, 9, 9, 9), session_docs=0)],
+            },
+        )
+
+        rows = handler._parse_cli_repositories_result(result)
+
+        assert [(r["user_name"], r["input_tokens"]) for r in rows] == [("u1", 0)]
+
+    def test_parse_cli_repositories_still_drops_token_only_bucket_on_real_branch(self, handler):
+        """Only branch "" is treated as missing attribution; a real branch without sessions is unchanged."""
+        result = _repo_result(
+            "org/repo",
+            {
+                "main": [_repo_user_bucket("u1", (1, 1, 0, 0), session_docs=1)],
+                "feature": [_repo_user_bucket("u1", (50, 50, 0, 0), session_docs=0)],
+            },
+        )
+
+        rows = handler._parse_cli_repositories_result(result)
+
+        assert [(r["branch"], r["input_tokens"]) for r in rows] == [("main", 1)]
 
     @pytest.mark.asyncio
     @patch(
