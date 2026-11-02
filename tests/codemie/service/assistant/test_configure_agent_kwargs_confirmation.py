@@ -43,7 +43,7 @@ def _run_configure(*, request_policy, assistant_policy):
             llm_model="gpt-4",
             smart_tool_selection_enabled=False,
             allow_tool_confirmation=True,
-            create_subagent_executors=lambda **_: [],
+            create_subagent_executors=lambda **_: ([], set()),
             get_subagent_descriptions=lambda a, u: {},
         )
     return agent_kwargs["require_tool_confirmation"]
@@ -114,7 +114,7 @@ def _run_configure_full(*, request_policy, assistant_policy):
             llm_model="gpt-4",
             smart_tool_selection_enabled=False,
             allow_tool_confirmation=True,
-            create_subagent_executors=lambda **_: [],
+            create_subagent_executors=lambda **_: ([], set()),
             get_subagent_descriptions=lambda a, u: {},
         )
     return agent_kwargs
@@ -179,7 +179,7 @@ def test_ask_for_approval_eagerly_persists_conversation():
             llm_model="gpt-4",
             smart_tool_selection_enabled=False,
             allow_tool_confirmation=True,
-            create_subagent_executors=lambda **_: [],
+            create_subagent_executors=lambda **_: ([], set()),
             get_subagent_descriptions=lambda a, u: {},
         )
     ensure_mock.assert_called_once_with(request, assistant, user)
@@ -209,7 +209,7 @@ def test_auto_approve_does_not_persist_conversation():
             llm_model="gpt-4",
             smart_tool_selection_enabled=False,
             allow_tool_confirmation=True,
-            create_subagent_executors=lambda **_: [],
+            create_subagent_executors=lambda **_: ([], set()),
             get_subagent_descriptions=lambda a, u: {},
         )
     ensure_mock.assert_not_called()

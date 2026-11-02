@@ -26,7 +26,6 @@ from typing import Optional, Any
 from codemie.agents.callbacks.tokens_callback import TokensCalculationCallback
 from codemie.clients.elasticsearch import ElasticSearchClient
 from codemie.configs import config, logger
-from codemie.configs.customer_config import customer_config
 from codemie.configs.llm_config import LLMProvider, LLMModel
 from codemie.configs.logger import current_user_email, logging_user_id
 from codemie.core.constants import (
@@ -36,9 +35,8 @@ from codemie.core.constants import (
     HEADER_CODEMIE_VERSION,
     HEADER_CODEMIE_TAGGING_PROJECT,
 )
-from codemie.core.exceptions import ModelNotWhitelistedException
 from codemie.core.models import ElasticSearchKwargs, GitRepo, SVNRepo, CodeFields, Application
-from codemie.service.llm.model_availability_service import ModelAvailabilityService
+from codemie.service.llm.model_availability_service import ProjectModelPolicy
 from codemie.rest_api.models.settings import DialCredentials, LiteLLMContext
 from codemie.service.llm_service.llm_service import llm_service, LLMService
 
@@ -236,37 +234,13 @@ def enforce_allowed_model(
 
     If project has allowed_models configured, enforce the constraint:
      - Return the model if not blank and in the whitelist
-     - Return the project default if requested model is blank or not allowed
+     - Return the project default otherwise
      - Hardened: fallback to first allowed model if default is missing
 
     Backward compatible: if project is None or has no whitelist, return requestedModel unchanged.
     """
-    if not project:
-        return requested_model
-
-    if not customer_config.is_feature_enabled("projectModelOverride"):
-        return requested_model
-
-    if not requested_model:
-        requested_model = ""
-
-    # None means the project does not restrict models at all (unconfigured).
-    # get_project_models() normalizes this to an empty list, which would be
-    # indistinguishable from "configured but empty" (deny-all) below — so the
-    # raw Application field must be checked first.
-    if project.allowed_models is None:
-        return requested_model or project.default_model or ""
-
-    config = ModelAvailabilityService.get_project_models(project.id)
-
-    if not config.allowed_models:
-        raise ModelNotWhitelistedException(
-            requested_model,
-            project.id,
-            details="Project has no allowed models. Admin must configure the whitelist.",
-        )
-
-    return ModelAvailabilityService.pick_allowed_model(requested_model, config.allowed_models, config.default_model)
+    policy = ProjectModelPolicy.for_project(project)
+    return policy.choose([requested_model], context="enforce_allowed_model") or ""
 
 
 def get_llm_by_credentials(

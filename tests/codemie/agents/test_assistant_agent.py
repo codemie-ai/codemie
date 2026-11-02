@@ -15,6 +15,7 @@
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
 from pydantic import BaseModel
 
 from codemie.agents.assistant_agent import AIToolsAgent, TaskResult
@@ -281,3 +282,51 @@ def test_generate_forwards_chat_history_to_orchestrator(mock_invoke, _mock_persi
     mock_invoke.assert_called_once()
     _, kwargs = mock_invoke.call_args
     assert kwargs["history"] == history
+
+
+class TestResolveLlmModel:
+    """_resolve_llm_model delegates the project rule to ProjectModelPolicy."""
+
+    _FOR_PROJECT = "codemie.service.llm.model_availability_service.ProjectModelPolicy.for_project"
+
+    @staticmethod
+    def _agent(project="proj", is_global=False, llm_model="blocked"):
+        agent = AIToolsAgent.__new__(AIToolsAgent)
+        agent.assistant = MagicMock(project=project, is_global=is_global)
+        agent.llm_model = llm_model
+        agent._resolved_llm_model = None
+        return agent
+
+    def test_whitelist_policy_replaces_a_blocked_model_with_the_default(self):
+        from codemie.service.llm.model_availability_service import PolicyMode, ProjectModelPolicy
+
+        policy = ProjectModelPolicy(PolicyMode.WHITELIST, ["gpt-4"], "gpt-4", "proj")
+        agent = self._agent()
+        with patch(self._FOR_PROJECT, return_value=policy) as for_project:
+            assert agent._resolve_llm_model() == "gpt-4"
+
+        for_project.assert_called_once_with("proj", False)
+
+    def test_deny_all_policy_raises(self):
+        from codemie.core.exceptions import ModelNotWhitelistedException
+        from codemie.service.llm.model_availability_service import PolicyMode, ProjectModelPolicy
+
+        policy = ProjectModelPolicy(PolicyMode.DENY_ALL, [], "gpt-4", "proj")
+        with patch(self._FOR_PROJECT, return_value=policy), pytest.raises(ModelNotWhitelistedException):
+            self._agent()._resolve_llm_model()
+
+    def test_global_assistant_is_passed_to_the_policy(self):
+        from codemie.service.llm.model_availability_service import PolicyMode, ProjectModelPolicy
+
+        agent = self._agent(is_global=True)
+        with patch(self._FOR_PROJECT, return_value=ProjectModelPolicy(PolicyMode.UNRESTRICTED)) as for_project:
+            assert agent._resolve_llm_model() == "blocked"
+
+        for_project.assert_called_once_with("proj", True)
+
+    def test_assistant_without_project_skips_the_policy(self):
+        agent = self._agent(project=None)
+        with patch(self._FOR_PROJECT) as for_project:
+            assert agent._resolve_llm_model() == "blocked"
+
+        for_project.assert_not_called()

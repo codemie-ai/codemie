@@ -601,6 +601,143 @@ class TestSaveChatHistory:
             assert params.client_source is source
 
 
+class TestExecutionModelReaders:
+    """History replay mode and the saved turn read the model build_agent resolves (agent.llm_model)."""
+
+    @pytest.fixture
+    def handler(self):
+        user = Mock(spec=User, id="user-123")
+        assistant = Mock(id="assistant-123", project="test-project", llm_model_type="own-model")
+        return StandardAssistantHandler(assistant, user, "request-uuid")
+
+    def test_history_projection_mode_uses_resolved_model(self, handler):
+        request = AssistantChatRequest(text="Hello", llm_model="picked-model", conversation_id="conv-1")
+        with (
+            patch(
+                "codemie.rest_api.handlers.assistant_handlers.BedrockOrchestratorService.is_bedrock_assistant",
+                return_value=False,
+            ),
+            patch(
+                "codemie.rest_api.handlers.assistant_handlers.AssistantService.resolve_execution_model",
+                return_value="react-model",
+            ) as resolve,
+            patch(
+                "codemie.rest_api.handlers.assistant_handlers.llm_service.get_react_llms",
+                return_value=["react-model"],
+            ),
+        ):
+            mode = handler._resolve_history_projection_mode(request)
+
+        resolve.assert_called_once_with(handler.assistant, request)
+        assert mode == "text_ledger"
+
+    def test_save_chat_history_passes_resolved_model(self, handler):
+        request = AssistantChatRequest(text="Hello", llm_model="picked-model")
+        data = ChatHistoryData(execution_start=time(), request=request, response="Response", thoughts=[])
+        with (
+            patch("codemie.service.llm_service.utils.set_llm_context"),
+            patch(
+                "codemie.rest_api.handlers.assistant_handlers.BedrockOrchestratorService.is_bedrock_assistant",
+                return_value=False,
+            ),
+            patch(
+                "codemie.rest_api.handlers.assistant_handlers.AssistantService.resolve_execution_model",
+                return_value="resolved-model",
+            ),
+            patch("codemie.rest_api.handlers.assistant_handlers.ConversationService") as mock_service,
+            patch("codemie.rest_api.handlers.assistant_handlers.request_summary_manager") as mock_manager,
+        ):
+            mock_manager.get_summary.return_value = Mock(tokens_usage=Mock())
+            handler.save_chat_history(data)
+
+        params = mock_service.upsert_chat_history.call_args.args[0]
+        assert params.llm_model == "resolved-model"
+        assert request.llm_model == "picked-model"
+
+    def test_save_chat_history_sets_llm_context_with_resolved_model(self, handler):
+        request = AssistantChatRequest(text="Hello", llm_model="picked-model")
+        data = ChatHistoryData(execution_start=time(), request=request, response="Response", thoughts=[])
+        with (
+            patch("codemie.service.llm_service.utils.set_llm_context") as set_ctx,
+            patch(
+                "codemie.rest_api.handlers.assistant_handlers.BedrockOrchestratorService.is_bedrock_assistant",
+                return_value=False,
+            ),
+            patch(
+                "codemie.rest_api.handlers.assistant_handlers.AssistantService.resolve_execution_model",
+                return_value="resolved-model",
+            ),
+            patch("codemie.rest_api.handlers.assistant_handlers.ConversationService"),
+            patch("codemie.rest_api.handlers.assistant_handlers.request_summary_manager") as mock_manager,
+        ):
+            mock_manager.get_summary.return_value = Mock(tokens_usage=Mock(routing=None))
+            handler.save_chat_history(data)
+
+        assert set_ctx.call_args.args[3] == "resolved-model"
+
+    def test_execution_model_falls_back_when_project_allows_no_model(self, handler):
+        from codemie.core.exceptions import ModelNotWhitelistedException
+
+        request = AssistantChatRequest(text="Hello", llm_model="picked-model")
+        with (
+            patch(
+                "codemie.rest_api.handlers.assistant_handlers.BedrockOrchestratorService.is_bedrock_assistant",
+                return_value=False,
+            ),
+            patch(
+                "codemie.rest_api.handlers.assistant_handlers.AssistantService.resolve_execution_model",
+                side_effect=ModelNotWhitelistedException("picked-model", "test-project", details="d"),
+            ),
+        ):
+            assert handler._execution_llm_model(request) == "picked-model"
+
+    def test_replay_and_saved_turn_resolve_once_per_request(self, handler):
+        request = AssistantChatRequest(text="Hello", llm_model="picked-model", conversation_id="conv-1")
+        data = ChatHistoryData(execution_start=time(), request=request, response="Response", thoughts=[])
+        with (
+            patch("codemie.service.llm_service.utils.set_llm_context"),
+            patch(
+                "codemie.rest_api.handlers.assistant_handlers.BedrockOrchestratorService.is_bedrock_assistant",
+                return_value=False,
+            ),
+            patch(
+                "codemie.rest_api.handlers.assistant_handlers.AssistantService.resolve_execution_model",
+                return_value="resolved-model",
+            ) as resolve,
+            patch("codemie.rest_api.handlers.assistant_handlers.llm_service.get_react_llms", return_value=[]),
+            patch("codemie.rest_api.handlers.assistant_handlers.ConversationService"),
+            patch("codemie.rest_api.handlers.assistant_handlers.request_summary_manager") as mock_manager,
+        ):
+            mock_manager.get_summary.return_value = Mock(tokens_usage=Mock(routing=None))
+            handler._resolve_history_projection_mode(request)
+            handler.save_chat_history(data)
+            handler.save_chat_history(data)
+
+        resolve.assert_called_once_with(handler.assistant, request)
+
+    def test_saved_turn_uses_the_built_agent_model(self, handler):
+        request = AssistantChatRequest(text="Hello", llm_model="picked-model")
+        data = ChatHistoryData(execution_start=time(), request=request, response="Response", thoughts=[])
+        agent = Mock(llm_model="agent-model")
+        with (
+            patch("codemie.service.llm_service.utils.set_llm_context") as set_ctx,
+            patch(
+                "codemie.rest_api.handlers.assistant_handlers.AssistantService.build_agent", return_value=agent
+            ) as build,
+            patch("codemie.rest_api.handlers.assistant_handlers.AssistantService.resolve_execution_model") as resolve,
+            patch("codemie.rest_api.handlers.assistant_handlers.ConversationService") as mock_service,
+            patch("codemie.rest_api.handlers.assistant_handlers.request_summary_manager") as mock_manager,
+        ):
+            mock_manager.get_summary.return_value = Mock(tokens_usage=Mock(routing=None))
+            assert handler._build_agent(assistant=handler.assistant, request=request) is agent
+            handler.save_chat_history(data)
+
+        build.assert_called_once_with(assistant=handler.assistant, request=request)
+        resolve.assert_not_called()
+        assert mock_service.upsert_chat_history.call_args.args[0].llm_model == "agent-model"
+        assert set_ctx.call_args.args[3] == "agent-model"
+
+
 def test_populate_conversation_history_uses_legacy_chat_history_when_feature_flag_disabled():
     user = Mock(spec=User)
     user.id = "user-123"

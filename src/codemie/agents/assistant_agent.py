@@ -302,14 +302,10 @@ class AIToolsAgent(WorkspaceAwareAgent):
             self._resolved_llm_model = self.llm_model
             return self._resolved_llm_model
 
-        from codemie.service.llm.model_availability_service import ModelAvailabilityService
+        from codemie.service.llm.model_availability_service import ProjectModelPolicy
 
-        resolved_model, _ = ModelAvailabilityService.resolve_model_for_execution(
-            requested_model=self.llm_model,
-            project_name=self.assistant.project,
-            is_global=self.assistant.is_global,
-            fallback_model=self.llm_model,
-        )
+        policy = ProjectModelPolicy.for_project(self.assistant.project, self.assistant.is_global)
+        resolved_model = policy.choose([self.llm_model], context="assistant_agent") or self.llm_model
         self._resolved_llm_model = resolved_model
         return self._resolved_llm_model
 

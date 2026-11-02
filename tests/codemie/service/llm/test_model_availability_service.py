@@ -235,7 +235,7 @@ class TestModelAvailabilityService:
 
         config = ModelAvailabilityService.get_project_models("my-project")
 
-        assert config.allowed_models == []
+        assert config.allowed_models is None
         assert config.default_model == ""
 
     # ===== Edge cases =====
@@ -277,7 +277,9 @@ class TestModelAvailabilityService:
 
 
 @pytest.mark.parametrize("requested_model", [None, ""])
-@pytest.mark.parametrize("allowed_models", [None, ["project-default", "allowed"]])
+@pytest.mark.parametrize(
+    "allowed_models", [None, ["project-default", "allowed"], ["project-default", "global-default"]]
+)
 def test_unset_model_selects_project_default(requested_model, allowed_models):
     app = MagicMock(allowed_models=allowed_models, default_model="project-default")
     with (
@@ -290,6 +292,20 @@ def test_unset_model_selects_project_default(requested_model, allowed_models):
         assert ModelAvailabilityService.resolve_model_for_execution(
             requested_model, "project", fallback_model="global-default"
         ) == ("project-default", False)
+
+
+def test_blocked_model_selects_project_default_over_whitelisted_fallback():
+    app = MagicMock(allowed_models=["project-default", "global-default"], default_model="project-default")
+    with (
+        patch(
+            "codemie.service.llm.model_availability_service.customer_config",
+            is_feature_enabled=MagicMock(return_value=True),
+        ),
+        patch("codemie.service.llm.model_availability_service.Application.get_by_id", return_value=app),
+    ):
+        assert ModelAvailabilityService.resolve_model_for_execution(
+            "blocked", "project", fallback_model="global-default"
+        ) == ("project-default", True)
 
 
 @pytest.mark.parametrize(
@@ -420,3 +436,19 @@ class TestModelAvailabilityMetrics:
             ModelAvailabilityService.resolve_model_for_execution("gpt-4", "my-project")
 
         mock_send_metric.assert_not_called()
+
+
+def _flag_on():
+    return patch(
+        "codemie.service.llm.model_availability_service.customer_config",
+        is_feature_enabled=MagicMock(return_value=True),
+    )
+
+
+def test_validate_asset_creation_passes_when_whitelist_unset_but_default_set():
+    app = MagicMock(allowed_models=None, default_model="project-default")
+    with (
+        _flag_on(),
+        patch("codemie.service.llm.model_availability_service.Application.get_by_id", return_value=app),
+    ):
+        ModelAvailabilityService.validate_model_for_asset_creation("any-model", "project")
