@@ -1503,5 +1503,5 @@ def test_session_title_is_trimmed_cut_to_200_characters_and_empty_is_null() -> N
 
 
 def test_a_blank_session_title_never_becomes_the_latest_value() -> None:
-    assert "e.key = 'session_title'" in rollups._LATEST_VALUES
+    assert "e.key IN ('session_title', 'platform')" in rollups._LATEST_VALUES
     assert "btrim(e.value #>> '{}', E' \\t\\r\\n\\u00a0') = ''" in rollups._LATEST_VALUES

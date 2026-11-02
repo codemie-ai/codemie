@@ -42,7 +42,7 @@ from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
 from codemie.repository.cli_analytics.ports import SESSION_PAGE_SORTS, Rows
 from codemie.repository.cli_analytics.postgres.engine import AnalyticsPgEngine
 from codemie.repository.cli_analytics.postgres.otlp import MAX_KEY_BYTES
-from codemie.repository.cli_analytics.postgres.rollups import _attr_ms
+from codemie.repository.cli_analytics.postgres.rollups import _BLANKS, _attr_ms
 from codemie.repository.cli_analytics.postgres.session_derived import CLASSIFIER_NAMES_SQL
 from codemie.repository.cli_analytics.postgres.fork_attribution import (
     dispatch_fork_candidate,
@@ -861,10 +861,16 @@ class PostgresCliAnalyticsReader:
                  SELECT session_id FROM session_dims WHERE session_id = $sid::text AND started_at IS NOT NULL
              ),
              h AS (
-                 SELECT session_id, resource_id, ts FROM log_events WHERE session_id = $sid::text
-                 UNION ALL
-                 SELECT session_id, resource_id, ts FROM spans WHERE session_id = $sid::text
-                 ORDER BY ts ASC, resource_id ASC
+                 -- the earliest log / span record whose resource has a usable service name
+                 SELECT e.session_id, e.resource_id, e.ts
+                 FROM (
+                     SELECT session_id, resource_id, ts FROM log_events WHERE session_id = $sid::text
+                     UNION ALL
+                     SELECT session_id, resource_id, ts FROM spans WHERE session_id = $sid::text
+                 ) e
+                 JOIN otel_resources ho ON ho.resource_id = e.resource_id
+                 WHERE nullif(btrim(ho.service_name, {_BLANKS}), '') IS NOT NULL
+                 ORDER BY e.ts ASC, e.resource_id ASC
                  LIMIT 1
              )
         SELECT c.session_id,
@@ -878,7 +884,10 @@ class PostgresCliAnalyticsReader:
                nullif(d.session_title, '')                                            AS session_title,
                coalesce(r.session_start, {_EPOCH})                                    AS started_at,  -- or 1970-01-01
                coalesce({_ms("r.session_end")} - {_ms("r.session_start")}, 0)         AS duration_ms,
-               nullif(o.service_name, '')                                             AS harness_service_name
+               -- the OTel service name of the earliest resource that has one; else the session `platform` (the hook
+               -- `platform`, or derived from span / metric names), used when no resource has a usable `service.name`
+               coalesce(nullif(btrim(o.service_name, {_BLANKS}), ''), nullif(btrim(d.platform, {_BLANKS}), ''))
+                                                                                      AS harness_service_name
         FROM c
         LEFT JOIN session_dims d ON d.session_id = c.session_id
         CROSS JOIN LATERAL (

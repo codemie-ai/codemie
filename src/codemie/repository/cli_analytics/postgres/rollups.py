@@ -174,7 +174,8 @@ _TOOL, _EXEC, _INTERACTION = int(SpanKind.TOOL), int(SpanKind.TOOL_EXECUTION), i
 _DIM_TYPES = _text_array(DIMENSION_HOOK_TYPES)
 
 
-# The characters trimmed from both ends of a prompt or a session title (vocabulary.BLANK_CHARS, as a SQL string).
+# The characters trimmed from both ends of a prompt, a session title, the session platform and the harness name
+# (vocabulary.BLANK_CHARS, as a SQL string).
 _BLANKS = "E' \\t\\r\\n\\u00a0'"
 
 
@@ -896,8 +897,8 @@ def _story_wins(new: str = "EXCLUDED", old: str = "sd") -> str:
     )
 
 
-# A session_title of only blank characters is no value: it must not shadow an earlier real name.
-_BLANK_TITLE = f"(e.key = 'session_title' AND btrim(e.value #>> '{{}}', {_BLANKS}) = '')"
+# A session_title or platform of only blank characters is no value: it must not shadow an earlier real one.
+_BLANK_TRIMMED = f"(e.key IN ('session_title', 'platform') AND btrim(e.value #>> '{{}}', {_BLANKS}) = '')"
 
 # The latest non-empty value of every field the row takes from the events' attrs (by ts, then
 # ingest_seq; a hook event before a usage_requests row of the same time), as one jsonb object.
@@ -923,7 +924,7 @@ _LATEST_VALUES = f"""SELECT jsonb_object_agg(x.key, x.value) AS v
         ) r
         CROSS JOIN LATERAL jsonb_each(CASE WHEN jsonb_typeof(r.attrs) = 'object' THEN r.attrs END) e
         WHERE e.value NOT IN ('null'::jsonb, '""'::jsonb)
-          AND NOT {_BLANK_TITLE}
+          AND NOT {_BLANK_TRIMMED}
           AND ({_LATEST_FIELD})
         ORDER BY e.key, r.ts DESC, r.ingest_seq DESC NULLS LAST, e.value::text COLLATE "C" DESC
     ) x"""
@@ -1331,7 +1332,7 @@ _SESSION_DIMS_VALUES: tuple[tuple[str, str], ...] = (
     ("story_source", "st.story_source"),
     *((c, f"lv.v->>{_literal(c)}") for c in _GIT_TEXT),
     ("claude_account_email", "ca.email"),
-    ("platform", f"coalesce(lv.v->>'platform', {_PLATFORM_FROM_NAMES})"),
+    ("platform", f"left(nullif(btrim(coalesce(lv.v->>'platform', {_PLATFORM_FROM_NAMES}), {_BLANKS}), ''), 200)"),
     ("ingest_source", "CASE WHEN src.plugin THEN 'plugin' ELSE 'otel' END"),
     ("client_version", f"coalesce(lv.v->>'client_version', {_otel_session_text('app.version')})"),
     ("entrypoint", f"coalesce(lv.v->>'entrypoint', {_otel_session_text('app.entrypoint')})"),

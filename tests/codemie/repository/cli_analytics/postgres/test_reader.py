@@ -421,6 +421,11 @@ async def test_session_detail_meta_resolves_the_earliest_service_name():
     assert "otel_resources" in sql
     assert "harness_service_name" in sql
     assert "ORDER BY" in sql.upper()
+    assert (
+        "coalesce(nullif(btrim(o.service_name, E' \\t\\r\\n\\u00a0'), ''), "
+        "nullif(btrim(d.platform, E' \\t\\r\\n\\u00a0'), ''))"
+    ) in sql
+    assert "WHERE nullif(btrim(ho.service_name, E' \\t\\r\\n\\u00a0'), '') IS NOT NULL ORDER BY" in sql
 
 
 @pytest.mark.asyncio
@@ -473,7 +478,7 @@ async def test_session_detail_meta_service_name_tiebreak_is_deterministic():
     await reader.get_session_detail_meta("s1")
 
     sql = " ".join(recorder.statements[0].split())
-    assert "ORDER BY ts ASC, resource_id ASC" in sql
+    assert "ORDER BY e.ts ASC, e.resource_id ASC" in sql
 
 
 def test_window_bounds_are_inclusive_and_millisecond_truncated():

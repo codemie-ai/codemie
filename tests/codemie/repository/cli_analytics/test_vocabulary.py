@@ -74,6 +74,23 @@ def test_known_harness_uses_its_override_label():
     assert v.humanize_harness_name("claude-code") == "Claude Code"
 
 
+def test_codemie_claude_harness_uses_its_override_label():
+    assert v.humanize_harness_name("codemie-claude") == "CodeMie Claude"
+    assert v.humanize_harness_name("CODEMIE-CLAUDE") == "CodeMie Claude"
+
+
+def test_copilot_cli_harness_uses_its_override_label():
+    assert v.humanize_harness_name("copilot-cli") == "Copilot CLI"
+    assert v.humanize_harness_name("  COPILOT-CLI\u00a0") == "Copilot CLI"
+
+
+def test_harness_name_is_trimmed_before_the_override_lookup():
+    assert v.humanize_harness_name("Claude-Code ") == "Claude Code"
+    assert v.humanize_harness_name("  codemie-claude") == "CodeMie Claude"
+    assert v.humanize_harness_name("\t\u00a0claude-code\u00a0\n") == "Claude Code"
+    assert v.humanize_harness_name("\t\u00a0") == "Unknown"
+
+
 def test_unmapped_harness_is_generically_humanized():
     assert v.humanize_harness_name("gemini_cli-beta") == "Gemini Cli Beta"
 
@@ -81,6 +98,7 @@ def test_unmapped_harness_is_generically_humanized():
 def test_missing_harness_is_unknown():
     assert v.humanize_harness_name(None) == "Unknown"
     assert v.humanize_harness_name("") == "Unknown"
+    assert v.humanize_harness_name("   ") == "Unknown"
 
 
 def test_builtin_command_names_constant():

@@ -147,7 +147,8 @@ SENTINEL_PREFIX_RAW: tuple[str, ...] = (
 # background command ends; "<agent-message" for a subagent hand-back or a peer session's message.
 CLAUDE_CODE_AUTO_PROMPT_PREFIXES: tuple[str, ...] = ("<task-notification>", "<agent-message")
 
-# The characters trimmed from both ends of a prompt or a session title: space, tab, line breaks and no-break space.
+# The characters trimmed from both ends of a prompt, a session title, the session platform and the harness name:
+# space, tab, line breaks and no-break space.
 # The SQL twin is rollups._BLANKS; keep the two equal.
 BLANK_CHARS: str = " \t\r\n\u00a0"
 
@@ -182,15 +183,18 @@ def strip_pasted_content(text: str) -> str:
     return _PASTED_CONTENT_TAG_RE.sub("", text).strip(BLANK_CHARS)
 
 
-# Raw otel_resources.service_name values needing a specific display label, rather
-# than the generic humanize fallback below.
+# Raw harness names (the OTel service name or the session platform, from a hook or derived from span/metric names)
+# needing a specific display label, rather than the generic humanize fallback below.
 HARNESS_LABEL_OVERRIDES: dict[str, str] = {
     "claude-code": "Claude Code",
+    "codemie-claude": "CodeMie Claude",
+    "copilot-cli": "Copilot CLI",
 }
 
 
 def humanize_harness_name(raw: str | None) -> str:
-    """Turn a raw harness/client service name into its session-detail display label."""
+    """Turn a raw harness name (the OTel service name or the session platform) into its display label."""
+    raw = (raw or "").strip(BLANK_CHARS)
     if not raw:
         return "Unknown"
     override = HARNESS_LABEL_OVERRIDES.get(raw.lower())
