@@ -31,7 +31,7 @@ from codemie.service.assistant_service import AssistantService
 class TestAssistantServiceBuildAgentWithHeaders:
     """Test cases for AssistantService.build_agent with request_headers."""
 
-    @patch('codemie.service.llm.model_availability_service.Application.get_by_id')
+    @patch('codemie.service.assistant_service.Application.get_by_id')
     @patch('codemie.service.assistant_service.Conversation.find_by_id')
     @patch('codemie.service.assistant_service.AIToolsAgent')
     @patch('codemie.service.assistant_service.LangGraphAgent')
@@ -118,7 +118,7 @@ class TestAssistantServiceBuildAgentWithHeaders:
         assert 'request_headers' in call_kwargs
         assert call_kwargs['request_headers'] == test_headers
 
-    @patch('codemie.service.llm.model_availability_service.Application.get_by_id')
+    @patch('codemie.service.assistant_service.Application.get_by_id')
     @patch('codemie.service.assistant_service.Conversation.find_by_id')
     @patch('codemie.service.assistant_service.AIToolsAgent')
     @patch('codemie.service.assistant_service.LangGraphAgent')

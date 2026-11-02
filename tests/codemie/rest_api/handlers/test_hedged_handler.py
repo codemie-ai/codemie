@@ -193,7 +193,7 @@ class TestHandleStreamFastPathWins:
                 "codemie.rest_api.handlers.hedged_handler.HedgingToolService.instantiate",
                 return_value=_make_fast_tool(_HIT_RESULT),
             ),
-            patch("codemie.rest_api.handlers.assistant_handlers.AssistantService.build_agent", return_value=mock_agent),
+            patch("codemie.rest_api.handlers.hedged_handler.AssistantService.build_agent", return_value=mock_agent),
             patch("codemie.rest_api.handlers.hedged_handler.ThreadedGenerator", return_value=real_tg),
             patch("codemie.rest_api.handlers.hedged_handler.extract_custom_headers", return_value={}),
             patch("codemie.rest_api.handlers.hedged_handler.set_disable_prompt_cache"),
@@ -256,7 +256,7 @@ class TestHandleStreamFastPathEmpty:
                 "codemie.rest_api.handlers.hedged_handler.HedgingToolService.instantiate",
                 return_value=_make_fast_tool(fast_tool_result),
             ),
-            patch("codemie.rest_api.handlers.assistant_handlers.AssistantService.build_agent", return_value=mock_agent),
+            patch("codemie.rest_api.handlers.hedged_handler.AssistantService.build_agent", return_value=mock_agent),
             patch("codemie.rest_api.handlers.hedged_handler.ThreadedGenerator", return_value=real_tg),
             patch("codemie.rest_api.handlers.hedged_handler.extract_custom_headers", return_value={}),
             patch("codemie.rest_api.handlers.hedged_handler.set_disable_prompt_cache"),
@@ -312,7 +312,7 @@ class TestHandleStreamFastPathEmpty:
                 "codemie.rest_api.handlers.hedged_handler.HedgingToolService.instantiate",
                 return_value=_make_fast_tool(_MISS_RESULT),
             ),
-            patch("codemie.rest_api.handlers.assistant_handlers.AssistantService.build_agent", return_value=mock_agent),
+            patch("codemie.rest_api.handlers.hedged_handler.AssistantService.build_agent", return_value=mock_agent),
             patch("codemie.rest_api.handlers.hedged_handler.ThreadedGenerator", return_value=real_tg),
             patch("codemie.rest_api.handlers.hedged_handler.extract_custom_headers", return_value={}),
             patch("codemie.rest_api.handlers.hedged_handler.set_disable_prompt_cache"),
@@ -352,7 +352,7 @@ class TestHandleStreamInstantiateFails:
                 "codemie.rest_api.handlers.hedged_handler.HedgingToolService.instantiate",
                 side_effect=ValueError("not found"),
             ),
-            patch("codemie.rest_api.handlers.assistant_handlers.AssistantService.build_agent", return_value=mock_agent),
+            patch("codemie.rest_api.handlers.hedged_handler.AssistantService.build_agent", return_value=mock_agent),
             patch("codemie.rest_api.handlers.hedged_handler.ThreadedGenerator", return_value=real_tg),
             patch("codemie.rest_api.handlers.hedged_handler.extract_custom_headers", return_value={}),
             patch("codemie.rest_api.handlers.hedged_handler.set_disable_prompt_cache"),
@@ -382,7 +382,7 @@ class TestHandleSync:
                 "codemie.rest_api.handlers.hedged_handler.HedgingToolService.instantiate",
                 return_value=_make_fast_tool(_HIT_RESULT),
             ),
-            patch("codemie.rest_api.handlers.assistant_handlers.AssistantService.build_agent") as mock_build,
+            patch("codemie.rest_api.handlers.hedged_handler.AssistantService.build_agent") as mock_build,
             patch("codemie.rest_api.handlers.hedged_handler.extract_custom_headers", return_value={}),
             patch("codemie.rest_api.handlers.hedged_handler.set_disable_prompt_cache"),
             patch.object(handler, "save_chat_history") as mock_save,
@@ -416,7 +416,7 @@ class TestHandleSync:
                 "codemie.rest_api.handlers.hedged_handler.HedgingToolService.instantiate",
                 return_value=_make_fast_tool(_HIT_RESULT),
             ),
-            patch("codemie.rest_api.handlers.assistant_handlers.AssistantService.build_agent"),
+            patch("codemie.rest_api.handlers.hedged_handler.AssistantService.build_agent"),
             patch("codemie.rest_api.handlers.hedged_handler.extract_custom_headers", return_value={}),
             patch("codemie.rest_api.handlers.hedged_handler.set_disable_prompt_cache"),
             patch.object(handler, "save_chat_history") as mock_save,
@@ -465,7 +465,7 @@ class TestHedgingMetricEmission:
                 "codemie.rest_api.handlers.hedged_handler.HedgingToolService.instantiate",
                 return_value=fast_tool,
             ),
-            patch("codemie.rest_api.handlers.assistant_handlers.AssistantService.build_agent", return_value=mock_agent),
+            patch("codemie.rest_api.handlers.hedged_handler.AssistantService.build_agent", return_value=mock_agent),
             patch("codemie.rest_api.handlers.hedged_handler.ThreadedGenerator", return_value=real_tg),
             patch("codemie.rest_api.handlers.hedged_handler.extract_custom_headers", return_value={}),
             patch("codemie.rest_api.handlers.hedged_handler.set_disable_prompt_cache"),
@@ -515,7 +515,7 @@ class TestHedgingMetricEmission:
                 "codemie.rest_api.handlers.hedged_handler.HedgingToolService.instantiate",
                 return_value=_make_fast_tool(_HIT_RESULT),
             ),
-            patch("codemie.rest_api.handlers.assistant_handlers.AssistantService.build_agent"),
+            patch("codemie.rest_api.handlers.hedged_handler.AssistantService.build_agent"),
             patch("codemie.rest_api.handlers.hedged_handler.extract_custom_headers", return_value={}),
             patch("codemie.rest_api.handlers.hedged_handler.set_disable_prompt_cache"),
             patch.object(handler, "save_chat_history"),
@@ -992,7 +992,7 @@ class TestHandleStreamAgentWinsRace:
                 "codemie.rest_api.handlers.hedged_handler.HedgingToolService.instantiate",
                 side_effect=ValueError("timeout simulation — fast path never finished"),
             ),
-            patch("codemie.rest_api.handlers.assistant_handlers.AssistantService.build_agent", return_value=mock_agent),
+            patch("codemie.rest_api.handlers.hedged_handler.AssistantService.build_agent", return_value=mock_agent),
             patch("codemie.rest_api.handlers.hedged_handler.ThreadedGenerator", return_value=real_tg),
             patch("codemie.rest_api.handlers.hedged_handler.extract_custom_headers", return_value={}),
             patch("codemie.rest_api.handlers.hedged_handler.set_disable_prompt_cache"),
@@ -1054,7 +1054,7 @@ class TestHandleStreamAgentWinsRace:
                 "codemie.rest_api.handlers.hedged_handler.HedgingToolService.instantiate",
                 side_effect=ValueError("not found"),
             ),
-            patch("codemie.rest_api.handlers.assistant_handlers.AssistantService.build_agent", return_value=mock_agent),
+            patch("codemie.rest_api.handlers.hedged_handler.AssistantService.build_agent", return_value=mock_agent),
             patch("codemie.rest_api.handlers.hedged_handler.ThreadedGenerator", return_value=real_tg),
             patch("codemie.rest_api.handlers.hedged_handler.extract_custom_headers", return_value={}),
             patch("codemie.rest_api.handlers.hedged_handler.set_disable_prompt_cache"),
@@ -1211,7 +1211,7 @@ class TestFastPathOtelContextPropagation:
                 "codemie.rest_api.handlers.hedged_handler.HedgingToolService.instantiate",
                 return_value=_make_fast_tool(_HIT_RESULT),
             ),
-            patch("codemie.rest_api.handlers.assistant_handlers.AssistantService.build_agent", return_value=mock_agent),
+            patch("codemie.rest_api.handlers.hedged_handler.AssistantService.build_agent", return_value=mock_agent),
             patch("codemie.rest_api.handlers.hedged_handler.ThreadedGenerator", return_value=real_tg),
             patch("codemie.rest_api.handlers.hedged_handler.extract_custom_headers", return_value={}),
             patch("codemie.rest_api.handlers.hedged_handler.set_disable_prompt_cache"),
@@ -1257,9 +1257,7 @@ class TestLoggingContextConversationId:
                 )
             )
             stack.enter_context(
-                patch(
-                    "codemie.rest_api.handlers.assistant_handlers.AssistantService.build_agent", return_value=mock_agent
-                )
+                patch("codemie.rest_api.handlers.hedged_handler.AssistantService.build_agent", return_value=mock_agent)
             )
             stack.enter_context(
                 patch("codemie.rest_api.handlers.hedged_handler.ThreadedGenerator", return_value=real_tg)
@@ -1410,7 +1408,7 @@ class TestLoggingContextConversationId:
                 )
                 stack.enter_context(
                     patch(
-                        "codemie.rest_api.handlers.assistant_handlers.AssistantService.build_agent",
+                        "codemie.rest_api.handlers.hedged_handler.AssistantService.build_agent",
                         return_value=mock_agent,
                     )
                 )
@@ -1472,7 +1470,7 @@ class TestUserMessageReceivedAtPropagation:
                 "codemie.rest_api.handlers.hedged_handler.HedgingToolService.instantiate",
                 return_value=_make_fast_tool(_HIT_RESULT),
             ),
-            patch("codemie.rest_api.handlers.assistant_handlers.AssistantService.build_agent", return_value=mock_agent),
+            patch("codemie.rest_api.handlers.hedged_handler.AssistantService.build_agent", return_value=mock_agent),
             patch("codemie.rest_api.handlers.hedged_handler.ThreadedGenerator", return_value=real_tg),
             patch("codemie.rest_api.handlers.hedged_handler.extract_custom_headers", return_value={}),
             patch("codemie.rest_api.handlers.hedged_handler.set_disable_prompt_cache"),
@@ -1501,7 +1499,7 @@ class TestUserMessageReceivedAtPropagation:
                 "codemie.rest_api.handlers.hedged_handler.HedgingToolService.instantiate",
                 return_value=_make_fast_tool(_MISS_RESULT),
             ),
-            patch("codemie.rest_api.handlers.assistant_handlers.AssistantService.build_agent", return_value=mock_agent),
+            patch("codemie.rest_api.handlers.hedged_handler.AssistantService.build_agent", return_value=mock_agent),
             patch("codemie.rest_api.handlers.hedged_handler.ThreadedGenerator", return_value=real_tg),
             patch("codemie.rest_api.handlers.hedged_handler.extract_custom_headers", return_value={}),
             patch("codemie.rest_api.handlers.hedged_handler.set_disable_prompt_cache"),
@@ -1556,7 +1554,7 @@ class TestUserMessageReceivedAtPropagation:
                 "codemie.rest_api.handlers.hedged_handler.HedgingToolService.instantiate",
                 return_value=_make_fast_tool(_HIT_RESULT),
             ),
-            patch("codemie.rest_api.handlers.assistant_handlers.AssistantService.build_agent"),
+            patch("codemie.rest_api.handlers.hedged_handler.AssistantService.build_agent"),
             patch("codemie.rest_api.handlers.hedged_handler.extract_custom_headers", return_value={}),
             patch("codemie.rest_api.handlers.hedged_handler.set_disable_prompt_cache"),
             patch.object(handler, "save_chat_history") as mock_save,
@@ -1573,7 +1571,7 @@ class TestUserMessageReceivedAtPropagation:
                 "codemie.rest_api.handlers.hedged_handler.HedgingToolService.instantiate",
                 return_value=_make_fast_tool(_HIT_RESULT),
             ),
-            patch("codemie.rest_api.handlers.assistant_handlers.AssistantService.build_agent"),
+            patch("codemie.rest_api.handlers.hedged_handler.AssistantService.build_agent"),
             patch("codemie.rest_api.handlers.hedged_handler.extract_custom_headers", return_value={}),
             patch("codemie.rest_api.handlers.hedged_handler.set_disable_prompt_cache"),
             patch.object(handler, "save_chat_history") as mock_save,

@@ -1301,12 +1301,9 @@ class TestResolveModelProjectLookup:
                 is_feature_enabled=MagicMock(return_value=True),
             ),
             patch(
-                "codemie.service.llm.model_availability_service.Application.get_by_id",
+                "codemie.service.llm.model_availability_service.ModelAvailabilityService.get_project_models",
                 return_value=MagicMock(allowed_models=["gpt-4"], default_model="gpt-4"),
             ),
-            patch(
-                "codemie.service.llm.model_availability_service.BaseMonitoringService.send_count_metric"
-            ) as mock_send_metric,
         ):
             response_data = {}
             model, source = _resolve_effective_llm_model(assistant, response_data)
@@ -1314,31 +1311,6 @@ class TestResolveModelProjectLookup:
         assert model == "gpt-4"
         assert source == "project_default"
         assert response_data["llm_model_type"] == "gpt-4"
-        # Display-only: the detail page must not count a fallback.
-        mock_send_metric.assert_not_called()
-
-    def test_resolve_effective_llm_model_empty_whitelist_shows_own_model_without_marker(self):
-        from codemie.rest_api.routers.assistant.catalog import _resolve_effective_llm_model
-
-        assistant = self._build_assistant(llm_model_type="own-model")
-        project = MagicMock(allowed_models=[], default_model="gpt-4")
-
-        with (
-            patch(
-                "codemie.service.llm.model_availability_service.customer_config",
-                is_feature_enabled=MagicMock(return_value=True),
-            ),
-            patch(
-                "codemie.service.llm.model_availability_service.Application.get_by_id",
-                return_value=project,
-            ),
-        ):
-            response_data = {}
-            model, source = _resolve_effective_llm_model(assistant, response_data)
-
-        assert model == "own-model"
-        assert source == "assistant"
-        assert "llm_model_type" not in response_data
 
     def test_resolve_effective_llm_model_project_not_found_skips_restriction(self):
         from codemie.rest_api.routers.assistant.catalog import _resolve_effective_llm_model
@@ -1360,10 +1332,11 @@ class TestResolveModelProjectLookup:
         assert model == "gpt-4"
         assert source == "assistant"
 
-    def test_resolve_assistant_model_applies_project_fallback(self):
-        from codemie.service.llm.model_availability_service import resolve_assistant_model
+    def test_resolve_chosen_execution_model_applies_project_fallback(self):
+        from codemie.rest_api.routers.assistant._ask import _resolve_chosen_execution_model
 
         assistant = self._build_assistant(llm_model_type="disallowed-model")
+        request = AssistantChatRequest(text="hi")
 
         with (
             patch(
@@ -1371,18 +1344,19 @@ class TestResolveModelProjectLookup:
                 is_feature_enabled=MagicMock(return_value=True),
             ),
             patch(
-                "codemie.service.llm.model_availability_service.Application.get_by_id",
+                "codemie.service.llm.model_availability_service.ModelAvailabilityService.get_project_models",
                 return_value=MagicMock(allowed_models=["gpt-4"], default_model="gpt-4"),
             ),
         ):
-            model = resolve_assistant_model(assistant, None)
+            model = _resolve_chosen_execution_model(assistant, request)
 
         assert model == "gpt-4"
 
-    def test_resolve_assistant_model_project_not_found_skips_restriction(self):
-        from codemie.service.llm.model_availability_service import resolve_assistant_model
+    def test_resolve_chosen_execution_model_project_not_found_skips_restriction(self):
+        from codemie.rest_api.routers.assistant._ask import _resolve_chosen_execution_model
 
         assistant = self._build_assistant()
+        request = AssistantChatRequest(text="hi")
 
         with (
             patch(
@@ -1394,50 +1368,9 @@ class TestResolveModelProjectLookup:
                 side_effect=KeyError("not found"),
             ),
         ):
-            model = resolve_assistant_model(assistant, "picked-model")
+            model = _resolve_chosen_execution_model(assistant, request)
 
-        assert model == "picked-model"
-
-    def test_resolve_assistant_model_global_with_empty_whitelist_is_unrestricted(self):
-        from codemie.service.llm.model_availability_service import resolve_assistant_model
-
-        assistant = self._build_assistant(is_global=True)
-
-        with (
-            patch(
-                "codemie.service.llm.model_availability_service.customer_config",
-                is_feature_enabled=MagicMock(return_value=True),
-            ),
-            patch(
-                "codemie.service.llm.model_availability_service.Application.get_by_id",
-                return_value=MagicMock(allowed_models=[], default_model="gpt-4"),
-            ),
-        ):
-            model = resolve_assistant_model(assistant, "picked-model")
-
-        assert model == "picked-model"
-
-    def test_prepare_assistant_for_execution_keeps_configured_model(self):
-        """The router no longer pre-resolves the model; build_agent resolves it without mutation."""
-        from codemie.rest_api.routers.assistant._ask import _prepare_assistant_for_execution
-
-        assistant = self._build_assistant(llm_model_type="own-model")
-        request = AssistantChatRequest(text="hi", llm_model="picked-model")
-
-        with (
-            patch(
-                "codemie.service.llm.model_availability_service.customer_config",
-                is_feature_enabled=MagicMock(return_value=True),
-            ),
-            patch(
-                "codemie.service.llm.model_availability_service.Application.get_by_id",
-                return_value=MagicMock(allowed_models=["gpt-4"], default_model="gpt-4"),
-            ),
-        ):
-            execution_assistant = _prepare_assistant_for_execution(assistant, request)
-
-        assert execution_assistant.llm_model_type == "own-model"
-        assert request.llm_model == "picked-model"
+        assert model == "gpt-4"
 
 
 class TestRestoreMaskedSensitivePromptVariables:

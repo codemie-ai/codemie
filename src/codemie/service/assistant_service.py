@@ -28,8 +28,8 @@ from codemie.agents.utils import validate_json_schema
 from codemie.configs import config
 from codemie.configs.logger import logger
 from codemie.configs.customer_config import customer_config
-from codemie.core.dependecies import get_disable_prompt_cache, set_disable_prompt_cache
-from codemie.core.models import AssistantChatRequest, IdeChatRequest, ToolCallPolicy, ToolConfig
+from codemie.core.dependecies import get_disable_prompt_cache, set_disable_prompt_cache, enforce_allowed_model
+from codemie.core.models import AssistantChatRequest, IdeChatRequest, ToolCallPolicy, ToolConfig, Application
 from codemie.core.template_security import render_system_prompt_template, TemplateSecurityError
 from codemie.core.thread import MessageQueue
 from codemie.core.utils import build_unique_file_objects, build_unique_file_objects_list, append_random_suffix
@@ -51,7 +51,6 @@ from codemie.service.assistant import VirtualAssistantService
 from codemie.service.assistant.assistant_engine_builder import LangGraphAssistantBuilder
 from codemie.service.assistant.assistant_user_mapping_service import assistant_user_mapping_service
 from codemie.service.aws_bedrock.bedrock_orchestration_service import BedrockOrchestratorService
-from codemie.service.llm.model_availability_service import resolve_assistant_model
 from codemie.service.llm_service.llm_service import llm_service
 from codemie.service.llm_service.utils import set_llm_context
 from codemie.service.tools.tools_info_service import ToolsInfoService
@@ -87,23 +86,19 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
     )
 
     @classmethod
-    def _apply_conversation_runtime_overrides(cls, assistant: Assistant, request: AssistantChatRequest) -> str | None:
-        """Apply the conversation's runtime settings to the request and return the user's model pick.
-
-        The pick is request.llm_model, or the conversation's llm_model when the request does not set
-        llm_model at all. It is returned, not written onto the request, so a sub-assistant built from
-        the same request still reads the conversation model as its own pick.
-        """
+    def _apply_conversation_runtime_overrides(cls, assistant: Assistant, request: AssistantChatRequest) -> None:
         if not request or not request.conversation_id:
-            return request.llm_model if request else None
+            return
 
         conversation = Conversation.find_by_id(request.conversation_id)
-        user_pick = cls._user_model_pick(request, conversation)
 
         if not conversation:
-            return user_pick
+            return
 
         fields_set = request.model_fields_set
+
+        if 'llm_model' not in fields_set and conversation.llm_model:
+            request.llm_model = conversation.llm_model
 
         if 'enable_image_generation' not in fields_set and conversation.enable_image_generation is not None:
             request.enable_image_generation = conversation.enable_image_generation
@@ -121,23 +116,6 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
         #
         # Conversation/request overrides should affect *this request execution only* via the request object.
         # (Tool resolution respects the assistant capability and may optionally honor an explicit request disable.)
-        return user_pick
-
-    @staticmethod
-    def _user_model_pick(request: AssistantChatRequest, conversation: Conversation | None) -> str | None:
-        """request.llm_model, or the conversation's model when the request does not set llm_model at all."""
-        if 'llm_model' not in request.model_fields_set and conversation and conversation.llm_model:
-            return conversation.llm_model
-        return request.llm_model
-
-    @classmethod
-    def resolve_execution_model(cls, assistant: Assistant, request: AssistantChatRequest) -> str | None:
-        """The model build_agent runs ``assistant`` on for ``request`` (its agent.llm_model), without building it.
-
-        Silent: build_agent reports a substitution, so this pre-build resolution does not log or count it again.
-        """
-        conversation = Conversation.find_by_id(request.conversation_id) if request.conversation_id else None
-        return resolve_assistant_model(assistant, cls._user_model_pick(request, conversation), report_fallback=False)
 
     @classmethod
     def get_tools_info(cls, user: User, show_for_ui: bool = False):
@@ -330,7 +308,7 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
         request_uuid: str,
         thread_generator: MessageQueue,
         llm_model: str,
-    ) -> tuple[list[CompiledStateGraph[Any, Any, Any, Any]], set[str]]:
+    ) -> list[CompiledStateGraph[Any, Any, Any, Any]]:
         return LangGraphAssistantBuilder.create_subagent_executors(
             assistant=assistant,
             user=user,
@@ -557,10 +535,12 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
             f"assistant_model={assistant.llm_model_type}, "
             f"cache_disabled={cache_disabled}"
         )
+        set_llm_context(assistant, None, user)
+
         # Because we do inplace changes in following lines, do a copy to keep external object safe
         request = deepcopy(request)
 
-        user_pick = cls._apply_conversation_runtime_overrides(assistant, request)
+        cls._apply_conversation_runtime_overrides(assistant, request)
 
         file_objects = build_unique_file_objects(
             file_names=request.file_names, conversation_id=request.conversation_id, history_index=request.history_index
@@ -569,7 +549,6 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
 
         # Handle Bedrock assistants (both Agents and AgentCore Runtime) - early return
         if BedrockOrchestratorService.is_bedrock_assistant(assistant):
-            set_llm_context(assistant, None, user)
             return cls._build_bedrock_agent(assistant, request, user, request_uuid, thread_generator, tool_callbacks)
 
         if dropped := cls.drop_missing_context(assistant):
@@ -578,14 +557,16 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
                 f"Project={assistant.project}, Datasources={[ctx.name for ctx in dropped]}"
             )
 
-        # Resolve the model once under the project policy, before any agent/subagent initialization.
-        # The result is passed explicitly; neither the assistant nor the request is changed.
-        # A builtin clone runs on the parent's resolved model, whose substitution the parent already reported.
-        # Read via the safe helper: a DB-loaded assistant has no Pydantic private storage, so getattr raises.
-        is_builtin_clone = LangGraphAssistantBuilder._safe_get_runtime_attr(assistant, "_runtime_builtin_subagent")
-        llm_model = resolve_assistant_model(assistant, user_pick, report_fallback=is_builtin_clone is None)
-        # The LiteLLM budget scope is decided for the model the agent actually runs on.
-        set_llm_context(assistant, None, user, llm_model)
+        # Determine LLM model and agent type
+        llm_model = request.llm_model or assistant.llm_model_type
+
+        # Enforce project-level model restrictions before any agent/subagent initialization
+        project = Application.get_by_id(assistant.project) if assistant.project and not assistant.is_global else None
+        llm_model = enforce_allowed_model(llm_model, project)
+        assistant.llm_model_type = llm_model
+
+        if request.llm_model:
+            request.llm_model = llm_model
 
         is_react = llm_model in llm_service.get_react_llms()
 

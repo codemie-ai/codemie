@@ -42,6 +42,7 @@ from codemie.rest_api.handlers.assistant_handlers import (
     StandardAssistantHandler,
 )
 from codemie.rest_api.utils.request_utils import extract_custom_headers
+from codemie.service.assistant_service import AssistantService
 from codemie.service.monitoring.hedging_monitoring_service import HedgingMetricPayload, HedgingMonitoringService
 from codemie.service.tools.dynamic_value_utils import process_string
 from codemie.service.tools.hedging_tool_service import HedgingToolService
@@ -481,7 +482,7 @@ class HedgedAssistantHandler(StandardAssistantHandler):
             finally:
                 detach_otel_context(token)
 
-        agent = self._build_agent(
+        agent = AssistantService.build_agent(
             assistant=self.assistant,
             request=request,
             user=self.user,

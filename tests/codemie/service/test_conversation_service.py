@@ -1465,49 +1465,6 @@ def test_upsert_chat_history_emits_routing_metric_when_routing_present(
 @patch("codemie.rest_api.models.conversation.Conversation.find_by_id")
 @patch("codemie.rest_api.models.conversation.ConversationMetrics.get_by_conversation_id")
 @patch("codemie.service.conversation_service.AgentWorkspaceService.sync_uploaded_files")
-def test_upsert_chat_history_reports_resolved_execution_model(
-    mock_sync_uploaded_files,
-    mock_metrics_get,
-    mock_conv_find,
-    mock_conv_save,
-    mock_metrics_save,
-    mock_calculate_metrics,
-    mock_send_conversation_metric,
-    _mock_send_routing_metric,
-    mock_request,
-    mock_assistant,
-    mock_admin_user,
-):
-    """The conversation metric carries the model the agent ran on, not the raw user pick."""
-    mock_conv_find.return_value = None
-    mock_metrics_get.side_effect = KeyError("not found")
-    mock_conv_save.return_value = True
-
-    ConversationService.upsert_chat_history(
-        UpsertChatHistoryParams(
-            assistant_response='response',
-            time_elapsed=0,
-            user=mock_admin_user,
-            assistant=mock_assistant,
-            request=mock_request,
-            llm_model="resolved-model",
-        )
-    )
-
-    mock_send_conversation_metric.assert_called_once()
-    assert mock_send_conversation_metric.call_args.args[5] == "resolved-model"
-
-
-@patch("codemie.service.monitoring.routing_monitoring_service.RoutingMonitoringService.send_routing_metric")
-@patch(
-    "codemie.service.monitoring.conversation_monitoring_service.ConversationMonitoringService.send_conversation_metric"
-)
-@patch("codemie.rest_api.models.conversation.ConversationMetrics.calculate_metrics")
-@patch("codemie.rest_api.models.conversation.ConversationMetrics.save")
-@patch("codemie.rest_api.models.conversation.Conversation.save")
-@patch("codemie.rest_api.models.conversation.Conversation.find_by_id")
-@patch("codemie.rest_api.models.conversation.ConversationMetrics.get_by_conversation_id")
-@patch("codemie.service.conversation_service.AgentWorkspaceService.sync_uploaded_files")
 def test_upsert_chat_history_skips_routing_metric_when_routing_empty(
     mock_sync_uploaded_files,
     mock_metrics_get,

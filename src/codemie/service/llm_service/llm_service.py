@@ -244,14 +244,18 @@ class LLMService:
         has no deployment of its own (see LLMRouter's own docstring), so base_name is its
         only identifier in allowed_models — matching ProjectService._get_available_router_model_ids.
         """
-        from codemie.service.llm.model_availability_service import ProjectModelPolicy
+        from codemie.service.llm.model_availability_service import ModelAvailabilityService
 
-        if project is None:
+        if project is None or project.allowed_models is None:
             return options
 
-        # Membership only, so a whitelist without a default_model does not fail the listing.
-        policy = ProjectModelPolicy.for_application(project, require_default=False)
-        return [option for option in options if policy.allows(option.base_name)]
+        if not project.allowed_models:
+            return []
+
+        allowed_set = set(project.allowed_models)
+        return [
+            option for option in options if ModelAvailabilityService.is_model_allowed([option.base_name], allowed_set)
+        ]
 
     def is_router_model(self, model_name: str) -> bool:
         """Return True if *model_name* is a configured and enabled Switchyard router."""
@@ -808,14 +812,24 @@ class LLMService:
         None allowed_models = no restriction (all models pass through).
         Empty allowed_models = explicit deny all (no models pass through).
         """
-        from codemie.service.llm.model_availability_service import ProjectModelPolicy
+        from codemie.service.llm.model_availability_service import ModelAvailabilityService
 
         if project is None:
             return models
 
-        # Membership only, so a whitelist without a default_model does not fail the listing.
-        policy = ProjectModelPolicy.for_application(project, require_default=False)
-        filtered = [model for model in models if policy.allows(model.base_name, model.deployment_name)]
+        if project.allowed_models is None:
+            return models
+
+        if not project.allowed_models:
+            logger.debug(f"Project {project.id} has empty allowed_models; returning no models")
+            return []
+
+        allowed_set = set(project.allowed_models)
+        filtered = [
+            model
+            for model in models
+            if ModelAvailabilityService.is_model_allowed([model.base_name, model.deployment_name], allowed_set)
+        ]
 
         logger.debug(
             f"Filtered models by project {project.id}: {len(models)} total, "

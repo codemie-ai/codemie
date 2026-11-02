@@ -174,8 +174,6 @@ class UpsertChatHistoryParams:
     llm_runs: Optional[List["LLMRun"]] = None
     in_progress: bool = False
     client_source: ClientSource | None = None
-    # The model the agent runs on (agent.llm_model); falls back to the request pick, then the assistant's own model.
-    llm_model: str | None = None
 
     def __post_init__(self) -> None:
         if self.tokens_usage is None:
@@ -425,7 +423,7 @@ class ConversationService:
         user = params.user
         in_progress = params.in_progress
 
-        llm_model = params.llm_model or request.llm_model or assistant.llm_model_type
+        llm_model = request.llm_model or assistant.llm_model_type
 
         conversation, should_create_conversation, schedule_naming = cls._find_or_create_conversation(
             request, assistant, user

@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from functools import partial
 from time import time
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, List
+from typing import TYPE_CHECKING, List
 
 if TYPE_CHECKING:
     from codemie.rest_api.models.assistant import ToolCallResumeRequest
@@ -40,12 +40,7 @@ from codemie.configs.customer_config import customer_config
 from codemie.core.ability import Ability, Action
 from codemie.core.dependecies import set_disable_prompt_cache
 from codemie.core.errors import ErrorDetailLevel
-from codemie.core.exceptions import (
-    ExtendedHTTPException,
-    MCPAuthenticationRequiredException,
-    ModelNotWhitelistedException,
-    NoDefaultModelException,
-)
+from codemie.core.exceptions import ExtendedHTTPException, MCPAuthenticationRequiredException
 from codemie.core.models import (
     BaseModelResponse,
     AssistantChatRequest,
@@ -128,8 +123,6 @@ class AssistantRequestHandler(ABC):
         self.request_uuid = request_uuid
         self.background_tasks: BackgroundTasks | None = None
         self.client_source = get_client_source()
-        # The model this request runs on: resolved once before the agent exists, then the built agent's.
-        self._execution_model: str | None = None
 
     @abstractmethod
     def process_request(
@@ -412,36 +405,6 @@ class AssistantRequestHandler(ABC):
 
         return tool_names
 
-    def _build_agent(self, **kwargs: Any) -> Any:
-        """Build the agent and record the model it runs on for the saved turn and LLM context."""
-        agent = AssistantService.build_agent(**kwargs)
-        model = getattr(agent, "llm_model", None)
-        if isinstance(model, str) and model:
-            self._execution_model = model
-        return agent
-
-    def _execution_llm_model(self, request: AssistantChatRequest) -> str | None:
-        """The model this request runs on: the built agent's llm_model once it exists.
-
-        History replay is chosen before the agent exists, so the model is resolved once (silently; build_agent
-        reports any substitution) and kept for the request. When the project allows no model, build_agent
-        raises; the raw pick is reported then.
-        """
-        if self._execution_model is None:
-            self._execution_model = self._pre_build_llm_model(request)
-        return self._execution_model
-
-    def _pre_build_llm_model(self, request: AssistantChatRequest) -> str | None:
-        runs_platform_agent = self.assistant.type != AssistantType.A2A and not (
-            BedrockOrchestratorService.is_bedrock_assistant(self.assistant)
-        )
-        if runs_platform_agent:
-            try:
-                return AssistantService.resolve_execution_model(self.assistant, request)
-            except (ModelNotWhitelistedException, NoDefaultModelException):
-                pass
-        return request.llm_model or self.assistant.llm_model_type
-
     def _resolve_history_projection_mode(self, request: AssistantChatRequest) -> str:
         """Select the safest replay mode for the active assistant/model."""
         if BedrockOrchestratorService.is_bedrock_assistant(self.assistant):
@@ -451,7 +414,7 @@ class AssistantRequestHandler(ABC):
             )
             return PLAIN_CHAT_MODE
 
-        llm_model = self._execution_llm_model(request)
+        llm_model = request.llm_model or self.assistant.llm_model_type
         if llm_model in llm_service.get_react_llms():
             logger.debug(
                 f"Selected conversation replay mode. AssistantId={self.assistant.id}, "
@@ -488,8 +451,7 @@ class AssistantRequestHandler(ABC):
         tokens_usage = (summary.tokens_usage if summary else None) or TokensUsage(
             input_tokens=0, output_tokens=0, money_spent=0
         )
-        execution_model = self._execution_llm_model(data.request)
-        served_model = (tokens_usage.routing.routed_model if tokens_usage.routing else None) or execution_model
+        served_model = (tokens_usage.routing.routed_model if tokens_usage.routing else None) or data.request.llm_model
         set_llm_context(self.assistant, None, self.user, served_model)
         ConversationService.upsert_chat_history(
             UpsertChatHistoryParams(
@@ -508,7 +470,6 @@ class AssistantRequestHandler(ABC):
                 background_tasks=self.background_tasks,
                 in_progress=data.in_progress,
                 client_source=self.client_source,
-                llm_model=execution_model,
             )
         )
         if not data.in_progress:
@@ -699,7 +660,7 @@ class StandardAssistantHandler(AssistantRequestHandler):
             # Set cache control flag for this request
             set_disable_prompt_cache(request.disable_cache or False)
 
-            agent = self._build_agent(
+            agent = AssistantService.build_agent(
                 assistant=self.assistant,
                 request=request,
                 user=self.user,
@@ -1182,7 +1143,7 @@ class StandardAssistantHandler(AssistantRequestHandler):
         # Set cache control flag for this request
         set_disable_prompt_cache(request.disable_cache or False)
 
-        agent = self._build_agent(
+        agent = AssistantService.build_agent(
             assistant=self.assistant,
             request=request,
             user=self.user,
@@ -1243,7 +1204,7 @@ class StandardAssistantHandler(AssistantRequestHandler):
         # Set cache control flag for this request
         set_disable_prompt_cache(request.disable_cache or False)
 
-        agent = self._build_agent(
+        agent = AssistantService.build_agent(
             assistant=self.assistant,
             request=request,
             user=self.user,
@@ -1344,7 +1305,7 @@ class StandardAssistantHandler(AssistantRequestHandler):
 
         chat_request.mark_history_variant_persisted()
 
-        agent = self._build_agent(
+        agent = AssistantService.build_agent(
             assistant=self.assistant,
             request=chat_request,
             user=self.user,

@@ -142,7 +142,7 @@ class LangGraphAssistantBuilder:
         request: AssistantChatRequest,
         request_uuid: str,
         thread_generator: MessageQueue,
-        resolved_model: str | None,
+        llm_model: str,
         agent_name: str,
     ):
         """Create a compiled executor for a builtin subagent.
@@ -151,8 +151,6 @@ class LangGraphAssistantBuilder:
         - assistant_ids (no nested assistants)
         - enabled_builtin_subagents (no builtin recursion)
         - system_prompt (builtin-specific prompt from config)
-        - llm_model_type: the clone runs on ``resolved_model``, the model the parent was resolved to.
-          The parent's policy already chose it, so the clone's own resolution returns it unchanged.
         """
         from codemie.service.tools.assistant_factory import AssistantFactory
 
@@ -165,8 +163,6 @@ class LangGraphAssistantBuilder:
         child_assistant.assistant_ids = []
         child_assistant.enabled_builtin_subagents = []
         child_assistant.system_prompt = builtin_system_prompt
-        if resolved_model:
-            child_assistant.llm_model_type = resolved_model
 
         # Mark as builtin clone and disable skill-contributed builtins at runtime to prevent recursion.
         child_assistant._runtime_builtin_subagent = builtin
@@ -178,6 +174,7 @@ class LangGraphAssistantBuilder:
             request=request,
             request_uuid=request_uuid,
             thread_generator=thread_generator,
+            llm_model=llm_model,
         ).build()
 
     @classmethod
@@ -189,20 +186,12 @@ class LangGraphAssistantBuilder:
         request_uuid: str,
         thread_generator: MessageQueue,
         llm_model: str,
-    ) -> tuple[list[CompiledStateGraph[Any, Any, Any, Any]], set[str]]:
-        """Build the sub-assistant and builtin executors.
-
-        Returns the executors and the names of the subagents that were actually built, in the
-        normalized form the executors carry (``LangGraphAgent.format_assistant_name``). The supervisor
-        advertises only those, so a subagent whose build failed gets no handoff tool.
-        """
+    ) -> list[CompiledStateGraph[Any, Any, Any, Any]]:
         effective_builtins = cls._merge_skill_builtin_subagents(assistant)
 
         if not assistant.assistant_ids and not effective_builtins:
-            return [], set()
+            return []
 
-        from codemie.agents.langgraph_agent import LangGraphAgent
-        from codemie.core.exception_formatting import describe_exception
         from codemie.service.tools.assistant_factory import create_assistant_executors
 
         assistant_ids = list(assistant.assistant_ids or [])
@@ -212,18 +201,15 @@ class LangGraphAssistantBuilder:
             f"{len(effective_builtins)} builtin subagents"
         )
 
-        # Children get the caller's request as is: request.llm_model is the user's pick, never the
-        # parent's resolved model, so each sub-assistant resolves its own model under its own project.
         subagents = create_assistant_executors(
             assistant_ids=assistant_ids,
             user=user,
             request=request,
             request_uuid=request_uuid,
             thread_generator=thread_generator,
+            llm_model=llm_model,
             parent_assistant=assistant,
         )
-
-        built_names: set[str] = {name for name in (getattr(s, "name", None) for s in subagents) if name}
 
         existing_names: set[str] = set()
         # Best-effort seed: names of assistants referenced by assistant_ids
@@ -245,11 +231,10 @@ class LangGraphAssistantBuilder:
                         request=request,
                         request_uuid=request_uuid,
                         thread_generator=thread_generator,
-                        resolved_model=llm_model,
+                        llm_model=llm_model,
                         agent_name=agent_name,
                     )
                 )
-                built_names.add(LangGraphAgent.format_assistant_name(agent_name))
             except MCPToolLoadException as e:
                 # Builtin subagent failures stay non-fatal, but the log must still name the
                 # subagent and the MCP server that broke it.
@@ -259,10 +244,10 @@ class LangGraphAssistantBuilder:
                     f"due to MCP server '{e.server_name}': {str(e.original_error)}"
                 )
             except Exception as e:
-                logger.error(f"Failed to create builtin subagent executor for {builtin.value}: {describe_exception(e)}")
+                logger.error(f"Failed to create builtin subagent executor for {builtin.value}: {e}")
 
         logger.debug(f"Created {len(subagents)} subagent executors")
-        return subagents, built_names
+        return subagents
 
     @staticmethod
     def get_subagent_descriptions_with_contributions(assistant: Assistant, user: User) -> dict[str, str]:
@@ -303,7 +288,7 @@ class LangGraphAssistantBuilder:
         smart_tool_selection_enabled: bool,
         *,
         allow_tool_confirmation: bool = False,
-        create_subagent_executors: Callable[..., tuple[list[CompiledStateGraph[Any, Any, Any, Any]], set[str]]],
+        create_subagent_executors: Callable[..., list[CompiledStateGraph[Any, Any, Any, Any]]],
         get_subagent_descriptions: Callable[[Assistant, User], dict[str, str]],
     ) -> None:
         agent_kwargs["smart_tool_selection_enabled"] = smart_tool_selection_enabled
@@ -326,7 +311,7 @@ class LangGraphAssistantBuilder:
         agent_kwargs["require_tool_confirmation"] = require_tool_confirmation
         agent_kwargs["tool_call_policy"] = permissions.tool_call_policy
 
-        subagents, built_names = create_subagent_executors(
+        subagents = create_subagent_executors(
             assistant=assistant,
             user=user,
             request=request,
@@ -338,11 +323,4 @@ class LangGraphAssistantBuilder:
             agent_kwargs["subagents"] = subagents
             # Use injected callback for descriptions (makes this helper testable and
             # keeps runtime behavior customizable by the caller).
-            from codemie.agents.langgraph_agent import LangGraphAgent
-
-            descriptions = get_subagent_descriptions(assistant, user)
-            agent_kwargs["subagent_descriptions"] = {
-                name: description
-                for name, description in descriptions.items()
-                if LangGraphAgent.format_assistant_name(name) in built_names
-            }
+            agent_kwargs["subagent_descriptions"] = get_subagent_descriptions(assistant, user)

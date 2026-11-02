@@ -156,9 +156,7 @@ def test_chat_builder_prepares_before_building_tools_and_passes_the_notices_to_t
     request = AssistantChatRequest(text="Hello", file_names=[], conversation_id="conv-1")
 
     with ExitStack() as stack:
-        stack.enter_context(
-            patch("codemie.service.llm.model_availability_service.Application.get_by_id", return_value=None)
-        )
+        stack.enter_context(patch("codemie.service.assistant_service.Application.get_by_id", return_value=None))
         stack.enter_context(patch("codemie.service.assistant_service.Conversation.find_by_id", return_value=None))
         stack.enter_context(patch("codemie.service.assistant_service.AIToolsAgent", return_value=Mock()))
         stack.enter_context(patch("codemie.service.assistant_service.LangGraphAgent"))
