@@ -118,6 +118,42 @@ model_list:
       base_model: bedrock_mantle/openai.gpt-5.6-sol
       label: "GPT-5.6 Sol"
 
+  - model_name: gpt-6-luna
+    litellm_params:
+      model: azure/codemie-gpt-6-luna-2026-09-22
+      api_base: https://codemie-polandcentral-0.openai.azure.com/
+      litellm_credential_name: default_azure_openai_credential
+      additional_drop_params: ["temperature", "top_p"]
+    model_info:
+      id: gpt-6-luna-polandcentral-0
+      base_model: azure/gpt-6-luna
+      label: "GPT-6 Luna"
+      mode: responses
+
+  - model_name: gpt-6-sol
+    litellm_params:
+      model: azure/codemie-gpt-6-sol-2026-09-22
+      api_base: https://codemie-polandcentral-0.openai.azure.com/
+      litellm_credential_name: default_azure_openai_credential
+      additional_drop_params: ["temperature", "top_p"]
+    model_info:
+      id: gpt-6-sol-polandcentral-0
+      base_model: azure/gpt-6-sol
+      label: "GPT-6 Sol"
+      mode: responses
+
+  - model_name: gpt-6.1-sol
+    litellm_params:
+      model: azure/codemie-gpt-6.1-sol-2026-09-29
+      api_base: https://codemie-polandcentral-0.openai.azure.com/
+      litellm_credential_name: default_azure_openai_credential
+      additional_drop_params: ["temperature", "top_p"]
+    model_info:
+      id: gpt-6.1-sol-polandcentral-0
+      base_model: azure/gpt-6.1-sol
+      label: "GPT-6.1 Sol"
+      mode: responses
+
   - model_name: grok-4.6
     litellm_params:
       model: bedrock/us.xai.grok-4.6
@@ -127,50 +163,6 @@ model_list:
       id: grok-4.6-us-east-1
       base_model: us.xai.grok-4.6
       label: "Grok 4.6"
-
-  - model_name: o3-mini
-    litellm_params:
-      model: azure/codemie-o3-mini-2025-01-31
-      litellm_credential_name: default_dial_credential
-      api_version: 2024-12-01-preview
-    model_info:
-      id: o3-mini
-      base_model: azure/o3-mini-2025-01-31
-      label: "o3 Mini 2025-01-31"
-      supports_native_streaming: false
-
-  - model_name: o1
-    litellm_params:
-      model: azure/codemie-o1-2024-12-17
-      litellm_credential_name: default_dial_credential
-      api_version: 2024-12-01-preview
-    model_info:
-      id: o1
-      base_model: azure/o1-2024-12-17
-      label: "o1 2024-12-17"
-      supports_native_streaming: false
-
-  - model_name: o3-2025-04-16
-    litellm_params:
-      model: azure/codemie-o3-2025-04-16
-      litellm_credential_name: default_dial_credential
-      api_version: 2024-12-01-preview
-    model_info:
-      id: o3-2025-04-16
-      base_model: azure/o3-2025-04-16
-      label: "o3 2025-04-16"
-      supports_native_streaming: false
-
-  - model_name: o4-mini-2025-04-16
-    litellm_params:
-      model: azure/codemie-o4-mini-2025-04-16
-      litellm_credential_name: default_dial_credential
-      api_version: 2024-12-01-preview
-    model_info:
-      id: o4-mini-2025-04-16
-      base_model: azure/o4-mini-2025-04-16
-      label: "o4-mini 2025-04-16"
-      supports_native_streaming: false
 
   - model_name: gpt-5.1-codex-2025-11-13
     litellm_params:
@@ -223,14 +215,52 @@ model_list:
       base_model: gemini-3.1-pro-preview
       label: "Gemini 3.1 Pro"
 
-  - model_name: gemini-3.6-flash
+  - model_name: gemini-3.7-flash
     litellm_params:
-      model: vertex_ai/gemini-3.6-flash
+      model: vertex_ai/gemini-3.7-flash
       vertex_location: "global"
     model_info:
-      id: gemini-3.6-flash-global
-      base_model: vertex_ai/gemini-3.6-flash
-      label: "Gemini 3.6 Flash"
+      id: gemini-3.7-flash-global
+      base_model: vertex_ai/gemini-3.7-flash
+      label: "Gemini 3.7 Flash"
+
+  - model_name: gemini-3.8-flash
+    litellm_params:
+      model: vertex_ai/gemini-3.8-flash
+      vertex_location: "global"
+    model_info:
+      id: gemini-3.8-flash-global
+      base_model: vertex_ai/gemini-3.8-flash
+      label: "Gemini 3.8 Flash"
+
+  - model_name: gemini-4-argon
+    litellm_params:
+      model: vertex_ai/gemini-4-argon
+      vertex_location: "global"
+    model_info:
+      id: gemini-4-argon-global
+      base_model: vertex_ai/gemini-4-argon
+      label: "Gemini 4 Argon"
+
+  - model_name: gemini-4-argon
+    litellm_params:
+      model: vertex_ai/gemini-4-argon
+      vertex_location: "eu"
+    model_info:
+      id: gemini-4-argon-eu
+      base_model: vertex_ai/gemini-4-argon
+      label: "Gemini 4 Argon"
+
+  - model_name: gemini-nano-banana-2.1
+    litellm_params:
+      model: vertex_ai/gemini-nano-banana-2.1
+      vertex_location: "global"
+    model_info:
+      id: gemini-nano-banana-2.1-global
+      base_model: vertex_ai/gemini-nano-banana-2.1
+      label: "Gemini Nano Banana 2.1"
+      forbidden_for_web: true
+      supports_image_generation: true
 
   - model_name: claude-4-5-sonnet
     litellm_params:
@@ -243,13 +273,13 @@ model_list:
       label: "VertexAI Claude Sonnet 4.5"
 
   # AWS Bedrock Models
-  - model_name: claude-4-5-haiku
+  - model_name: claude-haiku-4-5-20251001
     litellm_params:
-      model: bedrock/converse/us.anthropic.claude-haiku-4-5-20251001-v1:0
+      model: bedrock/eu.anthropic.claude-haiku-4-5-20251001-v1:0
       litellm_credential_name: default_aws_bedrock_credential
-      aws_region_name: us-west-2
+      aws_region_name: eu-central-1
     model_info:
-      id: claude-4-5-haiku-us-west-2
+      id: claude-4-5-haiku-eu-central-1
       base_model: us.anthropic.claude-haiku-4-5-20251001-v1:0
       label: "Bedrock Claude Haiku 4.5"
 
@@ -283,16 +313,6 @@ model_list:
       base_model: global.anthropic.claude-sonnet-4-5-20250929-v1:0
       label: "Bedrock Claude Sonnet 4.5"
 
-  - model_name: claude-4-5-sonnet
-    litellm_params:
-      model: bedrock/jp.anthropic.claude-sonnet-4-5-20250929-v1:0
-      litellm_credential_name: default_aws_bedrock_credential
-      aws_region_name: ap-northeast-1
-    model_info:
-      id: claude-4-5-sonnet-ap-northeast-1
-      base_model: jp.anthropic.claude-sonnet-4-5-20250929-v1:0
-      label: "Bedrock Claude Sonnet 4.5"
-
   - model_name: claude-sonnet-4-6
     litellm_params:
       model: bedrock/us.anthropic.claude-sonnet-4-6
@@ -323,15 +343,15 @@ model_list:
       base_model: us.anthropic.claude-sonnet-5
       label: "Bedrock Claude Sonnet 5"
 
-  - model_name: claude-opus-4-5-20251101
+  - model_name: claude-sonnet-5-5
     litellm_params:
-      model: bedrock/us.anthropic.claude-opus-4-5-20251101-v1:0
+      model: bedrock/global.anthropic.claude-sonnet-5-5
       litellm_credential_name: default_aws_bedrock_credential
-      aws_region_name: us-west-2
+      aws_region_name: eu-central-1
     model_info:
-      id: claude-opus-4-5-20251101-us-west-2
-      base_model: us.anthropic.claude-opus-4-5-20251101-v1:0
-      label: "Bedrock Claude Opus 4.5"
+      id: claude-sonnet-5-5-eu-central-1
+      base_model: global.anthropic.claude-sonnet-5-5
+      label: "Bedrock Claude Sonnet 5.5"
 
   - model_name: claude-opus-4-5-20251101
     litellm_params:
@@ -340,16 +360,16 @@ model_list:
       aws_region_name: eu-central-1
     model_info:
       id: claude-opus-4-5-20251101-eu-central-1
-      base_model: anthropic.claude-opus-4-5-20251101-v1:0
+      base_model: us.anthropic.claude-opus-4-5-20251101-v1:0
       label: "Bedrock Claude Opus 4.5"
 
   - model_name: claude-opus-4-6-20260205
     litellm_params:
-      model: bedrock/us.anthropic.claude-opus-4-6-v1
+      model: bedrock/eu.anthropic.claude-opus-4-6-v1
       litellm_credential_name: default_aws_bedrock_credential
-      aws_region_name: us-west-2
+      aws_region_name: eu-central-1
     model_info:
-      id: claude-opus-4-6-20260205-us-west-2
+      id: claude-opus-4-6-20260205-eu-central-1
       base_model: us.anthropic.claude-opus-4-6-v1
       label: "Bedrock Claude Opus 4.6"
 
@@ -362,6 +382,46 @@ model_list:
       id: claude-opus-4-7-eu-central-1
       base_model: eu.anthropic.claude-opus-4-7
       label: "Bedrock Claude Opus 4.7"
+
+  - model_name: claude-opus-4-8
+    litellm_params:
+      model: bedrock/eu.anthropic.claude-opus-4-8
+      litellm_credential_name: default_aws_bedrock_credential
+      aws_region_name: eu-central-1
+    model_info:
+      id: claude-opus-4-8-eu-central-1
+      base_model: eu.anthropic.claude-opus-4-8
+      label: "Bedrock Claude Opus 4.8"
+
+  - model_name: claude-opus-5
+    litellm_params:
+      model: bedrock/eu.anthropic.claude-opus-5
+      litellm_credential_name: default_aws_bedrock_credential
+      aws_region_name: eu-central-1
+    model_info:
+      id: claude-opus-5-eu-central-1
+      base_model: eu.anthropic.claude-opus-5
+      label: "Bedrock Claude Opus 5"
+
+  - model_name: claude-opus-5-5
+    litellm_params:
+      model: bedrock/eu.anthropic.claude-opus-5-5
+      litellm_credential_name: default_aws_bedrock_credential
+      aws_region_name: eu-central-1
+    model_info:
+      id: claude-opus-5-5-eu-central-1
+      base_model: eu.anthropic.claude-opus-5-5
+      label: "Bedrock Claude Opus 5.5"
+
+  - model_name: claude-haiku-5-5
+    litellm_params:
+      model: bedrock/eu.anthropic.claude-haiku-5-5
+      litellm_credential_name: default_aws_bedrock_credential
+      aws_region_name: eu-central-1
+    model_info:
+      id: claude-haiku-5-5-eu-central-1
+      base_model: eu.anthropic.claude-haiku-5-5
+      label: "Bedrock Claude Haiku 5.5"
 
   # Bedrock Qwen3 Coder 30B A3B
   - model_name: qwen.qwen3-coder-30b-a3b-v1
