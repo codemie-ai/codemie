@@ -16,9 +16,8 @@
 
 Covers:
 - get_user_projects_list
-- grant_project_access (including personal project blocking)
-- update_user_project_access
-- revoke_project_access
+- grant_project_access / update_user_project_access / revoke_project_access
+  (delegation to ProjectAssignmentService)
 - get_user_knowledge_bases_list
 - grant_kb_access
 - revoke_kb_access
@@ -112,47 +111,49 @@ class TestGetUserProjectsList:
         assert exc_info.value.message == "User not found"
 
 
+PAS_PATH = "codemie.service.project.project_assignment_service.project_assignment_service"
+
+
+def _actor():
+    return MagicMock(id="admin-456", is_admin=False, is_maintainer=False, is_admin_or_maintainer=False)
+
+
+def _session(mock_get_session):
+    mock_session = MagicMock()
+    mock_get_session.return_value.__enter__.return_value = mock_session
+    return mock_session
+
+
 class TestGrantProjectAccess:
-    """Tests for grant_project_access method"""
+    """Tests for grant_project_access: delegates to ProjectAssignmentService"""
 
     @patch("codemie.clients.postgres.get_session")
-    @patch("codemie.service.user.user_access_service.user_repository")
     @patch("codemie.service.user.user_access_service.application_repository")
-    @patch("codemie.service.user.user_access_service.user_project_repository")
     @patch("codemie.service.user.user_access_service.logger")
-    def test_grant_project_access_success(
-        self,
-        mock_logger,
-        mock_user_project_repo,
-        mock_app_repo,
-        mock_user_repo,
-        mock_get_session,
-    ):
-        """Test: Successfully grants project access to user"""
-        # Arrange
-        mock_session = MagicMock()
-        mock_get_session.return_value.__enter__.return_value = mock_session
+    @patch(PAS_PATH)
+    def test_grant_delegates_to_assign_user_to_project(self, mock_pas, mock_logger, mock_app_repo, mock_get_session):
+        mock_session = _session(mock_get_session)
+        project = MagicMock(name="project-alpha")
+        mock_app_repo.get_by_name.return_value = project
+        actor = _actor()
 
-        mock_user = MagicMock(id="user-123")
-        mock_user_repo.get_by_id.return_value = mock_user
-
-        mock_app_repo.is_personal_project.return_value = False
-        mock_user_project_repo.get_by_user_and_project.return_value = None
-
-        # Act
         result = UserAccessService.grant_project_access(
-            user_id="user-123",
-            project_name="project-alpha",
-            is_project_admin=True,
-            actor=MagicMock(id="admin-456", is_admin=False, is_maintainer=False, is_admin_or_maintainer=False),
+            user_id="user-123", project_name="project-alpha", is_project_admin=True, actor=actor
         )
 
-        # Assert
-        assert result["message"] == "Project access granted successfully"
-        mock_app_repo.get_or_create.assert_called_once_with(mock_session, "project-alpha")
-        mock_user_project_repo.add_project.assert_called_once_with(mock_session, "user-123", "project-alpha", True)
+        assert result == {"message": "Project access granted successfully"}
+        mock_app_repo.get_by_name.assert_called_once_with(mock_session, "project-alpha")
+        mock_pas.assign_user_to_project.assert_called_once_with(
+            mock_session,
+            project,
+            "user-123",
+            "project-alpha",
+            True,
+            actor,
+            "POST /v1/admin/users/user-123/projects/project-alpha",
+        )
+        mock_app_repo.get_or_create.assert_not_called()
         mock_session.commit.assert_called_once()
-        mock_logger.info.assert_called_once()
         log_message = mock_logger.info.call_args[0][0]
         assert "project_access_granted" in log_message
         assert "actor_user_id=admin-456" in log_message
@@ -160,338 +161,242 @@ class TestGrantProjectAccess:
         assert "domain=user_management" in log_message
 
     @patch("codemie.clients.postgres.get_session")
-    @patch("codemie.service.user.user_access_service.user_repository")
-    def test_grant_project_access_user_not_found(self, mock_user_repo, mock_get_session):
-        """Test: Raises 404 when target user does not exist"""
-        # Arrange
-        mock_session = MagicMock()
-        mock_get_session.return_value.__enter__.return_value = mock_session
-        mock_user_repo.get_by_id.return_value = None
-
-        # Act & Assert
-        with pytest.raises(ExtendedHTTPException) as exc_info:
-            UserAccessService.grant_project_access(
-                user_id="nonexistent-user",
-                project_name="project-alpha",
-                is_project_admin=False,
-                actor=MagicMock(id="admin-456", is_admin=False, is_maintainer=False, is_admin_or_maintainer=False),
-            )
-
-        assert exc_info.value.code == 404
-        assert exc_info.value.message == "User not found"
-
-    @patch("codemie.clients.postgres.get_session")
-    @patch("codemie.service.user.user_access_service.user_repository")
     @patch("codemie.service.user.user_access_service.application_repository")
-    @patch("codemie.service.user.user_access_service.logger")
-    def test_grant_project_access_personal_project_blocked(
-        self, mock_logger, mock_app_repo, mock_user_repo, mock_get_session
-    ):
-        """Test: Blocks personal project assignment with 404"""
-        # Arrange
-        mock_session = MagicMock()
-        mock_get_session.return_value.__enter__.return_value = mock_session
+    @patch(PAS_PATH)
+    def test_grant_missing_project_returns_404(self, mock_pas, mock_app_repo, mock_get_session):
+        mock_session = _session(mock_get_session)
+        mock_app_repo.get_by_name.return_value = None
 
-        mock_user = MagicMock(id="user-123")
-        mock_user_repo.get_by_id.return_value = mock_user
-        mock_app_repo.get_by_name.return_value = MagicMock(project_type="personal", created_by="other-user")
-
-        # Act & Assert
-        with pytest.raises(ExtendedHTTPException) as exc_info:
-            UserAccessService.grant_project_access(
-                user_id="user-123",
-                project_name="personal@example.com",
-                is_project_admin=False,
-                actor=MagicMock(id="admin-456", is_admin=False, is_maintainer=False, is_admin_or_maintainer=False),
-            )
+        with patch.object(UserAccessService, "_invalidate_auth_cache") as mock_invalidate:
+            with pytest.raises(ExtendedHTTPException) as exc_info:
+                UserAccessService.grant_project_access(
+                    user_id="user-123", project_name="missing", is_project_admin=False, actor=_actor()
+                )
 
         assert exc_info.value.code == 404
         assert exc_info.value.message == "Project not found"
-        mock_logger.warning.assert_called_once()
-        log_message = mock_logger.warning.call_args[0][0]
-        assert "project_authorization_failed" in log_message
-        assert "domain=user_management" in log_message
+        mock_pas.assign_user_to_project.assert_not_called()
+        mock_app_repo.get_or_create.assert_not_called()
+        mock_session.commit.assert_not_called()
+        mock_invalidate.assert_not_called()
 
     @patch("codemie.clients.postgres.get_session")
-    @patch("codemie.service.user.user_access_service.user_repository")
     @patch("codemie.service.user.user_access_service.application_repository")
-    @patch("codemie.service.user.user_access_service.user_project_repository")
-    def test_grant_project_access_already_has_access(
-        self, mock_user_project_repo, mock_app_repo, mock_user_repo, mock_get_session
-    ):
-        """Test: Raises 409 when user already has access to project"""
-        # Arrange
-        mock_session = MagicMock()
-        mock_get_session.return_value.__enter__.return_value = mock_session
+    @patch(PAS_PATH)
+    def test_grant_commits_then_invalidates(self, mock_pas, mock_app_repo, mock_get_session):
+        mock_session = _session(mock_get_session)
+        mock_app_repo.get_by_name.return_value = MagicMock()
+        calls = []
+        mock_pas.assign_user_to_project.side_effect = lambda *a, **k: calls.append("pas")
+        mock_session.commit.side_effect = lambda: calls.append("commit")
 
-        mock_user = MagicMock(id="user-123")
-        mock_user_repo.get_by_id.return_value = mock_user
-
-        mock_app_repo.is_personal_project.return_value = False
-        mock_existing = MagicMock(project_name="project-alpha")
-        mock_user_project_repo.get_by_user_and_project.return_value = mock_existing
-
-        # Act & Assert
-        with pytest.raises(ExtendedHTTPException) as exc_info:
+        with patch.object(
+            UserAccessService, "_invalidate_auth_cache", side_effect=lambda uid: calls.append("invalidate")
+        ) as mock_invalidate:
             UserAccessService.grant_project_access(
-                user_id="user-123",
-                project_name="project-alpha",
-                is_project_admin=False,
-                actor=MagicMock(id="admin-456", is_admin=False, is_maintainer=False, is_admin_or_maintainer=False),
+                user_id="user-123", project_name="project-alpha", is_project_admin=False, actor=_actor()
             )
 
+        assert calls == ["pas", "commit", "invalidate"]
+        mock_invalidate.assert_called_once_with("user-123")
+
+    @patch("codemie.clients.postgres.get_session")
+    @patch("codemie.service.user.user_access_service.application_repository")
+    @patch(PAS_PATH)
+    def test_grant_pas_error_propagates_without_commit(self, mock_pas, mock_app_repo, mock_get_session):
+        mock_session = _session(mock_get_session)
+        mock_app_repo.get_by_name.return_value = MagicMock()
+        mock_pas.assign_user_to_project.side_effect = ExtendedHTTPException(code=409, message="x")
+
+        with patch.object(UserAccessService, "_invalidate_auth_cache") as mock_invalidate:
+            with pytest.raises(ExtendedHTTPException) as exc_info:
+                UserAccessService.grant_project_access(
+                    user_id="user-123", project_name="project-alpha", is_project_admin=False, actor=_actor()
+                )
+
         assert exc_info.value.code == 409
-        assert exc_info.value.message == "User already has access to this project"
+        assert exc_info.value.message == "x"
+        mock_session.commit.assert_not_called()
+        mock_invalidate.assert_not_called()
 
 
 class TestUpdateUserProjectAccess:
-    """Tests for update_user_project_access method"""
+    """Tests for update_user_project_access: delegates to ProjectAssignmentService"""
 
     @patch("codemie.clients.postgres.get_session")
-    @patch("codemie.service.user.user_access_service.user_repository")
     @patch("codemie.service.user.user_access_service.application_repository")
-    @patch("codemie.service.user.user_access_service.user_project_repository")
     @patch("codemie.service.user.user_access_service.logger")
-    def test_update_user_project_access_success(
-        self,
-        mock_logger,
-        mock_user_project_repo,
-        mock_app_repo,
-        mock_user_repo,
-        mock_get_session,
-    ):
-        """Test: Successfully updates user's project admin status"""
-        # Arrange
-        mock_session = MagicMock()
-        mock_get_session.return_value.__enter__.return_value = mock_session
+    @patch(PAS_PATH)
+    def test_update_delegates_to_update_user_project_role(self, mock_pas, mock_logger, mock_app_repo, mock_get_session):
+        mock_session = _session(mock_get_session)
+        project = MagicMock(name="project-alpha")
+        mock_app_repo.get_by_name.return_value = project
+        actor = _actor()
 
-        mock_user = MagicMock(id="user-123")
-        mock_user_repo.get_by_id.return_value = mock_user
-
-        mock_app_repo.is_personal_project.return_value = False
-        mock_project = MagicMock(project_name="project-alpha", is_project_admin=False)
-        mock_user_project_repo.get_by_user_and_project.return_value = mock_project
-
-        # Act
         result = UserAccessService.update_user_project_access(
-            user_id="user-123",
-            project_name="project-alpha",
-            is_project_admin=True,
-            actor=MagicMock(id="admin-456", is_admin=False, is_maintainer=False, is_admin_or_maintainer=False),
+            user_id="user-123", project_name="project-alpha", is_project_admin=True, actor=actor
         )
 
-        # Assert
-        assert result["message"] == "Project access updated successfully"
-        mock_user_project_repo.update_admin_status.assert_called_once_with(
-            mock_session, "user-123", "project-alpha", True
+        assert result == {"message": "Project access updated successfully"}
+        mock_pas.update_user_project_role.assert_called_once_with(
+            mock_session,
+            project,
+            "user-123",
+            "project-alpha",
+            True,
+            actor,
+            "PUT /v1/admin/users/user-123/projects/project-alpha",
         )
         mock_session.commit.assert_called_once()
-        mock_logger.info.assert_called_once()
         log_message = mock_logger.info.call_args[0][0]
         assert "project_access_updated" in log_message
         assert "domain=user_management" in log_message
 
     @patch("codemie.clients.postgres.get_session")
-    @patch("codemie.service.user.user_access_service.user_repository")
-    def test_update_user_project_access_user_not_found(self, mock_user_repo, mock_get_session):
-        """Test: Raises 404 when target user does not exist"""
-        # Arrange
-        mock_session = MagicMock()
-        mock_get_session.return_value.__enter__.return_value = mock_session
-        mock_user_repo.get_by_id.return_value = None
-
-        # Act & Assert
-        with pytest.raises(ExtendedHTTPException) as exc_info:
-            UserAccessService.update_user_project_access(
-                user_id="nonexistent-user",
-                project_name="project-alpha",
-                is_project_admin=True,
-                actor=MagicMock(id="admin-456", is_admin=False, is_maintainer=False, is_admin_or_maintainer=False),
-            )
-
-        assert exc_info.value.code == 404
-        assert exc_info.value.message == "User not found"
-
-    @patch("codemie.clients.postgres.get_session")
-    @patch("codemie.service.user.user_access_service.user_repository")
     @patch("codemie.service.user.user_access_service.application_repository")
-    @patch("codemie.service.user.user_access_service.logger")
-    def test_update_user_project_access_personal_project_blocked(
-        self, mock_logger, mock_app_repo, mock_user_repo, mock_get_session
-    ):
-        """Test: Blocks personal project updates with 404"""
-        # Arrange
-        mock_session = MagicMock()
-        mock_get_session.return_value.__enter__.return_value = mock_session
+    @patch(PAS_PATH)
+    def test_update_missing_project_returns_404(self, mock_pas, mock_app_repo, mock_get_session):
+        mock_session = _session(mock_get_session)
+        mock_app_repo.get_by_name.return_value = None
 
-        mock_user = MagicMock(id="user-123")
-        mock_user_repo.get_by_id.return_value = mock_user
-        mock_app_repo.get_by_name.return_value = MagicMock(project_type="personal", created_by="other-user")
-
-        # Act & Assert
-        with pytest.raises(ExtendedHTTPException) as exc_info:
-            UserAccessService.update_user_project_access(
-                user_id="user-123",
-                project_name="personal@example.com",
-                is_project_admin=True,
-                actor=MagicMock(id="admin-456", is_admin=False, is_maintainer=False, is_admin_or_maintainer=False),
-            )
+        with patch.object(UserAccessService, "_invalidate_auth_cache") as mock_invalidate:
+            with pytest.raises(ExtendedHTTPException) as exc_info:
+                UserAccessService.update_user_project_access(
+                    user_id="user-123", project_name="missing", is_project_admin=True, actor=_actor()
+                )
 
         assert exc_info.value.code == 404
         assert exc_info.value.message == "Project not found"
-        mock_logger.warning.assert_called_once()
+        mock_pas.update_user_project_role.assert_not_called()
+        mock_session.commit.assert_not_called()
+        mock_invalidate.assert_not_called()
 
     @patch("codemie.clients.postgres.get_session")
-    @patch("codemie.service.user.user_access_service.user_repository")
     @patch("codemie.service.user.user_access_service.application_repository")
-    @patch("codemie.service.user.user_access_service.user_project_repository")
-    def test_update_user_project_access_no_existing_access(
-        self, mock_user_project_repo, mock_app_repo, mock_user_repo, mock_get_session
-    ):
-        """Test: Raises 404 when user does not have access to project"""
-        # Arrange
-        mock_session = MagicMock()
-        mock_get_session.return_value.__enter__.return_value = mock_session
+    @patch(PAS_PATH)
+    def test_update_commits_then_invalidates(self, mock_pas, mock_app_repo, mock_get_session):
+        mock_session = _session(mock_get_session)
+        mock_app_repo.get_by_name.return_value = MagicMock()
+        calls = []
+        mock_pas.update_user_project_role.side_effect = lambda *a, **k: calls.append("pas")
+        mock_session.commit.side_effect = lambda: calls.append("commit")
 
-        mock_user = MagicMock(id="user-123")
-        mock_user_repo.get_by_id.return_value = mock_user
-
-        mock_app_repo.is_personal_project.return_value = False
-        mock_user_project_repo.get_by_user_and_project.return_value = None
-
-        # Act & Assert
-        with pytest.raises(ExtendedHTTPException) as exc_info:
+        with patch.object(
+            UserAccessService, "_invalidate_auth_cache", side_effect=lambda uid: calls.append("invalidate")
+        ):
             UserAccessService.update_user_project_access(
-                user_id="user-123",
-                project_name="project-alpha",
-                is_project_admin=True,
-                actor=MagicMock(id="admin-456", is_admin=False, is_maintainer=False, is_admin_or_maintainer=False),
+                user_id="user-123", project_name="project-alpha", is_project_admin=True, actor=_actor()
             )
 
+        assert calls == ["pas", "commit", "invalidate"]
+
+    @patch("codemie.clients.postgres.get_session")
+    @patch("codemie.service.user.user_access_service.application_repository")
+    @patch(PAS_PATH)
+    def test_update_pas_error_propagates_without_commit(self, mock_pas, mock_app_repo, mock_get_session):
+        mock_session = _session(mock_get_session)
+        mock_app_repo.get_by_name.return_value = MagicMock()
+        mock_pas.update_user_project_role.side_effect = ExtendedHTTPException(
+            code=404, message="User is not assigned to this project"
+        )
+
+        with patch.object(UserAccessService, "_invalidate_auth_cache") as mock_invalidate:
+            with pytest.raises(ExtendedHTTPException) as exc_info:
+                UserAccessService.update_user_project_access(
+                    user_id="user-123", project_name="project-alpha", is_project_admin=True, actor=_actor()
+                )
+
         assert exc_info.value.code == 404
-        assert exc_info.value.message == "User does not have access to this project"
+        assert exc_info.value.message == "User is not assigned to this project"
+        mock_session.commit.assert_not_called()
+        mock_invalidate.assert_not_called()
 
 
 class TestRevokeProjectAccess:
-    """Tests for revoke_project_access method"""
+    """Tests for revoke_project_access: delegates to ProjectAssignmentService"""
 
     @patch("codemie.clients.postgres.get_session")
-    @patch("codemie.service.user.user_access_service.user_repository")
     @patch("codemie.service.user.user_access_service.application_repository")
-    @patch("codemie.service.user.user_access_service.user_project_repository")
     @patch("codemie.service.user.user_access_service.logger")
-    def test_revoke_project_access_success(
-        self,
-        mock_logger,
-        mock_user_project_repo,
-        mock_app_repo,
-        mock_user_repo,
-        mock_get_session,
-    ):
-        """Test: Successfully revokes user's project access"""
-        # Arrange
-        mock_session = MagicMock()
-        mock_get_session.return_value.__enter__.return_value = mock_session
+    @patch(PAS_PATH)
+    def test_revoke_delegates_to_remove_user_from_project(self, mock_pas, mock_logger, mock_app_repo, mock_get_session):
+        mock_session = _session(mock_get_session)
+        project = MagicMock(name="project-alpha")
+        mock_app_repo.get_by_name.return_value = project
+        actor = _actor()
 
-        mock_user = MagicMock(id="user-123")
-        mock_user_repo.get_by_id.return_value = mock_user
+        result = UserAccessService.revoke_project_access(user_id="user-123", project_name="project-alpha", actor=actor)
 
-        mock_app_repo.is_personal_project.return_value = False
-        mock_user_project_repo.remove_project.return_value = True
-
-        # Act
-        result = UserAccessService.revoke_project_access(
-            user_id="user-123",
-            project_name="project-alpha",
-            actor=MagicMock(id="admin-456", is_admin=False, is_maintainer=False, is_admin_or_maintainer=False),
+        assert result == {"message": "Project access removed successfully"}
+        mock_pas.remove_user_from_project.assert_called_once_with(
+            mock_session,
+            project,
+            "user-123",
+            "project-alpha",
+            actor,
+            "DELETE /v1/admin/users/user-123/projects/project-alpha",
         )
-
-        # Assert
-        assert result["message"] == "Project access removed successfully"
-        mock_user_project_repo.remove_project.assert_called_once_with(mock_session, "user-123", "project-alpha")
         mock_session.commit.assert_called_once()
-        mock_logger.info.assert_called_once()
         log_message = mock_logger.info.call_args[0][0]
         assert "project_access_removed" in log_message
         assert "actor_user_id=admin-456" in log_message
         assert "domain=user_management" in log_message
 
     @patch("codemie.clients.postgres.get_session")
-    @patch("codemie.service.user.user_access_service.user_repository")
-    def test_revoke_project_access_user_not_found(self, mock_user_repo, mock_get_session):
-        """Test: Raises 404 when target user does not exist"""
-        # Arrange
-        mock_session = MagicMock()
-        mock_get_session.return_value.__enter__.return_value = mock_session
-        mock_user_repo.get_by_id.return_value = None
-
-        # Act & Assert
-        with pytest.raises(ExtendedHTTPException) as exc_info:
-            UserAccessService.revoke_project_access(
-                user_id="nonexistent-user",
-                project_name="project-alpha",
-                actor=MagicMock(id="admin-456", is_admin=False, is_maintainer=False, is_admin_or_maintainer=False),
-            )
-
-        assert exc_info.value.code == 404
-        assert exc_info.value.message == "User not found"
-
-    @patch("codemie.clients.postgres.get_session")
-    @patch("codemie.service.user.user_access_service.user_repository")
     @patch("codemie.service.user.user_access_service.application_repository")
-    @patch("codemie.service.user.user_access_service.logger")
-    def test_revoke_project_access_personal_project_blocked(
-        self, mock_logger, mock_app_repo, mock_user_repo, mock_get_session
-    ):
-        """Test: Blocks personal project revocation with 404"""
-        # Arrange
-        mock_session = MagicMock()
-        mock_get_session.return_value.__enter__.return_value = mock_session
+    @patch(PAS_PATH)
+    def test_revoke_missing_project_returns_404(self, mock_pas, mock_app_repo, mock_get_session):
+        mock_session = _session(mock_get_session)
+        mock_app_repo.get_by_name.return_value = None
 
-        mock_user = MagicMock(id="user-123")
-        mock_user_repo.get_by_id.return_value = mock_user
-        mock_app_repo.get_by_name.return_value = MagicMock(project_type="personal", created_by="other-user")
-
-        # Act & Assert
-        with pytest.raises(ExtendedHTTPException) as exc_info:
-            UserAccessService.revoke_project_access(
-                user_id="user-123",
-                project_name="personal@example.com",
-                actor=MagicMock(id="admin-456", is_admin=False, is_maintainer=False, is_admin_or_maintainer=False),
-            )
+        with patch.object(UserAccessService, "_invalidate_auth_cache") as mock_invalidate:
+            with pytest.raises(ExtendedHTTPException) as exc_info:
+                UserAccessService.revoke_project_access(user_id="user-123", project_name="missing", actor=_actor())
 
         assert exc_info.value.code == 404
         assert exc_info.value.message == "Project not found"
-        mock_logger.warning.assert_called_once()
+        mock_pas.remove_user_from_project.assert_not_called()
+        mock_session.commit.assert_not_called()
+        mock_invalidate.assert_not_called()
 
     @patch("codemie.clients.postgres.get_session")
-    @patch("codemie.service.user.user_access_service.user_repository")
     @patch("codemie.service.user.user_access_service.application_repository")
-    @patch("codemie.service.user.user_access_service.user_project_repository")
-    def test_revoke_project_access_no_existing_access(
-        self, mock_user_project_repo, mock_app_repo, mock_user_repo, mock_get_session
-    ):
-        """Test: Raises 404 when user does not have access to project"""
-        # Arrange
-        mock_session = MagicMock()
-        mock_get_session.return_value.__enter__.return_value = mock_session
+    @patch(PAS_PATH)
+    def test_revoke_commits_then_invalidates(self, mock_pas, mock_app_repo, mock_get_session):
+        mock_session = _session(mock_get_session)
+        mock_app_repo.get_by_name.return_value = MagicMock()
+        calls = []
+        mock_pas.remove_user_from_project.side_effect = lambda *a, **k: calls.append("pas")
+        mock_session.commit.side_effect = lambda: calls.append("commit")
 
-        mock_user = MagicMock(id="user-123")
-        mock_user_repo.get_by_id.return_value = mock_user
+        with patch.object(
+            UserAccessService, "_invalidate_auth_cache", side_effect=lambda uid: calls.append("invalidate")
+        ):
+            UserAccessService.revoke_project_access(user_id="user-123", project_name="project-alpha", actor=_actor())
 
-        mock_app_repo.is_personal_project.return_value = False
-        mock_user_project_repo.remove_project.return_value = False
+        assert calls == ["pas", "commit", "invalidate"]
 
-        # Act & Assert
-        with pytest.raises(ExtendedHTTPException) as exc_info:
-            UserAccessService.revoke_project_access(
-                user_id="user-123",
-                project_name="project-alpha",
-                actor=MagicMock(id="admin-456", is_admin=False, is_maintainer=False, is_admin_or_maintainer=False),
-            )
+    @patch("codemie.clients.postgres.get_session")
+    @patch("codemie.service.user.user_access_service.application_repository")
+    @patch(PAS_PATH)
+    def test_revoke_creator_guard_error_propagates_without_commit(self, mock_pas, mock_app_repo, mock_get_session):
+        """AC2: PAS's 400 creator guard reaches the caller unchanged."""
+        mock_session = _session(mock_get_session)
+        mock_app_repo.get_by_name.return_value = MagicMock()
+        mock_pas.remove_user_from_project.side_effect = ExtendedHTTPException(
+            code=400, message="Cannot remove project creator"
+        )
 
-        assert exc_info.value.code == 404
-        assert exc_info.value.message == "User does not have access to this project"
+        with patch.object(UserAccessService, "_invalidate_auth_cache") as mock_invalidate:
+            with pytest.raises(ExtendedHTTPException) as exc_info:
+                UserAccessService.revoke_project_access(
+                    user_id="user-123", project_name="project-alpha", actor=_actor()
+                )
+
+        assert exc_info.value.code == 400
+        assert exc_info.value.message == "Cannot remove project creator"
+        mock_session.commit.assert_not_called()
+        mock_invalidate.assert_not_called()
 
 
 class TestGetUserKnowledgeBasesList:
@@ -714,24 +619,6 @@ class TestHelperMethods:
         assert "actor_user_id=admin-456" in result
         assert "target_user_id=user-123" in result
         assert ", " in result
-
-    @patch("codemie.service.user.user_access_service.logger")
-    def test_log_project_authorization_failure(self, mock_logger):
-        """Test: Logs authorization failure with audit context"""
-        # Act
-        UserAccessService._log_project_authorization_failure(
-            user_id="admin-456", target_user_id="user-123", action="grant_project_access"
-        )
-
-        # Assert
-        mock_logger.warning.assert_called_once()
-        log_message = mock_logger.warning.call_args[0][0]
-        assert "project_authorization_failed" in log_message
-        assert "user_id=admin-456" in log_message
-        assert "target_user_id=user-123" in log_message
-        assert "domain=user_management" in log_message
-        assert "method=grant_project_access" in log_message
-        assert "timestamp=" in log_message
 
 
 class TestGetUserProjectsListDefaultField:

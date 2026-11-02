@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "task": "Make Users management grant/revoke project access run the same membership, project budget allocation, LiteLLM member sync, activity events and creator guard as Projects management via a shared service method, with tests and an optional defensive membership check in LLM proxy budget resolution.",
+  "generated": "2026-10-23T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 18,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "UserAccessService and ProjectAssignmentService get consolidated behind a shared session-taking method. The shared budget-sync helpers are also called by authentication_service and project_service. user_management_router changes a little, and the optional proxy check would add proxy_router, budget_resolution_service and project_budget_repository. That is 3-4 components across API, Service and Repository, with shared utilities involved." },
+    { "dimension": "technical_risk", "reason": "The closest pattern is ProjectAssignmentService.assign_user_to_project/remove_user_from_project and its _sync_project_budget_member_added/_removed helpers, so the budget logic itself is reuse (base M). The risk comes from reconciling the two transaction models (UAS commits internally, PAS relies on the caller), from behaviour differences (auto-create on grant, missing-project personal guard, UUID check, error messages, where auth-cache invalidation lives), and from synchronous LiteLLM provider calls inside the request. The new creator guard changes access-control behaviour on an admin endpoint, and the optional proxy membership check sits on a hot path and interacts with a 60s per-process TTL cache." },
+    { "dimension": "requirements_clarity", "reason": "The core goal and the correct reference behaviour are well defined. Open design decisions remain: whether to use one shared method or wire the helpers in UAS, whether the Users-mgmt grant keeps project auto-create, whether to do the optional proxy check, and whether to back-fill PMBAs already orphaned in existing data." },
+    { "dimension": "file_change_estimate", "reason": "The core change is 2 service files, possibly 1-2 routers, and 2-3 test files (UAS tests, PAS tests, router tests). The optional proxy check would add 2-3 more. That is about 5-7 modified files and 0-1 new across src/service and tests, and up to 3 directories if the proxy work is included." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from M to L: affects authorization (new creator guard on the Users management DELETE path; the optional proxy membership check gates project budget charging)"
+  ],
+  "split_recommendation": null
+}

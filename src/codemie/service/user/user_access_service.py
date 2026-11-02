@@ -14,7 +14,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from collections.abc import Callable
 from types import SimpleNamespace
 
 from sqlalchemy.exc import IntegrityError
@@ -34,7 +34,6 @@ from codemie.repository.application_repository import application_repository
 _ERRORS = SimpleNamespace(
     USER_NOT_FOUND="User not found",
     PROJECT_NOT_FOUND="Project not found",
-    PERSONAL_PROJECT_MEMBERSHIP="Cannot modify membership of a personal project",
     NO_PROJECT_ACCESS="User does not have access to this project",
 )
 
@@ -87,58 +86,43 @@ class UserAccessService:
 
     @staticmethod
     def grant_project_access(user_id: str, project_name: str, is_project_admin: bool, actor: User) -> dict[str, str]:
-        """Grant project access to user"""
-        from codemie.clients.postgres import get_session
+        """Grant project access to user through the Projects-management assignment flow."""
+        from codemie.service.project.project_assignment_service import project_assignment_service
 
-        with get_session() as session:
-            target_user = user_repository.get_by_id(session, user_id)
-            if not target_user:
-                raise ExtendedHTTPException(code=404, message=_ERRORS.USER_NOT_FOUND)
+        UserAccessService._apply_membership_change(
+            user_id,
+            project_name,
+            "POST",
+            lambda session, project, action: project_assignment_service.assign_user_to_project(
+                session, project, user_id, project_name, is_project_admin, actor, action
+            ),
+        )
 
-            UserAccessService._reject_if_personal_project(session, project_name, actor, user_id, "grant_project_access")
+        log_details = UserAccessService._build_project_access_log_details(actor.id, user_id)
+        logger.info(f"project_access_granted: {log_details}, domain=user_management")
 
-            existing = user_project_repository.get_by_user_and_project(session, user_id, project_name)
-            if existing:
-                raise ExtendedHTTPException(code=409, message="User already has access to this project")
-
-            application_repository.get_or_create(session, project_name)
-            user_project_repository.add_project(session, user_id, project_name, is_project_admin)
-            session.commit()
-            UserAccessService._invalidate_auth_cache(user_id)
-
-            log_details = UserAccessService._build_project_access_log_details(actor.id, user_id)
-            logger.info(f"project_access_granted: {log_details}, domain=user_management")
-
-            return {"message": "Project access granted successfully"}
+        return {"message": "Project access granted successfully"}
 
     @staticmethod
     def update_user_project_access(
         user_id: str, project_name: str, is_project_admin: bool, actor: User
     ) -> dict[str, str]:
-        """Update user's project admin status"""
-        from codemie.clients.postgres import get_session
+        """Update user's project admin status through the Projects-management assignment flow."""
+        from codemie.service.project.project_assignment_service import project_assignment_service
 
-        with get_session() as session:
-            target_user = user_repository.get_by_id(session, user_id)
-            if not target_user:
-                raise ExtendedHTTPException(code=404, message=_ERRORS.USER_NOT_FOUND)
+        UserAccessService._apply_membership_change(
+            user_id,
+            project_name,
+            "PUT",
+            lambda session, project, action: project_assignment_service.update_user_project_role(
+                session, project, user_id, project_name, is_project_admin, actor, action
+            ),
+        )
 
-            UserAccessService._reject_if_personal_project(
-                session, project_name, actor, user_id, "update_user_project_access"
-            )
+        log_details = UserAccessService._build_project_access_log_details(actor.id, user_id)
+        logger.info(f"project_access_updated: {log_details}, domain=user_management")
 
-            project = user_project_repository.get_by_user_and_project(session, user_id, project_name)
-            if not project:
-                raise ExtendedHTTPException(code=404, message="User does not have access to this project")
-
-            user_project_repository.update_admin_status(session, user_id, project_name, is_project_admin)
-            session.commit()
-            UserAccessService._invalidate_auth_cache(user_id)
-
-            log_details = UserAccessService._build_project_access_log_details(actor.id, user_id)
-            logger.info(f"project_access_updated: {log_details}, domain=user_management")
-
-            return {"message": "Project access updated successfully"}
+        return {"message": "Project access updated successfully"}
 
     @staticmethod
     def set_default_project(user_id: str, project_name: str, actor: User) -> dict[str, str]:
@@ -188,6 +172,31 @@ class UserAccessService:
         logger.info(f"{event}: {log_details}, project_name={project_name!r}, domain=user_management")
 
     @staticmethod
+    def _apply_membership_change(
+        user_id: str,
+        project_name: str,
+        http_method: str,
+        operation: Callable[[Session, Application, str], object],
+    ) -> None:
+        """Run a ProjectAssignmentService membership operation for an existing project, then commit.
+
+        Raises 404 when the project does not exist. Exceptions from the operation propagate
+        before commit, so nothing is persisted and the auth cache is left untouched.
+        """
+        from codemie.clients.postgres import get_session
+
+        with get_session() as session:
+            project = application_repository.get_by_name(session, project_name)
+            if project is None:
+                raise ExtendedHTTPException(code=404, message=_ERRORS.PROJECT_NOT_FOUND)
+
+            action = f"{http_method} /v1/admin/users/{user_id}/projects/{project_name}"
+            operation(session, project, action)
+            session.commit()
+
+        UserAccessService._invalidate_auth_cache(user_id)
+
+    @staticmethod
     def _invalidate_auth_cache(user_id: str) -> None:
         """Drop cached auth users so membership/default changes apply on the next request."""
         from codemie.service.user.authentication_service import invalidate_user_from_cache
@@ -196,29 +205,22 @@ class UserAccessService:
 
     @staticmethod
     def revoke_project_access(user_id: str, project_name: str, actor: User) -> dict[str, str]:
-        """Remove user's project access"""
-        from codemie.clients.postgres import get_session
+        """Remove user's project access through the Projects-management assignment flow."""
+        from codemie.service.project.project_assignment_service import project_assignment_service
 
-        with get_session() as session:
-            target_user = user_repository.get_by_id(session, user_id)
-            if not target_user:
-                raise ExtendedHTTPException(code=404, message=_ERRORS.USER_NOT_FOUND)
+        UserAccessService._apply_membership_change(
+            user_id,
+            project_name,
+            "DELETE",
+            lambda session, project, action: project_assignment_service.remove_user_from_project(
+                session, project, user_id, project_name, actor, action
+            ),
+        )
 
-            UserAccessService._reject_if_personal_project(
-                session, project_name, actor, user_id, "revoke_project_access"
-            )
+        log_details = UserAccessService._build_project_access_log_details(actor.id, user_id)
+        logger.info(f"project_access_removed: {log_details}, domain=user_management")
 
-            removed = user_project_repository.remove_project(session, user_id, project_name)
-            if not removed:
-                raise ExtendedHTTPException(code=404, message=_ERRORS.NO_PROJECT_ACCESS)
-
-            session.commit()
-            UserAccessService._invalidate_auth_cache(user_id)
-
-            log_details = UserAccessService._build_project_access_log_details(actor.id, user_id)
-            logger.info(f"project_access_removed: {log_details}, domain=user_management")
-
-            return {"message": "Project access removed successfully"}
+        return {"message": "Project access removed successfully"}
 
     # ===========================================
     # Knowledge Base Access Management
@@ -336,56 +338,6 @@ class UserAccessService:
     # ===========================================
     # Private helpers
     # ===========================================
-
-    @staticmethod
-    def _reject_if_personal_project(
-        session: Session,
-        project_name: str,
-        actor: User,
-        target_user_id: str,
-        action: str,
-    ) -> None:
-        """Block membership changes on personal projects.
-
-        If the actor owns the personal project or is a super admin → 403 (project existence is known).
-        Otherwise → 404 (hide project existence from unrelated callers).
-        """
-        project = application_repository.get_by_name(session, project_name)
-        if project is None or project.project_type != Application.ProjectType.PERSONAL:
-            return
-
-        UserAccessService._log_project_authorization_failure(
-            user_id=actor.id,
-            target_user_id=target_user_id,
-            action=action,
-        )
-
-        if actor.is_admin_or_maintainer or project.created_by == actor.id:
-            raise ExtendedHTTPException(
-                code=403,
-                message=_ERRORS.PERSONAL_PROJECT_MEMBERSHIP,
-            )
-
-        raise ExtendedHTTPException(code=404, message=_ERRORS.PROJECT_NOT_FOUND)
-
-    @staticmethod
-    def _log_project_authorization_failure(
-        user_id: str,
-        target_user_id: str,
-        action: str,
-    ) -> None:
-        """Log project authorization failures with audit context (no PII)."""
-        timestamp = datetime.now(UTC).isoformat()
-        http_method = action.split()[0] if action else "UNKNOWN"
-        log_details = ", ".join(
-            [
-                f"user_id={user_id}",
-                f"target_user_id={target_user_id}",
-                f"method={http_method}",
-                f"timestamp={timestamp}",
-            ]
-        )
-        logger.warning(f"project_authorization_failed: {log_details}, domain=user_management")
 
     @staticmethod
     def _build_project_access_log_details(actor_user_id: str, target_user_id: str) -> str:

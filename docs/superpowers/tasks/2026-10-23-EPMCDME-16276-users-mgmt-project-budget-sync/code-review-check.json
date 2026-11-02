@@ -1,0 +1,129 @@
+{
+  "decision": "approve",
+  "rationale": "Targeted check of the one prior blocking finding: CR-001 resolved. At HEAD fce5613f0, TestPersonalProjectGuard runs the real _reject_if_personal_project for assign, update and remove, covering unrelated-404, admin-403 and owner-403, and asserts no repo mutation and no activity event; the guard runs first in all three methods. The docstring now names that class. The .codemie/codemie-cli.config.json hunk is an unrelated, uncommitted user change and was not graded. Defer items from the final round are not re-checked.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "Design 1: grant/update/revoke become thin wrappers delegating to ProjectAssignmentService, commit, invalidate, log, return existing message",
+      "status": "pass",
+      "notes": "_apply_membership_change; positional args match PAS signatures"
+    },
+    {
+      "kind": "spec",
+      "item": "Design 1: ProjectAssignmentService imported lazily inside the methods",
+      "status": "pass",
+      "notes": "lazy import inside each of the three methods"
+    },
+    {
+      "kind": "spec",
+      "item": "Design 2: auto-create removed; missing project returns 404 and get_or_create is not called",
+      "status": "pass",
+      "notes": "get_by_name None -> 404; tests assert get_or_create not called"
+    },
+    {
+      "kind": "spec",
+      "item": "Design 3: validation, guards and errors come from ProjectAssignmentService",
+      "status": "pass",
+      "notes": "UAS checks removed; PAS runs personal, creator, UUID, user and assignment checks"
+    },
+    {
+      "kind": "spec",
+      "item": "Design 4: side effects (PMBA, provider allocation, cache eviction, activity events) come from ProjectAssignmentService",
+      "status": "pass",
+      "notes": "delegation only; PAS calls budget sync helpers and inserts USER_PROJECT_* events"
+    },
+    {
+      "kind": "spec",
+      "item": "Design 5: UAS helpers without callers deleted; still-used error constants kept",
+      "status": "pass",
+      "notes": "both helpers and unused imports/constants removed; remaining _ERRORS keys referenced"
+    },
+    {
+      "kind": "spec",
+      "item": "Design 6 / Non-goals: PAS, routers, models, default endpoints, frontend unchanged",
+      "status": "pass",
+      "notes": "changed files limited to user_access_service.py and its two test files"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC1: DELETE soft-deletes PMBAs, deletes provider allocation, evicts cache, records USER_PROJECT_REMOVED via remove_user_from_project",
+      "status": "pass",
+      "notes": "revoke delegates to remove_user_from_project; delegation test present"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC2: DELETE of project creator returns 400 and changes nothing",
+      "status": "pass",
+      "notes": "PAS _reject_if_creator raises before mutation; no commit on raise"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC3: POST creates PMBAs and records USER_PROJECT_ASSIGNED via assign_user_to_project",
+      "status": "pass",
+      "notes": "grant delegates to assign_user_to_project; delegation test present"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC4: POST on missing project returns 404 and creates neither project nor membership",
+      "status": "pass",
+      "notes": "404 before delegation; test asserts no PAS call, no get_or_create, no commit"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC5: PUT records USER_PROJECT_ROLE_UPDATED via update_user_project_role",
+      "status": "pass",
+      "notes": "update delegates; delegation test present"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC6: error status codes unchanged, auth cache invalidated after commit, success body unchanged",
+      "status": "pass",
+      "notes": "codes from PAS; invalidate after with-block commit; message dicts unchanged"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC7: membership and budget mutations commit in one transaction; nothing committed on raise",
+      "status": "pass",
+      "notes": "single session, single commit; PAS methods do not commit; no-commit-on-raise tests"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC8: ProjectAssignmentService and Projects-management routers unchanged and their tests still pass",
+      "status": "pending-stage-7",
+      "notes": "no PAS/router change in diff; passing-suite evidence owned by Stage 7"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC9: UAS unit tests cover AC1-AC7: delegation args, 404 missing project, commit/invalidate ordering, no commit on raise",
+      "status": "pass",
+      "notes": "Grant/Update/Revoke test classes plus parametrized propagation test"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "all 3 commit subjects in 1bc3ce136..HEAD match the git-workflow.md EPMCDME-####: Description format"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "code-quality.md checked against user_access_service.py (354 lines) and its two test files; typed helper, collections.abc.Callable, no new modules"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "removed UAS personal guard matched by PAS _reject_if_personal_project on assign/update/remove with same 403/404 split; logs carry ids only; no secrets"
+    }
+  ],
+  "findings": [],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "resolved",
+      "notes": "TestPersonalProjectGuard (test_project_assignment_service.py:620) runs the real guard on assign/update/remove x 404/403/403 with no-mutation asserts; docstring fixed"
+    }
+  ]
+}

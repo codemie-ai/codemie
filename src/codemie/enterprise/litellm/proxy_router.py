@@ -28,6 +28,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request,
 from packaging.version import InvalidVersion, Version
 from starlette.datastructures import Headers
 from starlette.responses import StreamingResponse
+from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.header_decoding import decode_attribution_header
 from codemie.service.monitoring.base_monitoring_service import limit_string, send_log_metric
 from codemie.service.monitoring.metrics_constants import MetricsAttributes, LLM_ERROR_TOTAL_METRIC
@@ -449,6 +450,49 @@ def _validate_project_header(headers: Headers | httpx.Headers | dict, user: User
             "Project is required for API requests. "
             "Please set the project header (X-CodeMie-Project) or configure your CLI with a valid project."
         )
+
+
+async def _authorize_project_header(headers: Headers | httpx.Headers | dict, request_info: dict, user: User) -> None:
+    """Reject a request whose explicit project header names a project the caller cannot use.
+
+    Without this the header is trusted, so a removed member could keep charging the project
+    budget through a leftover allocation. Only an explicit header is checked: the default-project
+    and username fallbacks come from the caller's own memberships. There is no exemption for the
+    integration header, because the client chooses its value.
+    On success `request_info[PROJECT]` is set to the stored project name so the exact-match budget
+    lookup is not missed on letter case.
+
+    Raises:
+        ExtendedHTTPException: 403 when the project does not exist or the caller has no access to it.
+    """
+    from codemie.repository.application_repository import application_repository
+    from codemie.repository.user_project_repository import user_project_repository
+
+    project = headers.get(HEADER_CODEMIE_CLI_PROJECT)
+    if not project or not project.strip():
+        return
+
+    async with get_async_session() as session:
+        application = await application_repository.aget_active_by_name_case_insensitive(session, project)
+        allowed = application is not None and user.has_access_to_application(application.name)
+        if allowed and config.ENABLE_USER_MANAGEMENT and not user.is_admin_or_maintainer:
+            # The auth cache holds project lists for 30s and is not cleared on every removal path,
+            # so confirm the membership row still exists.
+            membership = await user_project_repository.aget_by_user_and_project(session, user.id, application.name)
+            allowed = membership is not None
+
+    if not allowed:
+        logger.warning(f"proxy_project_access_denied: user_id={user.id!r} project_name={project[:200]!r}")
+        # Same answer for a missing and a forbidden project, so existence is not disclosed.
+        raise ExtendedHTTPException(
+            code=403,
+            message="Access to the project is denied",
+            details="The project in the request does not exist or you are not a member of it.",
+            help="Use a project you are assigned to (X-CodeMie-Project header or CLI profile), "
+            "or ask a project admin to add you.",
+        )
+
+    request_info[PROJECT] = application.name
 
 
 def _extract_request_info(headers: Headers | httpx.Headers | dict, user: User | None = None) -> dict:
@@ -1828,6 +1872,7 @@ async def _proxy_to_llm_proxy(
 
     # Extract request info (uses codemie constants)
     request_info = _extract_request_info(request.headers, user)
+    await _authorize_project_header(request.headers, request_info, user)
 
     body_bytes, request_body = await _read_request_body(request)
     request_info[LLM_MODEL] = _extract_model(request_body, request_info, path_params) or UNKNOWN

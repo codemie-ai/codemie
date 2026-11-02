@@ -617,6 +617,69 @@ class TestProjectAssignmentServiceSingleRemoval:
         assert "Verify the user is assigned" in exc_info.value.help
 
 
+class TestPersonalProjectGuard:
+    """Personal-project guard on single assign, role update and remove (EPMCDME-16276).
+
+    Users management delegates to these methods, so the real guard must hold on all three.
+    """
+
+    OWNER_ID = "owner-1"
+
+    @staticmethod
+    def _call(operation: str, project: Application, actor: MagicMock):
+        common = {
+            "session": MagicMock(),
+            "project": project,
+            "user_id": str(uuid4()),
+            "project_name": project.name,
+            "actor": actor,
+            "action": f"X /v1/admin/users/u/projects/{project.name}",
+        }
+        if operation == "assign":
+            return ProjectAssignmentService.assign_user_to_project(is_project_admin=False, **common)
+        if operation == "update":
+            return ProjectAssignmentService.update_user_project_role(is_project_admin=True, **common)
+        return ProjectAssignmentService.remove_user_from_project(**common)
+
+    @pytest.mark.parametrize("operation", ["assign", "update", "remove"])
+    @pytest.mark.parametrize(
+        ("actor_id", "is_admin_or_maintainer", "code", "message"),
+        [
+            ("stranger", False, 404, "Project not found"),
+            ("admin", True, 403, "Cannot modify membership of a personal project"),
+            (OWNER_ID, False, 403, "Cannot modify membership of a personal project"),
+        ],
+        ids=["unrelated-404", "admin-403", "owner-403"],
+    )
+    @patch("codemie.service.project.project_assignment_service.activity_event_repository")
+    @patch("codemie.service.project.project_assignment_service.user_project_repository")
+    @patch("codemie.service.project.project_assignment_service.user_repository")
+    def test_personal_project_rejected_without_mutation(
+        self,
+        mock_user_repo,
+        mock_user_project_repo,
+        mock_activity_repo,
+        actor_id,
+        is_admin_or_maintainer,
+        code,
+        message,
+        operation,
+    ):
+        project = Application(id=str(uuid4()), name="owner-personal", project_type="personal", created_by=self.OWNER_ID)
+        actor = MagicMock(id=actor_id, is_admin_or_maintainer=is_admin_or_maintainer)
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            self._call(operation, project, actor)
+
+        assert exc_info.value.code == code
+        assert exc_info.value.message == message
+        mock_user_repo.get_by_id.assert_not_called()
+        mock_user_project_repo.add_project.assert_not_called()
+        mock_user_project_repo.update_admin_status.assert_not_called()
+        mock_user_project_repo.remove_project.assert_not_called()
+        mock_activity_repo.insert.assert_not_called()
+
+
 class TestGetMemberAddedAllocationAmounts:
     """Unit tests for _get_member_added_allocation_amounts helper."""
 

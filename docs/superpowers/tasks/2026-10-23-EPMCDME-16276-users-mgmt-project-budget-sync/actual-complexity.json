@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "generated": "2026-10-27T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 13,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 4,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "technical_risk", "reason": "UserAccessService grant/update/revoke now delegate to the existing ProjectAssignmentService (assign_user_to_project, update_user_project_role, remove_user_from_project) through one shared _apply_membership_change helper. That is an exact existing pattern, so the base score is S. It was bumped to M because the change alters membership authorization guards: the personal-project 403/404 now come from ProjectAssignmentService, and its parameterized propagation tests check that no commit and no auth-cache invalidation happen on failure." },
+    { "dimension": "file_change_estimate", "reason": "4 files changed: 1 service source file plus 3 test files. The net change removes code (383 insertions, 602 deletions) because duplicated membership and guard logic was cut from UserAccessService. 4 files maps to M on the diffstat scale." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from S to M: affects authorization (personal-project membership guards now enforced through ProjectAssignmentService)"
+  ],
+  "split_recommendation": null
+}
