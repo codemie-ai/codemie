@@ -15,13 +15,19 @@
 """Integration with the enterprise LiteLLM spend uploader."""
 
 from codemie.enterprise.spend_uploader.dependencies import (
+    LiteLLMDatabaseConnectionError,
     build_spend_uploader_service,
     get_litellm_db_url,
+    is_litellm_db_configured,
     is_spend_uploader_available,
+    verify_litellm_db_connection,
 )
 
 __all__ = [
+    "LiteLLMDatabaseConnectionError",
     "build_spend_uploader_service",
     "get_litellm_db_url",
+    "is_litellm_db_configured",
     "is_spend_uploader_available",
+    "verify_litellm_db_connection",
 ]

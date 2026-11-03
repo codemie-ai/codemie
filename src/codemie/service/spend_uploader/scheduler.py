@@ -19,8 +19,9 @@ import asyncio
 from codemie.configs import config, logger
 from codemie.enterprise.spend_uploader import (
     build_spend_uploader_service,
-    get_litellm_db_url,
+    is_litellm_db_configured,
     is_spend_uploader_available,
+    verify_litellm_db_connection,
 )
 from codemie.service.budget_reset.scheduler import _build_cron_trigger
 
@@ -54,12 +55,14 @@ class SpendUploaderScheduler:
                 "provide the spend uploader; skipping job registration"
             )
             return
-        if not get_litellm_db_url():
+        if not is_litellm_db_configured():
             logger.error(
                 "LITELLM_SPEND_UPLOADER_ENABLED is set but the LiteLLM database is not configured "
                 "(LITELLM_SPEND_UPLOADER_LITELLM_DB_URL or _DB_HOST/_DB_USER); skipping job registration"
             )
             return
+        # Unlike the checks above, not skipped: credentials that cannot log in must stop the backend at startup.
+        verify_litellm_db_connection()
 
         trigger = _build_cron_trigger(config.LITELLM_SPEND_UPLOADER_SCHEDULE)
         if trigger is None:
