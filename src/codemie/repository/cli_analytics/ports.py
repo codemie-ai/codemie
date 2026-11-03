@@ -23,8 +23,9 @@ aliases each method documents in the adapter.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Literal, Protocol, runtime_checkable
 
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
@@ -210,6 +211,10 @@ class CliAnalyticsReader(Protocol):
     async def get_session_start_times(self, f: LocalAnalyticsFilter) -> Rows: ...
 
     async def get_repository_sessions(self, f: LocalAnalyticsFilter, search: str | None = None) -> Rows: ...
+
+    async def get_framework_sessions(
+        self, start: datetime, end: datetime, framework_labels: Sequence[str]
+    ) -> list[tuple[str, str, str, int]]: ...
 
     async def get_session_detail_meta(self, session_id: str) -> Rows: ...
 

@@ -23,8 +23,9 @@ USAGE_ATTRIBUTION_COMPONENT_ID = f"features:{FEATURE_KEY}"
 # (2: Web Platform who pays follows the dated funding of each member, funding.py).
 CLASSIFIER_VERSION = "2"
 # Bump when the shape or the meaning of the cached Elasticsearch/app DB inputs changes (2: records without a
-# repository field join the empty value; 3: Web Platform funding, A9).
-INPUTS_VERSION = "3"
+# repository field join the empty value; 3: Web Platform funding, A9; 4: A5 framework sessions are also counted in
+# the CLI analytics Postgres).
+INPUTS_VERSION = "4"
 
 # ---------------------------------------------------------------------------------------------------------------------
 # Elasticsearch (codemie_metrics_logs*). Field paths follow service/analytics/handlers/cli/constants.py.
@@ -190,6 +191,13 @@ CUSTOM_COMPUTATION_WINDOW_S = 3600
 # After a failed computation, requests for the same key get the error (or the last good analysis) for this long
 # instead of starting another full read, so a struggling Elasticsearch is not hit again on every page load.
 FAILURE_BACKOFF_S = 60
+# The A5 framework-session read in the CLI analytics Postgres is bounded; past it A5 keeps the Elasticsearch counts.
+PG_FRAMEWORK_TIMEOUT_S = 10.0
+# An analysis computed without the Postgres framework sessions (the read or the merge failed) is served for this long
+# only, instead of ``analysisCacheMinutes``, so the next requests for the same range read Postgres again.
+PG_DEGRADED_TTL_S = 60
+# The skill-name read of the person view is bounded too; past it the view classifies by the Elasticsearch keys alone.
+PG_SKILL_NAMES_TIMEOUT_S = 5.0
 # Computations of one kind (default or custom settings) that may wait for the running one, per API process; more
 # are refused at once (503) instead of queueing.
 MAX_WAITING_PER_KIND = 3

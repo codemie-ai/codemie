@@ -126,19 +126,25 @@ async def test_skill_names_read_session_dims_with_the_sql_of_the_classifier():
     assert "FROM session_dims sd WHERE sd.session_id = ANY($1::text[])" in text
     assert " ".join(CLASSIFIER_NAMES_SQL.split()) in text
     assert " ".join(session_derived._READ.split()).count(" ".join(CLASSIFIER_NAMES_SQL.split())) == 1
-    skills = session_derived._SKILLS_OBJECT
-    agents = session_derived._AGENTS_OBJECT
-    with_summary, without_summary = " ".join(CLASSIFIER_NAMES_SQL.split()).split("THEN", 1)[1].split(" ELSE ", 1)
-    assert "session_skills" not in with_summary
+    names_sql = " ".join(CLASSIFIER_NAMES_SQL.split())
+    # One unconditional union: the summary timestamp no longer switches sources off.
+    assert "CASE WHEN sd.summary_ts" not in names_sql
+    assert "summary_ts" not in names_sql
+    for fragment in (
+        "session_skills",
+        "invocations_hourly",
+        "i.kind IN (2, 4)",
+        "jsonb_array_elements( CASE WHEN jsonb_typeof(sd.commands) = 'array' THEN sd.commands END)",
+        "jsonb_typeof(c) = 'string'",
+    ):
+        assert fragment in names_sql
+    # The dispatch and slash-command names have a lower bound only (one hour before the session start, none when the
+    # start is unknown); a later row stays, because the dimension hooks that fill `started_at` can end long before.
+    assert names_sql.count("i.hour") == 1
     assert (
-        f"FROM (SELECT s.name FROM jsonb_object_keys({skills}) s (name) "
-        f"UNION SELECT a.name FROM jsonb_object_keys({agents}) a (name)) x WHERE x.name <> ''"
-    ) in with_summary
-    assert (
-        "FROM (SELECT ss.skill_name AS name FROM session_skills ss WHERE ss.session_id = sd.session_id "
-        f"UNION SELECT s.name FROM jsonb_object_keys({skills}) s (name) "
-        f"UNION SELECT a.name FROM jsonb_object_keys({agents}) a (name)) x WHERE x.name <> ''"
-    ) in without_summary
+        "i.hour >= coalesce(date_trunc('hour', sd.started_at) - interval '1 hour', '-infinity'::timestamptz)"
+        in names_sql
+    )
 
 
 @pytest.mark.asyncio
@@ -148,8 +154,18 @@ async def test_skill_names_bind_the_distinct_session_ids_and_answer_an_empty_lis
     await PostgresCliAnalyticsReader(recorder).get_skill_names_by_session(["s2", "s1", "s2"])  # type: ignore[arg-type]
 
     assert recorder.args == [(["s2", "s1"],)]
-    assert "coalesce(CASE WHEN sd.summary_ts" in recorder.statements[0]
-    assert "ARRAY[]::text[]) AS skill_names" in recorder.statements[0]
+    text = " ".join(recorder.statements[0].split())
+    # The five sources of the union and the guard that keeps a non-array `commands` from raising.
+    assert text.count("UNION") == 4
+    for source in (
+        "FROM session_skills ss",
+        "FROM invocations_hourly i",
+        "FROM jsonb_object_keys(CASE WHEN jsonb_typeof(sd.skills) = 'object' THEN sd.skills END) s (name)",
+        "FROM jsonb_object_keys(CASE WHEN jsonb_typeof(sd.agents) = 'object' THEN sd.agents END) a (name)",
+        "CASE WHEN jsonb_typeof(sd.commands) = 'array' THEN sd.commands END) c WHERE jsonb_typeof(c) = 'string'",
+    ):
+        assert source in text
+    assert "ARRAY[]::text[]) AS skill_names" in text
 
 
 def test_deny_all_selects_no_session():
@@ -267,7 +283,8 @@ class _SqlRecorder:
         return []
 
 
-_NOT_WINDOWED = ("get_skill_names_by_session", "get_session_page")  # plus the get_session_detail_* queries
+# plus the get_session_detail_* queries
+_NOT_WINDOWED = ("get_skill_names_by_session", "get_session_page", "get_framework_sessions")
 
 
 class _PageRecorder(_SqlRecorder):
@@ -364,6 +381,28 @@ async def test_repository_sessions_read_the_windowed_sel():
 
     assert "FROM sel" in sql
     assert re.search(r"started_at BETWEEN \$\d+::timestamptz AND \$\d+::timestamptz", sql)
+
+
+@pytest.mark.asyncio
+async def test_framework_sessions_group_raw_keys_and_bind_the_window_and_label():
+    recorder = _ArgRecorder()
+    start, end = datetime(2026, 9, 1, 8, 30), datetime(2026, 9, 8, 17, 45)
+
+    rows = await PostgresCliAnalyticsReader(recorder).get_framework_sessions(start, end, ["STLC Factory", "SDLC"])  # type: ignore[arg-type]
+
+    sql = " ".join(recorder.statements[0].split())
+    assert rows == []
+    assert "started_at BETWEEN $1::timestamptz AND $2::timestamptz" in sql
+    assert "delivery_framework = ANY($3::text[])" in sql
+    assert "delivery_framework <>" not in sql  # the current labels are matched, not "anything but the fallback"
+    assert "GROUP BY 1, 2, 3" in sql
+    # Global per person and repository like the Elasticsearch side: no project predicate.
+    assert "project" not in sql.lower()
+    assert recorder.args[0] == (
+        datetime(2026, 9, 1, 8, 30, tzinfo=UTC),
+        datetime(2026, 9, 8, 17, 44, 59, 999000, tzinfo=UTC),
+        ["STLC Factory", "SDLC"],
+    )
 
 
 @pytest.mark.asyncio

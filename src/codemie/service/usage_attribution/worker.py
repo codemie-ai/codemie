@@ -44,6 +44,7 @@ from codemie.service.usage_attribution.constants import (
     WORKER_MEMORY_EXIT_CODE,
 )
 from codemie.service.usage_attribution.fetch import Fetcher, Spec
+from codemie.service.usage_attribution.framework_merge import load_people_and_merge
 
 logger = logging.getLogger(__name__)
 
@@ -325,7 +326,7 @@ def _fetch_meta(
     cards_spec: Any,
     evidence_blob: bytes | None,
     fplan: Any,
-    ev_window: dict,
+    ev_window: dict[str, Any],
 ) -> dict[str, Any]:
     es_query_specs = ([cards_spec] if evidence_blob is not None else []) + specs
     return {
@@ -343,6 +344,42 @@ def _fetch_meta(
     }
 
 
+def _assemble_inputs(
+    job: dict[str, Any],
+    ev_window: dict[str, Any],
+    same: bool,
+    evidence: dict[str, Any],
+    persons: dict[str, Any],
+    web_people: dict[str, Any],
+    shared_cli: dict[str, dict[str, Any]],
+    by_key: dict[str, Spec],
+    est: dict[str, Any],
+    static: dict[str, Any],
+    people: list[list[Any]],
+    meta: dict[str, Any],
+) -> dict[str, Any]:
+    """The compact inputs of the analysis from what was read, with the evidence parts, the people and the meta."""
+    return {
+        "v": INPUTS_VERSION,
+        "window": job["window"],
+        "evidence_window": ev_window,
+        "persons": persons,
+        "ev_persons": None if same else evidence["ev_persons"],
+        "values": evidence["values"],
+        "tool": evidence["tool"],
+        "sess": evidence["sess"],
+        "web_proj": by_key["web_proj"].result or {},
+        "web_fb": by_key["web_fb"].result or {},
+        "web_people": web_people,
+        "web_funding": by_key["web_funding"].result or {},
+        "shared_cli": shared_cli,
+        "totals": by_key["totals"].result or {},
+        "cards": dict(est),
+        "app_db": dict(static, people=people),
+        "meta": meta,
+    }
+
+
 def fetch_inputs(job: dict[str, Any]) -> tuple[dict[str, Any], bytes | None]:
     """Read the app DB and Elasticsearch, and return the compact inputs of the analysis, with the evidence (sizes,
     repository values, tools, sessions and people over the evidence window) gzipped apart when it was read now. With
@@ -350,9 +387,6 @@ def fetch_inputs(job: dict[str, Any]) -> tuple[dict[str, Any], bytes | None]:
     window it was read for, so this one reads only its own spend."""
     from codemie.clients.postgres import PostgresClient
     from codemie.configs.config import config
-    from sqlmodel import Session
-
-    from codemie.service.usage_attribution import app_db
 
     settings = job["settings"]
     money_from, money_to = _dt(job["window"]["from"]), _dt(job["window"]["to"])
@@ -398,36 +432,30 @@ def fetch_inputs(job: dict[str, Any]) -> tuple[dict[str, Any], bytes | None]:
     fetcher.execute(specs)
     es_ms = (time.perf_counter() - t_es) * 1000.0
     by_key = {sp.key: sp for sp in specs}
-    evidence, evidence_blob = _build_evidence(evidence, ev_window, est, by_key, same)
     shared_cli = _merge_shared_cli(by_key)
     persons = evidence["ev_persons"] if persons_shared else (by_key["persons"].result or {})
     web_people = by_key["web_people"].result or {}
     uids = _collect_uids(persons, web_people, shared_cli)
-    t_people = time.perf_counter()
-    with Session(engine) as session:
-        people = app_db.load_people(session, sorted(uids), db_timings, job.get("user_enrichment", True))
-    db_ms += (time.perf_counter() - t_people) * 1000.0
-    inputs = {
-        "v": INPUTS_VERSION,
-        "window": job["window"],
-        "evidence_window": ev_window,
-        "persons": persons,
-        "ev_persons": None if same else evidence["ev_persons"],
-        "values": evidence["values"],
-        "tool": evidence["tool"],
-        "sess": evidence["sess"],
-        "web_proj": by_key["web_proj"].result or {},
-        "web_fb": by_key["web_fb"].result or {},
-        "web_people": web_people,
-        "web_funding": by_key["web_funding"].result or {},
-        "shared_cli": shared_cli,
-        "totals": by_key["totals"].result or {},
-        "cards": dict(est),
-        "app_db": dict(static, people=people),
-        "meta": _fetch_meta(
-            fetcher, max_buckets, es_ms, db_ms, db_timings, specs, cards_spec, evidence_blob, fplan, ev_window
-        ),
-    }
+    people, merge_failed, people_ms = load_people_and_merge(engine, job, by_key, uids, evidence is None, db_timings)
+    db_ms += people_ms
+    evidence, evidence_blob = _build_evidence(evidence, ev_window, est, by_key, same)
+    inputs = _assemble_inputs(
+        job,
+        ev_window,
+        same,
+        evidence,
+        persons,
+        web_people,
+        shared_cli,
+        by_key,
+        est,
+        static,
+        people,
+        _fetch_meta(fetcher, max_buckets, es_ms, db_ms, db_timings, specs, cards_spec, evidence_blob, fplan, ev_window),
+    )
+    if merge_failed:
+        # The parent does not store these Elasticsearch-only inputs and evidence for the hour.
+        inputs["meta"]["postgres_merge_failed"] = True
     return inputs, evidence_blob
 
 

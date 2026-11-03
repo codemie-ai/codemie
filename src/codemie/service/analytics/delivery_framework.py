@@ -65,11 +65,20 @@ def get_framework_labels() -> list[str]:
     return [label for _, label in rules] + [fallback_label]
 
 
+def get_rule_framework_labels() -> list[str]:
+    """The labels of the configured rules without the fallback label, each once: the labels a session classified as a
+    framework session carries (a rule may share its label with the fallback, which then names no framework)."""
+    labels = get_framework_labels()
+    fallback_label = labels[-1]
+    return list(dict.fromkeys(label for label in labels[:-1] if label != fallback_label))
+
+
 def classify_delivery_framework(skill_names: list[str]) -> str:
     """Return the primary delivery framework for a session based on configured regex rules.
 
-    The input is the session's skill names and subagent types (e.g. `sdlc-factory:complexity-assessor`):
-    the rules match both alike. Priority is positional in customer config — first match wins. Returns the
+    The input is the session's skill names, subagent types, hook-dispatch names and slash-command names (`commands`),
+    all as plain names, e.g. `["reload-plugins", "stlc-factory:suite-health"]`: the rules match them alike. Priority
+    is positional in customer config — first match wins. Returns the
     configured fallback label when no rule matches (including empty skill_names list).
 
     To support additional signal types in future (e.g. file markers),

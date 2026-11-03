@@ -28,28 +28,33 @@ import asyncpg
 
 logger = logging.getLogger(__name__)
 
-# The names the classifier reads: skill names and subagent types. Skills: the keys of `skills` once a summary
-# filled the row, else the session's session_skills (OTel) together with the keys of the `skills` fallback,
-# which also counts the skills known from hooks. Subagent types: the keys of `agents`, since a subagent
-# start without `skill_name` is never a skill. The keys are read only from an object, so no row can raise.
+# The names the classifier reads, with or without a summary: the session's session_skills (OTel), the hook-dispatch
+# names (invocations_hourly kind 2) and the slash-command prompts (kind 4, which exist before the summary arrives), the
+# keys of `skills` and of `agents` (a subagent start without `skill_name` is never a skill), and the string elements of
+# `commands` (a slash-invoked plugin skill lands there, not in `skills`). The keys are read only from an object and the
+# elements only from an array, so no row can raise.
+# The kind 2 and 4 rows have a lower bound only: from one hour before `started_at` on, which lets the planner skip the
+# partitions before the session at run time (an unbounded probe would visit all of them), and an hour of margin covers
+# the hour a row is bucketed into. There is no upper bound: `started_at` and `last_event_at` are filled only by
+# dimension hooks, so a later dispatch would be lost. A NULL `started_at` bounds nothing (the coalesce).
 _SKILLS_OBJECT = "CASE WHEN jsonb_typeof(sd.skills) = 'object' THEN sd.skills END"
 _AGENTS_OBJECT = "CASE WHEN jsonb_typeof(sd.agents) = 'object' THEN sd.agents END"
 # The expression of the classifier names per session_dims row `sd`, one for the classifier below and for the
 # list and details views of the reader, so they cannot drift apart. NULL when the session has none.
-CLASSIFIER_NAMES_SQL = f"""CASE WHEN sd.summary_ts IS NOT NULL THEN
-                (SELECT array_agg(x.name ORDER BY x.name COLLATE "C")
-                 FROM (SELECT s.name FROM jsonb_object_keys({_SKILLS_OBJECT}) s (name)
-                       UNION
-                       SELECT a.name FROM jsonb_object_keys({_AGENTS_OBJECT}) a (name)) x
-                 WHERE x.name <> '')
-            ELSE (SELECT array_agg(x.name ORDER BY x.name COLLATE "C")
-                  FROM (SELECT ss.skill_name AS name FROM session_skills ss WHERE ss.session_id = sd.session_id
-                        UNION
-                        SELECT s.name FROM jsonb_object_keys({_SKILLS_OBJECT}) s (name)
-                        UNION
-                        SELECT a.name FROM jsonb_object_keys({_AGENTS_OBJECT}) a (name)) x
-                  WHERE x.name <> '')
-       END"""
+CLASSIFIER_NAMES_SQL = f"""(SELECT array_agg(x.name ORDER BY x.name COLLATE "C")
+        FROM (SELECT ss.skill_name AS name FROM session_skills ss WHERE ss.session_id = sd.session_id
+              UNION
+              SELECT i.name FROM invocations_hourly i WHERE i.session_id = sd.session_id AND i.kind IN (2, 4)
+                AND i.hour >= coalesce(date_trunc('hour', sd.started_at) - interval '1 hour', '-infinity'::timestamptz)
+              UNION
+              SELECT s.name FROM jsonb_object_keys({_SKILLS_OBJECT}) s (name)
+              UNION
+              SELECT a.name FROM jsonb_object_keys({_AGENTS_OBJECT}) a (name)
+              UNION
+              SELECT c #>> '{{}}' FROM jsonb_array_elements(
+                  CASE WHEN jsonb_typeof(sd.commands) = 'array' THEN sd.commands END) c
+              WHERE jsonb_typeof(c) = 'string') x
+        WHERE x.name <> '')"""
 _READ = f"""
 SELECT sd.session_id, sd.branch_dominant,
        {CLASSIFIER_NAMES_SQL} AS skill_names

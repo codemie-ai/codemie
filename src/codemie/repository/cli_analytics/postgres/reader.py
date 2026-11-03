@@ -34,7 +34,8 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
+from collections.abc import Sequence
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -73,6 +74,12 @@ _C = 'COLLATE "C"'
 _MAX_PAGE_OFFSET = 2**62  # far below the int64 bound of `OFFSET $offset::bigint`, far beyond any real row count
 
 _STARTED_IN_WINDOW = "started_at BETWEEN $start_dt::timestamptz AND $end_dt::timestamptz"
+# The person of a session_dims row `d`: the JWT email, else the largest developer name seen, else the developer name.
+# One expression for the session list and for the framework sessions, so the two cannot name a person differently.
+_SESSION_USER_EMAIL = (
+    "coalesce(nullif(coalesce(nullif(d.jwt_email, ''), nullif(d.dev_name_max, '')), ''), "
+    "nullif(d.developer_name, ''), '')"
+)
 # Clips the raw hook events that decide a session's last dimension event (not session membership).
 _TS = "ts BETWEEN $start_dt::timestamptz AND $end_dt::timestamptz"
 # Slash commands have one source per session: a session with a summary counts only the `commands`
@@ -352,8 +359,7 @@ class PostgresCliAnalyticsReader:
                        coalesce(d.branch, '')       AS branch,
                        coalesce(d.repo_remote, '')  AS repo_remote,
                        coalesce(d.project_name, '') AS project_name,
-                       coalesce(nullif(coalesce(nullif(d.jwt_email, ''), nullif(d.dev_name_max, '')), ''),
-                                nullif(d.developer_name, ''), '') AS user_email,
+                       {_SESSION_USER_EMAIL} AS user_email,
                        d.started_at,
                        d.last_event_at,
                        d.activity_started_at,
@@ -677,10 +683,11 @@ class PostgresCliAnalyticsReader:
         )
 
     async def get_skill_names_by_session(self, session_ids: list[str]) -> Rows:
-        """Distinct skill names and subagent types per session (the `skill_names` key), for any number of
-        sessions: the same names the delivery framework is derived from (`CLASSIFIER_NAMES_SQL`), so a session
-        known only from hooks or a summary, or one that only dispatched subagents, counts too.
-        A session without such a name has an empty list."""
+        """One row per known session id, `{"session_id", "skill_names"}`, for any number of sessions: the sorted
+        distinct names the delivery framework is derived from (`CLASSIFIER_NAMES_SQL`): the session's `session_skills`,
+        the hook-dispatch names (`invocations_hourly` kind 2), the keys of the `skills` and `agents` objects of
+        `session_dims` and the string elements of its `commands` array. A session without such a name has an empty
+        list; an id with no `session_dims` row has no row."""
         if not session_ids:
             return []
         return await self._q(
@@ -844,6 +851,37 @@ class PostgresCliAnalyticsReader:
         WHERE repository <> ''{search_clause}""",
             params,
         )
+
+    async def get_framework_sessions(
+        self, start: datetime, end: datetime, framework_labels: Sequence[str]
+    ) -> list[tuple[str, str, str, int]]:
+        """Per (lower-cased user email, raw repo_remote, raw repository): how many sessions started in [start, end)
+        have a delivery framework among `framework_labels` (the current non-fallback labels, so a stored label of a
+        renamed or removed rule never counts). The caller normalises the repository.
+
+        The query is global per person and repository, like the Elasticsearch side it is merged into: it counts the
+        sessions that started in the window whatever their project, with no filter of the dashboard."""
+        rows = await self._q(
+            f"""
+        SELECT user_email, repo_remote, repository, count(*)::bigint AS framework_sessions
+        FROM (
+            SELECT lower({_SESSION_USER_EMAIL}) AS user_email,
+                   coalesce(repo_remote, '') AS repo_remote,
+                   coalesce(repository, '') AS repository
+            FROM session_dims d
+            WHERE started_at IS NOT NULL AND {_STARTED_IN_WINDOW}
+              AND delivery_framework = ANY($labels::text[])
+        ) x
+        WHERE user_email <> ''
+        GROUP BY 1, 2, 3""",
+            {
+                "start_dt": truncate_to_ms(start),
+                # Elasticsearch ranges are [gte, lt); BETWEEN is inclusive, so the end drops one millisecond.
+                "end_dt": truncate_to_ms(end) - timedelta(milliseconds=1),
+                "labels": list(framework_labels),
+            },
+        )
+        return [(r["user_email"], r["repo_remote"], r["repository"], int(r["framework_sessions"])) for r in rows]
 
     # ── session detail ───────────────────────────────────────────────────────
 

@@ -1,0 +1,19 @@
+# Fix 6: reviewer comments CR-001..CR-004 (EPMCDME-16435, MR !4696)
+
+Worktree: /Users/vponkratina/work/ai/codemie/.claude/worktrees/EPMCDME-16435-stlc-summary-names (HEAD 07cb240dd). Work only there. No git add/commit. English only. Re-verify line references before editing.
+Run `make ruff` and `env -u CLI_ANALYTICS_PG_URL poetry run pytest tests/codemie/repository/cli_analytics tests/codemie/service/usage_attribution -q -k "not live"`. Do not run the live suite (the controller does); the new live tests must at least collect. Write `fix_mr_review6.CHECKPOINT.md` next to this file. No other change; do not touch .codemie/ or doctor.json.
+
+### CR-001. Live tests for `get_framework_sessions` (reader.py ~855-885; tests/codemie/repository/cli_analytics/postgres/test_live_framework_sessions.py)
+Add live cases (reuse the file's helpers; extend `_INSERT_DIMS` or add a helper to seed `dev_name_max` / `developer_name` / NULL `jwt_email`):
+1. Two framework sessions (non-fallback label, inside the window) for the same (email, repo_remote, repository) -> one row with count 2.
+2. A session with NULL/empty `jwt_email` and only `dev_name_max` set -> attributed to that name, lower-cased (use mixed case in the seed); a session with NULL `jwt_email` and `dev_name_max`, only `developer_name` set -> attributed to that name lower-cased; `jwt_email` wins over the others when set.
+3. A session with `jwt_email`, `dev_name_max` and `developer_name` all NULL or empty -> absent from the result.
+
+### CR-002. Degraded result must not overwrite the last-good copy (analysis.py `_store_computed_result` ~702-731)
+Call `self._save_last_good(...)` only when `not result.get("degraded")`. Rewrite `test_a_failed_read_is_not_kept_for_the_hour` (tests/codemie/service/usage_attribution/test_framework_wiring.py ~237-253) so it no longer relies on the degraded result being served as the stale copy: first complete computation saved as last-good; a later degraded computation leaves the complete last-good copy intact (assert its content/meta is the complete one, not the ES-only); with no earlier complete copy a degraded computation leaves no last-good copy. Keep the assertions about the short TTL and the retry after PG_DEGRADED_TTL_S. Add the same assertion for the merge-failure path (`test_a_failed_merge_in_the_worker_...`) that last-good is not written.
+
+### CR-003. Separate "feature off" from "storage build failure" (postgres_sources.py `reader_or_none` / `pg_framework_rows` ~34-70)
+`pg_framework_rows` returns `[]` only when the feature is off (add a small helper such as `feature_enabled()` reading `customer_config.is_feature_enabled("cliAnalytics")`, or reuse the existing check) or when there are no rule labels; the storage/reader build (`get_cli_analytics_storage().reader`) moves inside the existing `try` so a build failure returns `None` (degraded, short TTL, logged at warning with the exception type only). `reader_or_none` stays for the person view (any absence -> `{}`), reimplemented on top of the helper if that is simpler. Fix the `pg_framework_rows` docstring (what `[]` and `None` mean). Tests: feature off -> `[]`; storage build raises -> `None`; query raises -> `None`; healthy -> rows.
+
+### CR-004. Parameterise bare annotations in the code this MR added or changed
+worker.py `_assemble_inputs` (nine bare `dict` parameters and one bare `list`, ~347-358), the meta helper around worker.py:329 (`ev_window: dict`), analysis.py `read_postgres(started_job: dict)` (~756), analysis.py `_run_job` `job: dict` / `-> dict` (~844-848, the signature this MR changed), and bare `Sequence` / `Iterable` / `list[list]` in framework_sessions.py (~193, 208-210). Use `dict[str, Any]`, `list[dict[str, Any]]`, `Sequence[...]` etc. with the precise element types where known. Do not rewrite pre-existing bare annotations outside the code this MR touched.

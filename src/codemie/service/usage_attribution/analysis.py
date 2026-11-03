@@ -51,7 +51,7 @@ import math
 import multiprocessing
 import time
 from collections import Counter, OrderedDict
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from multiprocessing.connection import Connection
@@ -65,6 +65,7 @@ from codemie.service.usage_attribution.constants import (
     LAST_GOOD_TTL_S,
     LIST_SECTIONS,
     MAX_WAITING_PER_KIND,
+    PG_DEGRADED_TTL_S,
     REFRESH_MIN_INTERVAL_S,
     SLOW_READ_REUSE_S,
     WAIT_FOR_OTHER_POD_S,
@@ -77,6 +78,7 @@ from codemie.service.usage_attribution.limits import (
     end_computation,
     refusal_note,
 )
+from codemie.service.usage_attribution.postgres_sources import pg_framework_rows
 from codemie.service.usage_attribution.settings import EffectiveSettings
 
 logger = logging.getLogger(__name__)
@@ -710,7 +712,9 @@ class AnalysisService:
         started: float,
     ) -> AnalysisHandle:
         duration_ms = round((time.perf_counter() - started) * 1000.0, 1)
-        ttl = int(eff.values["analysisCacheMinutes"]) * 60
+        full_ttl = int(eff.values["analysisCacheMinutes"]) * 60
+        # An analysis without the Postgres framework sessions is served briefly, so the same range is computed again.
+        ttl = min(full_ttl, PG_DEGRADED_TTL_S) if result.get("degraded") else full_ttl
         now = datetime.now(timezone.utc)
         meta = self._build_meta(result, rng, ttl, duration_ms, now)
         sections: dict[str, bytes] = result["sections"]
@@ -722,7 +726,9 @@ class AnalysisService:
         # Sections first, then the meta key that marks the analysis complete.
         await self.cache.set_many(writes, ttl + 60)
         await self.cache.set_many({f"{prefix}:meta": meta_blob}, ttl)
-        await self._save_last_good(rng, eff, sections, meta_blob, ttl)
+        if not result.get("degraded"):
+            # A degraded analysis (without the Postgres framework sessions) never replaces the complete last good copy.
+            await self._save_last_good(rng, eff, sections, meta_blob, full_ttl)
         self._log_computed(rng, duration_ms, inputs_blob, meta)
         return AnalysisHandle(prefix, meta, "miss")
 
@@ -744,14 +750,31 @@ class AnalysisService:
             "settings": eff.values,
             "inputs_blob": inputs_blob,
             "evidence_blob": evidence_blob,
+            "pg_framework_rows": [],
             **job_extra,
         }
+        postgres_failed = False
+
+        async def read_postgres(started_job: dict[str, Any]) -> None:
+            # The worker reuses cached inputs or evidence without fetching: read only when neither blob is cached.
+            nonlocal postgres_failed
+            if inputs_blob or evidence_blob:
+                return
+            rows = await pg_framework_rows(rng.evidence_start, rng.end)
+            postgres_failed = rows is None
+            started_job["pg_framework_rows"] = rows or []
+
         kind = "custom" if eff.is_custom else "default"
         started = time.perf_counter()
         try:
-            result = await self._run_job(kind, job, timeout_s, admission)
+            result = await self._run_job(kind, job, timeout_s, admission, read_postgres)
         except Exception as exc:  # noqa: BLE001 - any failure falls back to the last good analysis
             return await self._on_compute_failure(exc, rng, eff, prefix, inputs_blob, timeout_s)
+        if postgres_failed or (result.get("meta") or {}).get("postgres_merge_failed"):
+            # The read or the merge of the Postgres sessions failed: the Elasticsearch-only inputs and evidence are not
+            # stored, and the analysis itself stays only PG_DEGRADED_TTL_S (the last good copy keeps its lifetime), so
+            # the same range is computed, and Postgres read, again after that.
+            result = {**result, "inputs_blob": None, "evidence_blob": None, "degraded": True}
         return await self._store_computed_result(
             rng, eff, prefix, result, inputs_key, quarter_key, hour_key, inputs_blob, started
         )
@@ -817,8 +840,16 @@ class AnalysisService:
         return AnalysisUnavailableError(f"The analysis failed: {name}", 503, retry_after=FAILURE_BACKOFF_S)
 
     # ------------------------------------------------------------------ worker
-    async def _run_job(self, kind: str, job: dict, timeout_s: float, admission: Admission) -> dict:
+    async def _run_job(
+        self,
+        kind: str,
+        job: dict[str, Any],
+        timeout_s: float,
+        admission: Admission,
+        before_start: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    ) -> dict[str, Any]:
         """Run one computation after waiting (bounded in time and in number of waiters) for a free slot of its kind.
+        ``before_start`` completes the job once the slot is held, so a refused (busy) request reads nothing for it.
 
         The timeout counts from the start of the computation, not from the wait. The computation counts against its
         user's limits from its start: refused before (busy, shutdown), it gives its counts back.
@@ -837,6 +868,11 @@ class AnalysisService:
             if self._closing:
                 raise AnalysisUnavailableError(_RESTARTING, 503, 10)
             admission.started = True
+            if before_start is not None:
+                await before_start(job)
+                if self._closing:  # shutdown began while the job was being completed: start no process
+                    admission.started = False
+                    raise AnalysisUnavailableError(_RESTARTING, 503, 10)
             if self._job_runner is not None:
                 return await asyncio.wait_for(asyncio.to_thread(self._job_runner, job), timeout_s)
             return await self._run_in_process(kind, job, timeout_s)

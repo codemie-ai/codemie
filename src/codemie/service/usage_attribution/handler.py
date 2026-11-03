@@ -57,6 +57,7 @@ from codemie.service.usage_attribution.constants import (
     WEB_KIND_BY_METRIC,
 )
 from codemie.service.usage_attribution.people_groups import candidate_ids, group_candidates, median_days
+from codemie.service.usage_attribution.postgres_sources import postgres_names_win, skill_names_by_session
 from codemie.service.usage_attribution.sections import r2, shard_of
 from codemie.service.usage_attribution.settings import (
     DefaultSettings,
@@ -289,9 +290,11 @@ def _people_predicates(candidates: set[str], exp_thr: float, web_thr: float) -> 
 # Handler
 # ---------------------------------------------------------------------------------------------------------------------
 class UsageAttributionHandler:
-    def __init__(self, user: Any, service: AnalysisService | None = None):
+    def __init__(self, user: Any, service: AnalysisService | None = None, reader: Any = None):
         self.user = user
         self.service = service or get_analysis_service()
+        # CLI analytics reader for the Postgres skill names; resolved lazily when not injected.
+        self._reader = reader
 
     # ------------------------------------------------------------------ analysis
     async def _analysis(self, rng: RangeInfo, eff: EffectiveSettings) -> AnalysisHandle:
@@ -894,7 +897,11 @@ class UsageAttributionHandler:
         web = web_resp.get("aggregations") or {}
         categories = {r["value"]: r["category"] for r in detail.get("repos") or []}
         recent_buckets = parsing.bucket_list(cli, "recent", "t")
-        extra = await self._person_session_extras(repo, rng, recent_buckets)
+        extra, pg_names = await _gather(
+            self._person_session_extras(repo, rng, recent_buckets),
+            skill_names_by_session(self._reader, [str(b["key"]) for b in recent_buckets]),
+        )
+        extra = postgres_names_win(extra, pg_names)
         return {
             "models": self._person_model_rows(cli, web),
             "agents": self._person_agents(cli, sessionless),

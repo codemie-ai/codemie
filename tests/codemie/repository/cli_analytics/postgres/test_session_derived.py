@@ -141,30 +141,26 @@ async def test_a_failing_classifier_keeps_the_stored_label_and_does_not_stop_the
     assert "'s1'" in logger.exception.call_args.args[0]
 
 
-def test_without_a_summary_the_classifier_reads_the_skills_of_otel_and_of_hooks() -> None:
-    # session_skills holds only the skills OTel reported. A session known from hooks alone has its
-    # skills in the `skills` fallback of session_dims: read without it, such a session would stay
-    # without a label until its summary arrives.
+def test_the_classifier_reads_the_skills_of_otel_and_of_hooks_whether_or_not_a_summary_arrived() -> None:
+    # session_skills holds only the skills OTel reported; the `skills` fallback of session_dims holds those
+    # known from hooks. One unconditional union reads both, with no switch on the summary timestamp.
     read = " ".join(session_derived._READ.split())
     skills = session_derived._SKILLS_OBJECT
     assert skills == "CASE WHEN jsonb_typeof(sd.skills) = 'object' THEN sd.skills END"  # never the keys of a non-object
-    with_summary, without_summary = read.split("CASE WHEN sd.summary_ts IS NOT NULL THEN", 1)[1].split(" ELSE ", 1)
-    assert "session_skills" not in with_summary
-    assert f"FROM (SELECT s.name FROM jsonb_object_keys({skills}) s (name) UNION" in with_summary
+    assert "summary_ts" not in read
     assert (
         "FROM (SELECT ss.skill_name AS name FROM session_skills ss WHERE ss.session_id = sd.session_id "
+        "UNION SELECT i.name FROM invocations_hourly i WHERE i.session_id = sd.session_id AND i.kind IN (2, 4) "
+        "AND i.hour >= coalesce(date_trunc('hour', sd.started_at) - interval '1 hour', '-infinity'::timestamptz) "
         f"UNION SELECT s.name FROM jsonb_object_keys({skills}) s (name) UNION"
-    ) in without_summary
+    ) in read
 
 
-def test_the_classifier_reads_the_subagent_types_in_both_branches() -> None:
+def test_the_classifier_reads_the_subagent_types_without_a_summary_switch() -> None:
     # A subagent start without `skill_name` is never a skill: it lives only in the keys of `agents`. A session
     # that only dispatches factory agents would stay "Pure chat" if the classifier read skills alone.
     read = " ".join(session_derived._READ.split())
     agents = session_derived._AGENTS_OBJECT
     assert agents == "CASE WHEN jsonb_typeof(sd.agents) = 'object' THEN sd.agents END"  # never the keys of a non-object
-    with_summary, without_summary = read.split("CASE WHEN sd.summary_ts IS NOT NULL THEN", 1)[1].split(" ELSE ", 1)
-    keys = f"SELECT a.name FROM jsonb_object_keys({agents}) a (name)) x WHERE x.name <> ''"
-    assert keys in with_summary
-    assert keys in without_summary
-    assert "session_skills" not in with_summary
+    assert f"SELECT a.name FROM jsonb_object_keys({agents}) a (name)" in read
+    assert read.count("jsonb_object_keys({})".format(agents)) == 1

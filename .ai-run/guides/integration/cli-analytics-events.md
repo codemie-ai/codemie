@@ -410,7 +410,7 @@ The state of the repository, sent at the end of the session.
   "schema_version": 2,
   "event_id": "git:3f6c1e1a-5b0c-4d59-9f0e-2a1d6c0b7e11:b7e1c02",
   "git_branch": "feature/ABC-123",
-  "repo_remote": "https://gitlab.example.com/org/repo.git",
+  "repo_remote": "org/repo",
   "git_email": "dev@example.com",
   "git_head_start": "9a4f3d1",
   "git_head_end": "b7e1c02",

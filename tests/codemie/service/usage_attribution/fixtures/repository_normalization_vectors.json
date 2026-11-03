@@ -1,0 +1,700 @@
+{
+  "_comment": "Golden vectors for normalize_repository (framework_sessions.py). The CLI parses the git remote itself and sends the parsed id as repo_remote, so a value that is not a URL or an scp form passes through, stripped and lower-cased, with all its segments. URL and scp forms are still parsed with the CLI rules, for older or other writers: expected is what detectGitRemoteRepo (src/utils/processes.ts, function parseGitRemoteUrl) of codemie-code returns for the raw git remote; when it returns undefined, or the remote is empty, normalize_repository falls back to the working directory, and with an empty working directory gives 'unknown' (the bucket the CLI reports). Regenerate it whenever the CLI rule changes. source cli_test: input and expected come from the CLI test src/utils/__tests__/processes-git.test.ts; source cli_run: expected was produced by running the CLI function with node (for a parsed id: truncateProjectPath of the built CLI returns it unchanged apart from the lower-casing the Python side applies); source contract: the Python-side rule, not a CLI output (a pass-through of a bare path or other non-URL value, and 'unknown' where the CLI function returns undefined).",
+  "vectors": [
+    {
+      "input": "git@github.com:codemie-ai/codemie-code.git",
+      "expected": "codemie-ai/codemie-code",
+      "source": "cli_test"
+    },
+    {
+      "input": "git@gitbud.epam.com:epm-cdme/codemie.git",
+      "expected": "epm-cdme/codemie",
+      "source": "cli_test"
+    },
+    {
+      "input": "https://github.com/codemie-ai/codemie-code.git",
+      "expected": "codemie-ai/codemie-code",
+      "source": "cli_test"
+    },
+    {
+      "input": "https://ghp_secrettoken@github.com/org/repo.git",
+      "expected": "org/repo",
+      "source": "cli_test"
+    },
+    {
+      "input": "https://github.com/org/repo",
+      "expected": "org/repo",
+      "source": "cli_test"
+    },
+    {
+      "input": "git@github.com:test-owner/my.repo.git",
+      "expected": "test-owner/my.repo",
+      "source": "cli_test"
+    },
+    {
+      "input": "git@github.com:test-owner/my.repo",
+      "expected": "test-owner/my.repo",
+      "source": "cli_test"
+    },
+    {
+      "input": "https://github.com/test-owner/my.repo.git",
+      "expected": "test-owner/my.repo",
+      "source": "cli_test"
+    },
+    {
+      "input": "https://github.com/vercel/next.js",
+      "expected": "vercel/next.js",
+      "source": "cli_test"
+    },
+    {
+      "input": "git@github.com:user/user.github.io.git",
+      "expected": "user/user.github.io",
+      "source": "cli_test"
+    },
+    {
+      "input": "https://github.com/org/a.b.c.git",
+      "expected": "org/a.b.c",
+      "source": "cli_test"
+    },
+    {
+      "input": "https://gitlab.example.com/qa-group-a/shared/svc.git",
+      "expected": "qa-group-a/shared/svc",
+      "source": "cli_test"
+    },
+    {
+      "input": "https://gitlab.example.com/qa-group-b/shared/svc.git",
+      "expected": "qa-group-b/shared/svc",
+      "source": "cli_test"
+    },
+    {
+      "input": "git@gitlab.example.com:qa-top/qa-sub/qa-subsub/deep-svc.git",
+      "expected": "qa-top/qa-sub/qa-subsub/deep-svc",
+      "source": "cli_test"
+    },
+    {
+      "input": "https://qaorg@dev.azure.com/qaorg/QA%20Project/_git/qa-ado-repo",
+      "expected": "qaorg/qa project/qa-ado-repo",
+      "source": "cli_test"
+    },
+    {
+      "input": "https://qaorg@dev.azure.com/qaorg/QAProject/_git/qa-ado-repo",
+      "expected": "qaorg/qaproject/qa-ado-repo",
+      "source": "cli_test"
+    },
+    {
+      "input": "git@ssh.dev.azure.com:v3/qaorg/QAProject/qa-ado-repo",
+      "expected": "qaorg/qaproject/qa-ado-repo",
+      "source": "cli_test"
+    },
+    {
+      "input": "https://gitlab.example.com/group/v3/_git.git",
+      "expected": "group/v3/_git",
+      "source": "cli_test"
+    },
+    {
+      "input": "https://gitlab.example.com/group/my.git-tools.git",
+      "expected": "group/my.git-tools",
+      "source": "cli_test"
+    },
+    {
+      "input": "https://user:token@gitlab.example.com/qa-group-a/shared/svc.git",
+      "expected": "qa-group-a/shared/svc",
+      "source": "cli_test"
+    },
+    {
+      "input": "https://user:TOKEN@host",
+      "expected": "unknown",
+      "source": "contract"
+    },
+    {
+      "input": "https://ghp_SECRET@github.com",
+      "expected": "unknown",
+      "source": "contract"
+    },
+    {
+      "input": "https://host:8443",
+      "expected": "unknown",
+      "source": "contract"
+    },
+    {
+      "input": "https://x.visualstudio.com",
+      "expected": "unknown",
+      "source": "contract"
+    },
+    {
+      "input": "ghp_SECRETTOKEN@github.com",
+      "expected": "unknown",
+      "source": "contract"
+    },
+    {
+      "input": "user:TOKEN@github.com",
+      "expected": "unknown",
+      "source": "contract"
+    },
+    {
+      "input": "https://gitlab.com/a/b.git?private_token=TOKEN",
+      "expected": "a/b",
+      "source": "cli_test"
+    },
+    {
+      "input": "https://host/a/b%0D%0AX-Evil:%201",
+      "expected": "a/b%0d%0ax-evil:%201",
+      "source": "cli_test"
+    },
+    {
+      "input": "https://host/a/b%E2%80%A8evil",
+      "expected": "a/b%e2%80%a8evil",
+      "source": "cli_test"
+    },
+    {
+      "input": "https://gitlab.example.com/group/a%2Fb/repo.git",
+      "expected": "group/a%2fb/repo",
+      "source": "cli_test"
+    },
+    {
+      "input": "https://gitlab.example.com/group/a/b/repo.git",
+      "expected": "group/a/b/repo",
+      "source": "cli_test"
+    },
+    {
+      "input": "https://dev.azure.com/org/%D0%9F%D1%80%D0%BE%D0%B5%D0%BA%D1%82/_git/repo",
+      "expected": "org/%d0%9f%d1%80%d0%be%d0%b5%d0%ba%d1%82/repo",
+      "source": "cli_test"
+    },
+    {
+      "input": "github-work:org/repo.git",
+      "expected": "org/repo",
+      "source": "cli_test"
+    },
+    {
+      "input": "github.com:org/repo",
+      "expected": "org/repo",
+      "source": "cli_test"
+    },
+    {
+      "input": "C:\\Users\\jdoe\\src\\repo.git",
+      "expected": "c:\\users\\jdoe\\src\\repo.git",
+      "source": "contract"
+    },
+    {
+      "input": "\\\\server\\share\\jdoe\\repo.git",
+      "expected": "\\\\server\\share\\jdoe\\repo.git",
+      "source": "contract"
+    },
+    {
+      "input": "https://github.com/org/repo.GIT",
+      "expected": "org/repo",
+      "source": "cli_test"
+    },
+    {
+      "input": "file://host/home/jdoe/repo.git",
+      "expected": "home/jdoe/repo",
+      "source": "cli_test"
+    },
+    {
+      "input": "file:///home/jdoe/repo.git",
+      "expected": "jdoe/repo",
+      "source": "cli_test"
+    },
+    {
+      "input": "/home/user/repo.git",
+      "expected": "/home/user/repo.git",
+      "source": "contract"
+    },
+    {
+      "input": "/opt/repos/myrepo.git",
+      "expected": "/opt/repos/myrepo.git",
+      "source": "contract"
+    },
+    {
+      "input": "https://github.com/org/bad%2.git",
+      "expected": "org/bad%2",
+      "source": "cli_test"
+    },
+    {
+      "input": "https://bitbucket.example.com/scm/PROJ/repo.git",
+      "expected": "proj/repo",
+      "source": "cli_test"
+    },
+    {
+      "input": "https://bitbucket.example.com/scm/~jdoe/repo.git",
+      "expected": "jdoe/repo",
+      "source": "cli_test"
+    },
+    {
+      "input": "https://user@bitbucket.example.com:8443/scm/PROJ/repo.git",
+      "expected": "proj/repo",
+      "source": "cli_test"
+    },
+    {
+      "input": "ssh://git@bitbucket.example.com:7999/PROJ/repo.git",
+      "expected": "proj/repo",
+      "source": "cli_test"
+    },
+    {
+      "input": "ssh://git@bitbucket.example.com:7999/~jdoe/repo.git",
+      "expected": "jdoe/repo",
+      "source": "cli_test"
+    },
+    {
+      "input": "git@bitbucket.example.com:PROJ/repo.git",
+      "expected": "proj/repo",
+      "source": "cli_test"
+    },
+    {
+      "input": "git@bitbucket.example.com:~jdoe/repo.git",
+      "expected": "jdoe/repo",
+      "source": "cli_test"
+    },
+    {
+      "input": "https://org.visualstudio.com/Proj/_git/repo",
+      "expected": "org/proj/repo",
+      "source": "cli_test"
+    },
+    {
+      "input": "https://org@org.visualstudio.com/Proj/_git/repo",
+      "expected": "org/proj/repo",
+      "source": "cli_test"
+    },
+    {
+      "input": "https://org.visualstudio.com/DefaultCollection/Proj/_git/repo",
+      "expected": "org/proj/repo",
+      "source": "cli_test"
+    },
+    {
+      "input": "org@vs-ssh.visualstudio.com:v3/org/Proj/repo",
+      "expected": "org/proj/repo",
+      "source": "cli_test"
+    },
+    {
+      "input": "https://dev.azure.com/org/Proj/_git/repo",
+      "expected": "org/proj/repo",
+      "source": "cli_test"
+    },
+    {
+      "input": "https://ORG.VISUALSTUDIO.COM/Proj/_git/repo",
+      "expected": "org/proj/repo",
+      "source": "cli_test"
+    },
+    {
+      "input": "https://dev.azure.com/org/bad%2",
+      "expected": "org/bad%2",
+      "source": "cli_test"
+    },
+    {
+      "input": "https://github.com/scm/repo.git",
+      "expected": "scm/repo",
+      "source": "cli_test"
+    },
+    {
+      "input": "git@gitlab.example.com:scm/team/repo.git",
+      "expected": "scm/team/repo",
+      "source": "cli_test"
+    },
+    {
+      "input": "https://bitbucket.example.com/bitbucket/scm/PROJ/repo.git",
+      "expected": "proj/repo",
+      "source": "cli_test"
+    },
+    {
+      "input": "https://example.com/group/a~b/repo.git",
+      "expected": "group/a~b/repo",
+      "source": "cli_test"
+    },
+    {
+      "input": "https://git.example.com/team/_git/repo.git",
+      "expected": "team/_git/repo",
+      "source": "cli_test"
+    },
+    {
+      "input": "https://bitbucket.example.com/~/repo.git",
+      "expected": "~/repo",
+      "source": "cli_test"
+    },
+    {
+      "input": "https://org.visualstudio.com/_git",
+      "expected": "unknown",
+      "source": "contract"
+    },
+    {
+      "input": "https://org.visualstudio.com/DefaultCollection",
+      "expected": "unknown",
+      "source": "contract"
+    },
+    {
+      "input": "https://org.visualstudio.com/DefaultCollection/_git",
+      "expected": "unknown",
+      "source": "contract"
+    },
+    {
+      "input": "https://example.com/~",
+      "expected": "unknown",
+      "source": "contract"
+    },
+    {
+      "input": "https://github.com/MyOrg/MyRepo.git",
+      "expected": "myorg/myrepo",
+      "source": "cli_test"
+    },
+    {
+      "input": "/Home/User/Repo.git",
+      "expected": "/home/user/repo.git",
+      "source": "contract"
+    },
+    {
+      "input": "https://github.com/owner/repo",
+      "expected": "owner/repo",
+      "source": "cli_run"
+    },
+    {
+      "input": "https://github.com/owner/repo.git",
+      "expected": "owner/repo",
+      "source": "cli_run"
+    },
+    {
+      "input": "https://github.com/owner/repo.GIT",
+      "expected": "owner/repo",
+      "source": "cli_run"
+    },
+    {
+      "input": "http://gitlab.local:8080/owner/repo.git",
+      "expected": "owner/repo",
+      "source": "cli_run"
+    },
+    {
+      "input": "git@github.com:owner/repo.git",
+      "expected": "owner/repo",
+      "source": "cli_run"
+    },
+    {
+      "input": "git@github.com:owner/repo",
+      "expected": "owner/repo",
+      "source": "cli_run"
+    },
+    {
+      "input": "ssh://git@github.com/owner/repo.git",
+      "expected": "owner/repo",
+      "source": "cli_run"
+    },
+    {
+      "input": "ssh://git@host.example:2222/owner/repo.git",
+      "expected": "owner/repo",
+      "source": "cli_run"
+    },
+    {
+      "input": "https://gitlab.com/a/b/c/repo.git",
+      "expected": "a/b/c/repo",
+      "source": "cli_run"
+    },
+    {
+      "input": "https://gitlab.com/Group/Sub/Repo",
+      "expected": "group/sub/repo",
+      "source": "cli_run"
+    },
+    {
+      "input": "https://github.com/owner/repo/",
+      "expected": "owner/repo",
+      "source": "cli_run"
+    },
+    {
+      "input": "https://github.com/Owner/Repo.git",
+      "expected": "owner/repo",
+      "source": "cli_run"
+    },
+    {
+      "input": "https://user:token@github.com/o/r.git",
+      "expected": "o/r",
+      "source": "cli_run"
+    },
+    {
+      "input": "https://github.com/owner/repo.git?ref=x#frag",
+      "expected": "owner/repo",
+      "source": "cli_run"
+    },
+    {
+      "input": "https://github.com/owner/my%20repo.git",
+      "expected": "owner/my repo",
+      "source": "cli_run"
+    },
+    {
+      "input": "https://github.com/owner/r%2Fx.git",
+      "expected": "owner/r%2fx",
+      "source": "cli_run"
+    },
+    {
+      "input": "https://github.com/owner/bad%ZZ.git",
+      "expected": "owner/bad%zz",
+      "source": "cli_run"
+    },
+    {
+      "input": "https://github.com/owner/ctl%0D%0A.git",
+      "expected": "owner/ctl%0d%0a",
+      "source": "cli_run"
+    },
+    {
+      "input": "https://dev.azure.com/Org/Project/_git/Repo",
+      "expected": "org/project/repo",
+      "source": "cli_run"
+    },
+    {
+      "input": "https://user@dev.azure.com/Org/Project/_git/Repo",
+      "expected": "org/project/repo",
+      "source": "cli_run"
+    },
+    {
+      "input": "git@ssh.dev.azure.com:v3/Org/Project/Repo",
+      "expected": "org/project/repo",
+      "source": "cli_run"
+    },
+    {
+      "input": "https://org.visualstudio.com/Project/_git/Repo",
+      "expected": "org/project/repo",
+      "source": "cli_run"
+    },
+    {
+      "input": "https://Org.visualstudio.com/DefaultCollection/Project/_git/Repo",
+      "expected": "org/project/repo",
+      "source": "cli_run"
+    },
+    {
+      "input": "org@vs-ssh.visualstudio.com:v3/Org/Project/Repo",
+      "expected": "org/project/repo",
+      "source": "cli_run"
+    },
+    {
+      "input": "https://bitbucket.example.com/scm/repo.git",
+      "expected": "scm/repo",
+      "source": "cli_run"
+    },
+    {
+      "input": "https://bitbucket.org/~User/repo.git",
+      "expected": "user/repo",
+      "source": "cli_run"
+    },
+    {
+      "input": "ssh://git@bitbucket.example.com:7999/~user/repo.git",
+      "expected": "user/repo",
+      "source": "cli_run"
+    },
+    {
+      "input": "/home/user/work/repo.git",
+      "expected": "/home/user/work/repo.git",
+      "source": "contract"
+    },
+    {
+      "input": "../repo.git",
+      "expected": "../repo.git",
+      "source": "contract"
+    },
+    {
+      "input": "C:\\Users\\x\\proj\\repo.git",
+      "expected": "c:\\users\\x\\proj\\repo.git",
+      "source": "contract"
+    },
+    {
+      "input": "file:///srv/git/repo.git",
+      "expected": "git/repo",
+      "source": "cli_run"
+    },
+    {
+      "input": "git@github.com:o/r.git",
+      "expected": "o/r",
+      "source": "cli_run"
+    },
+    {
+      "input": "https://user:p@ss@host/org/repo",
+      "expected": "org/repo",
+      "source": "cli_run"
+    },
+    {
+      "input": "git@host",
+      "expected": "unknown",
+      "source": "contract"
+    },
+    {
+      "input": "ssh://git@host",
+      "expected": "unknown",
+      "source": "contract"
+    },
+    {
+      "input": "~/repos/x.git",
+      "expected": "~/repos/x.git",
+      "source": "contract"
+    },
+    {
+      "input": "./repo",
+      "expected": "./repo",
+      "source": "cli_run"
+    },
+    {
+      "input": "repo.git",
+      "expected": "repo.git",
+      "source": "contract"
+    },
+    {
+      "input": "",
+      "expected": "unknown",
+      "source": "contract"
+    },
+    {
+      "input": "https://github.com/owner/\u00fcn\u00ef.git",
+      "expected": "owner/\u00fcn\u00ef",
+      "source": "cli_run"
+    },
+    {
+      "input": "git@github.com:owner/sub/repo.git",
+      "expected": "owner/sub/repo",
+      "source": "cli_run"
+    },
+    {
+      "input": "ssh://git@ssh.dev.azure.com/v3/Org/Project/Repo",
+      "expected": "org/project/repo",
+      "source": "cli_run"
+    },
+    {
+      "input": "https://github.com//owner//repo.git",
+      "expected": "owner/repo",
+      "source": "cli_run"
+    },
+    {
+      "input": "https://github.com/owner/repo.git.git",
+      "expected": "owner/repo.git",
+      "source": "cli_run"
+    },
+    {
+      "input": "git@github.com:owner/repo.Git",
+      "expected": "owner/repo",
+      "source": "cli_run"
+    },
+    {
+      "input": "https://github.com/o/r%C3%A9.git",
+      "expected": "o/r\u00e9",
+      "source": "cli_run"
+    },
+    {
+      "input": "https://github.com/o/r%C3%A9%FF.git",
+      "expected": "o/r%c3%a9%ff",
+      "source": "cli_run"
+    },
+    {
+      "input": "https://github.com/o/%E4%BD%A0.git",
+      "expected": "o/%e4%bd%a0",
+      "source": "cli_run"
+    },
+    {
+      "input": "D:\\work\\a\\b.git",
+      "expected": "d:\\work\\a\\b.git",
+      "source": "contract"
+    },
+    {
+      "input": "file:///",
+      "expected": "file:",
+      "source": "cli_run"
+    },
+    {
+      "input": "https://pass@host/x",
+      "expected": "x",
+      "source": "cli_run"
+    },
+    {
+      "input": "https://dev.azure.com/org/proj/_git/_git",
+      "expected": "org/proj",
+      "source": "cli_run"
+    },
+    {
+      "input": "https://dev.azure.com/v3/org/repo",
+      "expected": "org/repo",
+      "source": "cli_run"
+    },
+    {
+      "input": "ssh://git@bitbucket.example.com/scm/PROJ/repo.git",
+      "expected": "scm/proj/repo",
+      "source": "cli_run"
+    },
+    {
+      "input": "https://bitbucket.example.com/a/scm/b/c/scm/d/e",
+      "expected": "b/c/scm/d/e",
+      "source": "cli_run"
+    },
+    {
+      "input": "https://host/a/scm/b",
+      "expected": "a/scm/b",
+      "source": "cli_run"
+    },
+    {
+      "input": "owner/repo",
+      "expected": "owner/repo",
+      "source": "cli_run"
+    },
+    {
+      "input": "Owner/Repo",
+      "expected": "owner/repo",
+      "source": "cli_run"
+    },
+    {
+      "input": "  owner/repo  ",
+      "expected": "owner/repo",
+      "source": "cli_run"
+    },
+    {
+      "input": "epm-cdme/platform/backend/codemie",
+      "expected": "epm-cdme/platform/backend/codemie",
+      "source": "cli_run"
+    },
+    {
+      "input": "Group/Sub/Repo",
+      "expected": "group/sub/repo",
+      "source": "cli_run"
+    },
+    {
+      "input": "a/b/c/d",
+      "expected": "a/b/c/d",
+      "source": "cli_run"
+    },
+    {
+      "input": "single",
+      "expected": "single",
+      "source": "cli_run"
+    },
+    {
+      "input": "org/project/repo",
+      "expected": "org/project/repo",
+      "source": "cli_run"
+    },
+    {
+      "input": "org/project/_git/repo",
+      "expected": "org/project/_git/repo",
+      "source": "cli_run"
+    },
+    {
+      "input": "team/_git/repo",
+      "expected": "team/_git/repo",
+      "source": "cli_run"
+    },
+    {
+      "input": "owner/my.repo",
+      "expected": "owner/my.repo",
+      "source": "cli_run"
+    },
+    {
+      "input": "owner/repo.git",
+      "expected": "owner/repo.git",
+      "source": "cli_run"
+    },
+    {
+      "input": "owner/r%2fx",
+      "expected": "owner/r%2fx",
+      "source": "cli_run"
+    },
+    {
+      "input": "unknown",
+      "expected": "unknown",
+      "source": "cli_run"
+    },
+    {
+      "input": "   ",
+      "expected": "unknown",
+      "source": "contract"
+    }
+  ]
+}
