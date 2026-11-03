@@ -1277,8 +1277,14 @@ async def test_dispatch_union_branch_treats_subagent_hook_skill_name_as_skill_di
         "AND d_o.prompt_id = d.prompt_id AND (d_o.ts, d_o.ingest_seq) <> (d.ts, d.ingest_seq)) "
         "ORDER BY coalesce(f.skill_name, '') = '', f.ts, f.ingest_seq LIMIT 1" in sql
     )
-    assert "FROM dispatch_fork df LEFT JOIN stopped st ON st.agent_id = df.agent_id" in sql
-    assert "CASE WHEN df.agent_id IS NULL THEN 0 ELSE au.cost_usd END::float8" in sql
+    assert "FROM dispatch_fork df LEFT JOIN inline_usage iu ON iu.ts = df.ts" in sql
+    assert "LEFT JOIN stopped st ON st.agent_id = df.agent_id" in sql
+    # a dispatch without a fork takes the requests attributed to its skill in its own prompt, 0 without any
+    assert "CASE WHEN df.agent_id IS NULL THEN coalesce(iu.cost_usd, 0) ELSE au.cost_usd END::float8" in sql
+    assert "x.skill_name = w.skill_name" in sql
+    # identical re-sent dispatch rows (hook_events has no unique key) share one window, so they cannot double the sums
+    assert "SELECT DISTINCT d.ts, d.skill_name, d.prompt_id, df.agent_id, df.ts AS fork_ts" in sql
+    assert "WHERE t.scope_kind = 'skill' AND coalesce(t.agent_id, '') = ''" in sql
 
 
 @pytest.mark.asyncio
@@ -1387,8 +1393,10 @@ async def test_an_agent_dispatch_falls_back_to_its_parent_span_only_when_it_has_
     # the full even-split/time-window mechanism (row_number dispatch_id,
     # per-event active_n division, an unconditional sibling_count divisor) must still never come back —
     # only the narrower, next-sibling-start-bounded split below, scoped to the no-agentId fallback alone
+    # (the inline_attributed CTE runs the rollups' request pairing, which is no cost split)
+    dispatch_sql = sql.split("inline_attributed AS")[0] + sql.split("inline_window AS")[1]
     for removed in ("windows AS", "matches AS", "active_n", "sibling_count", "row_number() OVER"):
-        assert removed not in sql
+        assert removed not in dispatch_sql
 
 
 @pytest.mark.asyncio

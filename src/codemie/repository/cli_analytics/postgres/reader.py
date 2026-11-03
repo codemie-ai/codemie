@@ -53,6 +53,7 @@ from codemie.repository.cli_analytics.postgres.fork_attribution import (
     sole_dispatch_of_prompt,
     tool_response_agent_id,
 )
+from codemie.repository.cli_analytics.postgres.inline_skill_attribution import INLINE_SKILL_CTES
 from codemie.repository.cli_analytics.postgres.otlp import MAX_KEY_BYTES
 from codemie.repository.cli_analytics.postgres.rollups import _BLANKS, _attr_ms
 from codemie.repository.cli_analytics.postgres.session_derived import CLASSIFIER_NAMES_SQL
@@ -1178,7 +1179,9 @@ class PostgresCliAnalyticsReader:
         (its agent.tool.end names the fork's agentId) or the slash command's dispatch (the fork shares its
         prompt_id, and its skill name unless it ran in the foreground without one); that row takes the fork's
         run (its SubagentStart to its SubagentStop) and cost by the fork's agentId, and the fork adds no row
-        of its own. A fork with no initiator row is its own `command` row. Another skill's "real" duration
+        of its own. A fork with no initiator row is its own `command` row. An inline slash command (no fork)
+        takes the requests of its own prompt that usage_requests attributes to its skill, from the dispatch to
+        the next start of the same skill; its run ends at the last of them. Another skill's "real" duration
         runs to the end of its interaction.
         An agent's bar starts at its SubagentStart hook event, found by the agentId of its Agent call's
         result (`dispatch_start`); without one, at the call start (agent.tool.start); the launch ack when
@@ -1211,6 +1214,7 @@ class PostgresCliAnalyticsReader:
             )
 
         gate, gate_params = detail_gate(scope)
+
         rows = await self._q(
             f"""
         WITH t AS (
@@ -1273,8 +1277,9 @@ class PostgresCliAnalyticsReader:
             -- candidate at or after it with its prompt_id and skill name, else, when none has the name, the earliest
             -- one without a skill name (a foreground fork); none for another client's dispatch or one without a
             -- prompt_id; a dispatch whose skill name is too long to count is left out, as the counts leave it out;
-            -- a dispatch whose prompt_id holds another dispatch pairs with none
-            SELECT d.ts, d.skill_name, df.agent_id, df.ts AS fork_ts
+            -- a dispatch whose prompt_id holds another dispatch pairs with none; DISTINCT: hook_events has no
+            -- unique key, so rows identical in these columns are one dispatch (one timeline row, one usage window)
+            SELECT DISTINCT d.ts, d.skill_name, d.prompt_id, df.agent_id, df.ts AS fork_ts
             FROM hook_events d
             LEFT JOIN LATERAL (
                 SELECT f.agent_id, f.ts
@@ -1289,7 +1294,7 @@ class PostgresCliAnalyticsReader:
             ) df ON true
             WHERE d.session_id = $sid::text AND d.event_type = '{SKILL_DISPATCH_EVENT}' AND d.skill_name <> ''
               AND octet_length(d.skill_name) <= {MAX_KEY_BYTES}
-        ), idle AS (
+        ), {INLINE_SKILL_CTES}, idle AS (
             -- an agent continued by SendMessage starts again with the same agent_id: the time from a stop to the
             -- next start of the same agent is no run, once a later stop closes that run; each stop's gap counts once
             SELECT agent_id, sum(gap) AS idle
@@ -1428,20 +1433,25 @@ class PostgresCliAnalyticsReader:
                           WHERE t.skill_name <> '' AND sf.agent_id = h.agent_id)
         UNION ALL
         -- A slash-command skill dispatch. With a fork it takes the fork's run and cost by the fork's agentId;
-        -- a skill that ran in the main thread has no cost or duration of its own (0). Never matched against a
-        -- TOOL span by name.
+        -- a skill that ran in the main thread takes the requests the plugin attributed to it in its own prompt (see
+        -- inline_window), up to the last of them; 0 when it has none. Never matched against a TOOL span by name.
         SELECT '', df.skill_name, 1, df.ts, 0,
-               CASE WHEN df.agent_id IS NULL THEN 0
+               CASE WHEN df.agent_id IS NULL
+                    THEN coalesce((extract(epoch FROM iu.last_ts - df.ts) * 1000)::bigint, 0)
                     WHEN st.ended_at >= df.fork_ts THEN (extract(epoch FROM st.ended_at - df.fork_ts) * 1000)::bigint
                END,
                NULL,
-               CASE WHEN df.agent_id IS NULL THEN 0 ELSE au.cost_usd END::float8,
-               CASE WHEN df.agent_id IS NULL THEN 0 ELSE au.input_tokens END::bigint,
-               CASE WHEN df.agent_id IS NULL THEN 0 ELSE au.output_tokens END::bigint,
-               CASE WHEN df.agent_id IS NULL THEN 0 ELSE au.cache_read_tokens END::bigint,
-               CASE WHEN df.agent_id IS NULL THEN 0 ELSE au.cache_creation_tokens END::bigint,
-               au.models, NULL
+               CASE WHEN df.agent_id IS NULL THEN coalesce(iu.cost_usd, 0) ELSE au.cost_usd END::float8,
+               CASE WHEN df.agent_id IS NULL THEN coalesce(iu.input_tokens, 0) ELSE au.input_tokens END::bigint,
+               CASE WHEN df.agent_id IS NULL THEN coalesce(iu.output_tokens, 0) ELSE au.output_tokens END::bigint,
+               CASE WHEN df.agent_id IS NULL THEN coalesce(iu.cache_read_tokens, 0)
+                    ELSE au.cache_read_tokens END::bigint,
+               CASE WHEN df.agent_id IS NULL THEN coalesce(iu.cache_creation_tokens, 0)
+                    ELSE au.cache_creation_tokens END::bigint,
+               coalesce(au.models, iu.models), NULL
         FROM dispatch_fork df
+        LEFT JOIN inline_usage iu ON iu.ts = df.ts AND iu.skill_name = df.skill_name
+                                 AND iu.prompt_id = df.prompt_id
         LEFT JOIN stopped st ON st.agent_id = df.agent_id
         LEFT JOIN agent_usage au ON au.agent_id = df.agent_id
         ) dispatches

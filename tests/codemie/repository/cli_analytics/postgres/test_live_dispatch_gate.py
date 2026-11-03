@@ -2923,3 +2923,271 @@ async def test_live_hook_agent_count_takes_only_an_agent_type_kind_3_counts(engi
         assert await _counts(engine, session_id) == _expected(0, agents=1, skill_calls=0, agent_rows=1)
     finally:
         await _cleanup(engine, session_id)
+
+
+_INLINE_REQUEST_SQL = """
+    INSERT INTO log_events
+        (ts, session_id, event_kind, prompt_id, request_id, span_id, cost_usd, input_tokens, output_tokens,
+         cache_read_tokens, cache_creation_tokens, severity, resource_id, model, user_email)
+    VALUES ($1, $2, $3, $4, nullif($5, ''), $6, $7::float8, $8, $9, $10, $11, 0, 0, 'claude-sonnet-5-5',
+            'test@example.com')
+"""
+
+
+async def _seed_inline_request(
+    engine: AnalyticsPgEngine,
+    session_id: str,
+    ts: datetime,
+    prompt_id: str,
+    request_id: str,
+    scope: tuple[str, str],
+    cost: float,
+    *,
+    usage_ids: tuple[str, str] | None = None,
+    usage_lag: timedelta = timedelta(0),
+    tokens: tuple[int, int, int, int] = (100, 20, 30, 40),
+    agent_id: str = "",
+    usage_tokens: tuple[int, int, int, int] | None = None,
+    stop_reason: str = "end_turn",
+) -> None:
+    """An API request: its OTel record at `ts` (prompt id, `request_id` or none, the four token kinds) and the
+    plugin's agent.usage.request with its attribution scope (kind, name), `usage_lag` earlier, carrying the same
+    request id, or `usage_ids` (request id, message id) when given: a proxy sends no request id. `usage_tokens`
+    and an empty `stop_reason` make the usage row a partial streaming snapshot of the OTel record."""
+    input_tokens, output_tokens, cache_read, cache_creation = tokens
+    request_id_of_usage, message_id = usage_ids if usage_ids is not None else (request_id, "")
+    async with engine.acquire() as conn:
+        await conn.execute(
+            _INLINE_REQUEST_SQL,
+            ts,
+            session_id,
+            int(EventKind.API_REQUEST),
+            prompt_id,
+            request_id,
+            _id(f"int-{session_id}"),
+            cost,
+            input_tokens,
+            output_tokens,
+            cache_read,
+            cache_creation,
+        )
+    await _ingest(
+        engine,
+        [
+            {
+                "type": "agent.usage.request",
+                "timestamp": _iso(ts - usage_lag),
+                "session_id": session_id,
+                "request_id": request_id_of_usage,
+                "message_id": message_id,
+                "agent_id": agent_id,
+                "scope_kind": scope[0],
+                "scope_name": scope[1],
+                "model_raw": "claude-sonnet-5-5",
+                "model": "claude-sonnet-5-5",
+                "input_tokens": (usage_tokens or tokens)[0],
+                "output_tokens": (usage_tokens or tokens)[1],
+                "cache_read_tokens": (usage_tokens or tokens)[2],
+                "cache_creation_1h_tokens": (usage_tokens or tokens)[3],
+                "stop_reason": stop_reason,
+                **_CLAUDE_CODE,
+            }
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_live_an_inline_slash_skill_takes_only_its_own_attributed_requests(engine):
+    """Inline slash skills have no fork: each takes the main-thread requests the plugin attributed to its skill
+    in its own prompt, from its dispatch up to the next start of the same skill (a later dispatch or a Skill
+    call). Unattributed requests of the same prompt, ordinary prompts, another session's identical ids and a
+    session with no attribution (legacy) add nothing; a repeated run and a Skill call each keep their own."""
+    session_id, other, legacy = _session("inline-a"), _session("inline-b"), _session("inline-legacy")
+    first, ordinary, second, no_attr = "prompt-first", "prompt-ordinary", "prompt-second", "prompt-legacy"
+    skill = "inlineme"
+    at = lambda minute, second=0: _DAY + timedelta(minutes=minute, seconds=second)  # noqa: E731
+    try:
+        await _seed_turn(engine, session_id, [], costs=())
+        await _seed_turn(engine, other, [], costs=())
+        await _seed_turn(engine, legacy, [], costs=())
+        for sid in (session_id, other):
+            await _seed_inline_request(engine, sid, at(5, 10), first, f"req-1-{sid}", ("skill", skill), 0.4)
+            await _seed_inline_request(engine, sid, at(5, 30), first, f"req-2-{sid}", ("skill", skill), 0.6)
+        await _seed_inline_request(engine, session_id, at(5, 40), first, "req-main", ("main", ""), 9.0)
+        await _seed_inline_request(engine, session_id, at(8), ordinary, "req-ordinary", ("main", ""), 5.0)
+        await _seed_inline_request(engine, session_id, at(10, 20), second, "req-3", ("skill", skill), 1.0)
+        # after the Skill call of the same skill in the same prompt: the call's, not the second dispatch's
+        await _seed_skill_span(engine, session_id, at(10, 30), "toolu_inline_call", skill)
+        await _seed_inline_request(engine, session_id, at(10, 40), second, "req-4", ("skill", skill), 2.0)
+        await _seed_inline_request(engine, legacy, at(12, 10), no_attr, "req-legacy", ("", ""), 3.0)
+        await _ingest(
+            engine,
+            [
+                _dispatch(session_id, at(5), first, skill),
+                _dispatch(session_id, at(10), second, skill),
+                _dispatch(other, at(5), first, skill),
+                _dispatch(legacy, at(12), no_attr, skill),
+                _skill_start(session_id, at(10, 30), "toolu_inline_call", skill),
+                _inline_skill_end(session_id, at(10, 31), "toolu_inline_call", skill),
+            ],
+        )
+        await _refresh_rollups(engine)
+
+        detail = await _api_detail(engine, session_id)
+        commands = [d for d in detail["dispatches"] if d["kind"] == "command"]
+        assert [(d["duration_ms"], d["input_tokens"], d["output_tokens"]) for d in commands] == [
+            (30_000, 200, 40),  # req-1, req-2: not req-main, not another session's, not the ordinary prompt's
+            (20_000, 100, 20),  # req-3 only: req-4 belongs to the Skill call
+        ]
+        assert [(d["cache_read_tokens"], d["cache_creation_tokens"]) for d in commands] == [(60, 80), (30, 40)]
+        assert [d["cost_usd"] for d in commands] == [pytest.approx(0.0002), pytest.approx(0.0001)]
+
+        legacy_row = next(d for d in (await _api_detail(engine, legacy))["dispatches"] if d["kind"] == "command")
+        assert (legacy_row["duration_ms"], legacy_row["cost_usd"]) == (0, None)  # no attribution: as before
+    finally:
+        for sid in (session_id, other, legacy):
+            await _cleanup(engine, sid)
+
+
+@pytest.mark.asyncio
+async def test_live_an_inline_slash_skill_is_paired_with_requests_that_carry_no_request_id(engine):
+    """Behind the proxy a usage row has no request id (only a message id) and the OTel record may have none either:
+    they pair by raw model and token totals within 5 s, one to one, as the rollups pair them. A request of equal
+    totals and another scope, a pair whose two ids differ, a subagent's request and another session's identical
+    requests are never the skill's; one id missing on one side still pairs."""
+    session_id, other = _session("inline-proxy"), _session("inline-proxy-other")
+    prompt, skill = "prompt-proxy", "inlineme"
+    at = lambda minute, second=0: _DAY + timedelta(minutes=minute, seconds=second)  # noqa: E731
+    second = timedelta(seconds=1)
+    try:
+        for sid in (session_id, other):
+            await _seed_turn(engine, sid, [], costs=())
+        # no id on either side: the skill's, and an equal-token request of the main scope a second later
+        await _seed_inline_request(engine, session_id, at(5, 11), prompt, "", ("skill", skill), 0.4,
+                                   usage_ids=("", "msg-1"), usage_lag=second)  # fmt: skip
+        await _seed_inline_request(engine, session_id, at(5, 13), prompt, "", ("main", ""), 0.4,
+                                   usage_ids=("", "msg-2"), usage_lag=second)  # fmt: skip
+        # the OTel record has an id, the usage row only a message id: not both present, so the fingerprint pairs them
+        await _seed_inline_request(engine, session_id, at(5, 31), prompt, "req-otel-only", ("skill", skill), 0.6,
+                                   usage_ids=("", "msg-3"), usage_lag=second, tokens=(70, 10, 5, 3))  # fmt: skip
+        # both ids present and different: no pair, however equal the totals
+        await _seed_inline_request(engine, session_id, at(5, 40), prompt, "req-b", ("skill", skill), 9.0,
+                                   usage_ids=("req-a", "msg-4"), usage_lag=second, tokens=(900, 9, 9, 9))  # fmt: skip
+        # a subagent's request of the skill scope
+        await _seed_inline_request(engine, session_id, at(5, 50), prompt, "", ("skill", skill), 8.0,
+                                   usage_ids=("", "msg-5"), usage_lag=second, tokens=(800, 8, 8, 8),
+                                   agent_id="sub-1")  # fmt: skip
+        await _seed_inline_request(engine, other, at(5, 11), prompt, "", ("skill", skill), 7.0,
+                                   usage_ids=("", "msg-1"), usage_lag=second)  # fmt: skip
+        await _ingest(engine, [_dispatch(session_id, at(5), prompt, skill), _dispatch(other, at(5), prompt, skill)])
+        await _refresh_rollups(engine)
+
+        commands = [d for d in (await _api_detail(engine, session_id))["dispatches"] if d["kind"] == "command"]
+        assert [(d["duration_ms"], d["input_tokens"], d["output_tokens"]) for d in commands] == [(31_000, 170, 30)]
+        assert [(d["cache_read_tokens"], d["cache_creation_tokens"]) for d in commands] == [(35, 43)]
+        assert commands[0]["cost_usd"] == pytest.approx(0.00017)
+    finally:
+        for sid in (session_id, other):
+            await _cleanup(engine, sid)
+
+
+_DUPLICATE_DISPATCH_RAW_SQL = """
+    INSERT INTO hook_events (ts, session_id, event_type, skill_name, prompt_id)
+    SELECT ts, session_id, event_type, skill_name, prompt_id FROM hook_events
+    WHERE session_id = $1 AND event_type = 'agent.skill.dispatch'
+"""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("copy", ["resent", "same_batch", "other_bytes", "raw_row"])
+async def test_live_a_duplicated_inline_slash_dispatch_is_one_row_and_counts_its_requests_once(engine, copy):
+    """CR-001. hook_events has no unique key. A re-sent or repeated identical dispatch is dropped by the ingest ledger;
+    one that differs in a byte (`other_bytes`) or a raw second row is stored twice. In every case the timeline has the
+    same one command row with the same values as for a single dispatch, and the session totals do not move."""
+    session_id, control = _session(f"dup-{copy}"), _session(f"dup-{copy}-single")
+    prompt, skill = "prompt-dup", "inlineme"
+    at = lambda minute, second=0: _DAY + timedelta(minutes=minute, seconds=second)  # noqa: E731
+    try:
+        for sid in (session_id, control):
+            await _seed_turn(engine, sid, [], costs=())
+            await _seed_inline_request(engine, sid, at(5, 11), prompt, "req-1", ("skill", skill), 0.4)
+            await _seed_inline_request(engine, sid, at(5, 31), prompt, "req-2", ("skill", skill), 0.6,
+                                       tokens=(70, 10, 5, 3))  # fmt: skip
+        await _ingest(engine, [_dispatch(control, at(5), prompt, skill)])
+        first, second = _dispatch(session_id, at(5), prompt, skill), _dispatch(session_id, at(5), prompt, skill)
+        if copy == "resent":
+            await _ingest(engine, [first])
+            await _ingest(engine, [second])
+        elif copy == "same_batch":
+            await _ingest(engine, [first, second])
+        elif copy == "other_bytes":
+            second["command_source"] = "userSettings"
+            await _ingest(engine, [first, second])
+        else:
+            await _ingest(engine, [first])
+            async with engine.acquire() as conn:
+                await conn.execute(_DUPLICATE_DISPATCH_RAW_SQL, session_id)
+        async with engine.acquire() as conn:
+            stored = await conn.fetchval(
+                "SELECT count(*) FROM hook_events WHERE session_id = $1 AND event_type = 'agent.skill.dispatch'",
+                session_id,
+            )
+        assert stored == (2 if copy in ("other_bytes", "raw_row") else 1)  # the duplicate really reached the table
+        await _refresh_rollups(engine)
+
+        detail, expected = await _api_detail(engine, session_id), await _api_detail(engine, control)
+        fields = ("duration_ms", "input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens")
+        commands = [d for d in detail["dispatches"] if d["kind"] == "command"]
+        [want] = [d for d in expected["dispatches"] if d["kind"] == "command"]
+        assert [tuple(d[f] for f in fields) for d in commands] == [tuple(want[f] for f in fields)]
+        assert (commands[0]["input_tokens"], commands[0]["output_tokens"]) == (170, 30)
+        assert commands[0]["cost_usd"] == pytest.approx(want["cost_usd"])
+        assert sum(d["cost_usd"] or 0 for d in commands) == pytest.approx(0.00017)  # the visible sum, not twice it
+        rows = await PostgresCliAnalyticsReader(engine).get_session_detail_dispatches(session_id)
+        assert len([r for r in rows if r["skill_name"] == skill]) == 1
+        for key in ("input_tokens", "output_tokens", "cost_usd"):
+            assert detail[key] == pytest.approx(expected[key])  # the session totals are untouched
+    finally:
+        for sid in (session_id, control):
+            await _cleanup(engine, sid)
+
+
+@pytest.mark.asyncio
+async def test_live_an_inline_slash_skill_resolves_equal_proxy_requests_one_to_one_like_the_rollups(engine):
+    """No ids anywhere. (a) two equal-token skill requests 1 s apart whose records come 1.1 s after each: both
+    prefer the first record, each still gets one (the nearest FREE record), not just the mutual nearest; (b) a
+    main-scope and a skill request of equal totals compete for two records in one pass: the earlier takes the
+    nearest, the skill's takes the other, once; (c) a partial streaming snapshot (no stop_reason, placeholder
+    output) pairs with its record 8 s later by the rollups' partial tier, which takes the record's output."""
+    session_id = _session("inline-one-to-one")
+    prompt, skill = "prompt-one-to-one", "inlineme"
+    at = lambda minute, second=0.0: _DAY + timedelta(minutes=minute, seconds=second)  # noqa: E731
+    lag = timedelta(milliseconds=1100)
+    equal = (50, 10, 5, 3)
+    try:
+        await _seed_turn(engine, session_id, [], costs=())
+        for second, usage_id in [(11.1, "m-1"), (12.1, "m-2")]:  # (a)
+            await _seed_inline_request(engine, session_id, at(5, second), prompt, "", ("skill", skill), 0.4,
+                                       usage_ids=("", usage_id), usage_lag=lag)  # fmt: skip
+        await _seed_inline_request(engine, session_id, at(5, 31.1), prompt, "", ("main", ""), 0.1,
+                                   usage_ids=("", "m-3"), usage_lag=lag, tokens=equal)  # fmt: skip
+        await _seed_inline_request(engine, session_id, at(5, 32.1), prompt, "", ("skill", skill), 0.1,
+                                   usage_ids=("", "m-4"), usage_lag=lag, tokens=equal)  # fmt: skip
+        await _seed_inline_request(engine, session_id, at(5, 58), prompt, "", ("skill", skill), 0.2,
+                                   usage_ids=("", "m-5"), usage_lag=timedelta(seconds=8), tokens=(61, 25, 6, 7),
+                                   usage_tokens=(60, 5, 6, 7), stop_reason="")  # fmt: skip
+        await _ingest(engine, [_dispatch(session_id, at(5), prompt, skill)])
+        await _refresh_rollups(engine)
+
+        commands = [d for d in (await _api_detail(engine, session_id))["dispatches"] if d["kind"] == "command"]
+        # (a) 2 x (100, 20, 30, 40), (b) the skill's (50, 10, 5, 3) once, (c) the record's (61, 25, 6, 7)
+        assert [(d["duration_ms"], d["input_tokens"], d["output_tokens"]) for d in commands] == [(58_000, 311, 75)]
+        assert [(d["cache_read_tokens"], d["cache_creation_tokens"]) for d in commands] == [(71, 90)]
+        assert commands[0]["cost_usd"] == pytest.approx(0.000311)
+        rows = await PostgresCliAnalyticsReader(engine).get_session_detail_dispatches(session_id)
+        (models,) = [r["models"] for r in rows if r["skill_name"] == skill]
+        assert [(m["model_name"], m["input_tokens"], m["output_tokens"]) for m in models] == [
+            ("claude-sonnet-5-5", 311, 75)
+        ]
+    finally:
+        await _cleanup(engine, session_id)

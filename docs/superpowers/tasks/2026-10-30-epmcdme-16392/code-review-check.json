@@ -1,0 +1,37 @@
+{
+  "decision": "approve",
+  "rationale": "CR-001 resolved: DISTINCT in dispatch_fork (reader.py:1037) collapses rows identical in ts/skill_name/prompt_id/agent_id/fork_ts to one dispatch, so inline_window yields one window and one timeline row. It changes no other row: fork start rows are gated by NOT EXISTS on agent_id, Skill-call and session-total paths do not read dispatch_fork duplicates, and distinct dispatches differ in at least one key column. Live evidence was taken from the dispatch context, not rerun.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "story-ac", "item": "AC1", "status": "pass", "notes": "inline_usage supplies duration, cost, four token kinds and per-model values for fork-less dispatches"},
+    {"kind": "story-ac", "item": "AC2", "status": "pass", "notes": "Reuses _candidates/_one_to_one/_resolved tiers 1-3 over the whole session"},
+    {"kind": "story-ac", "item": "AC3", "status": "partial", "notes": "Bounded by prompt_id and next same-skill start; duplicate identical dispatch rows would double count"},
+    {"kind": "story-ac", "item": "AC4", "status": "pass", "notes": "Fork branch unchanged; fork rows still use au values"},
+    {"kind": "story-ac", "item": "AC5", "status": "pass", "notes": "Empty prompt_id excluded from inline_window; missing usage gives coalesce 0"},
+    {"kind": "story-ac", "item": "AC6", "status": "pass", "notes": "Pairing computed once in inline_attributed; inline_matched materialized"},
+    {"kind": "story-ac", "item": "live DB tests", "status": "pending-stage-7", "notes": "SQL behavior proven only by running the live dispatch gate tests"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "na", "notes": "standards not expected for this profile"},
+    {"kind": "code-quality", "status": "na", "notes": "standards not expected for this profile"},
+    {"kind": "security", "status": "na", "notes": "standards not expected for this profile"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/repository/cli_analytics/postgres/reader.py",
+      "line": 1053,
+      "title": "Duplicate dispatch rows double inline usage",
+      "problem": "inline_window selects one row per hook dispatch event; identical duplicates double inline sums.",
+      "impact": "Inflated cost/tokens for the affected inline skill on the timeline.",
+      "recommendation": "Collapse identical dispatches."
+    }
+  ],
+  "finding_status": [
+    {"id": "CR-001", "status": "resolved", "notes": "dispatch_fork now SELECT DISTINCT on (ts, skill_name, prompt_id, agent_id, fork_ts); inline_window and the final UNION branch read it, so one dispatch gives one row and one usage window. Fork rows unaffected (NOT EXISTS on agent_id); sole_dispatch_of_prompt compares (ts, ingest_seq), so duplicates stay inline and collapse to one row."}
+  ]
+}
