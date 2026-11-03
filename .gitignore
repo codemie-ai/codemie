@@ -71,6 +71,8 @@ bmad/*
 /run_claude.sh
 .ai-run/runs
 /.codegraph/
+# SDLC Factory pre-flight cache: machine-local, not shared
+/.ai-run/sdlc-factory/doctor.json
 # SDLC Factory: keep the durable record, ignore the machine state.
 # Prose is durable by shape (*.md), so a new Factory artifact needs no rule here;
 # resume cursors, diff snapshots, per-lens review inputs and task briefs stay ignored.
