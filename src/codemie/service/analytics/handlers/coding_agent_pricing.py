@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 
 from codemie.configs.llm_config import CostConfig
@@ -22,28 +23,61 @@ from codemie.service.llm_service.llm_service import llm_service
 logger = logging.getLogger(__name__)
 
 
+_ROUTING_PREFIX = re.compile(r"^(bedrock/)?(converse|invoke)/", re.IGNORECASE)
+_PROVIDER_PREFIX = re.compile(r"^([a-z0-9-]+\.)?anthropic\.", re.IGNORECASE)
+_VERSION_TAG = re.compile(r"(\d{8})-v\d+:\d+$")
+
+
 def normalize_model(model: str) -> str:
-    """Strip AWS Bedrock prefixes to get a bare model id."""
-    for prefix in ("us.anthropic.", "anthropic."):
-        if model.startswith(prefix):
-            return model[len(prefix) :]
-    return model
+    """Canonical model id: same rules as the SQL reader's `_normalized_model_name` (Bedrock wrapper, routing and
+    region/provider prefixes, and a '-v1:0' tag that follows an 8-digit date stamp)."""
+    model = _ROUTING_PREFIX.sub("", model)
+    model = _PROVIDER_PREFIX.sub("", model)
+    return _VERSION_TAG.sub(r"\g<1>", model)
+
+
+def _identity_cost(costs: list[CostConfig | None], model: str, tier: str, field: str) -> CostConfig | None:
+    """Choose a tariff within one matched identity; shared bases keep first-priced catalog order."""
+    priced = [cost for cost in costs if cost is not None]
+    if not priced:
+        return None
+    if any(cost != priced[0] for cost in priced):
+        logger.warning("cli_analytics: conflicting catalog tariffs for model %s at %s.%s", model, tier, field)
+        if field == "deployment_name":
+            return None
+    return priced[0]
 
 
 def lookup_cost_config(model: str) -> CostConfig | None:
-    """Return the CostConfig for the model from the runtime catalog, or None if not found.
+    """Return the CostConfig for the model from the runtime catalog, or None if not priced.
 
     The catalog is ``llm_service.get_all_llm_model_info()``: the LiteLLM proxy's models when the proxy is on, the
-    YAML config otherwise. Matches by both ``base_name`` (after Bedrock-prefix stripping) and ``deployment_name`` so
-    Bedrock variants stored in analytics (e.g. ``us.anthropic.claude-sonnet-4-6``) resolve without extra
-    normalisation. No fallback to another price list or to the default model: a price is exact or absent.
+    YAML config otherwise. Resolve the raw, unwrapped, then normalised name, preferring exact deployment names
+    over shared base names. A shared base name retains the catalog's first-priced-entry order; missing tariffs
+    for that same identity do not hide a priced duplicate. A matched identity with no tariff never falls through
+    to another identity. Only the final normalised-alias tier compares different deployments, so all its tariffs
+    must agree (including missing tariffs). Conflicting exact deployment tariffs are also left unpriced.
+    No fallback to another price list or to the default model: a price is exact or absent.
     """
+    catalog = llm_service.get_all_llm_model_info()
+    unwrapped = _ROUTING_PREFIX.sub("", model)
     normalized = normalize_model(model)
-    for llm_model in llm_service.get_all_llm_model_info():
-        if (
-            llm_model.base_name == normalized or llm_model.deployment_name == normalized
-        ) and llm_model.cost is not None:
-            return llm_model.cost
+    for tier, name in (("raw", model), ("unwrapped", unwrapped), ("normalized", normalized)):
+        for field in ("deployment_name", "base_name"):
+            matches = [m for m in catalog if getattr(m, field) == name]
+            if not matches:
+                continue
+            return _identity_cost([m.cost for m in matches], model, tier, field)
+    costs = [
+        m.cost
+        for m in catalog
+        if normalized in (normalize_model(m.base_name or ""), normalize_model(m.deployment_name or ""))
+    ]
+    if costs:
+        if any(cost != costs[0] for cost in costs):
+            logger.warning("cli_analytics: ambiguous catalog tariffs for model %s at normalized_alias", model)
+            return None
+        return costs[0]
     return None
 
 

@@ -38,7 +38,7 @@ from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
 from codemie.repository.cli_analytics.ports import SESSION_PAGE_SORTS, CliAnalyticsReader
 from codemie.repository.cli_analytics.vocabulary import BLANK_CHARS, humanize_harness_name, strip_pasted_content
 from codemie.service.analytics.delivery_framework import classify_delivery_framework
-from codemie.service.analytics.handlers.coding_agent_pricing import CatalogPricer
+from codemie.service.analytics.handlers.coding_agent_pricing import CatalogPricer, normalize_model
 from codemie.service.analytics.handlers.session_money import (
     dispatch_money,
     has_priced_model,
@@ -374,7 +374,7 @@ class LocalAnalyticsHandler:
         Falls back to `fallback` (the session's most-called model) when there are
         no per-model rows, keeping single-model sessions unchanged.
         """
-        names = sorted(_s(row.get("model_name")) for row in model_cost_rows if _s(row.get("model_name")))
+        names = sorted({normalize_model(_s(row.get("model_name"))) for row in model_cost_rows} - {""})
         if not names:
             return fallback
         return ", ".join(names)
@@ -716,7 +716,7 @@ class LocalAnalyticsHandler:
         model_rows_by_session: dict[str, list[dict]],
     ) -> dict:
         sid = _s(row.get("session_id"))
-        model = _s(row.get("model_name"))
+        model = normalize_model(_s(row.get("model_name")))
         cache_read = _i(row.get("cache_read_tokens"))
         turns = turns_by_session.get(sid, 0)
         lines = lines_by_session.get(sid, {})
@@ -905,7 +905,7 @@ class LocalAnalyticsHandler:
 
         cost = _first(cost_rows)
         scalars = _first(scalar_rows)
-        model = _s(cost.get("model_name"))
+        model = normalize_model(_s(cost.get("model_name")))
         # Token columns come from the per-model rows, which add the totals-only subagent rows, as the list does.
         input_tokens = sum(_i(row.get("input_tokens")) for row in model_cost_rows)
         output_tokens = sum(_i(row.get("output_tokens")) for row in model_cost_rows)
@@ -932,7 +932,7 @@ class LocalAnalyticsHandler:
             {
                 "timestamp": _iso(r.get("timestamp")),
                 "event_type": _s(r.get("event_type")),
-                "model_name": _s(r.get("model_name")) or None,
+                "model_name": normalize_model(_s(r.get("model_name"))) or None,
                 "input_tokens": _i(r.get("input_tokens")) if _s(r.get("event_type")) == "api_request" else None,
                 "output_tokens": _i(r.get("output_tokens")) if _s(r.get("event_type")) == "api_request" else None,
                 "cache_read_tokens": _i(r.get("cache_read_tokens"))

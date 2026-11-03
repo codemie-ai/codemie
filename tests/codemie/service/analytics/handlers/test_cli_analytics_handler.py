@@ -677,6 +677,7 @@ def _two_model_catalog():
     for name, cache_read in (("claude-haiku", 0.1e-6), ("claude-opus-5", 0.5e-6)):
         model = MagicMock()
         model.base_name = name
+        model.deployment_name = name
         model.cost = CostConfig(input=1e-6, output=5e-6, cache_read_input_token_cost=cache_read)
         models.append(model)
     return patch(
@@ -841,6 +842,43 @@ async def test_get_session_detail_unpriced_model_contributes_zero_without_breaki
     assert unpriced == ["definitely-not-a-real-model-xyz-9999"]
     assert detail["cost_usd"] == pytest.approx(26.96510036, abs=1e-9)
     assert detail["cache_read_cost_usd"] == pytest.approx(8.87843836, abs=1e-9)
+
+
+@pytest.mark.asyncio
+async def test_get_session_detail_resolves_bedrock_ids_in_detail_money_events_and_header():
+    """Raw Bedrock ids price at the catalog rates and show once under the catalog name; unknown ids stay unpriced."""
+    haiku = MagicMock()
+    haiku.base_name, haiku.deployment_name = "claude-haiku-4-5-20251001", None
+    haiku.cost = CostConfig(input=1e-6, output=5e-6, cache_read_input_token_cost=1e-7)
+    raw = "anthropic.claude-haiku-4-5-20251001-v1:0"
+    unknown = "anthropic.claude-unknown-9-20251001-v1:0"
+    rows = [
+        _models_row(model_name=raw, input_tokens=796, output_tokens=23),
+        _models_row(model_name="converse/eu." + raw, cache_read_tokens=1_000),
+        _models_row(model_name="claude-haiku-4-5-20251001", input_tokens=10),
+        _models_row(model_name=unknown, input_tokens=5),
+    ]
+    event = {**_opus_events()[0], "model_name": raw, "input_tokens": 796, "output_tokens": 23, "cache_read_tokens": 0}
+    event |= {"cache_creation_tokens": 0, "cache_creation_1h_tokens": None}
+    handler = _priced_detail_handler(rows, events=[event])
+    _, catalog_source = _ticket_catalog()
+    with (
+        patch(
+            "codemie.service.analytics.handlers.coding_agent_pricing.llm_service.get_all_llm_model_info",
+            return_value=[haiku],
+        ),
+        catalog_source,
+    ):
+        detail, unpriced, _ = await handler.get_session_detail("s1")
+
+    assert detail["cost_usd"] == pytest.approx(0.000911 + 1_000 * 1e-7 + 10 * 1e-6, abs=1e-12)
+    assert detail["cache_read_cost_usd"] == pytest.approx(1_000 * 1e-7, abs=1e-12)
+    assert detail["events"][0]["cost_usd"] == pytest.approx(0.000911, abs=1e-12)
+    assert detail["events"][0]["model_name"] == "claude-haiku-4-5-20251001"
+    assert (
+        detail["model_name"] == f"claude-haiku-4-5-20251001, {unknown.removeprefix('anthropic.').removesuffix('-v1:0')}"
+    )
+    assert unpriced == [unknown]
 
 
 def _models_row(**counts) -> dict:
