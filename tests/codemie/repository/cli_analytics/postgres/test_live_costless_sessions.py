@@ -23,15 +23,14 @@ from unittest.mock import patch
 
 import pytest
 
-from codemie.service.analytics.handlers.cli_analytics_handler import LocalAnalyticsHandler
-
 from codemie.repository.cli_analytics.postgres.reader import PostgresCliAnalyticsReader
+from codemie.service.analytics.handlers.cli_analytics_handler import LocalAnalyticsHandler
 from tests.codemie.repository.cli_analytics.postgres.test_live_session_subagent_cost import (
-    _cleanup,
-    _get_engine,
     _KNOWN_MODEL,
     _START,
     _USAGE,
+    _cleanup,
+    _get_engine,
     _lookup,
     _refresh,
     _seed_requests,
@@ -39,6 +38,7 @@ from tests.codemie.repository.cli_analytics.postgres.test_live_session_subagent_
     _seed_totals,
     _window,
 )
+from tests.codemie.repository.cli_analytics.support.scopes import DETAIL_SCOPE
 
 _PRICED = "test-epmcdme-16441-costless-priced"
 _COSTLESS = "test-epmcdme-16441-costless-none"
@@ -111,11 +111,11 @@ async def test_costless_session_detail_resolves_instead_of_404():
     try:
         await _seed(engine, with_costless=True, costless_id=_DETAIL, priced_id=_DETAIL + '-p')
         reader = PostgresCliAnalyticsReader(engine)
-        meta = await reader.get_session_detail_meta(_DETAIL)
+        meta = await reader.get_session_detail_meta(_DETAIL, scope=DETAIL_SCOPE)
         assert [r["session_id"] for r in meta] == [_DETAIL]
-        assert await reader.get_session_detail_model_costs(_DETAIL) == []
+        assert await reader.get_session_detail_model_costs(_DETAIL, scope=DETAIL_SCOPE) == []
         handler = LocalAnalyticsHandler(reader)
-        detail, _, _ = await handler.get_session_detail(_DETAIL)
+        detail, _, _ = await handler.get_session_detail(_DETAIL, scope=DETAIL_SCOPE)
         assert detail is not None
         assert detail["cost_usd"] == 0.0
         assert detail["cost_available"] is False
@@ -131,16 +131,16 @@ async def test_kpis_and_priced_aggregates_are_unchanged_by_a_costless_session():
     priced, costless = _PRICED + "-kpi", _COSTLESS + "-kpi"
     try:
         reader = PostgresCliAnalyticsReader(engine)
+        # Only this test's two fixture sessions: other workers write to the same window concurrently.
+        own = _window().restricted_to([priced, costless])
         await _seed(engine, False, costless, priced)
-        kpis_before = await reader.get_cost_kpis(_window())
+        kpis_before = await reader.get_cost_kpis(own)
         priced_before = [
-            r
-            for r in await reader.get_session_cost_facts(_window(), include_costless=True)
-            if r["session_id"] == priced
+            r for r in await reader.get_session_cost_facts(own, include_costless=True) if r["session_id"] == priced
         ]
         await _seed(engine, True, costless, priced)
-        kpis_after = await reader.get_cost_kpis(_window())
-        facts = await reader.get_session_cost_facts(_window(), include_costless=True)
+        kpis_after = await reader.get_cost_kpis(own)
+        facts = await reader.get_session_cost_facts(own, include_costless=True)
 
         assert kpis_after == kpis_before
         assert [r for r in facts if r["session_id"] == priced] == priced_before
@@ -157,7 +157,7 @@ async def test_kpis_and_priced_aggregates_are_unchanged_by_a_costless_session():
             )
         await _refresh(engine)
         with patch("codemie.service.analytics.handlers.coding_agent_pricing.lookup_cost_config", _lookup):
-            result, _, _ = await LocalAnalyticsHandler(reader).get_sessions(_window(), 0, 1000, "start_time", None)
+            result, _, _ = await LocalAnalyticsHandler(reader).get_sessions(own, 0, 1000, "start_time", None)
         by_id = {s["trace_id"]: s for s in result["sessions"]}
         assert by_id[costless]["cost_available"] is False
         assert by_id[costless]["cost_usd"] == 0.0
@@ -185,8 +185,8 @@ async def test_session_whose_only_model_is_missing_from_the_catalog_is_cost_avai
         handler = LocalAnalyticsHandler(reader)
         with patch("codemie.service.analytics.handlers.coding_agent_pricing.lookup_cost_config", _lookup):
             result, _, _ = await handler.get_sessions(_window(), 0, 1000, "start_time", None)
-            unpriced_detail, _, _ = await handler.get_session_detail(unpriced)
-            priced_detail, _, _ = await handler.get_session_detail(priced)
+            unpriced_detail, _, _ = await handler.get_session_detail(unpriced, scope=DETAIL_SCOPE)
+            priced_detail, _, _ = await handler.get_session_detail(priced, scope=DETAIL_SCOPE)
         by_id = {s["trace_id"]: s for s in result["sessions"]}
 
         assert (by_id[unpriced]["cost_available"], by_id[unpriced]["cost_usd"]) == (False, 0.0)

@@ -133,6 +133,7 @@ def _load_revision(file_name: str) -> ModuleType:
 
 
 SCHEMA_EXTENSION = _load_revision("a1c1a0000006_cli_analytics_schema_extension.py")
+SESSION_ROUTING = _load_revision("a1c1a0000007_cli_analytics_session_routing.py")
 _COST_DAILY_KEY_STATEMENTS = (
     "ALTER TABLE cost_daily DROP CONSTRAINT cost_daily_pkey",
     "ALTER TABLE cost_daily ADD PRIMARY KEY (day, session_id, user_email, model_name, query_source, speed, "
@@ -192,7 +193,12 @@ _INSERT_TARGET = re.compile(r"INSERT INTO (\w+)(?: AS \w+)? \(([^)]*)\)")
 def _declared_columns() -> dict[str, set[str]]:
     """The columns of each table once all revisions ran, read from the text of their statements."""
     declared: dict[str, set[str]] = {}
-    for statement in [*INITIAL_SCHEMA.UPGRADE, *SCHEMA_EXTENSION.UPGRADE, *SESSION_TITLE.UPGRADE]:
+    for statement in [
+        *INITIAL_SCHEMA.UPGRADE,
+        *SCHEMA_EXTENSION.UPGRADE,
+        *SESSION_TITLE.UPGRADE,
+        *SESSION_ROUTING.UPGRADE,
+    ]:
         lines = statement.strip().splitlines()
         created = re.match(r"CREATE TABLE (\w+) \(", lines[0])
         if created:
@@ -295,3 +301,44 @@ def test_downgrade_restores_the_five_column_cost_daily_key_and_drops_what_the_up
         (t.split()[2], c) for t in texts if t.startswith("ALTER TABLE ") for c in re.findall(r"DROP COLUMN (\w+)", t)
     }
     assert dropped == added  # the columns added to a table of this revision too, before the table is dropped
+
+
+_ROUTING_COLUMNS = {
+    "hook_events": [
+        "subscription_type",
+        "project_origin",
+        "route_note",
+        "client_subscription_type",
+        "client_policy_version",
+    ],
+    "session_dims": ["owner_email", "subscription_type", "project_origin", "route_note"],
+}
+
+
+def test_session_routing_revision_follows_the_session_title() -> None:
+    assert SESSION_ROUTING.revision == "a1c1a0000007"
+    assert SESSION_ROUTING.down_revision == SESSION_TITLE.revision
+
+
+def test_session_routing_adds_only_nullable_text_columns_to_hook_events_and_session_dims() -> None:
+    added = {}
+    for statement in SESSION_ROUTING.UPGRADE:
+        text = _normalized(statement)
+        assert text.startswith("ALTER TABLE "), text
+        assert not any(word in text for word in ("NOT NULL", "DEFAULT", "UNIQUE", "IF NOT EXISTS")), text
+        added[text.split()[2]] = re.findall(r"ADD COLUMN (\w+) text(?:,|$)", text)
+
+    assert added == _ROUTING_COLUMNS
+
+
+def test_session_routing_downgrade_drops_what_the_upgrade_added() -> None:
+    dropped = {_normalized(s).split()[2]: re.findall(r"DROP COLUMN (\w+)", s) for s in SESSION_ROUTING.DOWNGRADE}
+
+    assert dropped == _ROUTING_COLUMNS
+
+
+def test_the_routing_columns_are_declared_for_ingest_and_recompute() -> None:
+    declared = _declared_columns()
+
+    for table, columns in _ROUTING_COLUMNS.items():
+        assert set(columns) <= declared[table], table

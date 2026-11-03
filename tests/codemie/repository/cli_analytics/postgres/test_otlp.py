@@ -524,7 +524,21 @@ def test_hook_event_becomes_a_typed_row_with_the_sender_email():
 
 
 def test_hook_row_columns_follow_the_vocabulary():
-    assert HookRow._fields[7:-1] == v.HOOK_TEXT_FIELDS
+    assert HookRow._fields[7 : 7 + len(v.HOOK_TEXT_FIELDS)] == v.HOOK_TEXT_FIELDS
+    assert HookRow._fields[-len(v.HOOK_ROUTING_FIELDS) :] == v.HOOK_ROUTING_FIELDS
+
+
+def test_legacy_hook_row_has_no_routing_evidence():
+    (row,) = decode_hook_events([_hook()], "jwt@example.com", received_at_ns=0).hooks
+
+    assert [getattr(row, name) for name in v.HOOK_ROUTING_FIELDS] == [None] * len(v.HOOK_ROUTING_FIELDS)
+
+
+def test_a_payload_cannot_set_the_routing_columns():
+    (row,) = decode_hook_events([_hook(project_origin="personal")], "jwt@example.com", 0).hooks
+
+    assert row.project_origin is None
+    assert json.loads(row.attrs) == {"project_origin": "personal"}
 
 
 def test_hook_payload_cannot_override_the_authenticated_sender():

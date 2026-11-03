@@ -23,6 +23,7 @@ from types import SimpleNamespace
 import pytest
 
 from codemie.repository.cli_analytics.ports import CliAnalyticsStorageConfigError
+from codemie.repository.cli_analytics.scope import allowed
 from codemie.service.analytics.delivery_framework import classify_delivery_framework
 from codemie.service.usage_attribution import handler as h
 from codemie.service.usage_attribution import postgres_sources
@@ -38,7 +39,9 @@ class FakeReader:
         self.delay = delay
         self.calls = []
 
-    async def get_skill_names_by_session(self, session_ids):
+    async def get_skill_names_by_session(self, session_ids, *, scope):
+        assert allowed(scope, "N", "someone@x.com", "work-project")
+        assert not allowed(scope, "P", "someone@x.com", "personal-project")
         self.calls.append(list(session_ids))
         if self.delay:
             await asyncio.sleep(self.delay)

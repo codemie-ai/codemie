@@ -160,6 +160,12 @@ class HookRow(NamedTuple):
     prompt_body: str | None
     skill_name: str | None
     attrs: str | None
+    # Stamped by the ingest route (vocabulary.HOOK_ROUTING_FIELDS); NULL reads as unknown / no origin.
+    subscription_type: str | None = None
+    project_origin: str | None = None
+    route_note: str | None = None
+    client_subscription_type: str | None = None
+    client_policy_version: str | None = None
 
 
 class SpanRow(NamedTuple):

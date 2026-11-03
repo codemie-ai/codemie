@@ -226,6 +226,13 @@ _ACTIVE_MS_CLI = _counter("m.type = 'cli'", scale=1000)
 _EARLIEST_COLUMNS = ("repository", "branch", "repo_remote", "project_name", "developer_name", "first_prompt")
 
 
+def _bound_kept(column: str, merged: str) -> str:
+    """`project_name` / `jwt_email` of a bound session (owner_email set) stay as stored; others merge."""
+    if column not in ("project_name", "jwt_email"):
+        return merged
+    return f"CASE WHEN sd.owner_email IS NOT NULL THEN sd.{column} ELSE {merged} END"
+
+
 def _earliest_merged(column: str) -> str:
     """The stored earliest value unless the recompute reaches further back (see session_dims)."""
     # An empty first_prompt never replaces a stored one; the other columns are never empty strings.
@@ -1978,11 +1985,13 @@ RECOMPUTE: list[str] = [
     JOIN hook_events h ON h.session_id = k.session_id
     CROSS JOIN LATERAL (SELECT {_CLEAN_PROMPT} AS cp) c
     GROUP BY h.session_id
+    -- A bound session (owner_email set, EPMCDME-16440) keeps its stored project and owner: the binding is
+    -- stored state the ingest wrote, which no replayed or older raw row changes; its columns are not written here.
     ON CONFLICT (session_id) DO UPDATE SET
         started_at = LEAST(sd.started_at, EXCLUDED.started_at),
         last_event_at = GREATEST(sd.last_event_at, EXCLUDED.last_event_at),
-        {", ".join(f"{c} = {_earliest_merged(c)}" for c in _EARLIEST_COLUMNS)},
-        jwt_email = GREATEST(sd.jwt_email COLLATE "C", EXCLUDED.jwt_email COLLATE "C"),
+        {", ".join(f"{c} = {_bound_kept(c, _earliest_merged(c))}" for c in _EARLIEST_COLUMNS)},
+        jwt_email = {_bound_kept("jwt_email", 'GREATEST(sd.jwt_email COLLATE "C", EXCLUDED.jwt_email COLLATE "C")')},
         dev_name_max = GREATEST(sd.dev_name_max COLLATE "C", EXCLUDED.dev_name_max COLLATE "C"),
         updated_at = EXCLUDED.updated_at""",
     # SESSION last: the session columns read the rollups above.

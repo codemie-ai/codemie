@@ -35,10 +35,13 @@ from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTrace
 from codemie.repository.cli_analytics.ports import (
     CliTelemetryIngestor,
     IngestResult,
+    SessionBinding,
+    StalePolicyError,
     TelemetryStorageUnavailableError,
 )
 from codemie.repository.cli_analytics.postgres import ingestor as ingestor_module
 from codemie.repository.cli_analytics.postgres.ingestor import PostgresTelemetryIngestor
+from codemie.repository.cli_analytics.postgres.otlp import HookRow
 from tests.codemie.repository.cli_analytics.postgres.test_engine import SETTINGS
 from tests.codemie.repository.cli_analytics.support import hook_event_builders as hb
 from tests.codemie.repository.cli_analytics.support import otlp_builders as b
@@ -58,6 +61,7 @@ class RecordingConnection:
         self.transactions = 0
         self.fork_days: list[dict] = []  # what the fork-day lookup answers
         self.later_start_days: list[dict] = []  # what the later-start lookup answers
+        self.bindings: list[dict] = []  # what the session binding lookup answers
 
     @asynccontextmanager
     async def _transaction(self):
@@ -79,6 +83,8 @@ class RecordingConnection:
         if self.error:
             raise self.error
         self.statements.append((sql, args))
+        if "LEFT JOIN session_dims" in sql:
+            return self.bindings
         if "AND f.ts > u.t" in sql:
             return self.later_start_days
         if "JOIN hook_events f" in sql:
@@ -343,7 +349,7 @@ async def test_a_rejected_record_is_remembered_so_a_resend_skips_it():
 async def test_isolating_rejected_records_costs_a_bounded_number_of_transactions_per_request():
     # Otherwise a request of N unstorable records would take about 3N transactions.
     conn = RejectingConnection(poison="*")
-    body = _logs_body(*(_api_request(f"s{i}", 1) for i in range(500)))
+    body = _logs_body(*(_api_request(f"s{i % 100}", i) for i in range(500)))  # 100 sessions: the per-request cap
 
     with patch.object(ingestor_module, "logger"), pytest.raises(TelemetryStorageUnavailableError):
         await _ingestor(FakeEngine(conn)).ingest_otlp("logs", body, "application/x-protobuf")
@@ -356,8 +362,9 @@ async def test_the_plugins_resends_finish_a_request_its_budget_did_not():
     # Answered 200 after running out of attempts, the rest of the request would be lost: the plugin
     # deletes its spool on any 2xx. With a 503 it re-sends, and the ledger carries each attempt on.
     conn = RejectingConnection(poison="bad*")
-    sessions = [f"bad{i}" if i % 2 else f"ok{i}" for i in range(256)]  # every failing part mixes both
-    body = _logs_body(*(_api_request(s, 1) for s in sessions))
+    names = [f"bad{i}" if i % 2 else f"ok{i}" for i in range(100)]  # 100 sessions: the per-request cap
+    sessions = [names[i % 100] for i in range(256)]  # every failing part mixes both
+    body = _logs_body(*(_api_request(s, i) for i, s in enumerate(sessions)))
     ingestor = _ingestor(FakeEngine(conn))
 
     attempts = 0
@@ -476,14 +483,13 @@ async def test_a_batch_without_a_skill_or_agent_call_end_makes_no_fork_day_looku
     await _ingestor(engine).ingest_hook_events(events, "dev@example.com", 0)
 
     assert engine.conn.sql("JOIN hook_events f") == []
-    assert engine.conn.sql("pg_advisory_xact_lock") == []
 
 
 @pytest.mark.asyncio
-async def test_a_batch_running_the_fork_lookups_locks_its_sessions_first_in_key_order():
+async def test_a_batch_locks_every_session_first_in_key_order():
     """A Skill end naming a fork (session s1) and a keyed agent.subagent.start (session s2): one statement takes
-    the transaction-scoped lock of each session, keys sorted, after the rows are inserted and before either
-    lookup, so a concurrent batch of the same session commits before these lookups read its rows."""
+    the transaction-scoped lock of each session of the batch, keys sorted, before the binding lookup and the
+    ledger (EPMCDME-16440), so a concurrent batch of the same session commits before anything here reads."""
     engine = FakeEngine()
     events = [
         {
@@ -502,10 +508,108 @@ async def test_a_batch_running_the_fork_lookups_locks_its_sessions_first_in_key_
     statements = [sql for sql, _ in engine.conn.statements]
     (lock,) = [i for i, sql in enumerate(statements) if "pg_advisory_xact_lock" in sql]
     assert engine.conn.statements[lock][1] == ([-3786935906701147602, 4325205642299247865],)  # s2's key, s1's
-    hooks_insert = next(i for i, sql in enumerate(statements) if "INSERT INTO hook_events" in sql)
-    fork_lookup = next(i for i, sql in enumerate(statements) if "JOIN hook_events f" in sql)
-    later_start_lookup = next(i for i, sql in enumerate(statements) if "AND f.ts > u.t" in sql)
-    assert hooks_insert < lock < fork_lookup and lock < later_start_lookup
+    lookup = next(i for i, sql in enumerate(statements) if "LEFT JOIN session_dims" in sql)
+    ledger = next(i for i, sql in enumerate(statements) if "INSERT INTO ingest_dedup" in sql)
+    assert lock < lookup < ledger
+    assert engine.conn.statements[lookup][1] == (["s1", "s2"], False)  # legacy: no legacy-project probe
+
+
+def _bound(session: str, owner: str = "dev@example.com", project: str = "proj") -> dict:
+    return {
+        "session_id": session,
+        "owner_email": owner,
+        "project_name": project,
+        "subscription_type": "corporate",
+        "project_origin": "default_project",
+        "route_note": "folder_not_linked",
+        "legacy_project": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_session_guard_discard_answers_hook_events_with_reason_and_other_sessions_and_writes_nothing():
+    engine = FakeEngine()
+    engine.conn.bindings = [_bound("s0", owner="other@example.com")]
+
+    result = await _ingestor(engine).ingest_hook_events(_project_events(None, None), "dev@example.com", 0)
+
+    assert json.loads(result.body) == {
+        "accepted": 0,
+        "dropped": 2,
+        "reason": "session_owner_conflict",
+        "other_sessions_dropped": 1,
+    }
+    assert engine.conn.sql("INSERT INTO") == []
+
+
+@pytest.mark.asyncio
+async def test_a_session_guard_discard_answers_otlp_with_partial_success():
+    engine = FakeEngine()
+    engine.conn.bindings = [_bound("s1", project="proj")]
+    event = _project_events("other-project")[0] | {"session_id": "s1"}
+    body = b.logs_request(RESOURCE, [hb.as_otlp_log(event, T)]).SerializeToString()
+
+    result = await _ingestor(engine).ingest_otlp("logs", body, "application/x-protobuf", user_email="dev@example.com")
+
+    response = ExportLogsServiceResponse.FromString(result.body)
+    assert response.partial_success.rejected_log_records == 1
+    assert response.partial_success.error_message == "session_project_conflict"
+    assert engine.conn.sql("INSERT INTO") == []
+
+
+@pytest.mark.asyncio
+async def test_an_evidence_request_binds_a_new_session_and_stamps_its_hook_rows():
+    engine = FakeEngine()
+    binding = SessionBinding("dest", "corporate", "linked_folder", "", "corporate", "v1")
+
+    await _ingestor(engine).ingest_hook_events(_project_events("sent"), "dev@example.com", 0, binding=binding)
+
+    (bind_args,) = engine.conn.sql("INSERT INTO session_dims")
+    assert bind_args == (["s0"], "dev@example.com", "corporate", "linked_folder", "", ["dest"])
+    (hook_args,) = engine.conn.sql("INSERT INTO hook_events")
+    columns = dict(zip(HookRow._fields[2:], hook_args, strict=True))
+    assert columns["codemie_project_name"] == ["dest"] and columns["client_policy_version"] == ["v1"]
+
+
+@pytest.mark.asyncio
+async def test_an_evidence_request_without_the_sender_is_a_final_discard_not_an_error():
+    engine = FakeEngine()
+    body = _logs_body(_api_request("s1", 1))
+
+    result = await _ingestor(engine).ingest_otlp(
+        "logs", body, "application/x-protobuf", binding=SessionBinding("p", "x"), evidence_session_id="s1"
+    )
+
+    assert ExportLogsServiceResponse.FromString(result.body).partial_success.error_message == "session_owner_conflict"
+    assert engine.conn.statements == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sender", ["", "  "])
+async def test_a_missing_sender_never_skips_the_owner_check_of_a_bound_session(sender):
+    engine = FakeEngine()
+    engine.conn.bindings = [_bound("s1", owner="dev@example.com")]
+
+    result = await _ingestor(engine).ingest_otlp(
+        "logs", _logs_body(_api_request("s1", 1)), "application/x-protobuf", user_email=sender
+    )
+
+    assert ExportLogsServiceResponse.FromString(result.body).partial_success.error_message == "session_owner_conflict"
+    assert engine.conn.sql("INSERT INTO") == []
+
+
+@pytest.mark.asyncio
+async def test_the_owner_is_compared_as_an_email_not_as_a_case_sensitive_string():
+    """The user lookups compare lower(email) (user_repository), so a differently cased sender is the owner."""
+    engine = FakeEngine()
+    engine.conn.bindings = [_bound("s1", owner="Dev@Example.com")]
+
+    result = await _ingestor(engine).ingest_otlp(
+        "logs", _logs_body(_api_request("s1", 1)), "application/x-protobuf", user_email="dev@example.COM"
+    )
+
+    assert result.accepted == 1
+    assert engine.conn.sql("INSERT INTO log_events")
 
 
 @pytest.mark.asyncio
@@ -929,3 +1033,133 @@ async def test_other_log_records_keep_their_sent_attributes_untouched():
 
     (log_args,) = engine.conn.sql("INSERT INTO log_events")
     assert any("QA_CASE_CHECK" in (attrs or "") for attrs in log_args[-1])
+
+
+# ── destination resolved under the session lock; boundary, stale and sender order (review CR-001..006) ────
+
+
+class _Resolving:
+    """An evidence gate that defers the destination to the session lock (`resolve_session`)."""
+
+    def __init__(self, outcome) -> None:
+        self.outcome = outcome
+        self.calls: list[tuple] = []
+        self.binding = None
+
+    async def __call__(self, explicit):
+        return None
+
+    async def resolve_session(self, bound, legacy_project, hook_repo_remote):
+        self.calls.append((bound, legacy_project, hook_repo_remote))
+        if isinstance(self.outcome, Exception):
+            raise self.outcome
+        return self.outcome
+
+
+@pytest.mark.asyncio
+async def test_the_destination_is_resolved_after_the_lock_with_the_stored_binding_and_the_hook_remote():
+    engine = FakeEngine()
+    engine.conn.bindings = [_bound("s0", project="bound-proj")]
+    gate = _Resolving(SessionBinding("bound-proj", "corporate", "default_project", "folder_not_linked"))
+    event = _project_events(None)[0] | {"repo_remote": "git@h:o/r"}
+
+    await _ingestor(engine).ingest_hook_events([event], "dev@example.com", 0, gate=gate, evidence_session_id="s0")
+
+    ((bound, legacy, remote),) = gate.calls
+    assert (bound.project_name, bound.subscription_type, legacy, remote) == (
+        "bound-proj",
+        "corporate",
+        None,
+        "git@h:o/r",
+    )
+    order = [sql for sql, _ in engine.conn.statements]
+    assert next(i for i, s in enumerate(order) if "pg_advisory_xact_lock" in s) < next(
+        i for i, s in enumerate(order) if "INSERT INTO hook_events" in s
+    )
+    (hook_args,) = engine.conn.sql("INSERT INTO hook_events")
+    assert dict(zip(HookRow._fields[2:], hook_args, strict=True))["codemie_project_name"] == ["bound-proj"]
+
+
+@pytest.mark.asyncio
+async def test_a_resolver_discard_writes_nothing_and_counts_the_reason():
+    engine = FakeEngine()
+    before = ingestor_module.SESSION_DISCARDS["session_project_conflict"]
+
+    result = await _ingestor(engine).ingest_hook_events(
+        _project_events(None),
+        "dev@example.com",
+        0,
+        gate=_Resolving("session_project_conflict"),
+        evidence_session_id="s0",
+    )
+
+    assert json.loads(result.body)["reason"] == "session_project_conflict"
+    assert engine.conn.sql("INSERT INTO") == []
+    assert ingestor_module.SESSION_DISCARDS["session_project_conflict"] == before + 1
+
+
+@pytest.mark.asyncio
+async def test_another_owner_is_discarded_before_the_destination_is_resolved():
+    engine = FakeEngine()
+    engine.conn.bindings = [_bound("s0", owner="other@example.com")]
+    gate = _Resolving(SessionBinding("p", "corporate"))
+
+    result = await _ingestor(engine).ingest_hook_events(
+        _project_events(None), "dev@example.com", 0, gate=gate, evidence_session_id="s0"
+    )
+
+    assert json.loads(result.body)["reason"] == "session_owner_conflict"
+    assert gate.calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_retryable_resolution_rolls_back_and_surfaces_as_unavailable():
+    engine = FakeEngine()
+    gate = _Resolving(TelemetryStorageUnavailableError("default_project_unavailable"))
+
+    with pytest.raises(TelemetryStorageUnavailableError, match="default_project_unavailable"):
+        await _ingestor(engine).ingest_hook_events(
+            _project_events(None), "dev@example.com", 0, gate=gate, evidence_session_id="s0"
+        )
+
+    assert engine.conn.sql("INSERT INTO") == []
+
+
+@pytest.mark.asyncio
+async def test_a_stale_policy_loses_to_the_session_boundary_and_wins_over_everything_after_it():
+    """Spec 4: boundary, classification, stale, binding."""
+    engine = FakeEngine()
+    ingestor = _ingestor(engine)
+    gate = _Resolving(SessionBinding("p", "corporate"))
+
+    both = await ingestor.ingest_hook_events(
+        _project_events(None), "dev@example.com", 0, gate=gate, evidence_session_id="other", stale_policy_version="v9"
+    )
+    assert json.loads(both.body)["reason"] == "evidence_session_conflict"
+
+    with pytest.raises(StalePolicyError) as stale:
+        await ingestor.ingest_hook_events(
+            _project_events(None), "dev@example.com", 0, gate=gate, evidence_session_id="s0", stale_policy_version="v9"
+        )
+    assert stale.value.policy_version == "v9"
+    assert gate.calls == [] and engine.conn.statements == []
+
+
+@pytest.mark.asyncio
+async def test_a_declared_session_with_session_less_rows_is_a_boundary_discard_not_a_bypass():
+    """Rows without a session id carry '' and fail the boundary; a request without rows stores nothing."""
+    engine = FakeEngine()
+    ingestor = _ingestor(engine)
+    sessionless = hb.minimal("agent.tool.end", "", "2026-09-29T10:59:41.512Z")
+
+    result = await ingestor.ingest_hook_events([sessionless], "dev@example.com", 0, evidence_session_id="s0")
+    empty = await ingestor.ingest_otlp(
+        "metrics",
+        b.metrics_request(RESOURCE, []).SerializeToString(),
+        "application/x-protobuf",
+        evidence_session_id="s0",
+    )
+
+    assert json.loads(result.body)["reason"] == "evidence_session_conflict"
+    assert empty.accepted == 0
+    assert engine.conn.statements == []

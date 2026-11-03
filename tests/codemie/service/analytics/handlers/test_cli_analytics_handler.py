@@ -16,6 +16,7 @@ import pytest
 from datetime import date, datetime, timedelta, timezone
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
+from tests.codemie.repository.cli_analytics.support.scopes import DETAIL_SCOPE, EXCLUDE_SCOPE
 from codemie.configs.llm_config import CostConfig
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
 from codemie.service.analytics.handlers.cli_analytics_handler import (
@@ -61,7 +62,7 @@ BASE_COST_ROW = {
 
 
 def make_filter():
-    return LocalAnalyticsFilter(start_dt=datetime(2026, 1, 1), end_dt=datetime(2026, 12, 31))
+    return LocalAnalyticsFilter(scope=EXCLUDE_SCOPE, start_dt=datetime(2026, 1, 1), end_dt=datetime(2026, 12, 31))
 
 
 @pytest.mark.asyncio
@@ -617,7 +618,9 @@ async def test_branch_none_when_not_provided():
 async def test_a_branch_keeps_a_filter_that_denies_every_session_denying():
     # A project admin who administers no project sees nothing, whatever branch /sessions asks for.
     handler = make_handler(cost_facts=[BASE_COST_ROW])
-    denied = LocalAnalyticsFilter(start_dt=datetime(2026, 1, 1), end_dt=datetime(2026, 12, 31), deny_all=True)
+    denied = LocalAnalyticsFilter(
+        scope=EXCLUDE_SCOPE, start_dt=datetime(2026, 1, 1), end_dt=datetime(2026, 12, 31), deny_all=True
+    )
 
     await handler.get_sessions(denied, page=0, per_page=20, sort_by="start_time", search=None, branch="main")
 
@@ -752,7 +755,7 @@ def _priced_detail_handler(model_rows, events=(), dispatches=()):
 async def test_get_session_detail_prices_the_session_and_each_event_at_the_catalog():
     handler = _priced_detail_handler([_OPUS_ROW], events=_opus_events())
 
-    detail, unpriced, catalog_source = await _priced(handler.get_session_detail("s1"))
+    detail, unpriced, catalog_source = await _priced(handler.get_session_detail("s1", scope=DETAIL_SCOPE))
 
     assert detail["cost_usd"] == pytest.approx(26.96510036, abs=1e-9)
     assert detail["cache_read_cost_usd"] == pytest.approx(8.87843836, abs=1e-9)
@@ -782,7 +785,7 @@ async def test_get_session_detail_tokens_include_totals_only_subagent_rows():
     )
     handler._repo.get_session_detail_cost = AsyncMock(return_value=[{}])
 
-    detail, _, _ = await _priced(handler.get_session_detail("s1"))
+    detail, _, _ = await _priced(handler.get_session_detail("s1", scope=DETAIL_SCOPE))
 
     assert (
         detail["input_tokens"],
@@ -798,7 +801,7 @@ async def test_get_session_detail_tokens_include_totals_only_subagent_rows():
 async def test_get_session_detail_without_model_rows_reports_cost_available_false():
     handler = _priced_detail_handler([])
 
-    detail, _, _ = await _priced(handler.get_session_detail("s1"))
+    detail, _, _ = await _priced(handler.get_session_detail("s1", scope=DETAIL_SCOPE))
 
     assert detail["cost_usd"] == 0.0
     assert detail["cost_available"] is False
@@ -809,7 +812,7 @@ async def test_get_session_detail_with_only_an_unpriced_model_reports_cost_avail
     mystery = {"model_name": UNPRICED_MODEL, "input_tokens": 1_000, "cache_read_tokens": 100_000}
     handler = _priced_detail_handler([mystery])
 
-    detail, unpriced, _ = await _priced(handler.get_session_detail("s1"))
+    detail, unpriced, _ = await _priced(handler.get_session_detail("s1", scope=DETAIL_SCOPE))
 
     assert unpriced == [UNPRICED_MODEL]
     assert detail["cost_usd"] == 0.0
@@ -821,7 +824,7 @@ async def test_get_session_detail_with_a_priced_and_an_unpriced_model_reports_co
     mystery = {"model_name": UNPRICED_MODEL, "input_tokens": 1_000, "cache_read_tokens": 100_000}
     handler = _priced_detail_handler([_OPUS_ROW, mystery])
 
-    detail, _, _ = await _priced(handler.get_session_detail("s1"))
+    detail, _, _ = await _priced(handler.get_session_detail("s1", scope=DETAIL_SCOPE))
 
     assert detail["cost_available"] is True
 
@@ -837,7 +840,7 @@ async def test_get_session_detail_unpriced_model_contributes_zero_without_breaki
     }
     handler = _priced_detail_handler([_OPUS_ROW, mystery])
 
-    detail, unpriced, _ = await _priced(handler.get_session_detail("s1"))
+    detail, unpriced, _ = await _priced(handler.get_session_detail("s1", scope=DETAIL_SCOPE))
 
     assert unpriced == ["definitely-not-a-real-model-xyz-9999"]
     assert detail["cost_usd"] == pytest.approx(26.96510036, abs=1e-9)
@@ -869,7 +872,7 @@ async def test_get_session_detail_resolves_bedrock_ids_in_detail_money_events_an
         ),
         catalog_source,
     ):
-        detail, unpriced, _ = await handler.get_session_detail("s1")
+        detail, unpriced, _ = await handler.get_session_detail("s1", scope=DETAIL_SCOPE)
 
     assert detail["cost_usd"] == pytest.approx(0.000911 + 1_000 * 1e-7 + 10 * 1e-6, abs=1e-12)
     assert detail["cache_read_cost_usd"] == pytest.approx(1_000 * 1e-7, abs=1e-12)
@@ -910,7 +913,7 @@ async def test_get_session_detail_prices_each_dispatch_from_its_per_model_sums()
     ]
     handler = _priced_detail_handler([], dispatches=[two_models, *tied])
 
-    detail, unpriced, _ = await _priced(handler.get_session_detail("s1"))
+    detail, unpriced, _ = await _priced(handler.get_session_detail("s1", scope=DETAIL_SCOPE))
 
     costs = {d["label"]: d["cost_usd"] for d in detail["dispatches"][1:]}
     assert costs == {
@@ -935,7 +938,7 @@ async def test_get_session_detail_edge_events_and_a_dispatch_without_requests():
     idle = _dispatch_row(subagent_type="Plan", offset_s=5) | {"subagent_duration_ms": 1000, "models": [], "ties": None}
     handler = _priced_detail_handler([], events=[unsplit, no_model], dispatches=[idle])
 
-    detail, unpriced, _ = await _priced(handler.get_session_detail("s1"))
+    detail, unpriced, _ = await _priced(handler.get_session_detail("s1", scope=DETAIL_SCOPE))
 
     assert [e["cost_usd"] for e in detail["events"]] == [pytest.approx(0.0055, abs=1e-12), 0.0]
     assert detail["dispatches"][1]["cost_usd"] is None
@@ -1224,6 +1227,7 @@ async def test_rows_with_developer_name_also_carry_user_email() -> None:
         "get_session_detail_dispatches",
         "get_skill_names_by_session",
         "get_lines_by_session",
+        "get_class_lists",
     ):
         setattr(repo, name, AsyncMock(return_value=[]))
     repo.get_cost_by_user = AsyncMock(return_value=[{"developer_name": email, "session_ids": ["s1"]}])
@@ -1244,7 +1248,7 @@ async def test_rows_with_developer_name_also_carry_user_email() -> None:
     users, _ = await handler.get_users(make_filter(), page=None, per_page=None)
     cost, _ = await handler.get_cost(make_filter())
     sessions, _, _ = await handler.get_sessions(make_filter(), page=0, per_page=20, sort_by="start_time", search=None)
-    detail, _, _ = await handler.get_session_detail("s1")
+    detail, _, _ = await handler.get_session_detail("s1", scope=DETAIL_SCOPE)
 
     dumped = [
         LocalAnalyticsUserRow(**users["rows"][0]).model_dump(by_alias=True),
@@ -1290,6 +1294,7 @@ async def test_overview_avg_context_per_call_divides_by_api_call_count():
     repo.get_tool_success_by_session = AsyncMock(return_value=[])
     repo.get_session_durations = AsyncMock(return_value=[])
     repo.get_session_model_costs = AsyncMock(return_value=[])
+    repo.get_class_lists = AsyncMock(return_value=[])
     repo.get_session_cost_facts = AsyncMock(return_value=[{**BASE_COST_ROW, "session_id": "s1"}])
     handler = LocalAnalyticsHandler(repo)
 
@@ -1358,6 +1363,8 @@ async def test_efficiency_worst_session_and_avg_use_api_call_count():
     )
     repo.get_file_facts_by_session = AsyncMock(return_value=[])
     repo.get_lines_totals = AsyncMock(return_value=[])
+    repo.get_lines_by_session = AsyncMock(return_value=[])
+    repo.get_class_lists = AsyncMock(return_value=[])
     handler = LocalAnalyticsHandler(repo)
 
     data, _ = await handler.get_efficiency(make_filter())
@@ -1406,7 +1413,7 @@ def make_detail_handler(meta_row):
 @pytest.mark.asyncio
 async def test_session_detail_harness_name_is_humanized():
     handler = make_detail_handler({"session_id": "s1", "harness_service_name": "claude-code"})
-    detail, _, _ = await handler.get_session_detail("s1")
+    detail, _, _ = await handler.get_session_detail("s1", scope=DETAIL_SCOPE)
     assert detail["harness_name"] == "Claude Code"
 
 
@@ -1417,7 +1424,7 @@ async def test_session_detail_classifies_a_hook_only_session_by_the_reader_skill
         return_value=[{"session_id": "s1", "skill_names": ["stlc-factory:exploratory"]}]
     )
 
-    detail, _, _ = await handler.get_session_detail("s1")
+    detail, _, _ = await handler.get_session_detail("s1", scope=DETAIL_SCOPE)
 
     assert detail["delivery_framework"] == "STLC Factory (QA factory)"
 
@@ -1429,7 +1436,7 @@ async def test_session_detail_classifies_a_session_that_only_dispatched_a_factor
         return_value=[{"session_id": "s1", "skill_names": ["sdlc-factory:complexity-assessor"]}]
     )
 
-    detail, _, _ = await handler.get_session_detail("s1")
+    detail, _, _ = await handler.get_session_detail("s1", scope=DETAIL_SCOPE)
 
     assert detail["delivery_framework"] == "CodeMie AI Factory"
 
@@ -1439,7 +1446,7 @@ async def test_session_detail_without_skill_names_is_pure_chat():
     handler = make_detail_handler({"session_id": "s1"})
     handler._repo.get_skill_names_by_session = AsyncMock(return_value=[{"session_id": "s1", "skill_names": []}])
 
-    detail, _, _ = await handler.get_session_detail("s1")
+    detail, _, _ = await handler.get_session_detail("s1", scope=DETAIL_SCOPE)
 
     assert detail["delivery_framework"] == "Pure chat"
 
@@ -1455,7 +1462,7 @@ async def test_session_detail_places_an_agent_launched_before_the_first_hook():
     rows = [_dispatch_row(subagent_type="Explore", offset_s=5) | {"subagent_duration_ms": 1000}]
     handler._repo.get_session_detail_dispatches = AsyncMock(return_value=rows)
 
-    detail, _, _ = await handler.get_session_detail("s1")
+    detail, _, _ = await handler.get_session_detail("s1", scope=DETAIL_SCOPE)
 
     agent = next(d for d in detail["dispatches"] if d["kind"] == "agent")
     assert agent["start_offset_ms"] == 5000
@@ -1465,7 +1472,7 @@ async def test_session_detail_places_an_agent_launched_before_the_first_hook():
 @pytest.mark.asyncio
 async def test_session_detail_harness_name_unknown_when_unresolved():
     handler = make_detail_handler({"session_id": "s1", "harness_service_name": None})
-    detail, _, _ = await handler.get_session_detail("s1")
+    detail, _, _ = await handler.get_session_detail("s1", scope=DETAIL_SCOPE)
     assert detail["harness_name"] == "Unknown"
 
 
@@ -1563,6 +1570,7 @@ _MONEY_READS = (
     "get_lines_by_user",
     "get_cost_by_user",
     "get_users",
+    "get_class_lists",
 )
 
 # The ticket's sessions: Opus 5.5 with every cache write at 1h, Sonnet 4.6 likewise.
@@ -1787,6 +1795,8 @@ def _efficiency_handler(row):
     repo.get_turns_by_session = AsyncMock(return_value=[])
     repo.get_file_facts_by_session = AsyncMock(return_value=[])
     repo.get_lines_totals = AsyncMock(return_value=[])
+    repo.get_lines_by_session = AsyncMock(return_value=[])
+    repo.get_class_lists = AsyncMock(return_value=[])
     return LocalAnalyticsHandler(repo)
 
 
@@ -1881,14 +1891,14 @@ async def test_a_search_for_the_markup_name_finds_no_unnamed_session_either():
 @pytest.mark.asyncio
 async def test_session_detail_serves_the_name_when_set():
     handler = make_detail_handler({"session_id": "s1", "prompt": "first words", "session_title": "Release plan"})
-    detail, _, _ = await handler.get_session_detail("s1")
+    detail, _, _ = await handler.get_session_detail("s1", scope=DETAIL_SCOPE)
     assert detail["prompt"] == "Release plan"
 
 
 @pytest.mark.asyncio
 async def test_session_detail_serves_the_first_prompt_without_markup_when_unnamed():
     handler = make_detail_handler({"session_id": "s1", "prompt": "Do this\n\n" + _MARKUP, "session_title": None})
-    detail, _, _ = await handler.get_session_detail("s1")
+    detail, _, _ = await handler.get_session_detail("s1", scope=DETAIL_SCOPE)
     assert detail["prompt"] == "Do this\n\n\n" + _CLEAN
 
 
@@ -1907,7 +1917,7 @@ async def test_session_detail_serves_the_repository_then_the_branch_for_a_markup
     handler = make_detail_handler(
         {"session_id": "s1", "prompt": '<pasted_content id="a">', "repository": repository, "branch": branch}
     )
-    detail, _, _ = await handler.get_session_detail("s1")
+    detail, _, _ = await handler.get_session_detail("s1", scope=DETAIL_SCOPE)
     assert detail["prompt"] == expected
 
 

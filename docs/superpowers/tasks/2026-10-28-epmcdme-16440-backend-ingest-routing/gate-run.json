@@ -1,0 +1,127 @@
+{
+ "schema": 1,
+ "branch": "EPMCDME-16440_backend-ingest-routing",
+ "head": "260e89f8fa5d764ac944bb69d942aa1f71b1e386",
+ "runner": "poetry",
+ "started_at": "2026-10-28",
+ "completed_at": "2026-10-28",
+ "status": "PASSED_WITH_ACCEPTED_BASELINE_FAILURES",
+ "drift_detected": false,
+ "note": "Not an unconditional green run: every gate that exits non-zero does so only for the accepted baseline/environment failures listed in accepted_failures. sonar and pre-push-pytest were not run.",
+ "gates": [
+  {
+   "id": "lint",
+   "source": "guide",
+   "status": "PASS",
+   "command": "ruff format --check; ruff check",
+   "exit_code": 0,
+   "evidence": "rerun on touched file at final head 260e89f8f: qafix2.ruff-format/ruff-check.local.log; rest of the tree reused from head fd874c3c1 (rerun.ruff-*.local.log), unchanged since: the only delta fd874c3c1..260e89f8f is test_reader_live_session_range.py"
+  },
+  {
+   "id": "build",
+   "source": "guide",
+   "status": "PASS",
+   "command": "poetry build",
+   "exit_code": 0,
+   "evidence": "reused from fd874c3c1 (rerun.build.local.log); delta touches one test file only, outside the package"
+  },
+  {
+   "id": "license",
+   "source": "guide",
+   "status": "PASS",
+   "command": "python scripts/license_headers/check_license_headers.py --check --quiet",
+   "exit_code": 0,
+   "evidence": "touched file rerun at 260e89f8f (qafix2.license.local.log); whole tree reused from fd874c3c1 (rerun.license.local.log)"
+  },
+  {
+   "id": "secrets",
+   "source": "guide",
+   "status": "PASS",
+   "command": "podman run gitleaks v8.30.1 dir (docker absent)",
+   "exit_code": 0,
+   "evidence": "reused from fd874c3c1 (rerun.gitleaks.local.log); delta is one test file with generated uuid ids"
+  },
+  {
+   "id": "unit-affected",
+   "source": "guide",
+   "status": "PASS_WITH_ACCEPTED_FAILURES",
+   "command": "pytest session_binding_owner + service/project + test_cli_analytics_jobs + test_repository_project_registration + rest_api/routers (PG17, default -n 3)",
+   "exit_code": 1,
+   "evidence": "reused from fd874c3c1 (rerun.affected.local.log): 1827 passed, 1 failed (test_oauth_redis_lazy_init, accepted), 150 errors (msgraph collection, accepted). Paths unchanged by the final commit (only a live-PG test module changed)."
+  },
+  {
+   "id": "live-pg17-xdist-default",
+   "source": "guide",
+   "status": "PASS_WITH_ACCEPTED_FAILURES",
+   "command": "pytest tests/codemie/repository/cli_analytics/postgres -k live (repo default -n 3), fresh postgres:17 container per run, 3 runs",
+   "exit_code": 1,
+   "evidence": "rerun on final head 260e89f8f: qafix2.live-pg17-{1,2,3}.local.log; each run 211 passed, 1 failed = only the accepted last-calendar-day test"
+  },
+  {
+   "id": "live-pg14-xdist-default",
+   "source": "guide",
+   "status": "PASS_WITH_ACCEPTED_FAILURES",
+   "command": "same on fresh postgres:14, 2 runs",
+   "exit_code": 1,
+   "evidence": "rerun on final head 260e89f8f: qafix2.live-pg14-{1,2}.local.log; each run 211 passed, 1 failed = only the accepted last-calendar-day test. more_than_a_day_out passed in both."
+  },
+  {
+   "id": "live-serial",
+   "source": "guide",
+   "status": "PASS_WITH_ACCEPTED_FAILURES",
+   "command": "same -k live with -n 0, PG17 and PG14",
+   "exit_code": 1,
+   "evidence": "reused from fd874c3c1 (rerun.live3-n0-pg17/pg14.local.log): 211 passed, 1 failed = last-calendar-day. Production code unchanged since."
+  },
+  {
+   "id": "sonar",
+   "source": "guide",
+   "status": "NOT_RUN",
+   "command": "make sonar-local",
+   "notes": "Sonar token/server unavailable in this environment; owed to CI"
+  },
+  {
+   "id": "pre-push-pytest",
+   "source": "hook",
+   "status": "NOT_RUN",
+   "command": "scripts/git-hooks/pre_push.sh",
+   "notes": "full suite plus sonar was not run; only the affected subset and the live directory ran; owed to the pre-push hook/CI"
+  }
+ ],
+ "accepted_failures": [
+  {
+   "test": "tests/codemie/repository/cli_analytics/postgres/test_live_dispatch_gate.py::test_live_an_agent_end_on_the_last_calendar_day_queues_no_day_after_it",
+   "cause": "Windows datetime.fromtimestamp rejects year 9999 (OSError Errno 22) in otlp.ns_to_datetime; platform limit, not Postgres-related",
+   "baseline_evidence": "fails identically on baseline 381dc7fdd, PG17 and PG14 (rerun.baseline-live-pg17/pg14, qafix.baseline-lastday.local.log)"
+  },
+  {
+   "test": "tests/codemie/repository/cli_analytics/postgres/test_dirty.py (year-0001 / year-9999 cases)",
+   "cause": "same Windows datetime range limit",
+   "baseline_evidence": "reproduced on baseline 381dc7fdd (gate.baseline-dirty.local.log vs gate.head-dirty.local.log)"
+  },
+  {
+   "test": "test_settings overrides4/5",
+   "cause": "environment: local settings/.env override",
+   "baseline_evidence": "gate.baseline-settings.local.log vs gate.head-settings.local.log"
+  },
+  {
+   "test": "test_oauth_redis_lazy_init",
+   "cause": "environment: Redis/oauth dependency",
+   "baseline_evidence": "gate.baseline-oauth.local.log"
+  },
+  {
+   "test": "53 msgraph test collection errors (150 errors in the affected set)",
+   "cause": "environment: msgraph dependency not installed",
+   "baseline_evidence": "gate.baseline-collect.local.log"
+  },
+  {
+   "test": "test_reader_live_session_range.py::test_list_and_detail_agree_on_a_row_more_than_a_day_out (PG14 only)",
+   "cause": "reported in earlier PG14 baseline run; on baseline it was a symptom of the module's shared-id xdist race (below), not a PG14 defect",
+   "baseline_evidence": "rerun.baseline-live-pg14.local.log; passes on final head in both PG14 runs after the isolation fix"
+  }
+ ],
+ "resolved": {
+  "live-xdist-default": "Root cause: test_reader_live_session_range.py (untouched by the branch) used two fixed session ids and one email for its 7 tests, so under -n 3 tests on different workers deleted and re-inserted each other's rows. Reproduced on baseline 381dc7fdd with that module alone under -n 3 (3 of 3 runs failed, passes with -n 0, iso.basealone*.local.log). The branch only shifted xdist chunking (167 -> 212 tests). Fixed in 260e89f8f by uuid-suffixed per-test session ids and emails. Purge/binding hypothesis refuted (iso.alone*.local.log, baseline without branch modules)."
+ },
+ "failures": {}
+}

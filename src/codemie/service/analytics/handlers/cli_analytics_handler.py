@@ -37,6 +37,13 @@ from typing import Any
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
 from codemie.repository.cli_analytics.ports import SESSION_PAGE_SORTS, CliAnalyticsReader
 from codemie.repository.cli_analytics.vocabulary import BLANK_CHARS, humanize_harness_name, strip_pasted_content
+from codemie.service.analytics.cli_analytics_project_gate import (
+    NOTE_FOLDER_NOT_LINKED,
+    NOTE_LINK_UNAVAILABLE,
+    NOTE_REGISTERED_INACCESSIBLE,
+    NOTE_REGISTRATION_AMBIGUOUS,
+    ORIGIN_DEFAULT,
+)
 from codemie.service.analytics.delivery_framework import classify_delivery_framework
 from codemie.service.analytics.handlers.coding_agent_pricing import CatalogPricer, normalize_model
 from codemie.service.analytics.handlers.session_money import (
@@ -180,6 +187,44 @@ def _float_sort_key(value: float) -> float:
     return round(value, 9)
 
 
+FOLDER_NOT_LINKED_LABEL = "folder not linked to a project"
+_DEFAULT_FALLBACK_NOTES = frozenset(
+    {NOTE_FOLDER_NOT_LINKED, NOTE_LINK_UNAVAILABLE, NOTE_REGISTERED_INACCESSIBLE, NOTE_REGISTRATION_AMBIGUOUS}
+)
+
+
+def _routing(row: dict) -> dict[str, str | None]:
+    """The stored `route_note` as is (None when missing or blank, never guessed) plus the public label, set only for a
+    default-routed session whose note says the folder had no usable project link (including an inaccessible link)."""
+    note = _s(row.get("route_note")).strip() or None
+    default_fallback = _s(row.get("project_origin")) == ORIGIN_DEFAULT and note in _DEFAULT_FALLBACK_NOTES
+    return {"route_note": note, "routing_label": FOLDER_NOT_LINKED_LABEL if default_fallback else None}
+
+
+def _lists(row: dict | None) -> dict[str, list[str]]:
+    """Sorted distinct classes of an entity row (`subscription_types`/`project_origins` arrays). The reader already
+    returns the response vocabulary (scope.sql_*; `none` is not re-normalisable), so values are only de-duplicated
+    and sorted; an entity without a class row lists nothing."""
+    row = row or {}
+    return {
+        "subscription_types": sorted({_s(v) or "unknown" for v in row.get("subscription_types") or []}),
+        "project_origins": sorted({_s(v) or "none" for v in row.get("project_origins") or []}),
+    }
+
+
+def _union_lists(by_session: dict[str, dict], session_ids: Any) -> dict[str, list[str]]:
+    """Class lists of exactly the given contributing sessions (`by_session` = get_class_lists(f, "session"))."""
+    rows = [by_session[sid] for sid in session_ids if sid in by_session]
+    return {
+        "subscription_types": sorted({v for lists in map(_lists, rows) for v in lists["subscription_types"]}),
+        "project_origins": sorted({v for lists in map(_lists, rows) for v in lists["project_origins"]}),
+    }
+
+
+def _by_key(rows: list[dict]) -> dict[str, dict]:
+    return {_s(r.get("key")): r for r in rows}
+
+
 def _most_frequent(counts: dict[str, int]) -> str | None:
     """The most frequent value; ties go to the alphabetically first."""
     return min(counts, key=lambda value: (-counts[value], value)) if counts else None
@@ -199,6 +244,8 @@ def _new_repository_bucket(repository: str | None, branch: str | None, project: 
         "_tool_calls": 0,
         "_tool_ok": 0,
         "_projects": {},
+        "_subs": set(),
+        "_origins": set(),
     }
 
 
@@ -207,6 +254,8 @@ def _finalize_repository_bucket(bucket: dict, include_branches: bool) -> dict:
     bucket["tool_calls_success"] = bucket.pop("_tool_ok")
     bucket["tool_success_rate"] = _pct(bucket["tool_calls_success"], bucket["tool_calls"])
     projects = bucket.pop("_projects")
+    bucket["subscription_types"] = sorted(bucket.pop("_subs"))
+    bucket["project_origins"] = sorted(bucket.pop("_origins"))
     if not include_branches:
         # A repository can be worked on from several projects: label it with the one
         # most of its sessions belong to, not whichever session came first.
@@ -227,6 +276,8 @@ _BRANCH_ROW_FIELDS = (
     "tool_calls",
     "tool_calls_success",
     "tool_success_rate",
+    "subscription_types",
+    "project_origins",
 )
 _REPO_SUM_FIELDS = (
     "session_count",
@@ -262,10 +313,14 @@ def _group_branches_into_repositories(branch_rows: list[dict]) -> list[dict]:
                 "tool_calls": 0,
                 "tool_calls_success": 0,
                 "branches": [],
+                "subscription_types": [],
+                "project_origins": [],
             },
         )
         for field in _REPO_SUM_FIELDS:
             repo[field] += row[field]
+        for field in ("subscription_types", "project_origins"):
+            repo[field] = sorted({*repo[field], *row[field]})
         repo["branches"].append({field: row[field] for field in _BRANCH_ROW_FIELDS})
 
     out = list(repos.values())
@@ -310,6 +365,8 @@ def _build_repository_rows(
         bucket["lines_removed"] += _i(lines_by_session.get(sid, {}).get("lines_removed"))
         bucket["_tool_calls"] += _i(success_by_session.get(sid, {}).get("tool_calls"))
         bucket["_tool_ok"] += _i(success_by_session.get(sid, {}).get("tool_calls_success"))
+        bucket["_subs"].add(_s(row.get("subscription_type")) or "unknown")
+        bucket["_origins"].add(_s(row.get("project_origin")) or "none")
         if not include_branches and project:
             bucket["_projects"][project] = bucket["_projects"].get(project, 0) + 1
 
@@ -400,6 +457,9 @@ class LocalAnalyticsHandler:
             success_rows,
             duration_rows,
             session_model_rows,
+            all_classes,
+            model_classes,
+            day_classes,
         ) = await asyncio.gather(
             self._repo.get_cost_kpis(f),
             self._repo.get_model_breakdown(f),
@@ -409,7 +469,10 @@ class LocalAnalyticsHandler:
             self._repo.get_file_facts_by_session(f),
             self._repo.get_tool_success_by_session(f),
             self._repo.get_session_durations(f),
-            self._repo.get_session_model_costs(f),
+            self._repo.get_session_model_costs(f, spend_only=True),
+            self._repo.get_class_lists(f, "all"),
+            self._repo.get_class_lists(f, "model"),
+            self._repo.get_class_lists(f, "day"),
         )
 
         money = price_session_models(session_model_rows)
@@ -464,11 +527,21 @@ class LocalAnalyticsHandler:
             "cache_read_cost_usd": cache_read_cost_usd,
             "bloat_pct": _pct(cache_read_cost_usd, total_cost),
             "avg_context_per_call": _ctx_per_call(cache_read_tokens, total_api_calls),
+            **_lists(_first(all_classes)),
         }
 
-        daily_buckets = [{"day": _iso(r.get("day")), "net_lines": _i(r.get("net_lines"))} for r in lines_daily]
+        by_day, by_model = _by_key(day_classes), _by_key(model_classes)
+        daily_buckets = [
+            {"day": _iso(r.get("day")), "net_lines": _i(r.get("net_lines")), **_lists(by_day.get(_iso(r.get("day"))))}
+            for r in lines_daily
+        ]
         model_breakdown = [
-            {"model_name": _s(r.get("model_name")), "session_count": _i(r.get("session_count"))} for r in model_rows
+            {
+                "model_name": _s(r.get("model_name")),
+                "session_count": _i(r.get("session_count")),
+                **_lists(by_model.get(_s(r.get("model_name")))),
+            }
+            for r in model_rows
         ]
 
         data_as_of = max((_iso(r.get("day")) for r in lines_daily), default=None)
@@ -483,28 +556,33 @@ class LocalAnalyticsHandler:
         session_money: dict[str, float], files_by_session: dict[str, dict[str, Any]]
     ) -> tuple[int, float]:
         """A session that cost money but touched no file. Returns (count, wasted_usd)."""
-        dead = 0
-        wasted = 0.0
-        for sid, cost in session_money.items():
-            if cost <= 0:
-                continue
-            if _i(files_by_session.get(sid, {}).get("files_changed")) == 0:
-                dead += 1
-                wasted += cost
-        return dead, wasted
+        ids = LocalAnalyticsHandler._dead_ids(session_money, files_by_session)
+        return len(ids), sum(session_money[sid] for sid in ids)
+
+    @staticmethod
+    def _dead_ids(session_money: dict[str, float], files_by_session: dict[str, dict[str, Any]]) -> list[str]:
+        return [
+            sid
+            for sid, cost in session_money.items()
+            if cost > 0 and _i(files_by_session.get(sid, {}).get("files_changed")) == 0
+        ]
 
     # ── Cost ─────────────────────────────────────────────────────────────────
 
     async def get_cost(self, f: LocalAnalyticsFilter) -> tuple[dict[str, Any], CatalogPricer]:
-        kpi_rows, by_user, session_model_rows = await asyncio.gather(
+        kpi_rows, by_user, session_model_rows, all_classes, model_classes = await asyncio.gather(
             self._repo.get_cost_kpis(f),
             self._repo.get_cost_by_user(f),
-            self._repo.get_session_model_costs(f),
+            self._repo.get_session_model_costs(f, spend_only=True),
+            self._repo.get_class_lists(f, "all"),
+            self._repo.get_class_lists(f, "model"),
         )
+        by_model = _by_key(model_classes)
         money = price_session_models(session_model_rows)
         kpi = _first(kpi_rows)
         total_sessions = _i(kpi.get("total_sessions"))
         total_cost = money.total
+        spend_sessions = _i(kpi.get("spend_sessions"))
         total_tokens = (
             _i(kpi.get("total_input_tokens"))
             + _i(kpi.get("total_output_tokens"))
@@ -516,13 +594,17 @@ class LocalAnalyticsHandler:
                 "developer_name": _s(r.get("developer_name")),
                 "user_email": _s(r.get("developer_name")),
                 "cost_usd": money.of_sessions([_s(sid) for sid in (r.get("session_ids") or [])]),
+                **_lists(r),
             }
             for r in by_user
         ]
         cost_by_user.sort(key=lambda r: r["developer_name"])
         cost_by_user.sort(key=lambda r: _float_sort_key(r["cost_usd"]), reverse=True)
         cost_by_model = sorted(
-            ({"model_name": name, "cost_usd": cost} for name, cost in money.by_model.items()),
+            (
+                {"model_name": name, "cost_usd": cost, **_lists(by_model.get(name))}
+                for name, cost in money.by_model.items()
+            ),
             key=lambda r: (-_float_sort_key(r["cost_usd"]), r["model_name"]),
         )
         data = {
@@ -530,7 +612,8 @@ class LocalAnalyticsHandler:
                 "total_sessions": total_sessions,
                 "total_cost_usd": total_cost,
                 "total_tokens": total_tokens,
-                "avg_cost_per_session": (total_cost / total_sessions) if total_sessions else 0.0,
+                "avg_cost_per_session": (total_cost / spend_sessions) if spend_sessions else 0.0,
+                **_lists(_first(all_classes)),
             },
             "cost_by_user": cost_by_user,
             "cost_by_model": cost_by_model,
@@ -561,7 +644,7 @@ class LocalAnalyticsHandler:
             self._repo.get_file_facts_by_session(f),
             self._repo.get_tool_success_by_session(f),
             self._repo.get_session_durations(f),
-            self._repo.get_session_model_costs(f),
+            self._repo.get_session_model_costs(f, spend_only=True),
         )
 
         money = price_session_models(session_model_rows)
@@ -573,7 +656,7 @@ class LocalAnalyticsHandler:
         daily_by_user: dict[str, list[dict]] = {}
         for row in daily_rows:
             daily_by_user.setdefault(_s(row.get("developer_name")), []).append(
-                {"day": _iso(row.get("day")), "session_count": _i(row.get("session_count"))}
+                {"day": _iso(row.get("day")), "session_count": _i(row.get("session_count")), **_lists(row)}
             )
 
         rows: list[dict] = []
@@ -601,6 +684,7 @@ class LocalAnalyticsHandler:
                     "last_active": _iso(last_active[name]) if last_active.get(name) else None,
                     "user_id": None,  # filled in by the router via UserIdentityResolver
                     "daily_activity": daily_by_user.get(name, []),
+                    **_lists(row),
                 }
             )
 
@@ -645,7 +729,7 @@ class LocalAnalyticsHandler:
             self._repo.get_file_facts_by_session(f),
             self._repo.get_tool_success_by_session(f),
             self._repo.get_lines_by_session(f),
-            self._repo.get_session_model_costs(f),
+            self._repo.get_session_model_costs(f, spend_only=True),
         )
         returned = {_s(r.get("session_id")) for r in cost_facts}
         money = price_session_models([r for r in session_model_rows if _s(r.get("session_id")) in returned])
@@ -746,6 +830,9 @@ class LocalAnalyticsHandler:
             "net_lines": _i(lines.get("lines_added")) - _i(lines.get("lines_removed")),
             "delivery_framework": classify_delivery_framework(skills_by_session.get(sid, [])),
             "ctx_per_call": _ctx_per_call(row.get("cache_read_tokens"), row.get("api_call_count")),
+            "subscription_type": _s(row.get("subscription_type")) or "unknown",
+            "project_origin": _s(row.get("project_origin")) or "none",
+            **_routing(row),
         }
 
     @staticmethod
@@ -830,7 +917,7 @@ class LocalAnalyticsHandler:
         )
 
         session_ids = [_s(r.get("session_id")) for r in cost_facts]
-        skill_rows = await self._repo.get_skill_names_by_session(session_ids)
+        skill_rows = await self._repo.get_skill_names_by_session(session_ids, scope=f.scope)
         skills_by_session = {_s(r["session_id"]): r["skill_names"] for r in skill_rows}
 
         turns_by_session = {_s(r.get("session_id")): _i(r.get("turns")) for r in turns_rows}
@@ -878,7 +965,7 @@ class LocalAnalyticsHandler:
 
     # ── Session detail ───────────────────────────────────────────────────────
 
-    async def get_session_detail(self, session_id: str) -> tuple[dict[str, Any] | None, list[str], str]:
+    async def get_session_detail(self, session_id: str, *, scope: Any) -> tuple[dict[str, Any] | None, list[str], str]:
         (
             meta_rows,
             cost_rows,
@@ -889,14 +976,14 @@ class LocalAnalyticsHandler:
             skill_rows,
             model_cost_rows,
         ) = await asyncio.gather(
-            self._repo.get_session_detail_meta(session_id),
-            self._repo.get_session_detail_cost(session_id),
-            self._repo.get_session_detail_scalars(session_id),
-            self._repo.get_session_detail_tools(session_id),
-            self._repo.get_session_detail_events(session_id),
-            self._repo.get_session_detail_dispatches(session_id),
-            self._repo.get_skill_names_by_session([session_id]),
-            self._repo.get_session_detail_model_costs(session_id),
+            self._repo.get_session_detail_meta(session_id, scope=scope),
+            self._repo.get_session_detail_cost(session_id, scope=scope),
+            self._repo.get_session_detail_scalars(session_id, scope=scope),
+            self._repo.get_session_detail_tools(session_id, scope=scope),
+            self._repo.get_session_detail_events(session_id, scope=scope),
+            self._repo.get_session_detail_dispatches(session_id, scope=scope),
+            self._repo.get_skill_names_by_session([session_id], scope=scope),
+            self._repo.get_session_detail_model_costs(session_id, scope=scope),
         )
         pricer = CatalogPricer()
         meta = _first(meta_rows)
@@ -998,6 +1085,9 @@ class LocalAnalyticsHandler:
             "tool_success_rate": _pct(tool_ok_total, _i(scalars.get("tool_call_count"))),
             "tools": tools,
             "dispatches": dispatches,
+            "subscription_type": _s(meta.get("subscription_type")) or "unknown",
+            "project_origin": _s(meta.get("project_origin")) or "none",
+            **_routing(meta),
         }
         skill_names = _first(skill_rows).get("skill_names") or []
         detail["delivery_framework"] = classify_delivery_framework(skill_names)
@@ -1080,11 +1170,16 @@ class LocalAnalyticsHandler:
     # ── Tools ────────────────────────────────────────────────────────────────
 
     async def get_tools(self, f: LocalAnalyticsFilter) -> dict:
-        tool_rows, model_rows, invocation_rows = await asyncio.gather(
+        tool_rows, model_rows, invocation_rows, tool_classes, model_classes, invocation_classes = await asyncio.gather(
             self._repo.get_tool_usage(f),
             self._repo.get_model_breakdown(f),
             self._repo.get_invocations(f),
+            self._repo.get_class_lists(f, "tool"),
+            self._repo.get_class_lists(f, "model"),
+            self._repo.get_class_lists(f, "invocation"),
         )
+        by_tool, by_model = _by_key(tool_classes), _by_key(model_classes)
+        by_invocation = {(_s(r.get("kind")), _s(r.get("key"))): r for r in invocation_classes}
         tool_usage = []
         for row in tool_rows:
             calls = _i(row.get("call_count"))
@@ -1095,11 +1190,16 @@ class LocalAnalyticsHandler:
                     "call_count": calls,
                     "success_count": ok,
                     "success_rate": _pct(ok, calls),
+                    **_lists(by_tool.get(_s(row.get("tool_name")))),
                 }
             )
         tokens_by_model = sorted(
             (
-                {"model_name": _s(r.get("model_name")), "total_tokens": _i(r.get("total_tokens"))}
+                {
+                    "model_name": _s(r.get("model_name")),
+                    "total_tokens": _i(r.get("total_tokens")),
+                    **_lists(by_model.get(_s(r.get("model_name")))),
+                }
                 for r in model_rows
                 if _i(r.get("total_tokens")) > 0
             ),
@@ -1109,15 +1209,20 @@ class LocalAnalyticsHandler:
         return {
             "tool_usage": tool_usage,
             "tokens_by_model": tokens_by_model,
-            "skills_invoked": self._top_invocations(invocation_rows, "skill"),
-            "agent_subtypes": self._top_invocations(invocation_rows, "agent"),
-            "slash_commands": self._top_invocations(invocation_rows, "command"),
+            "skills_invoked": self._top_invocations(invocation_rows, "skill", by_invocation),
+            "agent_subtypes": self._top_invocations(invocation_rows, "agent", by_invocation),
+            "slash_commands": self._top_invocations(invocation_rows, "command", by_invocation),
         }
 
     @staticmethod
-    def _top_invocations(rows: list[dict], kind: str) -> list[dict]:
+    def _top_invocations(rows: list[dict], kind: str, classes: dict[tuple[str, str], dict] | None = None) -> list[dict]:
+        classes = classes or {}
         items = [
-            {"name": _s(r.get("name")), "count": _i(r.get("count"))}
+            {
+                "name": _s(r.get("name")),
+                "count": _i(r.get("count")),
+                **_lists(classes.get((kind, _s(r.get("name"))))),
+            }
             for r in rows
             if _s(r.get("kind")) == kind and _s(r.get("name"))
         ]
@@ -1127,18 +1232,29 @@ class LocalAnalyticsHandler:
     # ── Efficiency ───────────────────────────────────────────────────────────
 
     async def get_efficiency(self, f: LocalAnalyticsFilter) -> tuple[dict[str, Any], CatalogPricer]:
-        kpi_rows, session_model_rows, cost_facts, turns_rows, file_rows, lines_totals = await asyncio.gather(
+        (
+            kpi_rows,
+            session_model_rows,
+            cost_facts,
+            turns_rows,
+            file_rows,
+            lines_totals,
+            lines_rows,
+            session_classes,
+        ) = await asyncio.gather(
             self._repo.get_cost_kpis(f),
-            self._repo.get_session_model_costs(f),
+            self._repo.get_session_model_costs(f, spend_only=True),
             self._repo.get_session_cost_facts(f),
             self._repo.get_turns_by_session(f),
             self._repo.get_file_facts_by_session(f),
             self._repo.get_lines_totals(f),
+            self._repo.get_lines_by_session(f),
+            self._repo.get_class_lists(f, "session"),
         )
+        classes = _by_key(session_classes)
 
         money = price_session_models(session_model_rows)
         kpi = _first(kpi_rows)
-        total_sessions = _i(kpi.get("total_sessions"))
         total_cost = money.total
         cache_read_tokens = _i(kpi.get("total_cache_read_tokens"))
         total_api_calls = _i(kpi.get("total_api_calls"))
@@ -1152,6 +1268,7 @@ class LocalAnalyticsHandler:
         worst_prompt: str | None = None
         worst_trace: str | None = None
         depth_counts = dict.fromkeys(_DEPTH_BUCKETS, 0)
+        depth_sessions: dict[str, list[str]] = {b: [] for b in _DEPTH_BUCKETS}
         for row in cost_facts:
             sid = _s(row.get("session_id"))
             turns = turns_by_session.get(sid, 0)
@@ -1166,15 +1283,25 @@ class LocalAnalyticsHandler:
                     or None
                 )
                 worst_trace = sid
-            depth_counts[depth_bucket(turns)] += 1
+            bucket = depth_bucket(turns)
+            depth_counts[bucket] += 1
+            depth_sessions[bucket].append(sid)
 
         if worst_prompt:
             worst_prompt = worst_prompt[:_PROMPT_PREVIEW_LEN]
 
-        dead_count, wasted = self._dead_sessions(money.by_session, files_by_session)
+        dead_ids = self._dead_ids(money.by_session, files_by_session)
+        dead_count, wasted = len(dead_ids), sum(money.by_session[sid] for sid in dead_ids)
 
         cost_session_ids = {_s(r.get("session_id")) for r in cost_facts}
         priced_files = [r for sid, r in files_by_session.items() if sid in cost_session_ids]
+        # Sessions that contributed to code_changes: a changed file, or a non-zero line delta.
+        code_ids = {
+            sid for sid, r in files_by_session.items() if sid in cost_session_ids and _i(r.get("files_changed"))
+        }
+        code_ids |= {
+            _s(r.get("session_id")) for r in lines_rows if _i(r.get("lines_added")) or _i(r.get("lines_removed"))
+        }
         files_changed = sum(_i(r.get("files_changed")) for r in priced_files)
         files_written = sum(_i(r.get("files_written")) for r in priced_files)
         files_edited = sum(_i(r.get("files_edited")) for r in priced_files)
@@ -1189,19 +1316,25 @@ class LocalAnalyticsHandler:
                 "cache_read_cost_usd": cache_read_cost_usd,
                 "bloat_pct": _pct(cache_read_cost_usd, total_cost),
                 "total_cost_usd": total_cost,
+                **_union_lists(classes, cost_session_ids),
             },
             "dead_sessions": {
                 "count": dead_count,
-                "pct_of_sessions": _pct(dead_count, total_sessions),
+                "pct_of_sessions": _pct(dead_count, _i(kpi.get("spend_sessions"))),
                 "wasted_cost_usd": wasted,
                 "avg_cost_per_dead": (wasted / dead_count) if dead_count else None,
+                **_union_lists(classes, dead_ids),
             },
-            "session_depth": [{"bucket": b, "count": depth_counts[b]} for b in _DEPTH_BUCKETS],
+            "session_depth": [
+                {"bucket": b, "count": depth_counts[b], **_union_lists(classes, depth_sessions[b])}
+                for b in _DEPTH_BUCKETS
+            ],
             "code_changes": {
                 "files_changed": files_changed,
                 "files_written": files_written,
                 "files_edited": files_edited,
                 "net_lines": _i(lines.get("lines_added")) - _i(lines.get("lines_removed")),
+                **_union_lists(classes, code_ids),
             },
         }
         return data, money.pricer

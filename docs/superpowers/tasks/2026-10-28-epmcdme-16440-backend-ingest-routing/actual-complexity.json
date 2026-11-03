@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "generated": "2026-10-28T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 5, "label": "XL" }
+  },
+  "total": 27,
+  "size": "XL",
+  "band_range": "27-31",
+  "files_changed": 44,
+  "routing": "split-required",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Ingest/OTLP, session binding, purge, rollups, classification, project gate/destination resolver, new repository registration entity with REST API, and policy endpoint across several subsystems." },
+    { "dimension": "requirements_clarity", "reason": "4 review/fix rounds (1 automated, 2 manual) plus 3 QA-fix commits indicate design decisions and contract gaps surfaced during delivery." },
+    { "dimension": "technical_risk", "reason": "Session binding with advisory locks (concurrency), privacy/access-sensitive routing of analytics, two schema migrations in separate alembic trees; no exact precedent." },
+    { "dimension": "file_change_estimate", "reason": "44 files changed (about 22 source/doc/migration, 22 test), ~5k insertions across several directories." },
+    { "dimension": "affected_layers", "reason": "API routers, service, persistence (two migrations, two alembic environments), config declarations and the CLI ingestion contract; no UI." }
+  ],
+  "red_flags_applied": [
+    "Changes database schema (2 migrations): Technical Risk and Affected Layers raised",
+    "Security/privacy access routing: Technical Risk raised",
+    "Borderline 26/27 with Technical Risk XL: leaned higher"
+  ],
+  "split_recommendation": "Would have split by dependency within the backend repo: (1) registration entity + REST API + migration, (2) session binding/classification/destination routing and ingest. Retrospective only."
+}

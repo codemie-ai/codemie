@@ -42,9 +42,6 @@ from typing import Any
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
 from codemie.repository.cli_analytics.ports import SESSION_PAGE_SORTS, Rows
 from codemie.repository.cli_analytics.postgres.engine import AnalyticsPgEngine
-from codemie.repository.cli_analytics.postgres.otlp import MAX_KEY_BYTES
-from codemie.repository.cli_analytics.postgres.rollups import _BLANKS, _attr_ms
-from codemie.repository.cli_analytics.postgres.session_derived import CLASSIFIER_NAMES_SQL
 from codemie.repository.cli_analytics.postgres.fork_attribution import (
     dispatch_fork_candidate,
     executed_tool_span,
@@ -55,6 +52,17 @@ from codemie.repository.cli_analytics.postgres.fork_attribution import (
     skill_end_agent_id,
     sole_dispatch_of_prompt,
     tool_response_agent_id,
+)
+from codemie.repository.cli_analytics.postgres.otlp import MAX_KEY_BYTES
+from codemie.repository.cli_analytics.postgres.rollups import _BLANKS, _attr_ms
+from codemie.repository.cli_analytics.postgres.session_derived import CLASSIFIER_NAMES_SQL
+from codemie.repository.cli_analytics.scope import (
+    sql_detail_condition,
+    sql_list_condition,
+    sql_personal_billed,
+    sql_private,
+    sql_project_origin,
+    sql_subscription_type,
 )
 from codemie.repository.cli_analytics.vocabulary import (
     BUILTIN_COMMAND_NAMES,
@@ -72,6 +80,18 @@ _LLM_REQUEST = int(SpanKind.LLM_REQUEST)
 _DIM_TYPES = "ARRAY[" + ", ".join(f"'{t}'" for t in DIMENSION_HOOK_TYPES) + "]::text[]"
 _C = 'COLLATE "C"'
 _MAX_PAGE_OFFSET = 2**62  # far below the int64 bound of `OFFSET $offset::bigint`, far beyond any real row count
+
+
+# Spend is what the company or a project pays: the cost of a Personal-paid session (also one stored under a work
+# project) stays out of every aggregate money value, while the session itself remains in `sel` as activity.
+def _spend(alias: str) -> str:
+    return f"{alias}.session_id NOT IN (SELECT session_id FROM sel WHERE {sql_personal_billed('sel')})"
+
+
+# The response vocabulary of a selected session (`s` = sel); see scope.py.
+_SUB = sql_subscription_type("s.subscription_type")
+_ORIGIN = sql_project_origin("s.project_origin")
+_CLASS_LISTS = f"array_agg(DISTINCT {_SUB}) AS subscription_types, array_agg(DISTINCT {_ORIGIN}) AS project_origins"
 
 _STARTED_IN_WINDOW = "started_at BETWEEN $start_dt::timestamptz AND $end_dt::timestamptz"
 # The person of a session_dims row `d`: the JWT email, else the largest developer name seen, else the developer name.
@@ -209,6 +229,18 @@ def _facts_from(include_costless: bool) -> str:
              JOIN act a ON a.session_id = c.session_id"""
 
 
+def detail_gate(scope: Any, sid: str = "$sid::text") -> tuple[str, dict[str, Any]]:
+    """Per-session detail authorization (mode `detail`): a LEFT JOIN of session_dims on the session id, so a
+    session without a dims row is class M (derived project '', i.e. unattributed) and an existing Personal row
+    without a matching owner is denied. Absent or malformed scope -> always false."""
+    cond, params = sql_detail_condition(scope)
+    gate = (
+        f"EXISTS (SELECT 1 FROM (SELECT {sid} AS session_id) g "
+        f"LEFT JOIN session_dims d ON d.session_id = g.session_id WHERE {cond})"
+    )
+    return gate, params
+
+
 def positional(sql: str, params: dict[str, Any]) -> tuple[str, list[Any]]:
     """`$name` placeholders -> asyncpg's `$1, $2, ...`, with the values in the matching order."""
     names: list[str] = []
@@ -244,6 +276,7 @@ def window_params(f: LocalAnalyticsFilter) -> dict[str, Any]:
         "start_dt": start,
         "end_dt": end,
     }
+    params.update(sql_list_condition(f.scope)[1])
     if f.deny_all:
         return params
     if f.users:
@@ -256,6 +289,10 @@ def window_params(f: LocalAnalyticsFilter) -> dict[str, Any]:
         params["branch"] = f.branch
     if f.session_ids is not None:
         params["session_ids"] = list(dict.fromkeys(f.session_ids))
+    if f.subscription_types:
+        params["subscription_types"] = list(f.subscription_types)
+    if f.project_origins:
+        params["project_origins"] = list(f.project_origins)
     return params
 
 
@@ -328,28 +365,37 @@ class PostgresCliAnalyticsReader:
     # ── shared session selection ─────────────────────────────────────────────
 
     @staticmethod
+    def _filter_conditions(f: LocalAnalyticsFilter) -> list[str]:
+        """The request filters over the projected `x`, in a fixed order (the viewer scope is added before them)."""
+        conditions: list[str] = []
+        if f.users:
+            conditions.append("lower(user_email) = ANY($users::text[])")
+        if f.project_unattributed:
+            conditions.append("project_name = ''")
+        elif f.projects:
+            conditions.append("project_name = ANY($projects::text[])")
+        if f.repositories:
+            conditions.append("repository = ANY($repositories::text[])")
+        if f.branch:
+            conditions.append("branch = $branch::text")
+        if f.session_ids is not None:
+            conditions.append("session_id = ANY($session_ids::text[])")
+        if f.subscription_types:
+            conditions.append(f"{sql_subscription_type('x.subscription_type')} = ANY($subscription_types::text[])")
+        if f.project_origins:
+            conditions.append(f"{sql_project_origin('x.project_origin')} = ANY($project_origins::text[])")
+        return conditions
+
+    @staticmethod
     def _sessions_cte(f: LocalAnalyticsFilter) -> str:
         """Every session's dimensions (dimensions plus the session's email).
 
         Sessions whose started_at is in the window; the only place the window is decided.
         Strings are never NULL in the result, so missing values become '' for the filters.
         """
-        if f.deny_all:
-            conditions = ["false"]
-        else:
-            conditions = []
-            if f.users:
-                conditions.append("lower(user_email) = ANY($users::text[])")
-            if f.project_unattributed:
-                conditions.append("project_name = ''")
-            elif f.projects:
-                conditions.append("project_name = ANY($projects::text[])")
-            if f.repositories:
-                conditions.append("repository = ANY($repositories::text[])")
-            if f.branch:
-                conditions.append("branch = $branch::text")
-            if f.session_ids is not None:
-                conditions.append("session_id = ANY($session_ids::text[])")
+        # The viewer scope is always the first condition: nothing appended later can displace it.
+        conditions = [sql_list_condition(f.scope)[0]]
+        conditions.extend(["false"] if f.deny_all else PostgresCliAnalyticsReader._filter_conditions(f))
         where = ("\n            WHERE " + " AND ".join(conditions)) if conditions else ""
         return f"""
         sel AS (
@@ -365,7 +411,11 @@ class PostgresCliAnalyticsReader:
                        d.activity_started_at,
                        d.ended_at,
                        coalesce(d.first_prompt, '') AS first_prompt,
-                       coalesce(d.session_title, '') AS session_title
+                       coalesce(d.session_title, '') AS session_title,
+                       d.owner_email,
+                       d.subscription_type,
+                       d.project_origin,
+                       d.route_note
                 FROM session_dims d
                 WHERE d.started_at IS NOT NULL AND {_STARTED_IN_WINDOW}
             ) x{where}
@@ -408,12 +458,53 @@ class PostgresCliAnalyticsReader:
 
     # ── cost / token facts (cost_daily) ──────────────────────────────────────
 
+    async def get_class_lists(self, f: LocalAnalyticsFilter, by: str = "all") -> Rows:
+        """The distinct normalised subscription types / project origins of the selected sessions, per entity.
+
+        Read-only side query next to the sum queries (never joined into them, so no total can multiply). `by`:
+        `all` (one row, key ''), `model` (normalised model name), `day` (lines_daily day), `tool` (tool name),
+        `invocation` (kind and name, as get_invocations), `session` (session id).
+        Rows are `key`, `kind`, `subscription_types`,
+        `project_origins`; the lists are never NULL."""
+        classes = _CLASS_LISTS
+        name = self._normalized_model_name("d.model_name")
+        sources = {
+            "all": f"SELECT ''::text AS key, '' AS kind, {classes} FROM sel s "
+            "WHERE EXISTS (SELECT 1 FROM cost_daily d WHERE d.session_id = s.session_id)",
+            "session": f"SELECT s.session_id AS key, '' AS kind, {classes} FROM sel s GROUP BY s.session_id",
+            "model": f"SELECT {name} AS key, '' AS kind, {classes} FROM cost_daily d "
+            f"JOIN sel s ON s.session_id = d.session_id GROUP BY {name} HAVING {name} <> ''",
+            "day": f"SELECT l.day::text AS key, '' AS kind, {classes} FROM lines_daily l "
+            "JOIN sel s ON s.session_id = l.session_id GROUP BY 1",
+            "tool": f"SELECT i.name AS key, '' AS kind, {classes} FROM invocations_hourly i "
+            "JOIN sel s ON s.session_id = i.session_id WHERE i.kind = 1 GROUP BY 1",
+            "invocation": f"""SELECT u.name AS key,
+                   CASE u.kind WHEN 2 THEN 'skill' WHEN 3 THEN 'agent' ELSE 'command' END AS kind, {classes}
+            FROM (
+                SELECT kind, name, session_id FROM invocations_hourly WHERE kind IN (2, 3)
+                UNION ALL
+                SELECT kind, name, session_id FROM invocations_hourly
+                WHERE kind = 4 AND {_no_summary("invocations_hourly.session_id")}
+                  AND name <> ALL($builtin_commands::text[])
+                UNION ALL
+                SELECT 4, e.cmd #>> '{{}}', session_dims.session_id
+                FROM session_dims, jsonb_array_elements(session_dims.commands) AS e(cmd)
+                WHERE session_dims.summary_ts IS NOT NULL AND jsonb_typeof(e.cmd) = 'string'
+                  AND e.cmd #>> '{{}}' <> '' AND (e.cmd #>> '{{}}') <> ALL($builtin_commands::text[])
+            ) u JOIN sel s ON s.session_id = u.session_id GROUP BY 1, 2""",
+        }
+        params = window_params(f)
+        if by == "invocation":
+            params["builtin_commands"] = list(BUILTIN_COMMAND_NAMES)
+        return await self._q(f"WITH {self._sessions_cte(f)} {sources[by]}", params)
+
     async def get_cost_kpis(self, f: LocalAnalyticsFilter) -> Rows:
         return await self._q(
             f"""
         WITH {self._sessions_cte(f)}
         SELECT count(DISTINCT session_id)          AS total_sessions,
-               sum(cost_usd)                       AS total_cost_usd,
+               count(DISTINCT session_id) FILTER (WHERE {_spend("cost_daily")})  AS spend_sessions,
+               sum(cost_usd) FILTER (WHERE {_spend("cost_daily")})                AS total_cost_usd,
                sum(input_tokens)::bigint           AS total_input_tokens,
                sum(output_tokens)::bigint          AS total_output_tokens,
                sum(cache_read_tokens)::bigint      AS total_cache_read_tokens,
@@ -431,7 +522,7 @@ class PostgresCliAnalyticsReader:
         WITH {self._sessions_cte(f)}
         SELECT {model_name}                                   AS model_name,
                count(DISTINCT d.session_id)                   AS session_count,
-               sum(d.cost_usd)                                AS cost_usd,
+               sum(d.cost_usd) FILTER (WHERE {_spend("d")}) AS cost_usd,
                sum(d.cache_read_tokens)::bigint               AS cache_read_tokens,
                sum(d.input_tokens + d.output_tokens + d.cache_read_tokens + d.cache_creation_tokens)::bigint
                                                               AS total_tokens
@@ -443,9 +534,11 @@ class PostgresCliAnalyticsReader:
             window_params(f),
         )
 
-    async def get_session_model_costs(self, f: LocalAnalyticsFilter) -> Rows:
+    async def get_session_model_costs(self, f: LocalAnalyticsFilter, *, spend_only: bool = False) -> Rows:
         """Token sums per (session, raw model), the empty model kept, with the normalised model name: the rows
-        every money value is priced from. The 5m / 1h sums are NULL when no row of the group has a split."""
+        every money value is priced from. The 5m / 1h sums are NULL when no row of the group has a split.
+        `spend_only` leaves out Personal-paid sessions: aggregate spend is company/project-paid only, while a
+        single session keeps its own cost."""
         model_name = self._normalized_model_name("c.model_name")
         return await self._q(
             f"""
@@ -460,6 +553,7 @@ class PostgresCliAnalyticsReader:
                sum(c.cache_creation_5m_tokens)::bigint      AS cache_creation_5m_tokens,
                sum(c.cache_creation_1h_tokens)::bigint      AS cache_creation_1h_tokens
         FROM {_token_rows(*_SEL_SESSIONS)}
+        WHERE true{f" AND {_spend('c')}" if spend_only else ""}
         GROUP BY c.session_id, c.model_name""",
             window_params(f),
         )
@@ -468,7 +562,8 @@ class PostgresCliAnalyticsReader:
         return await self._q(
             f"""
         WITH {self._sessions_cte(f)}
-        SELECT {_DEVELOPER} AS developer_name, array_agg(DISTINCT c.session_id) AS session_ids
+        SELECT {_DEVELOPER} AS developer_name, array_agg(DISTINCT c.session_id) AS session_ids,
+               {_CLASS_LISTS}
         FROM {_cost_rows("c.session_id IN (SELECT session_id FROM sel)")} JOIN sel s ON s.session_id = c.session_id
         GROUP BY 1
         ORDER BY ({_DEVELOPER}) {_C}""",
@@ -485,9 +580,10 @@ class PostgresCliAnalyticsReader:
                sum(c.output_tokens)::bigint             AS output_tokens,
                sum(c.cache_read_tokens)::bigint         AS cache_read_tokens,
                sum(c.cache_creation_tokens)::bigint     AS cache_creation_tokens,
-               sum(c.cost_usd)                          AS cost_usd,
+               sum(c.cost_usd) FILTER (WHERE {_spend("c")}) AS cost_usd,
                {_TOP_MODEL}                             AS top_model,
-               array_agg(DISTINCT c.session_id)         AS session_ids
+               array_agg(DISTINCT c.session_id)         AS session_ids,
+               {_CLASS_LISTS}
         FROM {_cost_rows("c.session_id IN (SELECT session_id FROM sel)")}
              JOIN sel s ON s.session_id = c.session_id
         GROUP BY 1
@@ -499,7 +595,8 @@ class PostgresCliAnalyticsReader:
         return await self._q(
             f"""
         WITH {self._sessions_cte(f)}
-        SELECT {_DEVELOPER} AS developer_name, c.day AS day, count(DISTINCT c.session_id) AS session_count
+        SELECT {_DEVELOPER} AS developer_name, c.day AS day, count(DISTINCT c.session_id) AS session_count,
+               {_CLASS_LISTS}
         FROM {_cost_rows("c.session_id IN (SELECT session_id FROM sel)")} JOIN sel s ON s.session_id = c.session_id
         GROUP BY 1, 2
         ORDER BY ({_DEVELOPER}) {_C}, c.day""",
@@ -682,7 +779,7 @@ class PostgresCliAnalyticsReader:
             params,
         )
 
-    async def get_skill_names_by_session(self, session_ids: list[str]) -> Rows:
+    async def get_skill_names_by_session(self, session_ids: list[str], *, scope: Any) -> Rows:
         """One row per known session id, `{"session_id", "skill_names"}`, for any number of sessions: the sorted
         distinct names the delivery framework is derived from (`CLASSIFIER_NAMES_SQL`): the session's `session_skills`,
         the hook-dispatch names (`invocations_hourly` kind 2), the keys of the `skills` and `agents` objects of
@@ -690,13 +787,14 @@ class PostgresCliAnalyticsReader:
         list; an id with no `session_dims` row has no row."""
         if not session_ids:
             return []
+        gate, gate_params = detail_gate(scope, "sd.session_id")
         return await self._q(
             f"""
         SELECT sd.session_id, coalesce({CLASSIFIER_NAMES_SQL}, ARRAY[]::text[]) AS skill_names
         FROM session_dims sd
-        WHERE sd.session_id = ANY($session_ids::text[])
+        WHERE sd.session_id = ANY($session_ids::text[]) AND {gate}
         ORDER BY sd.session_id {_C}""",
-            {"session_ids": list(dict.fromkeys(session_ids))},
+            {"session_ids": list(dict.fromkeys(session_ids)), **gate_params},
         )
 
     # ── session-level aggregates ─────────────────────────────────────────────
@@ -748,6 +846,9 @@ class PostgresCliAnalyticsReader:
                max(s.repository)                            AS repository,
                max(s.branch)                                AS branch,
                max(s.project_name)                          AS project_name,
+               max({_SUB})                                  AS subscription_type,
+               max({_ORIGIN})                               AS project_origin,
+               max(nullif(btrim(s.route_note), ''))         AS route_note,
                max(s.first_prompt)                          AS prompt,
                max(s.session_title)                         AS session_title,
                max(a.session_start)                         AS started_at,
@@ -860,7 +961,8 @@ class PostgresCliAnalyticsReader:
         renamed or removed rule never counts). The caller normalises the repository.
 
         The query is global per person and repository, like the Elasticsearch side it is merged into: it counts the
-        sessions that started in the window whatever their project, with no filter of the dashboard."""
+        shared sessions that started in the window whatever their project, with no dashboard filter; owner-private
+        Personal sessions are excluded."""
         rows = await self._q(
             f"""
         SELECT user_email, repo_remote, repository, count(*)::bigint AS framework_sessions
@@ -871,6 +973,7 @@ class PostgresCliAnalyticsReader:
             FROM session_dims d
             WHERE started_at IS NOT NULL AND {_STARTED_IN_WINDOW}
               AND delivery_framework = ANY($labels::text[])
+              AND NOT {sql_private("d")}
         ) x
         WHERE user_email <> ''
         GROUP BY 1, 2, 3""",
@@ -885,10 +988,17 @@ class PostgresCliAnalyticsReader:
 
     # ── session detail ───────────────────────────────────────────────────────
 
-    async def get_session_detail_meta(self, session_id: str) -> Rows:
+    async def authorize_session(self, session_id: str, scope: Any) -> bool:
+        """Cheap read: may this viewer open the session? Decided before any payload query."""
+        gate, params = detail_gate(scope)
+        rows = await self._q(f"SELECT {gate} AS ok", {"sid": session_id, **params})
+        return bool(rows and rows[0]["ok"])
+
+    async def get_session_detail_meta(self, session_id: str, *, scope: Any) -> Rows:
         # The same range as the list, keyed on the cost row's session so a session without a
         # session_dims row still gets its earliest event as start.
         start, end = _activity_range("t")
+        gate, gate_params = detail_gate(scope)
         return await self._q(
             f"""
         WITH c AS (
@@ -925,7 +1035,10 @@ class PostgresCliAnalyticsReader:
                -- the OTel service name of the earliest resource that has one; else the session `platform` (the hook
                -- `platform`, or derived from span / metric names), used when no resource has a usable `service.name`
                coalesce(nullif(btrim(o.service_name, {_BLANKS}), ''), nullif(btrim(d.platform, {_BLANKS}), ''))
-                                                                                      AS harness_service_name
+                                                                                      AS harness_service_name,
+               {sql_subscription_type("d.subscription_type")}                          AS subscription_type,
+               {sql_project_origin("d.project_origin")}                                AS project_origin,
+               nullif(btrim(d.route_note), '')                                        AS route_note
         FROM c
         LEFT JOIN session_dims d ON d.session_id = c.session_id
         CROSS JOIN LATERAL (
@@ -933,11 +1046,13 @@ class PostgresCliAnalyticsReader:
             FROM (SELECT c.session_id, d.started_at, d.activity_started_at, d.last_event_at, d.ended_at) t
         ) r
         LEFT JOIN h ON h.session_id = c.session_id
-        LEFT JOIN otel_resources o ON o.resource_id = h.resource_id""",
-            {"sid": session_id},
+        LEFT JOIN otel_resources o ON o.resource_id = h.resource_id
+        WHERE {gate}""",
+            {"sid": session_id, **gate_params},
         )
 
-    async def get_session_detail_cost(self, session_id: str) -> Rows:
+    async def get_session_detail_cost(self, session_id: str, *, scope: Any) -> Rows:
+        gate, gate_params = detail_gate(scope)
         return await self._q(
             f"""
         SELECT {_TOP_MODEL}                         AS model_name,
@@ -945,13 +1060,14 @@ class PostgresCliAnalyticsReader:
                sum(c.output_tokens)::bigint         AS output_tokens,
                sum(c.cache_read_tokens)::bigint     AS cache_read_tokens,
                sum(c.cache_creation_tokens)::bigint AS cache_creation_tokens
-        FROM {_cost_rows("c.session_id = $sid::text")}""",
-            {"sid": session_id},
+        FROM {_cost_rows(f"c.session_id = $sid::text AND {gate}")}""",
+            {"sid": session_id, **gate_params},
         )
 
-    async def get_session_detail_model_costs(self, session_id: str) -> Rows:
+    async def get_session_detail_model_costs(self, session_id: str, *, scope: Any) -> Rows:
         """Token sums per raw model of one session, the empty model kept: the rows its money is priced from.
         The 5m / 1h sums are NULL when no row of the model has a split."""
+        gate, gate_params = detail_gate(scope)
         return await self._q(
             f"""
         SELECT c.model_name                                 AS model_name,
@@ -962,11 +1078,13 @@ class PostgresCliAnalyticsReader:
                sum(c.cache_creation_5m_tokens)::bigint      AS cache_creation_5m_tokens,
                sum(c.cache_creation_1h_tokens)::bigint      AS cache_creation_1h_tokens
         FROM {_token_rows("c.session_id = $sid::text", "u.session_id = $sid::text")}
+        WHERE {gate}
         GROUP BY c.model_name""",
-            {"sid": session_id},
+            {"sid": session_id, **gate_params},
         )
 
-    async def get_session_detail_scalars(self, session_id: str) -> Rows:
+    async def get_session_detail_scalars(self, session_id: str, *, scope: Any) -> Rows:
+        gate, gate_params = detail_gate(scope)
         return await self._q(
             f"""
         SELECT
@@ -1008,16 +1126,18 @@ class PostgresCliAnalyticsReader:
                 WHERE session_id = $sid::text AND event_type = '{SKILL_DISPATCH_EVENT}' AND skill_name <> ''
                   AND octet_length(skill_name) <= {MAX_KEY_BYTES}
                   AND skill_name NOT IN (SELECT name FROM invocations_hourly
-                                         WHERE kind = 2 AND session_id = $sid::text)))::bigint  AS skill_count""",
-            {"sid": session_id},
+                                         WHERE kind = 2 AND session_id = $sid::text)))::bigint  AS skill_count
+        WHERE {gate}""",
+            {"sid": session_id, **gate_params},
         )
 
-    async def get_session_detail_tools(self, session_id: str) -> Rows:
+    async def get_session_detail_tools(self, session_id: str, *, scope: Any) -> Rows:
+        gate, gate_params = detail_gate(scope)
         return await self._q(
             f"""
         SELECT t.tool_name, count(*) AS call_count, count(*) FILTER (WHERE e.success = 'true') AS success_count
         FROM (SELECT tool_name, tool_use_id FROM spans
-              WHERE span_kind = {_TOOL} AND session_id = $sid::text AND tool_name <> '') t
+              WHERE span_kind = {_TOOL} AND session_id = $sid::text AND tool_name <> '' AND {gate}) t
         LEFT JOIN (SELECT tool_use_id, max(success) AS success FROM spans
                    WHERE span_kind = {_EXEC} AND session_id = $sid::text AND tool_use_id <> ''
                    GROUP BY tool_use_id) e
@@ -1025,12 +1145,13 @@ class PostgresCliAnalyticsReader:
         GROUP BY t.tool_name
         ORDER BY call_count DESC, t.tool_name {_C}
         LIMIT 20""",
-            {"sid": session_id},
+            {"sid": session_id, **gate_params},
         )
 
-    async def get_session_detail_events(self, session_id: str) -> Rows:
+    async def get_session_detail_events(self, session_id: str, *, scope: Any) -> Rows:
         """API requests and tool calls of a session, in time order. A request's 5m / 1h cache-write split is NULL
         when its attributes carry none."""
+        gate, gate_params = detail_gate(scope)
         return await self._q(
             f"""
         SELECT * FROM (
@@ -1041,16 +1162,16 @@ class PostgresCliAnalyticsReader:
                    {_attr_ms("log_events", "cache_creation_5m_tokens")} AS cache_creation_5m_tokens,
                    {_attr_ms("log_events", "cache_creation_1h_tokens")} AS cache_creation_1h_tokens,
                    '' AS tool_name
-            FROM log_events WHERE session_id = $sid::text AND event_kind = {_API_REQUEST}
+            FROM log_events WHERE session_id = $sid::text AND event_kind = {_API_REQUEST} AND {gate}
             UNION ALL
             SELECT ts, 'tool_call', '', 0, 0, 0, 0, NULL, NULL, tool_name
-            FROM spans WHERE session_id = $sid::text AND span_kind = {_TOOL} AND tool_name <> ''
+            FROM spans WHERE session_id = $sid::text AND span_kind = {_TOOL} AND tool_name <> '' AND {gate}
         ) events
         ORDER BY timestamp, event_type {_C}, tool_name {_C}, model_name {_C}""",
-            {"sid": session_id},
+            {"sid": session_id, **gate_params},
         )
 
-    async def get_session_detail_dispatches(self, session_id: str) -> Rows:
+    async def get_session_detail_dispatches(self, session_id: str, *, scope: Any) -> Rows:
         """Agent and skill dispatches (tool spans) plus slash-command skills (hook events).
 
         One row per skill invocation. A forked skill's row is its initiator's: the Skill call's span row
@@ -1089,6 +1210,7 @@ class PostgresCliAnalyticsReader:
                 f" AND (w.next_start IS NULL OR {a}.ts < w.next_start)"
             )
 
+        gate, gate_params = detail_gate(scope)
         rows = await self._q(
             f"""
         WITH t AS (
@@ -1323,8 +1445,9 @@ class PostgresCliAnalyticsReader:
         LEFT JOIN stopped st ON st.agent_id = df.agent_id
         LEFT JOIN agent_usage au ON au.agent_id = df.agent_id
         ) dispatches
+        WHERE {gate}
         ORDER BY dispatch_start, is_slash_command, subagent_type {_C}, skill_name {_C}""",
-            {"sid": session_id},
+            {"sid": session_id, **gate_params},
         )
         for row in rows:
             row["models"] = json.loads(row["models"]) if row["models"] is not None else []

@@ -32,6 +32,7 @@ import os
 import asyncpg
 import pytest
 
+from tests.codemie.repository.cli_analytics.support.scopes import DETAIL_SCOPE, EXCLUDE_SCOPE
 from codemie.configs.config import Config
 from codemie.configs.llm_config import CostConfig
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
@@ -110,6 +111,7 @@ class _Seed:
     def window(self, *users: str, repositories: list[str] | None = None) -> LocalAnalyticsFilter:
         start = self.started.replace(tzinfo=None)
         return LocalAnalyticsFilter(
+            scope=EXCLUDE_SCOPE,
             start_dt=start - timedelta(hours=1),
             end_dt=start + timedelta(hours=1),
             users=list(users),
@@ -367,7 +369,7 @@ async def test_a_session_whose_rows_carry_two_emails_belongs_to_one_developer() 
 @pytest.mark.asyncio
 async def test_session_detail_prices_the_session_its_events_and_its_subagent_at_the_catalog() -> None:
     async with _seeded() as (handler, seed):
-        detail, unpriced, catalog_source = await handler.get_session_detail(seed.detail)
+        detail, unpriced, catalog_source = await handler.get_session_detail(seed.detail, scope=DETAIL_SCOPE)
 
     assert detail["cost_usd"] == _money(26.96510036)
     assert detail["cache_read_cost_usd"] == _money(8.87843836)

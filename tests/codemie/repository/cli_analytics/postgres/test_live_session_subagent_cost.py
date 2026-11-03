@@ -38,6 +38,7 @@ from codemie.repository.cli_analytics.postgres.settings import AnalyticsPgSettin
 from codemie.service.analytics.handlers.cli_analytics_handler import LocalAnalyticsHandler
 from codemie.service.analytics.handlers.session_money import price_session_models
 from tests.codemie.repository.cli_analytics.support.live_rollup_lock import live_rollup_lock
+from tests.codemie.repository.cli_analytics.support.scopes import DETAIL_SCOPE, EXCLUDE_SCOPE
 
 _LOCAL_PG_URL = os.environ.get("TEST_LOCAL_PG_URL", "postgresql://postgres:password@localhost:5432/postgres")
 _DAY = date(2026, 8, 2)
@@ -117,7 +118,9 @@ async def _refresh(engine: AnalyticsPgEngine) -> None:
 
 
 def _window() -> LocalAnalyticsFilter:
-    return LocalAnalyticsFilter(start_dt=_START - timedelta(days=1), end_dt=_NOW + timedelta(days=1))
+    return LocalAnalyticsFilter(
+        scope=EXCLUDE_SCOPE, start_dt=_START - timedelta(days=1), end_dt=_NOW + timedelta(days=1)
+    )
 
 
 _USAGE = {
@@ -147,13 +150,41 @@ async def test_totals_only_agent_adds_priced_cost_to_session_list_and_detail():
         with patch("codemie.service.analytics.handlers.coding_agent_pricing.lookup_cost_config", _lookup):
             assert price_session_models(rows).by_session[sid] > 0
 
-        detail = await reader.get_session_detail_model_costs(sid)
+        detail = await reader.get_session_detail_model_costs(sid, scope=DETAIL_SCOPE)
         assert [r["model_name"] for r in detail] == [_KNOWN_MODEL]
         assert detail[0]["output_tokens"] == 200
 
         with patch("codemie.service.analytics.handlers.coding_agent_pricing.lookup_cost_config", _lookup):
-            handler_detail, _, _ = await LocalAnalyticsHandler(reader).get_session_detail(sid)
+            handler_detail, _, _ = await LocalAnalyticsHandler(reader).get_session_detail(sid, scope=DETAIL_SCOPE)
         assert handler_detail["cost_available"] is True
+    finally:
+        await _cleanup(engine, sid)
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_subagent_totals_of_a_personal_paid_work_session_stay_out_of_spend_but_in_its_own_cost():
+    """EPMCDME-16440 with EPMCDME-16441: the totals-only subagent rows follow their session. A Personal-paid session
+    stored under a work project is activity, its subagent money is no aggregate spend, and the session keeps it."""
+    engine = await _get_engine()
+    sid = "test-epmcdme-16440-personal-paid-subagent"
+    try:
+        await _cleanup(engine, sid)
+        await _seed_start(engine, sid)
+        await _seed_totals(engine, sid, [_USAGE])
+        await _refresh(engine)
+        async with engine.acquire() as conn:
+            await conn.execute(
+                "UPDATE session_dims SET owner_email = 'ext@x.com', subscription_type = 'personal',"
+                " project_origin = 'default_project', project_name = 'work' WHERE session_id = $1",
+                sid,
+            )
+
+        reader = PostgresCliAnalyticsReader(engine)
+        listed = [r for r in await reader.get_session_model_costs(_window()) if r["session_id"] == sid]
+        spend = [r for r in await reader.get_session_model_costs(_window(), spend_only=True) if r["session_id"] == sid]
+        assert [r["input_tokens"] for r in listed] == [1000]  # the session itself keeps its subagent tokens
+        assert spend == []  # but no aggregate money is priced from them
     finally:
         await _cleanup(engine, sid)
         await engine.close()
@@ -175,7 +206,7 @@ async def test_agent_with_request_rows_is_not_double_counted_after_late_requests
         rows = [r for r in await reader.get_session_model_costs(_window()) if r["session_id"] == sid]
         assert sum(r["input_tokens"] for r in rows) == 1000  # the request rows only
         assert all(r["model_name"] != _KNOWN_MODEL for r in rows)
-        detail = await reader.get_session_detail_model_costs(sid)
+        detail = await reader.get_session_detail_model_costs(sid, scope=DETAIL_SCOPE)
         assert sum(r["input_tokens"] for r in detail) == 1000
     finally:
         await _cleanup(engine, sid)
@@ -225,7 +256,7 @@ async def test_totals_without_cache_split_keep_5m_1h_null():
         assert rows[0]["input_tokens"] == 500
         assert rows[0]["cache_creation_5m_tokens"] is None
         assert rows[0]["cache_creation_1h_tokens"] is None
-        detail = await reader.get_session_detail_model_costs(sid)
+        detail = await reader.get_session_detail_model_costs(sid, scope=DETAIL_SCOPE)
         assert detail[0]["cache_creation_5m_tokens"] is None
         assert detail[0]["cache_creation_1h_tokens"] is None
     finally:
@@ -245,9 +276,11 @@ async def test_subagent_tokens_do_not_leak_when_a_filter_excludes_the_session():
 
         reader = PostgresCliAnalyticsReader(engine)
         assert [r for r in await reader.get_session_model_costs(_window()) if r["session_id"] == sid]
-        outside_window = LocalAnalyticsFilter(start_dt=_NOW + timedelta(days=2), end_dt=_NOW + timedelta(days=3))
+        outside_window = LocalAnalyticsFilter(
+            scope=EXCLUDE_SCOPE, start_dt=_NOW + timedelta(days=2), end_dt=_NOW + timedelta(days=3)
+        )
         other_repo = LocalAnalyticsFilter(
-            start_dt=_window().start_dt, end_dt=_window().end_dt, repositories=["no-such-repo"]
+            scope=EXCLUDE_SCOPE, start_dt=_window().start_dt, end_dt=_window().end_dt, repositories=["no-such-repo"]
         )
         for excluded in (outside_window, other_repo):
             rows = await reader.get_session_model_costs(excluded)
@@ -301,7 +334,7 @@ async def test_totals_only_session_detail_tokens_match_the_list_tokens():
         reader = PostgresCliAnalyticsReader(engine)
         with patch("codemie.service.analytics.handlers.coding_agent_pricing.lookup_cost_config", _lookup):
             listed, _, _ = await LocalAnalyticsHandler(reader).get_sessions(_window(), 0, 1000, "start_time", None)
-            detail, _, _ = await LocalAnalyticsHandler(reader).get_session_detail(sid)
+            detail, _, _ = await LocalAnalyticsHandler(reader).get_session_detail(sid, scope=DETAIL_SCOPE)
         row = next(s for s in listed["sessions"] if s["trace_id"] == sid)
         columns = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens")
         assert [detail[c] for c in columns] == [row[c] for c in columns]

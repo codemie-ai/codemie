@@ -15436,6 +15436,22 @@
             "default": 0,
             "title": "Net Lines",
             "type": "integer"
+          },
+          "project_origins": {
+            "description": "Distinct project origins (linked_folder, profile, registered_repository, default_project, legacy_project, none, other), sorted",
+            "items": {
+              "type": "string"
+            },
+            "title": "Project Origins",
+            "type": "array"
+          },
+          "subscription_types": {
+            "description": "Distinct subscription types (codemie, corporate, personal, unknown, other), sorted",
+            "items": {
+              "type": "string"
+            },
+            "title": "Subscription Types",
+            "type": "array"
           }
         },
         "title": "LocalAnalyticsCodeChangesKPIs",
@@ -15450,6 +15466,22 @@
           "model_name": {
             "title": "Model Name",
             "type": "string"
+          },
+          "project_origins": {
+            "description": "Distinct project origins (linked_folder, profile, registered_repository, default_project, legacy_project, none, other), sorted",
+            "items": {
+              "type": "string"
+            },
+            "title": "Project Origins",
+            "type": "array"
+          },
+          "subscription_types": {
+            "description": "Distinct subscription types (codemie, corporate, personal, unknown, other), sorted",
+            "items": {
+              "type": "string"
+            },
+            "title": "Subscription Types",
+            "type": "array"
           }
         },
         "required": [
@@ -15468,6 +15500,22 @@
           "developer_name": {
             "title": "Developer Name",
             "type": "string"
+          },
+          "project_origins": {
+            "description": "Distinct project origins (linked_folder, profile, registered_repository, default_project, legacy_project, none, other), sorted",
+            "items": {
+              "type": "string"
+            },
+            "title": "Project Origins",
+            "type": "array"
+          },
+          "subscription_types": {
+            "description": "Distinct subscription types (codemie, corporate, personal, unknown, other), sorted",
+            "items": {
+              "type": "string"
+            },
+            "title": "Subscription Types",
+            "type": "array"
           },
           "user_email": {
             "default": "",
@@ -15515,6 +15563,22 @@
             "title": "Avg Cost Per Session",
             "type": "number"
           },
+          "project_origins": {
+            "description": "Distinct project origins (linked_folder, profile, registered_repository, default_project, legacy_project, none, other), sorted",
+            "items": {
+              "type": "string"
+            },
+            "title": "Project Origins",
+            "type": "array"
+          },
+          "subscription_types": {
+            "description": "Distinct subscription types (codemie, corporate, personal, unknown, other), sorted",
+            "items": {
+              "type": "string"
+            },
+            "title": "Subscription Types",
+            "type": "array"
+          },
           "total_cost_usd": {
             "title": "Total Cost Usd",
             "type": "number"
@@ -15560,9 +15624,25 @@
             "title": "Day",
             "type": "string"
           },
+          "project_origins": {
+            "description": "Distinct project origins (linked_folder, profile, registered_repository, default_project, legacy_project, none, other), sorted",
+            "items": {
+              "type": "string"
+            },
+            "title": "Project Origins",
+            "type": "array"
+          },
           "session_count": {
             "title": "Session Count",
             "type": "integer"
+          },
+          "subscription_types": {
+            "description": "Distinct subscription types (codemie, corporate, personal, unknown, other), sorted",
+            "items": {
+              "type": "string"
+            },
+            "title": "Subscription Types",
+            "type": "array"
           }
         },
         "required": [
@@ -15594,6 +15674,22 @@
             "default": 0.0,
             "title": "Pct Of Sessions",
             "type": "number"
+          },
+          "project_origins": {
+            "description": "Distinct project origins (linked_folder, profile, registered_repository, default_project, legacy_project, none, other), sorted",
+            "items": {
+              "type": "string"
+            },
+            "title": "Project Origins",
+            "type": "array"
+          },
+          "subscription_types": {
+            "description": "Distinct subscription types (codemie, corporate, personal, unknown, other), sorted",
+            "items": {
+              "type": "string"
+            },
+            "title": "Subscription Types",
+            "type": "array"
           },
           "wasted_cost_usd": {
             "default": 0.0,
@@ -15740,6 +15836,22 @@
             "title": "Cache Read Cost Usd",
             "type": "number"
           },
+          "project_origins": {
+            "description": "Distinct project origins (linked_folder, profile, registered_repository, default_project, legacy_project, none, other), sorted",
+            "items": {
+              "type": "string"
+            },
+            "title": "Project Origins",
+            "type": "array"
+          },
+          "subscription_types": {
+            "description": "Distinct subscription types (codemie, corporate, personal, unknown, other), sorted",
+            "items": {
+              "type": "string"
+            },
+            "title": "Subscription Types",
+            "type": "array"
+          },
           "total_cost_usd": {
             "default": 0.0,
             "title": "Total Cost Usd",
@@ -15823,6 +15935,22 @@
           "name": {
             "title": "Name",
             "type": "string"
+          },
+          "project_origins": {
+            "description": "Distinct project origins (linked_folder, profile, registered_repository, default_project, legacy_project, none, other), sorted",
+            "items": {
+              "type": "string"
+            },
+            "title": "Project Origins",
+            "type": "array"
+          },
+          "subscription_types": {
+            "description": "Distinct subscription types (codemie, corporate, personal, unknown, other), sorted",
+            "items": {
+              "type": "string"
+            },
+            "title": "Subscription Types",
+            "type": "array"
           }
         },
         "required": [
@@ -15838,9 +15966,25 @@
             "title": "Model Name",
             "type": "string"
           },
+          "project_origins": {
+            "description": "Distinct project origins (linked_folder, profile, registered_repository, default_project, legacy_project, none, other), sorted",
+            "items": {
+              "type": "string"
+            },
+            "title": "Project Origins",
+            "type": "array"
+          },
           "session_count": {
             "title": "Session Count",
             "type": "integer"
+          },
+          "subscription_types": {
+            "description": "Distinct subscription types (codemie, corporate, personal, unknown, other), sorted",
+            "items": {
+              "type": "string"
+            },
+            "title": "Subscription Types",
+            "type": "array"
           }
         },
         "required": [
@@ -15860,6 +16004,22 @@
           "net_lines": {
             "title": "Net Lines",
             "type": "integer"
+          },
+          "project_origins": {
+            "description": "Distinct project origins (linked_folder, profile, registered_repository, default_project, legacy_project, none, other), sorted",
+            "items": {
+              "type": "string"
+            },
+            "title": "Project Origins",
+            "type": "array"
+          },
+          "subscription_types": {
+            "description": "Distinct subscription types (codemie, corporate, personal, unknown, other), sorted",
+            "items": {
+              "type": "string"
+            },
+            "title": "Subscription Types",
+            "type": "array"
           }
         },
         "required": [
@@ -15922,6 +16082,22 @@
           "net_lines": {
             "title": "Net Lines",
             "type": "integer"
+          },
+          "project_origins": {
+            "description": "Distinct project origins (linked_folder, profile, registered_repository, default_project, legacy_project, none, other), sorted",
+            "items": {
+              "type": "string"
+            },
+            "title": "Project Origins",
+            "type": "array"
+          },
+          "subscription_types": {
+            "description": "Distinct subscription types (codemie, corporate, personal, unknown, other), sorted",
+            "items": {
+              "type": "string"
+            },
+            "title": "Subscription Types",
+            "type": "array"
           },
           "tool_call_success_rate": {
             "title": "Tool Call Success Rate",
@@ -16075,9 +16251,25 @@
             "title": "Net Lines",
             "type": "integer"
           },
+          "project_origins": {
+            "description": "Distinct project origins (linked_folder, profile, registered_repository, default_project, legacy_project, none, other), sorted",
+            "items": {
+              "type": "string"
+            },
+            "title": "Project Origins",
+            "type": "array"
+          },
           "session_count": {
             "title": "Session Count",
             "type": "integer"
+          },
+          "subscription_types": {
+            "description": "Distinct subscription types (codemie, corporate, personal, unknown, other), sorted",
+            "items": {
+              "type": "string"
+            },
+            "title": "Subscription Types",
+            "type": "array"
           },
           "tool_calls": {
             "title": "Tool Calls",
@@ -16160,6 +16352,14 @@
             ],
             "title": "Project Name"
           },
+          "project_origins": {
+            "description": "Distinct project origins (linked_folder, profile, registered_repository, default_project, legacy_project, none, other), sorted",
+            "items": {
+              "type": "string"
+            },
+            "title": "Project Origins",
+            "type": "array"
+          },
           "repository": {
             "anyOf": [
               {
@@ -16175,6 +16375,14 @@
           "session_count": {
             "title": "Session Count",
             "type": "integer"
+          },
+          "subscription_types": {
+            "description": "Distinct subscription types (codemie, corporate, personal, unknown, other), sorted",
+            "items": {
+              "type": "string"
+            },
+            "title": "Subscription Types",
+            "type": "array"
           },
           "tool_calls": {
             "title": "Tool Calls",
@@ -16264,6 +16472,22 @@
           "count": {
             "title": "Count",
             "type": "integer"
+          },
+          "project_origins": {
+            "description": "Distinct project origins (linked_folder, profile, registered_repository, default_project, legacy_project, none, other), sorted",
+            "items": {
+              "type": "string"
+            },
+            "title": "Project Origins",
+            "type": "array"
+          },
+          "subscription_types": {
+            "description": "Distinct subscription types (codemie, corporate, personal, unknown, other), sorted",
+            "items": {
+              "type": "string"
+            },
+            "title": "Subscription Types",
+            "type": "array"
           }
         },
         "required": [
@@ -16392,6 +16616,12 @@
             "title": "Output Tokens",
             "type": "integer"
           },
+          "project_origin": {
+            "default": "none",
+            "description": "personal, linked_folder, profile, registered_repository, default_project, legacy_project, none or other",
+            "title": "Project Origin",
+            "type": "string"
+          },
           "prompt": {
             "default": "",
             "title": "Prompt",
@@ -16409,6 +16639,30 @@
             "description": "Repository cwd at session start. None when the analytics plugin was not active.",
             "title": "Repository"
           },
+          "route_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Diagnostic routing note stored with the session (folder_not_linked, linked_project_unavailable, registered_project_inaccessible, registration_ambiguous). None for sessions without one, including legacy data.",
+            "title": "Route Note"
+          },
+          "routing_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "\"folder not linked to a project\" for a default-project session whose folder had no usable project or repository link (also when the link was inaccessible); None otherwise.",
+            "title": "Routing Label"
+          },
           "skill_count": {
             "default": 0,
             "title": "Skill Count",
@@ -16417,6 +16671,12 @@
           "start_time": {
             "description": "ISO 8601 datetime string",
             "title": "Start Time",
+            "type": "string"
+          },
+          "subscription_type": {
+            "default": "unknown",
+            "description": "codemie, corporate, personal, unknown or other",
+            "title": "Subscription Type",
             "type": "string"
           },
           "tool_call_count": {
@@ -16659,6 +16919,12 @@
             "title": "Output Tokens",
             "type": "integer"
           },
+          "project_origin": {
+            "default": "none",
+            "description": "personal, linked_folder, profile, registered_repository, default_project, legacy_project, none or other",
+            "title": "Project Origin",
+            "type": "string"
+          },
           "prompt": {
             "default": "",
             "title": "Prompt",
@@ -16676,9 +16942,39 @@
             "description": "Repository cwd at session start. None when the analytics plugin was not active.",
             "title": "Repository"
           },
+          "route_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Diagnostic routing note stored with the session (folder_not_linked, linked_project_unavailable, registered_project_inaccessible, registration_ambiguous). None for sessions without one, including legacy data.",
+            "title": "Route Note"
+          },
+          "routing_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "\"folder not linked to a project\" for a default-project session whose folder had no usable project or repository link (also when the link was inaccessible); None otherwise.",
+            "title": "Routing Label"
+          },
           "start_time": {
             "description": "ISO 8601 datetime string",
             "title": "Start Time",
+            "type": "string"
+          },
+          "subscription_type": {
+            "default": "unknown",
+            "description": "codemie, corporate, personal, unknown or other",
+            "title": "Subscription Type",
             "type": "string"
           },
           "tool_call_count": {
@@ -16768,6 +17064,22 @@
             "title": "Model Name",
             "type": "string"
           },
+          "project_origins": {
+            "description": "Distinct project origins (linked_folder, profile, registered_repository, default_project, legacy_project, none, other), sorted",
+            "items": {
+              "type": "string"
+            },
+            "title": "Project Origins",
+            "type": "array"
+          },
+          "subscription_types": {
+            "description": "Distinct subscription types (codemie, corporate, personal, unknown, other), sorted",
+            "items": {
+              "type": "string"
+            },
+            "title": "Subscription Types",
+            "type": "array"
+          },
           "total_tokens": {
             "title": "Total Tokens",
             "type": "integer"
@@ -16785,6 +17097,22 @@
           "call_count": {
             "title": "Call Count",
             "type": "integer"
+          },
+          "project_origins": {
+            "description": "Distinct project origins (linked_folder, profile, registered_repository, default_project, legacy_project, none, other), sorted",
+            "items": {
+              "type": "string"
+            },
+            "title": "Project Origins",
+            "type": "array"
+          },
+          "subscription_types": {
+            "description": "Distinct subscription types (codemie, corporate, personal, unknown, other), sorted",
+            "items": {
+              "type": "string"
+            },
+            "title": "Subscription Types",
+            "type": "array"
           },
           "success_count": {
             "title": "Success Count",
@@ -16916,9 +17244,25 @@
             "title": "Output Tokens",
             "type": "integer"
           },
+          "project_origins": {
+            "description": "Distinct project origins (linked_folder, profile, registered_repository, default_project, legacy_project, none, other), sorted",
+            "items": {
+              "type": "string"
+            },
+            "title": "Project Origins",
+            "type": "array"
+          },
           "session_count": {
             "title": "Session Count",
             "type": "integer"
+          },
+          "subscription_types": {
+            "description": "Distinct subscription types (codemie, corporate, personal, unknown, other), sorted",
+            "items": {
+              "type": "string"
+            },
+            "title": "Subscription Types",
+            "type": "array"
           },
           "tool_calls": {
             "default": 0,
@@ -23614,6 +23958,53 @@
           "password"
         ],
         "title": "RegistrationRequest",
+        "type": "object"
+      },
+      "RepositoryRegistrationResponse": {
+        "properties": {
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "project_name": {
+            "title": "Project Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "project_name"
+        ],
+        "title": "RepositoryRegistrationResponse",
+        "type": "object"
+      },
+      "RepositoryRemoteRequest": {
+        "description": "Name the repository by exactly one of: `remote` (a raw URL or scp spelling, normalized) or `key` (the\nidentity a response returned, taken exactly as is). `host:8443/a/b` is a different repository as a raw scp\nremote and as a key, which is why the two are separate fields. A response item is a valid body.",
+        "properties": {
+          "key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key"
+          },
+          "remote": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remote"
+          }
+        },
+        "title": "RepositoryRemoteRequest",
         "type": "object"
       },
       "ResourceRef": {
@@ -42080,6 +42471,42 @@
               "description": "Comma-separated repository names",
               "title": "Repositories"
             }
+          },
+          {
+            "description": "Comma-separated subscription types (codemie, corporate, personal, unknown, other)",
+            "in": "query",
+            "name": "subscription_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Comma-separated subscription types (codemie, corporate, personal, unknown, other)",
+              "title": "Subscription Type"
+            }
+          },
+          {
+            "description": "Comma-separated project origins (personal, linked_folder, profile, registered_repository, default_project, legacy_project, none, other)",
+            "in": "query",
+            "name": "project_origin",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Comma-separated project origins (personal, linked_folder, profile, registered_repository, default_project, legacy_project, none, other)",
+              "title": "Project Origin"
+            }
           }
         ],
         "responses": {
@@ -42113,6 +42540,37 @@
           }
         ],
         "summary": "Local analytics activity heatmap",
+        "tags": [
+          "OTel CLI Analytics"
+        ]
+      }
+    },
+    "/v1/analytics/cli-analytics/classification-policy": {
+      "get": {
+        "operationId": "classification_policy_v1_analytics_cli_analytics_classification_policy_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Classification Policy V1 Analytics Cli Analytics Classification Policy Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "CLI analytics classification policy",
         "tags": [
           "OTel CLI Analytics"
         ]
@@ -42230,6 +42688,42 @@
               ],
               "description": "Comma-separated repository names",
               "title": "Repositories"
+            }
+          },
+          {
+            "description": "Comma-separated subscription types (codemie, corporate, personal, unknown, other)",
+            "in": "query",
+            "name": "subscription_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Comma-separated subscription types (codemie, corporate, personal, unknown, other)",
+              "title": "Subscription Type"
+            }
+          },
+          {
+            "description": "Comma-separated project origins (personal, linked_folder, profile, registered_repository, default_project, legacy_project, none, other)",
+            "in": "query",
+            "name": "project_origin",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Comma-separated project origins (personal, linked_folder, profile, registered_repository, default_project, legacy_project, none, other)",
+              "title": "Project Origin"
             }
           }
         ],
@@ -42381,6 +42875,42 @@
               ],
               "description": "Comma-separated repository names",
               "title": "Repositories"
+            }
+          },
+          {
+            "description": "Comma-separated subscription types (codemie, corporate, personal, unknown, other)",
+            "in": "query",
+            "name": "subscription_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Comma-separated subscription types (codemie, corporate, personal, unknown, other)",
+              "title": "Subscription Type"
+            }
+          },
+          {
+            "description": "Comma-separated project origins (personal, linked_folder, profile, registered_repository, default_project, legacy_project, none, other)",
+            "in": "query",
+            "name": "project_origin",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Comma-separated project origins (personal, linked_folder, profile, registered_repository, default_project, legacy_project, none, other)",
+              "title": "Project Origin"
             }
           }
         ],
@@ -42643,6 +43173,42 @@
               "description": "Comma-separated repository names",
               "title": "Repositories"
             }
+          },
+          {
+            "description": "Comma-separated subscription types (codemie, corporate, personal, unknown, other)",
+            "in": "query",
+            "name": "subscription_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Comma-separated subscription types (codemie, corporate, personal, unknown, other)",
+              "title": "Subscription Type"
+            }
+          },
+          {
+            "description": "Comma-separated project origins (personal, linked_folder, profile, registered_repository, default_project, legacy_project, none, other)",
+            "in": "query",
+            "name": "project_origin",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Comma-separated project origins (personal, linked_folder, profile, registered_repository, default_project, legacy_project, none, other)",
+              "title": "Project Origin"
+            }
           }
         ],
         "responses": {
@@ -42859,6 +43425,42 @@
               "description": "Comma-separated repository names",
               "title": "Repositories"
             }
+          },
+          {
+            "description": "Comma-separated subscription types (codemie, corporate, personal, unknown, other)",
+            "in": "query",
+            "name": "subscription_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Comma-separated subscription types (codemie, corporate, personal, unknown, other)",
+              "title": "Subscription Type"
+            }
+          },
+          {
+            "description": "Comma-separated project origins (personal, linked_folder, profile, registered_repository, default_project, legacy_project, none, other)",
+            "in": "query",
+            "name": "project_origin",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Comma-separated project origins (personal, linked_folder, profile, registered_repository, default_project, legacy_project, none, other)",
+              "title": "Project Origin"
+            }
           }
         ],
         "responses": {
@@ -43030,6 +43632,18 @@
             }
           },
           {
+            "description": "Return only the caller's own Personal sessions (always on for non-admins)",
+            "in": "query",
+            "name": "personal_only",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Return only the caller's own Personal sessions (always on for non-admins)",
+              "title": "Personal Only",
+              "type": "boolean"
+            }
+          },
+          {
             "description": "e.g. last_7_days, last_30_days",
             "in": "query",
             "name": "time_period",
@@ -43137,6 +43751,42 @@
               ],
               "description": "Comma-separated repository names",
               "title": "Repositories"
+            }
+          },
+          {
+            "description": "Comma-separated subscription types (codemie, corporate, personal, unknown, other)",
+            "in": "query",
+            "name": "subscription_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Comma-separated subscription types (codemie, corporate, personal, unknown, other)",
+              "title": "Subscription Type"
+            }
+          },
+          {
+            "description": "Comma-separated project origins (personal, linked_folder, profile, registered_repository, default_project, legacy_project, none, other)",
+            "in": "query",
+            "name": "project_origin",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Comma-separated project origins (personal, linked_folder, profile, registered_repository, default_project, legacy_project, none, other)",
+              "title": "Project Origin"
             }
           }
         ],
@@ -43341,6 +43991,42 @@
               "description": "Comma-separated repository names",
               "title": "Repositories"
             }
+          },
+          {
+            "description": "Comma-separated subscription types (codemie, corporate, personal, unknown, other)",
+            "in": "query",
+            "name": "subscription_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Comma-separated subscription types (codemie, corporate, personal, unknown, other)",
+              "title": "Subscription Type"
+            }
+          },
+          {
+            "description": "Comma-separated project origins (personal, linked_folder, profile, registered_repository, default_project, legacy_project, none, other)",
+            "in": "query",
+            "name": "project_origin",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Comma-separated project origins (personal, linked_folder, profile, registered_repository, default_project, legacy_project, none, other)",
+              "title": "Project Origin"
+            }
           }
         ],
         "responses": {
@@ -43518,6 +44204,42 @@
               ],
               "description": "Comma-separated repository names",
               "title": "Repositories"
+            }
+          },
+          {
+            "description": "Comma-separated subscription types (codemie, corporate, personal, unknown, other)",
+            "in": "query",
+            "name": "subscription_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Comma-separated subscription types (codemie, corporate, personal, unknown, other)",
+              "title": "Subscription Type"
+            }
+          },
+          {
+            "description": "Comma-separated project origins (personal, linked_folder, profile, registered_repository, default_project, legacy_project, none, other)",
+            "in": "query",
+            "name": "project_origin",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Comma-separated project origins (personal, linked_folder, profile, registered_repository, default_project, legacy_project, none, other)",
+              "title": "Project Origin"
             }
           }
         ],
@@ -43704,6 +44426,42 @@
               ],
               "description": "Comma-separated repository names",
               "title": "Repositories"
+            }
+          },
+          {
+            "description": "Comma-separated subscription types (codemie, corporate, personal, unknown, other)",
+            "in": "query",
+            "name": "subscription_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Comma-separated subscription types (codemie, corporate, personal, unknown, other)",
+              "title": "Subscription Type"
+            }
+          },
+          {
+            "description": "Comma-separated project origins (personal, linked_folder, profile, registered_repository, default_project, legacy_project, none, other)",
+            "in": "query",
+            "name": "project_origin",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Comma-separated project origins (personal, linked_folder, profile, registered_repository, default_project, legacy_project, none, other)",
+              "title": "Project Origin"
             }
           }
         ],
@@ -71705,6 +72463,176 @@
           }
         ],
         "summary": "Update Project Ownership",
+        "tags": [
+          "Projects"
+        ]
+      }
+    },
+    "/v1/projects/{projectName}/repositories": {
+      "delete": {
+        "operationId": "unregister_repository_v1_projects__projectName__repositories_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "projectName",
+            "required": true,
+            "schema": {
+              "title": "Projectname",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RepositoryRemoteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepositoryRegistrationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Unregister Repository",
+        "tags": [
+          "Projects"
+        ]
+      },
+      "get": {
+        "operationId": "list_repositories_v1_projects__projectName__repositories_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "projectName",
+            "required": true,
+            "schema": {
+              "title": "Projectname",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/RepositoryRegistrationResponse"
+                  },
+                  "title": "Response List Repositories V1 Projects  Projectname  Repositories Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "List Repositories",
+        "tags": [
+          "Projects"
+        ]
+      },
+      "put": {
+        "operationId": "register_repository_v1_projects__projectName__repositories_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "projectName",
+            "required": true,
+            "schema": {
+              "title": "Projectname",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RepositoryRemoteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepositoryRegistrationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Register Repository",
         "tags": [
           "Projects"
         ]

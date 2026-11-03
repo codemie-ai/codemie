@@ -26,6 +26,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests.codemie.repository.cli_analytics.support.scopes import EXCLUDE_SCOPE
 from codemie.configs.llm_config import CostConfig
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
 from codemie.service.analytics.handlers.cli_analytics_handler import LocalAnalyticsHandler, depth_bucket
@@ -35,7 +36,7 @@ T1 = datetime(2026, 9, 1, 11, 0, 0)
 
 
 def _flt() -> LocalAnalyticsFilter:
-    return LocalAnalyticsFilter(start_dt=datetime(2026, 9, 1), end_dt=datetime(2026, 9, 8))
+    return LocalAnalyticsFilter(scope=EXCLUDE_SCOPE, start_dt=datetime(2026, 9, 1), end_dt=datetime(2026, 9, 8))
 
 
 def _cost_row(sid: str, **overrides) -> dict:
@@ -71,6 +72,7 @@ def _handler(cost_facts=(), turns=(), invocations=()) -> LocalAnalyticsHandler:
         "get_file_facts_by_session",
         "get_lines_totals",
         "get_tool_usage",
+        "get_class_lists",
     ):
         setattr(repo, name, AsyncMock(return_value=[]))
     repo.get_session_cost_facts = AsyncMock(return_value=list(cost_facts))

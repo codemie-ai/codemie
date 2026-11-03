@@ -122,6 +122,15 @@ HOOK_TEXT_FIELDS: tuple[str, ...] = (
     "skill_name",
 )
 
+# Server-stamped routing columns of hook_events (never read from the payload), in HookRow order after attrs.
+HOOK_ROUTING_FIELDS: tuple[str, ...] = (
+    "subscription_type",
+    "project_origin",
+    "route_note",
+    "client_subscription_type",
+    "client_policy_version",
+)
+
 # Hook keys with a typed home; any other key is kept in the residual attributes.
 HOOK_KNOWN_KEYS: frozenset[str] = frozenset({"type", "timestamp", "session_id", "prompt_id", *HOOK_TEXT_FIELDS})
 

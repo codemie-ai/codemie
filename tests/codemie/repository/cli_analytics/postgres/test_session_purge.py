@@ -483,7 +483,8 @@ async def test_a_client_time_after_today_does_not_keep_a_session_or_an_orphan() 
     def past(column: str) -> str:
         return f"CASE WHEN {column} < {TOMORROW} THEN {column} END"
 
-    idle = f"coalesce(greatest({past('last_event_at')}, {past('ended_at')}), updated_at) < {CUTOFF}"
+    bound = "CASE WHEN owner_email IS NOT NULL THEN updated_at END"  # a bound session counts its updated_at too
+    idle = f"coalesce(greatest({past('last_event_at')}, {past('ended_at')}, {bound}), updated_at) < {CUTOFF}"
     whole = _whole_session_purges(conn)[0]
     assert idle in whole
     (part,) = [sql for sql in conn.statements if sql.startswith("WITH dims AS")]

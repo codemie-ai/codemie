@@ -28,6 +28,7 @@ from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 import codemie.rest_api.routers.cli_analytics as router_module
+from tests.codemie.repository.cli_analytics.support.scopes import EXCLUDE_SCOPE
 from codemie.core.exceptions import ExtendedHTTPException
 from fastapi.responses import JSONResponse
 from codemie.repository.cli_analytics.factory import CliAnalyticsStorage
@@ -40,7 +41,6 @@ from codemie.repository.cli_analytics.ports import (
 )
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
-from codemie.service.analytics.access_filter import ProjectAccessContext
 
 
 class FakeIngestor:
@@ -50,13 +50,34 @@ class FakeIngestor:
         self.result = IngestResult(body=b"\x08\x01", media_type="application/x-protobuf", accepted=3)
         self.error: Exception | None = None
 
-    async def ingest_otlp(self, signal, body, content_type, gate=None):
+    async def ingest_otlp(
+        self,
+        signal,
+        body,
+        content_type,
+        gate=None,
+        *,
+        user_email="",
+        binding=None,
+        evidence_session_id=None,
+        stale_policy_version=None,
+    ):
         self.otlp_calls.append((signal, body, content_type))
         if self.error:
             raise self.error
         return self.result
 
-    async def ingest_hook_events(self, events, user_email, received_at_ns, gate=None):
+    async def ingest_hook_events(
+        self,
+        events,
+        user_email,
+        received_at_ns,
+        gate=None,
+        *,
+        binding=None,
+        evidence_session_id=None,
+        stale_policy_version=None,
+    ):
         self.hook_calls.append((events, user_email, received_at_ns))
         if self.error:
             raise self.error
@@ -66,7 +87,7 @@ class FakeIngestor:
 @pytest.fixture()
 def storage():
     reader = MagicMock()
-    reader.get_session_detail_meta = AsyncMock(return_value=[{"project_name": "other-project"}])
+    reader.authorize_session = AsyncMock(return_value=True)
     fake = CliAnalyticsStorage(reader=reader, ingestor=FakeIngestor())
     with patch.object(router_module, "get_cli_analytics_storage", return_value=fake):
         yield fake
@@ -261,14 +282,32 @@ def test_handler_reads_through_the_storage_reader(storage):
     assert router_module._handler()._repo is storage.reader
 
 
-def _context(*, is_admin: bool, admin_projects: list[str]) -> ProjectAccessContext:
-    return ProjectAccessContext(user_id="u1", plain_user_projects=[], admin_projects=admin_projects, is_admin=is_admin)
+def _viewer(*, is_admin: bool, admin_projects: list[str], is_auditor: bool = False) -> User:
+    """A real User (model_construct skips the ENV=local validator that makes everyone an admin)."""
+    return User.model_construct(
+        id="u1",
+        email="a@x.com",
+        roles=[],
+        is_admin=is_admin,
+        is_maintainer=False,
+        is_auditor=is_auditor,
+        admin_project_names=admin_projects,
+    )
 
 
-def _filter_params(projects: str | None = None) -> router_module.FilterParams:
+def _filter_params(
+    projects: str | None = None, subscription_type: str | None = None, project_origin: str | None = None
+) -> router_module.FilterParams:
     # Called outside FastAPI, so every Query() default must be given explicitly.
     return router_module.FilterParams(
-        time_period="last_7_days", start_date=None, end_date=None, users=None, projects=projects, repositories=None
+        time_period="last_7_days",
+        start_date=None,
+        end_date=None,
+        users=None,
+        projects=projects,
+        repositories=None,
+        subscription_type=subscription_type,
+        project_origin=project_origin,
     )
 
 
@@ -290,9 +329,7 @@ def test_filter_params_normalizes_naive_dates_to_utc():
 @pytest.mark.asyncio
 async def test_project_admin_without_projects_gets_a_deny_all_filter_without_nul():
     params = _filter_params()
-    with patch.object(router_module, "AccessFilter") as access:
-        access.return_value.get_project_access_context.return_value = _context(is_admin=False, admin_projects=[])
-        f = await params.resolve(User(id="u1"))
+    f = await params.resolve(_viewer(is_admin=False, admin_projects=[]))
 
     assert f.deny_all is True
     assert f.projects is None
@@ -301,9 +338,7 @@ async def test_project_admin_without_projects_gets_a_deny_all_filter_without_nul
 @pytest.mark.asyncio
 async def test_project_admin_filter_is_limited_to_administered_projects():
     params = _filter_params(projects="p1,p2")
-    with patch.object(router_module, "AccessFilter") as access:
-        access.return_value.get_project_access_context.return_value = _context(is_admin=False, admin_projects=["p2"])
-        f = await params.resolve(User(id="u1"))
+    f = await params.resolve(_viewer(is_admin=False, admin_projects=["p2"]))
 
     assert f.deny_all is False
     assert f.projects == ["p2"]
@@ -312,9 +347,7 @@ async def test_project_admin_filter_is_limited_to_administered_projects():
 @pytest.mark.asyncio
 async def test_project_unattributed_for_super_admin_sets_flag_and_clears_projects():
     params = _filter_params(projects="p1")
-    with patch.object(router_module, "AccessFilter") as access:
-        access.return_value.get_project_access_context.return_value = _context(is_admin=True, admin_projects=[])
-        f = await params.resolve(User(id="u1"), project_unattributed=True)
+    f = await params.resolve(_viewer(is_admin=True, admin_projects=[]), project_unattributed=True)
 
     assert f.project_unattributed is True
     assert f.projects is None
@@ -324,29 +357,34 @@ async def test_project_unattributed_for_super_admin_sets_flag_and_clears_project
 @pytest.mark.asyncio
 async def test_project_unattributed_for_project_admin_selects_nothing():
     params = _filter_params(projects="p1")
-    with patch.object(router_module, "AccessFilter") as access:
-        access.return_value.get_project_access_context.return_value = _context(is_admin=False, admin_projects=["p1"])
-        f = await params.resolve(User(id="u1"), project_unattributed=True)
+    f = await params.resolve(_viewer(is_admin=False, admin_projects=["p1"]), project_unattributed=True)
 
     assert f.deny_all is True
     assert f.projects is None
 
 
 @pytest.mark.asyncio
-async def test_session_detail_project_scoping_reads_through_the_storage_reader(storage):
+async def test_session_detail_denied_is_404_before_any_payload_read(storage):
+    storage.reader.authorize_session = AsyncMock(return_value=False)
     handler = MagicMock()
     handler.get_session_detail = AsyncMock(return_value=({"trace_id": "s1", "start_time": ""}, [], "yaml"))
     with (
         patch.object(router_module, "_ensure_enabled", return_value=None),
         patch.object(router_module, "_handler", return_value=handler),
-        patch.object(router_module, "AccessFilter") as access,
         pytest.raises(ExtendedHTTPException) as denied,
     ):
-        access.return_value.get_project_access_context.return_value = _context(is_admin=False, admin_projects=["mine"])
-        await router_module.get_session_detail(user=User(id="u1"), trace_id="s1")
+        await router_module.get_session_detail(user=_viewer(is_admin=False, admin_projects=["mine"]), trace_id="s1")
 
     assert denied.value.code == 404
-    storage.reader.get_session_detail_meta.assert_awaited_once_with("s1")
+    scope = storage.reader.authorize_session.await_args.args[1]
+    assert (scope.mode, scope.viewer_email, scope.unrestricted, scope.admin_projects) == (
+        "detail",
+        "a@x.com",
+        False,
+        frozenset({"mine"}),
+    )
+    handler.get_session_detail.assert_not_awaited()
+    storage.reader.get_session_detail_meta.assert_not_called()
 
 
 def _window(days: int) -> tuple[router_module.FilterParams, datetime]:
@@ -358,14 +396,14 @@ def _window(days: int) -> tuple[router_module.FilterParams, datetime]:
         users=None,
         projects=None,
         repositories=None,
+        subscription_type=None,
+        project_origin=None,
     )
     return params, end
 
 
 async def _resolve_as_admin(params: router_module.FilterParams):
-    with patch.object(router_module, "AccessFilter") as access:
-        access.return_value.get_project_access_context.return_value = _context(is_admin=True, admin_projects=[])
-        return await params.resolve(User(id="u1"))
+    return await params.resolve(_viewer(is_admin=True, admin_projects=[]))
 
 
 @pytest.mark.parametrize(("retention_days", "kept_days"), [(30, 30), (90, 60)])
@@ -388,18 +426,18 @@ async def test_get_sessions_forwards_is_project_unattributed_to_the_resolved_fil
     handler.get_sessions = AsyncMock(return_value=([], MagicMock(unpriced=[], catalog_source="yaml"), None))
     captured: dict = {}
 
-    async def fake_resolve(self, user, project_unattributed=False):
+    async def fake_resolve(self, user, project_unattributed=False, personal_only=False):
         captured["project_unattributed"] = project_unattributed
         end = datetime(2026, 9, 23, tzinfo=timezone.utc)
         return router_module.LocalAnalyticsFilter(
-            start_dt=end - timedelta(days=1), end_dt=end, project_unattributed=project_unattributed
+            scope=EXCLUDE_SCOPE, start_dt=end - timedelta(days=1), end_dt=end, project_unattributed=project_unattributed
         )
 
     with (
         patch.object(router_module, "_ensure_enabled", return_value=None),
         patch.object(router_module, "_handler", return_value=handler),
         patch.object(router_module, "_respond", return_value=JSONResponse({})),
-        patch.object(router_module.FilterParams, "resolve", fake_resolve),
+        patch.object(router_module.FilterParams, "resolve_sessions", fake_resolve),
     ):
         await router_module.get_sessions(
             user=User(id="u1"),
@@ -412,6 +450,7 @@ async def test_get_sessions_forwards_is_project_unattributed_to_the_resolved_fil
             is_unattributed=False,
             branch=None,
             is_project_unattributed=flag,
+            personal_only=False,
         )
 
     assert captured["project_unattributed"] is expected
@@ -434,8 +473,8 @@ async def test_users_and_repositories_metadata_carry_the_handler_pricing():
     )
     end = datetime(2026, 9, 23, tzinfo=timezone.utc)
 
-    async def fake_resolve(self, user, project_unattributed=False):
-        return router_module.LocalAnalyticsFilter(start_dt=end - timedelta(days=1), end_dt=end)
+    async def fake_resolve(self, user, project_unattributed=False, personal_only=False):
+        return router_module.LocalAnalyticsFilter(scope=EXCLUDE_SCOPE, start_dt=end - timedelta(days=1), end_dt=end)
 
     with (
         patch.object(router_module, "_ensure_enabled", return_value=None),
@@ -483,8 +522,8 @@ async def test_filtered_money_routes_metadata_carry_the_handler_pricing(route, h
     setattr(handler, handler_method, AsyncMock(return_value=handler_result))
     end = datetime(2026, 9, 23, tzinfo=timezone.utc)
 
-    async def fake_resolve(self, user, project_unattributed=False):
-        return router_module.LocalAnalyticsFilter(start_dt=end - timedelta(days=1), end_dt=end)
+    async def fake_resolve(self, user, project_unattributed=False, personal_only=False):
+        return router_module.LocalAnalyticsFilter(scope=EXCLUDE_SCOPE, start_dt=end - timedelta(days=1), end_dt=end)
 
     # The handler returns no data, so the response model is bypassed and only the metadata is rendered.
     with (
@@ -500,7 +539,7 @@ async def test_filtered_money_routes_metadata_carry_the_handler_pricing(route, h
 
 
 @pytest.mark.asyncio
-async def test_session_detail_metadata_carries_the_handler_pricing():
+async def test_session_detail_metadata_carries_the_handler_pricing(storage):
     handler = MagicMock()
     handler.get_session_detail = AsyncMock(
         return_value=({"start_time": "2026-09-23T00:00:00Z"}, ["", "mystery-model"], "litellm")
@@ -510,10 +549,18 @@ async def test_session_detail_metadata_carries_the_handler_pricing():
         patch.object(router_module, "_ensure_enabled", return_value=None),
         patch.object(router_module, "_handler", return_value=handler),
         patch.object(router_module, "_respond", side_effect=lambda payload, _: JSONResponse(payload)),
-        patch.object(router_module, "AccessFilter") as access,
     ):
-        access.return_value.get_project_access_context.return_value = _context(is_admin=True, admin_projects=[])
-        response = await router_module.get_session_detail(user=User(id="u1"), trace_id="t1")
+        response = await router_module.get_session_detail(user=_viewer(is_admin=True, admin_projects=[]), trace_id="t1")
 
     metadata = json.loads(response.body)["metadata"]
     assert (metadata["unpriced_models"], metadata["catalog_source"]) == (["", "mystery-model"], "litellm")
+
+
+@pytest.mark.asyncio
+async def test_subscription_type_and_project_origin_params_become_filter_values_and_scope_stays_exclude():
+    params = _filter_params(subscription_type="Corporate, unknown", project_origin="none,other")
+    f = await params.resolve(_viewer(is_admin=False, admin_projects=["p"]))
+
+    assert f.subscription_types == ["corporate", "unknown"]
+    assert f.project_origins == ["none", "other"]
+    assert (f.scope.mode, f.scope.unrestricted, f.scope.admin_projects) == ("exclude", False, frozenset({"p"}))

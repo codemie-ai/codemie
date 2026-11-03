@@ -41,6 +41,7 @@ from tests.codemie.repository.cli_analytics.postgres.test_live_turns_daily impor
     _live,
 )
 from tests.codemie.repository.cli_analytics.support import hook_event_builders as hb
+from tests.codemie.repository.cli_analytics.support.scopes import DETAIL_SCOPE, EXCLUDE_SCOPE
 from tests.codemie.repository.cli_analytics.test_vocabulary import PARITY_CORPUS
 
 _READ_FIRST_PROMPT = "SELECT first_prompt FROM session_dims WHERE session_id = $1"
@@ -328,6 +329,7 @@ async def _served(
     """The `prompt` the sessions list and the session detail serve, plus the session's stored first_prompt."""
     email = f"{session_id}@example.com"
     window = LocalAnalyticsFilter(
+        scope=EXCLUDE_SCOPE,
         start_dt=_BASE.replace(tzinfo=None) - timedelta(hours=1),
         end_dt=_BASE.replace(tzinfo=None) + timedelta(hours=1),
         users=[email],
@@ -355,7 +357,7 @@ async def _served(
             handler = LocalAnalyticsHandler(PostgresCliAnalyticsReader(live.engine))
             sessions, _, _ = await handler.get_sessions(window, 0, 20, "cost_usd", None)
             row = next(s for s in sessions["sessions"] if s["trace_id"] == session_id)
-            detail, _, _ = await handler.get_session_detail(session_id)
+            detail, _, _ = await handler.get_session_detail(session_id, scope=DETAIL_SCOPE)
     return row["prompt"], detail["prompt"], stored
 
 

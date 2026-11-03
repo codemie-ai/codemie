@@ -223,6 +223,21 @@ SCHEDULERS = SettingDeclaration(
     ],
 )
 
+CLI_ANALYTICS = SettingDeclaration(
+    component_id="features:cliAnalytics",
+    label="CLI analytics",
+    description="Classification settings for CLI analytics.",
+    fields=[
+        FieldDeclaration(
+            name="corporateOrganizations",
+            type=FieldType.TEXTAREA,
+            label="Corporate organizations",
+            description="One organization name per line. Sessions of a listed organization are classified Corporate.",
+            max_length=5000,
+        ),
+    ],
+)
+
 MCP_CUSTOM_SERVERS_DISABLED = SettingDeclaration(
     component_id="mcpCustomServersDisabled",
     label="MCP Custom Servers Disabled",
@@ -462,6 +477,7 @@ DECLARATIONS: tuple[SettingDeclaration, ...] = (
     SCHEDULERS,
     MCP_CUSTOM_SERVERS_DISABLED,
     WORKSPACE_SCRIPT_BRIDGE,
+    CLI_ANALYTICS,
     MARKETPLACE_THRESHOLDS,
     MARKETPLACE_CORE_GATES,
     MARKETPLACE_POLISH_GATES,

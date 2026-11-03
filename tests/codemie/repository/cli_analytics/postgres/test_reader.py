@@ -26,22 +26,34 @@ import pytest
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
 from codemie.repository.cli_analytics.ports import CliAnalyticsReader
 from codemie.repository.cli_analytics.postgres import session_derived
-from codemie.repository.cli_analytics.postgres.session_derived import CLASSIFIER_NAMES_SQL
 from codemie.repository.cli_analytics.postgres.fork_attribution import executed_tool_span, tool_response_agent_id
 from codemie.repository.cli_analytics.postgres.reader import (
-    PostgresCliAnalyticsReader,
     _C,
+    PostgresCliAnalyticsReader,
     normalise,
     positional,
     truncate_to_ms,
     window_params,
 )
+from codemie.repository.cli_analytics.postgres.session_derived import CLASSIFIER_NAMES_SQL
+from codemie.repository.cli_analytics.scope import (
+    ViewerScope,
+    normalise_project_origin,
+    normalise_subscription_type,
+    sql_list_condition,
+    sql_norm,
+    sql_private,
+    sql_project_origin,
+    sql_subscription_type,
+)
 from tests.codemie.repository.cli_analytics.support.contracts import assert_implements_port, port_methods
+from tests.codemie.repository.cli_analytics.support.scopes import DETAIL_SCOPE, EXCLUDE_SCOPE
 
 UTC = timezone.utc
 
 
 def _flt(**kwargs) -> LocalAnalyticsFilter:
+    kwargs.setdefault("scope", EXCLUDE_SCOPE)
     return LocalAnalyticsFilter(start_dt=datetime(2026, 9, 1, 8, 30), end_dt=datetime(2026, 9, 8, 17, 45), **kwargs)
 
 
@@ -99,7 +111,7 @@ def test_window_params_carry_the_bounds_and_filters():
 def test_window_params_for_deny_all_carry_no_filter_values():
     p = window_params(_flt(deny_all=True, projects=["p"]))
 
-    assert set(p) == {"start_dt", "end_dt"}
+    assert set(p) - {"scope_viewer"} == {"start_dt", "end_dt"}
 
 
 @pytest.mark.asyncio
@@ -110,7 +122,7 @@ async def test_skill_names_for_no_session_run_no_query():
             raise AssertionError("no query expected")
             yield
 
-    assert await PostgresCliAnalyticsReader(NoEngine()).get_skill_names_by_session([]) == []  # type: ignore[arg-type]
+    assert await PostgresCliAnalyticsReader(NoEngine()).get_skill_names_by_session([], scope=DETAIL_SCOPE) == []  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio
@@ -119,7 +131,7 @@ async def test_skill_names_read_session_dims_with_the_sql_of_the_classifier():
     # session known only from hooks has its skills in session_dims.skills, not in session_skills.
     recorder = _SqlRecorder()
 
-    await PostgresCliAnalyticsReader(recorder).get_skill_names_by_session(["s1", "s2", "s1"])  # type: ignore[arg-type]
+    await PostgresCliAnalyticsReader(recorder).get_skill_names_by_session(["s1", "s2", "s1"], scope=DETAIL_SCOPE)  # type: ignore[arg-type]
 
     (sql,) = recorder.statements
     text = " ".join(sql.split())
@@ -151,9 +163,9 @@ async def test_skill_names_read_session_dims_with_the_sql_of_the_classifier():
 async def test_skill_names_bind_the_distinct_session_ids_and_answer_an_empty_list_for_none():
     recorder = _ArgRecorder()
 
-    await PostgresCliAnalyticsReader(recorder).get_skill_names_by_session(["s2", "s1", "s2"])  # type: ignore[arg-type]
+    await PostgresCliAnalyticsReader(recorder).get_skill_names_by_session(["s2", "s1", "s2"], scope=DETAIL_SCOPE)  # type: ignore[arg-type]
 
-    assert recorder.args == [(["s2", "s1"],)]
+    assert recorder.args == [(["s2", "s1"], "admin@x.com")]
     text = " ".join(recorder.statements[0].split())
     # The five sources of the union and the guard that keeps a non-array `commands` from raising.
     assert text.count("UNION") == 4
@@ -169,8 +181,8 @@ async def test_skill_names_bind_the_distinct_session_ids_and_answer_an_empty_lis
 
 
 def test_deny_all_selects_no_session():
-    assert "WHERE false" in PostgresCliAnalyticsReader._sessions_cte(_flt(deny_all=True))
-    assert "WHERE false" not in PostgresCliAnalyticsReader._sessions_cte(_flt())
+    assert " AND false" in PostgresCliAnalyticsReader._sessions_cte(_flt(deny_all=True))
+    assert " AND false" not in PostgresCliAnalyticsReader._sessions_cte(_flt())
     assert PostgresCliAnalyticsReader._scope(_flt(deny_all=True)) != ""
 
 
@@ -284,7 +296,7 @@ class _SqlRecorder:
 
 
 # plus the get_session_detail_* queries
-_NOT_WINDOWED = ("get_skill_names_by_session", "get_session_page", "get_framework_sessions")
+_NOT_WINDOWED = ("get_skill_names_by_session", "authorize_session", "get_session_page", "get_framework_sessions")
 
 
 class _PageRecorder(_SqlRecorder):
@@ -397,7 +409,8 @@ async def test_framework_sessions_group_raw_keys_and_bind_the_window_and_label()
     assert "delivery_framework <>" not in sql  # the current labels are matched, not "anything but the fallback"
     assert "GROUP BY 1, 2, 3" in sql
     # Global per person and repository like the Elasticsearch side: no project predicate.
-    assert "project" not in sql.lower()
+    assert "project_name" not in sql.lower()
+    assert "NOT " + sql_private("d") in sql
     assert recorder.args[0] == (
         datetime(2026, 9, 1, 8, 30, tzinfo=UTC),
         datetime(2026, 9, 8, 17, 44, 59, 999000, tzinfo=UTC),
@@ -454,7 +467,7 @@ async def test_session_detail_meta_resolves_the_earliest_service_name():
     recorder = _SqlRecorder()
     reader = PostgresCliAnalyticsReader(recorder)
 
-    await reader.get_session_detail_meta("s1")
+    await reader.get_session_detail_meta("s1", scope=DETAIL_SCOPE)
 
     sql = " ".join(recorder.statements[0].split())
     assert "otel_resources" in sql
@@ -483,7 +496,7 @@ async def test_the_selected_sessions_carry_the_session_title():
 async def test_session_detail_meta_reads_the_session_title_next_to_the_first_prompt():
     recorder = _SqlRecorder()
 
-    await PostgresCliAnalyticsReader(recorder).get_session_detail_meta("s1")  # type: ignore[arg-type]
+    await PostgresCliAnalyticsReader(recorder).get_session_detail_meta("s1", scope=DETAIL_SCOPE)  # type: ignore[arg-type]
 
     sql = " ".join(recorder.statements[0].split())
     assert "nullif(d.session_title, '') AS session_title" in sql
@@ -495,7 +508,7 @@ async def test_session_detail_meta_reads_the_same_activity_range_as_the_list():
     # One definition: the same day-bounded probes, open-ended when the session has no session_dims row.
     recorder = _SqlRecorder()
 
-    await PostgresCliAnalyticsReader(recorder).get_session_detail_meta("s1")  # type: ignore[arg-type]
+    await PostgresCliAnalyticsReader(recorder).get_session_detail_meta("s1", scope=DETAIL_SCOPE)  # type: ignore[arg-type]
 
     sql = " ".join(recorder.statements[0].split())
     assert "FROM log_events le" in sql and "FROM spans sp" in sql
@@ -514,14 +527,18 @@ async def test_session_detail_meta_service_name_tiebreak_is_deterministic():
     recorder = _SqlRecorder()
     reader = PostgresCliAnalyticsReader(recorder)
 
-    await reader.get_session_detail_meta("s1")
+    await reader.get_session_detail_meta("s1", scope=DETAIL_SCOPE)
 
     sql = " ".join(recorder.statements[0].split())
     assert "ORDER BY e.ts ASC, e.resource_id ASC" in sql
 
 
 def test_window_bounds_are_inclusive_and_millisecond_truncated():
-    p = window_params(LocalAnalyticsFilter(start_dt=datetime(2026, 9, 1, 0, 0, 0, 123999), end_dt=datetime(2026, 9, 2)))
+    p = window_params(
+        LocalAnalyticsFilter(
+            start_dt=datetime(2026, 9, 1, 0, 0, 0, 123999), end_dt=datetime(2026, 9, 2), scope=EXCLUDE_SCOPE
+        )
+    )
 
     assert p["start_dt"] == datetime(2026, 9, 1, 0, 0, 0, 123000, tzinfo=UTC)
     assert p["end_dt"] == datetime(2026, 9, 2, tzinfo=UTC)
@@ -845,7 +862,8 @@ def test_restricting_a_filter_to_session_ids_keeps_every_other_scope():
 def test_session_ids_never_replace_a_filter_that_denies_every_session():
     cte = PostgresCliAnalyticsReader._sessions_cte(_flt(deny_all=True).restricted_to(["s1"]))
 
-    assert "WHERE false" in cte
+    assert "AND false" in cte  # the scope comes first, the denying filter still applies
+    assert "session_id = ANY($session_ids" not in cte  # a denied filter never reaches the id narrowing
 
 
 @pytest.mark.asyncio
@@ -871,7 +889,7 @@ async def test_the_top_model_is_the_largest_row_of_the_original_cost_grain(metho
     recorder = _SqlRecorder()
     reader = PostgresCliAnalyticsReader(recorder)  # type: ignore[arg-type]
     if method == "get_session_detail_cost":
-        await reader.get_session_detail_cost("s1")
+        await reader.get_session_detail_cost("s1", scope=DETAIL_SCOPE)
     else:
         await getattr(reader, method)(_flt())
     (statement,) = recorder.statements
@@ -889,7 +907,7 @@ async def test_the_top_model_is_the_largest_row_of_the_original_cost_grain(metho
 async def test_session_detail_model_costs_groups_by_model_for_one_session():
     recorder = _SqlRecorder()
     reader = PostgresCliAnalyticsReader(recorder)  # type: ignore[arg-type]
-    await reader.get_session_detail_model_costs("s1")
+    await reader.get_session_detail_model_costs("s1", scope=DETAIL_SCOPE)
     (statement,) = recorder.statements
     sql = " ".join(statement.split())
     assert "GROUP BY c.model_name" in sql
@@ -1054,7 +1072,9 @@ async def test_session_start_boundaries_are_inclusive_at_both_ends(offset_from, 
 @pytest.mark.asyncio
 async def test_bound_window_values_are_the_ms_truncated_filter_bounds():
     f = LocalAnalyticsFilter(
-        start_dt=datetime(2026, 9, 1, 8, 30, 0, 999999), end_dt=datetime(2026, 9, 8, 17, 45, 0, 500)
+        scope=EXCLUDE_SCOPE,
+        start_dt=datetime(2026, 9, 1, 8, 30, 0, 999999),
+        end_dt=datetime(2026, 9, 8, 17, 45, 0, 500),
     )
 
     assert await _bound_window(f) == (
@@ -1170,7 +1190,7 @@ async def test_scalars_agent_count_has_dedup_correction_like_skill_count():
     dispatch that hasn't rolled up yet undercounts/overcounts agent_count."""
     recorder = _SqlRecorder()
 
-    await PostgresCliAnalyticsReader(recorder).get_session_detail_scalars("s1")
+    await PostgresCliAnalyticsReader(recorder).get_session_detail_scalars("s1", scope=DETAIL_SCOPE)
 
     sql = " ".join(recorder.statements[0].split())
     agent_count_expr = sql.split("AS agent_count")[0].rsplit("AS tool_call_count", 1)[-1]
@@ -1219,7 +1239,7 @@ async def test_dispatch_union_branch_treats_subagent_hook_skill_name_as_skill_di
     dispatch it pairs with. A dispatch row takes its fork's cost by the fork's agentId."""
     recorder = _SqlRecorder()
 
-    await PostgresCliAnalyticsReader(recorder).get_session_detail_dispatches("s1")
+    await PostgresCliAnalyticsReader(recorder).get_session_detail_dispatches("s1", scope=DETAIL_SCOPE)
 
     sql = " ".join(recorder.statements[0].split())
     assert (
@@ -1266,7 +1286,7 @@ async def test_an_agent_call_is_a_dispatch_only_with_run_evidence_from_an_hour_b
     """An Agent or Skill call is a dispatch only through the gate the rollups count it by."""
     recorder = _SqlRecorder()
 
-    await PostgresCliAnalyticsReader(recorder).get_session_detail_dispatches("s1")
+    await PostgresCliAnalyticsReader(recorder).get_session_detail_dispatches("s1", scope=DETAIL_SCOPE)
 
     sql = " ".join(recorder.statements[0].split())
     # coalesce: ingest stores an absent subagent_type as NULL, and NULL = '' would drop skill rows
@@ -1281,7 +1301,7 @@ async def test_an_agent_call_is_a_dispatch_only_with_run_evidence_from_an_hour_b
 
 async def _dispatches_sql() -> str:
     recorder = _SqlRecorder()
-    await PostgresCliAnalyticsReader(recorder).get_session_detail_dispatches("s1")  # type: ignore[arg-type]
+    await PostgresCliAnalyticsReader(recorder).get_session_detail_dispatches("s1", scope=DETAIL_SCOPE)  # type: ignore[arg-type]
     assert len(recorder.statements) == 1
     return " ".join(recorder.statements[0].split())
 
@@ -1424,3 +1444,115 @@ async def test_invocations_bind_builtin_command_names() -> None:
     assert "builtin_commands" in captured_params
     assert captured_params["builtin_commands"] == list(BUILTIN_COMMAND_NAMES)
     assert captured_params["builtin_commands"] == ["model", "exit", "quit"]
+
+
+# ── viewer scope in the base conditions of _sessions_cte ─────────────────────
+
+
+def _cte(**kwargs) -> str:
+    return PostgresCliAnalyticsReader._sessions_cte(_flt(**kwargs))
+
+
+def test_exclude_scope_is_in_the_base_conditions():
+    cte = _cte(scope=ViewerScope("a@x.com", False, frozenset({"p"}), "exclude"))
+
+    assert f"NOT {sql_private('x')}" in cte
+    assert "coalesce(x.project_name, '') = ANY($scope_projects::text[])" in cte
+    assert "$scope_viewer" not in cte
+
+
+def test_own_only_scope_is_in_the_base_conditions():
+    cte = _cte(scope=ViewerScope("A@x.com", False, frozenset(), "own_only"))
+
+    assert f"{sql_norm('x.owner_email')} = $scope_viewer::text" in cte
+
+
+def test_scope_is_the_first_base_condition_so_appended_conditions_cannot_displace_it():
+    cte = _cte(
+        users=["u"],
+        projects=["p"],
+        repositories=["r"],
+        branch="b",
+        scope=ViewerScope("a@x.com", False, frozenset(), "own_only"),
+    )
+    where = cte.split(") x", 1)[1]
+
+    assert where.index("$scope_viewer") < where.index("$users") < where.index("branch = $branch")
+    scope_sql = sql_list_condition(ViewerScope("a@x.com", False, frozenset(), "own_only"))[0]
+    assert where.count("WHERE") == 1 and where.lstrip().startswith(f"WHERE {scope_sql} AND ")
+
+
+@pytest.mark.parametrize("scope", [None, "admin", object(), ViewerScope("a@x.com", True, frozenset(), "bogus")])  # type: ignore[arg-type]
+def test_absent_or_malformed_scope_denies_everything(scope):
+    cte = _cte(scope=scope)
+
+    assert "WHERE false" in cte
+    assert "true" not in cte.split("FROM session_dims d")[1]
+
+
+def test_scope_params_reach_the_query():
+    p = window_params(_flt(scope=ViewerScope("A@x.com", False, frozenset({"p"}), "exclude")))
+    q = window_params(_flt(deny_all=True, scope=ViewerScope("A@x.com", False, frozenset({"p"}), "own_only")))
+
+    assert p["scope_projects"] == ["p"]
+    assert q["scope_viewer"] == "a@x.com"
+
+
+def test_sessions_project_the_columns_the_scope_reads():
+    cte = _cte(scope=EXCLUDE_SCOPE)
+
+    for column in ("d.owner_email", "d.subscription_type", "d.project_origin"):
+        assert column in cte
+
+
+def test_window_params_carry_subscription_types_and_project_origins():
+    p = window_params(_flt(subscription_types=["unknown"], project_origins=["none"]))
+
+    assert (p["subscription_types"], p["project_origins"]) == (["unknown"], ["none"])
+    assert "subscription_types" not in window_params(_flt(deny_all=True, subscription_types=["unknown"]))
+
+
+def test_subscription_and_origin_filters_use_the_normalised_projection_and_stay_anded_with_the_scope():
+    cte = PostgresCliAnalyticsReader._sessions_cte(_flt(subscription_types=["unknown"], project_origins=["none"]))
+    where = cte.split(") x", 1)[1]
+
+    assert "THEN 'unknown'" in where and "THEN 'none'" in where  # NULL/empty map to unknown / none
+    assert f"{sql_norm('x.subscription_type')} = ''" in where
+    assert "= ANY($subscription_types::text[])" in where and "= ANY($project_origins::text[])" in where
+    # The scope predicate is first and every filter is ANDed after it: a filter value never widens it.
+    scope_sql = sql_list_condition(EXCLUDE_SCOPE)[0]
+    assert where.split("WHERE ", 1)[1].startswith(scope_sql + " AND ")
+    assert " OR lower(btrim" not in where.split(scope_sql, 1)[1]
+
+
+def test_personal_filter_under_exclude_still_carries_the_scope_that_excludes_personal():
+    cte = PostgresCliAnalyticsReader._sessions_cte(_flt(subscription_types=["personal"], project_origins=["personal"]))
+
+    assert f"NOT {sql_private('x')}" in cte  # exclude = not private to an owner only
+
+
+@pytest.mark.parametrize(
+    ("value", "sub", "origin"),
+    [
+        (None, "unknown", "none"),
+        ("  ", "unknown", "none"),
+        ("Corporate", "corporate", "other"),
+        ("CODEMIE", "codemie", "other"),
+        ("Personal", "personal", "personal"),
+        ("Linked_Folder", "other", "linked_folder"),
+        ("default_project", "other", "default_project"),
+        ("weird", "other", "other"),
+    ],
+)
+def test_vocabulary_normalisers(value, sub, origin):
+    assert normalise_subscription_type(value) == sub
+    assert normalise_project_origin(value) == origin
+
+
+def test_sql_vocabulary_expression_mirrors_the_python_mapping():
+    sql = sql_subscription_type("c")
+
+    assert (
+        sql.count("'unknown'") == 2 and "'other'" in sql and "IN ('codemie', 'corporate', 'personal', 'unknown')" in sql
+    )
+    assert "'none'" in sql_project_origin("c") and "'registered_repository'" in sql_project_origin("c")

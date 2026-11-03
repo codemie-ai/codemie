@@ -34,6 +34,7 @@ from codemie.repository.cli_analytics.postgres.reader import PostgresCliAnalytic
 from codemie.repository.cli_analytics.postgres.runtime import PostgresAnalyticsRuntime
 from codemie.repository.cli_analytics.postgres.settings import AnalyticsPgSettings
 from codemie.service.analytics.handlers.cli_analytics_handler import LocalAnalyticsHandler
+from tests.codemie.repository.cli_analytics.support.scopes import DETAIL_SCOPE
 
 # pytest.ini forces PG_URL to a dead port for the whole suite; TEST_LOCAL_PG_URL points this file at
 # a real local analytics Postgres (default: the docker-compose `postgres` service's credentials).
@@ -212,7 +213,7 @@ async def test_two_parallel_agents_get_their_own_exact_totals_not_an_even_split(
             api_requests=[(0.05, 300, 400), (0.12, 243, 2308)],
         )
 
-        rows = await PostgresCliAnalyticsReader(engine).get_session_detail_dispatches(session_id)
+        rows = await PostgresCliAnalyticsReader(engine).get_session_detail_dispatches(session_id, scope=DETAIL_SCOPE)
         assert len(rows) == 2
         by_cost = sorted(rows, key=lambda r: r["cost_usd"])
         assert by_cost[0]["cost_usd"] == pytest.approx(0.11)
@@ -286,7 +287,7 @@ async def test_a_dispatch_without_an_llm_group_has_no_cost_rather_than_a_guess()
             input_tokens=900,
         )
 
-        rows = await PostgresCliAnalyticsReader(engine).get_session_detail_dispatches(session_id)
+        rows = await PostgresCliAnalyticsReader(engine).get_session_detail_dispatches(session_id, scope=DETAIL_SCOPE)
         assert len(rows) == 2
         done = next(r for r in rows if r["cost_usd"] is not None)
         orphan = next(r for r in rows if r["cost_usd"] is None)
@@ -352,7 +353,7 @@ async def test_a_dispatch_with_no_agent_id_falls_back_to_its_parent_span_from_it
             input_tokens=120,
         )
 
-        rows = await PostgresCliAnalyticsReader(engine).get_session_detail_dispatches(session_id)
+        rows = await PostgresCliAnalyticsReader(engine).get_session_detail_dispatches(session_id, scope=DETAIL_SCOPE)
         (row,) = rows
         assert row["cost_usd"] == pytest.approx(0.07)
         assert row["input_tokens"] == 120
@@ -406,7 +407,7 @@ async def test_subagent_run_runs_from_its_subagent_start_else_its_call_start_to_
             await conn.execute(_START_EVENT_SQL, start + timedelta(milliseconds=300), session_id, "agentstarted")
             await conn.execute(_STOP_EVENT_SQL, start + timedelta(seconds=30), session_id, "agentstarted", "{}")
 
-        rows = await PostgresCliAnalyticsReader(engine).get_session_detail_dispatches(session_id)
+        rows = await PostgresCliAnalyticsReader(engine).get_session_detail_dispatches(session_id, scope=DETAIL_SCOPE)
         by_cost = {round(r["cost_usd"], 2): r for r in rows}
         assert by_cost[0.11]["subagent_duration_ms"] == 30_000
         assert by_cost[0.11]["dispatch_start"] == start.replace(tzinfo=None)  # the reader returns naive UTC
@@ -442,7 +443,7 @@ async def test_a_foreground_agent_runs_from_its_call_start_to_its_stop_even_thou
         async with engine.acquire() as conn:
             await conn.execute(_STOP_EVENT_SQL, start + timedelta(seconds=8), session_id, "agentforeground", "{}")
 
-        rows = await PostgresCliAnalyticsReader(engine).get_session_detail_dispatches(session_id)
+        rows = await PostgresCliAnalyticsReader(engine).get_session_detail_dispatches(session_id, scope=DETAIL_SCOPE)
         (row,) = rows
         assert row["subagent_duration_ms"] == 8_000
         assert row["dispatch_start"] == start.replace(tzinfo=None)  # the reader returns naive UTC, as elsewhere
@@ -454,7 +455,7 @@ async def test_a_foreground_agent_runs_from_its_call_start_to_its_stop_even_thou
 async def _agent_bars(engine: AnalyticsPgEngine, session_id: str, session_start: datetime) -> list[tuple[int, int]]:
     """Each agent bar as the API returns it, [start, end) in ms from the session start, in start order: the
     real reader rows passed through the handler, so the check covers the SQL and the offset/clamp logic."""
-    rows = await PostgresCliAnalyticsReader(engine).get_session_detail_dispatches(session_id)
+    rows = await PostgresCliAnalyticsReader(engine).get_session_detail_dispatches(session_id, scope=DETAIL_SCOPE)
     dispatches = LocalAnalyticsHandler._build_dispatches(rows, session_start.replace(tzinfo=None), 600_000, 1.0)
     agents = [d for d in dispatches if d["kind"] == "agent"]
     return sorted((d["start_offset_ms"], d["start_offset_ms"] + d["duration_ms"]) for d in agents)

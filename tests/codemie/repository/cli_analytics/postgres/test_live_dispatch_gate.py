@@ -41,6 +41,7 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
+from tests.codemie.repository.cli_analytics.support.scopes import DETAIL_SCOPE, EXCLUDE_SCOPE
 from codemie.configs.config import Config
 from codemie.configs.llm_config import CostConfig
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
@@ -236,7 +237,7 @@ async def _refresh_rollups(engine: AnalyticsPgEngine) -> None:
 
 
 async def _sql_agents(engine: AnalyticsPgEngine, session_id: str) -> list[dict[str, Any]]:
-    rows = await PostgresCliAnalyticsReader(engine).get_session_detail_dispatches(session_id)
+    rows = await PostgresCliAnalyticsReader(engine).get_session_detail_dispatches(session_id, scope=DETAIL_SCOPE)
     return [r for r in rows if r["subagent_type"]]
 
 
@@ -273,7 +274,9 @@ async def _rollup_skill_counts(engine: AnalyticsPgEngine, session_id: str, skill
 
 
 async def _api_detail(engine: AnalyticsPgEngine, session_id: str) -> dict[str, Any]:
-    detail, _, _ = await LocalAnalyticsHandler(PostgresCliAnalyticsReader(engine)).get_session_detail(session_id)
+    detail, _, _ = await LocalAnalyticsHandler(PostgresCliAnalyticsReader(engine)).get_session_detail(
+        session_id, scope=DETAIL_SCOPE
+    )
     assert detail is not None, "the session must exist in the session rollups after the refresh"
     return detail
 
@@ -804,7 +807,7 @@ async def test_live_forked_skill_dispatch_takes_its_cost_and_duration_from_its_o
             )
         await _refresh_rollups(engine)
 
-        rows = await PostgresCliAnalyticsReader(engine).get_session_detail_dispatches(session_id)
+        rows = await PostgresCliAnalyticsReader(engine).get_session_detail_dispatches(session_id, scope=DETAIL_SCOPE)
         [row] = [r for r in rows if r["skill_name"] == skill_name]
 
         assert row["cost_usd"] == pytest.approx(3.5)
@@ -1037,8 +1040,11 @@ def _dispatch_rows(detail: dict[str, Any]) -> list[tuple[Any, ...]]:
 
 async def _skills_invoked(engine: AnalyticsPgEngine) -> list[dict[str, Any]]:
     start = datetime.combine(_DAY.date(), time())
-    f = LocalAnalyticsFilter(start_dt=start, end_dt=start + timedelta(days=1))
-    return (await LocalAnalyticsHandler(PostgresCliAnalyticsReader(engine)).get_tools(f))["skills_invoked"]
+    f = LocalAnalyticsFilter(scope=EXCLUDE_SCOPE, start_dt=start, end_dt=start + timedelta(days=1))
+    rows = (await LocalAnalyticsHandler(PostgresCliAnalyticsReader(engine)).get_tools(f))["skills_invoked"]
+    return [
+        {"name": r["name"], "count": r["count"]} for r in rows
+    ]  # the class lists are covered in test_live_owner_scope
 
 
 async def _session_dims(engine: AnalyticsPgEngine, session_id: str, column: str):
@@ -2095,7 +2101,7 @@ async def test_live_a_slash_command_whose_skill_name_is_too_long_to_count_pairs_
         )  # fmt: skip
         await _refresh_rollups(engine)
 
-        rows = await PostgresCliAnalyticsReader(engine).get_session_detail_dispatches(session_id)
+        rows = await PostgresCliAnalyticsReader(engine).get_session_detail_dispatches(session_id, scope=DETAIL_SCOPE)
         if fork_skill == "named":
             assert await _counts(engine, session_id, long_name) == _expected(0)
             # the fork's own row, at the fork's start (the reader's timestamps are naive UTC)

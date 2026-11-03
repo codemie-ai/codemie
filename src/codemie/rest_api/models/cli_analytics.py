@@ -28,6 +28,20 @@ _ISO8601 = "ISO 8601 datetime string"
 _SAME_AS_DEVELOPER_NAME = "Same value as developer_name"
 
 
+class _ClassLists(BaseModel):
+    """Sorted distinct subscription types / project origins among an aggregate entity's selected sessions."""
+
+    subscription_types: list[str] = Field(
+        default_factory=list,
+        description="Distinct subscription types (codemie, corporate, personal, unknown, other), sorted",
+    )
+    project_origins: list[str] = Field(
+        default_factory=list,
+        description="Distinct project origins (linked_folder, profile, registered_repository, default_project, "
+        "legacy_project, none, other), sorted",
+    )
+
+
 # ── Envelope ──────────────────────────────────────────────────────────────────
 
 
@@ -63,7 +77,7 @@ class PaginationMetadata(BaseModel):
 # ── Overview ──────────────────────────────────────────────────────────────────
 
 
-class LocalAnalyticsOverviewKPIs(BaseModel):
+class LocalAnalyticsOverviewKPIs(_ClassLists):
     total_sessions: int
     total_cost_usd: float
     duration_ms: int
@@ -83,12 +97,12 @@ class LocalAnalyticsOverviewKPIs(BaseModel):
     avg_context_per_call: float
 
 
-class LocalAnalyticsOverviewDailyBucket(BaseModel):
+class LocalAnalyticsOverviewDailyBucket(_ClassLists):
     day: str = Field(..., description="ISO date, YYYY-MM-DD")
     net_lines: int
 
 
-class LocalAnalyticsModelBreakdownRow(BaseModel):
+class LocalAnalyticsModelBreakdownRow(_ClassLists):
     model_name: str
     session_count: int
 
@@ -107,7 +121,7 @@ class LocalAnalyticsOverviewResponse(BaseModel):
 # ── Repositories ──────────────────────────────────────────────────────────────
 
 
-class LocalAnalyticsRepositoryBranchRow(BaseModel):
+class LocalAnalyticsRepositoryBranchRow(_ClassLists):
     branch: str | None = None
     session_count: int
     turns: int
@@ -123,7 +137,7 @@ class LocalAnalyticsRepositoryBranchRow(BaseModel):
     )
 
 
-class LocalAnalyticsRepositoryRow(BaseModel):
+class LocalAnalyticsRepositoryRow(_ClassLists):
     repository: str | None = Field(
         None, description="Repository name. None for the unattributed bucket (plugin was not active)."
     )
@@ -160,12 +174,12 @@ class LocalAnalyticsRepositoriesResponse(BaseModel):
 # ── Users ─────────────────────────────────────────────────────────────────────
 
 
-class LocalAnalyticsDailyActivityBucket(BaseModel):
+class LocalAnalyticsDailyActivityBucket(_ClassLists):
     day: str = Field(..., description="ISO date, YYYY-MM-DD")
     session_count: int
 
 
-class LocalAnalyticsUserRow(BaseModel):
+class LocalAnalyticsUserRow(_ClassLists):
     developer_name: str = Field(..., description="Resolved user email")
     user_email: str = Field("", description=_SAME_AS_DEVELOPER_NAME)
     session_count: int
@@ -226,6 +240,24 @@ class LocalAnalyticsSessionRow(BaseModel):
     net_lines: int = 0
     bloat_pct: float = 0.0
     delivery_framework: str | None = Field(None, description="Detected delivery framework")
+    subscription_type: str = Field("unknown", description="codemie, corporate, personal, unknown or other")
+    project_origin: str = Field(
+        "none",
+        description=(
+            "personal, linked_folder, profile, registered_repository, default_project, legacy_project, none or other"
+        ),
+    )
+    route_note: str | None = Field(
+        None,
+        description="Diagnostic routing note stored with the session (folder_not_linked, linked_project_unavailable, "
+        "registered_project_inaccessible, registration_ambiguous). None for sessions without one, including legacy "
+        "data.",
+    )
+    routing_label: str | None = Field(
+        None,
+        description='"folder not linked to a project" for a default-project session whose folder had no usable '
+        "project or repository link (also when the link was inaccessible); None otherwise.",
+    )
 
 
 class LocalAnalyticsFrameworksResponse(BaseModel):
@@ -255,7 +287,7 @@ class LocalAnalyticsSessionEvent(BaseModel):
     tool_name: str | None = None
 
 
-class LocalAnalyticsToolWithSuccessRow(BaseModel):
+class LocalAnalyticsToolWithSuccessRow(_ClassLists):
     tool_name: str
     call_count: int
     success_count: int
@@ -313,20 +345,20 @@ class LocalAnalyticsActivityResponse(BaseModel):
 # ── Cost ──────────────────────────────────────────────────────────────────────
 
 
-class LocalAnalyticsCostKPIs(BaseModel):
+class LocalAnalyticsCostKPIs(_ClassLists):
     total_sessions: int
     total_cost_usd: float
     total_tokens: int
     avg_cost_per_session: float
 
 
-class LocalAnalyticsCostByUserRow(BaseModel):
+class LocalAnalyticsCostByUserRow(_ClassLists):
     developer_name: str
     user_email: str = Field("", description=_SAME_AS_DEVELOPER_NAME)
     cost_usd: float
 
 
-class LocalAnalyticsCostByModelRow(BaseModel):
+class LocalAnalyticsCostByModelRow(_ClassLists):
     model_name: str
     cost_usd: float
 
@@ -345,7 +377,7 @@ class LocalAnalyticsCostResponse(BaseModel):
 # ── Efficiency ────────────────────────────────────────────────────────────────
 
 
-class LocalAnalyticsEfficiencyKPIs(BaseModel):
+class LocalAnalyticsEfficiencyKPIs(_ClassLists):
     avg_context_per_call: float = 0.0
     worst_session_ctx_per_call: float | None = None
     worst_session_prompt: str | None = None
@@ -355,19 +387,19 @@ class LocalAnalyticsEfficiencyKPIs(BaseModel):
     total_cost_usd: float = 0.0
 
 
-class LocalAnalyticsDeadSessionsKPIs(BaseModel):
+class LocalAnalyticsDeadSessionsKPIs(_ClassLists):
     count: int = 0
     pct_of_sessions: float = 0.0
     wasted_cost_usd: float = 0.0
     avg_cost_per_dead: float | None = None
 
 
-class LocalAnalyticsSessionDepthBucket(BaseModel):
+class LocalAnalyticsSessionDepthBucket(_ClassLists):
     bucket: str
     count: int
 
 
-class LocalAnalyticsCodeChangesKPIs(BaseModel):
+class LocalAnalyticsCodeChangesKPIs(_ClassLists):
     files_changed: int = 0
     files_written: int = 0
     files_edited: int = 0
@@ -389,12 +421,12 @@ class LocalAnalyticsEfficiencyResponse(BaseModel):
 # ── Tools ─────────────────────────────────────────────────────────────────────
 
 
-class LocalAnalyticsTokensByModelRow(BaseModel):
+class LocalAnalyticsTokensByModelRow(_ClassLists):
     model_name: str
     total_tokens: int
 
 
-class LocalAnalyticsInvocationRow(BaseModel):
+class LocalAnalyticsInvocationRow(_ClassLists):
     name: str
     count: int
 

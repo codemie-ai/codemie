@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "task": "Backend: expose subscription type and project origin in CLI analytics API, filters, personal-session visibility and spend exclusion.",
+  "generated": "2026-10-27T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 22,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Touches cli_analytics reader and LocalAnalyticsFilter, router FilterParams access resolution, response models, and spend handlers across two cost pipelines (member_spend_service, usage_requests/cost_daily)." },
+    { "dimension": "requirements_clarity", "reason": "Open items: which analytics surface (legacy coding-agents vs OTel cli-analytics) carries the new fields, whether a project-spend endpoint uses CLI cost, and legacy rows mapping to Unknown." },
+    { "dimension": "technical_risk", "reason": "Personal-session visibility is a per-user privacy boundary; current access model (project admins, super-admin only for unattributed) has no owner self-view precedent, so the authz gap is a divergence (bumped from L). Spend exclusion must be consistent across both pipelines. Edge cases (legacy rows, unattributed) need defensive tests." },
+    { "dimension": "file_change_estimate", "reason": "Estimated 8-10 modified (reader, filters, router, models, spend handlers, budget/spend services) plus tests, across several directories." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from L to XL: affects authorization (personal-session visibility, owner self-view)"
+  ],
+  "split_recommendation": null
+}

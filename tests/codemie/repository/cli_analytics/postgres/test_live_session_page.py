@@ -44,6 +44,7 @@ from tests.codemie.repository.cli_analytics.postgres.test_live_session_subagent_
     _KNOWN_MODEL,
     _lookup,
 )
+from tests.codemie.repository.cli_analytics.support.scopes import EXCLUDE_SCOPE
 
 _LOCAL_PG_URL = os.environ.get("TEST_LOCAL_PG_URL", "")
 pytestmark = pytest.mark.skipif(not _LOCAL_PG_URL, reason="TEST_LOCAL_PG_URL is not set: no database to run against")
@@ -106,6 +107,7 @@ class _Seed:
 
     def filter(self, **kwargs) -> LocalAnalyticsFilter:
         return LocalAnalyticsFilter(
+            scope=EXCLUDE_SCOPE,
             start_dt=_naive(self.t0 - timedelta(days=1)),
             end_dt=_naive(self.t0 + timedelta(days=1)),
             users=[self.email],
@@ -263,7 +265,11 @@ async def test_a_session_page_never_leaves_the_selected_users_sessions():
         assert {r["session_id"] for r in await reader.get_session_model_costs(page)} == {seed.sid(1), seed.sid(7)}
 
         denied = LocalAnalyticsFilter(
-            start_dt=seed.filter().start_dt, end_dt=seed.filter().end_dt, users=[seed.email], deny_all=True
+            scope=EXCLUDE_SCOPE,
+            start_dt=seed.filter().start_dt,
+            end_dt=seed.filter().end_dt,
+            users=[seed.email],
+            deny_all=True,
         )
         assert await reader.get_session_page(denied, "start_time", 0, 20) == (0, [])
     finally:

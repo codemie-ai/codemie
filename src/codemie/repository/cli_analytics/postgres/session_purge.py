@@ -49,11 +49,15 @@ _SKIPPED_IDS_LOGGED = 10
 
 
 def _idle(utc_midnight: str, tomorrow: str) -> str:
-    """The session_dims row has seen no activity since before the cutoff."""
+    """The session_dims row has seen no activity since before the cutoff. A legacy row (no owner) is judged
+    by its hook times, else its updated_at. A bound row (EPMCDME-16440) also counts its updated_at, which only
+    the server sets (an accepted write refreshes it), so a resumed session that sends metrics or traces before
+    its next dimension hook is kept; a client time in the future still counts for nothing."""
     past = maintenance.PartitionMaintainer._past
+    bound_seen = "CASE WHEN owner_email IS NOT NULL THEN updated_at END"
     return (
-        f"coalesce(greatest({past('last_event_at', tomorrow)}, {past('ended_at', tomorrow)}), updated_at) "
-        f"< {utc_midnight}"
+        f"coalesce(greatest({past('last_event_at', tomorrow)}, {past('ended_at', tomorrow)}, {bound_seen}), "
+        f"updated_at) < {utc_midnight}"
     )
 
 

@@ -36,6 +36,7 @@ from codemie.repository.cli_analytics.postgres.engine import AnalyticsPgEngine
 from codemie.repository.cli_analytics.postgres.reader import PostgresCliAnalyticsReader
 from codemie.repository.cli_analytics.postgres.settings import AnalyticsPgSettings
 from codemie.service.analytics.handlers.cli_analytics_handler import LocalAnalyticsHandler
+from tests.codemie.repository.cli_analytics.support.scopes import DETAIL_SCOPE, EXCLUDE_SCOPE
 
 # pytest.ini forces PG_URL to a dead port for the whole suite; TEST_LOCAL_PG_URL points this file at
 # a real local analytics Postgres (default: the docker-compose `postgres` service's credentials).
@@ -131,7 +132,10 @@ async def test_reported_range_covers_events_outside_the_hook_times(ids: _Ids):
     engine = await _get_engine()
     t = _hook_time()
     f = LocalAnalyticsFilter(
-        start_dt=_naive(t - timedelta(hours=1)), end_dt=_naive(t + timedelta(hours=1)), users=[ids.email]
+        scope=EXCLUDE_SCOPE,
+        start_dt=_naive(t - timedelta(hours=1)),
+        end_dt=_naive(t + timedelta(hours=1)),
+        users=[ids.email],
     )
     try:
         await _cleanup(engine, ids.session)
@@ -149,7 +153,9 @@ async def test_reported_range_covers_events_outside_the_hook_times(ids: _Ids):
         assert _naive(t - timedelta(seconds=12)) in [r["started_at"] for r in await reader.get_session_start_times(f)]
 
         users, _ = await LocalAnalyticsHandler(reader).get_users(
-            LocalAnalyticsFilter(start_dt=f.start_dt, end_dt=f.end_dt, users=[ids.email]), page=None, per_page=None
+            LocalAnalyticsFilter(scope=EXCLUDE_SCOPE, start_dt=f.start_dt, end_dt=f.end_dt, users=[ids.email]),
+            page=None,
+            per_page=None,
         )
         assert users["avg_session_duration_ms"] == 672_000
     finally:
@@ -168,10 +174,16 @@ async def test_window_membership_still_follows_started_at(ids: _Ids):
         reader = PostgresCliAnalyticsReader(engine)
 
         inside = LocalAnalyticsFilter(
-            start_dt=_naive(t - timedelta(seconds=6)), end_dt=_naive(t + timedelta(hours=1)), users=[ids.email]
+            scope=EXCLUDE_SCOPE,
+            start_dt=_naive(t - timedelta(seconds=6)),
+            end_dt=_naive(t + timedelta(hours=1)),
+            users=[ids.email],
         )
         before = LocalAnalyticsFilter(
-            start_dt=_naive(t - timedelta(hours=1)), end_dt=_naive(t - timedelta(seconds=1)), users=[ids.email]
+            scope=EXCLUDE_SCOPE,
+            start_dt=_naive(t - timedelta(hours=1)),
+            end_dt=_naive(t - timedelta(seconds=1)),
+            users=[ids.email],
         )
         assert ids.session in {r["session_id"] for r in await reader.get_session_durations(inside)}
         assert ids.session not in {r["session_id"] for r in await reader.get_session_durations(before)}
@@ -186,7 +198,10 @@ async def test_range_without_otel_rows_is_the_hook_times(ids: _Ids):
     engine = await _get_engine()
     t = _hook_time()
     f = LocalAnalyticsFilter(
-        start_dt=_naive(t - timedelta(hours=1)), end_dt=_naive(t + timedelta(hours=1)), users=[ids.email]
+        scope=EXCLUDE_SCOPE,
+        start_dt=_naive(t - timedelta(hours=1)),
+        end_dt=_naive(t + timedelta(hours=1)),
+        users=[ids.email],
     )
     try:
         await _cleanup(engine, ids.hooks_only)
@@ -211,7 +226,9 @@ async def test_session_detail_reports_the_activity_range(ids: _Ids):
         await _cleanup(engine, ids.session)
         await _seed_session(engine, ids.session, ids.email, t, otel=True)
 
-        detail, _, _ = await LocalAnalyticsHandler(PostgresCliAnalyticsReader(engine)).get_session_detail(ids.session)
+        detail, _, _ = await LocalAnalyticsHandler(PostgresCliAnalyticsReader(engine)).get_session_detail(
+            ids.session, scope=DETAIL_SCOPE
+        )
 
         assert detail is not None
         start = datetime.fromisoformat(detail["start_time"])
@@ -236,7 +253,7 @@ async def test_session_detail_without_dims_starts_at_its_earliest_event(ids: _Id
             await conn.execute(_LOG_EVENTS_SQL, t + timedelta(seconds=30), ids.hooks_only)
 
         detail, _, _ = await LocalAnalyticsHandler(PostgresCliAnalyticsReader(engine)).get_session_detail(
-            ids.hooks_only
+            ids.hooks_only, scope=DETAIL_SCOPE
         )
 
         assert detail is not None
@@ -254,7 +271,10 @@ async def test_list_and_detail_agree_on_a_row_more_than_a_day_out(ids: _Ids):
     engine = await _get_engine()
     t = _hook_time()
     f = LocalAnalyticsFilter(
-        start_dt=_naive(t - timedelta(hours=1)), end_dt=_naive(t + timedelta(hours=1)), users=[ids.email]
+        scope=EXCLUDE_SCOPE,
+        start_dt=_naive(t - timedelta(hours=1)),
+        end_dt=_naive(t + timedelta(hours=1)),
+        users=[ids.email],
     )
     try:
         await _cleanup(engine, ids.session)
@@ -266,7 +286,7 @@ async def test_list_and_detail_agree_on_a_row_more_than_a_day_out(ids: _Ids):
 
         data, _, _ = await handler.get_sessions(f, page=0, per_page=50, sort_by="start_time", search=None)
         listed = next(s for s in data["sessions"] if s["trace_id"] == ids.session)
-        detail, _, _ = await handler.get_session_detail(ids.session)
+        detail, _, _ = await handler.get_session_detail(ids.session, scope=DETAIL_SCOPE)
 
         assert detail is not None
         assert datetime.fromisoformat(listed["start_time"]) == t - timedelta(seconds=12)
@@ -284,7 +304,10 @@ async def test_boundary_rows_at_exactly_cand_start_and_cand_end_do_not_widen_the
     engine = await _get_engine()
     t = _hook_time()
     f = LocalAnalyticsFilter(
-        start_dt=_naive(t - timedelta(hours=1)), end_dt=_naive(t + timedelta(hours=1)), users=[ids.email]
+        scope=EXCLUDE_SCOPE,
+        start_dt=_naive(t - timedelta(hours=1)),
+        end_dt=_naive(t + timedelta(hours=1)),
+        users=[ids.email],
     )
     try:
         await _cleanup(engine, ids.session)

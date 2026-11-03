@@ -95,6 +95,66 @@ class IngestGate(Protocol):
     def user_hash(self) -> str | None: ...
 
 
+@dataclass(frozen=True)
+class SessionBinding:
+    """The resolved destination of an evidence request (EPMCDME-16440), handed to the ingestor.
+
+    The owner is the authenticated sender (`user_email` of the ingest call). Under the per-session lock
+    the ingestor binds a session that has none to these values, or keeps an existing binding; the hook
+    rows of the request are stored under the effective binding. `subscription_type` is the billing class and
+    `project_origin == "personal"` the private scope: a Personal-paid binding with that origin is the owner's
+    personal project, which a session bound elsewhere never joins. A Personal-paid binding of a user type
+    without a personal project (external, service account) has a shared origin and a work project.
+    """
+
+    project_name: str
+    subscription_type: str
+    project_origin: str = ""
+    route_note: str = ""
+    client_subscription_type: str = ""
+    client_policy_version: str = ""
+
+
+# A gate that accepts an evidence request also hands over, in attributes set when it answers None, the
+# destination it chose (`binding`, a SessionBinding) and `validate_destination`: an async callable the
+# ingestor awaits under the session lock with the EFFECTIVE binding of each session whose project is not
+# the one the gate resolved (a bound or legacy project replaces the candidate). It answers a final discard
+# reason or None, and raises TelemetryStorageUnavailableError when the destination must be retried later. The
+# second argument is True for a session that is already bound: its project confirmed gone or inaccessible is a
+# final discard (`session_project_unavailable`), where an unbound session's is retried.
+DestinationValidator = Callable[["SessionBinding", bool], Awaitable[str | None]]
+
+
+# A gate that also has `resolve_session` lets the ingestor resolve the destination UNDER the session lock, once
+# the session's stored state is known: `(bound, legacy_project, hook_repo_remote)` -> the SessionBinding to
+# store under, or a final discard reason (a str). `bound` is the session's existing binding, else None;
+# `legacy_project` is the project of an unbound session's legacy rows. It raises
+# TelemetryStorageUnavailableError when the request must be retried. A bound session is validated against its
+# bound destination only: an unrelated candidate failure never discards it, and nothing is provisioned for a
+# request the session guard would discard.
+SessionResolver = Callable[["SessionBinding | None", "str | None", "str | None"], Awaitable["SessionBinding | str"]]
+
+# Session guard reasons (also the discard reasons of the ingest answer).
+REASON_OWNER_CONFLICT = "session_owner_conflict"
+REASON_PROJECT_CONFLICT = "session_project_conflict"
+REASON_SESSION_BOUNDARY = "evidence_session_conflict"
+
+
+def gate_resolver(gate: IngestGate | None) -> SessionResolver | None:
+    resolver = getattr(gate, "resolve_session", None)
+    return resolver if callable(resolver) else None
+
+
+def gate_binding(gate: IngestGate | None) -> "SessionBinding | None":
+    binding = getattr(gate, "binding", None)
+    return binding if isinstance(binding, SessionBinding) else None
+
+
+def gate_validator(gate: IngestGate | None) -> DestinationValidator | None:
+    validator = getattr(gate, "validate_destination", None)
+    return validator if callable(validator) else None
+
+
 def accepted_project(gate: IngestGate | None) -> str | None:
     """The stored name of the project the gate accepted the request for, None when it names none."""
     name = getattr(gate, "canonical_project", None)
@@ -116,8 +176,20 @@ class InvalidTelemetryPayloadError(TelemetryIngestError):
     """The body cannot be decoded or stored as sent; retrying the same body will not help."""
 
 
+class TelemetryPayloadTooLargeError(TelemetryIngestError):
+    """The request carries more distinct sessions than one request may lock (HTTP 413); nothing was stored."""
+
+
 class UnsupportedTelemetryContentTypeError(TelemetryIngestError):
     """The body's media type is not one the adapter can decode."""
+
+
+class StalePolicyError(TelemetryIngestError):
+    """The evidence request's classification policy is out of date (HTTP 409); nothing was stored."""
+
+    def __init__(self, policy_version: str) -> None:
+        super().__init__("stale_policy")
+        self.policy_version = policy_version
 
 
 class TelemetryStorageUnavailableError(TelemetryIngestError):
@@ -127,23 +199,51 @@ class TelemetryStorageUnavailableError(TelemetryIngestError):
 @runtime_checkable
 class CliTelemetryIngestor(Protocol):
     async def ingest_otlp(
-        self, signal: OtlpSignal, body: bytes, content_type: str, gate: IngestGate | None = None
+        self,
+        signal: OtlpSignal,
+        body: bytes,
+        content_type: str,
+        gate: IngestGate | None = None,
+        *,
+        user_email: str = "",
+        binding: SessionBinding | None = None,
+        evidence_session_id: str | None = None,
+        stale_policy_version: str | None = None,
     ) -> IngestResult:
         """Store one OTLP/HTTP export request (`application/x-protobuf` or `application/json`).
 
         A `gate` that answers a reason discards the request: nothing is stored and the answer is
         the OTLP success response whose partial_success reports the records sent and the reason.
+        `user_email` is the authenticated sender, checked against a bound session's owner (empty: not
+        checked); `binding` makes it an evidence request (see `SessionBinding`, requires `user_email`).
+        A session guard discard (`session_owner_conflict`, `session_project_conflict`) answers the same way.
+        `evidence_session_id` (evidence request, never blank: the route answers 400 for a missing id) is the one
+        session the request may carry: any other session id discards it as `evidence_session_conflict` before the
+        gate runs. The gate may supply the
+        `binding` and a destination validator itself (see `gate_binding`, `gate_validator`), or resolve it under
+        the session lock (`gate_resolver`). `stale_policy_version` set (the current version) answers
+        `StalePolicyError` after the session boundary check and before anything else (spec 4 order).
+        An evidence request without an authenticated sender email is discarded `session_owner_conflict`.
         """
         ...
 
     async def ingest_hook_events(
-        self, events: list[dict], user_email: str, received_at_ns: int, gate: IngestGate | None = None
+        self,
+        events: list[dict],
+        user_email: str,
+        received_at_ns: int,
+        gate: IngestGate | None = None,
+        *,
+        binding: SessionBinding | None = None,
+        evidence_session_id: str | None = None,
+        stale_policy_version: str | None = None,
     ) -> IngestResult:
         """Store plugin hook events parsed from `/event-hooks` NDJSON.
 
         `user_email` is the authenticated sender; `received_at_ns` stands in for a missing
         or unparseable event timestamp. A `gate` that answers a reason discards the events and the
-        answer is `{"accepted": 0, "dropped": N, "reason": ...}`.
+        answer is `{"accepted": 0, "dropped": N, "reason": ...}`; a session guard discard adds
+        `other_sessions_dropped`. `binding` as for `ingest_otlp`.
         """
         ...
 
@@ -156,7 +256,9 @@ class CliAnalyticsReader(Protocol):
 
     async def get_model_breakdown(self, f: LocalAnalyticsFilter) -> Rows: ...
 
-    async def get_session_model_costs(self, f: LocalAnalyticsFilter) -> Rows: ...
+    async def get_session_model_costs(self, f: LocalAnalyticsFilter, *, spend_only: bool = False) -> Rows: ...
+
+    async def get_class_lists(self, f: LocalAnalyticsFilter, by: str = "all") -> Rows: ...
 
     async def get_cost_by_user(self, f: LocalAnalyticsFilter) -> Rows: ...
 
@@ -184,7 +286,7 @@ class CliAnalyticsReader(Protocol):
 
     async def get_invocations(self, f: LocalAnalyticsFilter) -> Rows: ...
 
-    async def get_skill_names_by_session(self, session_ids: list[str]) -> Rows: ...
+    async def get_skill_names_by_session(self, session_ids: list[str], *, scope: Any) -> Rows: ...
 
     async def get_session_durations(self, f: LocalAnalyticsFilter) -> Rows: ...
 
@@ -216,16 +318,18 @@ class CliAnalyticsReader(Protocol):
         self, start: datetime, end: datetime, framework_labels: Sequence[str]
     ) -> list[tuple[str, str, str, int]]: ...
 
-    async def get_session_detail_meta(self, session_id: str) -> Rows: ...
+    async def authorize_session(self, session_id: str, scope: Any) -> bool: ...
 
-    async def get_session_detail_cost(self, session_id: str) -> Rows: ...
+    async def get_session_detail_meta(self, session_id: str, *, scope: Any) -> Rows: ...
 
-    async def get_session_detail_model_costs(self, session_id: str) -> Rows: ...
+    async def get_session_detail_cost(self, session_id: str, *, scope: Any) -> Rows: ...
 
-    async def get_session_detail_scalars(self, session_id: str) -> Rows: ...
+    async def get_session_detail_model_costs(self, session_id: str, *, scope: Any) -> Rows: ...
 
-    async def get_session_detail_tools(self, session_id: str) -> Rows: ...
+    async def get_session_detail_scalars(self, session_id: str, *, scope: Any) -> Rows: ...
 
-    async def get_session_detail_events(self, session_id: str) -> Rows: ...
+    async def get_session_detail_tools(self, session_id: str, *, scope: Any) -> Rows: ...
 
-    async def get_session_detail_dispatches(self, session_id: str) -> Rows: ...
+    async def get_session_detail_events(self, session_id: str, *, scope: Any) -> Rows: ...
+
+    async def get_session_detail_dispatches(self, session_id: str, *, scope: Any) -> Rows: ...

@@ -101,9 +101,12 @@ async def test_nothing_is_built_or_started_while_the_cli_analytics_feature_is_di
 
 
 def test_the_feature_flag_is_read_at_boot_because_it_cannot_change_at_runtime():
-    # start_cli_analytics_runtime checks features:cliAnalytics once. If the flag is ever declared a
-    # dynamic setting, the runtime must also be started when an admin switches the feature on.
-    assert by_component_id("features:cliAnalytics") is None
+    # start_cli_analytics_runtime checks the cliAnalytics on/off flag once, at boot. The component may
+    # declare other settings (classification, personal ingest), but if it ever declares the on/off flag
+    # as a dynamic field, the runtime must also be started when an admin switches the feature on.
+    declaration = by_component_id("features:cliAnalytics")
+    fields = {f.name.lower() for f in declaration.fields} if declaration else set()
+    assert "enabled" not in fields
 
 
 @pytest.mark.asyncio

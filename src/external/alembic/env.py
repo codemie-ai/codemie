@@ -116,6 +116,7 @@ from codemie.rest_api.models.agent_workspace import AgentWorkspace, AgentWorkspa
 from codemie.rest_api.a2a.types import Task
 from codemie.rest_api.models.deployment_version import DeploymentVersion
 from codemie.rest_api.models.scheduler_run import SchedulerRun  # noqa: F401
+from codemie.rest_api.models.repository_project_registration import RepositoryProjectRegistration  # noqa: F401
 
 target_metadata = SQLModel.metadata
 

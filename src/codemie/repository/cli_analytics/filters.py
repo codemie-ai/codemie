@@ -18,11 +18,13 @@ from __future__ import annotations
 
 import copy
 from datetime import datetime
+from typing import Any
 
 
 class LocalAnalyticsFilter:
     """Resolved query filters shared by every Local Analytics query.
 
+    `scope` (a ViewerScope) is mandatory and is enforced in the base conditions of the sessions CTE.
     `deny_all` selects no session at all. The router sets it for a project admin who
     administers no project, instead of an impossible project name: PostgreSQL rejects the
     NUL character the old sentinel relied on.
@@ -38,6 +40,10 @@ class LocalAnalyticsFilter:
         branch: str | None = None,
         deny_all: bool = False,
         project_unattributed: bool = False,
+        subscription_types: list[str] | None = None,
+        project_origins: list[str] | None = None,
+        *,
+        scope: Any,
     ) -> None:
         self.start_dt = start_dt
         self.end_dt = end_dt
@@ -48,6 +54,11 @@ class LocalAnalyticsFilter:
         self.deny_all = deny_all
         self.project_unattributed = project_unattributed
         self.session_ids: list[str] | None = None
+        # Response-vocabulary values (see scope.normalise_*); they only narrow, the scope still applies.
+        self.subscription_types = [v.strip().lower() for v in subscription_types or [] if v.strip()] or None
+        self.project_origins = [v.strip().lower() for v in project_origins or [] if v.strip()] or None
+        # Required, no default: the ViewerScope every list/aggregate is cut to. Absent or malformed denies all.
+        self.scope = scope
 
     def restricted_to(self, session_ids: list[str]) -> LocalAnalyticsFilter:
         """A copy that additionally requires `session_id` to be in `session_ids`. Every other filter stays in
@@ -58,7 +69,15 @@ class LocalAnalyticsFilter:
 
     @property
     def has_session_filter(self) -> bool:
-        return bool(self.deny_all or self.users or self.projects or self.repositories or self.project_unattributed)
+        return bool(
+            self.deny_all
+            or self.users
+            or self.projects
+            or self.repositories
+            or self.project_unattributed
+            or self.subscription_types
+            or self.project_origins
+        )
 
     def params(self) -> dict:
         p: dict = {"start_dt": self.start_dt, "end_dt": self.end_dt}
@@ -70,4 +89,8 @@ class LocalAnalyticsFilter:
             p["repositories"] = self.repositories
         if self.branch:
             p["branch"] = self.branch
+        if self.subscription_types:
+            p["subscription_types"] = self.subscription_types
+        if self.project_origins:
+            p["project_origins"] = self.project_origins
         return p

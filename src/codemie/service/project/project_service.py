@@ -47,6 +47,7 @@ from codemie.service.cost_center_service import cost_center_service
 from codemie.service.project import cli_analytics_policy
 from codemie.service.settings.settings import SettingsService
 from codemie.service.project.project_assignment_service import ProjectAssignmentService
+from codemie.service.project.repository_registration_service import RepositoryRegistrationRepository
 from codemie.service.user.authentication_service import invalidate_user_from_cache
 from codemie.service.llm_service.llm_service import llm_service
 
@@ -296,6 +297,10 @@ class ProjectService:
                 )
                 cls._validate_chargeback_attribution(session, effective_chargeback_attribution, resolved_cost_center_id)
 
+            if validated_name is not None and validated_name != project.name:
+                # Registrations are keyed by project name: they move with it, in this transaction.
+                cls._lock_project_or_404(session, project.name)
+                RepositoryRegistrationRepository.rename_project(session, project.name, validated_name)
             project = application_repository.update_project(
                 session,
                 project,
@@ -411,6 +416,13 @@ class ProjectService:
             raise ExtendedHTTPException(code=403, message=cls.ERRORS.ACCESS_DENIED)
 
         return project
+
+    @classmethod
+    def _lock_project_or_404(cls, session: Session, project_name: str) -> None:
+        """Lock the project row before touching its registrations, so a concurrent registration waits for this
+        transaction and then sees the project renamed or gone (the caller's commit releases the lock)."""
+        if RepositoryRegistrationRepository.lock_project(session, project_name) is None:
+            raise ExtendedHTTPException(code=404, message=cls.ERRORS.PROJECT_NOT_FOUND)
 
     @classmethod
     def _resolve_updated_name(cls, session: Session, project_name: str, name: str | None) -> str | None:
@@ -679,6 +691,8 @@ class ProjectService:
         affected_budget_ids = budget_repository.clear_project_on_deleted_budgets(session, project_name)
         affected_group_ids = project_budget_group_repository.clear_project_on_deleted_groups(session, project_name)
 
+        cls._lock_project_or_404(session, project_name)
+        RepositoryRegistrationRepository.delete_for_project(session, project_name)
         application_repository.delete_by_name(session, project_name)
         if creator_id is not None:
             user_project_repository.remove_project(session, creator_id, project_name)

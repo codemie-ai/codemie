@@ -296,15 +296,16 @@ async def test_an_earlier_copy_without_lines_does_not_hide_a_later_one_with_line
 
 
 @pytest.mark.asyncio
-async def test_a_lines_metric_ingest_waits_for_the_session_lock_and_another_metric_does_not() -> None:
-    sid = _session()
-    async with _live(sid) as live:
+async def test_a_lines_metric_ingest_waits_for_the_session_lock_and_another_session_does_not() -> None:
+    # Every ingest takes the lock of each of its sessions (EPMCDME-16440 spec 6c), so only another session's
+    # metric finishes while this session's lock is held.
+    sid, other = _session(), _session()
+    async with _live(sid, other) as live:
         key = live.engine.lock_key(f"ingest-session:{sid}")
         async with live.engine.acquire() as holder:
             await holder.execute("SELECT pg_advisory_lock($1)", key)
             try:
-                # Finishes while the lock is held: no lines point, so no lock is taken.
-                await asyncio.wait_for(live.metrics(_active_time_metric(sid, _TODAY)), timeout=30)
+                await asyncio.wait_for(live.metrics(_active_time_metric(other, _TODAY)), timeout=30)
                 ingest = asyncio.create_task(live.metrics(_lines_metric(sid, _TODAY, 7, 1)))
                 deadline = asyncio.get_running_loop().time() + 30
                 while not await holder.fetchval(_LOCK_WAITERS, key):

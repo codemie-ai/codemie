@@ -45,11 +45,19 @@ from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTrace
 
 from codemie.repository.cli_analytics.gate_discards import record_gate_discard
 from codemie.repository.cli_analytics.ports import (
+    REASON_OWNER_CONFLICT,
+    REASON_PROJECT_CONFLICT,
+    REASON_SESSION_BOUNDARY,
     IngestGate,
     IngestResult,
     OtlpSignal,
+    SessionBinding,
+    StalePolicyError,
     TelemetryStorageUnavailableError,
     accepted_project,
+    gate_binding,
+    gate_resolver,
+    gate_validator,
 )
 from codemie.repository.cli_analytics.postgres.dirty import RollupFamily, carries_lines, dirty_keys
 from codemie.repository.cli_analytics.postgres.engine import AnalyticsPgEngine
@@ -71,7 +79,27 @@ from codemie.repository.cli_analytics.postgres.otlp import (
     decode_otlp,
     json_text,
 )
+from codemie.repository.cli_analytics.postgres.session_binding import (
+    RECORD_KINDS,
+    SESSION_DISCARDS,
+    Sender,
+    SessionDiscard,
+    batch_sessions,
+    bind,
+    check_boundary,
+    check_owner,
+    check_session_count,
+    guard,
+    hook_repo_remote,
+    lock_and_read,
+    log_discard,
+    stamped,
+    stored_binding,
+    validate_effective,
+)
 from codemie.repository.cli_analytics.vocabulary import LINES_METRICS
+
+__all__ = ["REASON_OWNER_CONFLICT", "REASON_PROJECT_CONFLICT", "REASON_SESSION_BOUNDARY", "SESSION_DISCARDS"]
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +114,7 @@ _KNOWN_RESOURCES_LIMIT = 50_000
 # (class 22) or one too large for an index row (54000). Not class 23: "no partition for the
 # row" means the partitions are missing, which the next maintenance run repairs.
 _REJECTED_CONTENT = (asyncpg.DataError, asyncpg.exceptions.ProgramLimitExceededError)
-_RECORD_KINDS = ("logs", "hooks", "usage", "spans", "metrics")
+_RECORD_KINDS = RECORD_KINDS
 # Failed attempts a request may spend isolating rejected records. Past them the request answers
 # 503: what it stored or rejected stays, and the plugin's re-send carries on from there (the
 # ledger skips both). A 2xx would lose the rest, as the plugin deletes its spool on any 2xx.
@@ -175,9 +203,6 @@ ORDER BY d, h
 ON CONFLICT DO NOTHING
 RETURNING day, h"""
 
-# Sorted, so two batches sharing sessions take their locks in one order and cannot deadlock.
-_SESSION_LOCKS_SQL = "SELECT pg_advisory_xact_lock(k) FROM unnest($1::bigint[]) AS k ORDER BY k"
-
 # Of these sessions, those that already take their lines from stored agent.tool.end hook events.
 _LINES_SOURCE_SQL = """
 SELECT s FROM unnest($1::text[]) AS s
@@ -211,6 +236,25 @@ ORDER BY d, s
 ON CONFLICT (day, session_id) DO UPDATE
     -- marked_at stays: a key keeps its place in the queue however often it is marked again
     SET kinds = r.kinds | EXCLUDED.kinds, version = r.version + 1"""
+
+
+def _raise_if_stale(policy_version: str | None) -> None:
+    """Spec 4: after the session boundary and before anything else, a stale policy answers 409."""
+    if policy_version is not None:
+        raise StalePolicyError(policy_version)
+
+
+def _sender(
+    gate: IngestGate | None, user_email: str, binding: SessionBinding | None, evidence_session_id: str | None
+) -> Sender:
+    """Who writes and how the destination is decided. An evidence request needs a sender that can own the
+    binding: a missing sender email is a final discard, never a skipped owner check."""
+    resolve = gate_resolver(gate)
+    binding = binding or gate_binding(gate)
+    evidence = binding is not None or resolve is not None
+    if evidence and not user_email:
+        raise SessionDiscard(REASON_OWNER_CONFLICT, evidence_session_id or "", 0)
+    return Sender(user_email, binding, gate_validator(gate), resolve, evidence, accepted_project(gate))
 
 
 def _columns(rows: Sequence[tuple]) -> list[list[Any]]:
@@ -361,28 +405,67 @@ class PostgresTelemetryIngestor:
         self._known_resources: dict[int, date] = {}  # resource id -> the day this process stored it
 
     async def ingest_otlp(
-        self, signal: OtlpSignal, body: bytes, content_type: str, gate: IngestGate | None = None
+        self,
+        signal: OtlpSignal,
+        body: bytes,
+        content_type: str,
+        gate: IngestGate | None = None,
+        *,
+        user_email: str = "",
+        binding: SessionBinding | None = None,
+        evidence_session_id: str | None = None,
+        stale_policy_version: str | None = None,
     ) -> IngestResult:
         batch = await self._decode(lambda: decode_otlp(signal, body, content_type), len(body))
-        if gate is not None and (reason := await gate(frozenset(batch.explicit_projects))):
-            record_gate_discard("otlp", reason, batch.wire_count, gate.user_hash, batch.session_ids())
-            return _otlp_result(signal, content_type, batch.wire_count, 0, reason)
-        stored, rejected = await self._store(_attributed_to(batch, accepted_project(gate)))
+        try:
+            check_boundary(batch, evidence_session_id)
+            check_session_count(batch)
+            _raise_if_stale(stale_policy_version)
+            if gate is not None and (reason := await gate(frozenset(batch.explicit_projects))):
+                record_gate_discard("otlp", reason, batch.wire_count, gate.user_hash, batch.session_ids())
+                return _otlp_result(signal, content_type, batch.wire_count, 0, reason)
+            sender = _sender(gate, user_email, binding, evidence_session_id)
+            stored, rejected = await self._store(_attributed_to(batch, accepted_project(gate)), sender)
+        except SessionDiscard as exc:
+            log_discard(exc, batch.wire_count)
+            return _otlp_result(signal, content_type, batch.wire_count, 0, exc.reason)
         return _otlp_result(signal, content_type, rejected, stored)
 
     async def ingest_hook_events(
-        self, events: list[dict], user_email: str, received_at_ns: int, gate: IngestGate | None = None
+        self,
+        events: list[dict],
+        user_email: str,
+        received_at_ns: int,
+        gate: IngestGate | None = None,
+        *,
+        binding: SessionBinding | None = None,
+        evidence_session_id: str | None = None,
+        stale_policy_version: str | None = None,
     ) -> IngestResult:
         decode = lambda: decode_hook_events(events, user_email, received_at_ns)  # noqa: E731
         if len(events) > self._decode_in_thread_above_events:
             batch = await asyncio.to_thread(decode)
         else:
             batch = decode()
-        if gate is not None and (reason := await gate(frozenset(batch.explicit_projects))):
-            record_gate_discard("hooks", reason, batch.wire_count, gate.user_hash, batch.session_ids())
-            discarded = {"accepted": 0, "dropped": batch.wire_count, "reason": reason}
+        try:
+            check_boundary(batch, evidence_session_id)
+            check_session_count(batch)
+            _raise_if_stale(stale_policy_version)
+            if gate is not None and (reason := await gate(frozenset(batch.explicit_projects))):
+                record_gate_discard("hooks", reason, batch.wire_count, gate.user_hash, batch.session_ids())
+                discarded = {"accepted": 0, "dropped": batch.wire_count, "reason": reason}
+                return IngestResult(body=json_text(discarded).encode(), media_type=JSON_MEDIA_TYPE, accepted=0)
+            sender = _sender(gate, user_email, binding, evidence_session_id)
+            stored, _rejected = await self._store(_attributed_to(batch, accepted_project(gate)), sender)
+        except SessionDiscard as exc:
+            log_discard(exc, batch.wire_count)
+            discarded = {
+                "accepted": 0,
+                "dropped": batch.wire_count,
+                "reason": exc.reason,
+                "other_sessions_dropped": exc.other_sessions,
+            }
             return IngestResult(body=json_text(discarded).encode(), media_type=JSON_MEDIA_TYPE, accepted=0)
-        stored, _rejected = await self._store(_attributed_to(batch, accepted_project(gate)))
         return IngestResult(body=b"{}", media_type=JSON_MEDIA_TYPE, accepted=stored)
 
     async def _decode(self, decode: Callable[[], DecodedBatch], size: int) -> DecodedBatch:
@@ -390,7 +473,9 @@ class PostgresTelemetryIngestor:
             return await asyncio.to_thread(decode)
         return decode()
 
-    async def _store(self, batch: DecodedBatch, attempts: list[int] | None = None) -> tuple[int, int]:
+    async def _store(
+        self, batch: DecodedBatch, sender: Sender = Sender(), attempts: list[int] | None = None
+    ) -> tuple[int, int]:
         """Store the batch; returns how many records were stored and how many were rejected.
 
         A batch the database rejects for its content is split in halves until the record at
@@ -405,7 +490,7 @@ class PostgresTelemetryIngestor:
             )
             raise TelemetryStorageUnavailableError("Isolating records the storage rejects, retry later")
         try:
-            return await self._store_once(batch), 0
+            return await self._store_once(batch, sender), 0
         except _REJECTED_CONTENT as exc:
             attempts = attempts or [_ISOLATION_ATTEMPTS]
             attempts[0] -= 1
@@ -413,8 +498,8 @@ class PostgresTelemetryIngestor:
                 await self._reject(batch, exc)
                 return 0, 1
             first, second = _halves(batch)
-            stored_first, rejected_first = await self._store(first, attempts)
-            stored_second, rejected_second = await self._store(second, attempts)
+            stored_first, rejected_first = await self._store(first, sender, attempts)
+            stored_second, rejected_second = await self._store(second, sender, attempts)
             return stored_first + stored_second, rejected_first + rejected_second
 
     async def _reject(self, batch: DecodedBatch, error: asyncpg.PostgresError) -> None:
@@ -452,10 +537,28 @@ class PostgresTelemetryIngestor:
             logger.error("cli_analytics: ingest failed: %s: %s", type(exc).__name__, exc)
             raise TelemetryStorageUnavailableError("Analytics storage unavailable") from exc
 
-    async def _store_once(self, batch: DecodedBatch) -> int:
+    async def _store_once(self, batch: DecodedBatch, sender: Sender = Sender()) -> int:
         keys = sorted({(row.day, row.h) for kind in _RECORD_KINDS for row in getattr(batch, kind)})
         today = self._today()
+        user_email, binding = sender.user_email, sender.binding
+        sessions = batch_sessions(batch)
         async with self._transaction() as conn:
+            if sessions:
+                # Every session of the batch, before anything else (see lock_and_read).
+                dims = await lock_and_read(conn, self._lock_keys(sessions), sessions, sender.evidence)
+                check_owner(sessions, dims, user_email)
+                if sender.resolve is not None:
+                    # The destination is chosen here, with the session's stored state in hand (spec 6b).
+                    row = dims.get(sessions[0]) or {}
+                    legacy, remote = row.get("legacy_project"), hook_repo_remote(batch)
+                    outcome = await sender.resolve(stored_binding(row), legacy, remote)
+                    if isinstance(outcome, str):
+                        raise SessionDiscard(outcome, sessions[0], len(sessions) - 1)
+                    binding = outcome
+                effective, to_bind, bound = guard(batch, sessions, dims, user_email, binding, sender.request_project)
+                await validate_effective(effective, binding, sender.validate, len(sessions), bound)
+                batch = stamped(batch, effective)
+                await bind(conn, effective, to_bind, bound, user_email)
             # The ledger first: a re-sent record (stored, or rejected before) brings nothing else.
             fresh_keys = await conn.fetch(_LEDGER_SQL, [k[0] for k in keys], [k[1] for k in keys])
             stored = _keep_fresh(batch, {(r["day"], r["h"]) for r in fresh_keys})
@@ -470,24 +573,15 @@ class PostgresTelemetryIngestor:
             marks = dirty_keys(stored)
             forks = named_subagent_ids(stored.hooks)
             starts = keyed_subagent_starts(stored.hooks)
-            await self._lock_sessions(conn, stored, forks, starts, lines_sessions)
             await _mark_subagent_days(conn, marks, forks, starts)
             await self._mark_lines_days(conn, stored, marks, switching, today)
             await _write_dirty(conn, marks)
         self._remember((rid for rid, *_ in new_resources), today)
         return stored.record_count
 
-    async def _lock_sessions(
-        self, conn: asyncpg.Connection, stored: DecodedBatch, forks, starts, lines_sessions: list[str]
-    ) -> None:
-        # A lines metric point waits for a running lines lookup of its session, so that lookup's batch
-        # commits first and this point's day is recomputed with its hook lines in view.
-        metric_lines = {m.session_id for m in stored.metrics if m.session_id and m.metric_name in LINES_METRICS}
-        if sessions := {s for s, _ in forks} | {s for s, _, _ in starts} | set(lines_sessions) | metric_lines:
-            # Of two batches of one session the second to reach this lock waits for the first to commit,
-            # so its lookups below see the other's rows and re-queue the day the other made stale.
-            lock_keys = sorted(self._engine.lock_key(f"ingest-session:{s}") for s in sessions)
-            await conn.execute(_SESSION_LOCKS_SQL, lock_keys)
+    def _lock_keys(self, sessions: list[str]) -> list[int]:
+        # Sorted keys (see _SESSION_LOCKS_SQL). Costs one statement and one session_dims lookup per request.
+        return sorted(self._engine.lock_key(f"ingest-session:{s}") for s in sessions)
 
     async def _mark_lines_days(
         self, conn: asyncpg.Connection, stored: DecodedBatch, marks: dict[tuple, int], switching: list[str], today: date

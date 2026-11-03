@@ -23,6 +23,7 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+from codemie.repository.cli_analytics.scope import ViewerScope
 from codemie.service.usage_attribution.constants import PG_FRAMEWORK_TIMEOUT_S, PG_SKILL_NAMES_TIMEOUT_S
 
 if TYPE_CHECKING:
@@ -95,7 +96,11 @@ async def skill_names_by_session(reader: CliAnalyticsReader | None, session_ids:
     if reader is None:
         return {}
     try:
-        rows = await asyncio.wait_for(reader.get_skill_names_by_session(list(session_ids)), PG_SKILL_NAMES_TIMEOUT_S)
+        # Internal cross-project attribution may read shared sessions, never another owner's private sessions.
+        scope = ViewerScope(None, True, frozenset(), "detail")
+        rows = await asyncio.wait_for(
+            reader.get_skill_names_by_session(list(session_ids), scope=scope), PG_SKILL_NAMES_TIMEOUT_S
+        )
     except Exception as exc:  # noqa: BLE001 - the person view degrades to the Elasticsearch keys
         logger.warning("Postgres skill names unavailable for the person view: %s", type(exc).__name__)
         return {}

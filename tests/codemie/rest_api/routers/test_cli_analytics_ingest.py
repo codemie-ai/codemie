@@ -59,10 +59,23 @@ class RecordingIngestor:
         self.hook_calls: list[tuple[list[dict[str, Any]], str, int]] = []
         self.error: Exception | None = None
         self.gates: list[Any] = []  # the gate each call received
+        self.senders: list[str] = []  # the authenticated sender each OTLP call received
         self.run_gate = False  # call the gate first, as the real ingestor does
 
-    async def ingest_otlp(self, signal: OtlpSignal, body: bytes, content_type: str, gate: Any = None) -> IngestResult:
+    async def ingest_otlp(
+        self,
+        signal: OtlpSignal,
+        body: bytes,
+        content_type: str,
+        gate: Any = None,
+        *,
+        user_email: str = "",
+        binding: Any = None,
+        evidence_session_id: str | None = None,
+        stale_policy_version: str | None = None,
+    ) -> IngestResult:
         self.otlp_calls.append((signal, body, content_type))
+        self.senders.append(user_email)
         self.gates.append(gate)
         if self.run_gate:
             await gate(frozenset())
@@ -71,7 +84,15 @@ class RecordingIngestor:
         return IngestResult()
 
     async def ingest_hook_events(
-        self, events: list[dict[str, Any]], user_email: str, received_at_ns: int, gate: Any = None
+        self,
+        events: list[dict[str, Any]],
+        user_email: str,
+        received_at_ns: int,
+        gate: Any = None,
+        *,
+        binding: Any = None,
+        evidence_session_id: str | None = None,
+        stale_policy_version: str | None = None,
     ) -> IngestResult:
         self.hook_calls.append((events, user_email, received_at_ns))
         self.gates.append(gate)

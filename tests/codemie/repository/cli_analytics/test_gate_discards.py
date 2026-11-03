@@ -15,7 +15,6 @@
 """Gate discards are visible (EPMCDME-16441): one log line per discarded request."""
 
 import logging
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -23,6 +22,7 @@ import pytest
 from codemie.repository.cli_analytics.gate_discards import record_gate_discard
 from codemie.repository.cli_analytics.postgres import ingestor as ingestor_module
 from codemie.repository.cli_analytics.postgres.ingestor import PostgresTelemetryIngestor
+from codemie.repository.cli_analytics.postgres.otlp import DecodedBatch
 
 REASONS = ("cli_analytics_disabled", "project_context_required", "project_context_conflict")
 LOGGER = "codemie.repository.cli_analytics.gate_discards"
@@ -50,8 +50,15 @@ def _gate(reason: str | None, user_hash: str | None = "abcd1234abcd1234"):
     return gate
 
 
-def _batch(wire_count: int = 3, session_ids=lambda: set()):
-    return SimpleNamespace(wire_count=wire_count, explicit_projects=set(), session_ids=session_ids)
+class _NoSessionIdsBatch(DecodedBatch):
+    """A real decoded batch whose logging-only `session_ids` fails when read."""
+
+    def session_ids(self) -> set[str]:
+        raise AssertionError("session ids read on the accepted path")
+
+
+def _batch(wire_count: int = 3, cls: type[DecodedBatch] = DecodedBatch) -> DecodedBatch:
+    return cls(wire_count=wire_count)
 
 
 @pytest.mark.parametrize("route", ["otlp", "hooks"])
@@ -98,13 +105,10 @@ async def test_accepted_request_logs_nothing(caplog):
 
 @pytest.mark.asyncio
 async def test_accepted_request_never_reads_the_session_ids():
-    def boom():
-        raise AssertionError("session ids read on the accepted path")
-
     ingestor = PostgresTelemetryIngestor(MagicMock())
     ingestor._store = MagicMock(side_effect=lambda *_a, **_k: _done((1, 0)))
     with (
-        patch.object(ingestor_module, "decode_hook_events", return_value=_batch(1, session_ids=boom)),
+        patch.object(ingestor_module, "decode_hook_events", return_value=_batch(1, _NoSessionIdsBatch)),
         patch.object(ingestor_module, "_attributed_to", side_effect=lambda b, _p: b),
     ):
         await ingestor.ingest_hook_events([{}], "u@example.com", 0, gate=_gate(None))

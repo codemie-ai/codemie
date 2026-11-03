@@ -312,12 +312,12 @@ async def test_discarded_request_logs_the_user_hash(lookup):
     from codemie.repository.cli_analytics import gate_discards
     from codemie.repository.cli_analytics.postgres import ingestor as ingestor_module
     from codemie.repository.cli_analytics.postgres.ingestor import PostgresTelemetryIngestor
-    from types import SimpleNamespace
+    from codemie.repository.cli_analytics.postgres.otlp import DecodedBatch
 
     lookup.return_value = app(enabled=False)
     gate = build_ingest_gate(make_user(**MEMBER), "Proj-A")
     ingestor = PostgresTelemetryIngestor(object())
-    batch = SimpleNamespace(wire_count=2, explicit_projects=set(), session_ids=lambda: set())
+    batch = DecodedBatch(wire_count=2)
     with (
         patch.object(config, "CLI_ANALYTICS_LOG_HMAC_KEY", HMAC_KEY),
         patch.object(gate_discards, "logger") as log,

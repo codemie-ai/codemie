@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from tests.codemie.repository.cli_analytics.support.scopes import EXCLUDE_SCOPE
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
 
 START = datetime(2026, 9, 1)
@@ -23,7 +24,7 @@ END = datetime(2026, 9, 8)
 
 
 def _flt(**kwargs) -> LocalAnalyticsFilter:
-    return LocalAnalyticsFilter(start_dt=START, end_dt=END, **kwargs)
+    return LocalAnalyticsFilter(scope=EXCLUDE_SCOPE, start_dt=START, end_dt=END, **kwargs)
 
 
 def test_deny_all_defaults_to_false():
@@ -84,3 +85,15 @@ def test_params_drop_projects_when_project_unattributed():
     params = _flt(projects=["p1"], project_unattributed=True).params()
 
     assert "projects" not in params
+
+
+def test_params_carry_subscription_types_and_project_origins_lowercased_also_via_copy():
+    import copy
+
+    f = _flt(subscription_types=["Corporate", " unknown "], project_origins=["NONE"])
+
+    assert f.params()["subscription_types"] == ["corporate", "unknown"]
+    assert f.params()["project_origins"] == ["none"]
+    assert copy.copy(f).params() == f.params()
+    assert "subscription_types" not in _flt().params()
+    assert f.has_session_filter is True

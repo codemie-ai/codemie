@@ -24,6 +24,13 @@ from codemie.core.models import Application
 from codemie.service.project.project_service import ProjectService
 
 
+@pytest.fixture(autouse=True)
+def _registrations():
+    """These tests mock the session; registrations follow the project lifecycle in test_project_registration_lifecycle."""
+    with patch("codemie.service.project.project_service.RepositoryRegistrationRepository"):
+        yield
+
+
 # ---------------------------------------------------------------------------
 # Helpers / shared fixtures
 # ---------------------------------------------------------------------------

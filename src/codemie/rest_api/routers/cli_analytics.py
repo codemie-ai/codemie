@@ -55,21 +55,23 @@ from fastapi.responses import JSONResponse
 
 from codemie.configs.config import config
 from codemie.configs.customer_config import customer_config
-from codemie.core.constants import HEADER_CODEMIE_CLI_PROJECT
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.repository.cli_analytics.factory import get_cli_analytics_storage
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
+from codemie.repository.cli_analytics.scope import ViewerScope
 from codemie.repository.cli_analytics.hook_events import datetime_to_ns
 from codemie.repository.cli_analytics.ports import (
-    IngestGate,
     IngestResult,
     InvalidTelemetryPayloadError,
     OtlpSignal,
     CliAnalyticsStorageConfigError,
+    StalePolicyError,
     TelemetryIngestError,
+    TelemetryPayloadTooLargeError,
     TelemetryStorageUnavailableError,
     UnsupportedTelemetryContentTypeError,
 )
+from codemie.service.analytics.cli_classification import ORGANIZATION_ENCODING, policy_version
 from codemie.rest_api.models.cli_analytics import (
     LocalAnalyticsActivityResponse,
     LocalAnalyticsCostResponse,
@@ -82,9 +84,9 @@ from codemie.rest_api.models.cli_analytics import (
     LocalAnalyticsToolsResponse,
     LocalAnalyticsUsersResponse,
 )
+from codemie.rest_api.routers.cli_analytics_ingest_route import IngestRoute, corporate_organizations
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
-from codemie.service.analytics.access_filter import AccessFilter
 from codemie.service.analytics.cli_analytics_project_gate import build_ingest_gate
 from codemie.service.analytics.delivery_framework import get_framework_labels
 from codemie.service.analytics.handlers.cli_analytics_handler import LocalAnalyticsHandler, now_iso
@@ -107,6 +109,7 @@ _PROTOBUF_CONTENT_TYPE = "application/x-protobuf"
 _INGEST_ERROR_STATUS: dict[type[TelemetryIngestError], int] = {
     InvalidTelemetryPayloadError: status.HTTP_400_BAD_REQUEST,
     UnsupportedTelemetryContentTypeError: status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+    TelemetryPayloadTooLargeError: 413,
     TelemetryStorageUnavailableError: status.HTTP_503_SERVICE_UNAVAILABLE,
 }
 
@@ -114,6 +117,16 @@ _INGEST_ERROR_STATUS: dict[type[TelemetryIngestError], int] = {
 def _handler() -> LocalAnalyticsHandler:
     """The handler over the configured storage's reader (the storage is built on first use)."""
     return LocalAnalyticsHandler(get_cli_analytics_storage().reader)
+
+
+def viewer_access(user: User) -> tuple[bool, frozenset[str]]:
+    """(unrestricted, admin projects) under the CLI privilege policy, the one `_admin_gate` and `/sessions` use.
+
+    Only a super admin is unrestricted and only the user's own admin projects widen the scope. The shared
+    `AccessFilter` also treats an auditor as unrestricted (and drops their admin projects), which would let an
+    auditor read other users' shared sessions here although they cannot list them.
+    """
+    return bool(user.is_admin), frozenset(user.admin_project_names or [])
 
 
 async def _admin_gate(request: Request, _: User = Depends(authenticate)) -> None:
@@ -148,9 +161,23 @@ def _ensure_enabled() -> None:
         )
 
 
-def _project_gate(request: Request) -> IngestGate:
-    """Discards what the sender's project (X-CodeMie-Project) does not allow to store."""
-    return build_ingest_gate(request.state.user, request.headers.get(HEADER_CODEMIE_CLI_PROJECT))
+@router.get("/classification-policy", summary="CLI analytics classification policy")
+async def classification_policy() -> dict[str, Any]:
+    _ensure_enabled()
+    orgs = corporate_organizations()
+    # `organization_encodings` is optional and not part of the version: a client that sends the encoded organization
+    # header must see it here first (the support of one instance does not prove all instances are upgraded).
+    return {"organizations": orgs, "version": policy_version(orgs), "organization_encodings": [ORGANIZATION_ENCODING]}
+
+
+def _ingest_route(request: Request) -> IngestRoute:
+    return IngestRoute(request, build_ingest_gate)  # the builder is passed in, so tests patch it here
+
+
+def _stale_response(exc: StalePolicyError) -> Response:
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT, content={"reason": "stale_policy", "policy_version": exc.policy_version}
+    )
 
 
 def _ingest_response(result: IngestResult) -> Response:
@@ -167,10 +194,19 @@ async def _ingest_otlp(request: Request, signal: OtlpSignal) -> Response:
     if len(body) > config.ANALYTICS_INGEST_MAX_BODY_BYTES:
         raise HTTPException(status_code=413, detail=_ERR_BODY_TOO_LARGE)
     content_type = request.headers.get("content-type", _PROTOBUF_CONTENT_TYPE)
+    route = _ingest_route(request)
     try:
         result = await get_cli_analytics_storage().ingestor.ingest_otlp(
-            signal, body, content_type, gate=_project_gate(request)
+            signal,
+            body,
+            content_type,
+            gate=route.gate,
+            user_email=route.sender,
+            evidence_session_id=route.evidence_session_id,
+            stale_policy_version=route.stale_policy_version,
         )
+    except StalePolicyError as exc:
+        return _stale_response(exc)
     except TelemetryIngestError as exc:
         raise _ingest_http_error(exc) from exc
     except CliAnalyticsStorageConfigError as exc:  # retried by the client until the configuration is fixed
@@ -262,6 +298,14 @@ class FilterParams:
         users: str | None = Query(None, description="Comma-separated CodeMie user IDs or emails"),
         projects: str | None = Query(None, description="Comma-separated CodeMie project names"),
         repositories: str | None = Query(None, description="Comma-separated repository names"),
+        subscription_type: str | None = Query(
+            None, description="Comma-separated subscription types (codemie, corporate, personal, unknown, other)"
+        ),
+        project_origin: str | None = Query(
+            None,
+            description="Comma-separated project origins (personal, linked_folder, profile, "
+            "registered_repository, default_project, legacy_project, none, other)",
+        ),
     ) -> None:
         self.time_period = time_period
         self.start_date = to_utc(start_date) if start_date else None
@@ -269,6 +313,8 @@ class FilterParams:
         self.users = users
         self.projects = projects
         self.repositories = repositories
+        self.subscription_type = subscription_type
+        self.project_origin = project_origin
 
     @staticmethod
     def _split(value: str | None) -> list[str] | None:
@@ -278,6 +324,20 @@ class FilterParams:
         return items or None
 
     async def resolve(self, user: User, project_unattributed: bool = False) -> LocalAnalyticsFilter:
+        return await self._resolve(user, project_unattributed, own_only=False)
+
+    async def resolve_sessions(
+        self, user: User, project_unattributed: bool = False, personal_only: bool = False
+    ) -> LocalAnalyticsFilter:
+        """The `/sessions` variant: the viewer's own Personal sessions only (never widened) or today's scope.
+
+        An ordinary non-admin is always own_only; an admin is own_only when `personal_only` is set, and then
+        projects, users and is_project_unattributed are ignored. Other filters only narrow.
+        """
+        privileged = user.is_admin or user.is_applications_admin
+        return await self._resolve(user, project_unattributed, own_only=personal_only or not privileged)
+
+    async def _resolve(self, user: User, project_unattributed: bool, *, own_only: bool) -> LocalAnalyticsFilter:
         start_dt, end_dt = TimeParser.parse(self.time_period, self.start_date, self.end_date)
 
         # Raw rows are kept for less time than the rollups. A longer window would mix a year of
@@ -305,16 +365,19 @@ class FilterParams:
 
         projects = self._split(self.projects)
         deny_all = False
-        ctx = AccessFilter(user).get_project_access_context()
-        if not ctx.is_admin:
-            visible = set(ctx.admin_projects)
+        unrestricted, admin_projects = viewer_access(user)
+        if own_only:
+            # The scope's owner match is the restriction; no project/user selector may apply on top of it.
+            emails, projects, project_unattributed = None, None, False
+        elif not unrestricted:
+            visible = set(admin_projects)
             projects = list(set(projects) & visible) if projects else list(visible)
             # No visible admin project: select nothing rather than all data.
             deny_all = not projects
-        if project_unattributed:
+        if project_unattributed and not own_only:
             # Sessions without a project are visible to super admins only.
             projects = None
-            deny_all = deny_all or not ctx.is_admin
+            deny_all = deny_all or not unrestricted
 
         return LocalAnalyticsFilter(
             start_dt=start_dt,
@@ -324,6 +387,15 @@ class FilterParams:
             repositories=self._split(self.repositories),
             deny_all=deny_all,
             project_unattributed=project_unattributed,
+            subscription_types=self._split(self.subscription_type),
+            project_origins=self._split(self.project_origin),
+            # Shared aggregates and lists never include Personal sessions; only /sessions can be own_only.
+            scope=ViewerScope(
+                viewer_email=user.email,
+                unrestricted=unrestricted,
+                admin_projects=admin_projects,
+                mode="own_only" if own_only else "exclude",
+            ),
         )
 
 
@@ -384,12 +456,18 @@ async def ingest_event_hooks(request: Request) -> Response:
     if not events:
         raise HTTPException(status_code=400, detail="No parseable events")
     now_ns = datetime_to_ns(datetime.now(timezone.utc))
-    user = getattr(request.state, "user", None)
-    user_email = user.email if user and user.email else ""
+    route = _ingest_route(request)
     try:
         result = await get_cli_analytics_storage().ingestor.ingest_hook_events(
-            events, user_email, now_ns, gate=_project_gate(request)
+            events,
+            route.sender,
+            now_ns,
+            gate=route.gate,
+            evidence_session_id=route.evidence_session_id,
+            stale_policy_version=route.stale_policy_version,
         )
+    except StalePolicyError as exc:
+        return _stale_response(exc)
     except TelemetryIngestError as exc:
         raise _ingest_http_error(exc) from exc
     except CliAnalyticsStorageConfigError as exc:
@@ -606,7 +684,6 @@ async def get_frameworks(user: User = Depends(authenticate)) -> JSONResponse:
     "/sessions",
     response_model=LocalAnalyticsSessionsResponse,
     summary="Local analytics session list",
-    dependencies=[Depends(_admin_gate)],
 )
 @handle_errors("local analytics sessions")
 async def get_sessions(
@@ -620,10 +697,14 @@ async def get_sessions(
     is_unattributed: bool = Query(False, description="Return only sessions with no attributed repository"),
     branch: str | None = Query(None, description="Filter sessions by branch name"),
     is_project_unattributed: bool = Query(False, description="Return only sessions with no project"),
+    personal_only: bool = Query(
+        False, description="Return only the caller's own Personal sessions (always on for non-admins)"
+    ),
 ) -> JSONResponse:
+    # No _admin_gate: any authenticated user may list; a non-admin is forced to own Personal by the scope.
     _ensure_enabled()
     start_ns = time.monotonic_ns()
-    f = await filters.resolve(user, project_unattributed=is_project_unattributed)
+    f = await filters.resolve_sessions(user, is_project_unattributed, personal_only)
     resolved_page = page if page is not None else DEFAULT_PAGE
     resolved_per_page = per_page if per_page is not None else DEFAULT_PER_PAGE
     data, pricer, data_as_of = await _handler().get_sessions(
@@ -637,17 +718,25 @@ async def get_sessions(
     "/sessions/{trace_id}",
     response_model=LocalAnalyticsSessionDetailResponse,
     summary="Local analytics session detail",
-    dependencies=[Depends(_admin_gate)],
 )
 @handle_errors("local analytics session detail")
 async def get_session_detail(
     user: User = Depends(authenticate),
     trace_id: str = Path(..., description="Session id"),
 ) -> JSONResponse:
+    # No _admin_gate: the reader's detail predicate lets a non-admin see only their own Personal session.
     # An unavailable ClickHouse is indistinguishable from a missing trace here; preserve the 404 contract.
     _ensure_enabled()
     start_ns = time.monotonic_ns()
-    detail, unpriced, catalog_source = await _handler().get_session_detail(trace_id)
+    # Authorization comes first (one cheap read, no existence leak): the owner of a Personal session,
+    # or an admin allowed to see the non-Personal session's project. Nothing is fetched before it.
+    unrestricted, admin_projects = viewer_access(user)
+    scope = ViewerScope(
+        viewer_email=user.email, unrestricted=unrestricted, admin_projects=admin_projects, mode="detail"
+    )
+    detail = None
+    if await get_cli_analytics_storage().reader.authorize_session(trace_id, scope):
+        detail, unpriced, catalog_source = await _handler().get_session_detail(trace_id, scope=scope)
     if detail is None:
         raise ExtendedHTTPException(
             code=status.HTTP_404_NOT_FOUND,
@@ -655,20 +744,6 @@ async def get_session_detail(
             details=f"No session found with trace_id={trace_id!r}.",
             help="Check that the trace_id is correct.",
         )
-
-    # Project scoping: a project admin may only open sessions from projects they administer.
-    ctx = AccessFilter(user).get_project_access_context()
-    if not ctx.is_admin:
-        visible = set(ctx.admin_projects)
-        rows = await get_cli_analytics_storage().reader.get_session_detail_meta(trace_id)
-        project = str(rows[0].get("project_name") or "") if rows else ""
-        if project not in visible:
-            raise ExtendedHTTPException(
-                code=status.HTTP_404_NOT_FOUND,
-                message="Session not found",
-                details=f"No session found with trace_id={trace_id!r}.",
-                help="Check that the trace_id is correct.",
-            )
 
     metadata = {
         "timestamp": now_iso(),

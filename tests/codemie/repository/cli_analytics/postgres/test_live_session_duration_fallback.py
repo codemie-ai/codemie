@@ -36,6 +36,7 @@ from datetime import date, datetime, timedelta, timezone
 import asyncpg
 import pytest
 
+from tests.codemie.repository.cli_analytics.support.scopes import EXCLUDE_SCOPE
 from codemie.configs.config import Config
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
 from codemie.repository.cli_analytics.postgres.engine import AnalyticsPgEngine
@@ -138,7 +139,7 @@ async def _seed_usage(engine: AnalyticsPgEngine, *, session_id: str, ts: datetim
 
 
 def _window(start: datetime, now: datetime) -> LocalAnalyticsFilter:
-    return LocalAnalyticsFilter(start_dt=start - timedelta(days=1), end_dt=now + timedelta(days=1))
+    return LocalAnalyticsFilter(scope=EXCLUDE_SCOPE, start_dt=start - timedelta(days=1), end_dt=now + timedelta(days=1))
 
 
 async def _refresh(engine: AnalyticsPgEngine, day) -> None:
@@ -187,7 +188,9 @@ async def test_live_a_cancelled_sessionend_with_a_non_final_summary_takes_the_la
 
         reader = PostgresCliAnalyticsReader(engine)
         durations = await reader.get_session_durations(
-            LocalAnalyticsFilter(start_dt=start - timedelta(days=1), end_dt=now + timedelta(days=1))
+            LocalAnalyticsFilter(
+                scope=EXCLUDE_SCOPE, start_dt=start - timedelta(days=1), end_dt=now + timedelta(days=1)
+            )
         )
         by_id = {r["session_id"]: r["duration_ms"] for r in durations}
         assert by_id[session_id] == pytest.approx(90_000, abs=2_000)
@@ -288,7 +291,9 @@ async def test_live_an_ended_at_before_the_started_at_gives_a_null_duration_not_
 
         reader = PostgresCliAnalyticsReader(engine)
         durations = await reader.get_session_durations(
-            LocalAnalyticsFilter(start_dt=start - timedelta(days=1), end_dt=now + timedelta(days=1))
+            LocalAnalyticsFilter(
+                scope=EXCLUDE_SCOPE, start_dt=start - timedelta(days=1), end_dt=now + timedelta(days=1)
+            )
         )
         by_id = {r["session_id"]: r["duration_ms"] for r in durations}
         # duration_ms is NULL, so the reader's coalesce falls back to the hook pair: last_event_at
