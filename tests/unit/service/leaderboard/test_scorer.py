@@ -16,9 +16,12 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from decimal import Decimal
+
 import pytest
 
-from codemie.service.leaderboard.collector import RawUserMetrics
+from codemie.service.leaderboard.collector import RawUserMetrics, UserSpend
 from codemie.service.leaderboard.config import LeaderboardSettings
 from codemie.service.leaderboard.scorer import (
     DimensionScore,
@@ -26,9 +29,28 @@ from codemie.service.leaderboard.scorer import (
     _percentile_rank,
     _tiered,
 )
+from codemie.service.spend.coverage import Portion, SpendDimension, SpendResult, TimeRange
+from codemie.service.spend.rendering import render_spend
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
+
+
+def _measured(amount: float):
+    """A figure the ledger measured - including a real, measured zero."""
+    return render_spend(SpendResult(figure=Decimal(str(amount))))
+
+
+#: No figure at all: the ledger could not answer, or the person could not be identified. Distinct
+#: from `_measured(0)` in exactly the way the ranking must keep them distinct.
+ABSENT = render_spend(None)
+
+
+def _spend(total: float | None = None, cli: float | None = None) -> UserSpend:
+    return UserSpend(
+        total=ABSENT if total is None else _measured(total),
+        cli=ABSENT if cli is None else _measured(cli),
+    )
 
 
 def _make_user(
@@ -40,7 +62,7 @@ def _make_user(
     workflow_creation: dict | None = None,
     cli: dict | None = None,
     impact: dict | None = None,
-    litellm_spend: dict | None = None,
+    spend: UserSpend | None = None,
 ) -> RawUserMetrics:
     """Create a minimal RawUserMetrics with only the fields needed."""
     return RawUserMetrics(
@@ -52,8 +74,12 @@ def _make_user(
         workflow_creation=workflow_creation or {},
         cli=cli or {},
         impact=impact or {},
-        litellm_spend=litellm_spend or {},
+        spend=spend or UserSpend(),
     )
+
+
+def _component(dimension, key: str) -> dict | None:
+    return next((c for c in dimension.components if c["key"] == key), None)
 
 
 @pytest.fixture
@@ -226,7 +252,7 @@ class TestBuildSummaryMetrics:
             workflow_usage={"workflow_executions": 7},
             cli={"cli_sessions": 8, "cli_repos": 2, "cli_lines_added": 500, "cli_files_changed": 20},
             impact={"shared_conversations": 3, "shared_conversation_access": 15, "kata_completed": 1},
-            litellm_spend={"total_spend": 12.5, "cli_spend": 8.0},
+            spend=_spend(total=12.5, cli=8.0),
         )
 
         summary = LeaderboardScorer._build_summary_metrics(user)
@@ -242,3 +268,130 @@ class TestBuildSummaryMetrics:
         assert summary["kata_completed"] == 1
         assert summary["total_spend"] == 12.5
         assert summary["cli_spend"] == 8.0
+
+    def test_total_spend_is_the_port_figure_with_nothing_added(self):
+        """One holder read, no addition. The ES web-spend aggregate is not summed into it any more.
+
+        `PersonTotalHolder` already spans both pots and every category, so adding a second
+        Elasticsearch money aggregate to it counted the same money twice from a second source.
+        """
+        user = _make_user(usage={"web_money_spent": 99.0}, spend=_spend(total=12.5, cli=8.0))
+
+        summary = LeaderboardScorer._build_summary_metrics(user)
+
+        assert summary["total_spend"] == 12.5
+
+    def test_absent_figures_are_absent_and_never_zero(self):
+        user = _make_user(cli={"cli_sessions": 4})
+
+        summary = LeaderboardScorer._build_summary_metrics(user)
+
+        assert summary["total_spend"] is None
+        assert summary["cli_spend"] is None
+        assert summary["total_spend_unavailable"] is True
+        assert summary["cli_spend_unavailable"] is True
+
+    def test_a_measured_zero_is_reported_as_zero(self):
+        """A real $0 is a figure. It renders as 0.0 and is not flagged unavailable."""
+        summary = LeaderboardScorer._build_summary_metrics(_make_user(spend=_spend(total=0.0, cli=0.0)))
+
+        assert summary["total_spend"] == 0.0
+        assert summary["cli_spend"] == 0.0
+        assert summary["total_spend_unavailable"] is False
+        assert summary["cli_spend_unavailable"] is False
+
+    def test_a_partial_figure_carries_its_qualification(self):
+        """A figure short by a dimension hole may not render indistinguishably from an exact one."""
+        window = TimeRange(datetime(2026, 3, 1, tzinfo=timezone.utc), datetime(2026, 4, 1, tzinfo=timezone.utc))
+        qualified = render_spend(
+            SpendResult(
+                figure=Decimal("12.5"),
+                unavailable=window,
+                partial={SpendDimension.IDENTITY_BRIDGE: Portion(spend=None, rows=None)},
+            )
+        )
+
+        summary = LeaderboardScorer._build_summary_metrics(_make_user(spend=UserSpend(total=qualified)))
+
+        assert summary["total_spend"] == 12.5
+        assert summary["total_spend_unavailable"] is True
+        assert summary["total_spend_partial"] is True
+        # An unresolvable alias set has no computable amount: *an unknown amount is missing*, never 0.
+        assert summary["total_spend_missing_amount"] is None
+
+
+# ── The CLI money figure and the ranking ─────────────────────────────
+
+
+_CLI_ACTIVITY = {
+    "cli_sessions": 12,
+    "cli_repos": 3,
+    "cli_lines_added": 4000,
+    "cli_files_changed": 40,
+    "cli_total_tokens": 0,
+}
+
+
+class TestDeliveryEfficiency:
+    """`delivery_efficiency` and `lines_per_dollar` both divide by the person's CLI spend."""
+
+    def _d5(self, scorer: LeaderboardScorer, user: RawUserMetrics):
+        return scorer._score_d5(user, scorer._build_cohort_stats([user]), scorer._settings.dimensions[4])
+
+    def test_absent_figure_omits_the_component_and_the_lines_per_dollar(self, scorer: LeaderboardScorer):
+        """No figure, no component - never a clamped one and never a zero.
+
+        The old code divided by `max(cli_spend, 1)` and `max(cli_spend, 0.01)`, so a person whose spend
+        was unknown was scored and shown a lines-per-dollar ratio against a denominator nobody
+        measured. Omitting the component is what removes the substitute.
+        """
+        dimension = self._d5(scorer, _make_user(cli=dict(_CLI_ACTIVITY), spend=_spend(cli=None)))
+
+        assert _component(dimension, "delivery_efficiency") is None
+        assert [c["key"] for c in dimension.components] == [
+            "cli_sessions",
+            "repo_breadth",
+            "code_output",
+            "files_changed",
+            "tool_sophistication",
+        ]
+        assert "lines/$" not in repr(dimension.components)
+
+    def test_a_measured_zero_still_behaves_as_a_zero(self, scorer: LeaderboardScorer):
+        """A measured $0 is a figure: the component stands, and nothing divides by zero."""
+        dimension = self._d5(scorer, _make_user(cli=dict(_CLI_ACTIVITY), spend=_spend(cli=0.0)))
+
+        component = _component(dimension, "delivery_efficiency")
+        assert component is not None
+        assert component["normalized"] == 0.0
+        assert "0.00 lines/$" in component["display_value"]
+
+    def test_a_measured_figure_divides_by_itself_and_not_by_a_clamp(self, scorer: LeaderboardScorer):
+        """The `max(cli_spend, 1)` / `max(cli_spend, 0.01)` substitutes are gone.
+
+        At $0.50 the old denominators were 1 and 0.5, so the score used a spend twice the real one.
+        """
+        dimension = self._d5(scorer, _make_user(cli=dict(_CLI_ACTIVITY), spend=_spend(cli=0.5)))
+
+        component = _component(dimension, "delivery_efficiency")
+        assert component is not None
+        # 4000 lines / $0.50 = 8000 lines per dollar, not 4000.
+        assert "8000.00 lines/$" in component["display_value"]
+
+    def test_the_ranking_and_the_summary_use_one_figure(self, scorer: LeaderboardScorer):
+        """The two former CLI figures now agree, because they are one read."""
+        user = _make_user(cli=dict(_CLI_ACTIVITY), spend=_spend(total=50.0, cli=8.0))
+
+        summary = LeaderboardScorer._build_summary_metrics(user)
+        component = _component(self._d5(scorer, user), "delivery_efficiency")
+
+        lines_per_dollar = _CLI_ACTIVITY["cli_lines_added"] / summary["cli_spend"]
+        assert component is not None
+        assert f"{lines_per_dollar:.2f} lines/$" in component["display_value"]
+
+    def test_an_absent_figure_does_not_outrank_a_measured_one(self, scorer: LeaderboardScorer):
+        """*We do not know what they spent* must never score above a measured, efficient spender."""
+        unknown = _make_user(user_id="unknown", cli=dict(_CLI_ACTIVITY), spend=_spend(cli=None))
+        measured = _make_user(user_id="measured", cli=dict(_CLI_ACTIVITY), spend=_spend(cli=0.5))
+
+        assert self._d5(scorer, unknown).score < self._d5(scorer, measured).score

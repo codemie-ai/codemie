@@ -359,6 +359,19 @@ class WorkflowConfig(BaseModelWithSQLSupport, WorkflowConfigBase, table=True):
             return session.exec(statement).all()
 
     @classmethod
+    def get_ids_by_names(cls, names: List[str]) -> List[tuple[str, str]]:
+        """Every live `(id, name)` pair whose name is one of `names` - the directory read behind the
+        name-keyed analytics tables.
+
+        Names are neither unique nor immutable, so one name may come back with several ids and a
+        caller decides what that means; this only reports what is live. Projected to the two columns
+        rather than loading whole rows, because the caller hands in every bucket a table formed.
+        """
+        with Session(cls.get_engine()) as session:
+            statement = select(cls.id, cls.name).where(cls.name.in_(names))  # type: ignore[arg-type]
+            return [tuple(row) for row in session.exec(statement).all()]
+
+    @classmethod
     def is_not_global_filter(cls) -> ColumnElement[bool]:
         return cast(ColumnElement[bool], cls.is_global == False)  # noqa: E712
 

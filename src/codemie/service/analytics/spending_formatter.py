@@ -19,6 +19,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from codemie.service.analytics.response_formatter import ResponseFormatter
+from codemie.service.spend.coverage import SpendResult
+from codemie.service.spend.rendering import render_spend, spend_row_fields
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +33,7 @@ _SPENDING_METRIC_DEFINITIONS = {
     },
     "budget_limit": {
         "label": "Budget Limit ($)",
-        "description": "Soft budget limit (warning threshold)",
+        "description": "Maximum budget for the period (hard limit)",
     },
     "budget_reset_at": {
         "label": "Budget Reset Date",
@@ -73,25 +75,52 @@ def build_spending_metric(
     return metric
 
 
-def build_spending_metrics(spending_data: dict[str, Any] | None, user_id: str) -> list[dict[str, Any]]:
+def build_money_metric(metric_id: str, spend: SpendResult | None) -> dict[str, Any]:
+    """A currency metric whose figure comes from the spend port, carrying its qualification.
+
+    The annotation travels in the metric dict beside the number rather than being dropped, because a
+    truncated or dimension-incomplete total otherwise renders indistinguishably from a whole one. An
+    absent figure stays absent: `None` is the no-figure state and never a zero, which would claim the
+    user spent nothing.
+    """
+    rendered = render_spend(spend)
+    return {
+        **build_spending_metric(metric_id, rendered.figure, "number", "currency"),
+        **spend_row_fields(spend),
+    }
+
+
+def build_spending_metrics(
+    spending_data: dict[str, Any] | None, spend: SpendResult | None, user_id: str
+) -> list[dict[str, Any]]:
     """Build spending metrics list based on available data.
 
     Args:
-        spending_data: Dictionary with spending information or None if service unavailable
+        spending_data: Budget **policy** for the user - limit and reset window - or None if the
+            budget service answered nothing. It no longer supplies the money.
+        spend: What the user consumed over the platform budget period, from the spend port. None
+            means the port produced no figure for it.
+        user_id: User the metrics describe, for logging.
 
     Returns:
         List of metric dictionaries
     """
+    rendered = render_spend(spend)
+    current_spending_metric = build_money_metric("current_spending", spend)
+
     if not spending_data:
         logger.info(f"Budget tracking not available for user {user_id}")
         return [
-            build_spending_metric("current_spending", 0.0, "number", "currency"),
+            # What is unavailable in this branch is the **policy**, not the money: a user with no
+            # budget record can still have ledger spend, so the figure the port supplied is rendered
+            # here with its annotation. Overriding it with `None` would put a second, wrong
+            # unavailable state on the wire, and `0.0` would say the user spent nothing.
+            current_spending_metric,
             build_spending_metric("budget_limit", "N/A", "string"),
             build_spending_metric("budget_reset_at", "N/A", "string"),
             build_spending_metric("time_until_reset", "N/A", "string"),
         ]
 
-    current_spending = spending_data.get("total_spend", 0.0)
     budget_limit = spending_data.get("max_budget")
 
     # Handle empty/None fields - show "N/A" instead
@@ -102,12 +131,13 @@ def build_spending_metrics(spending_data: dict[str, Any] | None, user_id: str) -
 
     logger.info(
         f"Spending analytics retrieved for user {user_id}: "
-        f"spend=${current_spending:.2f}, budget={budget_limit}, time_until_reset={time_until_reset}"
+        f"spend={'unavailable' if rendered.figure is None else f'${rendered.figure:.2f}'}, "
+        f"budget={budget_limit}, time_until_reset={time_until_reset}"
     )
 
     # Adjust metric type/format based on whether value is N/A
     return [
-        build_spending_metric("current_spending", current_spending, "number", "currency"),
+        current_spending_metric,
         build_spending_metric("budget_limit", budget_limit, "number", "currency"),
         build_spending_metric(
             "budget_reset_at",

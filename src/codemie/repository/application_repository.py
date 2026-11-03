@@ -21,7 +21,7 @@ from uuid import UUID
 from sqlalchemy import literal, union_all
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.sql.elements import BooleanClauseList
+from sqlalchemy.sql.elements import BooleanClauseList, ColumnElement
 from sqlalchemy.sql.selectable import Select
 from sqlmodel import Session, and_, case, func, or_, select
 
@@ -30,6 +30,14 @@ from codemie.core.db_utils import escape_like_wildcards
 from codemie.core.models import Application
 from codemie.rest_api.models.user_management import UserProject
 from codemie.service.budget.budget_models import ProjectBudgetAssignment
+
+
+def _personal_projects_named(names: list[str]) -> tuple[ColumnElement[bool], ...]:
+    """Which applications are personal projects named in `names` - one definition for every lookup by name."""
+    return (
+        Application.name.in_(names),
+        Application.project_type == Application.ProjectType.PERSONAL.value,
+    )
 
 
 class ApplicationRepository:
@@ -861,38 +869,44 @@ class ApplicationRepository:
         logger.debug(f"Created application: name={name}, project_type={project_type}, created_by={created_by}")
         return application
 
-    async def aget_all_non_deleted(self, session: AsyncSession) -> list[Application]:
-        """Return all applications where deleted_at IS NULL.
-
-        Used by background jobs that have no user context.
-
-        Args:
-            session: Async database session
-
-        Returns:
-            List of all non-deleted Application records
-        """
-        statement = select(Application).where(Application.deleted_at.is_(None))
-        result = await session.execute(statement)
-        return list(result.scalars().all())
-
     async def aget_personal_project_names(self, session: AsyncSession, names: list[str]) -> set[str]:
-        """Return which of the given project names are non-deleted personal projects.
+        """Return which of `names` are non-deleted personal projects.
+
+        Asks only about the given names: picking the personal ones out of every non-deleted
+        application loaded ~45k rows and took 18-55 s per user spend read (EPMCDME-15537).
 
         Args:
             session: Async database session
             names: Project names to check
 
         Returns:
-            The subset of names that belong to personal projects
+            The subset of `names` that are non-deleted personal projects; empty, without a query,
+            when `names` is empty
         """
         if not names:
             return set()
-        statement = select(Application.name).where(
-            Application.name.in_(names),
-            Application.project_type == Application.ProjectType.PERSONAL.value,
-            Application.deleted_at.is_(None),
-        )
+        statement = select(Application.name).where(*_personal_projects_named(names), Application.deleted_at.is_(None))
+        result = await session.execute(statement)
+        return set(result.scalars().all())
+
+    async def aget_personal_project_owners(self, session: AsyncSession, names: list[str]) -> set[str | None]:
+        """Return the owners (`created_by`) of the personal projects named in `names`, soft-deleted ones included.
+
+        A report asks about the spend a name carried, and an email change soft-deletes the old personal
+        project while its history keeps the old name. The owner is `created_by`, never the user whose
+        email the name spells: the two part when an email changes.
+
+        Args:
+            session: Async database session
+            names: Project names to check
+
+        Returns:
+            The distinct owner ids, `None` among them for a personal project with no recorded owner;
+            empty, without a query, when `names` is empty or none of them is a personal project
+        """
+        if not names:
+            return set()
+        statement = select(Application.created_by).where(*_personal_projects_named(names)).distinct()
         result = await session.execute(statement)
         return set(result.scalars().all())
 

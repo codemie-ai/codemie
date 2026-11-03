@@ -335,39 +335,72 @@ def test_on_llm_end_with_no_cache_cost_config(
     assert call_args['llm_run'].cached_tokens_creation_cost == 0.0
 
 
+def _partial_error_response() -> LLMResult:
+    """A response carrying tokens from generations that completed before the call failed."""
+    message = BaseMessage(type="", content="", usage_metadata={"input_tokens": 100, "output_tokens": 5})
+    return LLMResult(generations=[[ChatGeneration(text="", message=message)]])
+
+
+@patch('codemie.agents.callbacks.tokens_callback.uses_litellm', return_value=True)
 @patch('codemie.agents.callbacks.tokens_callback.llm_service.get_model_cost')
 @patch('codemie.agents.callbacks.tokens_callback.request_summary_manager.update_llm_run')
 @patch('codemie.agents.callbacks.tokens_callback.calculate_token_cost')
-def test_on_llm_error_records_partial_tokens(
-    mock_calculate_token_cost, mock_update_llm_run, mock_get_model_cost, callback, mock_model_costs
+def test_on_llm_error_on_the_litellm_path_records_a_measured_zero(
+    mock_calculate_token_cost, mock_update_llm_run, mock_get_model_cost, _mock_uses_litellm, callback, mock_model_costs
 ):
-    """on_llm_error records token usage when the provider returns a partial response."""
-    message = BaseMessage(type="", content="", usage_metadata={"input_tokens": 100, "output_tokens": 5})
-    generation = ChatGeneration(text="", message=message)
-    partial_response = LLMResult(generations=[[generation]])
+    """A failed LiteLLM call carries a real, measured zero - AD-20 - and nothing re-prices it.
 
+    The token counts survive because they were consumed; only the invented charge goes. This was
+    AD-4's one live violation: the branch called ``calculate_token_cost`` unconditionally, with no
+    proxy-cost check even possible on an error path, so a failure was billed an estimate no ledger
+    would ever agree with. The zero here is a **measured** one and must not be confused with
+    ``_calculate_cost``'s unsettled ``None``.
+    """
     mock_get_model_cost.return_value = mock_model_costs
     mock_calculate_token_cost.return_value = (0.0001, 0.0, 0.0)
 
     callback.on_llm_error(
         error=RuntimeError("stream interrupted"),
         run_id=UUID('12345678-1234-5678-1234-567812345678'),
-        response=partial_response,
+        response=_partial_error_response(),
     )
 
-    mock_calculate_token_cost.assert_called_once_with(
-        llm_model=LLMService.BASE_NAME_GPT_41_MINI,
-        cost_config=mock_model_costs,
-        input_tokens=100,
-        output_tokens=5,
-        cached_tokens=0,
-        cache_creation_tokens=0,
-    )
+    mock_calculate_token_cost.assert_not_called()
+    mock_get_model_cost.assert_not_called()
     mock_update_llm_run.assert_called_once()
     call_args = mock_update_llm_run.call_args[1]
     assert call_args['llm_run'].input_tokens == 100
     assert call_args['llm_run'].output_tokens == 5
-    assert call_args['llm_run'].money_spent == 0.0001
+    assert call_args['llm_run'].money_spent == 0.0
+
+
+@patch('codemie.agents.callbacks.tokens_callback.uses_litellm', return_value=False)
+@patch('codemie.agents.callbacks.tokens_callback.llm_service.get_model_cost')
+@patch('codemie.agents.callbacks.tokens_callback.request_summary_manager.update_llm_run')
+@patch('codemie.agents.callbacks.tokens_callback.calculate_token_cost')
+def test_on_llm_error_off_the_litellm_path_keeps_the_local_estimate(
+    mock_calculate_token_cost, mock_update_llm_run, mock_get_model_cost, _mock_uses_litellm, callback, mock_model_costs
+):
+    """The mirror case, and it is why the zero is gated rather than unconditional.
+
+    AD-20 scopes itself to the **ledger** - ``status = 'failure'`` rows, *"counts come from the
+    ledger, never from the callback"* - and where no ledger serves this call class the local price
+    table **is** the authority. These tokens were processed before the call failed and the provider
+    may well have billed them, so an unconditional zero would silently drop real cost from every
+    non-LiteLLM deployment. Driven from ``uses_litellm`` rather than a config flag so the assertion
+    pins AD-2's single routing seam.
+    """
+    mock_get_model_cost.return_value = mock_model_costs
+    mock_calculate_token_cost.return_value = (0.0001, 0.0, 0.0)
+
+    callback.on_llm_error(
+        error=RuntimeError("stream interrupted"),
+        run_id=UUID('12345678-1234-5678-1234-567812345678'),
+        response=_partial_error_response(),
+    )
+
+    mock_calculate_token_cost.assert_called_once()
+    assert mock_update_llm_run.call_args[1]['llm_run'].money_spent == 0.0001
 
 
 def test_on_llm_error_skips_update_when_no_response(callback):
@@ -599,6 +632,120 @@ def test_on_llm_end_ignores_proxy_cost_when_gate_disabled(
     mock_calculate_token_cost.assert_called_once()
     call_args = mock_update_llm_run.call_args[1]
     assert call_args['llm_run'].money_spent == 0.01
+
+
+def _chat_result_without_proxy_cost():
+    """A completed chat generation carrying token counts and no cost of any kind."""
+    message = BaseMessage(
+        type="",
+        content="Test response",
+        usage_metadata={"input_tokens": 10, "output_tokens": 20},
+    )
+    return LLMResult(generations=[[ChatGeneration(text="Test response", message=message)]])
+
+
+@patch('codemie.agents.callbacks.tokens_callback.llm_service.get_model_cost')
+@patch('codemie.agents.callbacks.tokens_callback.request_summary_manager.update_llm_run')
+@patch('codemie.agents.callbacks.tokens_callback.calculate_token_cost')
+@patch('codemie.agents.callbacks.tokens_callback.uses_litellm', return_value=True)
+def test_on_llm_end_on_litellm_path_without_a_cost_is_unsettled_not_zero(
+    mock_uses_litellm, mock_calculate_token_cost, mock_update_llm_run, mock_get_model_cost, callback
+):
+    """AD-28: a LiteLLM call whose cost has not arrived carries an absence, never a zero.
+
+    This is the normal state for streamed Claude chat, where neither immediate-cost source
+    fires (AD-22). The ledger settles it later; a zero would freeze "this call was free" into
+    the record, and a local estimate would invent a figure LiteLLM already computed (AD-4).
+    """
+    asyncio.run(
+        callback.on_llm_end(
+            response=_chat_result_without_proxy_cost(), run_id=UUID('12345678-1234-5678-1234-567812345678')
+        )
+    )
+
+    mock_calculate_token_cost.assert_not_called()
+    mock_get_model_cost.assert_not_called()
+    llm_run = mock_update_llm_run.call_args[1]['llm_run']
+    assert llm_run.money_spent is None
+    # No float at all was emitted for the money, so in particular no 0.0 was: `None == 0.0` is
+    # False, but both are falsy, and every way the two get collapsed goes through a truthiness
+    # test on this field.
+    assert not isinstance(llm_run.money_spent, float)
+    # The tokens are real and stay.
+    assert llm_run.input_tokens == 10
+    assert llm_run.output_tokens == 20
+
+
+@patch('codemie.agents.callbacks.tokens_callback.config')
+@patch('codemie.agents.callbacks.tokens_callback.llm_service.get_model_cost')
+@patch('codemie.agents.callbacks.tokens_callback.request_summary_manager.update_llm_run')
+@patch('codemie.agents.callbacks.tokens_callback.calculate_token_cost')
+@patch('codemie.agents.callbacks.tokens_callback.uses_litellm', return_value=True)
+def test_on_llm_end_on_litellm_path_is_unsettled_even_with_usage_tracking_off(
+    mock_uses_litellm, mock_calculate_token_cost, mock_update_llm_run, mock_get_model_cost, mock_config, callback
+):
+    """The routing gate is strictly wider than the proxy-cost extraction gate.
+
+    With ``LLM_PROXY_TRACK_USAGE`` off the caller never even looks for the authoritative
+    number, but LiteLLM still billed the call, so re-pricing it locally is still an invention.
+    """
+    mock_config.LLM_PROXY_ENABLED = True
+    mock_config.LLM_PROXY_TRACK_USAGE = False
+    message = BaseMessage(type="", content="x", usage_metadata={"input_tokens": 5, "output_tokens": 10})
+    generation = ChatGeneration(text="x", message=message, generation_info={"litellm_cost": 0.9999})
+    result = LLMResult(generations=[[generation]])
+
+    asyncio.run(callback.on_llm_end(response=result, run_id=UUID('12345678-1234-5678-1234-567812345678')))
+
+    mock_calculate_token_cost.assert_not_called()
+    assert mock_update_llm_run.call_args[1]['llm_run'].money_spent is None
+
+
+@patch('codemie.agents.callbacks.tokens_callback.llm_service.get_model_cost')
+@patch('codemie.agents.callbacks.tokens_callback.request_summary_manager.update_llm_run')
+@patch('codemie.agents.callbacks.tokens_callback.calculate_token_cost')
+@patch('codemie.agents.callbacks.tokens_callback.uses_litellm', return_value=False)
+def test_on_llm_end_off_the_litellm_path_still_gets_the_local_estimate(
+    mock_uses_litellm, mock_calculate_token_cost, mock_update_llm_run, mock_get_model_cost, callback
+):
+    """The mirror case: in a non-LiteLLM deployment the local price table *is* the ledger.
+
+    Driven from ``uses_litellm`` rather than from a config flag, so the test pins AD-2's single
+    routing seam and not one of the several narrower predicates this repo has had.
+    """
+    mock_get_model_cost.return_value = CostConfig(input=0.001, output=0.002)
+    mock_calculate_token_cost.return_value = (0.05, 0.0, 0.0)
+
+    asyncio.run(
+        callback.on_llm_end(
+            response=_chat_result_without_proxy_cost(), run_id=UUID('12345678-1234-5678-1234-567812345678')
+        )
+    )
+
+    mock_calculate_token_cost.assert_called_once()
+    assert mock_update_llm_run.call_args[1]['llm_run'].money_spent == 0.05
+
+
+@patch('codemie.agents.callbacks.tokens_callback.config')
+@patch('codemie.agents.callbacks.tokens_callback.request_summary_manager.update_llm_run')
+@patch('codemie.agents.callbacks.tokens_callback.calculate_token_cost')
+@patch('codemie.agents.callbacks.tokens_callback.uses_litellm', return_value=True)
+def test_on_llm_end_settled_proxy_cost_survives_the_routing_gate(
+    mock_uses_litellm, mock_calculate_token_cost, mock_update_llm_run, mock_config, callback
+):
+    """A settled cost is used exactly as recorded - the gate must not shadow it into `None`."""
+    mock_config.LLM_PROXY_ENABLED = True
+    mock_config.LLM_PROXY_TRACK_USAGE = True
+    message = BaseMessage(type="", content="x", usage_metadata={"input_tokens": 10, "output_tokens": 20})
+    generation = ChatGeneration(
+        text="x", message=message, generation_info={"headers": {"x-litellm-response-cost": "0.0042"}}
+    )
+    result = LLMResult(generations=[[generation]])
+
+    asyncio.run(callback.on_llm_end(response=result, run_id=UUID('12345678-1234-5678-1234-567812345678')))
+
+    mock_calculate_token_cost.assert_not_called()
+    assert mock_update_llm_run.call_args[1]['llm_run'].money_spent == 0.0042
 
 
 @patch('codemie.agents.callbacks.tokens_callback.logger.debug')
@@ -878,6 +1025,63 @@ async def test_on_llm_end_applies_counterfactual_costs_from_router_reported_base
 
 
 @pytest.mark.asyncio
+async def test_on_llm_end_prices_the_counterfactual_on_the_litellm_path():
+    """The counterfactual is a "what it would have cost" analytics figure, not spend, so the
+    LiteLLM gate that withholds a local price from the call's own money must not withhold it
+    here - otherwise no routed agent call on a LiteLLM deployment ever reports savings."""
+    callback = TokensCalculationCallback(request_id="req-1", llm_model="gpt-smart-router")
+    router = _make_router(
+        routing_info=RoutingInfo(
+            routed_model="gpt-5.6-luna-2026-07-09",
+            requested_model="gpt-smart-router",
+            counterfactual_model="gpt-5.6-terra-2026-07-09",
+            tier="SIMPLE",
+            classifier_cost_usd=0.0005,
+        )
+    )
+    run_id = uuid4()
+    callback.on_chat_model_start({}, [[]], run_id=run_id, metadata={"_routing_ctx": (router, None)})
+    message = AIMessage(content="hi", usage_metadata={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15})
+    settled = ChatGeneration(message=message, generation_info={"litellm_cost": 0.001})
+
+    with (
+        patch("codemie.agents.callbacks.tokens_callback.uses_litellm", return_value=True),
+        patch("codemie.agents.callbacks.tokens_callback.config") as mock_config,
+        patch(
+            "codemie.agents.callbacks.tokens_callback.calculate_token_cost", return_value=(0.004, 0.0, 0.0)
+        ) as mock_calculate_token_cost,
+        patch("codemie.agents.callbacks.tokens_callback.llm_service.get_model_cost"),
+        patch("codemie.service.request_summary_manager.request_summary_manager.update_llm_run") as mock_update,
+    ):
+        mock_config.LLM_PROXY_ENABLED = True
+        mock_config.LLM_PROXY_TRACK_USAGE = True
+        await callback.on_llm_end(LLMResult(generations=[[settled]]), run_id=run_id)
+
+    llm_run = mock_update.call_args.kwargs["llm_run"]
+    assert llm_run.money_spent == 0.001
+    assert mock_calculate_token_cost.call_args.kwargs["llm_model"] == "gpt-5.6-terra-2026-07-09"
+    assert llm_run.routing.original_cost_usd == pytest.approx(0.0015)
+    assert llm_run.routing.estimated_max_cost_usd == 0.004
+    assert llm_run.routing.potential_savings_usd == pytest.approx(0.0025)
+
+
+def test_counterfactual_is_not_stamped_on_an_unsettled_cost(callback):
+    """With the actual cost still pending there is nothing to compare the counterfactual to, so
+    the routing comes back as it went in - no pricing, no fabricated zero."""
+    routing = RoutingInfo(
+        routed_model="gpt-5.6-luna-2026-07-09",
+        counterfactual_model="gpt-5.6-terra-2026-07-09",
+        tier="SIMPLE",
+    )
+
+    with patch("codemie.agents.callbacks.tokens_callback.calculate_token_cost") as mock_calculate_token_cost:
+        result = callback._apply_counterfactual_costs(routing, None, 10, 5, 0, 0)
+
+    assert result is routing
+    mock_calculate_token_cost.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_on_llm_end_records_routed_cache_hit_without_model_cost():
     """A routed whole-response cache hit remains observable but costs no model spend."""
     callback = TokensCalculationCallback(request_id="req-1", llm_model="gpt-smart-router")
@@ -911,3 +1115,50 @@ async def test_on_llm_end_records_routed_cache_hit_without_model_cost():
     assert llm_run.routing.routed_cache_hit is True
     assert llm_run.routing.routed_input_tokens == 11
     assert llm_run.routing.routed_output_tokens == 5
+
+
+class TestOnChatModelStartPublishesTheRunInFlight:
+    """The pre-flight callback is what lets an outbound header name the individual call.
+
+    The run id cannot instead ride in the model's fixed headers: one model object serves every
+    iteration of an agent loop, so a header set at construction would send one id for many calls and
+    a per-call cost lookup would sum the wrong rows.
+    """
+
+    def test_the_run_id_is_readable_by_the_request_that_owns_it(self):
+        from uuid import uuid4
+
+        from codemie.agents.callbacks.tokens_callback import TokensCalculationCallback
+        from codemie.service.spend.run_context import current_run_id
+
+        run_id = uuid4()
+        callback = TokensCalculationCallback(request_id="req-77", llm_model="gpt-4.1")
+        callback.on_chat_model_start({}, [[]], run_id=run_id)
+
+        assert current_run_id("req-77") == str(run_id)
+
+    @pytest.mark.asyncio
+    async def test_an_async_dispatch_publishes_into_the_awaiting_task(self):
+        """``ainvoke`` goes through the async manager, which runs a non-inline sync handler in an
+        executor on a copied context; the publish would then never reach the request that follows."""
+        from langchain_core.callbacks import AsyncCallbackManager
+
+        from codemie.service.spend.run_context import current_run_id
+
+        run_id = uuid4()
+        callback = TokensCalculationCallback(request_id="req-async", llm_model="gpt-4.1")
+        await AsyncCallbackManager(handlers=[callback]).on_chat_model_start({}, [[]], run_id=run_id)
+
+        assert current_run_id("req-async") == str(run_id)
+
+    def test_another_requests_call_does_not_read_it(self):
+        from uuid import uuid4
+
+        from codemie.agents.callbacks.tokens_callback import TokensCalculationCallback
+        from codemie.service.spend.run_context import current_run_id
+
+        TokensCalculationCallback(request_id="req-77", llm_model="gpt-4.1").on_chat_model_start(
+            {}, [[]], run_id=uuid4()
+        )
+
+        assert current_run_id("req-88") is None

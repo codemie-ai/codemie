@@ -21,6 +21,8 @@ from unittest.mock import Mock, patch, AsyncMock
 import pytest
 
 from codemie.service.conversation_analysis.conversation_analysis_service import ConversationAnalysisService
+from codemie.service.spend.origin_context import current_origin
+from codemie.service.spend.traffic_class import TrafficOrigin
 
 
 class TestConversationAnalysisServiceLeaderElection:
@@ -223,6 +225,66 @@ class TestConversationAnalysisServiceProcessBatch:
             # Verify no work status
             assert result["status"] == "no_work"
             assert result["processed"] == 0
+
+
+class TestConversationAnalysisServiceSpendOrigin:
+    """process_batch publishes the origin the analysis model is built under."""
+
+    @pytest.mark.asyncio
+    async def test_process_batch_publishes_conversation_analysis(self):
+        """The origin is in force inside the to_thread call that runs the analysis."""
+        service = ConversationAnalysisService()
+        observed = []
+
+        def record(_conversation_id):
+            observed.append(current_origin())
+            return Mock()
+
+        with patch("codemie.service.conversation_analysis.conversation_analysis_service.config") as mock_config:
+            mock_config.CONVERSATION_ANALYSIS_ENABLED = True
+            mock_config.CONVERSATION_ANALYSIS_BATCH_SIZE = 10
+            mock_config.CONVERSATION_ANALYSIS_MAX_RETRIES = 3
+
+            queue_item = Mock(id="queue-1", conversation_id="conv-1")
+            service.queue_repo.claim_batch_for_processing = AsyncMock(return_value=[queue_item])
+            service.queue_repo.mark_completed = AsyncMock()
+            service.analytics_repo.upsert_analysis = AsyncMock(return_value=(Mock(), True))
+            service._analyze_conversation = record
+
+            with patch(
+                "codemie.service.conversation_analysis.conversation_analysis_service."
+                "ConversationAnalyticsElasticsearchService"
+            ):
+                await service.process_batch()
+
+        assert observed == [TrafficOrigin.CONVERSATION_ANALYSIS]
+        assert current_origin() is None
+
+    @pytest.mark.asyncio
+    async def test_origin_is_restored_when_an_item_fails(self):
+        """A failed conversation must not leave its origin behind on the pod's loop."""
+        service = ConversationAnalysisService()
+
+        with patch("codemie.service.conversation_analysis.conversation_analysis_service.config") as mock_config:
+            mock_config.CONVERSATION_ANALYSIS_ENABLED = True
+            mock_config.CONVERSATION_ANALYSIS_BATCH_SIZE = 10
+            mock_config.CONVERSATION_ANALYSIS_MAX_RETRIES = 3
+
+            queue_item = Mock(id="queue-1", conversation_id="conv-1")
+            service.queue_repo.claim_batch_for_processing = AsyncMock(return_value=[queue_item])
+            service.queue_repo.mark_failed = AsyncMock()
+            observed = []
+
+            def record_and_fail(_conversation_id):
+                observed.append(current_origin())
+                raise RuntimeError("LLM failure")
+
+            service._analyze_conversation = record_and_fail
+
+            await service.process_batch()
+
+        assert observed == [TrafficOrigin.CONVERSATION_ANALYSIS]
+        assert current_origin() is None
 
 
 @pytest.mark.skip(reason="Requires PostgreSQL database - run manually for integration testing")

@@ -18,7 +18,6 @@ import asyncio
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from decimal import Decimal
 from typing import TYPE_CHECKING, Optional
 from uuid import uuid4
 
@@ -39,11 +38,10 @@ from codemie.service.activity.activity_models import (
     BudgetManagementEvent,
 )
 from codemie.service.activity.activity_repository import activity_event_repository
-from codemie.repository.project_spend_tracking_repository import project_spend_tracking_repository
 from codemie.service.budget.budget_enums import AllocationMode, BudgetCategory, BudgetType
 from codemie.service.budget.budget_models import Budget, member_effective_max_budget
 from codemie.service.budget.provider_registry import get_active_provider
-from codemie.service.spend_tracking.spend_models import ProjectSpendTracking
+from codemie.service.spend.budget_period import parse_budget_reset_at, running_period_start
 
 if TYPE_CHECKING:
     from codemie.service.budget.provider import BudgetEnforcementProvider, BudgetProviderState, GlobalBudgetState
@@ -105,6 +103,30 @@ class BudgetService:
         metadata = budget.provider_metadata or {}
         provider_ref = metadata.get("provider_budget_ref")
         return provider_ref if provider_ref else budget.budget_id
+
+    @staticmethod
+    def _running_period_start(budget: Budget) -> datetime | None:
+        """Where the budget's running period began, read before CodeMie sets its next reset."""
+        return running_period_start(
+            budget_reset_at=budget.budget_reset_at,
+            budget_duration=budget.budget_duration,
+            pinned_reset_at=budget.pinned_reset_at,
+            pinned_period_start=budget.pinned_period_start,
+            created_at=budget.created_at,
+        )
+
+    @staticmethod
+    def _pinned_reset_fields(budget_reset_at: str | None, period_start: datetime | None) -> dict:
+        """The record of a reset CodeMie set through the provider: the reset, and where its period began.
+
+        The provider resets no counter when CodeMie sets a reset, so the budget period cannot be
+        derived from the reset alone (`budget_period.running_period_start`).
+        """
+        recorded = budget_reset_at is not None and period_start is not None
+        return {
+            "pinned_reset_at": parse_budget_reset_at(budget_reset_at) if recorded else None,
+            "pinned_period_start": period_start if recorded else None,
+        }
 
     @staticmethod
     def _predefined_budget_needs_update(
@@ -250,6 +272,7 @@ class BudgetService:
         fields = {"provider_metadata": self._provider_metadata(state.provider_budget_ref or data.budget_id)}
         if state.budget_reset_at is not None:
             fields["budget_reset_at"] = state.budget_reset_at
+            fields.update(self._pinned_reset_fields(state.budget_reset_at, self._running_period_start(budget)))
         budget = await budget_repository.update(session, data.budget_id, fields)
 
         logger.info(
@@ -327,6 +350,8 @@ class BudgetService:
             data=data,
         )
 
+        # Read before the row takes the new duration: the running period is the old schedule's.
+        running_start = self._running_period_start(budget)
         update_fields = self._build_update_fields(data, new_category)
         budget = await budget_repository.update(session, budget_id, update_fields)
 
@@ -339,6 +364,7 @@ class BudgetService:
                 soft_budget=new_soft,
                 max_budget=new_max,
                 budget_duration=new_duration,
+                running_period_start=running_start,
             )
 
         logger.info(
@@ -399,6 +425,7 @@ class BudgetService:
         soft_budget: float,
         max_budget: float,
         budget_duration: str,
+        running_period_start: datetime | None,
     ) -> Budget:
         try:
             provider = get_active_provider()
@@ -436,6 +463,7 @@ class BudgetService:
         fields = {"provider_metadata": self._provider_metadata(state.provider_budget_ref or budget_id)}
         if state.budget_reset_at is not None:
             fields["budget_reset_at"] = state.budget_reset_at
+            fields.update(self._pinned_reset_fields(state.budget_reset_at, running_period_start))
         return await budget_repository.update(session, budget_id, fields)
 
     @staticmethod
@@ -514,7 +542,8 @@ class BudgetService:
                 return b.budget_id
         return None
 
-    async def _upsert_predefined_budget_db(self, session: AsyncSession, bc: PredefinedBudgetConfig) -> None:
+    async def _upsert_predefined_budget_db(self, session: AsyncSession, bc: PredefinedBudgetConfig) -> datetime | None:
+        """Write the configured budget; returns where its running period began before this write."""
         existing = await budget_repository.get_by_id(session, bc.budget_id)
         logger.debug(
             f"budget_event=predefined_budget_db_decision component=budget_service budget_id={bc.budget_id!r} "
@@ -532,9 +561,10 @@ class BudgetService:
                 provider_metadata=self._provider_metadata(bc.budget_id),
                 created_by="system",
             )
-            await budget_repository.insert(session, new_budget)
-            return
+            return self._running_period_start(await budget_repository.insert(session, new_budget))
 
+        # Read before the row takes the configured duration: the running period is the old schedule's.
+        running_start = self._running_period_start(existing)
         fields = {
             "name": bc.name,
             "description": bc.description,
@@ -545,6 +575,7 @@ class BudgetService:
             "provider_metadata": self._provider_metadata(self._provider_ref_for_budget(existing)),
         }
         await budget_repository.update(session, bc.budget_id, fields)
+        return running_start
 
     async def _sync_predefined_budget_provider(
         self,
@@ -591,7 +622,10 @@ class BudgetService:
         session: AsyncSession,
         bc: PredefinedBudgetConfig,
         state: "BudgetProviderState | None",
+        provider_state: "GlobalBudgetState | None",
+        running_period_start: datetime | None,
     ) -> None:
+        """Store the provider's reset, recording it when CodeMie set it: the sync moved the provider's own."""
         if state is None:
             return
         if state.sync_status == "failed":
@@ -601,14 +635,14 @@ class BudgetService:
                 f"provider={state.provider!r} sync_status={state.sync_status!r}"
             )
             return
-        await budget_repository.update(
-            session,
-            bc.budget_id,
-            {
-                "provider_metadata": self._provider_metadata(state.provider_budget_ref or bc.budget_id),
-                "budget_reset_at": state.budget_reset_at,
-            },
-        )
+        fields = {
+            "provider_metadata": self._provider_metadata(state.provider_budget_ref or bc.budget_id),
+            "budget_reset_at": state.budget_reset_at,
+        }
+        provider_reset_at = provider_state.budget_reset_at if provider_state is not None else None
+        if parse_budget_reset_at(state.budget_reset_at) != parse_budget_reset_at(provider_reset_at):
+            fields.update(self._pinned_reset_fields(state.budget_reset_at, running_period_start))
+        await budget_repository.update(session, bc.budget_id, fields)
 
     async def ensure_predefined_budgets(self, session: AsyncSession) -> None:
         """Force-create or update all predefined budgets at startup.
@@ -639,9 +673,10 @@ class BudgetService:
         )
 
         for bc in budget_config.predefined_budgets:
-            await self._upsert_predefined_budget_db(session, bc)
-            state = await self._sync_predefined_budget_provider(provider, bc, provider_budget_states.get(bc.budget_id))
-            await self._persist_predefined_budget_provider_state(session, bc, state)
+            provider_state = provider_budget_states.get(bc.budget_id)
+            running_start = await self._upsert_predefined_budget_db(session, bc)
+            state = await self._sync_predefined_budget_provider(provider, bc, provider_state)
+            await self._persist_predefined_budget_provider_state(session, bc, state, provider_state, running_start)
             await session.commit()
             logger.info(
                 f"budget_event=predefined_budget_synced component=budget_service budget_id={bc.budget_id!r} "
@@ -1296,8 +1331,11 @@ class BudgetService:
             categories: Budget categories to reset. Pass None or an empty list to
                 reset all active categories for the user.
 
-        Provider propagation failures are logged as warnings and do not abort the
-        operation (fail-open).
+        Every targeted category is reset in the provider before any reset time is
+        recorded. Provider failures are logged as warnings and do not stop the
+        other categories (fail-open); only categories whose provider reset
+        succeeded get a reset time. A failure to record the reset times is logged
+        and re-raised, leaving the session uncommitted.
         """
         from codemie.rest_api.models.user_management import UserDB
         from sqlmodel import select
@@ -1311,6 +1349,8 @@ class BudgetService:
         target_categories: list[BudgetCategory] = categories if categories else list(BudgetCategory)
 
         provider = get_active_provider()
+        reset_at = datetime.now(timezone.utc)
+        reset_categories: list[BudgetCategory] = []
 
         for category in target_categories:
             budget_id = await budget_repository.get_user_category_budget_id(session, user_id, category)
@@ -1329,39 +1369,19 @@ class BudgetService:
                 )
                 continue
 
-            try:
-                from codemie.service.spend_tracking.spend_collector_service import LiteLLMSpendCollectorService
+            reset_categories.append(category)
 
-                now = datetime.now(timezone.utc)
-                prev_rows = await project_spend_tracking_repository.get_latest_by_budget_ids(
-                    session, [budget_id], username
-                )
-                prev_row = prev_rows.get(budget_id)
-                marker: list[ProjectSpendTracking] = []
-                if prev_row is not None and LiteLLMSpendCollectorService._quantize_spend(
-                    prev_row.budget_period_spend
-                ) > Decimal("0"):
-                    marker.append(
-                        ProjectSpendTracking(
-                            id=uuid4(),
-                            project_name=username,
-                            user_id=user_id,
-                            budget_id=budget_id,
-                            budget_category=category.value,
-                            spend_subject_type="budget",
-                            spend_date=now,
-                            budget_period_spend=Decimal("0"),
-                            daily_spend=Decimal("0"),
-                            cumulative_spend=prev_row.cumulative_spend,
-                        )
-                    )
-                await project_spend_tracking_repository.insert_budget_entries(session, marker)
+        if reset_categories:
+            try:
+                for category in reset_categories:
+                    await budget_repository.mark_user_category_spend_reset(session, user_id, category, reset_at)
+                await session.commit()
             except Exception as exc:
-                await session.rollback()
-                logger.warning(
-                    f"budget_event=reset_marker_write_failed component=budget_service "
-                    f"user_id={user_id!r} category={category.value!r}: {exc}"
+                logger.error(
+                    f"Failed to record spend reset time for user {user_id!r} "
+                    f"categories {[c.value for c in reset_categories]!r}: {exc}"
                 )
+                raise
 
         reset_scope = [c.value for c in target_categories]
         logger.info(

@@ -20,16 +20,16 @@ from typing import List, Optional
 
 import yaml
 from elasticsearch import NotFoundError
-from sqlalchemy import Float, Integer
+from sqlalchemy import Integer
 from sqlmodel import Session, func, select
 from sqlmodel.sql.expression import and_, or_
 
 from codemie.configs import config, logger
 from codemie.core.ability import Ability, Action
 from codemie.core.constants import ChatRole, MermaidMimeType
+from codemie.core.event_loop import run_coroutine_blocking
 from codemie.core.exceptions import ExtendedHTTPException, MaterializationFailedException
-from codemie.core.models import UserEntity
-from codemie.core.utils import safe_divide
+from codemie.core.models import TokensUsage, UserEntity
 from codemie.core.workflow_models import (
     WorkflowConfig,
     WorkflowConfigTemplate,
@@ -49,12 +49,93 @@ from codemie.rest_api.utils.default_applications import ensure_application_exist
 from codemie.service.agent_workspace_service import AgentWorkspaceService
 from codemie.service.mcp.access_control import MCPAccessControlService
 from codemie.service.monitoring.workflow_monitoring_service import WorkflowMonitoringService
+from codemie.service.spend.coverage import SpendDimension, SpendResult, TimeRange
+from codemie.service.spend.hydration import hydrate_request_cost
+from codemie.service.spend.ledger import ComposedScope, DimensionScope, UserTerm
+from codemie.service.spend.rendering import RenderedSpend, render_composed_spend, render_spend, spend_fields
+from codemie.service.spend.spend_service import spend_service
 from codemie.service.workflow_config.workflow_marketplace_service import WorkflowMarketplaceService
 
 MAX_ITEMS_PER_PAGE = 10_000
 _EXECUTION_ID_KEYWORD = "execution_id.keyword"
 
 _marketplace_service = WorkflowMarketplaceService()
+
+
+async def _composed_per_workflow(
+    workflow_ids: List[str],
+    user_term: Optional[UserTerm],
+    project: Optional[str],
+    project_owners: tuple[str, ...],
+    period: TimeRange,
+) -> dict[str, SpendResult]:
+    """One composed read per workflow, all within a single trip onto the app loop."""
+    return {
+        workflow_id: await spend_service.aggregate_composed(
+            period,
+            ComposedScope(
+                user=user_term,
+                project=project,
+                dimension=DimensionScope(SpendDimension.WORKFLOW, workflow_id),
+                project_owners=project_owners,
+            ),
+        )
+        for workflow_id in workflow_ids
+    }
+
+
+def _workflow_breakdown_spend(
+    workflow_ids: List[str],
+    *,
+    user_term: Optional[UserTerm],
+    project: Optional[str],
+    period: Optional[TimeRange],
+    project_owners: tuple[str, ...] = (),
+) -> List[RenderedSpend]:
+    """Each workflow's own figure, read with the report's **whole** scope carried on every id.
+
+    **Deliberately not `aggregate_by_dimension(period, WORKFLOW, ids)`.** That read is a dashboard
+    table's: it narrows by a dashboard's `ReportFilter` at most and never by this report's
+    `ComposedScope`, so using it here would silently drop this report's own conjunction and report every
+    other user's spend on the same workflow as if it were this user's. One `aggregate_composed` per id
+    keeps the conjunction the report was asked for. The id set is the workflows *this* filter matched, so
+    the round-trip count is the breakdown's own row count and nothing wider.
+
+    A `None` period means the port is not asked at all, and a timeout means it did not answer: both
+    yield an absent figure per row rather than a zero, because a zero is a claim that nothing was
+    spent. `run_coroutine_blocking` returns `None` on timeout instead of raising for exactly this -
+    a slow ledger degrades a figure rather than failing the request.
+
+    (A near-copy of `conversation_service._spend_per_dimension_value`. Kept a copy rather than
+    shared, because the alternative is one of these two services importing the other for a bridge
+    neither owns; the rule they must not diverge on - the whole scope on every id - is written out in
+    both.)
+    """
+    if period is None or not workflow_ids:
+        return [render_spend(None) for _ in workflow_ids]
+
+    results = run_coroutine_blocking(
+        _composed_per_workflow(workflow_ids, user_term, project, project_owners, period),
+        on_timeout="workflow spending breakdown spend read",
+    )
+    if results is None:
+        return [render_spend(None) for _ in workflow_ids]
+    # One composed scope's figure per row: partial, never sized (`render_composed_spend`).
+    return [render_composed_spend(results.get(workflow_id)) for workflow_id in workflow_ids]
+
+
+def _average_cost(figure: Optional[float], item_count: int) -> Optional[float]:
+    """The per-execution cost, or **nothing at all** where no such cost exists.
+
+    Two absences used to arrive as `0.0`, and on a report a zero is a claim: *this workflow costs
+    nothing per run*. Neither absence supports it - no executions means there is no ratio to state,
+    and an unknown numerator makes the quotient unknown too. A figure that exists but is *qualified*
+    does yield a ratio, which inherits the qualification from the row's annotation exactly as the
+    figure does: it is the same money, divided.
+    """
+    if figure is None or item_count <= 0:
+        return None
+    return round(figure / item_count, 5)
 
 
 class WorkflowService:
@@ -378,6 +459,39 @@ class WorkflowService:
         except Exception as e:
             logger.error(f"Failed to get workflow execution: {e}")
             raise e
+
+    @classmethod
+    async def hydrate_execution_cost(cls, execution: WorkflowExecution) -> Optional[TokensUsage]:
+        """The execution's usage with a pending cost settled from the ledger where it can be.
+
+        AD-28 rule 7, at the execution's own grain: every LLM call of an execution left for the
+        ledger under `request_id=execution_id` (`workflow_execution_service`), so that id is the
+        key - a sub-execution is its own request and hydrates by its own id, never its parent's.
+        Only a figure the ledger settled is written back to the row; a usage the ledger cannot
+        answer for is returned flagged for this read and stored untouched.
+        """
+        usage = execution.tokens_usage
+        if usage is None:
+            return None
+        hydrated = await hydrate_request_cost(
+            request_id=execution.execution_id,
+            money_spent=usage.money_spent,
+            pending=usage.money_spent_pending,
+            unavailable=usage.money_spent_unavailable,
+        )
+        presented = usage.model_copy(
+            update={
+                "money_spent": hydrated.money_spent,
+                "money_spent_pending": hydrated.pending,
+                "money_spent_unavailable": hydrated.unavailable,
+            }
+        )
+        if hydrated.settled_now:
+            execution.tokens_usage = presented
+            # Not a change to the execution: its update_date is when it last ran, and the UI derives
+            # "Finished" and the runtime from it - a read settling the cost must not move either.
+            execution.update(touch_timestamp=False)
+        return presented
 
     @classmethod
     def get_nesting_depth(cls, execution_id: str) -> int:
@@ -722,27 +836,46 @@ class WorkflowService:
     @classmethod
     def get_workflow_spending_analytics(
         cls,
-        user_name: Optional[str] = None,
         workflow_id: Optional[str] = None,
         project: Optional[str] = None,
         since_date: Optional[datetime] = None,
         include_breakdown: bool = False,
+        *,
+        user_term: Optional[UserTerm] = None,
+        period: Optional[TimeRange] = None,
+        project_owners: tuple[str, ...] = (),
     ) -> dict:
         """
-        Get workflow execution spending analytics.
+        Get workflow execution activity, and read each workflow's money from the spend port.
+
+        **Returns no money total, deliberately.** The one money figure this report has is read once,
+        over the whole filter conjunction, by the caller that owns the report - `GetSpendingTool`. A
+        total here would be the workflow half of a sum, and a sum of two independently floored figures
+        is not a figure at all (AD-29): if either half were short the total would be short by an
+        unknown amount and would say nothing about it. Only `breakdown` carries money, one port figure
+        per workflow.
 
         Args:
-            user_name: Filter by user name (case-insensitive)
             workflow_id: Filter by specific workflow ID
             project: Filter by project name
-            since_date: Filter by creation date (>=)
+            since_date: Filter by creation date (>=) - the activity half only
             include_breakdown: Include detailed breakdown by individual workflows
+            user_term: The person every figure names, already resolved to the canonical id and alias set.
+                Resolved once by the caller and passed through unchanged, so the activity and the money on
+                one response name the same person; `None` means unconstrained.
+            period: The window every money figure covers. `None` is the whole of *do not ask the port*
+                - no window it can read - and every figure is then absent
+                rather than zero.
+            project_owners: The `users.id`s owning `project` when it is a personal project: the port can
+                match its money only through them (`ComposedScope.project_owners`).
 
         Returns:
-            Dict with keys: total_money_spent, total_input_tokens, total_output_tokens,
+            Dict with keys: total_input_tokens, total_output_tokens,
                            total_workflow_executions, breakdown (list of dicts)
         """
-        filters = cls._build_workflow_filters(user_name, workflow_id, project, since_date)
+        filters = cls._build_workflow_filters(
+            user_term.user_id if user_term else None, workflow_id, project, since_date
+        )
 
         with Session(WorkflowExecution.get_engine()) as session:
             # Get totals
@@ -751,10 +884,11 @@ class WorkflowService:
             # Get breakdown if requested
             breakdown = []
             if include_breakdown:
-                breakdown = cls._get_workflow_breakdown(session, filters)
+                breakdown = cls._get_workflow_breakdown(
+                    session, filters, user_term=user_term, project=project, period=period, project_owners=project_owners
+                )
 
             return {
-                'total_money_spent': totals['total_money_spent'],
                 'total_input_tokens': totals['total_input_tokens'],
                 'total_output_tokens': totals['total_output_tokens'],
                 'total_workflow_executions': totals['total_workflow_executions'],
@@ -876,20 +1010,21 @@ class WorkflowService:
 
     @staticmethod
     def _build_workflow_filters(
-        user_name: Optional[str] = None,
+        user_id: Optional[str] = None,
         workflow_id: Optional[str] = None,
         project: Optional[str] = None,
         since_date: Optional[datetime] = None,
     ) -> List:
-        """Build filter conditions for workflow execution queries."""
+        """Build filter conditions for workflow execution queries.
+
+        The user is matched on `created_by.user_id`, never on the stored display name: the money beside
+        these counts is read for one resolved person, and a display-name match would count a different
+        population - none at all for a username or an email, everybody sharing the name for a display name.
+        """
         filters = []
 
-        if user_name:
-            # Add null safety check for created_by JSONB field with case-insensitive comparison
-            user_name_field = func.jsonb_extract_path_text(WorkflowExecution.created_by, 'name')
-            filters.append(
-                and_(WorkflowExecution.created_by.isnot(None), func.lower(user_name_field) == user_name.lower())
-            )
+        if user_id:
+            filters.append(WorkflowExecution.created_by['user_id'].astext == user_id)
 
         if workflow_id:
             filters.append(WorkflowExecution.workflow_id == workflow_id)
@@ -915,9 +1050,13 @@ class WorkflowService:
 
     @classmethod
     def _get_workflow_totals(cls, session: Session, filters: List) -> dict:
-        """Get total spending across all workflow executions."""
+        """Get total activity across all workflow executions.
+
+        **No money.** `tokens_usage.money_spent` is a persisted per-execution subtotal whose source of
+        truth is the spend port, and a SQL sum over those copies is the second route to one number this
+        refactor removes. The caller reads the money it needs from `spend_service`.
+        """
         total_stmt = select(
-            func.sum(cls._extract_token_field('money_spent', Float)).label('total_money'),
             func.sum(cls._extract_token_field('input_tokens', Integer)).label('total_input'),
             func.sum(cls._extract_token_field('output_tokens', Integer)).label('total_output'),
             func.count(WorkflowExecution.id).label('total_executions'),
@@ -929,21 +1068,34 @@ class WorkflowService:
         total_result = session.exec(total_stmt).one()
 
         return {
-            'total_money_spent': float(total_result.total_money or 0),
             'total_input_tokens': int(total_result.total_input or 0),
             'total_output_tokens': int(total_result.total_output or 0),
             'total_workflow_executions': int(total_result.total_executions or 0),
         }
 
     @classmethod
-    def _get_workflow_breakdown(cls, session: Session, filters: List) -> List[dict]:
-        """Get spending breakdown by individual workflows."""
+    def _get_workflow_breakdown(
+        cls,
+        session: Session,
+        filters: List,
+        *,
+        user_term: Optional[UserTerm] = None,
+        project: Optional[str] = None,
+        period: Optional[TimeRange] = None,
+        project_owners: tuple[str, ...] = (),
+    ) -> List[dict]:
+        """Get spending breakdown by individual workflows.
+
+        The SQL groups **activity** by `WorkflowExecution.workflow_id` - the id, never the mutable
+        name, which would split one workflow across a rename and merge two that share a name. Money
+        is not summed here and is not ordered here: each workflow's figure is one spend-port read
+        keyed on the same id the group-by used, and the ordering follows those figures.
+        """
         # Join WorkflowExecution with WorkflowConfig to get workflow names
         breakdown_stmt = (
             select(
                 WorkflowExecution.workflow_id,
                 WorkflowConfig.name,
-                func.sum(cls._extract_token_field('money_spent', Float)).label('money_spent'),
                 func.sum(cls._extract_token_field('input_tokens', Integer)).label('input_tokens'),
                 func.sum(cls._extract_token_field('output_tokens', Integer)).label('output_tokens'),
                 func.count(WorkflowExecution.id).label('execution_count'),
@@ -955,32 +1107,44 @@ class WorkflowService:
         if filters:
             breakdown_stmt = breakdown_stmt.where(and_(*filters))
 
-        breakdown_stmt = breakdown_stmt.order_by(func.sum(cls._extract_token_field('money_spent', Float)).desc())
+        # Ordered by the id rather than by money: the money is not in this query any more, and a
+        # stable key keeps the rows and the figures read for them lined up.
+        breakdown_stmt = breakdown_stmt.order_by(WorkflowExecution.workflow_id)
 
         breakdown_results = session.exec(breakdown_stmt).all()
 
+        workflow_ids = [row[0] for row in breakdown_results]
+        spend = _workflow_breakdown_spend(
+            workflow_ids, user_term=user_term, project=project, period=period, project_owners=project_owners
+        )
+        logger.info(
+            f"Workflow spending breakdown read the ledger for {len(workflow_ids)} workflow(s) "
+            "over one window, each with the report's whole scope"
+        )
+
         breakdown = []
-        for row in breakdown_results:
+        for row, rendered in zip(breakdown_results, spend, strict=True):
             workflow_id_val = row[0]
-            workflow_name = row[1] or workflow_id_val
-            money_spent = float(row[2] or 0)
-            input_tokens = int(row[3] or 0)
-            output_tokens = int(row[4] or 0)
-            exec_count = int(row[5] or 0)
-            avg_cost = safe_divide(money_spent, exec_count)
+            exec_count = int(row[4] or 0)
 
             breakdown.append(
                 {
                     'dimension_type': 'workflow',
                     'dimension_id': workflow_id_val,
-                    'dimension_name': workflow_name,
-                    'money_spent': money_spent,
-                    'input_tokens': input_tokens,
-                    'output_tokens': output_tokens,
+                    'dimension_name': row[1] or workflow_id_val,
+                    'money_spent': rendered.figure,
+                    'input_tokens': int(row[2] or 0),
+                    'output_tokens': int(row[3] or 0),
                     'workflow_execution_count': exec_count,
-                    'average_cost_per_item': avg_cost,
+                    'average_cost_per_item': _average_cost(rendered.figure, exec_count),
+                    **spend_fields(rendered),
                 }
             )
+
+        # Ordered by the port figure, descending. An absent figure sorts **last** rather than as a
+        # zero: the first key separates the two outright, so no row nobody has a figure for is ranked
+        # among the figures.
+        breakdown.sort(key=lambda row: (row['money_spent'] is not None, row['money_spent'] or 0.0), reverse=True)
 
         return breakdown
 

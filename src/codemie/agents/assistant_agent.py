@@ -44,6 +44,7 @@ from codemie.agents.agent_runtime_utils import (
     serialize_tool_calls,
     transform_history,
     truncate_log_value,
+    with_captured_origin,
 )
 from codemie.agents.agent_callback_factory import build_tool_callbacks
 from codemie.agents.callbacks.agent_streaming_callback import AgentStreamingCallback
@@ -66,6 +67,7 @@ from codemie.core.constants import (
     USER_NAME,
     LLM_MODEL,
     AGENT_NAME,
+    ASSISTANT_ID,
     PROJECT,
     OUTPUT_FORMAT,
 )
@@ -87,6 +89,8 @@ from codemie.service.constants import AI_AGENT_CONVERSATION_REPLAY_V2_ENABLED_KE
 from codemie.service.dynamic_config_service import DynamicConfigService
 from codemie.service.llm_service.llm_service import llm_service
 from codemie.service.mcp.models import MCPToolInvocationResponse
+from codemie.service.spend.origin_context import current_origin
+from codemie.service.spend.traffic_class import TrafficOrigin
 from codemie.templates.agents.assistant_base import json_react_template_v2, user_prompt, markdown_response_prompt
 
 
@@ -148,6 +152,10 @@ def get_react_json_prompt_template(system_prompt):
 
 
 class AIToolsAgent(WorkspaceAwareAgent):
+    #: The origin in force where this agent was built, replayed on the thread that runs it. Class
+    #: level so an agent assembled without `__init__` still answers None rather than raising.
+    _origin: TrafficOrigin | None = None
+
     @staticmethod
     def _is_conversation_replay_v2_enabled() -> bool:
         return DynamicConfigService.get_bool_value_safe(
@@ -199,6 +207,7 @@ class AIToolsAgent(WorkspaceAwareAgent):
         self.output_schema = self._preprocess_output_schema(output_schema) if output_schema else None
         self.assistant = assistant
         self.trace_context = trace_context  # Store for trace unification
+        self._origin = current_origin()
         self._resolved_llm_model: Optional[str] = None
         self.tool_error_callback = (
             ToolErrorCaptureCallback(agent_name=agent_name) if self._is_conversation_replay_v2_enabled() else None
@@ -374,6 +383,11 @@ class AIToolsAgent(WorkspaceAwareAgent):
             USER_NAME: self.user.name,
             LLM_MODEL: self.llm_model,
             AGENT_NAME: self.agent_name,
+            # The id travels beside the name because the name is mutable: a tool-usage table keyed
+            # on `agent_name` re-buckets its whole history the moment an assistant is renamed.
+            # `langgraph_agent._configure_tools` has always sent it; this path had not, so the
+            # attribute was present for some assistants and absent for others.
+            ASSISTANT_ID: self.assistant.id if self.assistant else None,
             PROJECT: self.assistant.project if self.assistant else None,
             **(self.request.metadata or {}),
             **run_id_metadata(self.assistant),
@@ -587,6 +601,7 @@ class AIToolsAgent(WorkspaceAwareAgent):
     def _serialize_response_for_log(cls, response: Any) -> str:
         return serialize_response(response)
 
+    @with_captured_origin
     def generate(self, background_task_id: str = "") -> GenerationResult:
         start_time = time()
         try:
@@ -644,6 +659,7 @@ class AIToolsAgent(WorkspaceAwareAgent):
                 tool_errors=self._get_tool_errors(),
             )
 
+    @with_captured_origin
     def stream(self):
         set_logging_info(
             uuid=self.request_uuid,

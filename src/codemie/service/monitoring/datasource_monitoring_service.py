@@ -93,9 +93,12 @@ class DatasourceMonitoringService(BaseMonitoringService):
             MetricsAttributes.INPUT_TOKENS: tokens_usage.input_tokens,
             MetricsAttributes.OUTPUT_TOKENS: tokens_usage.output_tokens,
             MetricsAttributes.CACHE_READ_INPUT_TOKENS: tokens_usage.cached_tokens,
-            MetricsAttributes.MONEY_SPENT: tokens_usage.money_spent,
             MetricsAttributes.CACHED_TOKENS_MONEY_SPENT: tokens_usage.cached_tokens_money_spent,
         }
+        # A metric emitted while cost was pending used to carry a fabricated zero, since nothing
+        # re-emits this document when the ledger settles - the zero froze into history permanently.
+        if not (tokens_usage.money_spent_pending or tokens_usage.money_spent_unavailable):
+            attributes[MetricsAttributes.MONEY_SPENT] = tokens_usage.money_spent
 
         if additional_attributes:
             attributes.update(additional_attributes)
@@ -136,7 +139,15 @@ class DatasourceMonitoringService(BaseMonitoringService):
             model_usage[model]['input_tokens'] += run.input_tokens
             model_usage[model]['output_tokens'] += run.output_tokens
             model_usage[model]['cached_tokens'] += run.cached_tokens
-            model_usage[model]['money_spent'] += run.money_spent
+            # AD-28 rule 4: a run costs `None` while unsettled. Skipping it is not enough - the
+            # remaining sum would be this model's *settled part* emitted as its cost. So `None` is
+            # sticky here and carries the same meaning it carries on `LLMRun.money_spent`: **not
+            # settled**. One unsettled run makes the model's figure unavailable, and the attribute
+            # is then omitted below rather than truncated.
+            if run.money_spent is None:
+                model_usage[model]['money_spent'] = None
+            elif model_usage[model]['money_spent'] is not None:
+                model_usage[model]['money_spent'] += run.money_spent
             model_usage[model]['cached_tokens_money_spent'] += run.cached_tokens_money_spent
 
         # Send one metric per model
@@ -153,9 +164,14 @@ class DatasourceMonitoringService(BaseMonitoringService):
                 MetricsAttributes.INPUT_TOKENS: usage['input_tokens'],
                 MetricsAttributes.OUTPUT_TOKENS: usage['output_tokens'],
                 MetricsAttributes.CACHE_READ_INPUT_TOKENS: usage['cached_tokens'],
-                MetricsAttributes.MONEY_SPENT: usage['money_spent'],
                 MetricsAttributes.CACHED_TOKENS_MONEY_SPENT: usage['cached_tokens_money_spent'],
             }
+            # Gated exactly as the sibling emitter above is, and for the same reason: **nothing
+            # re-emits this document when the ledger settles**, so a truncated total or a `0.0`
+            # freezes into metric history uncorrectably. A metric has no annotation slot to say
+            # "this figure is short", so the only honest options are the whole figure or none.
+            if usage['money_spent'] is not None:
+                attributes[MetricsAttributes.MONEY_SPENT] = usage['money_spent']
 
             if additional_attributes:
                 attributes.update(additional_attributes)

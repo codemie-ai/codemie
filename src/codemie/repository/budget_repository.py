@@ -339,6 +339,25 @@ class BudgetRepository:
         await session.execute(stmt)
         await session.flush()
 
+    async def mark_user_category_spend_reset(
+        self,
+        session: AsyncSession,
+        user_id: str,
+        category: BudgetCategory,
+        reset_at: datetime,
+    ) -> None:
+        """UPDATE user_budget_assignments SET spend_reset_at WHERE user_id=? AND category=?"""
+        stmt = (
+            sa_update(UserBudgetAssignment)
+            .where(
+                UserBudgetAssignment.user_id == user_id,
+                UserBudgetAssignment.category == category.value,
+            )
+            .values(spend_reset_at=reset_at)
+        )
+        await session.execute(stmt)
+        await session.flush()
+
     async def delete_user_category_assignment(
         self,
         session: AsyncSession,
@@ -395,6 +414,37 @@ class BudgetRepository:
         for row in rows:
             grouped.setdefault(row.user_id, []).append(row)
         return grouped
+
+    async def list_personal_assignments_with_budgets(
+        self,
+        session: AsyncSession,
+        *,
+        user_ids: list[str] | None = None,
+        limit: int,
+    ) -> list[tuple[UserBudgetAssignment, Budget]]:
+        """Return personal budget assignments paired with the active budget each one points at.
+
+        This is the candidate set for the budget limit dashboards: the table holds one row per
+        (user, category) that *has* a limit, which is a far smaller set than every user times every
+        category. A soft-deleted budget carries no configured limit, so it is joined out.
+
+        ``user_ids=None`` means every holder; a list restricts the read to those users.
+
+        Ordered on (user_id, category) so a read truncated by ``limit`` returns a reproducible
+        prefix rather than an arbitrary one.
+        """
+        stmt = (
+            select(UserBudgetAssignment, Budget)
+            .join(Budget, UserBudgetAssignment.budget_id == Budget.budget_id)
+            .where(Budget.deleted_at.is_(None))
+        )
+        if user_ids is not None:
+            stmt = stmt.where(UserBudgetAssignment.user_id.in_(user_ids))
+        stmt = stmt.order_by(UserBudgetAssignment.user_id, UserBudgetAssignment.category).limit(limit)
+
+        result = await session.execute(stmt)
+        # A SQLAlchemy 2.x Row is not a tuple, so the pair is materialised for the declared type.
+        return [(row[0], row[1]) for row in result.all()]
 
 
 budget_repository = BudgetRepository()

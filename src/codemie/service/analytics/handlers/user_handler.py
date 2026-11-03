@@ -16,10 +16,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
+from dataclasses import replace
+from typing import cast
 from datetime import datetime, timezone
+from functools import partial
 
 from codemie.clients.postgres import get_async_session
 from codemie.configs import config
@@ -32,12 +34,37 @@ from codemie.service.analytics.handlers.field_constants import (
     PROJECT_KEYWORD_FIELD,
     USER_NAME_KEYWORD_FIELD,
 )
+from codemie.service.analytics.handlers.money_coverage import (
+    SETTLED_AGG,
+    UNSETTLED_AGG,
+    money_coverage_aggs,
+    read_money_coverage,
+)
+from codemie.service.analytics.handlers.report_filter import report_filter_for
 from codemie.service.analytics.handlers.user_identity_resolver import UserIdentityResolver
-from codemie.service.analytics.handlers.cli_cost_processor import CLICostAdjustmentMixin
 from codemie.service.analytics.metric_names import MetricName
-from codemie.service.analytics.query_pipeline import AnalyticsQueryFilters, AnalyticsQueryPipeline
+from codemie.service.analytics.query_pipeline import (
+    CANDIDATE_ORDER,
+    AnalyticsQueryFilters,
+    AnalyticsQueryPipeline,
+    EnrichedRows,
+    enriched_spend_rows,
+    ordered_spend_rows,
+)
 from codemie.service.analytics.response_formatter import ResponseFormatter
 from codemie.service.analytics.time_parser import TimeParser
+from codemie.service.spend.coverage import TimeRange
+from codemie.service.spend.identity_bridge import aliases_for_user
+from codemie.service.spend.ledger import PersonTotalHolder, ReportFilter
+from codemie.service.spend.rendering import (
+    FIELD_MISSING,
+    FIELD_PARTIAL,
+    RenderedSpend,
+    render_spend,
+    report_period_or_none,
+)
+from codemie.service.spend.spend_group import SpendGroup
+from codemie.service.spend.spend_service import spend_service
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +77,125 @@ OUTPUT_TOKENS_FIELD = "attributes.output_tokens"
 CLI_REQUEST_FIELD = "attributes.cli_request"
 USER_EMAIL_LABEL = "User Email"
 
+#: The money column of every by-users spending table.
+SPEND_COLUMN = "total_cost_usd"
+#: The precision a money footer is published at, and so the precision two footers are compared at.
+MONEY_DECIMALS = 2
+#: The money sum inside each by-users bucket, read back together with its coverage counts.
+BY_USER_MONEY_SUM = "total_cost"
+#: Where a parsed by-users row holds its qualified Elasticsearch figure until the enricher writes the
+#: money cell from it. Popped before the row is published.
+ES_MONEY_KEY = "_es_money"
+#: The documents of a platform bucket that a money attribute is expected on.
+#:
+#: **Narrowed by token counts, because `PLATFORM_METRICS` names are not all cost-bearing emitters.**
+#: `codemie_tools_usage_tokens` is also written by `AgentMonitoringService.send_tool_metrics` for every
+#: successful tool invocation, through `send_count_metric`, with no token counts and no money - no model
+#: was called - and the generator, output-change and validation names go through
+#: `emit_llm_token_metric`, which writes neither when the request recorded no model usage. Counted as
+#: unsettled, those documents would publish nearly every user `partial` in every window. Every emitter
+#: that may write money writes `attributes.input_tokens` unconditionally and `attributes.money_spent`
+#: only once the cost has settled, so a document with tokens and no money is exactly an outstanding
+#: cost. It is the discriminator `project_handler` and `workflow_handler` qualify their own sums by.
+PLATFORM_COST_BEARING = {"exists": {"field": INPUT_TOKENS_FIELD}}
 
-class UserHandler(CLICostAdjustmentMixin):
+
+def _by_user_money_aggs(cost_bearing: dict | None) -> dict:
+    """A by-users bucket's money `sum` and the coverage counts that say whether it is whole."""
+    return {
+        BY_USER_MONEY_SUM: {"sum": {"field": MONEY_SPENT_FIELD}},
+        **money_coverage_aggs(MONEY_SPENT_FIELD, cost_bearing=cost_bearing),
+    }
+
+
+def _measured_es_money(money_bucket: dict) -> RenderedSpend:
+    """One user's Elasticsearch money, qualified by its coverage and kept at its measured precision.
+
+    The qualification is `read_money_coverage`'s - nothing settled is unavailable, something unsettled
+    is partial - but the figure is the **unrounded** sum: these rows are footed and filtered on it, and
+    a sub-cent spend rounded to an exact `0.0` would be dropped as a user who spent nothing, which the
+    old `params.cost > 0` selector never did. The footer is unrounded too, in `spend_footer`.
+
+    **A user with no cost-bearing document at all is a measured zero, not an absence.** The unsettled
+    count is narrowed to documents a cost was expected on, so a bucket holding only tool-usage or
+    no-model-usage documents settles nothing and leaves nothing outstanding: no money was owed in it.
+    `read_money_coverage` reads *nothing settled* as unavailable, which is right when something was
+    owed; here it would brand the user "-" and every footer beside them partial for a cost nobody
+    incurred - the always-on alarm the narrowing exists to prevent.
+    """
+    if (
+        money_bucket.get(SETTLED_AGG, {}).get("value") == 0
+        and money_bucket.get(UNSETTLED_AGG, {}).get("doc_count") == 0
+    ):
+        return RenderedSpend(figure=0.0, unavailable=False, partial=False, missing_amount=None)
+    rendered = read_money_coverage(money_bucket, BY_USER_MONEY_SUM)
+    if rendered.figure is None:
+        return rendered
+    return rendered.with_figure(float(money_bucket[BY_USER_MONEY_SUM]["value"]))
+
+
+def _pop_es_money(rows: list[dict]) -> list[RenderedSpend]:
+    """Take each row's carried figure off it, so the carrier never reaches the wire."""
+    return [row.pop(ES_MONEY_KEY) for row in rows]
+
+
+async def _order_platform_spend(rows: list[dict], _start_dt: datetime, _end_dt: datetime) -> EnrichedRows:
+    """Write, order and foot the platform money cells, keeping every user the query listed.
+
+    Every row is kept, measured zeroes included, as this table always listed them: it never had a
+    zero-cost selector.
+    """
+    return ordered_spend_rows(rows, _pop_es_money(rows), SPEND_COLUMN)
+
+
+async def _filter_cli_spend(rows: list[dict], _start_dt: datetime, _end_dt: datetime) -> EnrichedRows:
+    """Write, order and foot the CLI money cells, dropping only a user who measurably spent nothing.
+
+    The rule the old `params.cost > 0` selector applied, minus its defect: that selector read a sum
+    that skips every unsettled request, so a user whose CLI calls had not settled read `0` and left
+    the table. `enriched_spend_rows` drops an *exact* zero only, keeping an unsettled user labelled.
+    """
+    return enriched_spend_rows(rows, _pop_es_money(rows), SPEND_COLUMN)
+
+
+def _footed_against_ledger(enriched: EnrichedRows, ledger_total: RenderedSpend) -> EnrichedRows:
+    """The footer, published `partial` when the ledger holds more for the same question than its rows.
+
+    **The row set can be short of the ledger, and nothing in the rows can tell.** Elasticsearch
+    enumerates the candidate users - a user is listed only if a spending metric document names them in
+    the window - while their figures come from the ledger. A user whose spend reached the ledger with no
+    metric document in the window (a LiteLLM call that emitted none, a document since rolled off) has
+    money in the scope's total and no row, so a footer summed over the rows alone is a subtotal
+    presented as a total. `ledger_total` is that scope's whole figure, read with the same boundary and
+    the same filter as the rows.
+
+    An absent ledger figure is no evidence either way, so the footer is left as it is rather than
+    qualified on a guess. Both figures are compared in cents, the precision the footer is published at:
+    the footer is already rounded, so the ledger figure is rounded the same way before the subtraction,
+    or a half-cent total rounded down in one and not the other would read as a missing cent. Its size is
+    published only when the ledger figure is itself exact: a short ledger figure is a floor, and the gap
+    from a floor is not the size of the hole.
+
+    **The check holds only while the rows answer the same question as `ledger_total`**, which is why
+    both are read with the one report filter built for the request. A row read without it is a person's
+    total across every project while the ledger total is narrowed to the filtered projects, so the rows
+    could exceed it and hide a missing spender.
+    """
+    footer = enriched.totals.get(SPEND_COLUMN)
+    if ledger_total.figure is None or footer is None:
+        return enriched
+    gap = round(round(ledger_total.figure, MONEY_DECIMALS) - footer, MONEY_DECIMALS)
+    if gap <= 0:
+        return enriched
+    totals = {
+        **enriched.totals,
+        f"{SPEND_COLUMN}_{FIELD_PARTIAL}": True,
+        f"{SPEND_COLUMN}_{FIELD_MISSING}": gap if ledger_total.is_exact else None,
+    }
+    return cast(EnrichedRows, replace(enriched, totals=totals))
+
+
+class UserHandler:
     """Handler for user analytics."""
 
     def __init__(self, user: User, repository: MetricsElasticRepository):
@@ -221,7 +365,7 @@ class UserHandler(CLICostAdjustmentMixin):
         """Get users spending analytics.
 
         Returns user spending data grouped by user email with total cost across all resource types
-        (assistants, workflows, datasources, CLI). CLI costs are adjusted for cutoff date.
+        (assistants, workflows, datasources, CLI).
 
         Args:
             time_period: Predefined time range (e.g., 'last_30_days')
@@ -238,70 +382,141 @@ class UserHandler(CLICostAdjustmentMixin):
         """
         logger.info("Requesting users-spending analytics")
 
-        start_dt, end_dt = TimeParser.parse(time_period, start_date, end_date)
-
-        result, cli_costs_by_user = await asyncio.gather(
-            self._pipeline.execute_tabular_query(
-                agg_builder=lambda query, fetch_size: self._build_users_spending_aggregation(query, fetch_size),
-                result_parser=self._parse_users_spending_rows_raw,
-                columns=self._get_users_spending_columns(),
-                group_by_field=USER_ID_KEYWORD_FIELD,
-                filters=AnalyticsQueryFilters(
-                    metric_filters=MetricName.to_list_from_group(MetricName.SPENDING_METRICS),
-                    time_period=time_period,
-                    start_date=start_date,
-                    end_date=end_date,
-                    users=users,
-                    projects=projects,
-                    page=page,
-                    per_page=per_page,
-                    client_source=client_source,
-                ),
-                use_bucket_selector=True,
+        result = await self._pipeline.execute_enriched_tabular_query(
+            agg_builder=lambda query, fetch_size: self._build_users_spending_aggregation(query, fetch_size),
+            result_parser=self._parse_users_spending_rows_raw,
+            columns=self._get_users_spending_columns(),
+            group_by_field=USER_ID_KEYWORD_FIELD,
+            # Every candidate bucket in one query: the enricher orders and counts the whole set,
+            # because the figure it sorts on is not in Elasticsearch.
+            row_enricher=partial(
+                self._enrich_users_spending, client_source=client_source, users=users, projects=projects
             ),
-            self.get_cli_costs_grouped_by(
-                start_dt, end_dt, USER_ID_KEYWORD_FIELD, "user", users, projects, client_source=client_source
+            filters=AnalyticsQueryFilters(
+                metric_filters=MetricName.to_list_from_group(MetricName.SPENDING_METRICS),
+                time_period=time_period,
+                start_date=start_date,
+                end_date=end_date,
+                users=users,
+                projects=projects,
+                page=page,
+                per_page=per_page,
+                client_source=client_source,
             ),
         )
-
-        self._apply_cli_adjustment_to_rows(result["data"]["rows"], cli_costs_by_user, "user_email")
-        await UserIdentityResolver.resolve_rows(result.get("data", {}).get("rows", []), "user_email")
         return result
 
-    def _build_users_spending_aggregation(self, query: dict, fetch_size: int) -> dict:
-        """Build terms aggregation for users spending with fetch-and-slice."""
-        from codemie.service.analytics.aggregation_builder import AggregationBuilder
+    async def _enrich_users_spending(
+        self,
+        rows: list[dict],
+        start_dt: datetime,
+        end_dt: datetime,
+        client_source: str | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+    ) -> EnrichedRows:
+        """Fill each user's cost from the spend port, then order and total the table by it.
 
-        # Define sub-aggregations (metrics)
-        sub_aggs = {
-            "total_cost": {"sum": {"field": MONEY_SPENT_FIELD}},
-            # Add CLI-specific cost aggregation for cutoff handling (use LiteLLM proxy metric)
-            "cli_cost": {
-                "filter": {
-                    "bool": {
-                        "filter": [
-                            {"term": {METRIC_NAME_KEYWORD_FIELD: MetricName.CLI_LLM_USAGE_TOTAL.value}},
-                            {"term": {CLI_REQUEST_FIELD: True}},
-                        ]
-                    }
-                },
-                "aggs": {"sum": {"sum": {"field": MONEY_SPENT_FIELD}}},
-            },
-            "filter_zero_cost": {
-                "bucket_selector": {
-                    "buckets_path": {"cost": "total_cost"},
-                    "script": "params.cost > 0",
-                }
-            },
+        The identity column is resolved here rather than after paging because the holder a figure is
+        read for is keyed on the resolved user, so every candidate row needs it, not just a page.
+
+        **The read is narrowed by the caller's own boundary, and `PersonTotalHolder` is why it must
+        be.** That holder is a person's total across everything, both pots deliberately, so the figure
+        it answers with is the whole platform's spend on that person - while the rows beside it came
+        from a query `SecureQueryBuilder` had already narrowed to what this caller may see. Footing the
+        one with the other is the disclosure: a project admin was shown a member's spend from projects
+        they cannot access, and a plain member their project's whole spend instead of their own share.
+        The scope comes from the pipeline, which is the single derivation point from a `User`; a
+        handler building one from `AccessFilter` itself would be a second one, free to drift from the
+        very query the rows came from.
+
+        **The read is narrowed by the dashboard's users and projects filter too, for the same reason.**
+        The rows beside it came from a query that filter had already narrowed, so a person filtered to
+        one project was shown their spend across every project. The filter is built **once** and handed
+        to both reads - each person's figure and the footer's total - because it costs an identity
+        lookup, and two builds a request apart are two chances to filter one table on different people.
+        """
+        await UserIdentityResolver.resolve_rows(rows, "user_email")
+        period = report_period_or_none(start_dt, end_dt, client_source)
+        # Not built without a period or a row: neither read runs then, and it costs an identity lookup.
+        report_filter = await report_filter_for(users, projects) if period and rows else None
+        holder_by_identifier = await self._person_total_holders(rows)
+        holders = list(dict.fromkeys(holder_by_identifier.values()))
+        # One round trip for the whole candidate set - all holders share the one requested window,
+        # one boundary and one filter, because both belong to the request rather than to a holder.
+        spend = (
+            await spend_service.consumed_for_holders(
+                holders, period, access=self._pipeline.access_scope, report_filter=report_filter
+            )
+            if holders and period
+            else {}
+        )
+        logger.info(f"Users-spending read the ledger for {len(holders)} holder(s) over {len(rows)} candidate row(s)")
+
+        rendered = [render_spend(spend.get(holder_by_identifier.get(row["user_email"]))) for row in rows]
+        enriched = enriched_spend_rows(rows, rendered, SPEND_COLUMN)
+        if period is None or not enriched.rows:
+            return enriched
+        return _footed_against_ledger(enriched, await self._scope_ledger_total(period, report_filter))
+
+    async def _scope_ledger_total(self, period: TimeRange, report_filter: ReportFilter | None) -> RenderedSpend:
+        """The ledger's whole figure for the question the table answers: this caller, these filters.
+
+        The read the summaries TOTAL card makes, with the same boundary and the same report filter, so
+        the footer and that card cannot disagree about one question without the footer saying so.
+        """
+        groups = await spend_service.aggregate_by_spend_group(
+            period, access=self._pipeline.access_scope, report_filter=report_filter
+        )
+        return render_spend(groups[SpendGroup.TOTAL])
+
+    @staticmethod
+    async def _person_total_holders(rows: list[dict]) -> dict[str, PersonTotalHolder]:
+        """Map each row's resolved identifier to the holder standing for that person's whole total.
+
+        `PersonTotalHolder` spans the personal and project pots deliberately: this column is a
+        person's total across everything, not how much of one budget they consumed.
+
+        Identifiers matching no user record are simply absent from the map, so those rows carry no
+        figure: an identity that cannot be resolved cannot be looked up, which is a different fact
+        from having spent nothing.
+        """
+        identifiers = {row["user_email"] for row in rows if row.get("user_email")}
+        if not identifiers:
+            return {}
+
+        async with get_async_session() as session:
+            records = await user_repository.afind_users_by_identifiers(session, identifiers)
+
+        if len(records) < len(identifiers):
+            logger.info(f"Users-spending resolved {len(records)}/{len(identifiers)} identifiers to a user record")
+        return {
+            identifier: PersonTotalHolder(
+                user_id=record.id,
+                # The record is already in hand, so the alias set costs no query.
+                aliases=aliases_for_user(record.username, record.email),
+            )
+            for identifier, record in records.items()
         }
 
-        # Build terms aggregation using helper
+    def _build_users_spending_aggregation(self, query: dict, fetch_size: int) -> dict:
+        """Build terms aggregation for users spending with fetch-and-slice.
+
+        No money aggregation and no zero-cost selector: the figure comes from the spend port, so
+        Elasticsearch supplies the candidate identities only and both the money order and the zero
+        filter move to Python, after the port has answered.
+        """
+        from codemie.service.analytics.aggregation_builder import AggregationBuilder
+
         terms_agg = AggregationBuilder.build_terms_agg(
             group_by_field=USER_ID_KEYWORD_FIELD,
             fetch_size=fetch_size,
-            order={"total_cost": "desc"},
-            sub_aggs=sub_aggs,
+            order=CANDIDATE_ORDER,
+            sub_aggs={},
         )
+        # Nothing is left to sub-aggregate now that money has moved out, so the empty container is
+        # not sent at all.
+        del terms_agg["aggs"]
 
         # Construct full aggregation body
         agg_body = {
@@ -319,12 +534,11 @@ class UserHandler(CLICostAdjustmentMixin):
 
         return agg_body
 
-    def _parse_users_spending_result(self, result: dict, cli_costs_by_user: dict[str, float]) -> list[dict]:
-        """Parse result for users spending, filtering out empty user emails, and merge adjusted CLI costs.
+    def _parse_users_spending_result(self, result: dict) -> list[dict]:
+        """Parse result for users spending, filtering out empty user emails.
 
         Args:
             result: Elasticsearch aggregation result
-            cli_costs_by_user: Mapping of user_email -> adjusted CLI cost
         """
         # Extract buckets from paginated_results (already sliced by pipeline)
         buckets = result.get("aggregations", {}).get("paginated_results", {}).get("buckets", [])
@@ -334,26 +548,11 @@ class UserHandler(CLICostAdjustmentMixin):
             raw_key = bucket["key"]
             if not raw_key:
                 continue
-            user_email = raw_key
-            total_cost_original = bucket.get("total_cost", {}).get("value", 0) or 0
-            cli_cost_original = bucket.get("cli_cost", {}).get("sum", {}).get("value", 0) or 0
-
-            # Get adjusted CLI cost — look up by raw key so empty-email buckets resolve correctly
-            cli_cost_adjusted = cli_costs_by_user.get(raw_key, 0.0)
-
-            # Calculate adjustment (can be negative if original costs were inflated)
-            # Example: cli_cost_adjusted=$10 (Feb 2-3 only) - cli_cost_original=$100 (Jan 1 - Feb 3) = -$90
-            cli_cost_adjustment = cli_cost_adjusted - cli_cost_original
-
-            # Update total cost
-            # Example: total_cost_original=$500 (web=$400 + CLI=$100) + adjustment=(-$90)
-            #          = $410 (web=$400 + CLI_adjusted=$10) ✓
-            total_cost = total_cost_original + cli_cost_adjustment
-
             rows.append(
                 {
-                    "user_email": user_email,
-                    "total_cost_usd": total_cost,
+                    "user_email": raw_key,
+                    # Filled from the spend port after parsing: Elasticsearch carries no money.
+                    "total_cost_usd": None,
                 }
             )
 
@@ -361,24 +560,18 @@ class UserHandler(CLICostAdjustmentMixin):
         return rows
 
     def _parse_users_spending_rows_raw(self, result: dict) -> list[dict]:
-        """Parse ES result into rows without applying CLI cost adjustment.
-
-        Stores original CLI cost in _cli_cost_original for use by
-        _apply_cli_adjustment_to_rows after asyncio.gather completes.
-        """
+        """Parse ES result into user spending rows."""
         buckets = result.get("aggregations", {}).get("paginated_results", {}).get("buckets", [])
         rows = []
         for bucket in buckets:
             raw_key = bucket["key"]
             if not raw_key:
                 continue
-            total_cost_original = bucket.get("total_cost", {}).get("value", 0) or 0
-            cli_cost_original = bucket.get("cli_cost", {}).get("sum", {}).get("value", 0) or 0
             rows.append(
                 {
                     "user_email": raw_key,
-                    "total_cost_usd": total_cost_original,
-                    "_cli_cost_original": cli_cost_original,
+                    # Filled from the spend port after parsing: Elasticsearch carries no money.
+                    "total_cost_usd": None,
                 }
             )
         logger.debug(f"Parsed users-spending rows (raw): {len(rows)} rows")
@@ -404,7 +597,11 @@ class UserHandler(CLICostAdjustmentMixin):
     ) -> dict:
         """Get platform spending per user (Assistants + Workflows + Datasources, no CLI).
 
-        Groups by user_email and sums money_spent for platform metrics only.
+        Groups by user_email and sums money_spent for platform metrics only. Each sum is published with
+        its coverage, because `money_spent` is written only once a cost settles: a user none of whose
+        documents settled reads unavailable, never `$0.00`, and a sum missing unsettled documents reads
+        partial. Every candidate bucket is fetched so the qualified figures, not Elasticsearch, order
+        and foot the table.
 
         Args:
             time_period: Predefined time range
@@ -426,13 +623,14 @@ class UserHandler(CLICostAdjustmentMixin):
         def parse_platform(result: dict) -> list[dict]:
             return self._parse_simple_spending_result(result, "user_email")
 
-        result = await self._pipeline.execute_tabular_query(
+        result = await self._pipeline.execute_enriched_tabular_query(
             agg_builder=lambda query, fetch_size: self._build_simple_spending_aggregation(
                 query, fetch_size, USER_ID_KEYWORD_FIELD
             ),
             result_parser=parse_platform,
             columns=self._get_users_spending_columns(),
             group_by_field=USER_ID_KEYWORD_FIELD,
+            row_enricher=_order_platform_spend,
             filters=AnalyticsQueryFilters(
                 metric_filters=platform_metrics,
                 time_period=time_period,
@@ -444,8 +642,6 @@ class UserHandler(CLICostAdjustmentMixin):
                 per_page=per_page,
                 client_source=client_source,
             ),
-            use_bucket_selector=False,
-            totals_aggs={"total_cost_usd": {"sum": {"field": MONEY_SPENT_FIELD}}},
         )
         await UserIdentityResolver.resolve_rows(result.get("data", {}).get("rows", []), "user_email")
         return result
@@ -464,7 +660,9 @@ class UserHandler(CLICostAdjustmentMixin):
         """Get CLI-only spending per user (grouped by user_name).
 
         Filters to codemie_litellm_proxy_usage with cli_request=true
-        and groups by attributes.user_name.keyword.
+        and groups by attributes.user_name.keyword. A streaming proxy call carries no settled cost, so
+        each sum is published with its coverage, and a user whose CLI calls have not settled is listed
+        as unavailable or partial rather than dropped as a zero.
 
         Args:
             time_period: Predefined time range
@@ -483,11 +681,12 @@ class UserHandler(CLICostAdjustmentMixin):
 
         from codemie.service.analytics.handlers.field_constants import USER_NAME_KEYWORD_FIELD
 
-        result = await self._pipeline.execute_tabular_query(
+        result = await self._pipeline.execute_enriched_tabular_query(
             agg_builder=lambda query, fetch_size: self._build_cli_spending_aggregation(query, fetch_size),
             result_parser=self._parse_cli_spending_result,
             columns=self._get_cli_spending_columns(),
             group_by_field=USER_NAME_KEYWORD_FIELD,
+            row_enricher=_filter_cli_spend,
             filters=AnalyticsQueryFilters(
                 metric_filters=MetricName.to_list(MetricName.CLI_LLM_USAGE_TOTAL),
                 time_period=time_period,
@@ -499,30 +698,24 @@ class UserHandler(CLICostAdjustmentMixin):
                 per_page=per_page,
                 client_source=client_source,
             ),
-            use_bucket_selector=True,
-            totals_aggs={
-                "total_cost_usd": {
-                    "filter": {"term": {CLI_REQUEST_FIELD: True}},
-                    "aggs": {"_v": {"sum": {"field": MONEY_SPENT_FIELD}}},
-                }
-            },
         )
         await UserIdentityResolver.resolve_rows(result.get("data", {}).get("rows", []), "user_name")
         return result
 
     def _build_simple_spending_aggregation(self, query: dict, fetch_size: int, group_by_field: str) -> dict:
-        """Build terms aggregation for simple spending (sum money_spent, no CLI adjustment)."""
-        from codemie.service.analytics.aggregation_builder import AggregationBuilder
+        """Build terms aggregation for simple spending (sum money_spent, no CLI adjustment).
 
-        sub_aggs = {
-            "total_cost": {"sum": {"field": MONEY_SPENT_FIELD}},
-        }
+        The sum sits beside its coverage counts, narrowed to `PLATFORM_COST_BEARING`: the bucket spans
+        every platform metric name, and not every document under those names is one a cost was expected
+        on.
+        """
+        from codemie.service.analytics.aggregation_builder import AggregationBuilder
 
         terms_agg = AggregationBuilder.build_terms_agg(
             group_by_field=group_by_field,
             fetch_size=fetch_size,
-            order={"total_cost": "desc"},
-            sub_aggs=sub_aggs,
+            order={BY_USER_MONEY_SUM: "desc"},
+            sub_aggs=_by_user_money_aggs(PLATFORM_COST_BEARING),
         )
 
         return {
@@ -537,7 +730,11 @@ class UserHandler(CLICostAdjustmentMixin):
         }
 
     def _parse_simple_spending_result(self, result: dict, field_name: str) -> list[dict]:
-        """Parse simple spending result (no CLI adjustment)."""
+        """Parse simple spending result (no CLI adjustment).
+
+        The money cell stays None here and the qualified figure rides on the row: the enricher writes
+        the cell and its flags in one pass, after it has every candidate to order and foot.
+        """
         buckets = result.get("aggregations", {}).get("paginated_results", {}).get("buckets", [])
         rows = []
 
@@ -545,26 +742,31 @@ class UserHandler(CLICostAdjustmentMixin):
             key = bucket.get("key", "")
             if not key:
                 continue
-            total_cost = bucket.get("total_cost", {}).get("value", 0) or 0
-            rows.append({field_name: key, "total_cost_usd": total_cost})
+            rows.append({field_name: key, SPEND_COLUMN: None, ES_MONEY_KEY: _measured_es_money(bucket)})
 
         logger.debug(f"Parsed simple-spending result: total_buckets={len(buckets)}, rows_parsed={len(rows)}")
         return rows
 
     def _build_cli_spending_aggregation(self, query: dict, fetch_size: int) -> dict:
-        """Build terms aggregation for CLI spending, filtered to cli_request=true."""
+        """Build terms aggregation for CLI spending, filtered to cli_request=true.
+
+        The selector keeps every user with a CLI request and leaves the zero rule to the enricher. It
+        used to keep `cost > 0`, read off a sum that skips every unsettled request, so a user whose CLI
+        calls had not settled was dropped as one who spent nothing. No `cost_bearing` narrowing: every
+        document in the filter is a LiteLLM proxy call, on which a money attribute is always expected.
+        """
         from codemie.service.analytics.aggregation_builder import AggregationBuilder
         from codemie.service.analytics.handlers.field_constants import USER_NAME_KEYWORD_FIELD
 
         sub_aggs = {
             "cli_request_filter": {
                 "filter": {"term": {CLI_REQUEST_FIELD: True}},
-                "aggs": {"total_cost": {"sum": {"field": MONEY_SPENT_FIELD}}},
+                "aggs": _by_user_money_aggs(cost_bearing=None),
             },
             "has_cli_request": {
                 "bucket_selector": {
-                    "buckets_path": {"cost": "cli_request_filter>total_cost"},
-                    "script": "params.cost > 0",
+                    "buckets_path": {"requests": "cli_request_filter>_count"},
+                    "script": "params.requests > 0",
                 }
             },
         }
@@ -572,7 +774,7 @@ class UserHandler(CLICostAdjustmentMixin):
         terms_agg = AggregationBuilder.build_terms_agg(
             group_by_field=USER_NAME_KEYWORD_FIELD,
             fetch_size=fetch_size,
-            order={"cli_request_filter>total_cost": "desc"},
+            order={f"cli_request_filter>{BY_USER_MONEY_SUM}": "desc"},
             sub_aggs=sub_aggs,
         )
 
@@ -583,7 +785,7 @@ class UserHandler(CLICostAdjustmentMixin):
         }
 
     def _parse_cli_spending_result(self, result: dict) -> list[dict]:
-        """Parse CLI spending result grouped by user_name."""
+        """Parse CLI spending result grouped by user_name, carrying each user's qualified figure."""
         buckets = result.get("aggregations", {}).get("paginated_results", {}).get("buckets", [])
         rows = []
 
@@ -591,8 +793,8 @@ class UserHandler(CLICostAdjustmentMixin):
             user_name = bucket.get("key", "")
             if not user_name:
                 continue
-            total_cost = bucket.get("cli_request_filter", {}).get("total_cost", {}).get("value", 0) or 0
-            rows.append({"user_name": user_name, "total_cost_usd": total_cost})
+            money = _measured_es_money(bucket.get("cli_request_filter", {}))
+            rows.append({"user_name": user_name, SPEND_COLUMN: None, ES_MONEY_KEY: money})
 
         logger.debug(f"Parsed cli-spending result: total_buckets={len(buckets)}, rows_parsed={len(rows)}")
         return rows

@@ -14,9 +14,15 @@
 
 """Leaderboard data collector.
 
-Collects raw metrics per user from PostgreSQL, Elasticsearch, and LiteLLM cost data.
-Ported from the prototype at users-leaderboard/v2/collector.py, adapted
-to use the platform's async session and MetricsElasticRepository.
+Collects raw metrics per user from PostgreSQL and Elasticsearch, and every money figure from the
+spend port. Ported from the prototype at users-leaderboard/v2/collector.py, adapted to use the
+platform's async session and MetricsElasticRepository.
+
+**Money is the one metric Elasticsearch does not supply here (AD-29).** It used to: a per-user ES
+aggregation produced a total and a CLI split, a second ES aggregation produced a per-user CLI spend,
+and the scorer added an ES web-spend aggregate to the first. Three aggregations for two quantities
+is what `spend_service` exists to collapse, so the two figures now come from two port reads and are
+never added to anything.
 """
 
 from __future__ import annotations
@@ -34,7 +40,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from codemie.configs.config import config
 from codemie.enterprise.litellm.budget_categories import BudgetCategory, derive_category_from_user_id
 from codemie.repository.metrics_elastic_repository import MetricsElasticRepository
+from codemie.repository.user_repository import user_repository
 from codemie.service.monitoring.metrics_constants import INVOKED_BY_SCRIPT, MetricsAttributes
+from codemie.service.spend.coverage import SpendResult, TimeRange
+from codemie.service.spend.identity_bridge import aliases_for_user
+from codemie.service.spend.ledger import ComposedScope, PersonTotalHolder, UserTerm
+from codemie.service.spend.rendering import RenderedSpend, render_spend, time_range_or_none
+from codemie.service.spend.spend_service import spend_service
+from codemie.service.spend.traffic_class import TrafficClass
 
 logger = logging.getLogger(__name__)
 
@@ -63,8 +76,32 @@ ATTR_ASSISTANT_ID_KEYWORD = "attributes.assistant_id.keyword"
 ATTR_MCP_NAME_KEYWORD = "attributes.mcp_name.keyword"
 ATTR_CLI_REQUEST = "attributes.cli_request"
 ATTR_INVOKED_BY_KEYWORD = f"attributes.{MetricsAttributes.INVOKED_BY}.keyword"
-ATTR_MONEY_SPENT = "attributes.money_spent"
 METRIC_NAME_KEYWORD = "metric_name.keyword"
+
+
+#: The no-figure state, shared because `RenderedSpend` is frozen. **Never a zero:** a person the
+#: identity bridge could not resolve, a period the port cannot read, and a ledger that could not
+#: answer all mean *we do not know what they spent*, which is a different fact from *they spent
+#: nothing* and may not render as `$0.00` or feed a ranking.
+NO_SPEND_FIGURE = render_spend(None)
+
+
+@dataclass(frozen=True, slots=True)
+class UserSpend:
+    """One person's two money figures, both read through the spend port.
+
+    **One CLI figure, not two.** The scorer needs a person's CLI money twice - once for the
+    ranking's delivery-efficiency component and once for the summary it displays - and two
+    aggregations for one quantity on one screen is exactly the divergence the port exists to
+    remove, so both uses share this one read.
+
+    Each figure keeps its `RenderedSpend` rather than a bare float: a truncated or
+    dimension-incomplete total is a number *plus* an annotation, and dropping the annotation would
+    leave it rendering indistinguishably from an exact figure.
+    """
+
+    total: RenderedSpend = NO_SPEND_FIGURE
+    cli: RenderedSpend = NO_SPEND_FIGURE
 
 
 @dataclass
@@ -81,7 +118,9 @@ class RawUserMetrics:
     workflow_creation: dict = field(default_factory=dict)
     cli: dict = field(default_factory=dict)
     impact: dict = field(default_factory=dict)
-    litellm_spend: dict = field(default_factory=dict)
+    #: Money, and the only place it lives. Never Elasticsearch (AD-29) and never a dict of
+    #: independently aggregated figures that a reader could add together.
+    spend: UserSpend = field(default_factory=UserSpend)
 
 
 def _validate_column(column: str) -> str:
@@ -131,10 +170,9 @@ class LeaderboardCollector:
         users = await self._discover_users_pg(start_dt, end_exclusive)
         logger.info(f"Leaderboard collector: discovered {len(users)} users from PG")
 
-        pg_metrics, es_metrics, cost_metrics = await asyncio.gather(
+        pg_metrics, es_metrics = await asyncio.gather(
             self._collect_pg_metrics(start_dt, end_exclusive),
             self._collect_es_metrics(start_iso, end_iso),
-            self._collect_cost_metrics(start_iso, end_iso),
             return_exceptions=True,
         )
         pg_metrics = self._normalize_metric_result(pg_metrics, "Leaderboard PG metrics collection failed", logger.error)
@@ -143,13 +181,19 @@ class LeaderboardCollector:
             "Leaderboard ES metrics collection failed",
             logger.warning,
         )
-        cost_metrics = self._normalize_metric_result(
-            cost_metrics, "Leaderboard cost metrics collection failed", logger.warning
-        )
 
         self._normalize_es_user_ids(users, es_metrics)
         self._merge_es_users(users, es_metrics)
-        raw_metrics = self._build_raw_metrics(users, pg_metrics, es_metrics, cost_metrics)
+        # Money is read after the identity merge rather than beside the two metric collections, so
+        # the ES-only people the merge just added are asked about too. Read concurrently with them,
+        # they would have been missing from the user set the port is asked about and would carry no
+        # figure for a reason that has nothing to do with what they spent.
+        raw_metrics = self._build_raw_metrics(
+            users,
+            pg_metrics,
+            es_metrics,
+            await self._collect_spend_or_nothing(set(users), time_range_or_none(start_dt, end_exclusive)),
+        )
 
         logger.info(f"Leaderboard collector: assembled {len(raw_metrics)} user metric sets")
         return raw_metrics
@@ -261,7 +305,7 @@ class LeaderboardCollector:
         users: dict[str, dict],
         pg_metrics: dict[str, dict],
         es_metrics: dict[str, dict[str, dict]],
-        cost_metrics: dict[str, dict],
+        spend_metrics: dict[str, UserSpend],
     ) -> list[RawUserMetrics]:
         return [
             RawUserMetrics(
@@ -287,7 +331,8 @@ class LeaderboardCollector:
                     **es_metrics.get(uid, {}).get("cli", {}),
                 },
                 impact=pg_metrics.get(uid, {}).get("impact", {}),
-                litellm_spend=cost_metrics.get(uid, {}),
+                # A person absent from the spend read carries the no-figure default, never a zero.
+                spend=spend_metrics.get(uid, UserSpend()),
             )
             for uid, identity in users.items()
         ]
@@ -968,19 +1013,9 @@ class LeaderboardCollector:
                                 "cache_read_tokens": {"sum": {"field": "attributes.cache_read_input_tokens"}},
                             },
                         },
-                        "cli_spend": {
-                            "filter": {
-                                "bool": {
-                                    "must": [
-                                        self._metric_term("codemie_litellm_proxy_usage"),
-                                        {"term": {ATTR_CLI_REQUEST: True}},
-                                    ]
-                                }
-                            },
-                            "aggs": {
-                                "total_spend": {"sum": {"field": ATTR_MONEY_SPENT}},
-                            },
-                        },
+                        # No money sub-aggregation. A person's CLI spend is read through the spend
+                        # port (AD-29: money never comes from Elasticsearch), and the copy that used
+                        # to be summed here was one of two figures for that one quantity.
                     },
                 }
             },
@@ -1028,7 +1063,6 @@ class LeaderboardCollector:
             uid = bucket["key"]
             sessions_agg = bucket.get("sessions", {})
             tool_agg = bucket.get("tool_usage", {})
-            cli_spend_agg = bucket.get("cli_spend", {})
             files_created = int(tool_agg.get("files_created", {}).get("value", 0) or 0)
             files_modified = int(tool_agg.get("files_modified", {}).get("value", 0) or 0)
             files_deleted = int(tool_agg.get("files_deleted", {}).get("value", 0) or 0)
@@ -1042,64 +1076,118 @@ class LeaderboardCollector:
                 "cli_lines_removed": int(tool_agg.get("lines_removed", {}).get("value", 0) or 0),
                 "cli_files_changed": files_created + files_modified + files_deleted,
                 "cli_total_tokens": input_tok + output_tok + cache_tok,
-                "cli_total_spend": float(cli_spend_agg.get("total_spend", {}).get("value", 0) or 0),
+                # No `cli_total_spend`: the person's CLI money is one spend-port read, carried on
+                # `RawUserMetrics.spend.cli` and shared by the ranking and the summary alike.
             }
 
-    # ── Cost Metrics ─────────────────────────────────────────────────
+    # ── Money: the spend port, and nothing else ───────────────
 
-    async def _collect_cost_metrics(self, start_iso: str, end_iso: str) -> dict[str, dict]:
-        """Aggregate per-user spend from ES codemie_litellm_proxy_usage metric."""
-        body = {
-            "size": 0,
-            "query": {
-                "bool": {
-                    "must": [
-                        {
-                            "range": {
-                                "@timestamp": {
-                                    "gte": start_iso,
-                                    "lte": end_iso,
-                                    "format": "yyyy-MM-dd",
-                                }
-                            }
-                        },
-                        {"term": {"metric_name.keyword": "codemie_litellm_proxy_usage"}},
-                    ]
-                }
-            },
-            "aggs": {
-                "by_user": {
-                    "terms": {
-                        "field": "attributes.user_id.keyword",
-                        "size": 10000,
-                        "min_doc_count": 1,
-                    },
-                    "aggs": {
-                        "total_spend": {"sum": {"field": ATTR_MONEY_SPENT}},
-                        "cli_spend": {
-                            "filter": {"term": {ATTR_CLI_REQUEST: True}},
-                            "aggs": {"amount": {"sum": {"field": ATTR_MONEY_SPENT}}},
-                        },
-                        "platform_spend": {
-                            "filter": {"bool": {"must_not": [{"term": {ATTR_CLI_REQUEST: True}}]}},
-                            "aggs": {"amount": {"sum": {"field": ATTR_MONEY_SPENT}}},
-                        },
-                    },
-                }
-            },
+    async def _collect_spend_or_nothing(self, identifiers: set[str], period: TimeRange | None) -> dict[str, UserSpend]:
+        """`_collect_spend`, degrading every figure to absent if the ledger cannot answer.
+
+        The port raises on failure and the reading path is what reports the absence - *"a ledger
+        outage degrades a figure and never a request"*. So a snapshot still computes, every money
+        figure in it says *unknown*, and nothing reports a zero anyone might read as measured.
+        """
+        try:
+            return await self._collect_spend(identifiers, period)
+        except Exception as exc:
+            logger.warning(f"Leaderboard spend collection failed, so every money figure is absent: {exc}")
+            return {}
+
+    async def _collect_spend(self, identifiers: set[str], period: TimeRange | None) -> dict[str, UserSpend]:
+        """Read every person's two money figures through the spend port.
+
+        **Money never comes from Elasticsearch (AD-29).** This replaced a per-user ES money
+        aggregation whose figures the scorer then added to a second ES aggregate; the two sums were
+        two answers to one question, which is what the port exists to remove.
+
+        A period the port cannot accept, an identifier the identity bridge cannot resolve, or a
+        ledger that cannot answer all yield **no figure** for that person rather than a zero.
+        """
+        if period is None or not identifiers:
+            logger.warning("Leaderboard spend: no readable period or no people, so every money figure is absent")
+            return {}
+
+        terms = await self._resolve_user_terms(identifiers)
+        if not terms:
+            return {}
+
+        totals = await self._person_totals(terms, period)
+        cli = await self._cli_figures(terms, period)
+        return {
+            identifier: UserSpend(total=render_spend(totals.get(identifier)), cli=render_spend(cli.get(identifier)))
+            for identifier in terms
         }
 
-        try:
-            data = await self._es.execute_aggregation_query(body, request_timeout=60)
-            result: dict[str, dict] = {}
-            for bucket in data.get("aggregations", {}).get("by_user", {}).get("buckets", []):
-                uid = bucket["key"]
-                result[uid] = {
-                    "total_spend": float(bucket.get("total_spend", {}).get("value", 0) or 0),
-                    "cli_spend": float(bucket.get("cli_spend", {}).get("amount", {}).get("value", 0) or 0),
-                    "platform_spend": float(bucket.get("platform_spend", {}).get("amount", {}).get("value", 0) or 0),
-                }
-            return result
-        except Exception as e:
-            logger.warning(f"Leaderboard cost metrics collection failed: {e}")
-            return {}
+    async def _resolve_user_terms(self, identifiers: set[str]) -> dict[str, UserTerm]:
+        """Map each discovered identifier to the person the ledger knows, aliases included.
+
+        Resolved in **one** batched lookup rather than one `resolve_identity` call per person: the
+        leaderboard asks about every user in the tenant, and `aliases_for_user` exists for exactly
+        this - *"a list screen has just loaded every user row it is about to show, and re-resolving
+        each one would be a query per row for facts already in memory"*. The values are identical,
+        because `resolve_identity` is that lookup followed by that alias rule.
+
+        An identifier matching no user record is simply **absent** from the map, so that person is
+        never asked about and carries no figure. That is the unresolvable state kept honest: there is
+        no `user_id` to key a holder on, so there is nothing to sum - which is a different fact from
+        having spent nothing, and it must not become an empty alias set on a fabricated holder.
+        """
+        records = await user_repository.afind_users_by_identifiers(self._session, identifiers)
+        if len(records) < len(identifiers):
+            logger.info(
+                f"Leaderboard spend: the identity bridge resolved {len(records)}/{len(identifiers)} people; "
+                f"the rest carry no money figure rather than a zero"
+            )
+        return {
+            identifier: UserTerm(
+                user_id=record.id,
+                # The record is already in hand, so the alias set costs no further query.
+                aliases=aliases_for_user(record.username, record.email),
+            )
+            for identifier, record in records.items()
+        }
+
+    @staticmethod
+    async def _person_totals(terms: dict[str, UserTerm], period: TimeRange) -> dict[str, SpendResult]:
+        """Each person's whole spend - **one** holder read, batched over everyone.
+
+        `PersonTotalHolder` is the one holder spanning the personal *and* project pots, across every
+        category, so this single figure already is the person's total across everything. Nothing is
+        added to it - in particular no Elasticsearch web-spend aggregate, which is what the display
+        copy used to be summed with.
+        """
+        holder_by_identifier = {
+            identifier: PersonTotalHolder(user_id=term.user_id, aliases=term.aliases)
+            for identifier, term in terms.items()
+        }
+        holders = list(dict.fromkeys(holder_by_identifier.values()))
+        spend = await spend_service.consumed_for_holders(holders, period)
+        return {
+            identifier: result
+            for identifier, holder in holder_by_identifier.items()
+            if (result := spend.get(holder)) is not None
+        }
+
+    @staticmethod
+    async def _cli_figures(terms: dict[str, UserTerm], period: TimeRange) -> dict[str, SpendResult]:
+        """Each person's CLI money - the composed read, split by traffic class.
+
+        **A composed scope, and emphatically not `PersonalHolder(user, BudgetCategory.CLI)`.** That
+        holder looks like the answer and compiles, but it is what the person's own customer was
+        charged, so it silently drops every CLI call the person made against a project budget.
+        This figure is *all* of a person's CLI traffic, project-scoped rows included.
+        `PersonTotalHolder` spans both pots but carries no category split, so neither holder has this
+        shape and the class-split read is the one that does.
+
+        One call per person because the port has no batched composed read: a class split is scoped by
+        one `ComposedScope` at a time. A user-only scope is valid - a scope needs at least one term,
+        not all of them.
+        """
+        figures: dict[str, SpendResult] = {}
+        for identifier, term in terms.items():
+            by_class = await spend_service.aggregate_composed_by_traffic_class(period, ComposedScope(user=term))
+            figures[identifier] = by_class[TrafficClass.CLI]
+        logger.info(f"Leaderboard spend: read the CLI class split for {len(figures)} people")
+        return figures

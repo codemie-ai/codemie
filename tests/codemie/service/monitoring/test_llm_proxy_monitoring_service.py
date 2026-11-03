@@ -189,6 +189,178 @@ class TestTrackUsage:
         assert attributes["cli_request"] is False
 
     @patch.object(LLMProxyMonitoringService, "send_count_metric")
+    def test_emits_codemie_request_id_from_request_info(self, mock_send, mock_user, cli_request_info):
+        LLMProxyMonitoringService.track_usage(
+            user=mock_user,
+            endpoint="/v1/chat/completions",
+            request_info=cli_request_info,
+            llm_model="claude-sonnet-4-5",
+            input_tokens=100,
+            output_tokens=50,
+            cached_tokens=0,
+            money_spent=0.01,
+            cached_tokens_money_spent=0.0,
+            status_code=200,
+        )
+
+        attributes = mock_send.call_args.kwargs["attributes"]
+        # AD-29's two-stage join needs codemie_request_id on the metric side, matching
+        # the ledger's codemie_request_id column.
+        assert attributes["request_id"] == "request-456"
+
+    @patch.object(LLMProxyMonitoringService, "send_count_metric")
+    def test_emits_run_id_attribute_when_present_in_request_info(self, mock_send, mock_user, non_cli_request_info):
+        request_info = {**non_cli_request_info, "run_id": "run-789"}
+
+        LLMProxyMonitoringService.track_usage(
+            user=mock_user,
+            endpoint="/v1/chat/completions",
+            request_info=request_info,
+            llm_model="gpt-4",
+            input_tokens=100,
+            output_tokens=50,
+            cached_tokens=0,
+            money_spent=0.02,
+            cached_tokens_money_spent=0.0,
+            status_code=200,
+        )
+
+        attributes = mock_send.call_args.kwargs["attributes"]
+        assert attributes["run_id"] == "run-789"
+
+    @patch.object(LLMProxyMonitoringService, "send_count_metric")
+    def test_run_id_absent_from_request_info_emits_none(self, mock_send, mock_user, non_cli_request_info):
+        # request_info carries no run_id today - the attribute must still be present on
+        # the metric (as None) so the key exists on the emission side ahead of the id
+        # actually being populated upstream.
+        LLMProxyMonitoringService.track_usage(
+            user=mock_user,
+            endpoint="/v1/chat/completions",
+            request_info=non_cli_request_info,
+            llm_model="gpt-4",
+            input_tokens=100,
+            output_tokens=50,
+            cached_tokens=0,
+            money_spent=0.02,
+            cached_tokens_money_spent=0.0,
+            status_code=200,
+        )
+
+        attributes = mock_send.call_args.kwargs["attributes"]
+        assert "run_id" in attributes
+        assert attributes["run_id"] is None
+
+    @patch.object(LLMProxyMonitoringService, "send_count_metric")
+    def test_settled_cost_is_emitted_unchanged(self, mock_send, mock_user, non_cli_request_info):
+        LLMProxyMonitoringService.track_usage(
+            user=mock_user,
+            endpoint="/v1/chat/completions",
+            request_info=non_cli_request_info,
+            llm_model="gpt-4",
+            input_tokens=100,
+            output_tokens=50,
+            cached_tokens=0,
+            money_spent=0.0001474,
+            cached_tokens_money_spent=0.0,
+            status_code=200,
+        )
+
+        attributes = mock_send.call_args.kwargs["attributes"]
+        # LiteLLM's own recorded cost, passed through - not rounded and not re-priced.
+        assert attributes["money_spent"] == 0.0001474
+
+    @patch.object(LLMProxyMonitoringService, "send_count_metric")
+    def test_unsettled_cost_emits_no_money_attribute_at_all(self, mock_send, mock_user, non_cli_request_info):
+        # Nothing re-emits this document once the ledger settles, so a zero written here
+        # would freeze into metric history uncorrectably. The key must be absent instead.
+        LLMProxyMonitoringService.track_usage(
+            user=mock_user,
+            endpoint="/v1/chat/completions",
+            request_info=non_cli_request_info,
+            llm_model="claude-sonnet-5",
+            input_tokens=100,
+            output_tokens=50,
+            cached_tokens=0,
+            money_spent=None,
+            cached_tokens_money_spent=0.0,
+            status_code=200,
+        )
+
+        attributes = mock_send.call_args.kwargs["attributes"]
+        assert "money_spent" not in attributes
+        # No zero was substituted for the missing figure under some other name either. A
+        # blanket "no 0.0 anywhere" sweep cannot express this: the zero token counts are
+        # legitimate measurements and compare equal to 0.0, and the cache breakdown is a
+        # ratified zero on this path rather than a fabricated one.
+        assert {key: value for key, value in attributes.items() if "money" in key} == {"cached_tokens_money_spent": 0.0}
+
+    @patch.object(LLMProxyMonitoringService, "send_count_metric")
+    def test_token_counts_survive_an_unsettled_cost(self, mock_send, mock_user, non_cli_request_info):
+        # The counts are final at this point; only the money is provisional, and dropping
+        # them along with the figure would lose measurements that will never be re-emitted.
+        LLMProxyMonitoringService.track_usage(
+            user=mock_user,
+            endpoint="/v1/chat/completions",
+            request_info=non_cli_request_info,
+            llm_model="claude-sonnet-5",
+            input_tokens=17,
+            output_tokens=10,
+            cached_tokens=3,
+            money_spent=None,
+            cached_tokens_money_spent=0.0,
+            status_code=200,
+            cache_creation_tokens=7,
+        )
+
+        attributes = mock_send.call_args.kwargs["attributes"]
+        assert attributes["input_tokens"] == 17
+        assert attributes["output_tokens"] == 10
+        assert attributes["cache_read_input_tokens"] == 3
+        assert attributes["cache_creation_tokens"] == 7
+
+    @patch.object(LLMProxyMonitoringService, "send_count_metric")
+    def test_cached_tokens_money_spent_is_emitted_unconditionally(self, mock_send, mock_user, non_cli_request_info):
+        # This breakdown is identically zero on the LiteLLM path and this is its only
+        # emitter: gating it too would break the historical Elasticsearch mapping.
+        LLMProxyMonitoringService.track_usage(
+            user=mock_user,
+            endpoint="/v1/chat/completions",
+            request_info=non_cli_request_info,
+            llm_model="claude-sonnet-5",
+            input_tokens=100,
+            output_tokens=50,
+            cached_tokens=20,
+            money_spent=None,
+            cached_tokens_money_spent=0.0,
+            status_code=200,
+        )
+
+        attributes = mock_send.call_args.kwargs["attributes"]
+        assert attributes["cached_tokens_money_spent"] == 0.0
+
+    @patch.object(LLMProxyMonitoringService, "send_count_metric")
+    @patch("codemie.service.monitoring.llm_proxy_monitoring_service.logger")
+    def test_debug_log_does_not_raise_on_unsettled_cost(self, mock_logger, mock_send, mock_user, non_cli_request_info):
+        # track_usage swallows its own exceptions, so a TypeError from formatting None would
+        # silently degrade to a warning instead of emitting the metric.
+        LLMProxyMonitoringService.track_usage(
+            user=mock_user,
+            endpoint="/v1/chat/completions",
+            request_info=non_cli_request_info,
+            llm_model="claude-sonnet-5",
+            input_tokens=100,
+            output_tokens=50,
+            cached_tokens=0,
+            money_spent=None,
+            cached_tokens_money_spent=0.0,
+            status_code=200,
+        )
+
+        mock_send.assert_called_once()
+        mock_logger.warning.assert_not_called()
+        assert "cost=unsettled" in mock_logger.debug.call_args.args[0]
+
+    @patch.object(LLMProxyMonitoringService, "send_count_metric")
     def test_missing_codemie_cli_key_sets_cli_flag_false(self, mock_send, mock_user):
         LLMProxyMonitoringService.track_usage(
             user=mock_user,

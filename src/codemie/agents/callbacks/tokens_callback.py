@@ -31,6 +31,8 @@ from codemie.core.router_chat_model import _iter_header_maps
 from codemie.core.routing_costs import with_counterfactual_costs
 from codemie.core.utils import calculate_token_cost
 from codemie.service.request_summary_manager import request_summary_manager, LLMRun
+from codemie.service.spend.routing import LLMCallClass, uses_litellm
+from codemie.service.spend.run_context import publish_run_scope
 from codemie.service.llm_service.llm_service import llm_service
 
 if TYPE_CHECKING:
@@ -39,6 +41,12 @@ if TYPE_CHECKING:
 
 
 class TokensCalculationCallback(AsyncCallbackHandler):
+    # The sync on_chat_model_start publishes the run id into a ContextVar the outbound request
+    # reads. Under the async manager a non-inline sync handler runs in an executor on a copied
+    # context, so that write never reaches the caller and every ainvoke sends a missing or stale
+    # run id; inline it runs in the caller's context. The sync manager ignores this flag.
+    run_inline = True
+
     def __init__(self, request_id: str, llm_model: str) -> None:
         super().__init__()
         self.internal_run_id = str(uuid.uuid4())
@@ -94,16 +102,32 @@ class TokensCalculationCallback(AsyncCallbackHandler):
         cached_tokens: int,
         cache_creation_tokens: int,
         cost_model: str | None = None,
-    ) -> tuple[float, float, float]:
-        """Return (money_spent, cached_tokens_money_spent, cached_tokens_creation_cost).
+    ) -> tuple[float | None, float, float]:
+        """Resolve this call's money, keeping a settled figure and an absent one apart.
+
+        A **settled** proxy cost is returned as recorded (AD-22). On the LiteLLM path with no
+        cost in hand the money is **unsettled** - `None`, meaning *the figure exists and has
+        not arrived*, which the ledger settles later (AD-28). It is never a zero (that would
+        claim the call was free) and never a local estimate, because LiteLLM already priced it
+        and re-pricing invents a second number (AD-4). Off that path the local price table
+        *is* the ledger, so the estimate is the right answer and survives unchanged.
 
         ``cost_model`` defaults to ``self.llm_model`` — this callback is always attached to
         the concretely invoked model (proxy path, plain agent path, or the capable/efficient
         model actually selected by Switchyard), so ``self.llm_model`` is already the correct
         billed model with no alias to resolve.
+
+        **Why the routing gate lives here and not in the caller's proxy-cost gate.** The
+        caller only *extracts* a cost while `LLM_PROXY_ENABLED and LLM_PROXY_TRACK_USAGE`;
+        that gate answers "should I read the authoritative number". This one answers the
+        different question "is a locally computed number legitimate at all", and it is
+        strictly wider: with tracking off but routing on, no cost is ever extracted, yet
+        LiteLLM still billed the call and re-pricing it here would still be an invention.
         """
         if proxy_cost is not None:
             return proxy_cost, 0.0, 0.0
+        if uses_litellm(LLMCallClass.CHAT):
+            return None, 0.0, 0.0
         model_costs = llm_service.get_model_cost(cost_model or self.llm_model)
         return calculate_token_cost(
             llm_model=cost_model or self.llm_model,
@@ -259,7 +283,7 @@ class TokensCalculationCallback(AsyncCallbackHandler):
     def _apply_counterfactual_costs(
         self,
         display_routing: "RoutingInfo",
-        money_spent: float,
+        money_spent: float | None,
         input_tokens: int,
         output_tokens: int,
         cached_tokens: int,
@@ -269,8 +293,14 @@ class TokensCalculationCallback(AsyncCallbackHandler):
 
         On the agent path, actual_cost_usd includes the classifier fee (it books the
         classifier as its own LLMRun), unlike the proxy path.
+
+        An unsettled actual cost (`None`) leaves nothing to compare, so nothing is stamped. The
+        counterfactual is priced locally even on the LiteLLM path, bypassing `_calculate_cost`'s
+        gate: it is a "what it would have cost" analytics figure, never spend.
         """
         if not (display_routing.counterfactual_model and display_routing.routed_model):
+            return display_routing
+        if money_spent is None:
             return display_routing
         try:
             if display_routing.tier == "complex":
@@ -278,13 +308,13 @@ class TokensCalculationCallback(AsyncCallbackHandler):
                 # catalog-vs-agent-path rounding showing up as fake savings.
                 estimated_max_usd = money_spent
             else:
-                estimated_max_usd, _, _ = self._calculate_cost(
-                    proxy_cost=None,
+                estimated_max_usd, _, _ = calculate_token_cost(
+                    llm_model=display_routing.counterfactual_model,
+                    cost_config=llm_service.get_model_cost(display_routing.counterfactual_model),
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
                     cached_tokens=cached_tokens,
                     cache_creation_tokens=cache_creation_tokens,
-                    cost_model=display_routing.counterfactual_model,
                 )
             return with_counterfactual_costs(
                 display_routing,
@@ -425,7 +455,6 @@ class TokensCalculationCallback(AsyncCallbackHandler):
             input_tokens = 0
             output_tokens = 0
             cached_tokens = 0
-            cache_creation_tokens = 0
             for gen_result in self._iter_gen_results(response):
                 if gen_result.generation_info and is_litellm_proxy_cache_hit(gen_result.generation_info):
                     logger.debug(
@@ -438,29 +467,41 @@ class TokensCalculationCallback(AsyncCallbackHandler):
                     input_tokens += usage_metadata.get("input_tokens", 0)
                     output_tokens += usage_metadata.get("output_tokens", 0)
                     cached_tokens += usage_metadata.get("input_token_details", {}).get("cache_read", 0)
-                    cache_creation_tokens += usage_metadata.get("input_token_details", {}).get("cache_creation", 0)
 
             if not (input_tokens or output_tokens):
                 return
 
-            model_costs = llm_service.get_model_cost(self.llm_model)
-            money_spent, cached_tokens_money_spent, cached_tokens_creation_cost = calculate_token_cost(
-                llm_model=self.llm_model,
-                cost_config=model_costs,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                cached_tokens=cached_tokens,
-                cache_creation_tokens=cache_creation_tokens,
-            )
-
+            # **On the LiteLLM path** a failed call carries a real, measured **zero** (AD-20:
+            # *"failure rows contribute zero to any spend total"*), and no local price may be
+            # applied at all (AD-4). That zero is the opposite of `_calculate_cost`'s unsettled
+            # `None`, which means the figure exists and has not arrived; reporting one as the
+            # other either fabricates money or loses it. Before this, the branch re-priced
+            # locally with no proxy-cost check even possible on an error path, so a failed call
+            # was charged an invented amount - AD-4's one live violation.
+            #
+            # **Off that path the local estimate stands, and the gate is why.** AD-20 scopes
+            # itself to the ledger (`status = 'failure'` rows, *"counts come from the ledger,
+            # never from the callback"*), and where there is no ledger the local price table
+            # *is* the authority. These tokens were processed before the call failed and the
+            # provider may well have billed them, so zeroing them here would silently drop real
+            # cost from every non-LiteLLM deployment.
+            money_spent = 0.0
+            if not uses_litellm(LLMCallClass.CHAT):
+                model_costs = llm_service.get_model_cost(self.llm_model)
+                money_spent, _, _ = calculate_token_cost(
+                    llm_model=self.llm_model,
+                    cost_config=model_costs,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cached_tokens=cached_tokens,
+                    cache_creation_tokens=0,
+                )
             llm_run = LLMRun(
                 run_id=str(run_id),
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 cached_tokens=cached_tokens,
                 money_spent=money_spent,
-                cached_tokens_money_spent=cached_tokens_money_spent,
-                cached_tokens_creation_cost=cached_tokens_creation_cost,
                 llm_model=self.llm_model,
             )
             request_summary_manager.update_llm_run(request_id=self.request_id, llm_run=llm_run)
@@ -476,15 +517,31 @@ class TokensCalculationCallback(AsyncCallbackHandler):
         metadata: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
-        """Run when LLM starts running.
+        """Publish the id of the call that is about to go out, so its header can name it.
 
-        Stashes a (router, decision) pair passed through the call's config metadata (see
+        **This callback, and not a later one, because this one is pre-flight.** It fires before the
+        model generates, in the same task as the request that follows, so the value is in place when
+        the outbound header is built and is correct under async and threads alike.
+
+        The run id cannot instead ride in the model's fixed headers: one model object serves every
+        iteration of an agent loop, so a header set at construction would send **one** id for many
+        calls, and a per-call cost lookup would then sum the wrong rows.
+
+        Also stashes a (router, decision) pair passed through the call's config metadata (see
         core/router_chat_model.py::RouterChatModel._agenerate), keyed by run_id, so on_llm_end
         can call that same router's routing_info()/extract_classifier_usage() with the decision
         already in hand — this callback fires on the concretely selected model itself, before
         _agenerate gets a chance to stamp anything on the response, so decision is the only
         reliable channel for a decision-bearing router (Switchyard).
+
+        Args:
+            serialized: The serialized LLM.
+            messages: The messages to run.
+            run_id: LangChain's id for this individual call - the value published.
+            metadata: The call's config metadata, which may carry a (router, decision) pair.
+            **kwargs: Additional keyword arguments.
         """
+        publish_run_scope(request_id=self.request_id, run_id=str(run_id))
         from codemie.core.router_chat_model import read_routing_ctx
 
         stashed = read_routing_ctx(metadata)

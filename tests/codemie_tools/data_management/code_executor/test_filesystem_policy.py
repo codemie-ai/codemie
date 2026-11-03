@@ -37,6 +37,48 @@ _COVERAGE_ENV_VARS = frozenset(
 )
 
 
+#: ``build_guarded_python_script``'s default ``max_threads``, which the guard applies to
+#: RLIMIT_NPROC.
+_GUARD_THREAD_CAP = 64
+
+
+def _user_process_count() -> int | None:
+    """Processes owned by this user, or None where the platform cannot report it.
+
+    RLIMIT_NPROC caps the processes of the *real UID*, not the threads of one process, so the
+    guard's thread cap is only reachable on a host already running fewer processes than the cap.
+    """
+    proc = Path("/proc")
+    if not proc.is_dir():
+        return None
+    uid = os.getuid()
+    count = 0
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            count += entry.stat().st_uid == uid
+        except OSError:  # the process exited while we were counting it
+            continue
+    return count
+
+
+_USER_PROCESS_COUNT = _user_process_count()
+
+#: Guards the two tests whose customer code imports numpy (directly, or through matplotlib and
+#: openpyxl). Below the cap nothing changes; at or above it every ``pthread_create`` inside the
+#: sandbox fails with EAGAIN, OpenBLAS aborts numpy's import, and the interpreter dies on SIGINT
+#: before a single filesystem decision is made - so the assertion would report the host's process
+#: count, not the policy under test.
+_needs_thread_headroom = pytest.mark.skipif(
+    _USER_PROCESS_COUNT is not None and _USER_PROCESS_COUNT >= _GUARD_THREAD_CAP,
+    reason=(
+        f"this user runs {_USER_PROCESS_COUNT} processes, at or above the guard's RLIMIT_NPROC "
+        f"cap of {_GUARD_THREAD_CAP}, so numpy cannot start a thread inside the sandbox"
+    ),
+)
+
+
 def _clean_env() -> dict[str, str]:
     return {k: v for k, v in os.environ.items() if k not in _COVERAGE_ENV_VARS}
 
@@ -875,6 +917,7 @@ def test_guard_sets_mplconfigdir_to_workspace_relative_path(tmp_path: Path) -> N
     assert DENIAL_MARKER not in result.stderr
 
 
+@_needs_thread_headroom
 def test_guard_allows_matplotlib_png_generation(tmp_path: Path) -> None:
     """matplotlib.pyplot.savefig must complete without filesystem denials when
     MPLCONFIGDIR resolves to an absolute path inside the workspace.  Subprocess
@@ -899,6 +942,7 @@ def test_guard_allows_matplotlib_png_generation(tmp_path: Path) -> None:
     assert fs_denials == [], f"Unexpected filesystem denials: {fs_denials}"
 
 
+@_needs_thread_headroom
 def test_guard_allows_openpyxl_to_save_workbook(tmp_path: Path) -> None:
     """openpyxl uses NamedTemporaryFile (absolute path in WORKSPACE_TMP) during
     save and removes it in an atexit handler.  It also calls mimetypes which

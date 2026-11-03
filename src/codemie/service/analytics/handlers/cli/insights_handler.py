@@ -30,11 +30,18 @@ from codemie.service.analytics.handlers.field_constants import (
     PROJECT_KEYWORD_FIELD,
     USER_EMAIL_KEYWORD_FIELD,
 )
+from codemie.service.analytics.handlers.money_coverage import money_coverage_aggs, read_money_coverage
 from codemie.service.analytics.handlers.user_identity_resolver import UserIdentityResolver
 from codemie.service.analytics.metric_names import MetricName
 from codemie.service.analytics.query_pipeline import AnalyticsQueryFilters
 from codemie.service.analytics.response_formatter import ResponseFormatter
 from codemie.service.analytics.time_parser import TimeParser
+from codemie.service.spend.rendering import (
+    RenderedSpend,
+    apply_spend_cells,
+    combine_rendered_spend,
+    spend_fields,
+)
 
 from .base_handler import CLIBaseHandler
 from .classification_engine import CLIClassificationEngine, EnrichedUserScope
@@ -68,6 +75,68 @@ from .constants import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: Money column id shared by every CLI insight table, so a row's figure and the three values that
+#: qualify it are never written under two spellings on two tables.
+MONEY_COLUMN = "total_cost"
+
+
+def _spend_order(spend: RenderedSpend) -> tuple[bool, float]:
+    """Sort key that ranks money descending and puts an **absent** figure last, not at zero.
+
+    Used with `reverse=True`, so the first element separates *has a figure* from *has none* outright
+    and no absent row is ever ranked among the figures. A user whose every request is still unsettled
+    used to be published rank-last at `$0.00` on the Top Spenders table - both the rank and the
+    amount asserted by nothing. The same two-part key is what `assistant_handler` and
+    `workflow_handler` already sort their money tables by.
+    """
+    return spend.figure is not None, spend.figure or 0.0
+
+
+def _projected_monthly_spend(spend: RenderedSpend, analysis_days: int) -> RenderedSpend:
+    """A 20-working-day projection of one window's spend, qualified exactly as its input is.
+
+    **A projection from a subtotal is a subtotal projected.** It is its input scaled by a count of
+    days, so it inherits its input's state and adds nothing: no figure from no figure - never
+    `$0.00`, which on a forecast card is the concrete claim *this person will cost nothing next
+    month* - and `partial` from `partial`, because scaling a figure that is short by an unknown
+    amount leaves it short by twenty-twentieths of an unknown amount.
+    """
+    if spend.figure is None:
+        return spend
+    return RenderedSpend(
+        figure=round((spend.figure / analysis_days) * 20, 2),
+        unavailable=spend.unavailable,
+        partial=spend.partial,
+        missing_amount=None,
+    )
+
+
+def _average_spend(total: RenderedSpend, member_count: int) -> RenderedSpend:
+    """One group's spend per member, carrying whatever qualifies the numerator.
+
+    The divisor is a fact - the members counted - so the numerator alone decides the state. The old
+    form divided a **floored** sum by a **full** member count and published the quotient bare: low by
+    an unknown amount, and saying nothing about it. An average over a subtotal is published `partial`
+    for that reason, and an average over no figure at all is no average.
+
+    No members is not a zero average either; it is no average, and only reachable if a group is ever
+    built without one.
+    """
+    if total.figure is None or member_count <= 0:
+        return RenderedSpend(figure=None, unavailable=total.unavailable, partial=total.partial, missing_amount=None)
+    return RenderedSpend(
+        figure=round(total.figure / member_count, 2),
+        unavailable=total.unavailable,
+        partial=total.partial,
+        missing_amount=None,
+    )
+
+
+def _ordered_by_spend(rows: list[dict], rendered: list[RenderedSpend]) -> list[dict]:
+    """Rows reordered by their money, absent figures last, with each row keeping its own cell."""
+    ordered = sorted(zip(rows, rendered, strict=True), key=lambda pair: _spend_order(pair[1]), reverse=True)
+    return [row for row, _ in ordered]
 
 
 class CLIInsightsHandler(CLIBaseHandler):
@@ -163,7 +232,16 @@ class CLIInsightsHandler(CLIBaseHandler):
         page: int = 0,
         per_page: int = 20,
     ) -> dict:
-        """Get aggregated user classification metrics for CLI insights."""
+        """Get aggregated user classification metrics for CLI insights.
+
+        Both money columns are qualified, and neither is a sum of independently floored figures: a
+        group's `total_cost` is `combine_rendered_spend` over its members, so a group holding one user
+        whose costs never settled is published short and says so, and `avg_cost` divides that total by
+        the **full** member count while carrying the total's own qualification - the old form did the
+        division bare and understated every such group by an amount the row could not mention.
+
+        `user_count` is a count of people and stays a count: a zero there would be a fact.
+        """
         start_dt, end_dt = TimeParser.parse(time_period, start_date, end_date)
         query = self._pipeline._build_query(
             start_dt,
@@ -175,11 +253,10 @@ class CLIInsightsHandler(CLIBaseHandler):
         result = await self.repository.execute_aggregation_query(
             self._build_cli_insights_classification_aggregation(query)
         )
-        grouped: dict[str, dict] = defaultdict(
-            lambda: {"classification": "", "user_count": 0, "total_cost": 0.0, "avg_cost": 0.0}
-        )
+        grouped: dict[str, dict] = defaultdict(lambda: {"classification": "", "user_count": 0})
+        member_spend: dict[str, list[RenderedSpend]] = defaultdict(list)
         for b in result.get("aggregations", {}).get("users", {}).get("buckets", []):
-            total_cost = round(b.get("cost_bucket", {}).get("total_cost", {}).get("value", 0) or 0, 2)
+            spend = read_money_coverage(b.get("cost_bucket", {}), MONEY_COLUMN)
             repositories = [r["key"] for r in b.get("repositories", {}).get("buckets", {}).get("buckets", [])]
             branches = [r["key"] for r in b.get("branches", {}).get("buckets", {}).get("buckets", [])]
             projects_used = [r["key"] for r in b.get("projects", {}).get("buckets", {}).get("buckets", [])]
@@ -187,17 +264,21 @@ class CLIInsightsHandler(CLIBaseHandler):
                 repositories=repositories,
                 branches=branches,
                 project_name=projects_used[0] if projects_used else None,
-                total_cost=total_cost,
+                spend=spend,
             )
             bucket = grouped[classification]
             bucket["classification"] = classification
             bucket["user_count"] += 1
-            bucket["total_cost"] += total_cost
+            member_spend[classification].append(spend)
         result_rows = list(grouped.values())
-        for row in result_rows:
-            row["total_cost"] = round(row["total_cost"], 2)
-            row["avg_cost"] = round(row["total_cost"] / max(row["user_count"], 1), 2)
-        result_rows.sort(key=lambda row: row["total_cost"], reverse=True)
+        rendered = [combine_rendered_spend(member_spend[row["classification"]]) for row in result_rows]
+        for row, spend in zip(result_rows, rendered, strict=True):
+            # No triple of its own: the average is derived from the same figure as `total_cost`, so
+            # the row's single annotation already qualifies both, and a second copy would be a second
+            # thing to keep in step saying nothing the first does not.
+            row["avg_cost"] = _average_spend(spend, row["user_count"]).figure
+        apply_spend_cells(result_rows, rendered, MONEY_COLUMN)
+        result_rows = _ordered_by_spend(result_rows, rendered)
         return self._format_custom_tabular_response(
             rows=result_rows,
             columns=self._get_cli_insights_user_classification_columns(),
@@ -220,7 +301,12 @@ class CLIInsightsHandler(CLIBaseHandler):
         page: int = 0,
         per_page: int = 20,
     ) -> dict:
-        """Get top CLI users ranked by cost."""
+        """Get top CLI users ranked by cost.
+
+        A user whose requests never settled a cost is ranked **last and shown as no figure**, not
+        first-from-the-bottom at `$0.00`: on a table whose whole subject is cost, a fabricated zero
+        is both a wrong amount and a wrong position.
+        """
         start_dt, end_dt = TimeParser.parse(time_period, start_date, end_date)
         query = self._pipeline._build_query(
             start_dt,
@@ -231,13 +317,14 @@ class CLIInsightsHandler(CLIBaseHandler):
         )
         result = await self.repository.execute_aggregation_query(self._build_cli_insights_top_users_aggregation(query))
         rows = []
+        rendered: list[RenderedSpend] = []
         for b in result.get("aggregations", {}).get("users", {}).get("buckets", []):
             user_id = b["key"]
             raw_user_name = self._extract_top_metric(b, "user_name", USER_NAME_KEYWORD_FIELD)
             raw_user_email = self._extract_top_metric(b, "user_email", USER_EMAIL_KEYWORD_FIELD)
             user_name = raw_user_email or raw_user_name or user_id
             user_email = raw_user_email or user_name
-            total_cost = round(b.get("cost_bucket", {}).get("total_cost", {}).get("value", 0) or 0, 2)
+            spend = read_money_coverage(b.get("cost_bucket", {}), MONEY_COLUMN)
             repositories = [r["key"] for r in b.get("repositories", {}).get("buckets", {}).get("buckets", [])]
             branches = [r["key"] for r in b.get("branches", {}).get("buckets", {}).get("buckets", [])]
             projects_used = [r["key"] for r in b.get("projects", {}).get("buckets", {}).get("buckets", [])]
@@ -245,7 +332,7 @@ class CLIInsightsHandler(CLIBaseHandler):
                 repositories=repositories,
                 branches=branches,
                 project_name=projects_used[0] if projects_used else None,
-                total_cost=total_cost,
+                spend=spend,
             )
             rows.append(
                 {
@@ -253,10 +340,11 @@ class CLIInsightsHandler(CLIBaseHandler):
                     "user_name": user_name,
                     "user_email": user_email,
                     "classification": classification,
-                    "total_cost": total_cost,
                 }
             )
-        rows.sort(key=lambda row: row["total_cost"], reverse=True)
+            rendered.append(spend)
+        apply_spend_cells(rows, rendered, MONEY_COLUMN)
+        rows = _ordered_by_spend(rows, rendered)
         await UserIdentityResolver.resolve_rows(rows, target_map={"user_name": "name", "user_email": "email"})
         return self._format_custom_tabular_response(
             rows=rows,
@@ -280,9 +368,14 @@ class CLIInsightsHandler(CLIBaseHandler):
         page: int = 0,
         per_page: int = 20,
     ) -> dict:
-        """Get Top Spenders table data for CLI insights."""
-        rows = await self._get_cli_insights_user_rows(time_period, start_date, end_date, users, projects)
-        rows.sort(key=lambda row: row["total_cost"], reverse=True)
+        """Get Top Spenders table data for CLI insights.
+
+        The rank comes from the money order, so an absent figure must not be ranked among the
+        figures: it sorts last and is published as no figure. Ranked as a zero instead, a user whose
+        whole window is unsettled was handed the bottom rank *and* the claim that they spent nothing.
+        """
+        rows, rendered = await self._get_cli_insights_user_rows(time_period, start_date, end_date, users, projects)
+        rows = _ordered_by_spend(rows, rendered)
         ranked_rows = [{"rank": index + 1, **row} for index, row in enumerate(rows)]
         return self._format_custom_tabular_response(
             rows=ranked_rows,
@@ -306,9 +399,9 @@ class CLIInsightsHandler(CLIBaseHandler):
         page: int = 0,
         per_page: int = 20,
     ) -> dict:
-        """Get all CLI users table data for CLI insights."""
-        rows = await self._get_cli_insights_user_rows(time_period, start_date, end_date, users, projects)
-        rows.sort(key=lambda row: row["total_cost"], reverse=True)
+        """Get all CLI users table data for CLI insights, ordered by cost with absent figures last."""
+        rows, rendered = await self._get_cli_insights_user_rows(time_period, start_date, end_date, users, projects)
+        rows = _ordered_by_spend(rows, rendered)
         return self._format_custom_tabular_response(
             rows=rows,
             columns=self._get_cli_insights_all_users_columns(),
@@ -581,18 +674,25 @@ class CLIInsightsHandler(CLIBaseHandler):
         page: int = 0,
         per_page: int = 20,
     ) -> dict:
-        """Get aggregated project classification metrics for CLI insights."""
-        rows = await self._get_cli_insights_project_rows(time_period, start_date, end_date, users, projects)
-        grouped: dict[str, dict] = defaultdict(lambda: {"classification": "", "project_count": 0, "total_cost": 0.0})
-        for row in rows:
+        """Get aggregated project classification metrics for CLI insights.
+
+        A classification's `total_cost` is `combine_rendered_spend` over its projects rather than a
+        sum of their cells: a group containing one project whose costs never settled is short by an
+        unknown amount and is published as such, and a group of nothing but such projects has no
+        figure. `project_count` is a count and stays one.
+        """
+        rows, rendered = await self._get_cli_insights_project_rows(time_period, start_date, end_date, users, projects)
+        grouped: dict[str, dict] = defaultdict(lambda: {"classification": "", "project_count": 0})
+        member_spend: dict[str, list[RenderedSpend]] = defaultdict(list)
+        for row, spend in zip(rows, rendered, strict=True):
             bucket = grouped[row["classification"]]
             bucket["classification"] = row["classification"]
             bucket["project_count"] += 1
-            bucket["total_cost"] += float(row["total_cost"])
+            member_spend[row["classification"]].append(spend)
         result_rows = list(grouped.values())
-        for row in result_rows:
-            row["total_cost"] = round(row["total_cost"], 2)
-        result_rows.sort(key=lambda row: row["total_cost"], reverse=True)
+        group_spend = [combine_rendered_spend(member_spend[row["classification"]]) for row in result_rows]
+        apply_spend_cells(result_rows, group_spend, MONEY_COLUMN)
+        result_rows = _ordered_by_spend(result_rows, group_spend)
         return self._format_custom_tabular_response(
             rows=result_rows,
             columns=self._get_cli_insights_project_classification_columns(),
@@ -615,9 +715,9 @@ class CLIInsightsHandler(CLIBaseHandler):
         page: int = 0,
         per_page: int = 20,
     ) -> dict:
-        """Get top CLI projects ranked by cost."""
-        rows = await self._get_cli_insights_project_rows(time_period, start_date, end_date, users, projects)
-        rows.sort(key=lambda row: row["total_cost"], reverse=True)
+        """Get top CLI projects ranked by cost, with a project whose cost is unknown ranked last."""
+        rows, rendered = await self._get_cli_insights_project_rows(time_period, start_date, end_date, users, projects)
+        rows = _ordered_by_spend(rows, rendered)
         return self._format_custom_tabular_response(
             rows=rows,
             columns=self._get_cli_insights_top_projects_by_cost_columns(),
@@ -741,8 +841,16 @@ class CLIInsightsHandler(CLIBaseHandler):
         end_date: datetime | None,
         users: list[str] | None,
         projects: list[str] | None,
-    ) -> list[dict]:
-        """Build user-level CLI insight rows used by multiple widgets."""
+    ) -> tuple[list[dict], list[RenderedSpend]]:
+        """Build user-level CLI insight rows used by multiple widgets.
+
+        The rows carry their money cell and the three values that qualify it, and the qualified
+        figures come back **beside** them: two callers order this table by money and one regroups it,
+        and neither an order nor a regrouping can be derived from a cell alone once the figure in it
+        may be absent.
+
+        Session and line counts stay integers - a zero in a line count is a measurement.
+        """
         start_dt, end_dt = TimeParser.parse(time_period, start_date, end_date)
         query = self._pipeline._build_query(
             start_dt,
@@ -753,13 +861,14 @@ class CLIInsightsHandler(CLIBaseHandler):
         )
         result = await self.repository.execute_aggregation_query(self._build_cli_insights_user_aggregation(query))
         rows = []
+        rendered: list[RenderedSpend] = []
         for bucket in result.get("aggregations", {}).get("users", {}).get("buckets", []):
             user_id = bucket["key"]
             raw_user_name = self._extract_top_metric(bucket, "user_name", USER_NAME_KEYWORD_FIELD)
             raw_user_email = self._extract_top_metric(bucket, "user_email", USER_EMAIL_KEYWORD_FIELD)
             user_name = raw_user_email or raw_user_name or user_id
             user_email = raw_user_email or user_name
-            total_cost = round(bucket.get("cost_bucket", {}).get("total_cost", {}).get("value", 0) or 0, 2)
+            spend = read_money_coverage(bucket.get("cost_bucket", {}), MONEY_COLUMN)
             repositories = [
                 repo["key"] for repo in bucket.get("repositories", {}).get("buckets", {}).get("buckets", [])
             ]
@@ -771,7 +880,7 @@ class CLIInsightsHandler(CLIBaseHandler):
                 repositories=repositories,
                 branches=branches,
                 project_name=projects_used[0] if projects_used else None,
-                total_cost=total_cost,
+                spend=spend,
             )
             total_lines_added = int(bucket.get("total_lines_added", {}).get("total", {}).get("value", 0) or 0)
             total_lines_removed = int(bucket.get("total_lines_removed", {}).get("total", {}).get("value", 0) or 0)
@@ -786,11 +895,12 @@ class CLIInsightsHandler(CLIBaseHandler):
                     "total_lines_added": total_lines_added,
                     "total_lines_removed": total_lines_removed,
                     "net_lines": total_lines_added - total_lines_removed,
-                    "total_cost": total_cost,
                 }
             )
+            rendered.append(spend)
+        apply_spend_cells(rows, rendered, MONEY_COLUMN)
         await UserIdentityResolver.resolve_rows(rows, target_map={"user_name": "name", "user_email": "email"})
-        return rows
+        return rows, rendered
 
     async def _get_cli_insights_project_rows(
         self,
@@ -799,8 +909,13 @@ class CLIInsightsHandler(CLIBaseHandler):
         end_date: datetime | None,
         users: list[str] | None,
         projects: list[str] | None,
-    ) -> list[dict]:
-        """Build project-level CLI insight rows used by multiple widgets."""
+    ) -> tuple[list[dict], list[RenderedSpend]]:
+        """Build project-level CLI insight rows used by multiple widgets.
+
+        Returns the rows and their qualified figures side by side: one caller orders this table by
+        money and one regroups it by classification, and a regrouping has to combine the figures
+        rather than add the cells (AD-29).
+        """
         start_dt, end_dt = TimeParser.parse(time_period, start_date, end_date)
         query = self._pipeline._build_query(
             start_dt,
@@ -811,11 +926,12 @@ class CLIInsightsHandler(CLIBaseHandler):
         )
         result = await self.repository.execute_aggregation_query(self._build_cli_insights_project_aggregation(query))
         rows = []
+        rendered: list[RenderedSpend] = []
         for bucket in result.get("aggregations", {}).get("projects", {}).get("buckets", []):
             project_name = str(bucket["key"]).strip()
             if not project_name:
                 continue
-            total_cost = round(bucket.get("cost_bucket", {}).get("total_cost", {}).get("value", 0) or 0, 2)
+            spend = read_money_coverage(bucket.get("cost_bucket", {}), MONEY_COLUMN)
             repositories = [
                 repo["key"] for repo in bucket.get("repositories", {}).get("buckets", {}).get("buckets", [])
             ]
@@ -824,17 +940,18 @@ class CLIInsightsHandler(CLIBaseHandler):
                 repositories=repositories,
                 branches=branches,
                 project_name=project_name,
-                total_cost=total_cost,
+                spend=spend,
             )
             rows.append(
                 {
                     "project_name": project_name,
                     "project_type": CLIClassificationEngine._infer_project_type(project_name),
                     "classification": classification,
-                    "total_cost": total_cost,
                 }
             )
-        return rows
+            rendered.append(spend)
+        apply_spend_cells(rows, rendered, MONEY_COLUMN)
+        return rows, rendered
 
     def _build_cli_insights_user_aggregation(self, query: dict) -> dict:
         """Build user aggregation for CLI insights."""
@@ -876,7 +993,14 @@ class CLIInsightsHandler(CLIBaseHandler):
                         },
                         "cost_bucket": {
                             "filter": {"term": {METRIC_NAME_KEYWORD_FIELD: MetricName.CLI_LLM_USAGE_TOTAL.value}},
-                            "aggs": {"total_cost": {"sum": {"field": MONEY_SPENT_FIELD}}},
+                            "aggs": {
+                                "total_cost": {"sum": {"field": MONEY_SPENT_FIELD}},
+                                # The sum skips every request whose cost never settled, so it is read
+                                # with its coverage and can say whether it is whole. No `cost_bearing`
+                                # narrowing: this bucket is already filtered to the LiteLLM proxy
+                                # metric, so a money attribute is expected on every document in it.
+                                **money_coverage_aggs(MONEY_SPENT_FIELD),
+                            },
                         },
                         "total_lines_added": {
                             "filter": lines_filter,
@@ -918,7 +1042,14 @@ class CLIInsightsHandler(CLIBaseHandler):
                         },
                         "cost_bucket": {
                             "filter": {"term": {METRIC_NAME_KEYWORD_FIELD: MetricName.CLI_LLM_USAGE_TOTAL.value}},
-                            "aggs": {"total_cost": {"sum": {"field": MONEY_SPENT_FIELD}}},
+                            "aggs": {
+                                "total_cost": {"sum": {"field": MONEY_SPENT_FIELD}},
+                                # The sum skips every request whose cost never settled, so it is read
+                                # with its coverage and can say whether it is whole. No `cost_bearing`
+                                # narrowing: this bucket is already filtered to the LiteLLM proxy
+                                # metric, so a money attribute is expected on every document in it.
+                                **money_coverage_aggs(MONEY_SPENT_FIELD),
+                            },
                         },
                     },
                 }
@@ -953,7 +1084,14 @@ class CLIInsightsHandler(CLIBaseHandler):
                         },
                         "cost_bucket": {
                             "filter": {"term": {METRIC_NAME_KEYWORD_FIELD: MetricName.CLI_LLM_USAGE_TOTAL.value}},
-                            "aggs": {"total_cost": {"sum": {"field": MONEY_SPENT_FIELD}}},
+                            "aggs": {
+                                "total_cost": {"sum": {"field": MONEY_SPENT_FIELD}},
+                                # The sum skips every request whose cost never settled, so it is read
+                                # with its coverage and can say whether it is whole. No `cost_bearing`
+                                # narrowing: this bucket is already filtered to the LiteLLM proxy
+                                # metric, so a money attribute is expected on every document in it.
+                                **money_coverage_aggs(MONEY_SPENT_FIELD),
+                            },
                         },
                     },
                 }
@@ -1002,7 +1140,14 @@ class CLIInsightsHandler(CLIBaseHandler):
                         },
                         "cost_bucket": {
                             "filter": {"term": {METRIC_NAME_KEYWORD_FIELD: MetricName.CLI_LLM_USAGE_TOTAL.value}},
-                            "aggs": {"total_cost": {"sum": {"field": MONEY_SPENT_FIELD}}},
+                            "aggs": {
+                                "total_cost": {"sum": {"field": MONEY_SPENT_FIELD}},
+                                # The sum skips every request whose cost never settled, so it is read
+                                # with its coverage and can say whether it is whole. No `cost_bearing`
+                                # narrowing: this bucket is already filtered to the LiteLLM proxy
+                                # metric, so a money attribute is expected on every document in it.
+                                **money_coverage_aggs(MONEY_SPENT_FIELD),
+                            },
                         },
                     },
                 }
@@ -1061,7 +1206,14 @@ class CLIInsightsHandler(CLIBaseHandler):
                         },
                         "cost_bucket": {
                             "filter": {"term": {METRIC_NAME_KEYWORD_FIELD: MetricName.CLI_LLM_USAGE_TOTAL.value}},
-                            "aggs": {"total_cost": {"sum": {"field": MONEY_SPENT_FIELD}}},
+                            "aggs": {
+                                "total_cost": {"sum": {"field": MONEY_SPENT_FIELD}},
+                                # The sum skips every request whose cost never settled, so it is read
+                                # with its coverage and can say whether it is whole. No `cost_bearing`
+                                # narrowing: this bucket is already filtered to the LiteLLM proxy
+                                # metric, so a money attribute is expected on every document in it.
+                                **money_coverage_aggs(MONEY_SPENT_FIELD),
+                            },
                         },
                     },
                 }
@@ -1175,6 +1327,9 @@ class CLIInsightsHandler(CLIBaseHandler):
                     "filter": proxy_filter,
                     "aggs": {
                         "total_cost": {"sum": {"field": MONEY_SPENT_FIELD}},
+                        # The detail modal's Total Cost card and its Est. Monthly projection both come
+                        # from this sum, so it is read with its coverage. Already proxy-only.
+                        **money_coverage_aggs(MONEY_SPENT_FIELD),
                         "input_tokens": {"sum": {"field": INPUT_TOKENS_FIELD}},
                         "output_tokens": {"sum": {"field": OUTPUT_TOKENS_FIELD}},
                         "cache_read_tokens": {"sum": {"field": CACHE_READ_INPUT_TOKENS_FIELD}},
@@ -1225,6 +1380,11 @@ class CLIInsightsHandler(CLIBaseHandler):
                                                     "filter": proxy_filter,
                                                     "aggs": {
                                                         "total_cost": {"sum": {"field": MONEY_SPENT_FIELD}},
+                                                        # Per-repository cost, read with its coverage
+                                                        # so a repository whose requests never settled
+                                                        # is not published at $0.00 - and so the row's
+                                                        # classification is not decided by that zero.
+                                                        **money_coverage_aggs(MONEY_SPENT_FIELD),
                                                     },
                                                 },
                                             },
@@ -1246,13 +1406,21 @@ class CLIInsightsHandler(CLIBaseHandler):
         start_dt: datetime,
         end_dt: datetime,
     ) -> dict:
-        """Extract scalar user detail metrics from aggregation buckets."""
+        """Extract scalar user detail metrics from aggregation buckets.
+
+        `spend` and `est_monthly_spend` are qualified figures rather than floats. The proxy sum skips
+        every request whose cost never settled, so `... or 0` gave the modal a Total Cost card reading
+        `$0.00` *and* an Est. Monthly card projecting that zero forward - a forecast asserting the
+        person will cost nothing next month, from a window nobody has a cost for.
+
+        Prompts, commands, files, sessions and active days are counts and stay counts.
+        """
         usage_aggs = aggs.get("tool_usage", {})
         session_aggs = aggs.get("session_usage", {})
         completed_session_aggs = aggs.get("completed_sessions", {})
         proxy_aggs = aggs.get("proxy_usage", {})
         total_sessions = int(session_aggs.get("total_sessions", {}).get("value", 0) or 0)
-        total_cost = round(proxy_aggs.get("total_cost", {}).get("value", 0) or 0, 2)
+        spend = read_money_coverage(proxy_aggs, MONEY_COLUMN)
         total_prompts = int(usage_aggs.get("total_prompts", {}).get("value", 0) or 0)
         total_lines_added = int(usage_aggs.get("total_lines_added", {}).get("value", 0) or 0)
         total_lines_removed = int(usage_aggs.get("total_lines_removed", {}).get("value", 0) or 0)
@@ -1267,7 +1435,7 @@ class CLIInsightsHandler(CLIBaseHandler):
             "resolved_user_name": resolved_user_name,
             "user_email": self._extract_top_metric(aggs, "user_email", USER_EMAIL_KEYWORD_FIELD) or resolved_user_name,
             "total_sessions": total_sessions,
-            "total_cost": total_cost,
+            "spend": spend,
             "total_prompts": total_prompts,
             "total_commands": int(usage_aggs.get("total_commands", {}).get("value", 0) or 0),
             "net_lines": total_lines_added - total_lines_removed,
@@ -1277,7 +1445,7 @@ class CLIInsightsHandler(CLIBaseHandler):
             "active_days": active_days,
             "avg_session_duration_min": avg_session_duration_min,
             "prompts_per_session": round(total_prompts / total_sessions, 2) if total_sessions else 0.0,
-            "est_monthly_20d": round((total_cost / analysis_days) * 20, 2),
+            "est_monthly_spend": _projected_monthly_spend(spend, analysis_days),
             "unique_repositories": int(usage_aggs.get("unique_repositories", {}).get("value", 0) or 0),
             "proxy_aggs": proxy_aggs,
         }
@@ -1305,7 +1473,9 @@ class CLIInsightsHandler(CLIBaseHandler):
         metrics: dict,
         classification: str,
         category_breakdown: list[dict],
+        category_spend: list[RenderedSpend],
         repository_classifications: list[dict],
+        repository_spend: list[RenderedSpend],
         tools: list[dict],
         models: list[dict],
         tool_profile: dict,
@@ -1313,8 +1483,8 @@ class CLIInsightsHandler(CLIBaseHandler):
         """Build widget-ready sections for the CLI user detail modal."""
         return {
             "key_metrics": self._build_cli_user_detail_key_metrics(
-                total_cost=metrics["total_cost"],
-                est_monthly_20d=metrics["est_monthly_20d"],
+                spend=metrics["spend"],
+                est_monthly_spend=metrics["est_monthly_spend"],
                 total_sessions=metrics["total_sessions"],
                 total_prompts=metrics["total_prompts"],
                 net_lines=metrics["net_lines"],
@@ -1336,8 +1506,12 @@ class CLIInsightsHandler(CLIBaseHandler):
                 ),
                 unique_repositories=metrics["unique_repositories"],
             ),
-            "category_breakdown_chart": self._build_cli_user_detail_category_breakdown_chart(category_breakdown),
-            "repositories_table": self._build_cli_user_detail_repositories_table(repository_classifications),
+            "category_breakdown_chart": self._build_cli_user_detail_category_breakdown_chart(
+                category_breakdown, category_spend
+            ),
+            "repositories_table": self._build_cli_user_detail_repositories_table(
+                repository_classifications, repository_spend
+            ),
         }
 
     def _parse_cli_insights_user_detail_result(
@@ -1362,12 +1536,14 @@ class CLIInsightsHandler(CLIBaseHandler):
             repositories=collections["repositories"],
             branches=collections["branches_used"],
             project_name=collections["unique_projects"][0] if collections["unique_projects"] else None,
-            total_cost=metrics["total_cost"],
+            spend=metrics["spend"],
         )
-        repository_classifications = CLIClassificationEngine._build_cli_repository_classifications(
+        repository_classifications, repository_spend = CLIClassificationEngine._build_cli_repository_classifications(
             aggs.get("repositories_data", {}).get("repositories", {}).get("buckets", []),
         )
-        category_breakdown = CLIClassificationEngine._build_cli_category_breakdown(repository_classifications)
+        category_breakdown, category_spend = CLIClassificationEngine._build_cli_category_breakdown(
+            repository_classifications, repository_spend
+        )
         tool_counts = CLIClassificationEngine._extract_cli_tool_counts(tool_docs_result)
         tools = [{"tool_name": name, "usage_count": count} for name, count in tool_counts]
         models = [
@@ -1380,7 +1556,9 @@ class CLIInsightsHandler(CLIBaseHandler):
             metrics=metrics,
             classification=classification,
             category_breakdown=category_breakdown,
+            category_spend=category_spend,
             repository_classifications=repository_classifications,
+            repository_spend=repository_spend,
             tools=tools,
             models=models,
             tool_profile=tool_profile,
@@ -1394,7 +1572,11 @@ class CLIInsightsHandler(CLIBaseHandler):
             "total_sessions": metrics["total_sessions"],
             "total_commands": metrics["total_commands"],
             "unique_repositories": metrics["unique_repositories"],
-            "total_cost": metrics["total_cost"],
+            # One triple qualifies both money fields: the projection is this figure scaled, so it
+            # carries the same state and a second copy would say nothing the first does not.
+            MONEY_COLUMN: metrics["spend"].figure,
+            "est_monthly_20d": metrics["est_monthly_spend"].figure,
+            **spend_fields(metrics["spend"]),
             "total_prompts": metrics["total_prompts"],
             "net_lines": metrics["net_lines"],
             "files_created": metrics["files_created"],
@@ -1403,7 +1585,6 @@ class CLIInsightsHandler(CLIBaseHandler):
             "active_days": metrics["active_days"],
             "avg_session_duration_min": metrics["avg_session_duration_min"],
             "prompts_per_session": metrics["prompts_per_session"],
-            "est_monthly_20d": metrics["est_monthly_20d"],
             "is_multi_category": len(category_breakdown) > 1,
             "category_diversity_score": CLIClassificationEngine._calculate_cli_category_diversity_score(
                 category_breakdown
@@ -1411,7 +1592,7 @@ class CLIInsightsHandler(CLIBaseHandler):
             "rule_reasons": CLIClassificationEngine._build_cli_rule_reasons(
                 repositories=collections["repositories"],
                 branches=collections["branches_used"],
-                total_cost=metrics["total_cost"],
+                spend=metrics["spend"],
                 total_sessions=metrics["total_sessions"],
                 active_days=metrics["active_days"],
                 net_lines=metrics["net_lines"],
@@ -1429,8 +1610,8 @@ class CLIInsightsHandler(CLIBaseHandler):
     def _build_cli_user_detail_key_metrics(
         self,
         *,
-        total_cost: float,
-        est_monthly_20d: float,
+        spend: RenderedSpend,
+        est_monthly_spend: RenderedSpend,
         total_sessions: int,
         total_prompts: int,
         net_lines: int,
@@ -1438,22 +1619,29 @@ class CLIInsightsHandler(CLIBaseHandler):
         active_days: int,
         avg_session_duration_min: float,
     ) -> dict:
-        """Build widget-ready key metrics section for the CLI user detail modal."""
+        """Build widget-ready key metrics section for the CLI user detail modal.
+
+        Each money card carries its annotation beside its number, because a subtotal renders
+        indistinguishably from a whole figure otherwise - and on the forecast card that mistake is
+        compounded twenty-fold before the reader sees it.
+        """
         return ResponseFormatter.format_summary_response(
             metrics=[
                 {
                     "id": "total_cost",
                     "label": TOTAL_COST_LABEL,
                     "type": "number",
-                    "value": total_cost,
+                    "value": spend.figure,
                     "format": "currency",
+                    **spend_fields(spend),
                 },
                 {
                     "id": "est_monthly_20d",
                     "label": "Est. Monthly (20 days)",
                     "type": "number",
-                    "value": est_monthly_20d,
+                    "value": est_monthly_spend.figure,
                     "format": "currency",
+                    **spend_fields(est_monthly_spend),
                 },
                 {
                     "id": "total_sessions",
@@ -1605,16 +1793,23 @@ class CLIInsightsHandler(CLIBaseHandler):
             total_count=len(models[:8]),
         )
 
-    def _build_cli_user_detail_category_breakdown_chart(self, category_breakdown: list[dict]) -> dict:
-        """Build widget-ready category breakdown chart section."""
+    def _build_cli_user_detail_category_breakdown_chart(
+        self, category_breakdown: list[dict], category_spend: list[RenderedSpend]
+    ) -> dict:
+        """Build widget-ready category breakdown chart section.
+
+        The chart's rows are rebuilt from selected keys, so the money annotation is re-emitted
+        explicitly: a currency cell that leaves it behind is a subtotal rendered as a total.
+        """
         rows = [
             {
                 "category": item["category"],
                 "percentage": item["percentage"] / 100,
-                "cost": item["cost"],
+                "cost": spend.figure,
                 "sessions": item["sessions"],
+                **spend_fields(spend),
             }
-            for item in category_breakdown
+            for item, spend in zip(category_breakdown, category_spend, strict=True)
         ]
         return ResponseFormatter.format_tabular_response(
             columns=[
@@ -1631,8 +1826,14 @@ class CLIInsightsHandler(CLIBaseHandler):
             total_count=len(rows),
         )
 
-    def _build_cli_user_detail_repositories_table(self, repository_rows: list[dict]) -> dict:
-        """Build widget-ready repositories table section."""
+    def _build_cli_user_detail_repositories_table(
+        self, repository_rows: list[dict], repository_spend: list[RenderedSpend]
+    ) -> dict:
+        """Build widget-ready repositories table section, money annotation included.
+
+        The `classification` column beside the cost is decided partly by that cost, so a repository
+        whose spend never settled shows no figure here *and* was classified without a cost signal.
+        """
         rows = [
             {
                 "repository": row["repository"],
@@ -1640,10 +1841,11 @@ class CLIInsightsHandler(CLIBaseHandler):
                 "classification": row["classification"],
                 "client": row.get("client", ""),
                 "sessions": row["sessions"],
-                "cost": row["cost"],
+                "cost": spend.figure,
                 "net_lines": row["net_lines"],
+                **spend_fields(spend),
             }
-            for row in repository_rows
+            for row, spend in zip(repository_rows, repository_spend, strict=True)
         ]
         return ResponseFormatter.format_tabular_response(
             columns=[
@@ -1754,6 +1956,12 @@ class CLIInsightsHandler(CLIBaseHandler):
         2. Batch-fetch enrichment records from PostgreSQL for those emails.
         3. Group by *field* (primary_skill / country / city / job_title); users without an
            enrichment record land in the "No HR Data" bucket.
+
+        A dimension's `total_cost` is `combine_rendered_spend` over its members, not a running sum of
+        their cells: a country holding one user whose costs never settled is short by an unknown
+        amount and is published short, and a country of nothing but such users has no figure at all -
+        `$0.00` against a job title would read as *this discipline costs nothing*. `user_count` is a
+        head count and stays exact.
         """
         start_dt, end_dt = TimeParser.parse(time_period, start_date, end_date)
         query = self._pipeline._build_query(
@@ -1767,7 +1975,7 @@ class CLIInsightsHandler(CLIBaseHandler):
         user_rows = [
             {
                 "user_email": self._extract_top_metric(b, "user_email", USER_EMAIL_KEYWORD_FIELD),
-                "total_cost": round(b.get("cost_bucket", {}).get("total_cost", {}).get("value", 0) or 0, 2),
+                "spend": read_money_coverage(b.get("cost_bucket", {}), MONEY_COLUMN),
             }
             for b in result.get("aggregations", {}).get("users", {}).get("buckets", [])
         ]
@@ -1776,7 +1984,8 @@ class CLIInsightsHandler(CLIBaseHandler):
         async with get_async_session() as session:
             enrichment_map = await user_enrichment_repository.get_by_emails(session, emails)
 
-        grouped: dict[str, dict] = defaultdict(lambda: {"user_count": 0, "total_cost": 0.0})
+        grouped: dict[str, dict] = defaultdict(lambda: {"user_count": 0})
+        member_spend: dict[str, list[RenderedSpend]] = defaultdict(list)
         for row in user_rows:
             email = (row.get("user_email") or "").lower()
             enrichment = enrichment_map.get(email) or enrichment_map.get(
@@ -1788,14 +1997,12 @@ class CLIInsightsHandler(CLIBaseHandler):
             ) or CLIClassificationEngine.NO_HR_DATA_LABEL
 
             grouped[dimension_value]["user_count"] += 1
-            grouped[dimension_value]["total_cost"] = round(
-                grouped[dimension_value]["total_cost"] + row.get("total_cost", 0.0), 2
-            )
+            member_spend[dimension_value].append(row["spend"])
 
-        return [
-            {field: key, "user_count": val["user_count"], "total_cost": val["total_cost"]}
-            for key, val in sorted(grouped.items(), key=lambda kv: kv[1]["total_cost"], reverse=True)
-        ]
+        rows = [{field: key, "user_count": val["user_count"]} for key, val in grouped.items()]
+        rendered = [combine_rendered_spend(member_spend[row[field]]) for row in rows]
+        apply_spend_cells(rows, rendered, MONEY_COLUMN)
+        return _ordered_by_spend(rows, rendered)
 
     async def get_cli_insights_by_enriched_user(
         self,

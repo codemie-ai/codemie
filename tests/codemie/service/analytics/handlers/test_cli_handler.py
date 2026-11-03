@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -25,6 +26,23 @@ from codemie.rest_api.security.user import User
 from codemie.service.analytics.handlers.cli.classification_engine import CLIClassificationEngine
 from codemie.service.analytics.handlers.cli.insights_handler import CLIInsightsHandler
 from codemie.service.analytics.handlers.cli_handler import CLIHandler
+from codemie.service.analytics.time_parser import TimeParser
+from codemie.service.spend.rendering import RenderedSpend, combine_rendered_spend
+
+
+def _exact(figure: float) -> RenderedSpend:
+    """A whole figure: every cost-bearing document in the window settled."""
+    return RenderedSpend(figure=figure, unavailable=False, partial=False, missing_amount=None)
+
+
+def _partial(figure: float) -> RenderedSpend:
+    """A subtotal: the settled documents total this, and an unknown amount is unsettled."""
+    return RenderedSpend(figure=figure, unavailable=False, partial=True, missing_amount=None)
+
+
+def _absent() -> RenderedSpend:
+    """No figure at all: nothing in the window settled a cost, which is not the same as zero."""
+    return RenderedSpend(figure=None, unavailable=True, partial=False, missing_amount=None)
 
 
 @pytest.fixture
@@ -148,7 +166,9 @@ class TestCLISummary:
                 },
             ]
         )
-        handler.get_cli_costs_with_adjustment = AsyncMock(return_value={"total_cost": 123.45})
+        handler._query_cli_cost_total = AsyncMock(
+            return_value=RenderedSpend(figure=123.45, unavailable=False, partial=False, missing_amount=None)
+        )
 
         response = await handler.get_cli_summary(time_period="last_30_days")
 
@@ -194,6 +214,121 @@ class TestCLISummary:
             next(metric for metric in response["data"]["metrics"] if metric["id"] == "mau")["fixed_timeframe"]
             == "Last 1 month"
         )
+
+    @pytest.mark.asyncio
+    async def test_get_cli_summary_cli_cost_uses_requested_range_unclamped(self, handler, mock_repository):
+        """cli_cost comes from a plain CLI money query over the requested range (no cutoff clamping)."""
+        handler._pipeline.execute_summary_query = AsyncMock(
+            side_effect=[
+                {"data": {"metrics": []}},
+                {"data": {"metrics": []}},
+                {"data": {"metrics": []}},
+            ]
+        )
+        mock_repository.execute_aggregation_query = AsyncMock(
+            return_value={
+                "aggregations": {
+                    "total_cost": {"value": 42.129},
+                    "money_settled": {"value": 4},
+                    "money_unsettled": {"doc_count": 0},
+                }
+            }
+        )
+        start = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        end = datetime(2026, 1, 31, tzinfo=timezone.utc)
+
+        response = await handler.get_cli_summary(start_date=start, end_date=end)
+
+        cli_cost_metric = next(m for m in response["data"]["metrics"] if m["id"] == "cli_cost")
+        assert cli_cost_metric["value"] == 42.13
+
+        agg_body = mock_repository.execute_aggregation_query.await_args.args[0]
+        expected_start, expected_end = TimeParser.parse(None, start, end)
+        time_range = next(f["range"]["@timestamp"] for f in agg_body["query"]["bool"]["filter"] if "range" in f)
+        assert time_range["gte"] == expected_start.isoformat()
+        assert time_range["lte"] == expected_end.isoformat()
+        assert agg_body["aggs"] == {
+            "total_cost": {"sum": {"field": "attributes.money_spent"}},
+            "money_settled": {"value_count": {"field": "attributes.money_spent"}},
+            "money_unsettled": {"filter": {"bool": {"must_not": [{"exists": {"field": "attributes.money_spent"}}]}}},
+        }
+        assert {"term": {"attributes.cli_request": True}} in agg_body["query"]["bool"]["filter"]
+
+    @staticmethod
+    def _cli_cost_card(response: dict) -> dict:
+        return next(metric for metric in response["data"]["metrics"] if metric["id"] == "cli_cost")
+
+    @pytest.mark.asyncio
+    async def test_cli_cost_is_unavailable_when_no_document_settled_a_cost(self, handler, mock_repository):
+        """Nothing settled is no figure. A zero here would claim the window cost nothing.
+
+        This is the live shape for streaming CLI traffic: those documents carry their token counts
+        and no money attribute at all, so the `sum` aggregation skips every one of them.
+        """
+        handler._pipeline.execute_summary_query = AsyncMock(
+            side_effect=[{"data": {"metrics": []}}, {"data": {"metrics": []}}, {"data": {"metrics": []}}]
+        )
+        mock_repository.execute_aggregation_query = AsyncMock(
+            return_value={
+                "aggregations": {
+                    "total_cost": {"value": 0.0},
+                    "money_settled": {"value": 0},
+                    "money_unsettled": {"doc_count": 812},
+                }
+            }
+        )
+
+        card = self._cli_cost_card(await handler.get_cli_summary(time_period="last_30_days"))
+
+        assert card["value"] is None
+        assert card["spend_unavailable"] is True
+        assert card["spend_partial"] is False
+
+    @pytest.mark.asyncio
+    async def test_cli_cost_is_partial_when_some_documents_carry_no_cost(self, handler, mock_repository):
+        """A subtotal is published as a subtotal, with the figure the settled documents did produce."""
+        handler._pipeline.execute_summary_query = AsyncMock(
+            side_effect=[{"data": {"metrics": []}}, {"data": {"metrics": []}}, {"data": {"metrics": []}}]
+        )
+        mock_repository.execute_aggregation_query = AsyncMock(
+            return_value={
+                "aggregations": {
+                    "total_cost": {"value": 42.129},
+                    "money_settled": {"value": 300},
+                    "money_unsettled": {"doc_count": 12},
+                }
+            }
+        )
+
+        card = self._cli_cost_card(await handler.get_cli_summary(time_period="last_30_days"))
+
+        assert card["value"] == 42.13
+        assert card["spend_partial"] is True
+        assert card["spend_unavailable"] is False
+        # The unsettled documents carry no money to add up, so the size of the hole is unknown -
+        # a state, not a gap, and never a row count standing in for money.
+        assert card["spend_missing_amount"] is None
+
+    @pytest.mark.asyncio
+    async def test_cli_cost_is_exact_when_every_document_settled(self, handler, mock_repository):
+        """The only state a currency card may render bare, including a measured zero."""
+        handler._pipeline.execute_summary_query = AsyncMock(
+            side_effect=[{"data": {"metrics": []}}, {"data": {"metrics": []}}, {"data": {"metrics": []}}]
+        )
+        mock_repository.execute_aggregation_query = AsyncMock(
+            return_value={
+                "aggregations": {
+                    "total_cost": {"value": 42.129},
+                    "money_settled": {"value": 312},
+                    "money_unsettled": {"doc_count": 0},
+                }
+            }
+        )
+
+        card = self._cli_cost_card(await handler.get_cli_summary(time_period="last_30_days"))
+
+        assert card["value"] == 42.13
+        assert (card["spend_unavailable"], card["spend_partial"], card["spend_missing_amount"]) == (False, False, None)
 
     def test_build_cli_summary_aggregation_structure(self, handler):
         """Verify CLI summary aggregation only includes overview metrics and token inputs."""
@@ -1444,13 +1579,21 @@ class TestCLIInsightsHelpers:
                         "buckets": [
                             {
                                 "key": "",
-                                "cost_bucket": {"total_cost": {"value": 9334.5}},
+                                "cost_bucket": {
+                                    "total_cost": {"value": 9334.5},
+                                    "money_settled": {"value": 900},
+                                    "money_unsettled": {"doc_count": 0},
+                                },
                                 "repositories": {"buckets": {"buckets": []}},
                                 "branches": {"buckets": {"buckets": []}},
                             },
                             {
                                 "key": "epm-cdme",
-                                "cost_bucket": {"total_cost": {"value": 120.0}},
+                                "cost_bucket": {
+                                    "total_cost": {"value": 120.0},
+                                    "money_settled": {"value": 40},
+                                    "money_unsettled": {"doc_count": 0},
+                                },
                                 "repositories": {"buckets": {"buckets": [{"key": "JnJ/payment-service/backend"}]}},
                                 "branches": {"buckets": {"buckets": [{"key": "feature/ABC-123-auth"}]}},
                             },
@@ -1460,37 +1603,41 @@ class TestCLIInsightsHelpers:
             }
         )
 
-        rows = await handler._get_cli_insights_project_rows("last_30_days", None, None, None, None)
+        rows, rendered = await handler._get_cli_insights_project_rows("last_30_days", None, None, None, None)
 
         assert len(rows) == 1
         assert rows[0]["project_name"] == "epm-cdme"
         assert rows[0]["total_cost"] == 120.0
+        assert rendered[0].is_exact
 
     @pytest.mark.asyncio
     async def test_get_cli_insights_top_spenders(self, handler):
         handler._get_cli_insights_user_rows = AsyncMock(
-            return_value=[
-                {
-                    "user_id": "u-2",
-                    "user_name": "Bob",
-                    "user_email": "bob@example.com",
-                    "classification": "learning",
-                    "total_sessions": 3,
-                    "net_lines": 12,
-                    "total_cost": 40.0,
-                    "total_lines_added": 20,
-                },
-                {
-                    "user_id": "u-1",
-                    "user_name": "Alice",
-                    "user_email": "alice@example.com",
-                    "classification": "production",
-                    "total_sessions": 8,
-                    "net_lines": 140,
-                    "total_cost": 120.0,
-                    "total_lines_added": 200,
-                },
-            ]
+            return_value=(
+                [
+                    {
+                        "user_id": "u-2",
+                        "user_name": "Bob",
+                        "user_email": "bob@example.com",
+                        "classification": "learning",
+                        "total_sessions": 3,
+                        "net_lines": 12,
+                        "total_cost": 40.0,
+                        "total_lines_added": 20,
+                    },
+                    {
+                        "user_id": "u-1",
+                        "user_name": "Alice",
+                        "user_email": "alice@example.com",
+                        "classification": "production",
+                        "total_sessions": 8,
+                        "net_lines": 140,
+                        "total_cost": 120.0,
+                        "total_lines_added": 200,
+                    },
+                ],
+                [_exact(40.0), _exact(120.0)],
+            )
         )
 
         response = await handler.get_cli_insights_top_spenders(time_period="last_30_days")
@@ -1542,6 +1689,8 @@ class TestCLIInsightsHelpers:
                     "completed_sessions": {"avg_duration_ms": {"value": 9480000}},
                     "proxy_usage": {
                         "total_cost": {"value": 1210.894},
+                        "money_settled": {"value": 3583},
+                        "money_unsettled": {"doc_count": 0},
                         "models": {"buckets": [{"key": "claude-sonnet-4-6", "doc_count": 3583}]},
                     },
                     "repositories_data": {
@@ -1563,7 +1712,11 @@ class TestCLIInsightsHelpers:
                                                                 "projects": {"buckets": [{"key": "epm-cdme"}]},
                                                             },
                                                             "sessions": {"count": {"value": 23}},
-                                                            "proxy": {"total_cost": {"value": 74.87}},
+                                                            "proxy": {
+                                                                "total_cost": {"value": 74.87},
+                                                                "money_settled": {"value": 200},
+                                                                "money_unsettled": {"doc_count": 0},
+                                                            },
                                                         }
                                                     ]
                                                 },
@@ -1587,7 +1740,11 @@ class TestCLIInsightsHelpers:
                                                                 "projects": {"buckets": [{"key": "epm-cdme"}]},
                                                             },
                                                             "sessions": {"count": {"value": 3}},
-                                                            "proxy": {"total_cost": {"value": 11.81}},
+                                                            "proxy": {
+                                                                "total_cost": {"value": 11.81},
+                                                                "money_settled": {"value": 30},
+                                                                "money_unsettled": {"doc_count": 0},
+                                                            },
                                                         }
                                                     ]
                                                 },
@@ -1683,6 +1840,10 @@ class TestCLIInsightsHelpers:
             "cost",
             "classification",
             "net_lines",
+            # The money cell never travels without the three values that qualify it.
+            "spend_unavailable",
+            "spend_partial",
+            "spend_missing_amount",
         }
         assert response["data"]["tools"][0] == {"tool_name": "Bash", "usage_count": 15}
         assert response["data"]["models"][0] == {"model_name": "claude-sonnet-4-6", "count": 3583}
@@ -1761,7 +1922,7 @@ class TestCLIInsightsHelpers:
             repositories=["tutorials/react-course"],
             branches=["main"],
             project_name="demo@epam.com",
-            total_cost=2.0,
+            spend=_exact(2.0),
         )
 
         assert classification in {"learning", "pet_project", "experimental"}
@@ -1772,8 +1933,644 @@ class TestCLIInsightsHelpers:
             repositories=["JnJ/payment-service/backend"],
             branches=["feature/ABC-123-auth"],
             project_name="team-project",
-            total_cost=200.0,
+            spend=_exact(200.0),
         )
 
         assert classification == "production"
         assert confidence > 0
+
+
+# ---------------------------------------------------------------------------
+# `attributes.money_spent` is omitted from a metric document whenever the cost has not settled
+# (`llm_proxy_monitoring_service`), and for streaming responses there is no cost header to settle
+# from at all. Every `sum` over it therefore returns the **settled remainder**, and `... or 0` used
+# to publish "nothing settled" as "nothing was spent". These tests pin the three states the read
+# side now distinguishes, and specifically the three places where a fabricated zero did more damage
+# than mis-stating one cell: a rank, a forecast, and a person's label.
+# ---------------------------------------------------------------------------
+
+
+def _cost_bucket(total: float | None, settled: int, unsettled: int) -> dict:
+    """One `cost_bucket` shaped exactly as the aggregation now asks for it."""
+    return {
+        "total_cost": {"value": total},
+        "money_settled": {"value": settled},
+        "money_unsettled": {"doc_count": unsettled},
+    }
+
+
+NOTHING_SETTLED = _cost_bucket(0.0, 0, 812)
+SOME_UNSETTLED = _cost_bucket(42.5, 300, 12)
+ALL_SETTLED = _cost_bucket(42.5, 312, 0)
+MEASURED_ZERO = _cost_bucket(0.0, 312, 0)
+
+#: Repository signals worth production 1.5 and experimental 1.5 — a deliberate tie, so that the
+#: half-point the old `< 5` branch added on a fabricated zero is exactly enough to flip the label.
+TIED_REPOSITORIES = ["Acme/payments", "tmp"]
+
+
+class TestTheCostRuleNeverFiresOnAFigureNobodyHas:
+    """`classification_engine` turns money into a bare string, so the qualification is spent inside."""
+
+    def test_an_absent_cost_leaves_the_label_to_the_repository_signals(self):
+        """The consequence that has no format hint to warn a reader: a label decided by a phantom zero."""
+        classification, _confidence = CLIClassificationEngine._classify_cli_entity(
+            repositories=TIED_REPOSITORIES,
+            branches=[],
+            project_name="team-project",
+            spend=_absent(),
+        )
+
+        assert classification == "production"
+
+    def test_a_measured_zero_still_earns_the_low_cost_signal(self):
+        """A document carrying `money_spent: 0.0` is a measurement, and this is the branch it means.
+
+        It is also the exact boundary the defect crossed: with the fabricated zero restored, an
+        *absent* figure reaches this same branch and the entity above is published `experimental`.
+        """
+        classification, _confidence = CLIClassificationEngine._classify_cli_entity(
+            repositories=TIED_REPOSITORIES,
+            branches=[],
+            project_name="team-project",
+            spend=_exact(0.0),
+        )
+
+        assert classification == "experimental"
+
+    def test_a_subtotal_under_five_fires_no_low_cost_branch(self):
+        """A subtotal is a lower bound, and `< 5` needs an upper one: a partial $3 may really be $300."""
+        classification, _confidence = CLIClassificationEngine._classify_cli_entity(
+            repositories=TIED_REPOSITORIES,
+            branches=[],
+            project_name="team-project",
+            spend=_partial(3.0),
+        )
+
+        assert classification == "production"
+
+    def test_a_subtotal_over_one_hundred_still_proves_the_production_branch(self):
+        """What a lower bound *does* prove: settled >= 100 means the whole window is >= 100."""
+        scores = dict.fromkeys(("production", "learning", "testing", "experimental", "pet_project"), 0.0)
+
+        CLIClassificationEngine._score_cli_cost(scores, _partial(150.0))
+
+        assert scores["production"] == 1.5
+
+    def test_no_figure_contributes_no_component_at_all(self):
+        """Neither branch — the score is left standing on the signals that were measured."""
+        scores = dict.fromkeys(("production", "learning", "testing", "experimental", "pet_project"), 0.0)
+
+        CLIClassificationEngine._score_cli_cost(scores, _absent())
+
+        assert set(scores.values()) == {0.0}
+
+    def test_an_exact_figure_keeps_every_threshold_it_had(self):
+        """The fix removes no signal from a whole figure."""
+        heavy = dict.fromkeys(("production", "learning", "testing", "experimental", "pet_project"), 0.0)
+        middling = dict(heavy)
+        light = dict(heavy)
+
+        CLIClassificationEngine._score_cli_cost(heavy, _exact(120.0))
+        CLIClassificationEngine._score_cli_cost(middling, _exact(20.0))
+        CLIClassificationEngine._score_cli_cost(light, _exact(1.0))
+
+        assert heavy["production"] == 1.5
+        assert (middling["production"], middling["learning"]) == (0.5, 0.5)
+        assert light["experimental"] == 0.5
+
+    def test_a_rule_reason_says_the_cost_is_unknown_rather_than_quoting_a_figure(self):
+        """The reason list is prose with no annotation slot, so the qualification goes in the sentence."""
+        reasons = CLIClassificationEngine._build_cli_rule_reasons(
+            repositories=["Acme/payments"],
+            branches=["release/1.0"],
+            spend=_absent(),
+            total_sessions=4,
+            active_days=2,
+            net_lines=90,
+        )
+
+        assert any("cost: unknown" in reason for reason in reasons)
+        assert not any("$" in reason for reason in reasons)
+
+    def test_a_rule_reason_marks_a_subtotal_as_one(self):
+        reasons = CLIClassificationEngine._build_cli_rule_reasons(
+            repositories=["Acme/payments"],
+            branches=["release/1.0"],
+            spend=_partial(3.0),
+            total_sessions=4,
+            active_days=2,
+            net_lines=90,
+        )
+
+        assert "cost: $3.00 (subtotal)" in reasons
+
+    def test_a_rule_reason_states_a_whole_figure_bare(self):
+        reasons = CLIClassificationEngine._build_cli_rule_reasons(
+            repositories=["Acme/payments"],
+            branches=["release/1.0"],
+            spend=_exact(3.0),
+            total_sessions=4,
+            active_days=2,
+            net_lines=90,
+        )
+
+        assert "cost: $3.00" in reasons
+
+
+class TestForecastCardIsNeverAProjectionOfNothing:
+    """`est_monthly_20d` is a card, so an absent input must not reach it as `$0.00`."""
+
+    @pytest.fixture
+    def handler(self, mock_user, mock_repository):
+        return CLIInsightsHandler(mock_user, mock_repository)
+
+    @staticmethod
+    def _core_metrics(handler, proxy_bucket: dict) -> dict:
+        # A ten-day window, so the 20-working-day projection is exactly twice the window's spend.
+        return handler._extract_cli_user_detail_core_metrics(
+            user_name="Ada",
+            aggs={"proxy_usage": {**proxy_bucket, "models": {"buckets": []}}},
+            start_dt=datetime(2026, 3, 1, tzinfo=timezone.utc),
+            end_dt=datetime(2026, 3, 11, tzinfo=timezone.utc),
+        )
+
+    def test_nothing_settled_projects_to_no_figure(self, handler):
+        metrics = self._core_metrics(handler, NOTHING_SETTLED)
+
+        assert metrics["spend"].figure is None
+        assert metrics["est_monthly_spend"].figure is None
+        assert metrics["est_monthly_spend"].unavailable is True
+
+    def test_a_subtotal_projects_to_a_subtotal(self, handler):
+        metrics = self._core_metrics(handler, SOME_UNSETTLED)
+
+        assert metrics["est_monthly_spend"].figure == 85.0
+        assert metrics["est_monthly_spend"].partial is True
+
+    def test_a_whole_figure_projects_to_a_whole_figure(self, handler):
+        metrics = self._core_metrics(handler, ALL_SETTLED)
+
+        assert metrics["est_monthly_spend"].figure == 85.0
+        assert metrics["est_monthly_spend"].is_exact
+
+    def test_a_measured_zero_projects_to_an_unqualified_zero(self, handler):
+        metrics = self._core_metrics(handler, MEASURED_ZERO)
+
+        assert metrics["est_monthly_spend"].figure == 0.0
+        assert metrics["est_monthly_spend"].is_exact
+
+    def test_both_money_cards_carry_the_annotation_beside_the_number(self, handler):
+        cards = handler._build_cli_user_detail_key_metrics(
+            spend=_absent(),
+            est_monthly_spend=_absent(),
+            total_sessions=3,
+            total_prompts=10,
+            net_lines=5,
+            files_modified=1,
+            active_days=2,
+            avg_session_duration_min=1.0,
+        )["data"]["metrics"]
+        by_id = {card["id"]: card for card in cards}
+
+        for card_id in ("total_cost", "est_monthly_20d"):
+            assert by_id[card_id]["value"] is None
+            assert by_id[card_id]["spend_unavailable"] is True
+            assert by_id[card_id]["spend_partial"] is False
+
+
+def _user_bucket(user_id: str, email: str, cost_bucket: dict, *, repositories: list[str], branches: list[str]) -> dict:
+    """One `users` terms bucket for the user-rows and classification aggregations."""
+    return {
+        "key": user_id,
+        "user_name": {"top": [{"metrics": {"attributes.user_name.keyword": email}}]},
+        "user_email": {"top": [{"metrics": {"attributes.user_email.keyword": email}}]},
+        "projects": {"buckets": {"buckets": [{"key": "epm-cdme"}]}},
+        "repositories": {"buckets": {"buckets": [{"key": repo} for repo in repositories]}},
+        "branches": {"buckets": {"buckets": [{"key": branch} for branch in branches]}},
+        "cost_bucket": cost_bucket,
+        "total_lines_added": {"total": {"value": 100}},
+        "total_lines_removed": {"total": {"value": 10}},
+        "total_sessions": {"count": {"value": 4}},
+    }
+
+
+class TestAnAbsentFigureIsNotRankedAmongTheFigures:
+    """Top Spenders publishes a rank, so a floored figure decides a position as well as an amount."""
+
+    @pytest.fixture
+    def handler(self, mock_user, mock_repository):
+        return CLIInsightsHandler(mock_user, mock_repository)
+
+    @pytest.mark.asyncio
+    @patch(
+        "codemie.service.analytics.handlers.cli.insights_handler.UserIdentityResolver.resolve_rows",
+        new_callable=AsyncMock,
+    )
+    async def test_the_user_whose_costs_never_settled_ranks_last_with_no_figure(
+        self, _mock_resolve_rows, handler, mock_repository
+    ):
+        mock_repository.execute_aggregation_query = AsyncMock(
+            return_value={
+                "aggregations": {
+                    "users": {
+                        "buckets": [
+                            _user_bucket(
+                                "u-absent",
+                                "absent@example.com",
+                                NOTHING_SETTLED,
+                                repositories=["Acme/payments"],
+                                branches=["release/1.0"],
+                            ),
+                            _user_bucket(
+                                "u-small",
+                                "small@example.com",
+                                _cost_bucket(1.0, 5, 0),
+                                repositories=["Acme/payments"],
+                                branches=["release/1.0"],
+                            ),
+                            _user_bucket(
+                                "u-big",
+                                "big@example.com",
+                                _cost_bucket(500.0, 50, 0),
+                                repositories=["Acme/payments"],
+                                branches=["release/1.0"],
+                            ),
+                        ]
+                    }
+                }
+            }
+        )
+
+        rows = (await handler.get_cli_insights_top_spenders(time_period="last_30_days"))["data"]["rows"]
+
+        assert [row["user_id"] for row in rows] == ["u-big", "u-small", "u-absent"]
+        assert [row["rank"] for row in rows] == [1, 2, 3]
+        # Last by rank, and explicitly no figure — never the $0.00 that put it there before.
+        assert rows[-1]["total_cost"] is None
+        assert rows[-1]["spend_unavailable"] is True
+        assert rows[1]["total_cost"] == 1.0
+
+    @pytest.mark.asyncio
+    @patch(
+        "codemie.service.analytics.handlers.cli.insights_handler.UserIdentityResolver.resolve_rows",
+        new_callable=AsyncMock,
+    )
+    async def test_a_subtotal_is_ranked_by_what_settled_and_says_it_is_a_subtotal(
+        self, _mock_resolve_rows, handler, mock_repository
+    ):
+        mock_repository.execute_aggregation_query = AsyncMock(
+            return_value={
+                "aggregations": {
+                    "users": {
+                        "buckets": [
+                            _user_bucket(
+                                "u-partial",
+                                "partial@example.com",
+                                SOME_UNSETTLED,
+                                repositories=["Acme/payments"],
+                                branches=["release/1.0"],
+                            ),
+                            _user_bucket(
+                                "u-exact",
+                                "exact@example.com",
+                                _cost_bucket(10.0, 8, 0),
+                                repositories=["Acme/payments"],
+                                branches=["release/1.0"],
+                            ),
+                        ]
+                    }
+                }
+            }
+        )
+
+        rows = (await handler.get_cli_insights_all_users(time_period="last_30_days"))["data"]["rows"]
+        by_id = {row["user_id"]: row for row in rows}
+
+        assert by_id["u-partial"]["total_cost"] == 42.5
+        assert by_id["u-partial"]["spend_partial"] is True
+        assert by_id["u-partial"]["spend_missing_amount"] is None
+        assert by_id["u-exact"]["spend_partial"] is False
+        # Line and session counts are measurements and keep their zeros and their exactness.
+        assert by_id["u-partial"]["net_lines"] == 90
+        assert by_id["u-partial"]["total_sessions"] == 4
+
+
+class TestProjectRowsPublishTheThreeStates:
+    """The plain money cell, one bucket per state."""
+
+    @pytest.fixture
+    def handler(self, mock_user, mock_repository):
+        return CLIInsightsHandler(mock_user, mock_repository)
+
+    @staticmethod
+    def _project_result(named_buckets: list[tuple[str, dict]]) -> dict:
+        return {
+            "aggregations": {
+                "projects": {
+                    "buckets": [
+                        {
+                            "key": name,
+                            "cost_bucket": cost_bucket,
+                            "repositories": {"buckets": {"buckets": [{"key": "Acme/payments"}]}},
+                            "branches": {"buckets": {"buckets": [{"key": "release/1.0"}]}},
+                        }
+                        for name, cost_bucket in named_buckets
+                    ]
+                }
+            }
+        }
+
+    @pytest.mark.asyncio
+    async def test_each_state_reaches_the_cell_as_itself(self, handler, mock_repository):
+        mock_repository.execute_aggregation_query = AsyncMock(
+            return_value=self._project_result(
+                [
+                    ("none-settled", NOTHING_SETTLED),
+                    ("some-unsettled", SOME_UNSETTLED),
+                    ("all-settled", ALL_SETTLED),
+                    ("measured-zero", MEASURED_ZERO),
+                ]
+            )
+        )
+
+        rows, _rendered = await handler._get_cli_insights_project_rows("last_30_days", None, None, None, None)
+        by_name = {row["project_name"]: row for row in rows}
+
+        assert by_name["none-settled"]["total_cost"] is None
+        assert by_name["none-settled"]["spend_unavailable"] is True
+        assert by_name["some-unsettled"]["total_cost"] == 42.5
+        assert by_name["some-unsettled"]["spend_partial"] is True
+        assert by_name["all-settled"]["total_cost"] == 42.5
+        assert (by_name["all-settled"]["spend_unavailable"], by_name["all-settled"]["spend_partial"]) == (False, False)
+        # A measured zero is a figure and stays one, unqualified.
+        assert by_name["measured-zero"]["total_cost"] == 0.0
+        assert (
+            by_name["measured-zero"]["spend_unavailable"],
+            by_name["measured-zero"]["spend_partial"],
+        ) == (False, False)
+
+    @pytest.mark.asyncio
+    async def test_a_project_whose_cost_is_unknown_is_ranked_last_not_at_zero(self, handler, mock_repository):
+        mock_repository.execute_aggregation_query = AsyncMock(
+            return_value=self._project_result(
+                [
+                    ("none-settled", NOTHING_SETTLED),
+                    ("cheap", _cost_bucket(0.5, 2, 0)),
+                ]
+            )
+        )
+
+        rows = (await handler.get_cli_insights_top_projects_by_cost(time_period="last_30_days"))["data"]["rows"]
+
+        assert [row["project_name"] for row in rows] == ["cheap", "none-settled"]
+
+
+class TestGroupTotalsAndAveragesCarryTheirQualification:
+    """A group total over floored figures, and an average whose numerator is a subtotal."""
+
+    @pytest.fixture
+    def handler(self, mock_user, mock_repository):
+        return CLIInsightsHandler(mock_user, mock_repository)
+
+    @staticmethod
+    def _classification_result(cost_buckets: list[dict]) -> dict:
+        # Identical repository/branch signals, so every user lands in one classification group and
+        # the assertion is about the group's money rather than about how it was grouped.
+        return {
+            "aggregations": {
+                "users": {
+                    "buckets": [
+                        _user_bucket(
+                            f"u-{index}",
+                            f"u{index}@example.com",
+                            cost_bucket,
+                            repositories=["Acme/payments"],
+                            branches=["release/1.0"],
+                        )
+                        for index, cost_bucket in enumerate(cost_buckets)
+                    ]
+                }
+            }
+        }
+
+    @pytest.mark.asyncio
+    async def test_one_member_with_no_figure_makes_the_group_total_and_average_say_so(self, handler, mock_repository):
+        mock_repository.execute_aggregation_query = AsyncMock(
+            return_value=self._classification_result([NOTHING_SETTLED, _cost_bucket(100.0, 40, 0)])
+        )
+
+        rows = (await handler.get_cli_insights_user_classification(time_period="last_30_days"))["data"]["rows"]
+
+        assert len(rows) == 1
+        assert rows[0]["user_count"] == 2
+        assert rows[0]["total_cost"] == 100.0
+        # The total is short by one member's whole spend, so it is not whole; the average divides
+        # that subtotal by the full head count and inherits the same qualification.
+        assert rows[0]["spend_unavailable"] is True
+        assert rows[0]["spend_partial"] is True
+        assert rows[0]["avg_cost"] == 50.0
+
+    @pytest.mark.asyncio
+    async def test_a_group_in_which_nothing_settled_has_neither_a_total_nor_an_average(self, handler, mock_repository):
+        mock_repository.execute_aggregation_query = AsyncMock(
+            return_value=self._classification_result([NOTHING_SETTLED, NOTHING_SETTLED])
+        )
+
+        rows = (await handler.get_cli_insights_user_classification(time_period="last_30_days"))["data"]["rows"]
+
+        assert rows[0]["total_cost"] is None
+        assert rows[0]["avg_cost"] is None
+        assert rows[0]["user_count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_a_group_of_whole_figures_totals_and_averages_exactly(self, handler, mock_repository):
+        mock_repository.execute_aggregation_query = AsyncMock(
+            return_value=self._classification_result([_cost_bucket(30.0, 10, 0), _cost_bucket(10.0, 4, 0)])
+        )
+
+        rows = (await handler.get_cli_insights_user_classification(time_period="last_30_days"))["data"]["rows"]
+
+        assert rows[0]["total_cost"] == 40.0
+        assert rows[0]["avg_cost"] == 20.0
+        assert (rows[0]["spend_unavailable"], rows[0]["spend_partial"]) == (False, False)
+
+    @pytest.mark.asyncio
+    async def test_project_classification_groups_combine_rather_than_add_their_cells(self, handler, mock_repository):
+        mock_repository.execute_aggregation_query = AsyncMock(
+            return_value={
+                "aggregations": {
+                    "projects": {
+                        "buckets": [
+                            {
+                                "key": name,
+                                "cost_bucket": cost_bucket,
+                                "repositories": {"buckets": {"buckets": [{"key": "Acme/payments"}]}},
+                                "branches": {"buckets": {"buckets": [{"key": "release/1.0"}]}},
+                            }
+                            for name, cost_bucket in [
+                                ("alpha", NOTHING_SETTLED),
+                                ("beta", _cost_bucket(60.0, 20, 0)),
+                            ]
+                        ]
+                    }
+                }
+            }
+        )
+
+        rows = (await handler.get_cli_insights_project_classification(time_period="last_30_days"))["data"]["rows"]
+
+        assert len(rows) == 1
+        assert rows[0]["project_count"] == 2
+        assert rows[0]["total_cost"] == 60.0
+        assert rows[0]["spend_unavailable"] is True
+        assert rows[0]["spend_partial"] is True
+
+
+class TestRepositoryAndCategoryMoneyInTheDetailModal:
+    """The per-repository rows and the category rollup built from them."""
+
+    @staticmethod
+    def _client_bucket(cost_bucket: dict, sessions: int) -> dict:
+        return {
+            "key": "CLI",
+            "usage": {
+                "lines_added": {"value": 100},
+                "lines_removed": {"value": 10},
+                "projects": {"buckets": [{"key": "epm-cdme"}]},
+            },
+            "sessions": {"count": {"value": sessions}},
+            "proxy": cost_bucket,
+        }
+
+    @classmethod
+    def _repository_buckets(cls, entries: list[tuple[str, dict, int]]) -> list[dict]:
+        return [
+            {
+                "key": repository,
+                "branches": {
+                    "buckets": [{"key": "main", "clients": {"buckets": [cls._client_bucket(cost, sessions)]}}]
+                },
+            }
+            for repository, cost, sessions in entries
+        ]
+
+    def test_a_repository_whose_cost_never_settled_shows_no_figure_and_sorts_last(self):
+        rows, rendered = CLIClassificationEngine._build_cli_repository_classifications(
+            self._repository_buckets(
+                [
+                    ("Acme/unknown", NOTHING_SETTLED, 5),
+                    ("Acme/cheap", _cost_bucket(2.0, 3, 0), 5),
+                ]
+            )
+        )
+
+        assert [row["repository"] for row in rows] == ["Acme/cheap", "Acme/unknown"]
+        assert rows[-1]["cost"] is None
+        assert rows[-1]["spend_unavailable"] is True
+        assert rendered[-1].figure is None
+
+    def test_two_buckets_of_one_row_combine_their_figures_rather_than_adding_one_to_nothing(self):
+        """The same logical row arrives twice; one half unsettled must not be added away silently."""
+        buckets = [
+            {
+                "key": "Acme/payments",
+                "branches": {
+                    "buckets": [
+                        # 'HEAD' and '' both normalise to no tracked branch, which is exactly how one
+                        # logical row arrives as two buckets: proxy cost events carry no branch.
+                        {"key": "HEAD", "clients": {"buckets": [self._client_bucket(_cost_bucket(20.0, 8, 0), 3)]}},
+                        {"key": "", "clients": {"buckets": [self._client_bucket(NOTHING_SETTLED, 2)]}},
+                    ]
+                },
+            }
+        ]
+
+        rows, _rendered = CLIClassificationEngine._build_cli_repository_classifications(buckets)
+
+        assert len(rows) == 1
+        assert rows[0]["sessions"] == 5
+        assert rows[0]["cost"] == 20.0
+        assert rows[0]["spend_unavailable"] is True
+        assert rows[0]["spend_partial"] is True
+
+    def test_a_category_of_nothing_but_unknown_costs_has_no_cost(self):
+        rows, rendered = CLIClassificationEngine._build_cli_repository_classifications(
+            self._repository_buckets([("Acme/unknown", NOTHING_SETTLED, 5)])
+        )
+
+        breakdown, _breakdown_spend = CLIClassificationEngine._build_cli_category_breakdown(rows, rendered)
+
+        assert len(breakdown) == 1
+        assert breakdown[0]["cost"] is None
+        assert breakdown[0]["spend_unavailable"] is True
+        # Sessions and the share derived from them are counts and stay exact.
+        assert breakdown[0]["sessions"] == 5
+        assert breakdown[0]["percentage"] == 100.0
+
+    def test_a_repository_that_settled_money_but_opened_no_session_keeps_its_row(self):
+        """Proxy cost events carry no session, so a repository can settle real spend and open none.
+
+        The row used to be dropped for having no session, which took its money out of this table and
+        out of the category rollup built from it while the modal's Total Cost card above still counted
+        it - $500 in the card, in no row, and nothing saying the table was short.
+        """
+        rows, rendered = CLIClassificationEngine._build_cli_repository_classifications(
+            self._repository_buckets(
+                [
+                    ("Org/web", _cost_bucket(25.0, 40, 0), 25),
+                    ("Org/batch", _cost_bucket(500.0, 12, 0), 0),
+                ]
+            )
+        )
+
+        assert [(row["repository"], row["sessions"], row["cost"]) for row in rows] == [
+            ("Org/batch", 0, 500.0),
+            ("Org/web", 25, 25.0),
+        ]
+        # Nothing about the kept row is qualified: its figure settled in full.
+        assert rows[0]["spend_unavailable"] is False
+        assert rows[0]["spend_partial"] is False
+        # And the table now adds up to what the card over it shows.
+        assert combine_rendered_spend(rendered).figure == 525.0
+        assert combine_rendered_spend(rendered).is_exact is True
+
+    def test_the_category_rollup_regains_the_session_less_repositorys_money(self):
+        rows, rendered = CLIClassificationEngine._build_cli_repository_classifications(
+            self._repository_buckets(
+                [
+                    ("Org/web", _cost_bucket(25.0, 40, 0), 25),
+                    ("Org/batch", _cost_bucket(500.0, 12, 0), 0),
+                ]
+            )
+        )
+
+        breakdown, _breakdown_spend = CLIClassificationEngine._build_cli_category_breakdown(rows, rendered)
+
+        assert sum(row["cost"] for row in breakdown) == 525.0
+        # Sessions are counts and the session-less row contributes a real zero to them.
+        assert sum(row["sessions"] for row in breakdown) == 25
+
+    def test_a_session_less_repository_with_a_measured_zero_keeps_its_row_as_a_zero(self):
+        rows, _rendered = CLIClassificationEngine._build_cli_repository_classifications(
+            self._repository_buckets([("Org/free", MEASURED_ZERO, 0)])
+        )
+
+        # A measured zero is a figure: the row says the work was free rather than omitting it.
+        assert [(row["repository"], row["cost"], row["spend_unavailable"]) for row in rows] == [
+            ("Org/free", 0.0, False)
+        ]
+
+    def test_a_session_less_repository_with_no_figure_at_all_is_still_dropped(self):
+        """Nothing settled means nothing to lose: the money the card counts is not in this bucket."""
+        rows, rendered = CLIClassificationEngine._build_cli_repository_classifications(
+            self._repository_buckets(
+                [
+                    ("Org/web", _cost_bucket(25.0, 40, 0), 25),
+                    ("Org/idle", NOTHING_SETTLED, 0),
+                ]
+            )
+        )
+
+        assert [row["repository"] for row in rows] == ["Org/web"]
+        assert combine_rendered_spend(rendered).figure == 25.0

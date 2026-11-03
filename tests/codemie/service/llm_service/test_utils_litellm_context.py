@@ -50,7 +50,7 @@ class TestSetLLMContext:
         user_id = "test-user-123"
         mock_user = MagicMock()
         mock_user.id = user_id
-        mock_user.email = 'user@example.com'
+        mock_user.email = "user@test.com"
 
         # Mock LiteLLM credentials
         litellm_creds = LiteLLMCredentials(api_key="litellm-key", url="https://litellm.test.com")
@@ -96,7 +96,7 @@ class TestSetLLMContext:
         user_id = "test-user-123"
         mock_user = MagicMock()
         mock_user.id = user_id
-        mock_user.email = 'user@example.com'
+        mock_user.email = "user@test.com"
 
         # Mock None LiteLLM credentials
         mock_settings_service.get_litellm_creds.return_value = None
@@ -139,7 +139,7 @@ class TestSetLLMContext:
         user_id = "test-user-123"
         mock_user = MagicMock()
         mock_user.id = user_id
-        mock_user.email = 'user@example.com'
+        mock_user.email = "user@test.com"
 
         # Mock LiteLLM credentials
         litellm_creds = LiteLLMCredentials(api_key="litellm-key", url="https://litellm.test.com")
@@ -182,7 +182,7 @@ class TestSetLLMContext:
         user_id = "test-user-123"
         mock_user = MagicMock()
         mock_user.id = user_id
-        mock_user.email = 'user@example.com'
+        mock_user.email = "user@test.com"
 
         # Mock exception in get_litellm_creds
         mock_settings_service.get_litellm_creds.side_effect = Exception("LiteLLM service error")
@@ -219,7 +219,7 @@ class TestSetLLMContext:
         user_id = "test-user-123"
         mock_user = MagicMock()
         mock_user.id = user_id
-        mock_user.email = 'user@example.com'
+        mock_user.email = "user@test.com"
 
         # Mock successful LiteLLM credentials
         litellm_creds = LiteLLMCredentials(api_key="litellm-key", url="https://litellm.test.com")
@@ -266,7 +266,7 @@ class TestSetLLMContext:
         user_id = "test-user-123"
         mock_user = MagicMock()
         mock_user.id = user_id
-        mock_user.email = 'user@example.com'
+        mock_user.email = "user@test.com"
 
         # Mock successful credential retrieval
         litellm_creds = LiteLLMCredentials(api_key="litellm-key", url="https://litellm.test.com")
@@ -432,6 +432,22 @@ class TestResolveEffectiveProjectSharing:
         result = _resolve_effective_project(None, None, user)
 
         assert result is None
+
+    @patch('codemie.service.llm_service.utils.set_litellm_context')
+    @patch('codemie.service.llm_service.utils.set_dial_credentials')
+    @patch('codemie.service.llm_service.utils.SettingsService')
+    def test_set_llm_context_records_the_principal_email(self, mock_settings, mock_dial, mock_set_litellm):
+        """The email names the personal project; the spend header compares the project with it."""
+        mock_settings.get_litellm_creds.return_value = None
+        mock_settings.get_dial_creds.return_value = None
+        user = _make_user("alice@example.com")
+        user.username = "alice"
+
+        set_llm_context(None, "alice@example.com", user)
+
+        ctx = mock_set_litellm.call_args[0][0]
+        assert ctx.principal_email == "alice@example.com"
+        assert ctx.current_project == "alice@example.com"
 
     @patch('codemie.service.llm_service.utils.set_litellm_context')
     @patch('codemie.service.llm_service.utils.set_dial_credentials')

@@ -24,12 +24,18 @@ This test suite covers the query pipeline orchestration including:
 
 from __future__ import annotations
 
+import threading
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from codemie.service.analytics.query_pipeline import AnalyticsQueryFilters, AnalyticsQueryPipeline
+from codemie.service.analytics.query_pipeline import (
+    BUCKET_SELECTOR_FETCH_SIZE,
+    AnalyticsQueryFilters,
+    AnalyticsQueryPipeline,
+    EnrichedRows,
+)
 
 
 class TestAnalyticsQueryPipeline:
@@ -1012,3 +1018,357 @@ class TestAnalyticsQueryPipeline:
         )
 
         mock_totals_calculator.calculate_totals.assert_called_once_with(columns=columns, rows=parsed_rows)
+
+    async def _run_bucket_selector_query(
+        self,
+        pipeline,
+        mock_repository,
+        mock_time_parser,
+        mock_query_builder_class,
+        mock_formatter,
+        mock_totals_calculator,
+        bucket_count,
+    ):
+        mock_time_parser.parse.return_value = (datetime(2024, 1, 1), datetime(2024, 1, 31))
+        mock_builder = MagicMock()
+        mock_builder.build.return_value = {"query": "built"}
+        mock_query_builder_class.return_value = mock_builder
+        mock_repository.execute_aggregation_query.return_value = {
+            "aggregations": {
+                "paginated_results": {"buckets": [{"key": f"k{i}", "doc_count": 1} for i in range(bucket_count)]}
+            }
+        }
+        mock_formatter.format_tabular_response.return_value = {}
+        mock_totals_calculator.calculate_totals.return_value = {}
+        await pipeline.execute_tabular_query(
+            agg_builder=MagicMock(return_value={"aggs": {}}),
+            result_parser=MagicMock(return_value=[]),
+            columns=[],
+            group_by_field="attributes.user_id.keyword",
+            filters=AnalyticsQueryFilters(page=0, per_page=20),
+            use_bucket_selector=True,
+        )
+
+    @patch("codemie.service.analytics.query_pipeline.logger")
+    @patch("codemie.service.analytics.query_pipeline.TotalsCalculator")
+    @patch("codemie.service.analytics.query_pipeline.ResponseFormatter")
+    @patch("codemie.service.analytics.query_pipeline.SecureQueryBuilder")
+    @patch("codemie.service.analytics.query_pipeline.TimeParser")
+    @pytest.mark.asyncio
+    async def test_a_capped_bucket_selector_result_is_logged(
+        self,
+        mock_time_parser,
+        mock_query_builder_class,
+        mock_formatter,
+        mock_totals_calculator,
+        mock_logger,
+        pipeline,
+        mock_repository,
+    ):
+        """Exactly the cap means groups past it are silently absent; the warning is the only signal."""
+        await self._run_bucket_selector_query(
+            pipeline,
+            mock_repository,
+            mock_time_parser,
+            mock_query_builder_class,
+            mock_formatter,
+            mock_totals_calculator,
+            bucket_count=BUCKET_SELECTOR_FETCH_SIZE,
+        )
+        assert mock_logger.warning.call_count == 1
+        message = mock_logger.warning.call_args.args[0]
+        assert "analytics_bucket_selector_capped" in message
+        assert "attributes.user_id.keyword" in message
+        assert "2024-01-01" in message
+
+    @patch("codemie.service.analytics.query_pipeline.logger")
+    @patch("codemie.service.analytics.query_pipeline.TotalsCalculator")
+    @patch("codemie.service.analytics.query_pipeline.ResponseFormatter")
+    @patch("codemie.service.analytics.query_pipeline.SecureQueryBuilder")
+    @patch("codemie.service.analytics.query_pipeline.TimeParser")
+    @pytest.mark.asyncio
+    async def test_a_bucket_selector_result_below_the_cap_is_not_logged(
+        self,
+        mock_time_parser,
+        mock_query_builder_class,
+        mock_formatter,
+        mock_totals_calculator,
+        mock_logger,
+        pipeline,
+        mock_repository,
+    ):
+        await self._run_bucket_selector_query(
+            pipeline,
+            mock_repository,
+            mock_time_parser,
+            mock_query_builder_class,
+            mock_formatter,
+            mock_totals_calculator,
+            bucket_count=BUCKET_SELECTOR_FETCH_SIZE - 1,
+        )
+        assert mock_logger.warning.call_count == 0
+
+
+class TestTabularRowEnricher:
+    """The optional async enrichment hook — what it changes, and what it must not."""
+
+    @pytest.fixture
+    def mock_repository(self):
+        from unittest.mock import AsyncMock
+
+        repository = MagicMock()
+        repository.execute_aggregation_query = AsyncMock()
+        return repository
+
+    @pytest.fixture
+    def pipeline(self, mock_repository):
+        return AnalyticsQueryPipeline(user=MagicMock(), repository=mock_repository)
+
+    @staticmethod
+    def _agg_builder():
+        return MagicMock(
+            return_value={
+                "query": {"match_all": {}},
+                "size": 0,
+                "aggs": {"paginated_results": {"terms": {"field": "test", "size": 10000}}},
+            }
+        )
+
+    @staticmethod
+    def _parser(result):
+        return [
+            {"key": bucket["key"], "cost": None} for bucket in result["aggregations"]["paginated_results"]["buckets"]
+        ]
+
+    COLUMNS = [{"id": "key", "type": "string"}, {"id": "cost", "type": "number", "format": "currency"}]
+
+    @patch("codemie.service.analytics.query_pipeline.SecureQueryBuilder")
+    @patch("codemie.service.analytics.query_pipeline.TimeParser")
+    @pytest.mark.asyncio
+    async def test_no_enricher_leaves_tabular_output_untouched(
+        self, mock_time_parser, mock_query_builder_class, pipeline, mock_repository
+    ):
+        """The regression this hook must not cause: a caller without one sees the old response."""
+        mock_time_parser.parse.return_value = (datetime(2026, 1, 1), datetime(2026, 1, 31))
+        mock_query_builder_class.return_value = MagicMock(**{"build.return_value": {}})
+        mock_repository.execute_aggregation_query.return_value = {
+            "aggregations": {"paginated_results": {"buckets": [{"key": "a"}, {"key": "b"}]}}
+        }
+
+        response = await pipeline.execute_tabular_query(
+            agg_builder=self._agg_builder(),
+            result_parser=lambda result: [
+                {"key": bucket["key"], "cost": 2.5} for bucket in result["aggregations"]["paginated_results"]["buckets"]
+            ],
+            columns=self.COLUMNS,
+            group_by_field="test.keyword",
+            filters=AnalyticsQueryFilters(page=0, per_page=20),
+            use_bucket_selector=True,
+        )
+
+        assert response["data"] == {
+            "columns": self.COLUMNS,
+            "rows": [{"key": "a", "cost": 2.5}, {"key": "b", "cost": 2.5}],
+            "totals": {"cost": 5.0},
+        }
+        assert response["pagination"] == {"page": 0, "per_page": 20, "total_count": 2, "has_more": False}
+
+    @patch("codemie.service.analytics.query_pipeline.SecureQueryBuilder")
+    @patch("codemie.service.analytics.query_pipeline.TimeParser")
+    @pytest.mark.asyncio
+    async def test_enricher_sees_every_candidate_row_and_the_query_window(
+        self, mock_time_parser, mock_query_builder_class, pipeline, mock_repository
+    ):
+        """One call, all candidates, before the slice — that is what makes a single round trip enough."""
+        from codemie.service.analytics.query_pipeline import EnrichedRows
+
+        start_dt, end_dt = datetime(2026, 1, 1), datetime(2026, 1, 31)
+        mock_time_parser.parse.return_value = (start_dt, end_dt)
+        mock_query_builder_class.return_value = MagicMock(**{"build.return_value": {}})
+        mock_repository.execute_aggregation_query.return_value = {
+            "aggregations": {"paginated_results": {"buckets": [{"key": f"k{i}"} for i in range(5)]}}
+        }
+        seen = []
+
+        async def enricher(rows, window_start, window_end):
+            seen.append((rows, window_start, window_end))
+            return EnrichedRows(rows=rows, columns=("cost",), totals={})
+
+        await pipeline.execute_enriched_tabular_query(
+            agg_builder=self._agg_builder(),
+            result_parser=self._parser,
+            columns=self.COLUMNS,
+            group_by_field="test.keyword",
+            filters=AnalyticsQueryFilters(page=0, per_page=2),
+            row_enricher=enricher,
+        )
+
+        assert len(seen) == 1
+        rows, window_start, window_end = seen[0]
+        assert [row["key"] for row in rows] == ["k0", "k1", "k2", "k3", "k4"]
+        assert (window_start, window_end) == (start_dt, end_dt)
+
+    @patch("codemie.service.analytics.query_pipeline.SecureQueryBuilder")
+    @patch("codemie.service.analytics.query_pipeline.TimeParser")
+    @pytest.mark.asyncio
+    async def test_enricher_rows_drive_page_slice_and_total_count(
+        self, mock_time_parser, mock_query_builder_class, pipeline, mock_repository
+    ):
+        """The page is cut from the enricher's order, and dropped rows leave the count."""
+        from codemie.service.analytics.query_pipeline import EnrichedRows
+
+        mock_time_parser.parse.return_value = (datetime(2026, 1, 1), datetime(2026, 1, 31))
+        mock_query_builder_class.return_value = MagicMock(**{"build.return_value": {}})
+        mock_repository.execute_aggregation_query.return_value = {
+            "aggregations": {"paginated_results": {"buckets": [{"key": "a"}, {"key": "b"}, {"key": "c"}]}}
+        }
+
+        async def enricher(rows, _start, _end):
+            # Reversed and one row short: nothing about the page may come from the bucket order.
+            return EnrichedRows(rows=list(reversed(rows))[:2], columns=("cost",), totals={})
+
+        response = await pipeline.execute_enriched_tabular_query(
+            agg_builder=self._agg_builder(),
+            result_parser=self._parser,
+            columns=self.COLUMNS,
+            group_by_field="test.keyword",
+            filters=AnalyticsQueryFilters(page=0, per_page=1),
+            row_enricher=enricher,
+        )
+
+        assert [row["key"] for row in response["data"]["rows"]] == ["c"]
+        assert response["pagination"]["total_count"] == 2
+        assert response["pagination"]["has_more"] is True
+
+    @patch("codemie.service.analytics.query_pipeline.TotalsCalculator")
+    @patch("codemie.service.analytics.query_pipeline.SecureQueryBuilder")
+    @patch("codemie.service.analytics.query_pipeline.TimeParser")
+    @pytest.mark.asyncio
+    async def test_enriched_column_has_exactly_one_footer_writer(
+        self, mock_time_parser, mock_query_builder_class, mock_totals_calculator, pipeline, mock_repository
+    ):
+        """The calculator is told to skip the enriched column, so the two cannot both write its key."""
+        from codemie.service.analytics.query_pipeline import EnrichedRows
+
+        mock_time_parser.parse.return_value = (datetime(2026, 1, 1), datetime(2026, 1, 31))
+        mock_query_builder_class.return_value = MagicMock(**{"build.return_value": {}})
+        mock_repository.execute_aggregation_query.return_value = {
+            "aggregations": {"paginated_results": {"buckets": [{"key": "a"}]}}
+        }
+        mock_totals_calculator.calculate_totals.return_value = {"other": 3.0}
+
+        async def enricher(rows, _start, _end):
+            return EnrichedRows(rows=rows, columns=("cost",), totals={"cost": 7.5})
+
+        response = await pipeline.execute_enriched_tabular_query(
+            agg_builder=self._agg_builder(),
+            result_parser=self._parser,
+            columns=self.COLUMNS,
+            group_by_field="test.keyword",
+            row_enricher=enricher,
+        )
+
+        assert mock_totals_calculator.calculate_totals.call_args.kwargs["exclude_columns"] == ["cost"]
+        assert response["data"]["totals"] == {"other": 3.0, "cost": 7.5}
+
+    @patch("codemie.service.analytics.query_pipeline.SecureQueryBuilder")
+    @patch("codemie.service.analytics.query_pipeline.TimeParser")
+    @pytest.mark.asyncio
+    async def test_enricher_is_handed_every_candidate_bucket_never_one_page(
+        self, mock_time_parser, mock_query_builder_class, pipeline, mock_repository
+    ):
+        """Ordering the whole candidate set is impossible when only one page was fetched, so the
+        enriched path fetches to the cap whatever page is asked for, in one query."""
+        from codemie.service.analytics.query_pipeline import BUCKET_SELECTOR_FETCH_SIZE, EnrichedRows
+
+        mock_time_parser.parse.return_value = (datetime(2026, 1, 1), datetime(2026, 1, 31))
+        mock_query_builder_class.return_value = MagicMock(**{"build.return_value": {}})
+        mock_repository.execute_aggregation_query.return_value = {
+            "aggregations": {"paginated_results": {"buckets": [{"key": "a"}]}}
+        }
+        agg_builder = self._agg_builder()
+
+        async def enricher(rows, _start, _end):
+            return EnrichedRows(rows=rows)
+
+        await pipeline.execute_enriched_tabular_query(
+            agg_builder=agg_builder,
+            result_parser=self._parser,
+            columns=self.COLUMNS,
+            group_by_field="test.keyword",
+            row_enricher=enricher,
+            filters=AnalyticsQueryFilters(page=3, per_page=2),
+        )
+
+        assert [call.args[1] for call in agg_builder.call_args_list] == [BUCKET_SELECTOR_FETCH_SIZE]
+        assert mock_repository.execute_aggregation_query.await_count == 1
+
+
+class _ThreadRecordingParser:
+    """A result parser that records the thread of every call it receives, and yields no rows."""
+
+    def __init__(self):
+        self.threads: list[int] = []
+
+    def __call__(self, _result, *_metadata):
+        self.threads.append(threading.get_ident())
+        return []
+
+
+def _any_agg_body(query, _fetch_size=None):
+    return {"query": query, "size": 0, "aggs": {"paginated_results": {"terms": {"field": "test", "size": 10}}}}
+
+
+async def _keep_every_row(rows, _window_start, _window_end):
+    return EnrichedRows(rows=rows)
+
+
+_COLUMNS = [{"id": "key", "type": "string"}]
+_TABULAR = {"agg_builder": _any_agg_body, "columns": _COLUMNS}
+_GROUPED = {**_TABULAR, "group_by_field": "test.keyword"}
+
+
+class TestParsersRunOffTheEventLoop:
+    """EPMCDME-15537: a parser may block, and the backend serves every request from one event loop."""
+
+    @pytest.fixture
+    def pipeline(self):
+        from unittest.mock import AsyncMock
+
+        result = {
+            "aggregations": {"paginated_results": {"buckets": [{"key": "a"}]}, "total_buckets": {"value": 1}},
+            "hits": {"total": {"value": 1}},
+        }
+        repository = MagicMock()
+        repository.execute_aggregation_query = AsyncMock(return_value=result)
+        repository.execute_search_query = AsyncMock(return_value=result)
+        repository.execute_esql_query = AsyncMock(return_value=result)
+        return AnalyticsQueryPipeline(user=MagicMock(), repository=repository)
+
+    @pytest.mark.parametrize(
+        ("method", "arguments", "expected_parses"),
+        [
+            pytest.param("execute_search_rows", {"columns": _COLUMNS}, 1, id="search_rows"),
+            pytest.param("execute_tabular_query", _GROUPED, 2, id="tabular_page_and_totals"),
+            pytest.param(
+                "execute_enriched_tabular_query", {**_GROUPED, "row_enricher": _keep_every_row}, 1, id="enriched_page"
+            ),
+            pytest.param("execute_tabular_query_with_flattened_rows", _TABULAR, 1, id="flattened_rows"),
+            pytest.param("execute_composite_query", {"agg_builder": _any_agg_body}, 1, id="composite"),
+            pytest.param("execute_esql_query", {"esql_query": "FROM metrics", "columns": _COLUMNS}, 1, id="esql"),
+        ],
+    )
+    @patch("codemie.service.analytics.query_pipeline.SecureQueryBuilder")
+    @patch("codemie.service.analytics.query_pipeline.TimeParser")
+    @pytest.mark.asyncio
+    async def test_every_parse_runs_in_a_worker_thread(
+        self, mock_time_parser, mock_query_builder_class, pipeline, method, arguments, expected_parses
+    ):
+        mock_time_parser.parse.return_value = (datetime(2026, 1, 1), datetime(2026, 1, 31))
+        mock_query_builder_class.return_value = MagicMock(**{"build.return_value": {}})
+        parser = _ThreadRecordingParser()
+
+        await getattr(pipeline, method)(result_parser=parser, **arguments)
+
+        assert len(parser.threads) == expected_parses
+        assert threading.get_ident() not in parser.threads

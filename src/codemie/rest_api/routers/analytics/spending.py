@@ -17,9 +17,11 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timezone
+from typing import NamedTuple
 
 from fastapi import APIRouter, Depends, Query, status
 from fastapi.responses import JSONResponse
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from codemie.configs.config import config
 from codemie.core.exceptions import ExtendedHTTPException
@@ -43,9 +45,17 @@ from codemie.rest_api.utils.client_context import ClientSource
 from codemie.rest_api.security.user import User
 from codemie.clients.postgres import get_async_session
 from codemie.service.analytics.analytics_service import AnalyticsService
+from codemie.repository.budget_repository import budget_repository
+from codemie.service.budget.budget_enums import BudgetCategory
+from codemie.service.budget.budget_models import Budget
+from codemie.service.spend.budget_period import budget_period_range
+from codemie.service.spend.coverage import SpendResult, TimeRange
+from codemie.service.spend.identity_bridge import resolve_identity
+from codemie.service.spend.ledger import PersonalHolder
+from codemie.service.spend.spend_service import spend_service
 from codemie.service.analytics.handlers.member_spend_service import member_spend_service
 from codemie.service.analytics.spending_formatter import (
-    build_spending_metric,
+    build_money_metric,
     build_spending_metrics,
     paginate_tabular,
 )
@@ -53,6 +63,105 @@ from codemie.service.analytics.spending_formatter import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+async def _consumed_per_budget_category(
+    user_id: str, policy_by_category: dict[BudgetCategory, dict | None]
+) -> dict[BudgetCategory, SpendResult]:
+    """What the user consumed in each category's own budget period, read through the spend port.
+
+    A category absent from the result has **no figure** - never a zero - and was deliberately not
+    asked about, because no budget period could be derived for it.
+
+    Args:
+        user_id: The canonical `users.id` of the budget subject.
+        policy_by_category: Each category's budget policy dict, or None where the provider supplied
+            none. The period is derived from the same dict whose `budget_reset_at` the response
+            displays, so the window a figure covers and the reset the reader sees are one fact.
+    """
+    if not _budget_periods(user_id, policy_by_category, assigned_budgets={}):
+        # Nothing is askable, so nothing is asked - and the identity is not resolved either, which
+        # would be a query answering a question no holder is going to pose. Whether a period exists
+        # does not depend on the assigned budgets, which only say where it starts.
+        return {}
+
+    async with get_async_session() as session:
+        assigned = await _assigned_budgets(session, user_id)
+        periods = _budget_periods(user_id, policy_by_category, assigned)
+        # Resolved once for the subject and passed through unchanged. `None` is meaningful: it says
+        # this person's pre-rollout rows cannot be identified, which the port labels on the figure.
+        # An empty set would instead claim they have no fallback identities.
+        aliases = (await resolve_identity(session, user_id)).aliases
+
+    categories: dict[PersonalHolder, BudgetCategory] = {}
+    holders_by_period: dict[TimeRange, list[PersonalHolder]] = {}
+    for category, period in periods.items():
+        holder = PersonalHolder(user_id=user_id, category=category, aliases=aliases)
+        categories[holder] = category
+        holders_by_period.setdefault(period, []).append(holder)
+
+    # One round trip per distinct period, not per category: categories on the same reset schedule
+    # collapse to the same range, and all holders in one call must share one period.
+    consumed: dict[BudgetCategory, SpendResult] = {}
+    for period, holders in holders_by_period.items():
+        for holder, result in (await spend_service.consumed_for_holders(holders, period)).items():
+            consumed[categories[holder]] = result
+    return consumed
+
+
+class _AssignedBudget(NamedTuple):
+    budget: Budget
+    spend_reset_at: datetime | None
+
+
+async def _assigned_budgets(session: AsyncSession, user_id: str) -> dict[str, _AssignedBudget]:
+    """The user's assigned budget per category value, with what only CodeMie records about its period.
+
+    That is the reset CodeMie set on the budget and the instant an administrator last reset the
+    user's spend by hand.
+    """
+    assignments = await budget_repository.get_user_category_assignments(session, user_id)
+    budgets = await budget_repository.get_by_ids(session, [a.budget_id for a in assignments])
+    return {
+        a.category: _AssignedBudget(budgets[a.budget_id], a.spend_reset_at)
+        for a in assignments
+        if a.budget_id in budgets
+    }
+
+
+def _budget_periods(
+    user_id: str, policy_by_category: dict[BudgetCategory, dict | None], assigned_budgets: dict[str, _AssignedBudget]
+) -> dict[BudgetCategory, TimeRange]:
+    """Each category's budget period, omitting every category that has none.
+
+    The one definition of a budget period. An inline `[now - duration, now)` is a rolling window that
+    answers a different question just as convincingly. A category omitted here is **not queried at
+    all**, and its figure is reported absent rather than computed over a guessed window. The provider's
+    policy names the reset; where the period began after a reset CodeMie set is recorded only on the
+    assigned budget, and a manual spend reset only on the assignment.
+    """
+    periods: dict[BudgetCategory, TimeRange] = {}
+    for category, policy in policy_by_category.items():
+        if not policy:
+            continue
+        assigned = assigned_budgets.get(category.value)
+        budget = assigned.budget if assigned else None
+        period = budget_period_range(
+            budget_reset_at=policy.get("budget_reset_at"),
+            budget_duration=policy.get("budget_duration"),
+            pinned_reset_at=budget.pinned_reset_at if budget else None,
+            pinned_period_start=budget.pinned_period_start if budget else None,
+            effective_from=assigned.spend_reset_at if assigned else None,
+        )
+        if period is None:
+            logger.warning(
+                f"spending: no budget period derivable for category={category.value} user={user_id} "
+                f"(reset_at={policy.get('budget_reset_at')!r} duration={policy.get('budget_duration')!r}); "
+                "reporting no figure rather than guessing a window"
+            )
+            continue
+        periods[category] = period
+    return periods
 
 
 @router.get(
@@ -77,7 +186,7 @@ async def get_user_spending(
 
     **Response:**
     - current_spending: Current amount spent in USD
-    - budget_limit: Soft budget limit (warning threshold)
+    - budget_limit: Maximum budget for the period (hard limit)
     - hard_budget_limit: Hard budget limit (blocking threshold)
     - budget_reset_at: ISO 8601 timestamp of next reset
     - time_until_reset: Formatted time until budget resets (e.g., "5 days 4 hours 31mins")
@@ -91,12 +200,15 @@ async def get_user_spending(
         get_proxy_customer_spending,
         get_premium_customer_spending,
         is_premium_models_enabled,
+        is_proxy_budget_enabled,
     )
 
     start_time = datetime.now(timezone.utc)
     logger.info(f"User {user.id} requesting spending analytics")
 
-    # Get standard spending data from LiteLLM
+    # Budget **policy** from LiteLLM: the limit and the reset window. Every money figure below comes
+    # from the spend port instead, because LiteLLM's own counter is an enforcement input and not a
+    # reported figure.
     try:
         spending_data = await asyncio.to_thread(get_customer_spending, user.username, True)
     except Exception as e:
@@ -107,34 +219,46 @@ async def get_user_spending(
             help="A temporary issue occurred. Please try again later",
         ) from e
 
-    metrics = build_spending_metrics(spending_data, user.username)
+    # Whether each optional budget **exists** is a configuration fact, and it is the only reason a
+    # metric is omitted below: no such budget is a different answer from an unknown figure, and only
+    # the first justifies saying nothing at all.
+    cli_configured = is_proxy_budget_enabled()
+    premium_configured = is_premium_models_enabled()
 
-    try:
-        proxy_spending_data = await asyncio.to_thread(get_proxy_customer_spending, user.username)
-        if proxy_spending_data is not None:
-            proxy_current_spending = proxy_spending_data.get("total_spend", 0.0)
-            logger.debug(f"Proxy spending retrieved for user {user.id}: spend=${proxy_current_spending:.2f}")
-            metrics.append(build_spending_metric("cli_current_spending", proxy_current_spending, "number", "currency"))
-    except Exception as e:
-        logger.warning(f"Failed to fetch proxy spending for user {user.id}: {e}")
-
-    # Include premium budget spending when feature is enabled
-    if is_premium_models_enabled():
+    # A failed policy read costs the figure's **window**, not the metric: the port is still asked
+    # about a configured budget, and the user is still told what it holds. Dropping the metric here -
+    # which the code this replaces did - made a provider hiccup indistinguishable from a budget that
+    # does not exist.
+    cli_policy = None
+    if cli_configured:
         try:
-            premium_spending_data = await asyncio.to_thread(get_premium_customer_spending, user.username)
-            if premium_spending_data is not None:
-                premium_current_spending = premium_spending_data.get("total_spend", 0.0)
-                logger.debug(f"Premium spending retrieved for user {user.id}: spend=${premium_current_spending:.2f}")
-                metrics.append(
-                    build_spending_metric(
-                        "premium_current_spending",
-                        premium_current_spending,
-                        "number",
-                        "currency",
-                    )
-                )
+            cli_policy = await asyncio.to_thread(get_proxy_customer_spending, user.username)
         except Exception as e:
-            logger.warning(f"Failed to fetch premium spending for user {user.id}: {e}")
+            logger.warning(f"Failed to fetch proxy budget policy for user {user.id}: {e}")
+
+    premium_policy = None
+    if premium_configured:
+        try:
+            premium_policy = await asyncio.to_thread(get_premium_customer_spending, user.username)
+        except Exception as e:
+            logger.warning(f"Failed to fetch premium budget policy for user {user.id}: {e}")
+
+    consumed = await _consumed_per_budget_category(
+        user.id,
+        {
+            BudgetCategory.PLATFORM: spending_data,
+            BudgetCategory.CLI: cli_policy,
+            BudgetCategory.PREMIUM_MODELS: premium_policy,
+        },
+    )
+
+    metrics = build_spending_metrics(spending_data, consumed.get(BudgetCategory.PLATFORM), user.username)
+
+    if cli_configured:
+        metrics.append(build_money_metric("cli_current_spending", consumed.get(BudgetCategory.CLI)))
+
+    if premium_configured:
+        metrics.append(build_money_metric("premium_current_spending", consumed.get(BudgetCategory.PREMIUM_MODELS)))
 
     response_data = {
         "data": {"metrics": metrics},
@@ -216,7 +340,6 @@ async def get_user_budget_usage(
 ) -> TabularResponse:
     from datetime import timezone
 
-    from codemie.clients.postgres import get_async_session
     from codemie.service.analytics.handlers.budget_usage_service import budget_usage_service
     from codemie.service.analytics.response_formatter import ResponseFormatter
 
@@ -238,10 +361,7 @@ async def get_user_budget_usage(
         logger.info(f"User {user.id} requesting budget usage analytics")
 
     try:
-        async with get_async_session() as session:
-            columns, rows = await budget_usage_service.get_budget_usage(
-                session, subject_user_id, subject_label, subject_email
-            )
+        columns, rows = await budget_usage_service.get_budget_usage(subject_user_id, subject_label, subject_email)
     except ExtendedHTTPException:
         raise
     except Exception as e:
@@ -300,8 +420,7 @@ async def get_user_project_spending(
         )
     _authorize_admin_budget_view(user, target_projects)
 
-    async with get_async_session() as session:
-        columns, rows = await member_spend_service.get_user_project_spend(session, str(target_user.id))
+    columns, rows = await member_spend_service.get_user_project_spend(str(target_user.id))
 
     return paginate_tabular(
         columns=columns,
@@ -337,8 +456,7 @@ async def get_project_member_spending(
 
     _authorize_admin_budget_view(user, {project_name})
 
-    async with get_async_session() as session:
-        columns, rows = await member_spend_service.get_project_member_spend(session, project_name)
+    columns, rows = await member_spend_service.get_project_member_spend(project_name)
 
     return paginate_tabular(
         columns=columns,

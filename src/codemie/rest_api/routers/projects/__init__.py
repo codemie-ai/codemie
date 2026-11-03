@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from codemie.rest_api.routers.projects import crud, management, membership, spending
+from codemie.rest_api.routers.projects import crud, management, membership
 
 
 router = APIRouter(
@@ -26,7 +26,6 @@ router = APIRouter(
 )
 
 router.include_router(crud.router)
-router.include_router(spending.router)
 router.include_router(management.router)
 router.include_router(membership.router)
 

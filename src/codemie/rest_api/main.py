@@ -358,6 +358,82 @@ async def _initialize_enterprise_services(app: FastAPI):
         register_budget_enforcement_provider(LiteLLMBudgetEnforcementProvider(litellm_service))
         logger.info("LiteLLM budget enforcement provider registered")
 
+    _register_spend_ledgers()
+
+
+def _register_spend_ledgers() -> None:
+    """Register the spend ledgers - the one port every spend figure is read through.
+
+    Two registrations, and they are **not** gated on the same condition. The core side owns the
+    classes LiteLLM does not route, and registers even in a deployment with no enterprise package at
+    all. The LiteLLM side is registered only where the routing predicate actually selects it - which
+    is narrower than "LiteLLM is enabled": that flag is true in deployments whose traffic never
+    reaches LiteLLM, and registering there would point every consumer at a table no request writes
+    to, so every figure would come back unavailable.
+
+    A failure to register is logged and swallowed. An unregistered ledger reports **unavailable**,
+    never zero, so a spend figure degrades while the application still starts - no request has ever
+    depended on a spend read.
+
+    **The coverage values are read once here, before either ledger, and registered for both.** Two of
+    the four - the emission-lag allowance `L` and the paging threshold `N` - bound the metric-store
+    window `SpendService` resolves ids over, which happens in every deployment regardless of which
+    adapter answers a figure, so they cannot hang off a provider branch. One read also keeps the
+    property the coverage design rests on: a floor becomes visible to every consumer at the same
+    instant.
+
+    **The pre-floor cutover is wrapped on last, once no further ledger can arrive.** It re-registers
+    whichever ledgers the two steps above left in the registry, each one composed over the legacy
+    Elasticsearch engine so periods below the coverage floor keep answering instead of reporting
+    unavailable. Wrapping earlier would wrap only what had been registered by then and let the rest
+    land unwrapped afterwards - a cutover covering half a deployment, which looks registered and is
+    not. It is gated on its own opt-in flag inside `register_spend_cutover`, so a deployment that has
+    not opted in ends this function with exactly the registry it had before the step existed.
+    """
+    from codemie.service.spend.composition import load_ledger_coverage, register_spend_ledgers
+    from codemie.service.spend.ledger_registry import register_ledger_coverage
+
+    try:
+        register_ledger_coverage(load_ledger_coverage())
+    except Exception as error:
+        # Swallowed like every other failure here. Unregistered coverage leaves the floor unset,
+        # which reports every figure unavailable rather than serving one against a floor nobody
+        # published - and the LiteLLM ledger below is then built on that same honest state.
+        logger.error(f"Failed to read the spend ledger coverage: {error}", exc_info=True)
+
+    try:
+        register_spend_ledgers()
+    except Exception as error:
+        logger.error(f"Failed to register the default spend ledger: {error}", exc_info=True)
+
+    from codemie.service.spend.routing import LLMCallClass, uses_litellm
+
+    # A branch rather than an early return: every deployment has to reach the cutover step below, and
+    # the one that would skip it is the fully-native one - the deployment whose figures are entirely
+    # pre-floor and therefore the one the step exists for.
+    if any(uses_litellm(call_class) for call_class in LLMCallClass):
+        try:
+            from codemie.enterprise.litellm.spend_ledger import build_spend_logs_ledger
+            from codemie.service.spend.ledger_registry import ledger_coverage, register_spend_logs_ledger
+
+            # The coverage read above, not a second read of the same configuration: two reads could
+            # observe a value mid-change and put two consumers on opposite sides of one floor.
+            register_spend_logs_ledger(build_spend_logs_ledger(ledger_coverage()))
+            logger.info("LiteLLM spend ledger registered")
+        except Exception as error:
+            logger.error(f"Failed to register the LiteLLM spend ledger: {error}", exc_info=True)
+
+    try:
+        from codemie.service.spend.composition import register_spend_cutover
+
+        register_spend_cutover()
+    except Exception as error:
+        # Swallowed like the registrations above, and the slot keeps whatever it already holds: a
+        # ledger that answers above the floor and reports unavailable below it is the behaviour of
+        # every deployment before this step, whereas an emptied slot would report unavailable
+        # everywhere - a working figure turned off by a failure to improve it.
+        logger.error(f"Failed to register the pre-floor spend cutover: {error}", exc_info=True)
+
 
 def _setup_litellm_features(app: FastAPI):
     """Initialize LiteLLM features if enabled and record the models status on app state."""
@@ -417,6 +493,23 @@ def _schedule_customer_config_refresh(tasks: list[asyncio.Task]) -> None:
             await _warm_customer_config()
 
     tasks.append(asyncio.create_task(_loop(), name="customer_config_refresh"))
+
+
+def _schedule_event_loop_lag_monitor(tasks: list[asyncio.Task]) -> None:
+    """Sample event-loop lag for the life of the app unless the interval is 0 (EPMCDME-15537).
+
+    A blocking call stalls every request on the worker, and only the lag names that cost.
+    """
+    from codemie.service.monitoring.event_loop_monitor import monitor_event_loop_lag
+
+    if config.EVENT_LOOP_LAG_MONITOR_INTERVAL_SECONDS <= 0:
+        return
+    tasks.append(
+        asyncio.create_task(
+            monitor_event_loop_lag(config.EVENT_LOOP_LAG_MONITOR_INTERVAL_SECONDS, config.EVENT_LOOP_LAG_WARN_SECONDS),
+            name="event_loop_lag_monitor",
+        )
+    )
 
 
 def _schedule_budget_reconciliation(app: FastAPI, tasks: list[asyncio.Task]) -> None:
@@ -551,31 +644,47 @@ def _setup_conversation_analysis_scheduler(app: FastAPI):
     logger.info("Conversation analysis scheduler started successfully")
 
 
-def _setup_spend_tracking_scheduler(app: FastAPI):
-    """Setup spend tracking collector scheduler if enabled."""
-    if not (
-        config.LITELLM_SPEND_COLLECTOR_ENABLED
-        or config.LITELLM_BUDGET_RESET_TRACKER_ENABLED
-        or config.LITELLM_BUDGET_RESET_RECONCILIATION_ENABLED
-        or config.LITELLM_SPEND_UPLOADER_ENABLED
-    ):
+def _setup_budget_reset_scheduler(app: FastAPI):
+    """Set up the budget reset reconciliation scheduler if enabled."""
+    if not config.LITELLM_BUDGET_RESET_RECONCILIATION_ENABLED:
         return
 
     if not config.LLM_PROXY_ENABLED:
         logger.warning(
-            "Spend tracking scheduler enabled but LLM_PROXY_ENABLED=False; "
-            "spend tracking requires the LiteLLM proxy — skipping scheduler setup"
+            "Budget reset scheduler enabled but LLM_PROXY_ENABLED=False; "
+            "budget reset reconciliation requires the LiteLLM proxy — skipping scheduler setup"
         )
         return
 
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
-    from codemie.service.spend_tracking.scheduler import SpendTrackingScheduler
+    from codemie.service.budget_reset.scheduler import BudgetResetScheduler
 
-    spend_tracking_scheduler_instance = AsyncIOScheduler()
-    spend_tracking_scheduler = SpendTrackingScheduler(scheduler=spend_tracking_scheduler_instance)
-    spend_tracking_scheduler.start()
-    app.state.spend_tracking_scheduler = spend_tracking_scheduler
-    logger.info("Spend tracking scheduler started successfully")
+    budget_reset_scheduler_instance = AsyncIOScheduler()
+    budget_reset_scheduler = BudgetResetScheduler(scheduler=budget_reset_scheduler_instance)
+    budget_reset_scheduler.start()
+    app.state.budget_reset_scheduler = budget_reset_scheduler
+    logger.info("Budget reset scheduler started successfully")
+
+
+def _setup_spend_uploader_scheduler(app: FastAPI):
+    """Set up the LiteLLM spend uploader scheduler if enabled."""
+    if not config.LITELLM_SPEND_UPLOADER_ENABLED:
+        return
+
+    if not config.LLM_PROXY_ENABLED:
+        logger.warning(
+            "Spend uploader scheduler enabled but LLM_PROXY_ENABLED=False; "
+            "the spend uploader requires the LiteLLM proxy — skipping scheduler setup"
+        )
+        return
+
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+    from codemie.service.spend_uploader.scheduler import SpendUploaderScheduler
+
+    spend_uploader_scheduler = SpendUploaderScheduler(scheduler=AsyncIOScheduler())
+    spend_uploader_scheduler.start()
+    app.state.spend_uploader_scheduler = spend_uploader_scheduler
+    logger.info("Spend uploader scheduler started successfully")
 
 
 def _setup_leaderboard_scheduler(app: FastAPI):
@@ -1038,7 +1147,8 @@ async def _shutdown_services(app: FastAPI, tasks: list):
             logger.error(f"Error shutting down plugin service: {e}", exc_info=True)
 
     _stop_scheduler(app, 'conversation_analysis_scheduler', 'Conversation analysis scheduler')
-    _stop_scheduler(app, 'spend_tracking_scheduler', 'Spend tracking scheduler')
+    _stop_scheduler(app, 'budget_reset_scheduler', 'Budget reset scheduler')
+    _stop_scheduler(app, 'spend_uploader_scheduler', 'Spend uploader scheduler')
     _stop_scheduler(app, 'leaderboard_scheduler', 'Leaderboard scheduler')
     _stop_scheduler(app, 'stale_datasource_scheduler', 'Stale datasource scheduler')
     _stop_scheduler(
@@ -1206,7 +1316,8 @@ async def lifespan(app: FastAPI):
         _setup_memory_profiling_scheduler()
 
     _setup_conversation_analysis_scheduler(app)
-    _setup_spend_tracking_scheduler(app)
+    _setup_budget_reset_scheduler(app)
+    _setup_spend_uploader_scheduler(app)
     _setup_inactive_project_budget_scheduler(app)
     _setup_inactive_cost_center_budget_scheduler(app)
     _setup_active_project_budget_scheduler(app)
@@ -1223,6 +1334,9 @@ async def lifespan(app: FastAPI):
 
     # CLI Analytics storage: PostgreSQL prepares its schema and runs rollup/partition jobs.
     app.state.cli_analytics_jobs = await start_cli_analytics_runtime()
+
+    # Last, so the blocking startup work above is not reported as event-loop lag (EPMCDME-15537).
+    _schedule_event_loop_lag_monitor(tasks)
 
     yield
 

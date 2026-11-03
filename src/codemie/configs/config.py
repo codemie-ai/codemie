@@ -597,9 +597,6 @@ class Config(BaseSettings):
     # Gives a call's place back after this long, even if the call is still running (see ToolRunGate).
     WORKSPACE_SCRIPT_TOOL_CALL_MAX_HOLD_SECONDS: float = 480.0
 
-    # CLI metrics data quality cutoff
-    CLI_METRICS_CUTOFF_DATE: str = "2026-02-07"
-
     # Cache configuration for MCP toolkit instances
     MCP_TOOLKIT_SERVICE_CACHE_SIZE: int = 100
     MCP_TOOLKIT_SERVICE_CACHE_TTL: int = 3600
@@ -733,6 +730,73 @@ class Config(BaseSettings):
     LLM_PROXY_TRACK_USAGE: bool = True
     # Send model max_output_tokens as max_tokens to LiteLLM proxy; False falls back to proxy defaults
     LLM_PROXY_FORWARD_MAX_OUTPUT_TOKENS: bool = True
+
+    # --- Spend ledger coverage (read ONCE, at the ledger's composition root) -------------
+    # Two published boundary values and two bounding parameters. Only the first partitions a
+    # range. None is ever derived from a query: a floor is a deployment-level value every
+    # consumer observes at the same instant, which is what makes activation atomic for readers.
+    # The floors and SPEND_LEDGER_READY apply only where some call class routes to LiteLLM; a
+    # deployment without it ignores them and keeps the Elasticsearch-backed default ledger.
+    #
+    # F, the coverage floor: the earliest start_time the COMPLETED load contains, published once
+    # at activation. Empty means unactivated, and an unactivated ledger reports unavailable
+    # everywhere - never zero. Never a live MIN(start_time): a minimum over a table still being
+    # filled reports coverage the table does not have.
+    SPEND_LEDGER_COVERAGE_FLOOR: str = "2026-11-01T00:00:00Z"  # ISO-8601 UTC; empty leaves the ledger unactivated
+    # E, the explicit-identity floor: the identity rollout's COMPLETION instant on this
+    # deployment. Legitimately empty until that rollout lands, and a correct steady state for a
+    # deployment that never performs it - project figures are then labelled partial indefinitely.
+    SPEND_LEDGER_IDENTITY_FLOOR: str = ""  # ISO-8601 UTC
+    # Readiness is a state a named unit HOLDS, not a health check the ledger runs. It is set
+    # false when retention deletes at or above F, or when per-request spend logging stops.
+    SPEND_LEDGER_READY: bool = True
+    # L, the metric emission-lag allowance. Never a floor and never a per-report argument. The
+    # default errs high on purpose: the gap is the remaining duration of the execution a row
+    # belongs to, not a network lag. Under-widening is a defect; over-widening only costs a
+    # larger id set, which the range predicate discards.
+    SPEND_LEDGER_EMISSION_LAG_HOURS: int = 24
+    # N, the id-set size at which a dimension-grouped report PAGES. Never a truncation point:
+    # a narrowed report answers a smaller question than the one asked.
+    SPEND_LEDGER_MAX_METRIC_IDS: int = 50_000
+    # Below F: reported absent, or served by the LEGACY engine. False - the default - keeps current
+    # behaviour, where a period reaching below F is reported unavailable. True routes that portion to
+    # the legacy Elasticsearch engine (attributes.money_spent), which is what production shows today
+    # for dates the completed load never covered, so behaviour changes only where a deployment opts
+    # in. Read ONCE at the ledger's composition root like every other value in this block, never deep
+    # in a reader: a reader that consulted it per query could answer one request from two engines.
+    # Deliberately NOT paired with a cutover date of its own - the cutover reuses F above. Two
+    # independently configured instants are exactly the "two surfaces on opposite sides of one floor"
+    # failure this coverage design exists to prevent: they drift apart, and the interval between them
+    # is then either counted by both engines or claimed by neither.
+    SPEND_LEDGER_LEGACY_BELOW_FLOOR: bool = True
+    # Whether windowed ledger sums and row counts are answered from the exact hourly projection `litellm_spend_hourly`
+    # (EPMCDME-15537): whole hours from the projection, the partial edge hours and the metric store's
+    # resolved ids from raw rows, in one statement. Exact either way. False reverts every read to raw
+    # rows - the rollback lever for reads only: the triggers keep maintaining the projection. Read once, where the
+    # ledger is composed (`build_spend_logs_ledger`).
+    SPEND_LEDGER_PROJECTION_ENABLED: bool = True
+    # Ledger read isolation (EPMCDME-15537), prepared but NOT active: every default keeps today's
+    # behaviour. 0 - the default - lets ledger reads share the application pool; above 0 they get a
+    # dedicated pool of that size. Activate only once ledger reads are fast: while one still takes
+    # tens of seconds, a small pool or a statement timeout turns a slow figure into a missing one.
+    # Activation prerequisites: instrument the dedicated engine for OTel SQLAlchemy spans and add
+    # pool gauges for it; size it against total workers x replicas, since each worker holds its own
+    # pool; set the timeouts from multi-viewer measurements once the projection makes ledger reads fast.
+    SPEND_LEDGER_POOL_SIZE: int = Field(default=0, ge=0)
+    # How long a ledger read waits for a dedicated-pool connection; ignored on the shared pool.
+    SPEND_LEDGER_POOL_TIMEOUT_SECONDS: float = Field(default=30.0, gt=0)
+    # Server-side cap on one ledger statement, dedicated pool only; 0 means none. Never applied to
+    # the shared pool, where it would cut every application query along with the ledger's.
+    SPEND_LEDGER_STATEMENT_TIMEOUT_MS: int = Field(default=0, ge=0)
+    # A ledger read at or above this duration is logged as a WARNING; every read is also timed.
+    SPEND_LEDGER_SLOW_READ_SECONDS: float = Field(default=5.0, gt=0)
+    # How often the event loop's scheduling lag is sampled; 0 disables the monitor. A lag is time the
+    # loop was held - by a blocking call or by CPU saturation - which every request on that worker
+    # spent waiting.
+    EVENT_LOOP_LAG_MONITOR_INTERVAL_SECONDS: float = Field(default=1.0, ge=0)
+    # A sampled lag at or above this is logged as a WARNING; every sample is also recorded.
+    EVENT_LOOP_LAG_WARN_SECONDS: float = Field(default=0.5, gt=0)
+
     # LiteLLM model tagging configuration
     # The comma-separated list of project names to be used as tags for "x-litellm-tags" HTTP Header
     LITE_LLM_PROJECTS_TO_TAGS_LIST: str = ""
@@ -914,14 +978,7 @@ class Config(BaseSettings):
     # Metrics Index Rotation Configuration
     METRICS_ROTATION_ENABLED: bool = False  # Enables quarterly ES index rotation for codemie_metrics_logs
 
-    # LiteLLM Spend Collector Configuration
-    LITELLM_SPEND_COLLECTOR_ENABLED: bool = False  # Enables the spend collector APScheduler job
-    LITELLM_SPEND_COLLECTOR_SCHEDULE: str = "0 1 * * *"  # Cron schedule (UTC) for the spend collector — nightly at 1 AM
-    LITELLM_BUDGET_RESET_TRACKER_ENABLED: bool = False  # Enables the member reset-window tracker job
-    LITELLM_BUDGET_RESET_TRACKER_SCHEDULE: str = (
-        "*/10 * * * *"  # Cron schedule (UTC) for the reset-window tracker — every 10 minutes
-    )
-    LITELLM_BUDGET_RESET_WINDOW_MINUTES: int = 15  # Look-ahead window for soon-resetting project budgets
+    # LiteLLM Budget Reset Reconciliation Configuration
     LITELLM_BUDGET_RESET_RECONCILIATION_ENABLED: bool = False  # Enables the daily reset reconciliation job
     LITELLM_BUDGET_RESET_RECONCILIATION_SCHEDULE: str = (
         "10 0 * * *"  # Cron schedule (UTC) for reset reconciliation — daily at 12:10 AM
@@ -945,10 +1002,6 @@ class Config(BaseSettings):
     INACTIVE_PROJECT_BUDGET_STOP_SCHEDULE: str = _CRON_DAILY_MIDNIGHT  # Cron schedule (UTC) — daily midnight
     INACTIVE_COST_CENTER_BUDGET_STOP_SCHEDULE: str = _CRON_DAILY_MIDNIGHT  # Cron schedule (UTC) — daily midnight
     ACTIVE_PROJECT_BUDGET_RESTORE_SCHEDULE: str = "0 1 * * *"  # Cron schedule (UTC) — daily 1 AM
-    BUDGET_USAGE_STALENESS_THRESHOLD_MS: int = 600000  # 10 minutes — lazy-refresh threshold for /budget_usage
-    BUDGET_MEMBER_SPEND_STALENESS_THRESHOLD_MS: int = (
-        600000  # 10 minutes — lazy-refresh threshold for member spend analytics
-    )
 
     # Stale Datasource Detection Configuration
     STALE_DATASOURCE_ENABLED: bool = False  # Enables nightly stale datasource detection job

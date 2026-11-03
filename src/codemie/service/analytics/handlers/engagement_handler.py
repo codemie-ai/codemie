@@ -19,29 +19,72 @@ DAU: distinct users active in the **last 24 hours** (fixed window, ignores
 MAU: distinct users active in the **last 30 days** (rolling window, ignores
      the dashboard time filter) — matches Kibana "Last 1 month" cardinality widget.
 
-Weekly spending uses the normal time filter and shows money spent in 3h
-intervals broken down by source (Assistants, Workflows, Datasources, CLI).
+Weekly spending covers the **last 7 days** (fixed window, ignores the dashboard
+time filter) in 3h buckets, split by traffic class (Assistants, Workflows,
+Datasources, CLI). Its money is read from the spend port, not from this
+handler's own Elasticsearch aggregation, so a series means here exactly what it
+means on every other money surface.
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+import time
+from collections.abc import Mapping
+from datetime import datetime
 
 from codemie.repository.metrics_elastic_repository import MetricsElasticRepository
 from codemie.rest_api.security.user import User
 from codemie.service.analytics.handlers.field_constants import PLACEHOLDER_USER_IDS
-from codemie.service.analytics.metric_names import MetricName
-from codemie.service.analytics.query_pipeline import AnalyticsQueryFilters, AnalyticsQueryPipeline
+from codemie.service.analytics.handlers.report_filter import report_filter_for
+from codemie.service.analytics.query_pipeline import (
+    AnalyticsQueryFilters,
+    AnalyticsQueryPipeline,
+    tabular_filters_applied,
+)
 from codemie.service.analytics.response_formatter import ResponseFormatter
+from codemie.service.analytics.time_parser import TimeParser
+from codemie.service.spend.coverage import SpendResult
+from codemie.service.spend.ledger import BUCKET_WIDTH_3_HOURS, bucket_starts
+from codemie.service.spend.rendering import render_spend, report_period_or_none, spend_fields, time_range_or_none
+from codemie.service.spend.spend_service import spend_service
+from codemie.service.spend.traffic_class import TrafficClass
 
 logger = logging.getLogger(__name__)
 
 # Elasticsearch field constants
 USER_ID_KEYWORD_FIELD = "attributes.user_id.keyword"
-METRIC_NAME_KEYWORD_FIELD = "metric_name.keyword"
-CLI_REQUEST_FIELD = "attributes.cli_request"
-MONEY_SPENT_FIELD = "attributes.money_spent"
+
+#: The window the chart draws, whatever the dashboard's time filter says - the widget is labelled
+#: "Last 1 week" and has always ignored that filter.
+WEEKLY_TIME_PERIOD = "last_7_days"
+
+#: Which traffic class each series of the chart is. **The mapping is the whole definition of a
+#: series**: the port owns what "workflow spend" selects, and a predicate assembled beside it here
+#: would be a second definition free to disagree with every other surface for the same week.
+_SERIES_CLASSES: Mapping[str, TrafficClass] = {
+    "assistants_spent": TrafficClass.ASSISTANT,
+    "workflows_spent": TrafficClass.WORKFLOW,
+    "datasources_spent": TrafficClass.DATASOURCE,
+    "cli_spent": TrafficClass.CLI,
+}
+
+
+def _series_cells(series: str, result: SpendResult | None) -> dict[str, object]:
+    """One series' value on a bucket, with the three keys that qualify it.
+
+    The qualification keys are prefixed with the series id exactly as `spend_footer` prefixes a
+    column's, because one row carries four independent figures: an unprefixed triple would say
+    *something on this bucket is short* without naming which line of the chart it is short on.
+
+    A measured zero stays `0.0` and an absent figure is `None`, never `0`. The widget draws a `None`
+    as a gap and a number as a bar, so the distinction survives all the way to the screen - which is
+    the whole point, since a fabricated zero there reads as *nothing was spent*.
+    """
+    rendered = render_spend(result)
+    cells: dict[str, object] = {series: None if rendered.figure is None else round(rendered.figure, 2)}
+    cells.update({f"{series}_{key}": value for key, value in spend_fields(rendered).items()})
+    return cells
 
 
 class EngagementHandler:
@@ -50,8 +93,9 @@ class EngagementHandler:
     DAU and MAU ignore the dashboard time filter: they delegate to
     ``AnalyticsQueryPipeline.execute_summary_query`` with fixed
     ``time_period`` literals ("last_24_hours" / "last_30_days").
-    Weekly histogram uses ``execute_composite_query`` with the
-    caller-supplied time filter.
+    The weekly histogram issues no Elasticsearch query at all: it reads the
+    spend port over its own fixed window and uses the pipeline only for the
+    access boundary the port must be narrowed by.
     """
 
     def __init__(self, user: User, repository: MetricsElasticRepository):
@@ -205,7 +249,7 @@ class EngagementHandler:
         }
 
     # ------------------------------------------------------------------
-    # Weekly spending histogram (respects dashboard time filter)
+    # Weekly spending histogram (always the last 7 days)
     # ------------------------------------------------------------------
 
     async def get_weekly_spending(
@@ -216,175 +260,91 @@ class EngagementHandler:
     ) -> dict:
         """Get weekly spending histogram broken down by source.
 
-        Always covers the last 7 days regardless of the dashboard time filter,
-        matching the Kibana behaviour for this widget.
+        **Money comes from the spend port and no Elasticsearch query is issued.** The chart used to
+        split spend by groups of metric names, which answered a different question from every other
+        money surface: the same week could be drawn here as one figure and reported elsewhere as
+        another, with neither wrong by its own definition. `TrafficClass` is the one definition of a
+        series, and it lives with the predicates that select it.
+
+        **Below the coverage floor, and in a deployment with no LiteLLM ledger, the three non-CLI
+        series are absent rather than zero.** The metric store has a word for CLI traffic and none
+        for the other three, so the pre-floor adapter draws that one line and leaves the rest
+        unanswered; the widget renders those as gaps. Reported as zeros they would claim no
+        assistant, workflow or datasource money was spent that week, which is the fabrication this
+        whole port exists to stop - the owner accepted the gap over the false zero.
+
+        **The rows are the port's own bucket walk, not the requested window.** A three-hour bin files
+        07:12 under 06:00, so the first bucket may start before the window does; walking from the
+        requested instant instead would key every row a partial step off the ledger's own keys and
+        match none of them. Buckets nobody spent in are still walked, so an idle stretch is a row of
+        measured zeros rather than a hole in the chart.
 
         Args:
             users: Optional user-scope filter (access-control).
             projects: Optional project-scope filter (access-control).
+            client_source: Optional client-source filter; the port cannot apply it, so every series
+                is then absent.
 
         Returns:
             TabularResponse with columns: time, assistants_spent, workflows_spent,
             datasources_spent, cli_spent.
         """
+        started = time.time()
         logger.info("Requesting weekly spending histogram (last 7 days, ignores time filter)")
 
-        columns = self._get_weekly_spending_columns()
-
-        def agg_builder(query: dict) -> dict:
-            return self._build_weekly_spending_aggregation(query)
-
-        def parse_result(result: dict, metadata: dict) -> dict:
-            rows = self._parse_weekly_spending_result(result)
-            response = ResponseFormatter.format_tabular_response(
-                rows=rows,
-                columns=columns,
-                filters_applied=metadata.get("filters_applied", {}),
-                execution_time_ms=metadata.get("execution_time_ms", 0),
-                totals=None,
+        start_dt, end_dt = TimeParser.parse(WEEKLY_TIME_PERIOD, None, None)
+        period = time_range_or_none(start_dt, end_dt)
+        # The week is walked even when the port is not asked - a client-source filter it cannot apply
+        # - so the chart keeps its buckets and every series on them reads absent, never zero.
+        asked = report_period_or_none(start_dt, end_dt, client_source)
+        # The figure is narrowed by the boundary the dashboard's own queries are built under, taken
+        # from the pipeline so that one access context answers for the rows and for the money.
+        split = (
+            await spend_service.aggregate_by_time_bucket(
+                asked,
+                BUCKET_WIDTH_3_HOURS,
+                access=self._pipeline.access_scope,
+                report_filter=await report_filter_for(users, projects),
             )
-            response["pagination"] = {
-                "page": 0,
-                "per_page": len(rows),
-                "total_count": len(rows),
-                "has_more": False,
-            }
-            response["fixed_timeframe"] = "Last 1 week"
-            return response
-
-        return await self._pipeline.execute_composite_query(
-            agg_builder=agg_builder,
-            result_parser=parse_result,
-            filters=AnalyticsQueryFilters(
-                metric_filters=None,
-                time_period="last_7_days",
-                users=users,
-                projects=projects,
-                client_source=client_source,
-            ),
+            if asked is not None
+            else {}
         )
 
+        buckets = bucket_starts(period, BUCKET_WIDTH_3_HOURS) if period is not None else ()
+        rows = [self._bucket_row(bucket, split) for bucket in buckets]
+
+        response = ResponseFormatter.format_tabular_response(
+            rows=rows,
+            columns=self._get_weekly_spending_columns(),
+            filters_applied=tabular_filters_applied(
+                AnalyticsQueryFilters(
+                    time_period=WEEKLY_TIME_PERIOD, users=users, projects=projects, client_source=client_source
+                ),
+                start_dt,
+                end_dt,
+            ),
+            execution_time_ms=(time.time() - started) * 1000,
+            totals=None,
+        )
+        response["pagination"] = {
+            "page": 0,
+            "per_page": len(rows),
+            "total_count": len(rows),
+            "has_more": False,
+        }
+        response["fixed_timeframe"] = "Last 1 week"
+        return response
+
     @staticmethod
-    def _extract_time_bounds(query: dict) -> tuple[int | None, int | None]:
-        """Extract min/max epoch-ms bounds from a bool-filter query for extended_bounds."""
-        for clause in query.get("bool", {}).get("filter", []):
-            range_filter = clause.get("range", {})
-            for field in ("@timestamp", "time"):
-                if field not in range_filter:
-                    continue
-                tf = range_filter[field]
-                try:
-                    gte = tf.get("gte")
-                    lte = tf.get("lte")
-                    if isinstance(gte, str):
-                        gte = int(datetime.fromisoformat(gte.replace("Z", "+00:00")).timestamp() * 1000)
-                    if isinstance(lte, str):
-                        lte = int(datetime.fromisoformat(lte.replace("Z", "+00:00")).timestamp() * 1000)
-                    return gte, lte
-                except (ValueError, AttributeError) as exc:
-                    logger.warning(f"Could not parse time bounds for extended_bounds: {exc}")
-                    return None, None
-        return None, None
-
-    def _build_weekly_spending_aggregation(self, query: dict) -> dict:
-        """Build 3h date-histogram aggregation with 4 spending sub-aggregations."""
-        min_time, max_time = self._extract_time_bounds(query)
-
-        date_histogram: dict = {
-            "field": "time",
-            "fixed_interval": "3h",
-            "order": {"_key": "asc"},
-        }
-        if min_time is not None and max_time is not None:
-            date_histogram["extended_bounds"] = {"min": min_time, "max": max_time}
-
-        return {
-            "query": query,
-            "size": 0,
-            "aggs": {
-                "time_buckets": {
-                    "date_histogram": date_histogram,
-                    "aggs": {
-                        "assistants_spent": {
-                            "filter": {
-                                "terms": {
-                                    METRIC_NAME_KEYWORD_FIELD: [
-                                        MetricName.CONVERSATION_ASSISTANT_USAGE.value,
-                                        MetricName.ASSISTANT_GENERATOR_TOTAL.value,
-                                        MetricName.PROMPT_GENERATOR_TOTAL.value,
-                                        MetricName.SKILL_GENERATOR_TOTAL.value,
-                                        MetricName.CODEMIE_TOOLS_USAGE_TOKENS.value,
-                                        MetricName.MARKETPLACE_ASSISTANT_VALIDATION_TOTAL.value,
-                                    ]
-                                }
-                            },
-                            "aggs": {"sum": {"sum": {"field": MONEY_SPENT_FIELD}}},
-                        },
-                        "workflows_spent": {
-                            "filter": {
-                                "terms": {
-                                    METRIC_NAME_KEYWORD_FIELD: [
-                                        MetricName.WORKFLOW_EXECUTION_TOTAL.value,
-                                        MetricName.WORKFLOW_OUTPUT_CHANGE_TOTAL.value,
-                                    ]
-                                }
-                            },
-                            "aggs": {"sum": {"sum": {"field": MONEY_SPENT_FIELD}}},
-                        },
-                        "datasources_spent": {
-                            "filter": {"term": {METRIC_NAME_KEYWORD_FIELD: MetricName.DATASOURCE_TOKENS_USAGE.value}},
-                            "aggs": {"sum": {"sum": {"field": MONEY_SPENT_FIELD}}},
-                        },
-                        "cli_spent": {
-                            "filter": {
-                                "bool": {
-                                    "filter": [
-                                        {"term": {METRIC_NAME_KEYWORD_FIELD: MetricName.CLI_LLM_USAGE_TOTAL.value}},
-                                        {"term": {CLI_REQUEST_FIELD: True}},
-                                    ]
-                                }
-                            },
-                            "aggs": {"sum": {"sum": {"field": MONEY_SPENT_FIELD}}},
-                        },
-                    },
-                }
-            },
-        }
-
-    def _parse_weekly_spending_result(self, result: dict) -> list[dict]:
-        """Parse 3h spending buckets into tabular rows."""
-        buckets = result.get("aggregations", {}).get("time_buckets", {}).get("buckets", [])
-
-        rows = []
-        for bucket in buckets:
-            try:
-                key_millis = bucket.get("key")
-                if key_millis is None:
-                    logger.warning(f"Spending bucket missing key: {bucket}")
-                    continue
-
-                ts_iso = datetime.fromtimestamp(key_millis / 1000, tz=timezone.utc).isoformat()
-
-                assistants = round(bucket.get("assistants_spent", {}).get("sum", {}).get("value", 0) or 0, 2)
-                workflows = round(bucket.get("workflows_spent", {}).get("sum", {}).get("value", 0) or 0, 2)
-                datasources = round(bucket.get("datasources_spent", {}).get("sum", {}).get("value", 0) or 0, 2)
-                cli = round(bucket.get("cli_spent", {}).get("sum", {}).get("value", 0) or 0, 2)
-
-                rows.append(
-                    {
-                        "time": ts_iso,
-                        "assistants_spent": assistants,
-                        "workflows_spent": workflows,
-                        "datasources_spent": datasources,
-                        "cli_spent": cli,
-                    }
-                )
-            except (ValueError, TypeError, OSError) as e:
-                logger.warning(f"Failed to parse spending bucket {bucket}: {e}. Skipping.")
-                continue
-
-        logger.debug(f"Weekly spending histogram: total_buckets={len(buckets)}, rows_parsed={len(rows)}")
-        return rows
+    def _bucket_row(bucket: datetime, split: Mapping[tuple[datetime, TrafficClass], SpendResult]) -> dict:
+        """One bucket of the chart: its start, and the four series measured over it."""
+        # ISO-8601 carrying the UTC offset, as the date-histogram keys were rendered before: the
+        # widget builds a `Date` from this string, and an offset-less one is read in the browser's
+        # own zone, which shifts every bar of the chart for a reader outside UTC.
+        row: dict = {"time": bucket.isoformat()}
+        for series, traffic_class in _SERIES_CLASSES.items():
+            row.update(_series_cells(series, split.get((bucket, traffic_class))))
+        return row
 
     @staticmethod
     def _get_weekly_spending_columns() -> list[dict]:

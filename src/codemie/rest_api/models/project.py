@@ -36,9 +36,16 @@ class ProjectCounters(BaseModel):
 class ProjectSpendingSummary(BaseModel):
     """Compact spending summary for project list responses."""
 
-    current_spending: float
+    current_spending: Optional[float] = None
     budget_limit: Optional[float] = None
-    total_percent: float
+    total_percent: Optional[float] = None
+    # The same annotation triple every money row on these paths carries: a figure cannot say by
+    # itself that it is truncated or dimension-incomplete. Defaulted so every other client keeps
+    # deserialising, and `spend_missing_amount` stays None while `spend_partial` is set when the
+    # missing amount itself is unknown - that is a state, not a gap.
+    spend_unavailable: bool = False
+    spend_partial: bool = False
+    spend_missing_amount: Optional[float] = None
 
 
 class ProjectAssignedBudgetSummary(BaseModel):
@@ -55,17 +62,31 @@ class ProjectAssignedBudgetSummary(BaseModel):
     member_count: int
     allocated_member_budget_total: float
     current_spending: Optional[float] = None
+    # A figure cannot say by itself that it is truncated or dimension-incomplete, so it travels with
+    # both annotations the spend port returns beside it. Defaulted so every other client keeps
+    # deserialising, and `spend_unavailable` defaults to False because a caller that never had a port
+    # answer must not brand its figure suspect. `spend_missing_amount` stays None while
+    # `spend_partial` is set when the missing amount itself is unknown - that is a state, not a gap.
+    spend_unavailable: bool = False
+    spend_partial: bool = False
+    spend_missing_amount: Optional[float] = None
 
 
 class ProjectSpendingDetail(BaseModel):
     """Full spending detail for project detail responses."""
 
-    current_spending: float
-    cumulative_spend: float
+    current_spending: Optional[float] = None
     budget_reset_at: Optional[datetime] = None
     time_until_reset: Optional[str] = None
     budget_limit: Optional[float] = None
-    total: float
+    total: Optional[float] = None
+    # The same annotation triple every money row on these paths carries: a figure cannot say by
+    # itself that it is truncated or dimension-incomplete. Defaulted so every other client keeps
+    # deserialising, and `spend_missing_amount` stays None while `spend_partial` is set when the
+    # missing amount itself is unknown - that is a state, not a gap.
+    spend_unavailable: bool = False
+    spend_partial: bool = False
+    spend_missing_amount: Optional[float] = None
 
 
 class SpendingWidgetColumn(BaseModel):
@@ -78,13 +99,22 @@ class SpendingWidgetColumn(BaseModel):
 
 class SpendingWidgetRow(BaseModel):
     budget_id: str
-    budget_category: str | None = None
+    budget_category: Optional[str] = None
+    # False for a category removed during a budget period that is still open: its spend still
+    # counts toward the project, but it has no budget to take a limit or percentage from (EPMCDME-15048).
     is_assigned: bool = True
-    current_spending: float
+    current_spending: Optional[float] = None
     budget_reset_at: Optional[datetime] = None
     time_until_reset: Optional[str] = None
     budget_limit: Optional[float] = None
-    total: float
+    total: Optional[float] = None
+    # The same annotation triple every money row on these paths carries: a figure cannot say by
+    # itself that it is truncated or dimension-incomplete. Defaulted so every other client keeps
+    # deserialising, and `spend_missing_amount` stays None while `spend_partial` is set when the
+    # missing amount itself is unknown - that is a state, not a gap.
+    spend_unavailable: bool = False
+    spend_partial: bool = False
+    spend_missing_amount: Optional[float] = None
 
 
 class SpendingWidgetData(BaseModel):
@@ -146,24 +176,6 @@ class PaginatedProjectListResponse(BaseModel):
     """Paginated project list response (Story 16)"""
 
     data: list[ProjectListItem]
-    pagination: PaginationInfo
-
-
-class SpendTrackingRow(BaseModel):
-    """A single project_spend_tracking row returned by the spends endpoint."""
-
-    spend_date: datetime
-    daily_spend: float
-    cumulative_spend: float
-    budget_period_spend: float
-    budget_id: Optional[str] = None
-
-
-class PaginatedSpendsResponse(BaseModel):
-    """Paginated response for GET /projects/{projectName}/spends."""
-
-    total_spend: float
-    rows: list[SpendTrackingRow]
     pagination: PaginationInfo
 
 

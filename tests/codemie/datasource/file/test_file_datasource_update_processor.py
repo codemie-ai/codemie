@@ -19,6 +19,8 @@ from codemie.datasource.file.file_datasource_update_processor import FileDatasou
 from codemie.datasource.file.file_datasource_processor import FILE_PATH_DATA_NT
 from codemie.rest_api.models.index import GuardrailBlockedException, IndexDeletedException, IndexInfo
 from codemie.rest_api.security.user import User
+from codemie.service.spend.origin_context import current_origin
+from codemie.service.spend.traffic_class import TrafficOrigin
 
 
 @pytest.fixture
@@ -482,3 +484,35 @@ class TestProcessExceptionHandlers:
 
         mock_index.set_error.assert_called_once()
         mock_on_end.assert_called_once()
+
+
+class TestSpendOrigin:
+    """The update flow publishes the same indexing origin as the base processor."""
+
+    def test_process_publishes_datasource_indexing(self, make_processor, mock_index):
+        proc = make_processor()
+        mock_index.project_name = "test_project"
+        observed = []
+
+        with (
+            patch('codemie.datasource.file.file_datasource_update_processor.ensure_application_exists'),
+            patch('codemie.service.llm_service.utils.set_llm_context'),
+            patch('codemie.datasource.file.file_datasource_update_processor.set_logging_info'),
+            patch('codemie.datasource.file.file_datasource_update_processor.propagated_span') as mock_span,
+            patch.object(proc, '_init_loader', return_value=MagicMock()),
+            patch.object(proc, '_on_process_start'),
+            patch.object(proc, '_process', side_effect=lambda: observed.append(current_origin())),
+            patch.object(proc, '_persist_load_stats', return_value={}),
+            patch.object(proc, '_on_process_end'),
+            patch.object(proc, '_validate_indexing_result'),
+            patch.object(proc, '_create_or_update_scheduler'),
+        ):
+            mock_span.return_value.__enter__ = MagicMock(return_value=None)
+            mock_span.return_value.__exit__ = MagicMock(return_value=False)
+            proc.loader = MagicMock()
+            proc.loader.fetch_remote_stats.return_value = {"documents_count_key": 1}
+
+            proc.process()
+
+        assert observed == [TrafficOrigin.DATASOURCE_INDEXING]
+        assert current_origin() is None

@@ -30,6 +30,8 @@ from codemie.service.llm_service.llm_service import llm_service
 from codemie.enterprise.observability import get_observability_provider
 from codemie.service.search_and_rerank.base import SearchAndRerankBase, es_response_to_document
 from codemie.service.search_and_rerank.rrf import RRF
+from codemie.service.spend.origin_context import spend_origin
+from codemie.service.spend.traffic_class import TrafficOrigin
 
 # NOTE: observe is captured at import time from the singleton provider.
 # Tests that switch providers via reset_provider() must do so BEFORE this module
@@ -86,8 +88,11 @@ class SearchAndRerankTool(SearchAndRerankBase):
             f"Starting tool hybrid search. Query='{self.query[:100]}...', TopK={self.top_k}, Index={self.index_name}"
         )
 
-        # Perform KNN vector search
-        knn_results = self._knn_vector_search()
+        # Perform KNN vector search. Search embeddings emit no token metric of their own and this
+        # class records no run summary either, so the header is the only record of this spend.
+        with spend_origin(TrafficOrigin.SEARCH_EMBEDDING):
+            knn_results = self._knn_vector_search()
+
         logger.debug(f"Tool KNN search returned {len(knn_results)} results")
 
         # Perform enhanced text search

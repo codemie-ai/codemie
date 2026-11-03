@@ -22,20 +22,19 @@ Covers:
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
-from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid4
 
 import pytest
 
 from codemie.core.exceptions import ExtendedHTTPException, ValidationException
+from codemie.service.budget import budget_service as budget_service_module
 from codemie.service.budget.budget_enums import BudgetCategory
 from codemie.service.budget.budget_models import Budget
 from codemie.service.budget.provider import PersonalBudgetEntry
 from codemie.service.budget.budget_service import BudgetService
-from codemie.service.spend_tracking.spend_models import ProjectSpendTracking
 
 
 # ---------------------------------------------------------------------------
@@ -455,6 +454,241 @@ class TestPredefinedBudgetStartupSync:
 
 
 # ---------------------------------------------------------------------------
+# TestAResetCodeMieSetIsRecorded (EPMCDME-15204)
+# ---------------------------------------------------------------------------
+
+#: A 30d budget created 2099-10-09 15:05, whose first reset CodeMie set to the next midnight after 30 days:
+#: it prolongs the provider's October period.
+_CREATED = datetime(2099, 10, 9, 15, 5, 4, tzinfo=timezone.utc)
+_PINNED = "2099-11-09T00:00:00Z"
+_OCTOBER = datetime(2099, 10, 1, tzinfo=timezone.utc)
+
+
+def _this_and_next_month() -> tuple[datetime, str]:
+    """The provider's current `30d` period start and its reset: a change reads the running period at now."""
+    start = datetime.now(timezone.utc).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    reset = start.replace(year=start.year + 1, month=1) if start.month == 12 else start.replace(month=start.month + 1)
+    return start, reset.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _ok_state(budget_reset_at: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        provider="litellm", provider_budget_ref="default", budget_reset_at=budget_reset_at, sync_status="ok"
+    )
+
+
+def _recorded(written: list[dict]) -> list[tuple]:
+    """Every (pinned_reset_at, pinned_period_start) pair written, in order."""
+    return [(f["pinned_reset_at"], f["pinned_period_start"]) for f in written if "pinned_reset_at" in f]
+
+
+def _predefined_config(budget_duration: str, max_budget: float = 100.0) -> list[SimpleNamespace]:
+    return [
+        SimpleNamespace(
+            budget_id="default",
+            name="Default Budget",
+            description="Default platform budget for new LiteLLM customers.",
+            soft_budget=50.0,
+            max_budget=max_budget,
+            budget_duration=budget_duration,
+            budget_category="platform",
+        )
+    ]
+
+
+def _provider_budget(budget_reset_at: str = "2099-11-01T00:00:00Z") -> SimpleNamespace:
+    return SimpleNamespace(
+        budget_id="default", soft_budget=50.0, max_budget=100.0, budget_duration="30d", budget_reset_at=budget_reset_at
+    )
+
+
+class TestAResetCodeMieSetIsRecorded:
+    """Setting a reset resets no counter, so where the running period began is recorded with it."""
+
+    @staticmethod
+    def _capture(written: list[dict], row: Budget | None = None):
+        async def update(_session, budget_id, fields):
+            written.append(fields)
+            return row or _make_budget(budget_id=budget_id)
+
+        return update
+
+    @pytest.mark.asyncio
+    async def test_a_new_budget_records_the_provider_s_period_its_creation_falls_in(self):
+        service = _make_service()
+        provider = MagicMock()
+        provider.ensure_global_budget = AsyncMock(return_value=_ok_state(_PINNED))
+        written: list[dict] = []
+
+        with (
+            patch(
+                "codemie.service.budget.budget_service.budget_repository.get_by_id", new=AsyncMock(return_value=None)
+            ),
+            patch(
+                "codemie.service.budget.budget_service.budget_repository.get_by_name", new=AsyncMock(return_value=None)
+            ),
+            patch(
+                "codemie.service.budget.budget_service.budget_repository.insert",
+                new=AsyncMock(return_value=_make_budget(budget_id="new-budget", created_at=_CREATED)),
+            ),
+            patch("codemie.service.budget.budget_service.budget_repository.update", new=self._capture(written)),
+            patch("codemie.service.budget.budget_service.get_active_provider", return_value=provider),
+            patch("codemie.service.budget.budget_service.activity_event_repository.async_insert", new=AsyncMock()),
+        ):
+            await service.create_budget(AsyncMock(), _make_create_request(), actor_id="admin")
+
+        assert written[-1]["budget_reset_at"] == _PINNED
+        assert _recorded(written) == [(datetime(2099, 11, 9, tzinfo=timezone.utc), _OCTOBER)]
+
+    @pytest.mark.asyncio
+    async def test_a_change_records_the_period_running_on_the_old_schedule(self):
+        """Read before the row takes the new duration: on 7d the period would seem to start a week back."""
+        service = _make_service()
+        period_start, reset = _this_and_next_month()
+        existing = _make_budget(budget_reset_at=reset, budget_duration="30d", created_at=_CREATED)
+        provider = MagicMock()
+        provider.provider_name = "litellm"
+        provider.update_global_budget = AsyncMock(return_value=_ok_state("2099-10-28T00:00:00Z"))
+        written: list[dict] = []
+
+        async def update(_session, _budget_id, fields):
+            written.append(fields)
+            for key, value in fields.items():
+                setattr(existing, key, value)
+            return existing
+
+        with (
+            patch("codemie.service.budget.budget_service.budget_config.predefined_budgets", []),
+            patch(
+                "codemie.service.budget.budget_service.budget_repository.get_by_id",
+                new=AsyncMock(return_value=existing),
+            ),
+            patch.object(
+                service,
+                "_validate_budget_update_request",
+                new=AsyncMock(return_value=(50.0, 100.0, "7d", "platform", {"budget_duration"})),
+            ),
+            patch("codemie.service.budget.budget_service.budget_repository.update", new=AsyncMock(side_effect=update)),
+            patch("codemie.service.budget.budget_service.get_active_provider", return_value=provider),
+            patch("codemie.service.budget.budget_service.activity_event_repository.async_insert", new=AsyncMock()),
+        ):
+            from codemie.rest_api.routers.budget_router import BudgetUpdateRequest
+
+            await service.update_budget(AsyncMock(), "test-budget", BudgetUpdateRequest(budget_duration="7d"), "admin")
+
+        assert _recorded(written) == [(datetime(2099, 10, 28, tzinfo=timezone.utc), period_start)]
+
+    @pytest.mark.asyncio
+    async def test_a_predefined_budget_created_in_the_provider_records_its_first_period(self):
+        service = _make_service()
+        provider = MagicMock()
+        provider.provider_name = "litellm"
+        provider.list_global_budget_states = AsyncMock(return_value=[])
+        provider.ensure_global_budget = AsyncMock(return_value=_ok_state(_PINNED))
+        written: list[dict] = []
+
+        with (
+            patch("codemie.service.budget.budget_service.budget_config.predefined_budgets", _predefined_config("30d")),
+            patch("codemie.service.budget.budget_service.get_active_provider", return_value=provider),
+            patch(
+                "codemie.service.budget.budget_service.budget_repository.get_by_id", new=AsyncMock(return_value=None)
+            ),
+            patch(
+                "codemie.service.budget.budget_service.budget_repository.insert",
+                new=AsyncMock(return_value=_make_budget(budget_id="default", created_at=_CREATED)),
+            ),
+            patch("codemie.service.budget.budget_service.budget_repository.update", new=self._capture(written)),
+        ):
+            await service.ensure_predefined_budgets(AsyncMock())
+
+        assert _recorded(written) == [(datetime(2099, 11, 9, tzinfo=timezone.utc), _OCTOBER)]
+
+    @pytest.mark.asyncio
+    async def test_a_predefined_duration_change_records_the_period_running_on_the_old_schedule(self):
+        service = _make_service()
+        period_start, reset = _this_and_next_month()
+        existing = _make_budget(budget_id="default", budget_reset_at=reset, created_at=_CREATED)
+        provider = MagicMock()
+        provider.provider_name = "litellm"
+        provider.list_global_budget_states = AsyncMock(return_value=[_provider_budget(budget_reset_at=reset)])
+        provider.update_global_budget = AsyncMock(return_value=_ok_state("2099-10-28T00:00:00Z"))
+        written: list[dict] = []
+
+        async def update(_session, _budget_id, fields):
+            written.append(fields)
+            for key, value in fields.items():
+                setattr(existing, key, value)
+            return existing
+
+        with (
+            patch("codemie.service.budget.budget_service.budget_config.predefined_budgets", _predefined_config("7d")),
+            patch("codemie.service.budget.budget_service.get_active_provider", return_value=provider),
+            patch(
+                "codemie.service.budget.budget_service.budget_repository.get_by_id",
+                new=AsyncMock(return_value=existing),
+            ),
+            patch("codemie.service.budget.budget_service.budget_repository.update", new=AsyncMock(side_effect=update)),
+        ):
+            await service.ensure_predefined_budgets(AsyncMock())
+
+        assert _recorded(written) == [(datetime(2099, 10, 28, tzinfo=timezone.utc), period_start)]
+
+    @pytest.mark.asyncio
+    async def test_a_predefined_budget_without_a_provider_reset_records_the_one_the_client_set(self):
+        """Sent back empty, the provider's reset is computed by the client - CodeMie set it."""
+        service = _make_service()
+        existing = _make_budget(budget_id="default", created_at=_CREATED)
+        provider = MagicMock()
+        provider.provider_name = "litellm"
+        provider.list_global_budget_states = AsyncMock(return_value=[_provider_budget(budget_reset_at=None)])
+        provider.update_global_budget = AsyncMock(return_value=_ok_state(_PINNED))
+        written: list[dict] = []
+
+        with (
+            patch(
+                "codemie.service.budget.budget_service.budget_config.predefined_budgets",
+                _predefined_config("30d", max_budget=110.0),
+            ),
+            patch("codemie.service.budget.budget_service.get_active_provider", return_value=provider),
+            patch(
+                "codemie.service.budget.budget_service.budget_repository.get_by_id",
+                new=AsyncMock(return_value=existing),
+            ),
+            patch("codemie.service.budget.budget_service.budget_repository.update", new=self._capture(written)),
+        ):
+            await service.ensure_predefined_budgets(AsyncMock())
+
+        assert _recorded(written) == [(datetime(2099, 11, 9, tzinfo=timezone.utc), _OCTOBER)]
+
+    @pytest.mark.asyncio
+    async def test_a_predefined_reset_the_provider_set_is_not_recorded(self):
+        """Only the limits change, so the provider's own reset comes back and the record is left alone."""
+        service = _make_service()
+        provider = MagicMock()
+        provider.provider_name = "litellm"
+        provider.list_global_budget_states = AsyncMock(return_value=[_provider_budget()])
+        provider.update_global_budget = AsyncMock(return_value=_ok_state("2099-11-01T00:00:00Z"))
+        written: list[dict] = []
+
+        with (
+            patch(
+                "codemie.service.budget.budget_service.budget_config.predefined_budgets",
+                _predefined_config("30d", max_budget=110.0),
+            ),
+            patch("codemie.service.budget.budget_service.get_active_provider", return_value=provider),
+            patch(
+                "codemie.service.budget.budget_service.budget_repository.get_by_id",
+                new=AsyncMock(return_value=_make_budget(budget_id="default", budget_reset_at="2099-11-01T00:00:00Z")),
+            ),
+            patch("codemie.service.budget.budget_service.budget_repository.update", new=self._capture(written)),
+        ):
+            await service.ensure_predefined_budgets(AsyncMock())
+
+        assert any(fields.get("budget_reset_at") == "2099-11-01T00:00:00Z" for fields in written)
+        assert _recorded(written) == []
+
+
+# ---------------------------------------------------------------------------
 # TestBackfillUserBudgetAssignments
 # ---------------------------------------------------------------------------
 
@@ -785,157 +1019,6 @@ async def test_resolve_backfill_category_uses_prefetched_provider_metadata_when_
     assert state is prefetched_state
 
 
-# ---------------------------------------------------------------------------
-# Tests for reset_user_budget_spending zero marker rows (EPMCDME-12991)
-# ---------------------------------------------------------------------------
-
-
-def _make_budget_tracking_row(project_name, budget_id, budget_period_spend, cumulative_spend):
-    return ProjectSpendTracking(
-        id=uuid4(),
-        project_name=project_name,
-        budget_id=budget_id,
-        budget_category="platform",
-        spend_subject_type="budget",
-        spend_date=datetime(2026, 6, 1, tzinfo=timezone.utc),
-        budget_period_spend=Decimal(str(budget_period_spend)),
-        daily_spend=Decimal(str(budget_period_spend)),
-        cumulative_spend=Decimal(str(cumulative_spend)),
-    )
-
-
-@pytest.mark.asyncio
-async def test_reset_user_budget_spending_writes_zero_marker_row():
-    """After personal reset, a zero 'budget' marker row is inserted for each category."""
-    service = BudgetService()
-    session = AsyncMock()
-
-    db_user = SimpleNamespace(id="user-1", username="alice@example.com")
-    prev_row = _make_budget_tracking_row("alice@example.com", "budget-platform-1", "25.00", "75.00")
-
-    provider = SimpleNamespace(reset_user_budget_spending=AsyncMock())
-    mock_insert = AsyncMock()
-
-    mock_result = MagicMock()
-    mock_result.scalars.return_value.first.return_value = db_user
-    session.execute = AsyncMock(return_value=mock_result)
-
-    with (
-        patch("codemie.service.budget.budget_service.get_active_provider", return_value=provider),
-        patch(
-            "codemie.service.budget.budget_service.budget_repository.get_user_category_budget_id",
-            new=AsyncMock(return_value="budget-platform-1"),
-        ),
-        patch(
-            "codemie.service.budget.budget_service.project_spend_tracking_repository.get_latest_by_budget_ids",
-            new=AsyncMock(return_value={"budget-platform-1": prev_row}),
-        ),
-        patch(
-            "codemie.service.budget.budget_service.project_spend_tracking_repository.insert_budget_entries",
-            new=mock_insert,
-        ),
-    ):
-        await service.reset_user_budget_spending(
-            session=session,
-            user_id="user-1",
-            actor_id="admin",
-            categories=[BudgetCategory.PLATFORM],
-        )
-
-    mock_insert.assert_awaited()
-    all_inserted_rows = [row for call in mock_insert.await_args_list for row in call[0][1]]
-    assert len(all_inserted_rows) == 1
-    inserted = all_inserted_rows[0]
-    assert inserted.budget_period_spend == Decimal("0")
-    assert inserted.daily_spend == Decimal("0")
-    assert inserted.cumulative_spend == Decimal("75.00")
-    assert inserted.project_name == "alice@example.com"
-    assert inserted.user_id == "user-1"
-    assert inserted.budget_id == "budget-platform-1"
-    assert inserted.spend_subject_type == "budget"
-
-
-@pytest.mark.asyncio
-async def test_reset_user_budget_spending_no_marker_when_no_prior_row():
-    """No marker row inserted if this user has no prior spend rows."""
-    service = BudgetService()
-    session = AsyncMock()
-
-    db_user = SimpleNamespace(id="user-2", username="bob@example.com")
-    provider = SimpleNamespace(reset_user_budget_spending=AsyncMock())
-    mock_insert = AsyncMock()
-
-    mock_result = MagicMock()
-    mock_result.scalars.return_value.first.return_value = db_user
-    session.execute = AsyncMock(return_value=mock_result)
-
-    with (
-        patch("codemie.service.budget.budget_service.get_active_provider", return_value=provider),
-        patch(
-            "codemie.service.budget.budget_service.budget_repository.get_user_category_budget_id",
-            new=AsyncMock(return_value="budget-cli-2"),
-        ),
-        patch(
-            "codemie.service.budget.budget_service.project_spend_tracking_repository.get_latest_by_budget_ids",
-            new=AsyncMock(return_value={}),
-        ),
-        patch(
-            "codemie.service.budget.budget_service.project_spend_tracking_repository.insert_budget_entries",
-            new=mock_insert,
-        ),
-    ):
-        await service.reset_user_budget_spending(
-            session=session,
-            user_id="user-2",
-            actor_id="admin",
-            categories=[BudgetCategory.CLI],
-        )
-
-    mock_insert.assert_awaited()
-    all_rows = [row for call in mock_insert.await_args_list for row in call[0][1]]
-    assert all_rows == []
-
-
-@pytest.mark.asyncio
-async def test_reset_user_budget_spending_rolls_back_session_on_marker_failure():
-    """If the marker insert fails, session.rollback() is called so the next category can proceed."""
-    service = BudgetService()
-    session = AsyncMock()
-    session.rollback = AsyncMock()
-
-    db_user = SimpleNamespace(id="user-3", username="carol@example.com")
-    prev_row = _make_budget_tracking_row("carol@example.com", "budget-platform-3", "10.00", "30.00")
-    provider = SimpleNamespace(reset_user_budget_spending=AsyncMock())
-
-    mock_result = MagicMock()
-    mock_result.scalars.return_value.first.return_value = db_user
-    session.execute = AsyncMock(return_value=mock_result)
-
-    with (
-        patch("codemie.service.budget.budget_service.get_active_provider", return_value=provider),
-        patch(
-            "codemie.service.budget.budget_service.budget_repository.get_user_category_budget_id",
-            new=AsyncMock(return_value="budget-platform-3"),
-        ),
-        patch(
-            "codemie.service.budget.budget_service.project_spend_tracking_repository.get_latest_by_budget_ids",
-            new=AsyncMock(return_value={"budget-platform-3": prev_row}),
-        ),
-        patch(
-            "codemie.service.budget.budget_service.project_spend_tracking_repository.insert_budget_entries",
-            new=AsyncMock(side_effect=Exception("DB error")),
-        ),
-    ):
-        await service.reset_user_budget_spending(
-            session=session,
-            user_id="user-3",
-            actor_id="admin",
-            categories=[BudgetCategory.PLATFORM],
-        )
-
-    session.rollback.assert_awaited_once()
-
-
 class TestBudgetModelNotificationFields:
     def test_budget_carries_notification_fields(self):
         now = datetime(2026, 8, 14, tzinfo=timezone.utc)
@@ -1202,6 +1285,290 @@ class TestUpdateBudgetResetsSoftLimitNotifiedAt:
 
         primary = captured["calls"][0]
         assert "soft_limit_notified_at" not in primary
+
+
+# ---------------------------------------------------------------------------
+# TestResetUserBudgetSpending
+# ---------------------------------------------------------------------------
+
+
+def _session_yielding_user(username: str | None):
+    """Session double whose only SELECT yields a user row, or nothing.
+
+    The service reads just ``db_user.username``, so a namespace is a faithful
+    stand-in for the ORM row and keeps the test off the database. Pass None to
+    model an unknown user.
+    """
+    db_user = SimpleNamespace(username=username) if username is not None else None
+    session = AsyncMock()
+    session.execute = AsyncMock(
+        return_value=MagicMock(scalars=MagicMock(return_value=MagicMock(first=MagicMock(return_value=db_user))))
+    )
+    return session
+
+
+def _predefined_budget(budget_id: str, category: BudgetCategory) -> SimpleNamespace:
+    """Config entry as ``_default_budget_id_for_category`` reads it: category as a raw string."""
+    return SimpleNamespace(budget_id=budget_id, budget_category=category.value)
+
+
+def _provider_double(failing_categories: tuple[BudgetCategory, ...] = ()) -> MagicMock:
+    async def _reset(*, username, budget_category, budget_id):
+        if budget_category in failing_categories:
+            raise RuntimeError("provider is down")
+
+    provider = MagicMock()
+    provider.reset_user_budget_spending = AsyncMock(side_effect=_reset)
+    return provider
+
+
+@contextmanager
+def _reset_environment(provider, assigned: dict, predefined: tuple = ()):
+    """Patch the module-level collaborators the reset path reaches through.
+
+    ``assigned`` maps a category to the budget id stored for the user; a missing
+    key means the user has no assignment for that category, which is what pushes
+    the service onto the predefined-default fallback.
+    """
+    with (
+        patch("codemie.service.budget.budget_service.budget_repository") as repo,
+        patch("codemie.service.budget.budget_service.get_active_provider", return_value=provider),
+        patch("codemie.service.budget.budget_service.budget_config") as mock_budget_config,
+        patch("codemie.service.budget.budget_service.logger") as mock_logger,
+    ):
+        repo.get_user_category_budget_id = AsyncMock(side_effect=lambda s, u, category: assigned.get(category))
+        repo.mark_user_category_spend_reset = AsyncMock()
+        mock_budget_config.predefined_budgets = list(predefined)
+        yield mock_logger
+
+
+def _awaited_categories(provider) -> list:
+    return [call.kwargs["budget_category"] for call in provider.reset_user_budget_spending.await_args_list]
+
+
+class TestResetUserBudgetSpending:
+    @pytest.mark.asyncio
+    async def test_personal_reset_records_reset_time_for_each_category_that_succeeded(self):
+        provider = _provider_double(failing_categories=(BudgetCategory.CLI,))
+        assigned = {category: f"assigned-{category.value}" for category in BudgetCategory}
+        session = _session_yielding_user("alice")
+
+        with _reset_environment(provider, assigned=assigned):
+            await _make_service().reset_user_budget_spending(
+                session=session,
+                user_id="u-1",
+                actor_id="admin-1",
+                categories=[BudgetCategory.PLATFORM, BudgetCategory.CLI],
+            )
+            mark = budget_service_module.budget_repository.mark_user_category_spend_reset
+
+        mark.assert_awaited_once()
+        args = mark.await_args.args
+        assert args[:3] == (session, "u-1", BudgetCategory.PLATFORM)
+        assert args[3].tzinfo is not None
+        session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_personal_reset_records_nothing_when_every_provider_reset_fails(self):
+        provider = _provider_double(failing_categories=tuple(BudgetCategory))
+        assigned = {category: f"assigned-{category.value}" for category in BudgetCategory}
+        session = _session_yielding_user("alice")
+
+        with _reset_environment(provider, assigned=assigned):
+            await _make_service().reset_user_budget_spending(session=session, user_id="u-1", actor_id="admin-1")
+            mark = budget_service_module.budget_repository.mark_user_category_spend_reset
+
+        mark.assert_not_awaited()
+        session.commit.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_every_category_is_reset_in_the_provider_before_any_reset_time_is_recorded(self):
+        provider = _provider_double()
+        assigned = {category: f"assigned-{category.value}" for category in BudgetCategory}
+        events: list[tuple[str, BudgetCategory]] = []
+        provider_reset = provider.reset_user_budget_spending.side_effect
+
+        async def _record_provider_reset(*, username, budget_category, budget_id):
+            events.append(("reset", budget_category))
+            await provider_reset(username=username, budget_category=budget_category, budget_id=budget_id)
+
+        async def _record_mark(session, user_id, category, reset_at):
+            events.append(("mark", category))
+
+        provider.reset_user_budget_spending.side_effect = _record_provider_reset
+
+        with _reset_environment(provider, assigned=assigned):
+            budget_service_module.budget_repository.mark_user_category_spend_reset.side_effect = _record_mark
+            await _make_service().reset_user_budget_spending(
+                session=_session_yielding_user("alice"), user_id="u-1", actor_id="admin-1"
+            )
+
+        categories = list(BudgetCategory)
+        assert events == [("reset", c) for c in categories] + [("mark", c) for c in categories]
+
+    @pytest.mark.asyncio
+    async def test_a_failure_to_record_reset_times_is_logged_and_raised_after_every_provider_reset(self):
+        provider = _provider_double()
+        assigned = {category: f"assigned-{category.value}" for category in BudgetCategory}
+        session = _session_yielding_user("alice")
+
+        with _reset_environment(provider, assigned=assigned) as mock_logger:
+            budget_service_module.budget_repository.mark_user_category_spend_reset.side_effect = RuntimeError(
+                "db is down"
+            )
+            with pytest.raises(RuntimeError, match="db is down"):
+                await _make_service().reset_user_budget_spending(session=session, user_id="u-1", actor_id="admin-1")
+
+        assert _awaited_categories(provider) == list(BudgetCategory)
+        mock_logger.error.assert_called_once()
+        assert "u-1" in mock_logger.error.call_args.args[0]
+        session.commit.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unknown_user_raises_404_before_touching_provider(self):
+        provider = _provider_double()
+
+        with _reset_environment(provider, assigned={}):
+            with pytest.raises(ExtendedHTTPException) as exc_info:
+                await _make_service().reset_user_budget_spending(
+                    session=_session_yielding_user(None),
+                    user_id="ghost-user",
+                    actor_id="admin-1",
+                )
+
+        assert exc_info.value.code == 404
+        assert "ghost-user" in exc_info.value.message
+        provider.reset_user_budget_spending.assert_not_awaited()
+
+    @pytest.mark.parametrize("categories", [None, []])
+    @pytest.mark.asyncio
+    async def test_falsy_categories_reset_every_category_in_enum_order(self, categories):
+        provider = _provider_double()
+        assigned = {category: f"assigned-{category.value}" for category in BudgetCategory}
+
+        with _reset_environment(provider, assigned=assigned):
+            await _make_service().reset_user_budget_spending(
+                session=_session_yielding_user("alice"),
+                user_id="u-1",
+                actor_id="admin-1",
+                categories=categories,
+            )
+
+        assert _awaited_categories(provider) == list(BudgetCategory)
+
+    @pytest.mark.asyncio
+    async def test_explicit_categories_reset_only_those_in_the_given_order(self):
+        provider = _provider_double()
+        requested = [BudgetCategory.PREMIUM_MODELS, BudgetCategory.PLATFORM]
+        assigned = {category: f"assigned-{category.value}" for category in BudgetCategory}
+
+        with _reset_environment(provider, assigned=assigned):
+            await _make_service().reset_user_budget_spending(
+                session=_session_yielding_user("alice"),
+                user_id="u-1",
+                actor_id="admin-1",
+                categories=requested,
+            )
+
+        assert _awaited_categories(provider) == requested
+
+    @pytest.mark.asyncio
+    async def test_assigned_budget_id_wins_over_the_predefined_default(self):
+        provider = _provider_double()
+        predefined = (_predefined_budget("default-platform", BudgetCategory.PLATFORM),)
+
+        with _reset_environment(
+            provider,
+            assigned={BudgetCategory.PLATFORM: "assigned-platform"},
+            predefined=predefined,
+        ):
+            await _make_service().reset_user_budget_spending(
+                session=_session_yielding_user("alice"),
+                user_id="u-1",
+                actor_id="admin-1",
+                categories=[BudgetCategory.PLATFORM],
+            )
+
+        provider.reset_user_budget_spending.assert_awaited_once_with(
+            username="alice", budget_category=BudgetCategory.PLATFORM, budget_id="assigned-platform"
+        )
+
+    @pytest.mark.asyncio
+    async def test_unassigned_category_falls_back_to_the_predefined_default(self):
+        provider = _provider_double()
+        predefined = (_predefined_budget("default-cli", BudgetCategory.CLI),)
+
+        with _reset_environment(provider, assigned={}, predefined=predefined):
+            await _make_service().reset_user_budget_spending(
+                session=_session_yielding_user("alice"),
+                user_id="u-1",
+                actor_id="admin-1",
+                categories=[BudgetCategory.CLI],
+            )
+
+        provider.reset_user_budget_spending.assert_awaited_once_with(
+            username="alice", budget_category=BudgetCategory.CLI, budget_id="default-cli"
+        )
+
+    @pytest.mark.asyncio
+    async def test_category_without_assignment_or_default_is_skipped(self):
+        provider = _provider_double()
+        predefined = (_predefined_budget("default-platform", BudgetCategory.PLATFORM),)
+
+        with _reset_environment(provider, assigned={}, predefined=predefined):
+            await _make_service().reset_user_budget_spending(
+                session=_session_yielding_user("alice"),
+                user_id="u-1",
+                actor_id="admin-1",
+                categories=[BudgetCategory.CLI, BudgetCategory.PLATFORM],
+            )
+
+        assert _awaited_categories(provider) == [BudgetCategory.PLATFORM]
+
+    @pytest.mark.asyncio
+    async def test_provider_failure_is_logged_and_the_remaining_categories_still_reset(self):
+        provider = _provider_double(failing_categories=(BudgetCategory.CLI,))
+        assigned = {category: f"assigned-{category.value}" for category in BudgetCategory}
+
+        with _reset_environment(provider, assigned=assigned) as mock_logger:
+            await _make_service().reset_user_budget_spending(
+                session=_session_yielding_user("alice"),
+                user_id="u-1",
+                actor_id="admin-1",
+                categories=[BudgetCategory.CLI, BudgetCategory.PLATFORM],
+            )
+
+        assert _awaited_categories(provider) == [BudgetCategory.CLI, BudgetCategory.PLATFORM]
+        warning = mock_logger.warning.call_args.args[0]
+        assert "'u-1'" in warning
+        assert "'cli'" in warning
+
+    @pytest.mark.asyncio
+    async def test_info_log_names_the_scope_and_falls_back_to_actor_id(self):
+        provider = _provider_double()
+        assigned = {BudgetCategory.PLATFORM: "assigned-platform"}
+
+        with _reset_environment(provider, assigned=assigned) as mock_logger:
+            await _make_service().reset_user_budget_spending(
+                session=_session_yielding_user("alice"),
+                user_id="u-1",
+                actor_id="admin-1",
+                actor_name="Admin One",
+                categories=[BudgetCategory.PLATFORM],
+            )
+            await _make_service().reset_user_budget_spending(
+                session=_session_yielding_user("alice"),
+                user_id="u-1",
+                actor_id="admin-1",
+                actor_name="",
+                categories=[BudgetCategory.PLATFORM],
+            )
+
+        named, anonymous = (call.args[0] for call in mock_logger.info.call_args_list)
+        assert "'u-1'" in named
+        assert "['platform']" in named
+        assert "'Admin One'" in named
+        assert "'admin-1'" in anonymous
 
 
 @pytest.mark.asyncio

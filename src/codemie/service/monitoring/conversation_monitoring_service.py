@@ -67,7 +67,6 @@ class ConversationMonitoringService(BaseMonitoringService):
             MetricsAttributes.INPUT_TOKENS: tokens_usage.input_tokens,
             MetricsAttributes.OUTPUT_TOKENS: tokens_usage.output_tokens,
             MetricsAttributes.CACHE_READ_INPUT_TOKENS: tokens_usage.cached_tokens,
-            MetricsAttributes.MONEY_SPENT: tokens_usage.money_spent,
             MetricsAttributes.CACHED_TOKENS_MONEY_SPENT: tokens_usage.cached_tokens_money_spent,
             MetricsAttributes.PROJECT: get_current_project(fallback=assistant.project),
             MetricsAttributes.EXECUTION_TIME: time_elapsed,
@@ -80,6 +79,10 @@ class ConversationMonitoringService(BaseMonitoringService):
             MetricsAttributes.CLIENT_SOURCE: (client_source or ClientSource.PLATFORM).value,
             **(({MetricsAttributes.REQUEST_ID: request_id}) if request_id else {}),
         }
+        # A metric emitted while cost was pending used to carry a fabricated zero, since nothing
+        # re-emits this document when the ledger settles - the zero froze into history permanently.
+        if not (tokens_usage.money_spent_pending or tokens_usage.money_spent_unavailable):
+            attributes[MetricsAttributes.MONEY_SPENT] = tokens_usage.money_spent
 
         cls.send_count_metric(name=cls.CONVERSATION_BASE_METRIC + "_assistant_usage", attributes=attributes)
 

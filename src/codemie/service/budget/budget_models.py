@@ -122,6 +122,20 @@ class Budget(SQLModel, table=True):
     budget_duration: str = Field(nullable=False, max_length=16)  # e.g. "30d"
     budget_category: str = Field(nullable=False, max_length=32)  # BudgetCategory value
     budget_reset_at: Optional[str] = Field(default=None, nullable=True)
+    # The last reset CodeMie set through the provider for a global budget, and where the period then
+    # running began - a boundary the provider keeps no record of (`budget_period.running_period_start`).
+    pinned_reset_at: Optional[datetime] = Field(
+        sa_column=Column(TIMESTAMP(timezone=True), nullable=True),
+        default=None,
+    )
+    pinned_period_start: Optional[datetime] = Field(
+        sa_column=Column(TIMESTAMP(timezone=True), nullable=True),
+        default=None,
+    )
+    spend_reset_at: Optional[datetime] = Field(
+        sa_column=Column(TIMESTAMP(timezone=True), nullable=True),
+        default=None,
+    )
     provider_metadata: Optional[dict] = Field(
         default=None,
         sa_column=Column(JSONB, nullable=True),
@@ -194,6 +208,10 @@ class UserBudgetAssignment(SQLModel, table=True):
         default=None,
     )
     assigned_by: Optional[str] = Field(default=None, nullable=True, max_length=255)
+    spend_reset_at: Optional[datetime] = Field(
+        sa_column=Column(TIMESTAMP(timezone=True), nullable=True),
+        default=None,
+    )
 
     __table_args__ = (
         Index("ix_uba_budget_id", "budget_id"),

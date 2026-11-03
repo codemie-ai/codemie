@@ -24,6 +24,8 @@ from codemie.service.monitoring.metrics_constants import (
     MetricsAttributes,
 )
 from codemie.service.request_summary_manager import RequestSummary
+from codemie.service.spend.origin_context import current_origin
+from codemie.service.spend.traffic_class import TrafficOrigin
 from codemie.service.skill_generator_service import SkillGeneratorService
 
 
@@ -229,6 +231,82 @@ class TestRefineSkillDetailsTokenMetrics(unittest.TestCase):
             )
 
         mock_rsm.clear_summary.assert_called_once_with(self.request_id)
+
+
+class TestSkillGeneratorSpendOrigin(unittest.TestCase):
+    """Both skill generator entry points publish their origin before the model is built."""
+
+    def setUp(self):
+        self.mock_user = MagicMock()
+        self.mock_user.id = "user-1"
+        self.observed = []
+
+    def _record(self, return_value):
+        def record(*_args, **_kwargs):
+            self.observed.append(current_origin())
+            return return_value
+
+        return record
+
+    @patch("codemie.service.skill_generator_service.request_summary_manager")
+    @patch("codemie.service.skill_generator_service.emit_llm_token_metric")
+    @patch("codemie.service.skill_generator_service.ToolsInfoService")
+    @patch("codemie.service.skill_generator_service.get_llm_by_credentials")
+    def test_generate_skill_details_publishes_skill_generator(self, mock_get_llm, mock_tools, _emit, _rsm):
+        mock_llm = MagicMock()
+        mock_get_llm.side_effect = self._record(mock_llm)
+        mock_tools.get_tools_info.return_value = []
+
+        response = MagicMock()
+        response.name = "my-skill"
+        response.description = "desc"
+        response.instructions = "instructions"
+        response.categories = []
+        response.toolkits = []
+
+        with patch("codemie.service.skill_generator_service.SKILL_GENERATOR_TEMPLATE") as mock_tmpl:
+            mock_chain = MagicMock()
+            mock_tmpl.__or__ = lambda _s, _other: mock_chain
+            mock_llm.with_structured_output.return_value = mock_chain
+            mock_chain.invoke.return_value = response
+
+            SkillGeneratorService.generate_skill_details(text="Build skill", user=self.mock_user)
+
+        self.assertEqual(self.observed, [TrafficOrigin.SKILL_GENERATOR])
+        self.assertIsNone(current_origin())
+
+    @patch("codemie.service.skill_generator_service.request_summary_manager")
+    @patch("codemie.service.skill_generator_service.emit_llm_token_metric")
+    @patch("codemie.service.assistant_generator_service.PromptGeneratorChain")
+    def test_refine_skill_details_publishes_skill_generator(self, mock_chain_cls, _emit, _rsm):
+        result = MagicMock()
+        result.fields = []
+        result.toolkits = []
+        result.context = []
+        mock_chain = MagicMock()
+        mock_chain.invoke_with_model.return_value = result
+        mock_chain_cls.from_prompt_template.side_effect = self._record(mock_chain)
+
+        SkillGeneratorService.refine_skill_details(user=self.mock_user, request_id="req-skill-origin")
+
+        self.assertEqual(self.observed, [TrafficOrigin.SKILL_GENERATOR])
+        self.assertIsNone(current_origin())
+
+    @patch("codemie.service.skill_generator_service.request_summary_manager")
+    @patch("codemie.service.skill_generator_service.send_log_metric")
+    @patch("codemie.service.skill_generator_service.get_llm_by_credentials")
+    def test_origin_is_restored_when_generation_fails(self, mock_get_llm, _send_metric, _rsm):
+        def record_and_fail(*_args, **_kwargs):
+            self.observed.append(current_origin())
+            raise RuntimeError("LLM failure")
+
+        mock_get_llm.side_effect = record_and_fail
+
+        with self.assertRaises(ExtendedHTTPException):
+            SkillGeneratorService.generate_skill_details(text="Build skill", user=self.mock_user)
+
+        self.assertEqual(self.observed, [TrafficOrigin.SKILL_GENERATOR])
+        self.assertIsNone(current_origin())
 
 
 if __name__ == "__main__":

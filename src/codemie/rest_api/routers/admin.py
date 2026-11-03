@@ -13,7 +13,8 @@
 # limitations under the License.
 
 from datetime import datetime
-from fastapi import APIRouter, HTTPException, status, Depends, BackgroundTasks
+
+from fastapi import APIRouter, status, Depends, BackgroundTasks
 
 from codemie.configs import config
 from codemie.core.models import (
@@ -41,8 +42,6 @@ from codemie.rest_api.security.user import User
 from codemie.service.monitoring.project_monitoring_service import ProjectMonitoringService
 from codemie.service.platform.platform_indexing_service import PlatformIndexingService
 from codemie.configs.logger import logger
-from codemie.service.spend_tracking.config import SPEND_TRACKING_LOCK_ID
-from codemie.utils.leader_lock import async_leader_lock
 
 router = APIRouter(tags=["Admin"], prefix="/v1", dependencies=[Depends(authenticate)])
 
@@ -209,72 +208,6 @@ async def reindex_marketplace_assistants(
     background_tasks.add_task(reindex_task)
 
     return BaseResponse(message="Marketplace assistants reindexing started in background. Check logs for progress.")
-
-
-@router.post(
-    "/admin/spend-tracking/collect",
-    status_code=status.HTTP_200_OK,
-    response_model=BaseResponseWithData,
-    dependencies=[Depends(admin_access_only)],
-)
-async def trigger_spend_collection(admin: User = Depends(authenticate)):
-    from codemie.repository.application_repository import ApplicationRepository
-    from codemie.repository.project_spend_tracking_repository import ProjectSpendTrackingRepository
-    from codemie.service.spend_tracking.spend_collector_service import LiteLLMSpendCollectorService
-
-    if not config.LITELLM_SPEND_COLLECTOR_ENABLED:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Spend collection is disabled (LITELLM_SPEND_COLLECTOR_ENABLED=False)",
-        )
-    if not config.LLM_PROXY_ENABLED:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Spend collection requires the LiteLLM proxy (LLM_PROXY_ENABLED=False)",
-        )
-
-    logger.info(
-        "Spend collection triggered by admin",
-        extra={"admin_id": admin.id, "admin_name": admin.name},
-    )
-
-    async with async_leader_lock(SPEND_TRACKING_LOCK_ID) as acquired:
-        if not acquired:
-            logger.info(
-                "Spend collection already in progress, rejecting concurrent request",
-                extra={"admin_id": admin.id},
-            )
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Spend collection is already in progress",
-            )
-
-        service = LiteLLMSpendCollectorService(
-            app_repository=ApplicationRepository(),
-            tracking_repository=ProjectSpendTrackingRepository(),
-        )
-        try:
-            rows_inserted = await service.collect()
-        except Exception as e:
-            logger.error(
-                "Spend collection failed",
-                exc_info=True,
-                extra={"admin_id": admin.id},
-            )
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Spend collection failed: {e}",
-            )
-
-        logger.info(
-            "Spend collection completed",
-            extra={"admin_id": admin.id, "rows_inserted": rows_inserted},
-        )
-
-        return BaseResponseWithData(
-            message="Spend collection completed",
-            data={"rows_inserted": rows_inserted},
-        )
 
 
 @router.get(

@@ -18,6 +18,8 @@ from unittest.mock import MagicMock, patch
 from codemie.core.models import TokensUsage
 from codemie.service.monitoring.metrics_constants import MetricsAttributes
 from codemie.service.request_summary_manager import RequestSummary
+from codemie.service.spend.origin_context import current_origin
+from codemie.service.spend.traffic_class import TrafficOrigin
 from codemie.service.workflow_execution.workflow_output_change_request_service import WorkflowOutputChangeRequestService
 
 _WF_MODULE = "codemie.service.workflow_execution.workflow_output_change_request_service"
@@ -107,3 +109,43 @@ class TestWorkflowOutputChangeTokenMetrics(unittest.TestCase):
         WorkflowOutputChangeRequestService.run("original", "make shorter", request_id=None)
 
         mock_rsm.clear_summary.assert_not_called()
+
+
+class TestWorkflowOutputChangeSpendOrigin(unittest.TestCase):
+    """run() publishes its origin before the model it hands to PureChatChain is built."""
+
+    @patch(f"{_WF_MODULE}.request_summary_manager")
+    @patch(f"{_WF_MODULE}.emit_llm_token_metric")
+    @patch(f"{_WF_MODULE}.get_llm_by_credentials")
+    @patch("codemie.chains.pure_chat_chain.PureChatChain.generate")
+    def test_publishes_workflow_output_change(self, mock_generate, mock_get_llm, _emit, _rsm):
+        observed = []
+
+        def record(*_args, **_kwargs):
+            observed.append(current_origin())
+            return MagicMock()
+
+        mock_get_llm.side_effect = record
+        mock_generate.return_value = MagicMock(generated="changed")
+
+        WorkflowOutputChangeRequestService.run("original", "make it shorter", "req-origin-1")
+
+        self.assertEqual(observed, [TrafficOrigin.WORKFLOW_OUTPUT_CHANGE])
+        self.assertIsNone(current_origin())
+
+    @patch(f"{_WF_MODULE}.request_summary_manager")
+    @patch(f"{_WF_MODULE}.get_llm_by_credentials")
+    def test_origin_is_restored_when_the_call_fails(self, mock_get_llm, _rsm):
+        observed = []
+
+        def record_and_fail(*_args, **_kwargs):
+            observed.append(current_origin())
+            raise RuntimeError("LLM failure")
+
+        mock_get_llm.side_effect = record_and_fail
+
+        with self.assertRaises(RuntimeError):
+            WorkflowOutputChangeRequestService.run("original", "make it shorter", "req-origin-2")
+
+        self.assertEqual(observed, [TrafficOrigin.WORKFLOW_OUTPUT_CHANGE])
+        self.assertIsNone(current_origin())

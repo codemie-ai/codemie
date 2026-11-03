@@ -16,13 +16,15 @@
 
 from __future__ import annotations
 
+import math
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from codemie.repository.metrics_elastic_repository import MetricsElasticRepository
 from codemie.rest_api.security.user import User
-from codemie.service.analytics.handlers.routing_handler import RoutingHandler
+from codemie.service.analytics.handlers.money_coverage import SETTLED_AGG, UNSETTLED_AGG
+from codemie.service.analytics.handlers.routing_handler import MONEY_SUM_AGG, PATH_MONEY_COLUMNS, RoutingHandler
 from codemie.service.analytics.metric_names import MetricName
 
 
@@ -45,6 +47,17 @@ def mock_repository():
 @pytest.fixture
 def handler(mock_user, mock_repository):
     return RoutingHandler(mock_user, mock_repository)
+
+
+def _money(total: float, settled: int, unsettled: int = 0) -> dict:
+    """One money bucket as Elasticsearch answers it: the sum and its two coverage counts."""
+    return {MONEY_SUM_AGG: {"value": total}, SETTLED_AGG: {"value": settled}, UNSETTLED_AGG: {"doc_count": unsettled}}
+
+
+def _paths_result(tier_bucket: dict) -> dict:
+    """A routing-paths aggregation holding one router, one routed model and the given tier bucket."""
+    model = {"key": "claude-sonnet-5", "tiers": {"buckets": [tier_bucket]}}
+    return {"aggregations": {"routers": {"buckets": [{"key": "gpt-smart-router", "models": {"buckets": [model]}}]}}}
 
 
 class TestGetRoutingSummary:
@@ -263,9 +276,9 @@ class TestRoutingComposition:
                                                     {
                                                         "key": "medium",
                                                         "doc_count": 4,
-                                                        "actual_cost": {"value": 0.05},
-                                                        "estimated_max_cost": {"value": 0.08},
-                                                        "potential_savings": {"value": 0.02},
+                                                        "actual_cost_usd": _money(0.05, 4),
+                                                        "estimated_max_cost_usd": _money(0.08, 4),
+                                                        "potential_savings_usd": _money(0.02, 4),
                                                     }
                                                 ]
                                             },
@@ -279,17 +292,24 @@ class TestRoutingComposition:
             }
         )
 
-        assert rows == [
-            {
-                "router": "gpt-smart-router",
-                "routed_model": "claude-sonnet-5",
-                "tier": "medium",
-                "request_count": 4,
-                "actual_cost_usd": 0.05,
-                "estimated_max_cost_usd": 0.08,
-                "potential_savings_usd": 0.02,
+        expected = {
+            "router": "gpt-smart-router",
+            "routed_model": "claude-sonnet-5",
+            "tier": "medium",
+            "request_count": 4,
+        }
+        for column, figure in (
+            ("actual_cost_usd", 0.05),
+            ("estimated_max_cost_usd", 0.08),
+            ("potential_savings_usd", 0.02),
+        ):
+            expected |= {
+                column: figure,
+                f"{column}_spend_unavailable": False,
+                f"{column}_spend_partial": False,
+                f"{column}_spend_missing_amount": None,
             }
-        ]
+        assert rows == [expected]
 
     def test_normalizes_negative_zero_costs(self, handler):
         rows = handler._parse_routing_paths(
@@ -308,9 +328,9 @@ class TestRoutingComposition:
                                                     {
                                                         "key": "simple",
                                                         "doc_count": 1,
-                                                        "actual_cost": {"value": -0.001},
-                                                        "estimated_max_cost": {"value": 0.0},
-                                                        "potential_savings": {"value": -0.001},
+                                                        "actual_cost_usd": _money(-0.001, 1),
+                                                        "estimated_max_cost_usd": _money(0.0, 1),
+                                                        "potential_savings_usd": _money(-0.001, 1),
                                                     }
                                                 ]
                                             },
@@ -324,8 +344,9 @@ class TestRoutingComposition:
             }
         )
 
-        assert rows[0]["actual_cost_usd"] == 0.0
-        assert rows[0]["potential_savings_usd"] == 0.0
+        # Unsigned, not merely equal: `-0.0 == 0.0`, yet it renders as "-$0.00".
+        assert math.copysign(1.0, rows[0]["actual_cost_usd"]) == 1.0
+        assert math.copysign(1.0, rows[0]["potential_savings_usd"]) == 1.0
 
     @pytest.mark.asyncio
     async def test_returns_requested_model_distribution(self, handler):
@@ -456,10 +477,10 @@ class TestRoutingHandlerAggBuilders:
                 "aggregations": {
                     "request_count": {"value": 42},
                     "session_count": {"value": 7},
-                    "total_original_cost": {"value": 0.4},
-                    "total_classifier_cost": {"value": 0.0},
-                    "total_estimated_max_cost": {"value": 0.8},
-                    "total_potential_savings": {"value": 0.4},
+                    "total_original_cost": _money(0.4, 42),
+                    "total_classifier_cost": _money(0.0, 12),
+                    "total_estimated_max_cost": _money(0.8, 42),
+                    "total_potential_savings": _money(0.4, 42),
                     "decision_source_counts": {
                         "buckets": [
                             {"key": "llm_classifier", "doc_count": 12},
@@ -537,3 +558,71 @@ class TestRoutingHandlerAggBuilders:
         assert "total_cached_tokens" in ids, "cached tokens metric must be in overhead response"
         cached_metric = next(m for m in metrics if m["id"] == "total_cached_tokens")
         assert cached_metric["value"] == 10
+
+
+# A money `sum` over documents none of which carry the attribute answers 0.0, never null - which is
+# exactly the $0.00 these figures must not show when nothing settled.
+COVERAGE_STATES = [
+    pytest.param(_money(0.0, settled=0, unsettled=100), None, True, False, id="nothing-settled"),
+    pytest.param(_money(1.234, settled=3, unsettled=2), 1.23, False, True, id="some-unsettled"),
+    pytest.param(_money(1.234, settled=5, unsettled=0), 1.23, False, False, id="all-settled"),
+]
+SUMMARY_MONEY_CARDS = [
+    "total_original_cost",
+    "total_classifier_cost",
+    "total_estimated_max_cost",
+    "total_potential_savings",
+]
+
+
+class TestRoutingMoneyCoverage:
+    """A routing money figure is a settled remainder: absent when nothing settled, partial when some did not."""
+
+    @pytest.mark.parametrize(("bucket", "figure", "unavailable", "partial"), COVERAGE_STATES)
+    def test_summary_money_cards_carry_their_coverage(self, handler, bucket, figure, unavailable, partial):
+        metrics = handler._parse_routing_summary({"aggregations": dict.fromkeys(SUMMARY_MONEY_CARDS, bucket)})
+
+        cards = {metric["id"]: metric for metric in metrics if metric["id"] in SUMMARY_MONEY_CARDS}
+        assert len(cards) == len(SUMMARY_MONEY_CARDS)
+        for card in cards.values():
+            assert (card["value"], card["spend_unavailable"], card["spend_partial"]) == (figure, unavailable, partial)
+
+    @pytest.mark.parametrize(("bucket", "figure", "unavailable", "partial"), COVERAGE_STATES)
+    def test_classifier_overhead_cost_card_carries_its_coverage(self, handler, bucket, figure, unavailable, partial):
+        metrics = handler._parse_classifier_overhead({"aggregations": {"total_classifier_cost": bucket}})
+
+        card = next(metric for metric in metrics if metric["id"] == "total_classifier_cost")
+        assert (card["value"], card["spend_unavailable"], card["spend_partial"]) == (figure, unavailable, partial)
+
+    @pytest.mark.parametrize(("bucket", "figure", "unavailable", "partial"), COVERAGE_STATES)
+    def test_routing_paths_money_cells_carry_their_coverage(self, handler, bucket, figure, unavailable, partial):
+        tier_bucket = {"key": "medium", "doc_count": 100, **dict.fromkeys(PATH_MONEY_COLUMNS, bucket)}
+
+        [row] = handler._parse_routing_paths(_paths_result(tier_bucket))
+
+        for column in PATH_MONEY_COLUMNS:
+            cell = (row[column], row[f"{column}_spend_unavailable"], row[f"{column}_spend_partial"])
+            assert cell == (figure, unavailable, partial)
+
+    def test_counterfactual_sums_count_routed_documents_lacking_the_figure_as_unsettled(self, handler):
+        summary_aggs = handler._build_routing_summary_agg({"match_all": {}})["aggs"]
+        paths_aggs = handler._build_routing_paths_agg({"match_all": {}}, 10)["aggs"]
+        tier_aggs = paths_aggs["routers"]["aggs"]["models"]["aggs"]["tiers"]["aggs"]
+
+        money_buckets = [summary_aggs[card] for card in SUMMARY_MONEY_CARDS if card != "total_classifier_cost"]
+        money_buckets += [tier_aggs[column] for column in PATH_MONEY_COLUMNS]
+        for money in money_buckets:
+            # The attribute the routing emitter writes on every call routed against a counterfactual model.
+            assert money["aggs"][UNSETTLED_AGG]["filter"]["bool"]["filter"] == [
+                {"exists": {"field": "attributes.counterfactual_model"}}
+            ]
+
+    def test_classifier_cost_counts_llm_classifier_decisions_lacking_it_as_unsettled(self, handler):
+        for agg_body in (
+            handler._build_routing_summary_agg({"match_all": {}}),
+            handler._build_classifier_overhead_agg({"match_all": {}}),
+        ):
+            money = agg_body["aggs"]["total_classifier_cost"]
+            assert money["aggs"][UNSETTLED_AGG]["filter"]["bool"]["filter"] == [
+                {"term": {"attributes.decision_source.keyword": "llm-classifier"}}
+            ]

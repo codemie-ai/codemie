@@ -21,6 +21,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlalchemy.dialects import postgresql
 
 from codemie.repository.project_budget_repository import (
     ProjectBudgetAssignmentRepository,
@@ -148,6 +149,10 @@ async def test_get_assigned_budget_summaries_for_projects_returns_empty_for_empt
     session.execute.assert_not_called()
 
 
+BUDGET_CREATED_AT = datetime(2026, 4, 2, 9, 0, tzinfo=UTC)
+BUDGET_SPEND_RESET_AT = datetime(2026, 4, 9, 15, 30, tzinfo=UTC)
+
+
 @pytest.mark.asyncio
 async def test_get_assigned_budget_summaries_for_projects_groups_rows_by_project():
     repo = ProjectBudgetAssignmentRepository()
@@ -164,7 +169,8 @@ async def test_get_assigned_budget_summaries_for_projects_groups_rows_by_project
             "budget_duration": "30d",
             "budget_reset_at": "2026-04-23T10:10:00Z",
             "provider_metadata": {"sync_status": "ok"},
-            "current_spending": 7.5,
+            "budget_created_at": BUDGET_CREATED_AT,
+            "budget_spend_reset_at": BUDGET_SPEND_RESET_AT,
             "member_count": 2,
             "allocated_member_budget_total": 50.0,
         }
@@ -172,6 +178,10 @@ async def test_get_assigned_budget_summaries_for_projects_groups_rows_by_project
     session.execute = AsyncMock(return_value=result_mock)
 
     result = await repo.get_assigned_budget_summaries_for_projects(session, ["proj-a"], budget_category="cli")
+
+    statement = session.execute.call_args.args[0]
+    assert "budget_created_at" in statement.selected_columns
+    assert "budget_spend_reset_at" in statement.selected_columns
 
     assert result == {
         "proj-a": [
@@ -187,7 +197,75 @@ async def test_get_assigned_budget_summaries_for_projects_groups_rows_by_project
                 provider_sync_status="ok",
                 member_count=2,
                 allocated_member_budget_total=50.0,
-                current_spending=7.5,
+                provider_metadata={"sync_status": "ok"},
+                budget_created_at=BUDGET_CREATED_AT,
+                budget_spend_reset_at=BUDGET_SPEND_RESET_AT,
+            )
+        ]
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_removed_budget_summaries_for_projects_returns_empty_for_empty_input():
+    repo = ProjectBudgetAssignmentRepository()
+    session = AsyncMock()
+
+    result = await repo.get_removed_budget_summaries_for_projects(session, [])
+
+    assert result == {}
+    session.execute.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_removed_budget_summaries_for_projects_reads_every_removal_latest_first_per_category():
+    repo = ProjectBudgetAssignmentRepository()
+    session = AsyncMock()
+    result_mock = MagicMock()
+    result_mock.mappings.return_value.all.return_value = [
+        {
+            "project_name": "proj-a",
+            "budget_id": "budget-removed",
+            "name": "Premium Budget",
+            "budget_category": "premium_models",
+            "soft_budget": 80.0,
+            "max_budget": 100.0,
+            "budget_duration": "30d",
+            "budget_reset_at": "2026-11-01T00:00:00Z",
+            "provider_metadata": {"sync_status": "deleted"},
+            "budget_created_at": BUDGET_CREATED_AT,
+            "budget_spend_reset_at": BUDGET_SPEND_RESET_AT,
+        }
+    ]
+    session.execute = AsyncMock(return_value=result_mock)
+
+    result = await repo.get_removed_budget_summaries_for_projects(session, ["proj-a"])
+
+    assert "budget_spend_reset_at" in session.execute.call_args.args[0].selected_columns
+    sql = str(session.execute.call_args.args[0].compile(dialect=postgresql.dialect()))
+    # Every removal, not one per category: a category removed twice in one period has counted since the first.
+    assert "DISTINCT" not in sql
+    assert "project_budget_assignments.deleted_at IS NOT NULL" in sql
+    assert sql.endswith(
+        "ORDER BY project_budget_assignments.project_name, project_budget_assignments.budget_category, "
+        "project_budget_assignments.deleted_at DESC"
+    )
+    assert result == {
+        "proj-a": [
+            ProjectAssignedBudgetSummaryRow(
+                project_name="proj-a",
+                budget_id="budget-removed",
+                name="Premium Budget",
+                budget_category="premium_models",
+                soft_budget=80.0,
+                max_budget=100.0,
+                budget_duration="30d",
+                budget_reset_at="2026-11-01T00:00:00Z",
+                provider_sync_status="deleted",
+                member_count=0,
+                allocated_member_budget_total=0.0,
+                provider_metadata={"sync_status": "deleted"},
+                budget_created_at=BUDGET_CREATED_AT,
+                budget_spend_reset_at=BUDGET_SPEND_RESET_AT,
             )
         ]
     }

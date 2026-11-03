@@ -80,12 +80,6 @@ async def test_noop_budget_provider_accepts_all_protocol_arguments(monkeypatch):
     assert runtime_sync_result.provider == "noop"
     assert await provider.list_global_budget_states() == []
     assert await provider.list_personal_budget_assignments() == []
-    assert await provider.collect_project_budget_spend() == []
-    assert await provider.collect_project_budget_spend_for_projects(["proj-a"]) == []
-    assert await provider.collect_member_budget_spend() == []
-    assert await provider.collect_member_budget_spend_for_refs({"ref-1"}) == []
-    assert await provider.collect_member_budget_spend_for_allocations([]) == []
-    assert await provider.collect_personal_spend() == []
     assert await provider.get_project_budget_state_by_ref(provider_budget_ref="ref-1") is None
 
 

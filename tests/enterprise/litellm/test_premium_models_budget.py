@@ -514,11 +514,18 @@ class TestSpendingEndpointPremiumMetric:
                 assert "premium_current_spending" not in metric_ids
 
     @pytest.mark.asyncio
-    async def test_omits_premium_metric_when_premium_spending_is_none(self):
-        """Feature enabled but no premium customer yet → no premium metric in response."""
+    async def test_keeps_premium_metric_as_unavailable_when_the_policy_read_answers_none(self):
+        """A configured premium budget whose policy read answers nothing keeps its metric, absent.
+
+        **Re-baselined, and the old name encoded the defect** — it was
+        `test_omits_premium_metric_when_premium_spending_is_none` and asserted the metric vanished.
+        Omitting it made *the budget is not configured* and *nobody could tell us about a budget that
+        is configured* render identically, which is the collapse of two different absences the spend
+        refactor removes. The feature predicate decides whether the metric exists; the port decides
+        whether it carries a figure. So the metric is present with no numeric value and says why.
+        """
         standard_spending = {
             "customer_id": "alice@example.com",
-            "total_spend": 50.0,
             "max_budget": 300.0,
             "budget_reset_at": None,
         }
@@ -538,8 +545,13 @@ class TestSpendingEndpointPremiumMetric:
                 import json
 
                 data = json.loads(response.body)
-                metric_ids = [m["id"] for m in data["data"]["metrics"]]
-                assert "premium_current_spending" not in metric_ids
+                metrics = {m["id"]: m for m in data["data"]["metrics"]}
+                assert "premium_current_spending" in metrics
+                premium = metrics["premium_current_spending"]
+                assert premium["value"] is None
+                assert premium["spend_unavailable"] is True
+                # The absent figure must not reach the wire as a number in any spelling.
+                assert "0.0" not in json.dumps(premium)
 
 
 class TestDirectPathPersonalAgentPremiumBudget:

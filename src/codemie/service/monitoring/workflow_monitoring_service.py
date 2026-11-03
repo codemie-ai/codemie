@@ -98,6 +98,10 @@ class WorkflowMonitoringService(BaseMonitoringService):
             MetricsAttributes.USER_NAME: user.name,
             MetricsAttributes.USER_EMAIL: user.username,
             MetricsAttributes.WORKFLOW_NAME: workflow_config.name,
+            # AD-29: codemie_workflow_id is the one dimension both the ledger and
+            # Elasticsearch were blind to. Without this, a renamed workflow's earlier rows
+            # can only be resolved by the mutable, non-unique workflow_name.
+            MetricsAttributes.WORKFLOW_ID: workflow_config.id,
             MetricsAttributes.PROJECT: get_current_project(fallback=workflow_config.project),
             MetricsAttributes.STATUS: execution_status.name if execution_status else "UNKNOWN",
             MetricsAttributes.MODE: workflow_config.mode,
@@ -133,10 +137,14 @@ class WorkflowMonitoringService(BaseMonitoringService):
                 MetricsAttributes.INPUT_TOKENS: llm_run.input_tokens,
                 MetricsAttributes.OUTPUT_TOKENS: llm_run.output_tokens,
                 MetricsAttributes.CACHE_READ_INPUT_TOKENS: llm_run.cached_tokens,
-                MetricsAttributes.MONEY_SPENT: llm_run.money_spent,
                 MetricsAttributes.CACHED_TOKENS_MONEY_SPENT: llm_run.cached_tokens_money_spent,
                 MetricsAttributes.EXECUTION_TIME: execution_time,
             }
+            # AD-28/AD-29: a metric emitted while cost is still pending carries NO money
+            # attribute at all - never a zero - because a zero freezes into metric history
+            # uncorrected once the ledger settles.
+            if llm_run.money_spent is not None:
+                run_attributes[MetricsAttributes.MONEY_SPENT] = llm_run.money_spent
             if additional_attributes:
                 run_attributes.update(additional_attributes)
             cls.send_count_metric(
@@ -157,17 +165,22 @@ class WorkflowMonitoringService(BaseMonitoringService):
         additional_attributes: Optional[dict],
     ):
         base = cls._build_execution_base_attributes(workflow_config, user, execution_status, execution_id)
+        tokens_usage = workflow_execution_config.tokens_usage
         attributes = {
             **base,
-            MetricsAttributes.INPUT_TOKENS: workflow_execution_config.tokens_usage.input_tokens,
-            MetricsAttributes.OUTPUT_TOKENS: workflow_execution_config.tokens_usage.output_tokens,
-            MetricsAttributes.CACHE_READ_INPUT_TOKENS: workflow_execution_config.tokens_usage.cached_tokens,
-            MetricsAttributes.MONEY_SPENT: workflow_execution_config.tokens_usage.money_spent,
-            MetricsAttributes.CACHED_TOKENS_MONEY_SPENT: (
-                workflow_execution_config.tokens_usage.cached_tokens_money_spent
-            ),
+            MetricsAttributes.INPUT_TOKENS: tokens_usage.input_tokens,
+            MetricsAttributes.OUTPUT_TOKENS: tokens_usage.output_tokens,
+            MetricsAttributes.CACHE_READ_INPUT_TOKENS: tokens_usage.cached_tokens,
+            MetricsAttributes.CACHED_TOKENS_MONEY_SPENT: tokens_usage.cached_tokens_money_spent,
             MetricsAttributes.EXECUTION_TIME: execution_time,
         }
+        # AD-29: "a metric emitted while cost was pending carries NO money attribute rather than a
+        # zero one." `money_spent` here is the **settled subtotal** - truthful, but not final, and
+        # nothing re-emits this document when the ledger settles. Emitted anyway it freezes a partial
+        # (a zero, where nothing settled at all) into metric history permanently. Token counts are
+        # unaffected: they are final at this point and only the money is provisional.
+        if not (tokens_usage.money_spent_pending or tokens_usage.money_spent_unavailable):
+            attributes[MetricsAttributes.MONEY_SPENT] = tokens_usage.money_spent
         if additional_attributes:
             attributes.update(additional_attributes)
         cls.send_count_metric(

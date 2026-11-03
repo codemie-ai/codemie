@@ -31,6 +31,7 @@ from sqlmodel import Session
 
 from codemie.configs import config
 from codemie.configs.logger import logger
+from codemie.core.event_loop import run_coroutine_blocking
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.enterprise.mcp_auth.dependencies import enqueue_mcp_auth_cleanup
 from codemie.repository.user_repository import user_repository
@@ -56,10 +57,134 @@ from codemie.service.activity.activity_models import (
     UserManagementEvent,
 )
 from codemie.service.activity.activity_repository import activity_event_repository
+from codemie.service.budget.budget_enums import BudgetCategory
+from codemie.service.budget.daily_reset_reconciliation_service import daily_budget_reset_reconciliation_service
+from codemie.service.spend.budget_period import budget_period_range
+from codemie.service.spend.coverage import SpendResult, TimeRange
+from codemie.service.spend.identity_bridge import aliases_for_user
+from codemie.service.spend.ledger import PersonalHolder
+from codemie.service.spend.rendering import RenderedSpend, render_spend
+from codemie.service.spend.spend_service import spend_service
 
 
 _USER_NOT_FOUND = "User not found"
 _ACCESS_DENIED = "Access denied"
+
+#: Identifies one budget assignment in the spend lookup: the same triple the assignment row is
+#: keyed by, so a user's per-category figures cannot be confused with one another.
+_AssignmentKey = tuple[str, str, str]
+
+#: What an assignment the port never answered for renders as - no figure, and unavailable rather
+#: than merely blank, because a blank number alone is what a client shows as "nothing spent".
+_NO_SPEND = render_spend(None)
+
+
+async def _consumed_per_period(
+    holders_by_period: dict[TimeRange, list[PersonalHolder]],
+) -> dict[TimeRange, dict[PersonalHolder, SpendResult]]:
+    """One batched port read per distinct period, all within a single trip onto the app loop."""
+    return {
+        period: await spend_service.consumed_for_holders(holders, period)
+        for period, holders in holders_by_period.items()
+    }
+
+
+def _assignment_holder(user: UserDB, assignment, budget) -> tuple[TimeRange, PersonalHolder] | None:
+    """The period and holder one assignment is read under, or None when there is no figure to ask for."""
+    try:
+        category = BudgetCategory(assignment.category)
+    except ValueError:
+        logger.warning(
+            f"Skipping spend figure for unknown budget category: user_id={user.id}, "
+            f"category={assignment.category}, budget_id={assignment.budget_id}"
+        )
+        return None
+
+    period = (
+        budget_period_range(
+            budget_reset_at=budget.budget_reset_at,
+            budget_duration=budget.budget_duration,
+            pinned_reset_at=budget.pinned_reset_at,
+            pinned_period_start=budget.pinned_period_start,
+            effective_from=assignment.spend_reset_at,
+        )
+        if budget
+        else None
+    )
+    if period is None:
+        # No derivable budget period means no figure to ask for - not a zero.
+        return None
+
+    # The user rows are already loaded, so the alias set costs no query.
+    holder = PersonalHolder(
+        user_id=user.id,
+        category=category,
+        aliases=aliases_for_user(user.username, user.email),
+    )
+    return period, holder
+
+
+def _reconcile_overdue_resets(session: Session, budget_assignments_map: dict[str, list[tuple]]) -> None:
+    """Reconcile the listed budgets' overdue reset instants before any period is derived from them.
+
+    Each moved instant is reloaded into the budget already loaded, which both the figure's period and
+    the displayed reset date read (see `refresh_overdue`). Synchronous for the reason
+    `_current_spending_by_assignment` is.
+    """
+    budgets = {
+        budget.budget_id: budget
+        for assignments in budget_assignments_map.values()
+        for _, budget in assignments
+        if budget is not None
+    }
+    moved = run_coroutine_blocking(
+        daily_budget_reset_reconciliation_service.refresh_overdue(list(budgets.values())),
+        on_timeout="admin user list budget reset refresh",
+    )
+    for budget_id in moved or ():
+        session.refresh(budgets[budget_id], ["budget_reset_at"])
+
+
+def _current_spending_by_assignment(
+    users: list[UserDB],
+    budget_assignments_map: dict[str, list[tuple]],
+) -> dict[_AssignmentKey, RenderedSpend]:
+    """What the spend port said per budget assignment: the consumed figure and both annotations.
+
+    A key absent from the result and a key whose figure is None mean the same thing - no figure
+    exists - and neither is ever a zero: a measured zero is a real figure and only it may render as
+    0. Callers read an absent key as `_NO_SPEND` so the annotation reaches the row too.
+
+    Synchronous because `list_users` and its FastAPI handler are, and making them async would ripple
+    through a sync-session call chain; the bridge runs the read on the app's own loop instead.
+    """
+    holders_by_period: dict[TimeRange, list[PersonalHolder]] = {}
+    keys_by_holder: dict[tuple[TimeRange, PersonalHolder], list[_AssignmentKey]] = {}
+
+    for user in users:
+        for assignment, budget in budget_assignments_map.get(user.id, []):
+            placed = _assignment_holder(user, assignment, budget)
+            if placed is None:
+                continue
+            period, holder = placed
+            holders_by_period.setdefault(period, []).append(holder)
+            keys_by_holder.setdefault((period, holder), []).append((user.id, assignment.category, assignment.budget_id))
+
+    if not holders_by_period:
+        return {}
+
+    results = run_coroutine_blocking(_consumed_per_period(holders_by_period), on_timeout="admin user list spend read")
+    if results is None:
+        # The bridge timed out, so every figure is absent. Absent is never zero, and the empty map
+        # makes every assignment read as unavailable rather than as a silently blank number.
+        return {}
+
+    spend_by_assignment: dict[_AssignmentKey, RenderedSpend] = {}
+    for (period, holder), keys in keys_by_holder.items():
+        rendered = render_spend(results.get(period, {}).get(holder))
+        for key in keys:
+            spend_by_assignment[key] = rendered
+    return spend_by_assignment
 
 
 class UserManagementService:
@@ -373,6 +498,17 @@ class UserManagementService:
         user_ids = [u.id for u in users]
         projects_map = user_repository.fetch_projects_map(session, user_ids)
         budget_assignments_map = user_repository.fetch_budget_assignments_map(session, user_ids)
+        _reconcile_overdue_resets(session, budget_assignments_map)
+        spend_by_assignment = _current_spending_by_assignment(users, budget_assignments_map)
+        # Every assignment row is paired with what the port said about it, so the response model reads
+        # the figure and both its annotations from one lookup and cannot emit the figure without them.
+        annotated_assignments = {
+            u.id: [
+                (a, b, spend_by_assignment.get((u.id, a.category, a.budget_id), _NO_SPEND))
+                for a, b in budget_assignments_map.get(u.id, [])
+            ]
+            for u in users
+        }
 
         # Story 10 Code Review R2: Filter pre-fetched projects_map instead of re-querying per user
         # This prevents per-user query amplification while applying visibility rules
@@ -412,9 +548,13 @@ class UserManagementService:
                         max_budget=b.max_budget if b else None,
                         budget_duration=b.budget_duration if b else None,
                         budget_reset_at=b.budget_reset_at if b else None,
-                        current_spending=current_spending,
+                        # Absent by default: no figure is a real answer and must not become 0.
+                        current_spending=spend.figure,
+                        spend_unavailable=spend.unavailable,
+                        spend_partial=spend.partial,
+                        spend_missing_amount=spend.missing_amount,
                     )
-                    for a, b, current_spending in budget_assignments_map.get(u.id, [])
+                    for a, b, spend in annotated_assignments[u.id]
                 ],
                 date=u.date,
             )

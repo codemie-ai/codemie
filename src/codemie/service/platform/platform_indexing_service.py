@@ -17,6 +17,8 @@ from codemie.configs import logger, config
 from codemie.datasource.platform.base_platform_processor import BasePlatformDatasourceProcessor
 from codemie.datasource.platform.assistant_datasource_processor import AssistantDatasourceProcessor
 from codemie.rest_api.security.user import User
+from codemie.service.spend.origin_context import spend_origin
+from codemie.service.spend.traffic_class import TrafficOrigin
 
 
 class PlatformIndexingService:
@@ -46,6 +48,9 @@ class PlatformIndexingService:
         Returns:
             Dict mapping datasource name to number of indexed documents
         """
+        # The full sync runs each processor's `process()`, which publishes the indexing origin for
+        # its own duration: platform-owned datasources are indexing work like any other, and the
+        # class split already files their embeddings there by call type.
         logger.info("Starting platform datasources synchronization")
 
         results = {}
@@ -127,7 +132,10 @@ class PlatformIndexingService:
             datasource_name=config.PLATFORM_MARKETPLACE_DATASOURCE_NAME,
             user=user,
         )
-        processor.index_single_entity(assistant_id, is_update=is_update)
+        # The single-entity path never passes through `process()`, whose block publishes the origin
+        # for a full sync, so it publishes for itself: the embedding model is built inside.
+        with spend_origin(TrafficOrigin.DATASOURCE_INDEXING):
+            processor.index_single_entity(assistant_id, is_update=is_update)
 
         logger.info(f"Successfully indexed assistant {assistant_id}", extra={"assistant_id": assistant_id})
 

@@ -99,11 +99,24 @@ class GetRawConversationsInput(DateFilterMixin, PaginationMixin):
 
 
 class GetSpendingInput(DateFilterMixin):
-    """Input schema for get_spending tool."""
+    """Input schema for get_spending tool.
 
-    user_name: Optional[str] = Field(None, description=FILTER_BY_USER_NAME)
-    assistant_id: Optional[str] = Field(None, description="Filter by assistant ID")
-    workflow_id: Optional[str] = Field(None, description="Filter by workflow ID")
+    At least one of user_name, project, assistant_id or workflow_id must be given: a spending figure
+    is read for a named subject, and there is no reading of the question under which "no subject"
+    means "the whole platform".
+    """
+
+    user_name: Optional[str] = Field(
+        None,
+        description=(
+            "Whose spending: a username, an email or a display name. Your own name matches in any case, as do "
+            "emails; another person's username or display name must match exactly."
+        ),
+    )
+    assistant_id: Optional[str] = Field(
+        None, description="Filter by assistant ID. Mutually exclusive with workflow_id."
+    )
+    workflow_id: Optional[str] = Field(None, description="Filter by workflow ID. Mutually exclusive with assistant_id.")
     project: Optional[str] = Field(None, description=FILTER_BY_PROJECT_NAME_DESC)
     include_breakdown: bool = Field(
         False, description="Include detailed spending breakdown by assistants and workflows"
@@ -189,18 +202,29 @@ class ConversationMetricOutput(BaseModel):
     total_messages: int
     total_input_tokens: int
     total_output_tokens: int
-    total_money_spent: float
+    # `None` when this conversation has no settled cost. `ConversationMetrics.total_money_spent` is
+    # already `Optional`, and `or 0.0` here turned "nobody knows yet" into "it was free" - on a
+    # surface an assistant quotes to a person.
+    total_money_spent: Optional[float] = None
     average_response_time: float
 
 
 class ConversationMetricsSummary(BaseModel):
-    """Summary statistics for conversation metrics."""
+    """Summary statistics for conversation metrics.
+
+    `total_money_spent` is a **sum over the conversations that settled a cost**, which is not the same
+    thing as the total. The two flags say which it is, because a subtotal that looks exact is the one
+    failure this refactor exists to remove (AD-23/AD-33): `spend_unavailable` when nothing settled at
+    all - then the figure is `None`, never `0.0` - and `spend_partial` when some did and some did not.
+    """
 
     total_count: int
     total_messages: int
     total_input_tokens: int
     total_output_tokens: int
-    total_money_spent: float
+    total_money_spent: Optional[float] = None
+    spend_unavailable: bool = False
+    spend_partial: bool = False
 
 
 class GetConversationMetricsOutput(BaseModel):
@@ -244,17 +268,28 @@ class GetRawConversationsOutput(BaseModel):
 
 
 class SpendingGroupOutput(BaseModel):
-    """Spending by group dimension."""
+    """Spending by group dimension.
+
+    The money fields come from the spend port, so they carry the port's own three states rather than
+    a bare number: `None` is **no figure** and never a zero, and the `spend_*` triple says whether
+    the figure that is there is short and by how much. An assistant quotes these to a person, so a
+    truncated figure that arrives looking whole is the failure this shape prevents.
+    """
 
     dimension_type: str  # "assistant" or "workflow"
     dimension_id: str
     dimension_name: str
-    money_spent: float
+    money_spent: Optional[float] = None
     input_tokens: int
     output_tokens: int
     conversation_count: Optional[int] = None  # For assistants
     workflow_execution_count: Optional[int] = None  # For workflows
-    average_cost_per_item: float
+    # No figure and no items are two different reasons there is no per-item cost, and neither is
+    # `0.0` - which on a report reads as "this dimension costs nothing per item".
+    average_cost_per_item: Optional[float] = None
+    spend_unavailable: bool = False
+    spend_partial: bool = False
+    spend_missing_amount: Optional[float] = None
 
 
 class LiteLLMSpendingOutput(BaseModel):
@@ -268,14 +303,26 @@ class LiteLLMSpendingOutput(BaseModel):
 
 
 class GetSpendingOutput(BaseModel):
-    """Output schema for get_spending tool."""
+    """Output schema for get_spending tool.
 
-    # Totals from ConversationMetrics
-    total_money_spent: float
-    total_input_tokens: int
-    total_output_tokens: int
-    total_conversations: int
-    total_workflow_executions: int
+    `total_money_spent` is **one** figure from **one** spend-port read over the whole filter
+    conjunction - never a conversation figure added to a workflow figure. Two independently floored
+    figures added together are not a figure: if either was short, the sum is short by an unknown
+    amount and says nothing about it, and this is the surface an assistant reads a number off and
+    quotes to a person.
+    """
+
+    # One composed spend-port read over the whole filter conjunction.
+    total_money_spent: Optional[float] = None
+    spend_unavailable: bool = False
+    spend_partial: bool = False
+    spend_missing_amount: Optional[float] = None
+    # Activity of the same subject as the money. `None` when the `user_name` asked about resolved to no
+    # person: activity is keyed on the resolved `users.id`, and an unknown count is not a zero.
+    total_input_tokens: Optional[int] = None
+    total_output_tokens: Optional[int] = None
+    total_conversations: Optional[int] = None
+    total_workflow_executions: Optional[int] = None
 
     # Detailed breakdown (optional, based on include_breakdown parameter)
     spending_breakdown: List[SpendingGroupOutput] = Field(
@@ -337,7 +384,9 @@ class ConversationAnalyticsWithMetricsOutput(BaseModel):
     total_messages: int
     total_input_tokens: int
     total_output_tokens: int
-    total_money_spent: float
+    # `ConversationMetrics.total_money_spent` is None for a conversation with nothing settled;
+    # coercing that to 0.0 here would republish the absent figure as an exact zero.
+    total_money_spent: Optional[float] = None
     average_response_time: float
     last_interaction_date: str
 

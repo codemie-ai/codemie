@@ -28,6 +28,8 @@ from codemie.rest_api.models.assistant import PromptVariable
 from codemie.rest_api.routers.assistant._ask import _ask_assistant, _ask_virtual_assistant
 from codemie.service.assistant.sensitive_prompt_variables import restore_existing_encrypted_values
 from codemie.rest_api.security.user import User
+from codemie.service.spend.origin_context import current_origin
+from codemie.service.spend.traffic_class import TrafficOrigin
 
 
 @pytest.fixture
@@ -1268,6 +1270,73 @@ def test_resume_tool_call_never_had_and_still_has_no_billing_user_param():
 
     internal_params = inspect.signature(_ask_assistant_resume).parameters
     assert "billing_user" not in internal_params
+
+
+class TestAskAssistantOrigin:
+    """A conversation turn stamps its spend rows `conversation`, and only while it runs."""
+
+    @patch("codemie.rest_api.routers.assistant._ask.assistant_user_interaction_service.record_usage")
+    @patch("codemie.rest_api.routers.assistant._ask.request_summary_manager.create_request_summary")
+    @patch("codemie.rest_api.routers.utils.Ability")
+    @patch("codemie.rest_api.routers.assistant._ask.get_request_handler")
+    def test_handler_runs_under_the_conversation_origin(
+        self,
+        mock_get_handler,
+        mock_ability,
+        mock_request_summary,
+        mock_record_usage,
+        mock_user,
+        mock_assistant,
+    ):
+        """The handler builds the agent and its model, so the origin has to be live around it."""
+        mock_ability_instance = MagicMock()
+        mock_ability_instance.can.return_value = True
+        mock_ability.return_value = mock_ability_instance
+
+        seen = {}
+        mock_handler = MagicMock()
+        mock_handler.process_request.side_effect = lambda *a, **kw: seen.update(origin=current_origin())
+        mock_get_handler.side_effect = lambda *a, **kw: seen.update(handler_origin=current_origin()) or mock_handler
+
+        _ask_assistant(
+            mock_assistant,
+            MagicMock(state=MagicMock(uuid="req-origin-1")),
+            AssistantChatRequest(text="hi"),
+            mock_user,
+            MagicMock(),
+        )
+
+        assert seen["handler_origin"] is TrafficOrigin.CONVERSATION
+        assert seen["origin"] is TrafficOrigin.CONVERSATION
+        assert current_origin() is None
+
+    @patch("codemie.rest_api.routers.assistant._ask.request_summary_manager.create_request_summary")
+    @patch("codemie.rest_api.routers.assistant._ask.get_request_handler")
+    def test_virtual_assistant_handler_runs_under_the_conversation_origin(
+        self,
+        mock_get_handler,
+        mock_request_summary,
+        mock_user,
+        mock_assistant,
+    ):
+        """A transient assistant is still a conversation turn."""
+        mock_assistant.id = None
+
+        seen = {}
+        mock_handler = MagicMock()
+        mock_handler.process_request.side_effect = lambda *a, **kw: seen.update(origin=current_origin())
+        mock_get_handler.return_value = mock_handler
+
+        _ask_virtual_assistant(
+            mock_assistant,
+            MagicMock(state=MagicMock(uuid="req-origin-2")),
+            AssistantChatRequest(text="hi"),
+            mock_user,
+            MagicMock(),
+        )
+
+        assert seen["origin"] is TrafficOrigin.CONVERSATION
+        assert current_origin() is None
 
 
 class TestResolveModelProjectLookup:

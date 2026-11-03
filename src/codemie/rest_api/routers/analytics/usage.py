@@ -94,11 +94,11 @@ async def get_summaries(
     - `projects`: Filter by specific projects (must be within user's accessible projects)
 
     **Response:**
-    - Returns 11 metrics including 4 spending metrics:
-      - platform_cost: LLM costs from web platform (conversations + workflows, excluding CLI)
+    - Returns 15 metrics including 4 spending metrics, all served by the spend port:
+      - total_money_spent: Total spending across all usage types
+      - platform_cost: Everything that is not CLI, embeddings included
       - cli_cost: CLI-specific spending
-      - embedding_cost: Embedding model usage costs
-      - total_money_spent: Total spending across all categories
+      - embedding_cost: Embedding (datasource indexing) spending, a slice of platform_cost
     - Also includes token counts and usage statistics
     - Includes metadata: timestamp, data_as_of, filters_applied, execution_time_ms
 

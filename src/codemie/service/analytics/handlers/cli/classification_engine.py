@@ -20,6 +20,9 @@ import re
 from collections import defaultdict
 from enum import Enum
 
+from codemie.service.analytics.handlers.money_coverage import read_money_coverage
+from codemie.service.spend.rendering import RenderedSpend, apply_spend_cells, combine_rendered_spend
+
 from .constants import (
     AGENT_TOOL_MATCHERS,
     CODE_CHANGE_TOOL_MATCHERS,
@@ -68,9 +71,16 @@ class CLIClassificationEngine:
         repositories: list[str],
         branches: list[str],
         project_name: str | None,
-        total_cost: float,
+        spend: RenderedSpend,
     ) -> tuple[str, float]:
-        """Apply a lightweight deterministic classification for CLI insight widgets."""
+        """Apply a lightweight deterministic classification for CLI insight widgets.
+
+        **`spend` is a qualified figure and not a float, because the result of this function is a
+        bare string.** The classification ships on four tables and on the "Primary Category" card,
+        none of which carry a currency format hint, so nothing on those surfaces can tell a reader
+        that the label was decided by money nobody measured. The qualification has to be spent
+        *here*, inside the scoring, since it cannot be published beside the answer.
+        """
         scores = {
             "production": 0.0,
             "learning": 0.0,
@@ -81,7 +91,7 @@ class CLIClassificationEngine:
         CLIClassificationEngine._score_cli_repositories(scores, repositories)
         CLIClassificationEngine._score_cli_branches(scores, branches)
         CLIClassificationEngine._score_cli_project(scores, project_name)
-        CLIClassificationEngine._score_cli_cost(scores, total_cost)
+        CLIClassificationEngine._score_cli_cost(scores, spend)
         if not repositories and not branches:
             scores["experimental"] += 1.0
 
@@ -129,14 +139,38 @@ class CLIClassificationEngine:
             scores["pet_project"] += 1.0
 
     @staticmethod
-    def _score_cli_cost(scores: dict[str, float], total_cost: float) -> None:
-        """Apply spend-based classification signals."""
-        if total_cost >= 100:
+    def _score_cli_cost(scores: dict[str, float], spend: RenderedSpend) -> None:
+        """Apply spend-based classification signals, and only where the figure can carry the branch.
+
+        **No figure means no cost signal at all - neither branch fires.** The absent figure used to
+        arrive here as a fabricated `0.0`, which satisfies `< 5` and pushed `experimental`, where the
+        same traffic with its costs settled would have added `1.5` toward `production`: an unmeasured
+        cost was quietly deciding a person's label. Omitting the component instead leaves the
+        classification standing on its repository, branch and project signals - the same remedy
+        `scorer._cli_efficiency_metrics` applies when a person's CLI money is unknown, and for the
+        same reason: a manufactured operand is worse than a missing one.
+
+        **A subtotal is a lower bound, so it may fire only the branch a lower bound proves.** That the
+        settled requests already total >= 100 settles that the whole window does, whatever the
+        unsettled ones hold, so that branch is sound on a partial figure. The other two need an upper
+        bound a subtotal cannot give: a partial `3.00` may really be `300`, and reading it as `< 5`
+        would brand heavy production use `experimental` on the strength of the part that happened to
+        settle first.
+
+        A **measured** zero is a figure and keeps its branch. It says the traffic cost nothing, which
+        is exactly what the `< 5` signal is for.
+        """
+        if spend.figure is None:
+            return
+        if spend.figure >= 100:
             scores["production"] += 1.5
-        elif total_cost >= 20:
+            return
+        if spend.partial:
+            return
+        if spend.figure >= 20:
             scores["production"] += 0.5
             scores["learning"] += 0.5
-        elif total_cost < 5:
+        elif spend.figure < 5:
             scores["experimental"] += 0.5
 
     @staticmethod
@@ -283,12 +317,19 @@ class CLIClassificationEngine:
     def _build_cli_rule_reasons(
         repositories: list[str],
         branches: list[str],
-        total_cost: float,
+        spend: RenderedSpend,
         total_sessions: int,
         active_days: int,
         net_lines: int,
     ) -> list[str]:
-        """Build human-readable deterministic signals for the detail modal."""
+        """Build human-readable deterministic signals for the detail modal.
+
+        A reason string is a surface with no annotation slot at all, so the qualification has to be
+        inside the sentence. An absent figure says it is absent rather than being skipped by the old
+        `> 0` guard - silence there reads as *cost was not a signal*, when the truth is that cost is
+        not known - and a subtotal says it is one, so `cost: $3.00` never stands in for a window
+        whose settled part is $3.00 and whose remainder nobody has.
+        """
         reasons = []
         production_branch_count = sum(
             1
@@ -303,8 +344,10 @@ class CLIClassificationEngine:
             reasons.append(f"multi_repo: {len(repositories)} repos")
         if net_lines > 0:
             reasons.append(f"productivity: +{net_lines} lines")
-        if total_cost > 0:
-            reasons.append(f"cost: ${total_cost:.2f}")
+        if spend.figure is None:
+            reasons.append("cost: unknown (no request in this window settled a cost)")
+        elif spend.figure > 0:
+            reasons.append(f"cost: ${spend.figure:.2f}{' (subtotal)' if spend.partial else ''}")
         return reasons
 
     # Client types that all represent the CLI client label.
@@ -322,12 +365,20 @@ class CLIClassificationEngine:
 
     @staticmethod
     def _extract_cli_client_usage(client_bucket: dict) -> dict:
-        """Extract usage/cost/session metrics for a single (repository, branch, client) bucket."""
+        """Extract usage/cost/session metrics for a single (repository, branch, client) bucket.
+
+        `cost` is a `RenderedSpend` rather than a float. The `proxy` sub-bucket's `sum` skips every
+        request whose cost never settled, so `... or 0` published a repository row reading `$0.00`
+        for a repository whose spend is simply unknown - and that row is also what the category
+        breakdown and the classification are built from, so the fabricated zero travelled.
+
+        Sessions and line counts stay integers: a zero there is a measurement, not an absence.
+        """
         usage_aggs = client_bucket.get("usage", {})
         project_buckets = usage_aggs.get("projects", {}).get("buckets", [])
         return {
             "project_name": project_buckets[0]["key"] if project_buckets else None,
-            "cost": round(client_bucket.get("proxy", {}).get("total_cost", {}).get("value", 0) or 0, 2),
+            "cost": read_money_coverage(client_bucket.get("proxy", {}), "total_cost"),
             "lines_added": int(usage_aggs.get("lines_added", {}).get("value", 0) or 0),
             "lines_removed": int(usage_aggs.get("lines_removed", {}).get("value", 0) or 0),
             "sessions": int(client_bucket.get("sessions", {}).get("count", {}).get("value", 0) or 0),
@@ -335,42 +386,59 @@ class CLIClassificationEngine:
 
     @staticmethod
     def _merge_cli_repository_row(row: dict, raw_branch: str, usage: dict) -> None:
-        """Fold usage from a duplicate (repository, branch, client) bucket into an existing row."""
+        """Fold the countable usage from a duplicate (repository, branch, client) bucket into a row.
+
+        Money is deliberately **not** folded here: two qualified figures combine by
+        `combine_rendered_spend`, not by `+`, so that a row short by one unsettled bucket says it is
+        short instead of presenting the other bucket's subtotal as the pair's total (AD-29). The
+        caller holds the figures and combines them there.
+        """
         row["sessions"] += usage["sessions"]
-        row["cost"] = round(row["cost"] + usage["cost"], 2)
         row["net_lines"] += usage["lines_added"] - usage["lines_removed"]
         if raw_branch and not row["branch"]:
             row["branch"] = raw_branch
 
     @staticmethod
     def _new_cli_repository_row(repository: str, raw_branch: str, branch: str, client: str, usage: dict) -> dict:
-        """Build a new output row, classifying the (repository, branch) pair."""
+        """Build a new output row, classifying the (repository, branch) pair.
+
+        The money cell is written by `apply_spend_cells` once the row's buckets are all folded in,
+        so it is absent from the literal here: a figure and the three values that qualify it are
+        written in one pass, and a row cannot carry one without the others.
+        """
         classification, _confidence = CLIClassificationEngine._classify_cli_entity(
             repositories=[repository],
             branches=[branch] if branch else [],
             project_name=usage["project_name"],
-            total_cost=usage["cost"],
+            spend=usage["cost"],
         )
         return {
             "repository": repository,
             "branch": raw_branch,
             "client": client,
             "sessions": usage["sessions"],
-            "cost": usage["cost"],
             "classification": classification,
             "net_lines": usage["lines_added"] - usage["lines_removed"],
         }
 
     @staticmethod
-    def _build_cli_repository_classifications(repository_buckets: list[dict]) -> list[dict]:
+    def _build_cli_repository_classifications(
+        repository_buckets: list[dict],
+    ) -> tuple[list[dict], list[RenderedSpend]]:
         """Build repository rows for CLI user detail, one row per (repository, branch, client).
 
         ES produces multiple buckets for the same logical row when different event types
         carry inconsistent branch/client values (proxy cost events have no branch/client,
         tool-usage events do). Normalise both dimensions before merging so sessions and
         cost always land in the same output row.
+
+        The rows and their qualified figures are returned side by side, in the same order, because
+        the category breakdown regroups these rows by classification and has to combine the figures
+        again: a triple already written into a row cannot be combined, only re-read, and a total over
+        re-read figures cannot tell one shared hole from several (AD-29).
         """
         merged: dict[tuple[str, str, str], dict] = {}
+        spend_by_key: dict[tuple[str, str, str], RenderedSpend] = {}
         for repo_bucket in repository_buckets:
             # Fall back to Cowork rather than dropping the bucket — an empty repository value
             # still carries real cost (proxy events without attribution), and silently
@@ -387,31 +455,77 @@ class CLIClassificationEngine:
                     key = (repository, branch, client)
                     if key in merged:
                         CLIClassificationEngine._merge_cli_repository_row(merged[key], raw_branch, usage)
+                        spend_by_key[key] = combine_rendered_spend([spend_by_key[key], usage["cost"]])
                     else:
                         merged[key] = CLIClassificationEngine._new_cli_repository_row(
                             repository, raw_branch, branch, client, usage
                         )
+                        spend_by_key[key] = usage["cost"]
 
-        rows = [row for row in merged.values() if row["sessions"] > 0]
-        rows.sort(key=lambda row: (row["cost"], row["sessions"]), reverse=True)
-        return rows
+        # A bucket with no session document has nothing to say in a table of per-repository sessions
+        # and is still dropped - but never while it holds a measured figure. Proxy cost events carry
+        # no session, so a repository can settle real spend and open no session at all; dropping that
+        # row subtracted its money from this table *and* from the category rollup built out of these
+        # rows, while the modal's Total Cost card above them - a separate aggregation over the same
+        # window - still counted it. That is the same leak the repository fallback above fixes, in the
+        # other dimension: `$500` in the card, in no row, and nothing anywhere saying it was short.
+        # `figure is not None` is exactly the money that card counts (an unsettled bucket contributes
+        # to neither), so keeping these rows makes the two agree. A *measured* zero is a figure like
+        # any other and keeps its row, which says the work was free rather than omitting it.
+        kept = [
+            (row, spend_by_key[key])
+            for key, row in merged.items()
+            if row["sessions"] > 0 or spend_by_key[key].figure is not None
+        ]
+        # Cost still decides the order, and an absent figure sorts last rather than as a zero: the
+        # first key separates the two outright, so no repository whose spend is unknown is ever
+        # ranked among the ones whose spend is known.
+        kept.sort(
+            key=lambda pair: (pair[1].figure is not None, pair[1].figure or 0.0, pair[0]["sessions"]),
+            reverse=True,
+        )
+        rows = [row for row, _ in kept]
+        rendered = [spend for _, spend in kept]
+        apply_spend_cells(rows, rendered, "cost")
+        return rows, rendered
 
     @staticmethod
-    def _build_cli_category_breakdown(repository_rows: list[dict]) -> list[dict]:
-        """Build category breakdown from classified repositories."""
+    def _build_cli_category_breakdown(
+        repository_rows: list[dict],
+        repository_spend: list[RenderedSpend],
+    ) -> tuple[list[dict], list[RenderedSpend]]:
+        """Build category breakdown from classified repositories.
+
+        A category's cost is `combine_rendered_spend` over its rows rather than `sum(...)` of their
+        cells: a category holding one repository whose cost never settled is short by an unknown
+        amount and has to say so, and a category holding nothing but such repositories has no figure
+        at all - `$0.00` there would claim a whole category of work was free.
+
+        `sessions`, `repositories` and the `percentage` derived from sessions are counts, so a zero
+        in them is a fact and they need no qualification.
+        """
         grouped: dict[str, dict] = defaultdict(
-            lambda: {"category": "", "sessions": 0, "cost": 0.0, "repositories": 0, "percentage": 0.0}
+            lambda: {"category": "", "sessions": 0, "repositories": 0, "percentage": 0.0}
         )
+        parts: dict[str, list[RenderedSpend]] = defaultdict(list)
         total_sessions = sum(int(row["sessions"]) for row in repository_rows)
-        for row in repository_rows:
+        for row, spend in zip(repository_rows, repository_spend, strict=True):
             bucket = grouped[row["classification"]]
             bucket["category"] = row["classification"]
             bucket["sessions"] += int(row["sessions"])
-            bucket["cost"] += float(row["cost"])
             bucket["repositories"] += 1
+            parts[row["classification"]].append(spend)
         rows = list(grouped.values())
         for row in rows:
-            row["cost"] = round(row["cost"], 2)
             row["percentage"] = round((row["sessions"] / total_sessions) * 100, 1) if total_sessions else 0.0
-        rows.sort(key=lambda row: (row["sessions"], row["cost"]), reverse=True)
-        return rows
+        ordered = sorted(
+            zip(rows, [combine_rendered_spend(parts[row["category"]]) for row in rows], strict=True),
+            # Sessions lead as before; cost only breaks their ties, and an absent figure breaks them
+            # last rather than as a zero.
+            key=lambda pair: (pair[0]["sessions"], pair[1].figure is not None, pair[1].figure or 0.0),
+            reverse=True,
+        )
+        rows = [row for row, _ in ordered]
+        rendered = [spend for _, spend in ordered]
+        apply_spend_cells(rows, rendered, "cost")
+        return rows, rendered

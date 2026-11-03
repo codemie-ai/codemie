@@ -974,10 +974,18 @@ class TokensUsage(BaseModel):
     input_tokens: int
     output_tokens: int
     cached_tokens: int = 0
+    # AD-28 rule 3: a truthful settled subtotal, never a fabricated total - money_spent stays
+    # a required float, but no longer implies "this is the whole cost" on its own; check the
+    # two flags below first. Both default False and are additive so existing callers that never
+    # set them keep meaning "settled", unchanged.
     money_spent: float
     cached_tokens_money_spent: float = 0.0
     cached_tokens_creation_money_spent: float = 0.0
     routing: RoutingInfo | None = None
+    # AD-28 rule 3: cost WILL exist shortly - re-read later; money_spent above is a partial.
+    money_spent_pending: bool = False
+    # AD-28 rule 3: the ledger CANNOT answer for this - do not retry; money_spent above is a partial.
+    money_spent_unavailable: bool = False
 
 
 class IdeToolArgument(ConfiguredModel):

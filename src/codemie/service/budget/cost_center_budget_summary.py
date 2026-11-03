@@ -17,8 +17,8 @@ from __future__ import annotations
 import logging
 
 from pydantic import BaseModel
-from sqlalchemy.ext.asyncio import AsyncSession
 
+from codemie.clients.postgres import get_async_session
 from codemie.repository.project_budget_repository import (
     ProjectAssignedBudgetSummaryRow,
     project_budget_assignment_repository,
@@ -27,7 +27,9 @@ from codemie.repository.project_budget_repository import (
 # Use the service-layer enum — NOT codemie.enterprise.litellm.budget_categories.BudgetCategory,
 # which is a separate, identically-shaped enum that project_budget_repository/projects.py do not use.
 from codemie.service.budget.budget_enums import BudgetCategory, SyncStatus
-from codemie.service.project.project_spending_service import latest_key_rows_by_project, spend_repo
+from codemie.service.project.project_spending_service import project_budget_spend
+from codemie.service.spend.coverage import SpendResult
+from codemie.service.spend.rendering import RenderedSpend, combine_rendered_spend, render_budget_spend
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +51,11 @@ class CostCenterAssignedBudgetSummary(BaseModel):
     max_budget: float
     member_count: int
     allocated_member_budget_total: float
-    current_spending: float
+    # None means no figure, never a zero; the spend_* fields say what qualifies a figure that exists.
+    current_spending: float | None = None
+    spend_unavailable: bool = False
+    spend_partial: bool = False
+    spend_missing_amount: float | None = None
     excluded_count: int = 0
     unsynced_count: int = 0
 
@@ -57,15 +63,18 @@ class CostCenterAssignedBudgetSummary(BaseModel):
 class CostCenterBudgetSummary(BaseModel):
     """Combined budget summary aggregated across a cost center's linked projects.
 
-    Mirrors ProjectSpendingSummary (current_spending, budget_limit, total_percent)
-    plus a per-category breakdown list, for data-contract parity with the existing
+    Mirrors ProjectSpendingSummary (current_spending, budget_limit, total_percent and the spend_*
+    annotation) plus a per-category breakdown list, for data-contract parity with the existing
     project-level pattern in rest_api/models/project.py and
     service/project/project_spending_service.py.
     """
 
-    current_spending: float
+    current_spending: float | None = None
     budget_limit: float | None = None
-    total_percent: float
+    total_percent: float | None = None
+    spend_unavailable: bool = False
+    spend_partial: bool = False
+    spend_missing_amount: float | None = None
     budgets: list[CostCenterAssignedBudgetSummary]
 
 
@@ -75,18 +84,20 @@ class CostCenterBudgetSummary(BaseModel):
 # excluding all the monthly ones (see _pick_category_duration).
 _PREFERRED_DURATION = "30d"
 
+_BudgetSpend = tuple[ProjectAssignedBudgetSummaryRow, SpendResult | None]
 
-def _group_rows_by_category(
-    rows_by_project: dict[str, list[ProjectAssignedBudgetSummaryRow]],
-) -> dict[BudgetCategory, list[ProjectAssignedBudgetSummaryRow]]:
-    """Flatten every project's rows into one list per valid BudgetCategory.
+
+def _group_by_category(
+    spend_by_project: dict[str, list[_BudgetSpend]],
+) -> dict[BudgetCategory, list[_BudgetSpend]]:
+    """Flatten every project's budget rows into one list per valid BudgetCategory.
 
     Rows whose category string isn't a recognized BudgetCategory value are logged and
     dropped here, before any duration/sync-status classification runs.
     """
-    grouped: dict[BudgetCategory, list[ProjectAssignedBudgetSummaryRow]] = {}
-    for rows in rows_by_project.values():
-        for row in rows:
+    grouped: dict[BudgetCategory, list[_BudgetSpend]] = {}
+    for pairs in spend_by_project.values():
+        for row, result in pairs:
             try:
                 category = BudgetCategory(row.budget_category)
             except ValueError:
@@ -95,7 +106,7 @@ def _group_rows_by_category(
                     f"for project={row.project_name} budget_id={row.budget_id} category={row.budget_category}"
                 )
                 continue
-            grouped.setdefault(category, []).append(row)
+            grouped.setdefault(category, []).append((row, result))
     return grouped
 
 
@@ -117,15 +128,16 @@ class _RowAggregation:
 
     def __init__(self) -> None:
         self.totals: dict[BudgetCategory, dict[str, float]] = {}
+        self.spend: dict[BudgetCategory, list[RenderedSpend]] = {}
         self.category_duration: dict[BudgetCategory, str] = {}
         self.excluded_counts: dict[BudgetCategory, int] = {}
         self.unsynced_counts: dict[BudgetCategory, int] = {}
         self.accepted_budget_ids: dict[BudgetCategory, set[str]] = {}
 
-    def add_category(self, category: BudgetCategory, rows: list[ProjectAssignedBudgetSummaryRow]) -> None:
+    def add_category(self, category: BudgetCategory, pairs: list[_BudgetSpend]) -> None:
         """Split one category's rows into unsynced / excluded / accepted and fold them in."""
-        synced_rows = []
-        for row in rows:
+        synced = []
+        for row, result in pairs:
             if row.provider_sync_status in _INACTIVE_SYNC_STATUSES:
                 logger.warning(
                     f"Skipping assigned budget row with inactive provider sync "
@@ -134,14 +146,14 @@ class _RowAggregation:
                 )
                 self.unsynced_counts[category] = self.unsynced_counts.get(category, 0) + 1
                 continue
-            synced_rows.append(row)
+            synced.append((row, result))
 
-        winning_duration = _pick_category_duration(synced_rows)
+        winning_duration = _pick_category_duration([row for row, _ in synced])
         if winning_duration is None:
             return
         self.category_duration[category] = winning_duration
 
-        for row in synced_rows:
+        for row, result in synced:
             if row.budget_duration != winning_duration:
                 logger.warning(
                     f"Skipping assigned budget row with mismatched budget_duration "
@@ -151,14 +163,17 @@ class _RowAggregation:
                 self.excluded_counts[category] = self.excluded_counts.get(category, 0) + 1
                 continue
 
-            bucket = self.totals.setdefault(
-                category, {"soft_budget": 0.0, "max_budget": 0.0, "allocated": 0.0, "spend": 0.0}
-            )
+            bucket = self.totals.setdefault(category, {"soft_budget": 0.0, "max_budget": 0.0, "allocated": 0.0})
             bucket["soft_budget"] += float(row.soft_budget)
             bucket["max_budget"] += float(row.max_budget)
             bucket["allocated"] += float(row.allocated_member_budget_total)
-            bucket["spend"] += float(row.current_spending or 0.0)
+            self.spend.setdefault(category, []).append(render_budget_spend(result))
             self.accepted_budget_ids.setdefault(category, set()).add(row.budget_id)
+
+    def category_spend(self, category: BudgetCategory) -> RenderedSpend | None:
+        """The category's combined figure, or None when no budget of it was accepted."""
+        rendered = self.spend.get(category)
+        return combine_rendered_spend(rendered) if rendered else None
 
     def flat_accepted_budget_ids(self) -> list[str]:
         return [budget_id for ids in self.accepted_budget_ids.values() for budget_id in ids]
@@ -167,101 +182,104 @@ class _RowAggregation:
         return set(self.totals) | set(self.excluded_counts) | set(self.unsynced_counts)
 
 
-def _aggregate_rows(rows_by_project: dict[str, list[ProjectAssignedBudgetSummaryRow]]) -> _RowAggregation:
+def _aggregate(spend_by_project: dict[str, list[_BudgetSpend]]) -> _RowAggregation:
     aggregation = _RowAggregation()
-    for category, rows in _group_rows_by_category(rows_by_project).items():
-        aggregation.add_category(category, rows)
+    for category, pairs in _group_by_category(spend_by_project).items():
+        aggregation.add_category(category, pairs)
     return aggregation
-
-
-async def _fetch_key_spend_total(async_session: AsyncSession, project_names: list[str]) -> float:
-    """Sum the latest key-based spend row per project, for parity with the project page."""
-    if not project_names:
-        return 0.0
-    key_rows = await spend_repo.get_latest_spending_by_project(async_session, project_names, spend_subject_type="key")
-    latest_key_by_project = latest_key_rows_by_project(key_rows)
-    return sum(float(row.budget_period_spend) for row in latest_key_by_project.values())
 
 
 def _build_category_summaries(
     aggregation: _RowAggregation,
     member_counts_by_category: dict[str, int],
 ) -> list[CostCenterAssignedBudgetSummary]:
-    touched = aggregation.touched_categories()
-    return [
-        CostCenterAssignedBudgetSummary(
-            budget_category=category,
-            budget_duration=aggregation.category_duration.get(category),
-            soft_budget=round(aggregation.totals.get(category, {}).get("soft_budget", 0.0), 2),
-            max_budget=round(aggregation.totals.get(category, {}).get("max_budget", 0.0), 2),
-            member_count=member_counts_by_category.get(category.value, 0),
-            allocated_member_budget_total=round(aggregation.totals.get(category, {}).get("allocated", 0.0), 2),
-            current_spending=round(aggregation.totals.get(category, {}).get("spend", 0.0), 2),
-            excluded_count=aggregation.excluded_counts.get(category, 0),
-            unsynced_count=aggregation.unsynced_counts.get(category, 0),
+    summaries = []
+    for category in BudgetCategory:
+        if category not in aggregation.touched_categories():
+            continue
+        totals = aggregation.totals.get(category, {})
+        rendered = aggregation.category_spend(category)
+        summaries.append(
+            CostCenterAssignedBudgetSummary(
+                budget_category=category,
+                budget_duration=aggregation.category_duration.get(category),
+                soft_budget=round(totals.get("soft_budget", 0.0), 2),
+                max_budget=round(totals.get("max_budget", 0.0), 2),
+                member_count=member_counts_by_category.get(category.value, 0),
+                allocated_member_budget_total=round(totals.get("allocated", 0.0), 2),
+                # Unrounded, like the project cards: rounding turned a real sub-cent spend into 0.
+                current_spending=rendered.figure if rendered else None,
+                spend_unavailable=rendered.unavailable if rendered else False,
+                spend_partial=rendered.partial if rendered else False,
+                spend_missing_amount=rendered.missing_amount if rendered else None,
+                excluded_count=aggregation.excluded_counts.get(category, 0),
+                unsynced_count=aggregation.unsynced_counts.get(category, 0),
+            )
         )
-        for category in BudgetCategory
-        if category in touched
-    ]
+    return summaries
 
 
-def _compute_grand_totals(
-    budgets: list[CostCenterAssignedBudgetSummary],
-    key_spend_total: float,
-) -> tuple[float | None, float, float]:
-    """Combine per-category figures into the response's top-level spend/limit/percent.
+def _grand_total(aggregation: _RowAggregation, removed_by_project: dict[str, list[_BudgetSpend]]) -> RenderedSpend:
+    """Every accepted category's spend plus the projects' spend in removed categories still in their period.
 
-    budget_limit is only returned when every category shares one budget_duration — grand
-    totals across different reset windows are otherwise ambiguous. total_percent is clamped
-    to 100 so it can't disagree with a UI that clamps its own bars the same way.
+    There is no separate API-key term: key traffic reaches the ledger carrying a budget category, so it
+    is already inside the category figures. Removed categories add spend but no limit, as on the
+    project page (EPMCDME-15048).
+    """
+    rendered = [spend for spend in aggregation.spend.values() for spend in spend]
+    rendered += [render_budget_spend(result) for pairs in removed_by_project.values() for _, result in pairs]
+    return combine_rendered_spend(rendered)
+
+
+def _budget_limit(budgets: list[CostCenterAssignedBudgetSummary]) -> float | None:
+    """The summed limit, only when every category shares one budget_duration.
+
+    Grand totals across different reset windows are otherwise ambiguous.
     """
     durations = {b.budget_duration for b in budgets if b.budget_duration is not None}
-    has_single_duration = bool(budgets) and len(durations) <= 1
-    budget_limit = round(sum(b.max_budget for b in budgets), 2) if has_single_duration else None
-
-    current_spending = round(sum(b.current_spending for b in budgets) + key_spend_total, 2)
-    if not budget_limit:
-        return budget_limit, current_spending, 0.0
-
-    total_percent = min(round((current_spending / budget_limit * 100), 2), 100.0)
-    return budget_limit, current_spending, total_percent
+    if not budgets or len(durations) > 1:
+        return None
+    return round(sum(b.max_budget for b in budgets), 2)
 
 
-async def get_cost_center_budget_summary(
-    async_session: AsyncSession,
-    project_names: list[str],
-) -> CostCenterBudgetSummary:
+def _total_percent(current_spending: float | None, budget_limit: float | None) -> float | None:
+    """Consumed percentage, clamped to 100 like the UI clamps its bars; None when either side is absent."""
+    if current_spending is None or not budget_limit:
+        return None
+    return min(round(current_spending / budget_limit * 100, 2), 100.0)
+
+
+async def get_cost_center_budget_summary(project_names: list[str]) -> CostCenterBudgetSummary:
     """Sum platform/cli/premium_models budget rows across the given projects.
 
-    Pure-async and takes an already-resolved project name list so sibling callers
-    with their own project lists can reuse this without re-resolving names or
-    reimplementing summation. Never touches a sync Session.
+    Takes an already-resolved project name list so sibling callers with their own project lists
+    can reuse this without re-resolving names or reimplementing summation. Opens only short
+    sessions of its own and holds none across the ledger read (EPMCDME-15537).
 
-    current_spending mirrors the project page's "Spend" (assigned-budget spend plus key
-    spend), reusing project_spending_service's bulk key-row helpers rather than
-    reimplementing them.
+    current_spending mirrors the project page's "Spend": it is read through the same
+    `project_budget_spend` pairs the project cards derive their figures from.
     """
-    rows_by_project: dict[str, list[ProjectAssignedBudgetSummaryRow]] = {}
-    if project_names:
-        rows_by_project = await project_budget_assignment_repository.get_assigned_budget_summaries_for_projects(
-            async_session, project_names
-        )
-    key_spend_total = await _fetch_key_spend_total(async_session, project_names)
+    if not project_names:
+        return CostCenterBudgetSummary(budgets=[])
 
-    aggregation = _aggregate_rows(rows_by_project)
+    spend_by_project, removed_by_project = await project_budget_spend(project_names)
+    aggregation = _aggregate(spend_by_project)
 
-    member_counts_by_category: dict[str, int] = {}
-    if project_names:
+    async with get_async_session() as async_session:
         member_counts_by_category = await project_budget_assignment_repository.get_distinct_member_counts_by_category(
             async_session, project_names, budget_ids=aggregation.flat_accepted_budget_ids()
         )
 
     budgets = _build_category_summaries(aggregation, member_counts_by_category)
-    budget_limit, current_spending, total_percent = _compute_grand_totals(budgets, key_spend_total)
+    total = _grand_total(aggregation, removed_by_project)
+    budget_limit = _budget_limit(budgets)
 
     return CostCenterBudgetSummary(
-        current_spending=current_spending,
+        current_spending=total.figure,
         budget_limit=budget_limit,
-        total_percent=total_percent,
+        total_percent=_total_percent(total.figure, budget_limit),
+        spend_unavailable=total.unavailable,
+        spend_partial=total.partial,
+        spend_missing_amount=total.missing_amount,
         budgets=budgets,
     )

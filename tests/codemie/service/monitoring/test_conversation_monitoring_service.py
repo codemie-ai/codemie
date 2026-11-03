@@ -75,3 +75,50 @@ def test_send_conversation_metric_emits_client_source(
 
     _, call_kwargs = mock_send_count_metric.call_args
     assert call_kwargs["attributes"][MetricsAttributes.CLIENT_SOURCE] == expected_value
+
+
+@patch.object(ConversationMonitoringService, "send_count_metric")
+def test_send_conversation_metric_omits_money_when_pending(mock_send_count_metric, mock_user, mock_assistant):
+    """AD-28/AD-29: a metric emitted while cost is pending carries no money attribute."""
+    pending_tokens_usage = TokensUsage(
+        input_tokens=10,
+        output_tokens=5,
+        money_spent=0.0,
+        money_spent_pending=True,
+    )
+
+    ConversationMonitoringService.send_conversation_metric(
+        user=mock_user,
+        assistant=mock_assistant,
+        tokens_usage=pending_tokens_usage,
+        time_elapsed=1.0,
+        conversation_id="conv-1",
+        llm_model="gpt-4",
+        status=ConversationStatus.SUCCESS,
+    )
+
+    attributes = mock_send_count_metric.call_args.kwargs["attributes"]
+    assert MetricsAttributes.MONEY_SPENT not in attributes
+
+
+@patch.object(ConversationMonitoringService, "send_count_metric")
+def test_send_conversation_metric_includes_money_when_settled(mock_send_count_metric, mock_user, mock_assistant):
+    """A settled TokensUsage still emits the money attribute with its value."""
+    settled_tokens_usage = TokensUsage(
+        input_tokens=10,
+        output_tokens=5,
+        money_spent=0.05,
+    )
+
+    ConversationMonitoringService.send_conversation_metric(
+        user=mock_user,
+        assistant=mock_assistant,
+        tokens_usage=settled_tokens_usage,
+        time_elapsed=1.0,
+        conversation_id="conv-2",
+        llm_model="gpt-4",
+        status=ConversationStatus.SUCCESS,
+    )
+
+    attributes = mock_send_count_metric.call_args.kwargs["attributes"]
+    assert attributes[MetricsAttributes.MONEY_SPENT] == 0.05

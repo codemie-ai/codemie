@@ -35,6 +35,8 @@ from codemie.core.dependecies import get_llm_by_credentials, get_project_for_met
 from codemie.service.monitoring.base_monitoring_service import emit_llm_token_metric
 from codemie.service.monitoring.metrics_constants import SKILL_GENERATOR_TOTAL_METRIC, MetricsAttributes
 from codemie.service.request_summary_manager import request_summary_manager
+from codemie.service.spend.origin_context import spend_origin
+from codemie.service.spend.traffic_class import TrafficOrigin
 from codemie.service.mcp.access_control import MCPAccessControlService
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import CreatedByUser
@@ -1622,144 +1624,146 @@ description: {skill.description}
         from codemie.service.llm_service.llm_service import llm_service
         from pydantic import BaseModel, Field as PydanticField
 
-        try:
-            # Normalize inputs
-            description = SkillService._normalize_string_input(description)
-            existing_content = SkillService._normalize_string_input(existing_content)
-            skill_name = SkillService._normalize_string_input(skill_name)
+        with spend_origin(TrafficOrigin.SKILL_GENERATOR):
+            try:
+                # Normalize inputs
+                description = SkillService._normalize_string_input(description)
+                existing_content = SkillService._normalize_string_input(existing_content)
+                skill_name = SkillService._normalize_string_input(skill_name)
 
-            # Auto-determine mode
-            mode = "refine" if existing_content else "generate"
+                # Auto-determine mode
+                mode = "refine" if existing_content else "generate"
 
-            # Validate refine mode requirements
-            if mode == "refine" and not existing_content:
-                raise ExtendedHTTPException(
-                    code=status.HTTP_400_BAD_REQUEST,
-                    message="Existing content required for refine mode",
-                    details="Mode is 'refine' but no existing_content provided",
-                    help="Provide existing_content or use mode='generate'",
+                # Validate refine mode requirements
+                if mode == "refine" and not existing_content:
+                    raise ExtendedHTTPException(
+                        code=status.HTTP_400_BAD_REQUEST,
+                        message="Existing content required for refine mode",
+                        details="Mode is 'refine' but no existing_content provided",
+                        help="Provide existing_content or use mode='generate'",
+                    )
+
+                # Setup model and logging
+                model_to_use = llm_model or llm_service.default_llm_model
+                logger.info(
+                    f"Generating skill instructions. Mode={mode}, Model={model_to_use}, "
+                    f"User={user.id}, RequestID={request_id}"
                 )
 
-            # Setup model and logging
-            model_to_use = llm_model or llm_service.default_llm_model
-            logger.info(
-                f"Generating skill instructions. Mode={mode}, Model={model_to_use}, "
-                f"User={user.id}, RequestID={request_id}"
-            )
-
-            llm = get_llm_by_credentials(
-                llm_model=model_to_use, temperature=0.7, streaming=False, request_id=request_id
-            )
-
-            class SkillInstructionsStructured(BaseModel):
-                """Structured sections for skill instructions - validated independently."""
-
-                overview: str = PydanticField(
-                    description="One sentence overview of what this skill enables. Must be concise.",
-                    min_length=20,
-                    max_length=300,
+                llm = get_llm_by_credentials(
+                    llm_model=model_to_use, temperature=0.7, streaming=False, request_id=request_id
                 )
 
-                important: str | None = PydanticField(
-                    description=(
-                        "Critical rules or must-follow guidelines. Only include if truly critical. Use bullet points."
-                    ),
-                    default=None,
-                    min_length=50,
-                    max_length=2000,
+                class SkillInstructionsStructured(BaseModel):
+                    """Structured sections for skill instructions - validated independently."""
+
+                    overview: str = PydanticField(
+                        description="One sentence overview of what this skill enables. Must be concise.",
+                        min_length=20,
+                        max_length=300,
+                    )
+
+                    important: str | None = PydanticField(
+                        description=(
+                            "Critical rules or must-follow guidelines. Only include if truly critical. "
+                            "Use bullet points."
+                        ),
+                        default=None,
+                        min_length=50,
+                        max_length=2000,
+                    )
+
+                    instructions: str = PydanticField(
+                        description=(
+                            "Step-by-step instructions with clear actions. Format as markdown with:\n"
+                            "### Step 1: [Action Name]\n"
+                            "[Explanation]\n\n"
+                            "**Example:** [Concrete example]\n\n"
+                            "**Expected result:** [What success looks like]"
+                        ),
+                        min_length=200,
+                        max_length=10000,
+                    )
+
+                    examples: str = PydanticField(
+                        description=(
+                            "At least 2 concrete usage examples. Format as markdown with:\n"
+                            "### Example 1: [Scenario]\n"
+                            "**User says:** \"[Trigger phrase]\"\n\n"
+                            "**Actions:**\n"
+                            "1. [Step]\n"
+                            "2. [Step]\n\n"
+                            "**Result:** [Outcome]"
+                        ),
+                        min_length=200,
+                        max_length=10000,
+                    )
+
+                    troubleshooting: str | None = PydanticField(
+                        description=(
+                            "Troubleshooting section for common errors. Format as:\n"
+                            "### Error: \"[Error message]\"\n"
+                            "**Cause:** [Why it happens]\n"
+                            "**Solution:** [How to fix]"
+                        ),
+                        default=None,
+                        min_length=100,
+                        max_length=5000,
+                    )
+
+                structured_llm = llm.with_structured_output(SkillInstructionsStructured)
+
+                # Prepare prompt based on mode
+                prompt, variables = (
+                    SkillService._prepare_refine_prompt(description, existing_content)
+                    if mode == "refine"
+                    else SkillService._prepare_generate_prompt(description, existing_content, skill_name)
                 )
 
-                instructions: str = PydanticField(
-                    description=(
-                        "Step-by-step instructions with clear actions. Format as markdown with:\n"
-                        "### Step 1: [Action Name]\n"
-                        "[Explanation]\n\n"
-                        "**Example:** [Concrete example]\n\n"
-                        "**Expected result:** [What success looks like]"
-                    ),
-                    min_length=200,
-                    max_length=10000,
+                # Invoke LLM and validate
+                instructions = SkillService._invoke_llm_and_validate(prompt, variables, structured_llm)
+
+                # Send success metric
+                SkillMonitoringService.send_skill_instruction_generation_metric(
+                    success=True,
+                    user=user,
+                    mode=mode,
+                    model=model_to_use,
                 )
 
-                examples: str = PydanticField(
-                    description=(
-                        "At least 2 concrete usage examples. Format as markdown with:\n"
-                        "### Example 1: [Scenario]\n"
-                        "**User says:** \"[Trigger phrase]\"\n\n"
-                        "**Actions:**\n"
-                        "1. [Step]\n"
-                        "2. [Step]\n\n"
-                        "**Result:** [Outcome]"
-                    ),
-                    min_length=200,
-                    max_length=10000,
+                emit_llm_token_metric(
+                    name=SKILL_GENERATOR_TOTAL_METRIC,
+                    request_id=request_id,
+                    base_attributes={
+                        MetricsAttributes.LLM_MODEL: model_to_use or "default",
+                        MetricsAttributes.USER_ID: logging_user_id.get("-"),
+                        MetricsAttributes.USER_NAME: current_user_email.get("-"),
+                        MetricsAttributes.PROJECT: get_project_for_metric(),
+                    },
                 )
 
-                troubleshooting: str | None = PydanticField(
-                    description=(
-                        "Troubleshooting section for common errors. Format as:\n"
-                        "### Error: \"[Error message]\"\n"
-                        "**Cause:** [Why it happens]\n"
-                        "**Solution:** [How to fix]"
-                    ),
-                    default=None,
-                    min_length=100,
-                    max_length=5000,
+                logger.info(f"Successfully generated skill instructions. Mode={mode}, Length={len(instructions)}")
+
+                # Return response
+                from codemie.rest_api.models.skill import SkillInstructionsGenerateResponse
+
+                return SkillInstructionsGenerateResponse(
+                    instructions=instructions,
+                    metadata={
+                        "model": model_to_use,
+                        "mode": mode,
+                        "request_id": request_id,
+                        "length": len(instructions),
+                    },
                 )
 
-            structured_llm = llm.with_structured_output(SkillInstructionsStructured)
-
-            # Prepare prompt based on mode
-            prompt, variables = (
-                SkillService._prepare_refine_prompt(description, existing_content)
-                if mode == "refine"
-                else SkillService._prepare_generate_prompt(description, existing_content, skill_name)
-            )
-
-            # Invoke LLM and validate
-            instructions = SkillService._invoke_llm_and_validate(prompt, variables, structured_llm)
-
-            # Send success metric
-            SkillMonitoringService.send_skill_instruction_generation_metric(
-                success=True,
-                user=user,
-                mode=mode,
-                model=model_to_use,
-            )
-
-            emit_llm_token_metric(
-                name=SKILL_GENERATOR_TOTAL_METRIC,
-                request_id=request_id,
-                base_attributes={
-                    MetricsAttributes.LLM_MODEL: model_to_use or "default",
-                    MetricsAttributes.USER_ID: logging_user_id.get("-"),
-                    MetricsAttributes.USER_NAME: current_user_email.get("-"),
-                    MetricsAttributes.PROJECT: get_project_for_metric(),
-                },
-            )
-
-            logger.info(f"Successfully generated skill instructions. Mode={mode}, Length={len(instructions)}")
-
-            # Return response
-            from codemie.rest_api.models.skill import SkillInstructionsGenerateResponse
-
-            return SkillInstructionsGenerateResponse(
-                instructions=instructions,
-                metadata={
-                    "model": model_to_use,
-                    "mode": mode,
-                    "request_id": request_id,
-                    "length": len(instructions),
-                },
-            )
-
-        except ExtendedHTTPException:
-            raise
-        except Exception as e:
-            SkillService._send_error_metric_and_raise(user=user, mode=mode, model=model_to_use, error=e)
-        finally:
-            if request_id:
-                request_summary_manager.clear_summary(request_id)
+            except ExtendedHTTPException:
+                raise
+            except Exception as e:
+                SkillService._send_error_metric_and_raise(user=user, mode=mode, model=model_to_use, error=e)
+            finally:
+                if request_id:
+                    request_summary_manager.clear_summary(request_id)
 
 
 # Create singleton instance for sync access from tools

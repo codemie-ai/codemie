@@ -23,7 +23,7 @@ from codemie.rest_api.security.workflow_context import set_current_workflow_id
 from codemie.agents.assistant_agent import AIToolsAgent, TaskResult
 from codemie.agents.callbacks.agent_streaming_callback import AgentStreamingCallback
 from codemie.agents.callbacks.monitoring_callback import MonitoringCallback
-from codemie.core.constants import ChatRole
+from codemie.core.constants import ASSISTANT_ID, ChatRole
 from codemie.core.thread import ThreadedGenerator
 from codemie.core.models import AssistantChatRequest, ChatMessage, HumanMessage, AIMessage
 from codemie.rest_api.security.user import User
@@ -128,6 +128,46 @@ def test_init_agent(
         patch.object(AIToolsAgent, "get_prompt_template"),
     ):
         agent._configure_tools([])
+
+
+def test_configure_tools_sends_the_assistant_id_in_the_tool_metadata(
+    agent: AIToolsAgent,
+    mock_tools: list,
+) -> None:
+    """The tool-usage metrics need a stable key, and this runtime was the one not sending it.
+
+    `langgraph_agent._configure_tools` has always put `ASSISTANT_ID` in the tool metadata; this path sent
+    only `AGENT_NAME`, so the attribute existed for some assistants and not others and a tool-usage table
+    had nothing but the mutable name to group on. A rename re-buckets that table's whole history.
+    """
+    agent.tools = mock_tools
+    agent.assistant = MagicMock(id="asst-42", project="test-project")
+
+    with (
+        patch("codemie.agents.assistant_agent.create_tool_calling_agent", return_value=MagicMock()),
+        patch.object(AIToolsAgent, "get_prompt_template"),
+    ):
+        agent._configure_tools([])
+
+    assert mock_tools[0].metadata[ASSISTANT_ID] == "asst-42"
+
+
+def test_configure_tools_sends_no_assistant_id_when_there_is_no_assistant(
+    agent: AIToolsAgent,
+    mock_tools: list,
+) -> None:
+    """Empty, not a fabricated string: an ad-hoc run belongs to no assistant, and inventing a key for it
+    would create a bucket in the tool-usage table that names nothing."""
+    agent.tools = mock_tools
+    agent.assistant = None
+
+    with (
+        patch("codemie.agents.assistant_agent.create_tool_calling_agent", return_value=MagicMock()),
+        patch.object(AIToolsAgent, "get_prompt_template"),
+    ):
+        agent._configure_tools([])
+
+    assert mock_tools[0].metadata[ASSISTANT_ID] == ""
 
 
 def test_configure_tools_stamps_the_trusted_ids_over_request_metadata(

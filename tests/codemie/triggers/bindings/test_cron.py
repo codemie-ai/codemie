@@ -28,6 +28,7 @@ from codemie.triggers.bindings.cron import (
     invoke_workflow,
     reindex_code,
 )
+from codemie.core.models import TokensUsage
 from codemie.triggers.bindings.utils import validate_datasource
 from codemie.triggers.actors.datasource import resume_stale_datasource  # noqa: F401 — imported for patch path resolution
 
@@ -1078,7 +1079,7 @@ def test_extract_datasource_metrics_returns_none_when_payload_is_none():
 
 @patch("codemie.rest_api.models.index.IndexInfo")
 def test_extract_datasource_metrics_returns_metrics_from_index_info(mock_index_cls):
-    tokens_usage = MagicMock(input_tokens=1000, output_tokens=0, money_spent=0.0002)
+    tokens_usage = TokensUsage(input_tokens=1000, output_tokens=0, money_spent=0.0002)
     fresh_index = MagicMock(tokens_usage=tokens_usage)
     mock_index_cls.get_by_id.return_value = fresh_index
 
@@ -1088,7 +1089,30 @@ def test_extract_datasource_metrics_returns_metrics_from_index_info(mock_index_c
     metrics = _extract_datasource_metrics(payload)
 
     mock_index_cls.get_by_id.assert_called_once_with("idx-1")
-    assert metrics == {"inputTokens": 1000, "outputTokens": 0, "cost": 0.0002}
+    assert metrics == {
+        "inputTokens": 1000,
+        "outputTokens": 0,
+        "cost": 0.0002,
+        "moneySpentPending": False,
+        "moneySpentUnavailable": False,
+    }
+
+
+@patch("codemie.rest_api.models.index.IndexInfo")
+def test_extract_datasource_metrics_stores_a_flagged_zero_as_no_figure_with_its_flag(mock_index_cls):
+    # The run ends before the ledger settles it: the zero beside the pending flag is a placeholder.
+    tokens_usage = TokensUsage(input_tokens=1000, output_tokens=0, money_spent=0.0, money_spent_pending=True)
+    mock_index_cls.get_by_id.return_value = MagicMock(tokens_usage=tokens_usage)
+
+    metrics = _extract_datasource_metrics(MagicMock(index_info=MagicMock(id="idx-1")))
+
+    assert metrics == {
+        "inputTokens": 1000,
+        "outputTokens": 0,
+        "cost": None,
+        "moneySpentPending": True,
+        "moneySpentUnavailable": False,
+    }
 
 
 @patch("codemie.rest_api.models.index.IndexInfo")

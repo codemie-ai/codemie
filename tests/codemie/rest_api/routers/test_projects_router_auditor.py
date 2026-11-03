@@ -15,7 +15,7 @@
 """Tests for auditor access to projects router (EPMCDME-10930)."""
 
 from contextlib import asynccontextmanager
-from datetime import date as date_type
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -23,6 +23,9 @@ import pytest
 
 from codemie.configs import config
 from codemie.rest_api.security.user import User
+from codemie.service.budget.budget_enums import BudgetCategory
+from codemie.service.spend.coverage import SpendResult
+from codemie.service.spend.ledger import ProjectHolder
 
 
 @asynccontextmanager
@@ -84,7 +87,7 @@ class TestProjectsRouterAuditor:
 
 class TestProjectsRouterAuditorRouteLevel:
     """EPMCDME-10930 spec 5.2: router-level auditor coverage for list_projects and
-    get_project_spends (the helper-level tests above only exercise the pure
+    get_project_detail (the helper-level tests above only exercise the pure
     functions, not the routes that actually call asyncio.to_thread(..., is_admin=...)
     or evaluate the inline can_access disjunction).
     """
@@ -120,40 +123,6 @@ class TestProjectsRouterAuditorRouteLevel:
         assert call_kwargs["is_admin"] is True
 
     @patch("codemie.rest_api.routers.projects._common.config")
-    @patch("codemie.rest_api.routers.projects.spending.get_async_session")
-    @patch("codemie.rest_api.routers.projects.spending.get_session")
-    @patch("codemie.rest_api.routers.projects.spending.application_repository")
-    @patch("codemie.rest_api.routers.projects.spending.spend_repo")
-    @pytest.mark.anyio
-    async def test_get_project_spends_allows_auditor_with_no_other_access(
-        self, mock_spend_repo, mock_app_repo, mock_get_session, mock_get_async_session, mock_config
-    ):
-        """Auditor has no admin_project_names and isn't a project/application admin,
-        yet must still pass the can_access check per spec's platform-wide read access.
-        """
-        from codemie.rest_api.routers.projects.spending import get_project_spends
-
-        mock_config.ENABLE_USER_MANAGEMENT = True
-        mock_project = MagicMock()
-        mock_project.deleted_at = None
-        mock_project.project_type = "shared"
-        mock_get_session.return_value.__enter__.return_value = MagicMock()
-        mock_app_repo.get_by_name.return_value = mock_project
-        mock_get_async_session.return_value = _mock_session_ctx(AsyncMock())
-        mock_spend_repo.get_spend_for_period = AsyncMock(return_value=(0.0, 0, []))
-
-        result = await get_project_spends(
-            project_name="some-project",
-            period_from=date_type(2026, 1, 1),
-            period_to=date_type(2026, 1, 31),
-            page=0,
-            per_page=20,
-            user=_make_auditor(),
-        )
-
-        assert result.pagination.total == 0
-
-    @patch("codemie.rest_api.routers.projects._common.config")
     @patch("codemie.rest_api.routers.projects.crud.get_session")
     @patch("codemie.rest_api.routers.projects.crud.project_visibility_service")
     @pytest.mark.anyio
@@ -185,10 +154,9 @@ class TestProjectsRouterAuditorRouteLevel:
         call_kwargs = mock_visibility_service.get_visible_project_with_members.call_args.kwargs
         assert call_kwargs["is_admin"] is True
 
-    @patch("codemie.service.project.project_spending_service.project_budget_assignment_repository")
     @patch("codemie.rest_api.routers.projects._common.config")
-    @patch("codemie.service.project.project_spending_service.budget_repository")
-    @patch("codemie.service.project.project_spending_service.spend_repo")
+    @patch("codemie.service.project.project_spending_service.spend_service")
+    @patch("codemie.service.project.project_spending_service.project_budget_assignment_repository")
     @patch("codemie.service.project.project_spending_service.get_async_session")
     @patch("codemie.rest_api.routers.projects.crud.get_session")
     @patch("codemie.rest_api.routers.projects.crud.project_visibility_service")
@@ -198,16 +166,16 @@ class TestProjectsRouterAuditorRouteLevel:
         mock_visibility_service,
         mock_get_session,
         mock_get_async_session,
-        mock_spend_repo,
-        mock_budget_repo,
-        mock_config,
         mock_project_budget_repo,
+        mock_spend_service,
+        mock_config,
     ):
         """EPMCDME-10930 spec 5.2: GET /v1/projects/{name}?include_spending=true actually
         returns spending data for a pure auditor (not just is_admin=True passed downstream).
         """
         from codemie.rest_api.routers.projects.crud import get_project_detail
 
+        mock_project_budget_repo.get_removed_budget_summaries_for_projects = AsyncMock(return_value={})
         mock_project_budget_repo.get_assigned_budget_summaries_for_projects = AsyncMock(return_value={})
 
         mock_config.ENABLE_USER_MANAGEMENT = True
@@ -222,19 +190,34 @@ class TestProjectsRouterAuditorRouteLevel:
             "admin_count": 0,
             "members": [],
         }
-        mock_get_async_session.return_value = _mock_session_ctx(AsyncMock())
-        mock_budget_repo.get_all_keyed_by_id = AsyncMock(return_value={})
+        mock_get_async_session.side_effect = lambda: _mock_session_ctx(AsyncMock())
 
-        key_row = MagicMock(budget_period_spend=100.0, cumulative_spend=500.0, budget_id=None)
-        mock_spend_repo.get_latest_key_spending_for_project = AsyncMock(return_value=key_row)
-        mock_spend_repo.get_latest_budget_rows_for_project = AsyncMock(return_value=[])
-        mock_spend_repo.get_latest_project_budget_rows_by_category = AsyncMock(return_value=[])
-        mock_spend_repo.get_lifetime_spend = AsyncMock(return_value=500.0)
+        budget_row = SimpleNamespace(
+            project_name="some-project",
+            budget_id="budget-1",
+            name="Platform Budget",
+            budget_category="platform",
+            soft_budget=50.0,
+            max_budget=200.0,
+            budget_duration="30d",
+            budget_reset_at="2099-04-23T10:10:00Z",
+            provider_sync_status="ok",
+            member_count=0,
+            allocated_member_budget_total=0.0,
+            budget_created_at=None,
+            budget_spend_reset_at=None,
+        )
+        mock_project_budget_repo.get_assigned_budget_summaries_for_projects = AsyncMock(
+            return_value={"some-project": [budget_row]}
+        )
+        holder = ProjectHolder(project="some-project", category=BudgetCategory.PLATFORM)
+        mock_spend_service.consumed_for_holders = AsyncMock(return_value={holder: SpendResult(figure=Decimal("100.0"))})
 
         response = await get_project_detail(
             request=MagicMock(method="GET", url=SimpleNamespace(path="/v1/projects/some-project")),
             project_name="some-project",
             include_spending=True,
+            spending_rows_limit=50,
             user=_make_auditor(),
         )
 

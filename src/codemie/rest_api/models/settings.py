@@ -194,6 +194,10 @@ class LiteLLMCredentials(BaseModel):
 class LiteLLMContext(BaseModel):
     credentials: Optional[LiteLLMCredentials]
     current_project: str | None
+    # The user's email, which names their personal project and stands in `current_project` for a
+    # non-member on a global asset. Not the LiteLLM customer key: that is the username, and the two
+    # differ wherever the identity provider does not make one the other.
+    principal_email: str | None = None
     # The personal project name is independent of the provider's username/customer ID.
     personal_project: str | None = None
     # Project the request was attributed to before its budget fell back to personal/default.

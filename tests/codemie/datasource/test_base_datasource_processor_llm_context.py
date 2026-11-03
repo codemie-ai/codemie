@@ -14,6 +14,9 @@
 
 from unittest.mock import MagicMock, patch
 
+from codemie.service.spend.origin_context import current_origin
+from codemie.service.spend.traffic_class import TrafficOrigin
+
 
 class TestBaseDatasourceProcessorLLMContext:
     """Verify that _setup_processing_context passes the index object to set_llm_context."""
@@ -59,3 +62,32 @@ class TestBaseDatasourceProcessorLLMContext:
         BaseDatasourceProcessor._setup_processing_context(processor)
 
         mock_set_llm_context.assert_called_once_with(processor.index, None, processor.user)
+
+
+class TestBaseDatasourceProcessorSpendOrigin:
+    """The indexing origin is in force for the whole run, including where the embedding store is built."""
+
+    def _make_processor(self):
+        processor = MagicMock()
+        processor.index.project_name = "test-proj"
+        processor._pre_scheduled = True
+        processor.datasource_name = "test-datasource"
+        return processor
+
+    @patch('codemie.datasource.base_datasource_processor.get_elasticsearch')
+    @patch('codemie.datasource.base_datasource_processor.propagated_span')
+    def test_origin_is_visible_where_the_embedding_store_is_built(self, mock_span, mock_get_elasticsearch):
+        """The store is built on the run's own thread, so a construction-time read sees the origin."""
+        from codemie.datasource.base_datasource_processor import BaseDatasourceProcessor
+
+        processor = self._make_processor()
+        observed = []
+        mock_get_elasticsearch.side_effect = lambda *_args, **_kwargs: observed.append(current_origin())
+        mock_span.return_value.__enter__ = MagicMock(return_value=None)
+        mock_span.return_value.__exit__ = MagicMock(return_value=False)
+        processor._process.side_effect = lambda: BaseDatasourceProcessor._get_store_by_index("idx", "model")
+
+        BaseDatasourceProcessor.process(processor)
+
+        assert observed == [TrafficOrigin.DATASOURCE_INDEXING]
+        assert current_origin() is None

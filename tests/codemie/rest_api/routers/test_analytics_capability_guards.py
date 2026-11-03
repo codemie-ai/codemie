@@ -159,6 +159,13 @@ async def test_group_a_returns_200_empty_when_elasticsearch_unconfigured(path):
             new_callable=AsyncMock,
             return_value={},
         ),
+        # The budget-limit tables take their candidates from the Postgres budget assignments, not
+        # from ES - outside this scope too, so mocked to "no assignment" for the same reason.
+        patch(
+            "codemie.repository.budget_repository.budget_repository.list_personal_assignments_with_budgets",
+            new_callable=AsyncMock,
+            return_value=[],
+        ),
         patch(
             "codemie.configs.customer_config.CustomerConfig.is_feature_enabled",
             return_value=True,

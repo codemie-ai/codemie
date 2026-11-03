@@ -32,21 +32,6 @@ if TYPE_CHECKING:
     from codemie.service.budget.budget_models import Budget, ProjectMemberBudgetAssignment
 
 
-class PersonalSpendEntry(BaseModel):
-    """Personal (non-project-scoped) spend entry returned by the provider.
-
-    ``user_identifier`` is the normalized email with any provider-specific suffixes
-    already stripped.  ``budget_category`` is pre-derived by the provider so the
-    caller never needs to import provider-specific suffix logic.
-    """
-
-    user_identifier: str
-    budget_id: str
-    budget_category: str
-    spend: Decimal
-    budget_reset_at: str | None = None
-
-
 class BudgetProviderState(BaseModel):
     """Opaque provider state returned after budget provisioning."""
 
@@ -89,33 +74,6 @@ class BudgetRuntimeProviderResult(BaseModel):
     api_key: str | None = None
     base_url: str | None = None
     headers: dict[str, str] = Field(default_factory=dict)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class ProjectBudgetSpendSnapshot(BaseModel):
-    """Authoritative project/category spend snapshot from the provider."""
-
-    project_name: str
-    budget_category: BudgetCategory
-    budget_id: str
-    spend: Decimal
-    cumulative_spend: Decimal | None = None
-    budget_reset_at: str | None = None
-    provider_subject_id: str | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class MemberBudgetSpendSnapshot(BaseModel):
-    """Member-level breakdown spend snapshot from the provider."""
-
-    project_name: str
-    budget_category: BudgetCategory
-    budget_id: str
-    user_id: str
-    spend: Decimal
-    cumulative_spend: Decimal | None = None
-    budget_reset_at: str | None = None
-    provider_subject_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -204,10 +162,7 @@ class BudgetEnforcementProvider(Protocol):
     Project budget methods (Phase 8 — Release B):
       ensure_project_budget, update_project_budget, delete_project_budget,
       get_project_budget_state_by_ref, sync_member_allocation, delete_member_allocation,
-      resolve_runtime, collect_project_budget_spend, collect_member_budget_spend.
-
-    Spend collection methods:
-      collect_personal_spend, collect_project_budget_spend, collect_member_budget_spend.
+      resolve_runtime.
 
     Runtime helpers:
       resolve_runtime_sync, provider_name.
@@ -368,29 +323,8 @@ class BudgetEnforcementProvider(Protocol):
         context: BudgetRuntimeContext,
     ) -> BudgetRuntimeProviderResult: ...
 
-    async def collect_project_budget_spend(self) -> list[ProjectBudgetSpendSnapshot]: ...
-
-    async def collect_project_budget_spend_for_projects(
-        self,
-        project_names: list[str],
-    ) -> list[ProjectBudgetSpendSnapshot]: ...
-
-    async def collect_member_budget_spend(self) -> list[MemberBudgetSpendSnapshot]: ...
-
-    async def collect_member_budget_spend_for_refs(
-        self,
-        provider_member_refs: set[str],
-    ) -> list[MemberBudgetSpendSnapshot]: ...
-
-    async def collect_member_budget_spend_for_allocations(
-        self,
-        allocations: list[ProjectMemberBudgetAssignment],
-    ) -> list[MemberBudgetSpendSnapshot]: ...
-
     async def reconcile_budget_reset_timestamps(
         self,
         *,
         targets: list[BudgetResetReconciliationTarget],
     ) -> BudgetResetReconciliationResult: ...
-
-    async def collect_personal_spend(self) -> "list[PersonalSpendEntry] | None": ...

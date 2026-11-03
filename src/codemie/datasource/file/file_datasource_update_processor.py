@@ -27,6 +27,8 @@ from codemie.datasource.loader.base_datasource_loader import BaseDatasourceLoade
 from codemie.datasource.loader.file_loader import FilesDatasourceLoader
 from codemie.rest_api.models.index import GuardrailBlockedException, IndexDeletedException, ProgressUpdate
 from codemie.rest_api.utils.default_applications import ensure_application_exists
+from codemie.service.spend.origin_context import spend_origin
+from codemie.service.spend.traffic_class import TrafficOrigin
 
 
 class FileDatasourceUpdateProcessor(FileDatasourceProcessor):
@@ -173,10 +175,14 @@ class FileDatasourceUpdateProcessor(FileDatasourceProcessor):
         # Import here to avoid circular import (same pattern as base class).
         from codemie.service.llm_service.utils import set_llm_context
 
-        with propagated_span(
-            self._otel_context,
-            "datasource.process",
-            {"codemie.datasource_name": self.datasource_name},
+        # Same binding as the base processor: the whole update run is indexing traffic.
+        with (
+            spend_origin(TrafficOrigin.DATASOURCE_INDEXING),
+            propagated_span(
+                self._otel_context,
+                "datasource.process",
+                {"codemie.datasource_name": self.datasource_name},
+            ),
         ):
             try:
                 self._load_stats_persisted = False

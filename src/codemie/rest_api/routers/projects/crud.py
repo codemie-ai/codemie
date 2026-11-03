@@ -20,10 +20,9 @@ from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, Path, Query, Request
 
-from codemie.clients.postgres import get_async_session, get_session
+from codemie.clients.postgres import get_session
 from codemie.configs import config
 from codemie.core.exceptions import ExtendedHTTPException
-from codemie.repository.project_budget_repository import project_budget_assignment_repository
 from codemie.rest_api.models.project import (
     PaginatedProjectListResponse,
     PaginationInfo,
@@ -45,12 +44,21 @@ from codemie.service.budget.provider_registry import get_active_provider
 from codemie.service.project import cli_analytics_policy
 from codemie.service.project.project_service import project_service
 from codemie.service.project.project_spending_service import (
+    assigned_budget_rows,
+    assigned_budget_summary,
+    assigned_category,
     attach_project_detail_spending,
     attach_project_spending_summaries,
+    budget_period_of,
     can_see_project_spending,
+    fill_spend,
+    removed_budget_rows,
 )
 from codemie.service.project.project_visibility_service import project_visibility_service
 from codemie.service.settings.settings import SettingsService
+from codemie.service.spend.coverage import TimeRange
+from codemie.service.spend.ledger import ProjectHolder
+from codemie.service.spend.spend_service import spend_service
 
 
 router = APIRouter()
@@ -131,41 +139,45 @@ async def _attach_assigned_budget_summaries(
     if not project_names:
         return
 
-    async with get_async_session() as async_session:
-        budget_rows_by_project = await project_budget_assignment_repository.get_assigned_budget_summaries_for_projects(
-            async_session,
-            project_names,
-            budget_category=_budget_category_value(budget_category),
-        )
+    budget_rows_by_project = await assigned_budget_rows(project_names, _budget_category_value(budget_category))
+    removed_rows_by_project = await removed_budget_rows(project_names)
+
+    # Each summary starts with an absent figure and is filled in below, once the whole holder set
+    # is known: a row the port is never asked about keeps no figure rather than acquiring a zero.
+    holders_by_period: dict[TimeRange, list[ProjectHolder]] = {}
+    # A None holder and period mark a row the port is never asked about: it carries no figure and
+    # still carries the annotation, because to a reader that is the same fact as a no-figure answer.
+    pending_spend: list[tuple[ProjectAssignedBudgetSummary, ProjectHolder | None, TimeRange | None]] = []
 
     for item in items:
-        rows = budget_rows_by_project.get(item.name, [])
         budgets: list[ProjectAssignedBudgetSummary] = []
-        for row in rows:
-            try:
-                category = BudgetCategory(row.budget_category)
-            except ValueError:
-                logger.warning(
-                    f"Skipping assigned budget row with invalid category "
-                    f"for project={item.name} budget_id={row.budget_id} category={row.budget_category}"
-                )
+        for row in budget_rows_by_project.get(item.name, []):
+            category = assigned_category(row, item.name)
+            if category is None:
                 continue
-            budgets.append(
-                ProjectAssignedBudgetSummary(
-                    budget_id=row.budget_id,
-                    name=row.name,
-                    budget_category=category,
-                    soft_budget=row.soft_budget,
-                    max_budget=row.max_budget,
-                    budget_duration=row.budget_duration,
-                    budget_reset_at=row.budget_reset_at,
-                    provider_sync_status=row.provider_sync_status,
-                    member_count=row.member_count,
-                    allocated_member_budget_total=row.allocated_member_budget_total,
-                    current_spending=row.current_spending,
-                )
-            )
+            summary = assigned_budget_summary(row, category)
+            budgets.append(summary)
+
+            period = budget_period_of(row, removed_rows_by_project.get(item.name, []))
+            # No derivable period means no window to aggregate over, so there is no figure to ask
+            # for: the port is not called for this row and its spend stays absent.
+            if period is None:
+                pending_spend.append((summary, None, None))
+                continue
+            holder = ProjectHolder(project=row.project_name, category=category)
+            holders_by_period.setdefault(period, []).append(holder)
+            pending_spend.append((summary, holder, period))
         item.budgets = budgets
+
+    # One round trip per distinct period - budgets sharing a reset schedule share a period, so the
+    # whole list screen usually costs a single call.
+    spend_by_period = {
+        period: await spend_service.consumed_for_holders(holders, period)
+        for period, holders in holders_by_period.items()
+    }
+
+    for summary, holder, period in pending_spend:
+        fill_spend(summary, None if period is None else spend_by_period[period][holder])
 
 
 @router.post("/projects", response_model=ProjectCreateResponse, status_code=201)

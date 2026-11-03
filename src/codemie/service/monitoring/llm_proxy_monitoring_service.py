@@ -445,7 +445,7 @@ class LLMProxyMonitoringService(BaseMonitoringService):
         input_tokens: int,
         output_tokens: int,
         cached_tokens: int,
-        money_spent: float,
+        money_spent: Optional[float],
         cached_tokens_money_spent: float,
         status_code: int,
         cache_creation_tokens: int = 0,
@@ -470,7 +470,8 @@ class LLMProxyMonitoringService(BaseMonitoringService):
             input_tokens: Number of input/prompt tokens
             output_tokens: Number of output/completion tokens
             cached_tokens: Number of cache-read tokens (for Anthropic prompt caching)
-            money_spent: Total cost in USD
+            money_spent: Total cost in USD, or None while LiteLLM's cost is unsettled -
+                in which case no money attribute is emitted at all
             cached_tokens_money_spent: Cost of cached tokens in USD
             status_code: HTTP response status code
             cache_creation_tokens: Number of cache-creation tokens (Anthropic prompt caching)
@@ -487,8 +488,17 @@ class LLMProxyMonitoringService(BaseMonitoringService):
                 MetricsAttributes.OUTPUT_TOKENS: output_tokens,
                 MetricsAttributes.CACHE_READ_INPUT_TOKENS: cached_tokens,
                 MetricsAttributes.CACHE_CREATION_TOKENS: cache_creation_tokens,
-                MetricsAttributes.MONEY_SPENT: money_spent,
                 MetricsAttributes.CACHED_TOKENS_MONEY_SPENT: cached_tokens_money_spent,
+                # AD-29: the join key must exist on both sides of the ledger/Elasticsearch
+                # union or the two-stage join is unimplementable. CL-44 does not retire this
+                # obligation - once workflow analytics resolves natively from the ledger this
+                # emission looks unused, but removing it breaks the union's NULL branch, which
+                # is the only path for every row written before the CL-44 rollout (and,
+                # permanently, for the assistant/conversation/execution/datasource dimensions,
+                # which have no column at all). Release-blocking for as long as any such row
+                # is in retention.
+                MetricsAttributes.REQUEST_ID: request_info.get(REQUEST_ID),
+                MetricsAttributes.RUN_ID: request_info.get(MetricsAttributes.RUN_ID),
                 ENDPOINT: endpoint,
                 RESPONSE_STATUS: status_code,
                 BRANCH: request_info.get(BRANCH, ""),
@@ -498,6 +508,13 @@ class LLMProxyMonitoringService(BaseMonitoringService):
                 "cli_request": cli_request,
                 "chrome_extension_request": bool(request_info.get(CHROME_EXTENSION)),
             }
+
+            # A metric emitted while cost is unsettled carries NO money attribute at all -
+            # never a zero. This document has no annotation slot and nothing re-emits it once
+            # the ledger settles, so a fabricated zero would freeze into metric history
+            # uncorrectably. Token counts are unaffected: they are final here.
+            if money_spent is not None:
+                attributes[MetricsAttributes.MONEY_SPENT] = money_spent
 
             sanitized_info = cls._sanitize_request_info(request_info)
             attributes.update(sanitized_info)
@@ -516,11 +533,12 @@ class LLMProxyMonitoringService(BaseMonitoringService):
                 attributes=attributes,
             )
 
+            cost_text = f"${money_spent:.6f}" if money_spent is not None else "unsettled"
             logger.debug(
                 f"LLM proxy usage tracked: user={user.username}, model={llm_model}, "
                 f"input={input_tokens}, output={output_tokens}, cached={cached_tokens}, "
                 f"cache_creation={cache_creation_tokens}, cli_request={cli_request}, "
-                f"cost=${money_spent:.6f}, cached_cost=${cached_tokens_money_spent:.6f}"
+                f"cost={cost_text}, cached_cost=${cached_tokens_money_spent:.6f}"
             )
 
         except Exception as e:

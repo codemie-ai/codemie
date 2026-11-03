@@ -25,6 +25,8 @@ from codemie.enterprise.observability import get_observability_provider
 from codemie.service.request_summary_manager import request_summary_manager
 from codemie.service.search_and_rerank.base import SearchAndRerankBase, es_response_to_document
 from codemie.service.search_and_rerank.rrf import RRF
+from codemie.service.spend.origin_context import spend_origin
+from codemie.service.spend.traffic_class import TrafficOrigin
 
 # NOTE: observe is captured at import time from the singleton provider.
 # Tests that switch providers via reset_provider() must do so BEFORE this module
@@ -94,7 +96,11 @@ class SearchAndRerankCode(SearchAndRerankBase):
             List[Document]: A list of ranked documents matching the search criteria.
 
         """
-        search_results = self._knn_vector_search() if self.use_knn_search else []
+        # Search embeddings emit no token metric of their own - the request summary records the run,
+        # and the header is what classifies its spend.
+        with spend_origin(TrafficOrigin.SEARCH_EMBEDDING):
+            search_results = self._knn_vector_search() if self.use_knn_search else []
+
         if self.file_path or self.keywords_list:
             search_results.extend(self._text_search(by_path=not self.use_knn_search))
 
@@ -138,7 +144,7 @@ class SearchAndRerankCode(SearchAndRerankBase):
         """
         git_repo = get_repo_from_fields(self.code_fields)
         embeddings_model = llm_service.get_embedding_deployment_name(git_repo.embeddings_model)
-        embeddings = get_embeddings_model(embeddings_model)
+        embeddings = get_embeddings_model(embeddings_model, request_id=self.request_id or None)
         query_vector = embeddings.embed_query(self.query)
 
         if self.request_id:

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import threading
+import uuid
 from dataclasses import dataclass, field
 from hashlib import sha256
 from typing import TYPE_CHECKING, Any, Optional, TypeVar
@@ -26,6 +27,9 @@ from langchain_core.runnables import Runnable
 from pydantic import BaseModel
 
 from codemie.configs import logger
+from codemie.service.spend.origin_context import current_origin
+from codemie.service.spend.run_context import current_run_id
+from codemie.service.spend.spend_logs_metadata import spend_logs_metadata_header
 
 from codemie.core.constants import LITELLM_CUSTOMER_ID_HEADER
 from .project_member_runtime_sync import ensure_project_member_runtime_ready_sync
@@ -109,10 +113,15 @@ class LiteLLMAzureOpenAIEmbeddings(AzureOpenAIEmbeddings):
     captured.
     """
 
-    def __init__(self, **kwargs: Any) -> None:
+    def __init__(self, codemie_run_id: Optional[str] = None, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         original_client = self.client
         object.__setattr__(self, 'client', EmbeddingClientWrapper(original_client))
+        # The run id this instance stamps on its outbound calls, exposed so the in-memory LLMRun
+        # built after the operation can carry the SAME id. Until a caller reads it the two ids
+        # differ, and a per-run cost lookup for an embedding operation finds no row - see the
+        # correlation note in the spend implementation state.
+        object.__setattr__(self, 'codemie_run_id', codemie_run_id)
 
     def consume_last_usage(self) -> EmbeddingUsage | None:
         return self.client.consume_last_usage()
@@ -154,12 +163,20 @@ class LiteLLMChatOpenAI(AzureChatOpenAI):
         llm_model_details: Model configuration (not a Pydantic field)
     """
 
-    def __init__(self, llm_model_details: "LLMModel", **kwargs: Any):
+    def __init__(
+        self,
+        llm_model_details: "LLMModel",
+        spend_attribution: Optional[dict[str, str | None]] = None,
+        **kwargs: Any,
+    ):
         """
         Initialize LiteLLMChatOpenAI.
 
         Args:
             llm_model_details: Model configuration details
+            spend_attribution: Correlation and identity values for the spend row each call
+                produces, everything except the per-call run id. Held here because one model object
+                serves a whole agent loop and the run id differs per call within it.
             **kwargs: Keyword arguments passed to AzureChatOpenAI parent class
         """
         # Initialize parent AzureChatOpenAI class first
@@ -168,6 +185,53 @@ class LiteLLMChatOpenAI(AzureChatOpenAI):
         # Store llm_model_details as a regular attribute (not a Pydantic field)
         # Use object.__setattr__ to bypass Pydantic's __setattr__
         object.__setattr__(self, 'llm_model_details', llm_model_details)
+        object.__setattr__(self, 'spend_attribution', spend_attribution or {})
+
+    def _get_request_payload(
+        self,
+        input_: LanguageModelInput,
+        *,
+        stop: Optional[list[str]] = None,
+        **kwargs: Any,
+    ) -> dict:
+        """Add this individual call's spend metadata, naming the run id that is in flight.
+
+        **This method rather than `default_headers`, because headers are fixed at construction.**
+        One model object is reused for every iteration of an agent loop, so a run id set at
+        construction would name one call for all of them and a per-call cost lookup would sum the
+        wrong rows. This is the single place both the sync and async paths build their payload, and
+        the SDK accepts `extra_headers` there - so one override covers every call the model makes.
+
+        A retry the SDK performs internally re-sends under the **same** run id, which is correct:
+        each attempt may have cost money and is summed, while the call is counted once.
+
+        **The origin published on the invoking thread wins over the construction-time one, and the
+        construction-time one stands where nothing was published.** The second case is the live one:
+        a model handed to a pool thread that copies no context is invoked where nothing was
+        published at all, and the construction-time value is what keeps its rows from landing NULL.
+        The first is the guard for nesting - a model built under one origin and invoked inside a
+        narrower block - which no path takes today (every tool builds its model inside its own
+        block) and which this read makes right rather than silently wrong should one appear.
+        """
+        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+
+        attribution: dict[str, str | None] = getattr(self, 'spend_attribution', None) or {}
+        if not attribution:
+            return payload
+
+        origin = current_origin()
+        header = spend_logs_metadata_header(
+            **{
+                **attribution,
+                "run_id": current_run_id(attribution.get("request_id")),
+                "origin": (origin.value if origin else None) or attribution.get("origin"),
+            }
+        )
+        if header:
+            # Ours last: a per-request header must win over the construction-time copy, which
+            # carries the same keys minus the run id.
+            payload["extra_headers"] = {**payload.get("extra_headers", {}), **header}
+        return payload
 
     def with_structured_output(
         self,
@@ -233,6 +297,7 @@ def create_litellm_chat_model(
     temperature: Optional[float] = None,
     top_p: Optional[float] = None,
     streaming: bool = True,
+    request_id: Optional[str] = None,
 ) -> AzureChatOpenAI:
     """
     Create LiteLLM chat model instance (enterprise business logic).
@@ -280,7 +345,7 @@ def create_litellm_chat_model(
         streaming=streaming,
     )
 
-    _configure_direct_runtime_overrides(
+    resolved_category = _configure_direct_runtime_overrides(
         llm_model_details=llm_model_details,
         litellm_context=litellm_context,
         user_email=user_email,
@@ -294,6 +359,20 @@ def create_litellm_chat_model(
     if streaming:
         base_args['stream_usage'] = True
 
+    # Attribution and correlation for the spend row this call will produce. Built AFTER budget
+    # routing, because that is what decides the category, and carried on the model object so each
+    # individual call can re-emit it with its own run id - see LiteLLMChatOpenAI.
+    spend_attribution = _spend_attribution_values(
+        request_id=request_id,
+        user_id=user_id,
+        category=resolved_category,
+        litellm_context=litellm_context,
+        user_email=user_email,
+    )
+    # The construction-time copy carries no run id: one model object serves every iteration of an
+    # agent loop, so a run id fixed here would name one call for many.
+    merged_headers.update(spend_logs_metadata_header(**spend_attribution))
+
     # Add custom headers
     if merged_headers:
         _format_headers_for_openai_api(merged_headers)
@@ -304,7 +383,11 @@ def create_litellm_chat_model(
     _log_output_limit(llm_model_details, filtered_args)
 
     # Return LiteLLMChatOpenAI instance (forces function_calling for all structured output)
-    return LiteLLMChatOpenAI(llm_model_details=llm_model_details, **filtered_args)
+    return LiteLLMChatOpenAI(
+        llm_model_details=llm_model_details,
+        spend_attribution=spend_attribution,
+        **filtered_args,
+    )
 
 
 def _resolve_max_output_tokens(llm_model_details: "LLMModel") -> Optional[int]:
@@ -404,16 +487,38 @@ def _apply_project_runtime_overrides(
         request_params["azure_endpoint"] = runtime_base_url
 
 
+def resolve_mirrored_budget_id(customer: Any | None, category: Any) -> str | None:
+    """The budget_id to mirror into user_budget_assignments after check_user_budget().
+
+    Uses the budget_id from the actual LiteLLM customer record so that users with a
+    custom budget get the correct ID mirrored.  Falls back to the configured default
+    budget_id for the given category when the customer has no budget table attached.
+    """
+    budget_table = getattr(customer, "litellm_budget_table", None) if customer is not None else None
+    budget_id: str | None = getattr(budget_table, "budget_id", None) if budget_table is not None else None
+    if budget_id:
+        return budget_id
+
+    from .budget_categories import BudgetCategory as LiteLLMBudgetCategory
+    from .dependencies import get_category_budget_id
+
+    try:
+        litellm_category = LiteLLMBudgetCategory(category.value)
+    except ValueError:
+        logger.warning(
+            "budget_event=mirror_skipped component=litellm_llm_factory reason=unknown_category category=%r",
+            category.value,
+        )
+        return None
+    return get_category_budget_id(litellm_category)
+
+
 def _mirror_budget_assignment(*, user_id: str | None, customer: Any | None, category: "CoreBudgetCategory") -> None:
     """Best-effort: mirror a budget assignment into user_budget_assignments.
 
     Called from the synchronous direct-runtime path after check_user_budget() creates
     the LiteLLM customer.  Dispatches to the main event loop without blocking so that
     the model-creation call-site is not affected if the DB write is slow or fails.
-
-    Uses the budget_id from the actual LiteLLM customer record so that users with a
-    custom budget get the correct ID mirrored.  Falls back to the configured default
-    budget_id for the given category when the customer has no budget table attached.
     """
     if not user_id:
         return
@@ -422,23 +527,7 @@ def _mirror_budget_assignment(*, user_id: str | None, customer: Any | None, cate
     from codemie.core.event_loop import _main_event_loop
     from codemie.service.budget.budget_service import budget_service
 
-    budget_table = getattr(customer, "litellm_budget_table", None) if customer is not None else None
-    budget_id: str | None = getattr(budget_table, "budget_id", None) if budget_table is not None else None
-
-    if not budget_id:
-        from .budget_categories import BudgetCategory as LiteLLMBudgetCategory
-        from .dependencies import get_category_budget_id
-
-        try:
-            litellm_category = LiteLLMBudgetCategory(category.value)
-        except ValueError:
-            logger.warning(
-                "budget_event=mirror_skipped component=litellm_llm_factory reason=unknown_category category=%r",
-                category.value,
-            )
-            return
-        budget_id = get_category_budget_id(litellm_category)
-
+    budget_id = resolve_mirrored_budget_id(customer, category)
     if not budget_id:
         return
     loop = _main_event_loop
@@ -528,6 +617,93 @@ def _apply_platform_budget(
     _mirror_budget_assignment(user_id=user_id, customer=customer, category=CoreBudgetCategory.PLATFORM)
 
 
+def _project_in_context(
+    litellm_context: Optional["LiteLLMContext"],
+    user_email: Optional[str],
+) -> str | None:
+    """The project this call is being made inside, or None.
+
+    **`current_project` is not always a project.** For a non-member accessing a global assistant it
+    holds the user's own email, and in the user's personal project it is that project's name, which
+    is the same email. Sent as `codemie_project` either would book a person's spend against a
+    "project" named after them, landing a well-formed `project_scoped` row attributed to something
+    that is not a project - no error, no NULL, nothing to notice - and out of their personal figure.
+
+    **`user_email` is the LiteLLM customer key, which is the username**, so it names the personal
+    scope only where the username is the email. `principal_email` is the email itself; both are
+    checked, so the comparison holds whichever identity provider made the user.
+    """
+    if not litellm_context or not litellm_context.current_project:
+        return None
+    if litellm_context.current_project in {user_email, litellm_context.principal_email} - {None}:
+        return None
+    return litellm_context.current_project
+
+
+def _spend_attribution_values(
+    *,
+    request_id: Optional[str],
+    user_id: Optional[str],
+    category: Optional["CoreBudgetCategory"],
+    litellm_context: Optional["LiteLLMContext"],
+    user_email: Optional[str],
+) -> dict[str, str | None]:
+    """Everything the spend-logs metadata header needs except the per-call run id.
+
+    Kept as a dict rather than built straight into a header because the chat path needs it **twice**
+    - once at construction, without a run id, and again per call with one - and building it twice
+    from two expressions is how the two drift.
+
+    The workflow id is read from the workflow context var and **never** from `LiteLLMContext`: by
+    model-construction time that context holds the *node's assistant*, because building a workflow
+    node's agent overwrites the workflow-level context. A value taken from there is wrong and
+    self-consistent - no NULL, no defect count, nothing to notice.
+
+    The origin is read here because the entry point published it on this thread before the model was
+    built, which is the only moment several kinds of work are still identifiable. It is read **again
+    per call** in `LiteLLMChatOpenAI._get_request_payload`: a chat model is built once and invoked
+    many times, sometimes from a nested block that published a narrower origin, so neither read alone
+    covers both cases.
+    """
+    from codemie.rest_api.security.workflow_context import get_current_workflow_id
+
+    origin = current_origin()
+    return {
+        "request_id": request_id,
+        "user_id": user_id,
+        "category": category.value if category is not None else None,
+        "project": _project_in_context(litellm_context, user_email),
+        "workflow_id": get_current_workflow_id(),
+        "origin": origin.value if origin else None,
+    }
+
+
+def _classify_direct_traffic(
+    llm_model_details: "LLMModel",
+    user_email: Optional[str],
+) -> "CoreBudgetCategory":
+    """What KIND of traffic this is, independent of which budget pays for it.
+
+    **The two questions are tangled together everywhere else in this file, and separating them here
+    is the whole point.** The branches below pick a category *in order to select a budget*, so their
+    answer legitimately depends on which budgets exist: a premium call with no premium budget is
+    billed as platform. On the own-credentials bypass no CodeMie budget is consulted at all, so only
+    the classification question remains - and asking the budget-shaped resolvers instead would
+    answer `platform` for everything, because no budget is available to select.
+
+    Do **not** rewire the budget-selecting branches onto this function. Their category must agree
+    with what was actually billed; this one answers what the traffic *is*.
+    """
+    from codemie.service.budget.budget_enums import BudgetCategory as CoreBudgetCategory
+
+    from .dependencies import get_premium_username
+
+    if user_email and get_premium_username(user_email, llm_model_details.base_name) is not None:
+        return CoreBudgetCategory.PREMIUM_MODELS
+    # Direct runtime traffic is never CLI - that arrives through the proxy.
+    return CoreBudgetCategory.PLATFORM
+
+
 def _record_direct_budget_attribution(
     context: Optional["LiteLLMContext"], project: str | None, *, project_budget_used: bool
 ) -> None:
@@ -556,7 +732,20 @@ def _configure_direct_runtime_overrides(
     creds: Optional["LiteLLMCredentials"],
     merged_headers: dict[str, str],
     request_params: dict[str, Any],
-) -> None:
+) -> Optional["CoreBudgetCategory"]:
+    """Apply runtime budget routing, and report **which category it resolved**.
+
+    The category is returned rather than re-derived by the caller because it is decided here, by
+    branching this function already performs. Deriving it a second time for the attribution header
+    would put one rule in two places, and the two would answer differently the first time either
+    branch changed.
+
+    `None` means no category was resolved - the own-credentials bypass - and a caller must then send
+    **no** identity at all rather than guessing one, because a partial identity tuple is refused as
+    a whole downstream and a guessed one is worse than an absent one.
+    """
+    from codemie.service.budget.budget_enums import BudgetCategory as CoreBudgetCategory
+
     if creds:
         logger.info(
             f"budget_event=runtime_mode_selected component=litellm_llm_factory "
@@ -567,7 +756,14 @@ def _configure_direct_runtime_overrides(
         # the user's own key, so member-budget attribution/enforcement must not apply.
         # Mirrors the proxy path (c8e6529e7, EPMCDME-11961); global and non-global
         # personal keys behave identically here (EPMCDME-13264).
-        return
+        #
+        # **Enforcement is skipped; attribution is not.** Identity is sent on this path too, so the
+        # row carries a canonical `attr_user_id` instead of leaving it NULL forever - a NULL there
+        # makes the project-member holder structurally blind to this traffic and leaves every other
+        # holder depending on the username/email alias set, which exists as insurance rather than as
+        # a path anything should rely on. The category is the traffic's own kind, not a budget
+        # selection, because no budget is selected here.
+        return _classify_direct_traffic(llm_model_details, user_email)
 
     # Context creation can already flag a fallback for analytics. Resolve the original
     # project for this model so that annotation never changes category precedence, and a
@@ -581,6 +777,7 @@ def _configure_direct_runtime_overrides(
         project_runtime_api_key,
         project_runtime_base_url,
         has_project_budget_scopes,
+        project_runtime_category,
     ) = _resolve_direct_project_budget_runtime(
         llm_model_details=llm_model_details,
         litellm_context=runtime_context,
@@ -611,7 +808,7 @@ def _configure_direct_runtime_overrides(
             f"provider_header_names={sorted(project_runtime_headers.keys())!r} "
             f"litellm_customer_key={project_runtime_headers.get(LITELLM_CUSTOMER_ID_HEADER)!r}"
         )
-        return
+        return project_runtime_category
 
     # current_project equals user_email when a personal user accesses a global assistant
     # (_resolve_effective_project returns user.email for non-members). That is not a real
@@ -633,7 +830,7 @@ def _configure_direct_runtime_overrides(
         has_project_context=has_real_project_context,
     ):
         _record_direct_budget_attribution(litellm_context, project, project_budget_used=False)
-        return
+        return CoreBudgetCategory.PREMIUM_MODELS
 
     _apply_platform_budget(
         llm_model_details=llm_model_details,
@@ -643,6 +840,7 @@ def _configure_direct_runtime_overrides(
         merged_headers=merged_headers,
     )
     _record_direct_budget_attribution(litellm_context, project, project_budget_used=False)
+    return CoreBudgetCategory.PLATFORM
 
 
 def _get_direct_request_category_budget_id(user_id: str, category: str) -> str | None:
@@ -821,11 +1019,14 @@ def _resolve_direct_project_budget_runtime(
     litellm_context: Optional["LiteLLMContext"],
     user_id: Optional[str],
     user_email: Optional[str],
-) -> tuple[dict[str, str], str | None, str | None, bool]:
+) -> tuple[dict[str, str], str | None, str | None, bool, Optional["CoreBudgetCategory"]]:
     """Resolve project budget headers for direct LiteLLM chat model usage.
 
     The 4th element (has_project_budget_scopes) is True when the project has at least one budget
     scope for this user. False means the caller must not block personal/default budget fallback.
+    The 5th is the category this resolution selected, or None where it selected none - returned so
+    the attribution header names the same category the routing chose, rather than a second guess at
+    it.
     """
     if not litellm_context or not litellm_context.current_project or not user_id or not user_email:
         logger.info(
@@ -834,7 +1035,7 @@ def _resolve_direct_project_budget_runtime(
             f"project_name={(litellm_context.current_project if litellm_context else None)!r} "
             f"model={llm_model_details.base_name!r} reason=missing_context_or_project"
         )
-        return {}, None, None, False
+        return {}, None, None, False, None
 
     from codemie.service.budget.budget_resolution_service import budget_resolution_service
 
@@ -852,7 +1053,7 @@ def _resolve_direct_project_budget_runtime(
             f"project_name={litellm_context.current_project!r} "
             f"model={llm_model_details.base_name!r} reason=no_project_budget_scopes"
         )
-        return {}, None, None, False
+        return {}, None, None, False, None
 
     category = _resolve_direct_budget_category(
         user_email=user_email,
@@ -896,7 +1097,7 @@ def _resolve_direct_project_budget_runtime(
             f"budget_category={category.value!r} model={llm_model_details.base_name!r} "
             f"reason=no_provider_result"
         )
-        return {}, None, None, True
+        return {}, None, None, True, category
 
     selection = select_runtime_budget_mode(
         has_user_litellm_credentials=False,
@@ -921,9 +1122,9 @@ def _resolve_direct_project_budget_runtime(
             raise RuntimeError(
                 f"Project member runtime selected but provider returned no runtime user for {project_name!r}"
             )
-        return provider_result.headers, provider_result.api_key, provider_result.base_url, True
+        return provider_result.headers, provider_result.api_key, provider_result.base_url, True, category
 
-    return provider_result.headers, provider_result.api_key, provider_result.base_url, True
+    return provider_result.headers, provider_result.api_key, provider_result.base_url, True, category
 
 
 def create_litellm_embedding_model(
@@ -932,6 +1133,7 @@ def create_litellm_embedding_model(
     litellm_context: Optional["LiteLLMContext"],
     user_email: Optional[str],
     user_id: Optional[str] = None,
+    request_id: Optional[str] = None,
 ) -> "AzureOpenAIEmbeddings":
     """
     Create LiteLLM embedding model instance (enterprise business logic).
@@ -958,7 +1160,7 @@ def create_litellm_embedding_model(
     merged_headers = _generate_litellm_headers(llm_model_details, litellm_context)
 
     embedding_params = _build_embedding_model_params(embedding_model=embedding_model, creds=creds)
-    _configure_direct_runtime_overrides(
+    resolved_category = _configure_direct_runtime_overrides(
         llm_model_details=llm_model_details,
         litellm_context=litellm_context,
         user_email=user_email,
@@ -968,11 +1170,26 @@ def create_litellm_embedding_model(
         request_params=embedding_params,
     )
 
+    # **Both correlation ids ride in the fixed headers here, unlike on the chat path.** A model
+    # instance is built per embedding operation, so there is no finer grain for a run id to have
+    # and no agent loop to reuse the object across - the defect that forces the chat path's
+    # per-call mechanism cannot arise. The run id is minted here because nothing upstream supplies
+    # one for an embedding operation.
+    attribution = _spend_attribution_values(
+        request_id=request_id,
+        user_id=user_id,
+        category=resolved_category,
+        litellm_context=litellm_context,
+        user_email=user_email,
+    )
+    embedding_run_id = str(uuid.uuid4())
+    merged_headers.update(spend_logs_metadata_header(**attribution, run_id=embedding_run_id))
+
     # Add headers
     if merged_headers:
         embedding_params['default_headers'] = merged_headers
 
-    return LiteLLMAzureOpenAIEmbeddings(**embedding_params)
+    return LiteLLMAzureOpenAIEmbeddings(codemie_run_id=embedding_run_id, **embedding_params)
 
 
 def generate_litellm_headers_from_context(
@@ -1127,6 +1344,7 @@ def get_litellm_chat_model(
     temperature: Optional[float] = None,
     top_p: Optional[float] = None,
     streaming: bool = True,
+    request_id: Optional[str] = None,
 ) -> Optional["AzureChatOpenAI"]:
     """
     Get LiteLLM chat model if enterprise is enabled AND proxy mode is lite_llm.
@@ -1172,6 +1390,7 @@ def get_litellm_chat_model(
             temperature=temperature,
             top_p=top_p,
             streaming=streaming,
+            request_id=request_id,
         )
     except Exception:
         logger.exception("Failed to create LiteLLM chat model while LiteLLM proxy is enabled")
@@ -1184,6 +1403,7 @@ def get_litellm_embedding_model(
     litellm_context: Optional["LiteLLMContext"],
     user_email: Optional[str],
     user_id: Optional[str] = None,
+    request_id: Optional[str] = None,
 ) -> Optional["AzureOpenAIEmbeddings"]:
     """
     Get LiteLLM embedding model if enterprise is enabled AND proxy mode is lite_llm.
@@ -1224,6 +1444,7 @@ def get_litellm_embedding_model(
             litellm_context=litellm_context,
             user_email=user_email,
             user_id=user_id,
+            request_id=request_id,
         )
     except Exception:
         logger.exception("Failed to create LiteLLM embedding model while LiteLLM proxy is enabled")

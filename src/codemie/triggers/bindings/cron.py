@@ -143,15 +143,21 @@ def _extract_datasource_metrics(payload) -> dict | None:
         return None
     try:
         from codemie.rest_api.models.index import IndexInfo
+        from codemie.rest_api.models.scheduler_run import RunMetrics
 
         fresh = IndexInfo.get_by_id(str(index_info.id))
         if fresh is None or fresh.tokens_usage is None:
             return None
-        return {
-            "inputTokens": fresh.tokens_usage.input_tokens,
-            "outputTokens": fresh.tokens_usage.output_tokens,
-            "cost": fresh.tokens_usage.money_spent,
-        }
+        usage = fresh.tokens_usage
+        # The flags are stored with the cost: the run ends before the ledger settles it, and a
+        # snapshot without them would freeze the "nothing settled yet" zero as a final $0.
+        return RunMetrics.from_usage(
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.money_spent,
+            pending=usage.money_spent_pending,
+            unavailable=usage.money_spent_unavailable,
+        ).model_dump()
     except Exception:
         return None
 

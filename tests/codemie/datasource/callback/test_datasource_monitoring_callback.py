@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import uuid
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from langchain_core.documents import Document
 
@@ -265,3 +265,149 @@ class TestDatasourceMonitoringCallback:
         assert callback._estimated_embedding_tokens == 5
         mock_logger.warning.assert_called_once()
         assert secret not in str(mock_logger.warning.call_args)
+
+
+class TestEstimatedEmbeddingFallbackMoney:
+    """The last-resort branch reached when no embedding usage was captured at all.
+
+    Completion and error give **different** answers and that is the point: a completed
+    embedding on the LiteLLM path is *unsettled* (AD-28, an absence the ledger fills in), while
+    a failed indexing run billed nothing and carries a real, measured *zero* (AD-20). Reporting
+    one as the other either fabricates money or loses it.
+    """
+
+    @staticmethod
+    def _callback_with_estimated_tokens(index_info, user, request_uuid, tokens=2587):
+        callback = DatasourceMonitoringCallback(index=index_info, user=user, request_uuid=request_uuid)
+        callback._estimated_embedding_tokens = tokens
+        return callback
+
+    @patch("codemie.datasource.callback.datasource_monitoring_callback.uses_litellm", return_value=True)
+    @patch("codemie.datasource.callback.datasource_monitoring_callback.llm_service.get_embeddings_model_cost")
+    @patch("codemie.datasource.callback.datasource_monitoring_callback.request_summary_manager")
+    @patch.object(DatasourceMonitoringService, "send_indexing_metrics")
+    @patch.object(DatasourceMonitoringService, "send_datasource_tokens_usage_metrics_by_model")
+    @patch.object(IndexInfo, "update_progress")
+    def test_on_complete_on_litellm_path_is_unsettled_not_zero(
+        self,
+        mock_update_progress,
+        mock_send_by_model,
+        mock_send_indexing_metrics,
+        mock_request_summary_manager,
+        mock_get_embeddings_model_cost,
+        mock_uses_litellm,
+        mock_index_info,
+        mock_user,
+        mock_request_uuid,
+    ):
+        mock_summary = RequestSummary(request_id=mock_request_uuid)
+        mock_summary.tokens_usage = None
+        mock_request_summary_manager.get_summary.return_value = mock_summary
+
+        callback = self._callback_with_estimated_tokens(mock_index_info, mock_user, mock_request_uuid)
+        callback.on_complete(result="some result")
+
+        llm_run = mock_send_by_model.call_args[1]["llm_runs"][0]
+        assert llm_run.money_spent is None
+        assert not isinstance(llm_run.money_spent, float)
+        mock_get_embeddings_model_cost.assert_not_called()
+        assert llm_run.input_tokens == 2587
+
+    @patch("codemie.datasource.callback.datasource_monitoring_callback.uses_litellm", return_value=False)
+    @patch("codemie.datasource.callback.datasource_monitoring_callback.llm_service.get_embeddings_model_cost")
+    @patch("codemie.datasource.callback.datasource_monitoring_callback.request_summary_manager")
+    @patch.object(DatasourceMonitoringService, "send_indexing_metrics")
+    @patch.object(DatasourceMonitoringService, "send_datasource_tokens_usage_metrics_by_model")
+    @patch.object(IndexInfo, "update_progress")
+    def test_on_complete_off_the_litellm_path_still_estimates(
+        self,
+        mock_update_progress,
+        mock_send_by_model,
+        mock_send_indexing_metrics,
+        mock_request_summary_manager,
+        mock_get_embeddings_model_cost,
+        mock_uses_litellm,
+        mock_index_info,
+        mock_user,
+        mock_request_uuid,
+    ):
+        """The mirror case - removing the estimate everywhere would break the default path."""
+        mock_summary = RequestSummary(request_id=mock_request_uuid)
+        mock_summary.tokens_usage = None
+        mock_request_summary_manager.get_summary.return_value = mock_summary
+        mock_get_embeddings_model_cost.return_value = MagicMock(input=0.0001)
+
+        callback = self._callback_with_estimated_tokens(mock_index_info, mock_user, mock_request_uuid, tokens=100)
+        callback.on_complete(result="some result")
+
+        llm_run = mock_send_by_model.call_args[1]["llm_runs"][0]
+        assert llm_run.money_spent == pytest.approx(100 * 0.0001)
+
+    @patch("codemie.datasource.callback.datasource_monitoring_callback.uses_litellm", return_value=True)
+    @patch("codemie.datasource.callback.datasource_monitoring_callback.llm_service.get_embeddings_model_cost")
+    @patch("codemie.datasource.callback.datasource_monitoring_callback.request_summary_manager")
+    @patch.object(DatasourceMonitoringService, "send_indexing_metrics")
+    @patch.object(DatasourceMonitoringService, "send_datasource_tokens_usage_metrics_by_model")
+    @patch.object(IndexInfo, "update_progress")
+    def test_on_error_carries_a_real_measured_zero(
+        self,
+        mock_update_progress,
+        mock_send_by_model,
+        mock_send_indexing_metrics,
+        mock_request_summary_manager,
+        mock_get_embeddings_model_cost,
+        mock_uses_litellm,
+        mock_index_info,
+        mock_user,
+        mock_request_uuid,
+    ):
+        """AD-20 on the LiteLLM path: the failure was not billed, so zero - and never `None`."""
+        mock_summary = RequestSummary(request_id=mock_request_uuid)
+        mock_summary.tokens_usage = None
+        mock_request_summary_manager.get_summary.return_value = mock_summary
+
+        callback = self._callback_with_estimated_tokens(mock_index_info, mock_user, mock_request_uuid)
+        callback.on_error(exception=ValueError("Test error"))
+
+        llm_run = mock_send_by_model.call_args[1]["llm_runs"][0]
+        assert llm_run.money_spent == 0.0
+        assert llm_run.money_spent is not None
+        mock_get_embeddings_model_cost.assert_not_called()
+        assert llm_run.input_tokens == 2587
+
+    @patch("codemie.datasource.callback.datasource_monitoring_callback.uses_litellm", return_value=False)
+    @patch("codemie.datasource.callback.datasource_monitoring_callback.llm_service.get_embeddings_model_cost")
+    @patch("codemie.datasource.callback.datasource_monitoring_callback.request_summary_manager")
+    @patch.object(DatasourceMonitoringService, "send_indexing_metrics")
+    @patch.object(DatasourceMonitoringService, "send_datasource_tokens_usage_metrics_by_model")
+    @patch.object(IndexInfo, "update_progress")
+    def test_on_error_off_the_litellm_path_keeps_the_local_estimate(
+        self,
+        mock_update_progress,
+        mock_send_by_model,
+        mock_send_indexing_metrics,
+        mock_request_summary_manager,
+        mock_get_embeddings_model_cost,
+        mock_uses_litellm,
+        mock_index_info,
+        mock_user,
+        mock_request_uuid,
+    ):
+        """The mirror case, and it is why the failure zero is gated rather than unconditional.
+
+        This branch's own condition — no proxy usage captured — is the **ordinary** case for a
+        non-LiteLLM deployment, where proxy data never exists at all. AD-20 scopes its zero to the
+        ledger (*"counts come from the ledger, never from the callback"*), so an unconditional zero
+        here would replace the only figure such a deployment ever had for a failed index with a claim
+        that it cost nothing. Driven from `uses_litellm` so the assertion pins AD-2's routing seam.
+        """
+        mock_get_embeddings_model_cost.return_value = MagicMock(input=0.0001)
+        mock_summary = RequestSummary(request_id=mock_request_uuid)
+        mock_summary.tokens_usage = None
+        mock_request_summary_manager.get_summary.return_value = mock_summary
+
+        callback = self._callback_with_estimated_tokens(mock_index_info, mock_user, mock_request_uuid, tokens=100)
+        callback.on_error(exception=ValueError("Test error"))
+
+        llm_run = mock_send_by_model.call_args[1]["llm_runs"][0]
+        assert llm_run.money_spent == pytest.approx(100 * 0.0001)

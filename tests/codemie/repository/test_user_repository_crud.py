@@ -410,14 +410,12 @@ class TestUserRepositoryFetchBudgetAssignmentsMap:
         assert result == {}
         db_session.exec.assert_not_called()
 
-    def test_fetch_budget_assignments_map_groups_assignments_and_spending(
+    def test_fetch_budget_assignments_map_groups_assignments_by_user(
         self,
         user_repository,
         db_session,
         mocker,
     ):
-        email_result = mocker.MagicMock()
-        email_result.all.return_value = ["User1@example.com", "user2@example.com"]
         rows_result = mocker.MagicMock()
         user_1 = mocker.MagicMock(id="user-1")
         user_2 = mocker.MagicMock(id="user-2")
@@ -425,18 +423,28 @@ class TestUserRepositoryFetchBudgetAssignmentsMap:
         assignment_2 = mocker.MagicMock()
         budget_1 = mocker.MagicMock()
         rows_result.all.return_value = [
-            (user_1, assignment_1, budget_1, 12.5),
-            (user_1, None, None, None),
-            (user_2, assignment_2, None, None),
+            (user_1, assignment_1, budget_1),
+            (user_1, None, None),
+            (user_2, assignment_2, None),
         ]
-        db_session.exec.side_effect = [email_result, rows_result]
+        db_session.exec.return_value = rows_result
 
         result = user_repository.fetch_budget_assignments_map(db_session, ["user-1", "user-2"])
 
         assert result == {
-            "user-1": [(assignment_1, budget_1, 12.5)],
-            "user-2": [(assignment_2, None, None)],
+            "user-1": [(assignment_1, budget_1)],
+            "user-2": [(assignment_2, None)],
         }
+
+    def test_fetch_budget_assignments_map_issues_one_query(self, user_repository, db_session, mocker):
+        """No spend join means no companion email query: assignments come from a single statement."""
+        rows_result = mocker.MagicMock()
+        rows_result.all.return_value = []
+        db_session.exec.return_value = rows_result
+
+        user_repository.fetch_budget_assignments_map(db_session, ["user-1"])
+
+        db_session.exec.assert_called_once()
 
 
 class TestUserRepositoryGetByEmails:

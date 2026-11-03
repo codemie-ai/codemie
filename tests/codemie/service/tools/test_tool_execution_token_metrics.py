@@ -12,15 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for token metric emission in ToolExecutionService LLM call sites."""
+"""Tests for token metric emission and spend-origin binding in ToolExecutionService LLM call sites."""
 
 import unittest
 from unittest.mock import MagicMock, patch
 
 from codemie.core.models import TokensUsage
-from codemie.rest_api.models.tool import ToolInvokeRequest
+from codemie.rest_api.models.index import IndexInfo
+from codemie.rest_api.models.tool import DatasourceSearchInvokeRequest, ToolInvokeRequest
 from codemie.service.monitoring.metrics_constants import MetricsAttributes
 from codemie.service.request_summary_manager import RequestSummary
+from codemie.service.spend.origin_context import current_origin
+from codemie.service.spend.traffic_class import TrafficOrigin
 from codemie.service.tools.tool_execution_service import ToolExecutionService
 
 _SVC = "codemie.service.tools.tool_execution_service"
@@ -329,3 +332,119 @@ class TestInvokeToolWithSystemIntegrationTokenMetrics(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestToolExecutionSpendOrigin(unittest.TestCase):
+    """Every direct tool-invocation entry publishes the tools origin around the work."""
+
+    def setUp(self):
+        self.observed = []
+        self.request = ToolInvokeRequest(
+            project="test-project",
+            request_id="req-origin-1",
+            tool_creds={"token": "abc"},
+            tool_args={"file_names": ["https://example.com/file.pdf"]},
+        )
+
+    def _record(self, return_value):
+        def record(*_args, **_kwargs):
+            self.observed.append(current_origin())
+            return return_value
+
+        return record
+
+    @patch(f"{_SVC}.request_summary_manager")
+    @patch(f"{_SVC}.emit_llm_token_metric")
+    @patch(f"{_SVC}.get_llm_by_credentials")
+    @patch(f"{_SVC}.build_unique_file_objects_list")
+    @patch(f"{_SVC}.FileAnalysisToolkit")
+    def test_invoke_file_analysis_tool_publishes_tools(
+        self, mock_fa_toolkit, mock_build_files, mock_get_llm, _emit, _rsm
+    ):
+        mock_get_llm.side_effect = self._record(MagicMock())
+        mock_build_files.return_value = [MagicMock()]
+
+        mock_tool = MagicMock()
+        mock_tool.execute.return_value = "result"
+        mock_fa_toolkit.get_toolkit.return_value.get_tools.return_value = [mock_tool]
+
+        with patch("codemie.service.tools.tool_service.ToolsService.find_tool", return_value=mock_tool):
+            with patch(f"{_SVC}.ToolExecutionService.validate_tool_args"):
+                ToolExecutionService.invoke_file_analysis_tool(self.request, "file_analysis")
+
+        self.assertEqual(self.observed, [TrafficOrigin.TOOLS])
+        self.assertIsNone(current_origin())
+
+    @patch(f"{_SVC}.request_summary_manager")
+    @patch(f"{_SVC}.emit_llm_token_metric")
+    @patch(f"{_SVC}.ToolExecutionService._create_toolkit_instance")
+    @patch(f"{_SVC}.ToolExecutionService.validate_tool_args")
+    @patch(f"{_SVC}.ToolDiscoveryService")
+    def test_invoke_tool_with_direct_creds_publishes_tools(
+        self, mock_discovery, _validate, mock_create_toolkit, _emit, _rsm
+    ):
+        mock_tool = MagicMock()
+        mock_tool.execute.return_value = "git result"
+        toolkit = MagicMock()
+        toolkit.get_tools.return_value = [mock_tool]
+        mock_create_toolkit.side_effect = self._record(toolkit)
+        mock_discovery.find_tool_by_name.return_value = MagicMock()
+
+        with patch("codemie.service.tools.tool_service.ToolsService.find_tool", return_value=mock_tool):
+            ToolExecutionService.invoke_tool_with_direct_creds(self.request, "git_push")
+
+        self.assertEqual(self.observed, [TrafficOrigin.TOOLS])
+        self.assertIsNone(current_origin())
+
+    @patch(f"{_SVC}.request_summary_manager")
+    @patch(f"{_SVC}.emit_llm_token_metric")
+    @patch(f"{_SVC}.ToolExecutionService.get_tool_with_system_integration")
+    @patch(f"{_SVC}.ToolExecutionService.validate_tool_args")
+    @patch(f"{_SVC}.VirtualAssistantService")
+    def test_invoke_tool_with_system_integration_publishes_tools(
+        self, mock_virtual_assistant, _validate, mock_get_tool, _emit, _rsm
+    ):
+        mock_virtual_assistant.create_from_tool_invocation.side_effect = self._record(MagicMock())
+        mock_tool = MagicMock()
+        mock_tool.execute.return_value = "result"
+        mock_get_tool.return_value = mock_tool
+
+        ToolExecutionService.invoke_tool_with_system_integration(self.request, "jira_tool", MagicMock())
+
+        self.assertEqual(self.observed, [TrafficOrigin.TOOLS])
+        self.assertIsNone(current_origin())
+
+    @patch(f"{_SVC}.request_summary_manager")
+    @patch(f"{_SVC}.emit_llm_token_metric")
+    def test_invoke_datasource_search_publishes_tools(self, _emit, _rsm):
+        datasource = MagicMock(spec=IndexInfo)
+        request = MagicMock(spec=DatasourceSearchInvokeRequest)
+        request.query = "test query"
+        request.llm_model = "gpt-4"
+        request.request_id = "req-origin-1"
+
+        search_tool = MagicMock()
+        search_tool.metadata = {}
+        search_tool.execute.return_value = "search results"
+
+        with patch.object(ToolExecutionService, "get_search_tool", side_effect=self._record(search_tool)):
+            ToolExecutionService.invoke_datasource_search(datasource, request)
+
+        self.assertEqual(self.observed, [TrafficOrigin.TOOLS])
+        self.assertIsNone(current_origin())
+
+    @patch(f"{_SVC}.request_summary_manager")
+    @patch(f"{_SVC}.emit_llm_token_metric")
+    @patch(f"{_SVC}.get_llm_by_credentials")
+    def test_origin_is_restored_when_the_tool_fails(self, mock_get_llm, _emit, _rsm):
+        def record_and_fail(*_args, **_kwargs):
+            self.observed.append(current_origin())
+            raise RuntimeError("LLM failure")
+
+        mock_get_llm.side_effect = record_and_fail
+
+        with self.assertRaises(RuntimeError):
+            ToolExecutionService.invoke_file_analysis_tool(self.request, "file_analysis")
+
+        self.assertEqual(self.observed, [TrafficOrigin.TOOLS])
+        self.assertIsNone(current_origin())

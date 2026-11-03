@@ -39,11 +39,21 @@ _HANDLER_MODULE = "codemie.service.analytics.handlers.cli.insights_handler"
 # ---------------------------------------------------------------------------
 
 
-def _es_bucket(email: str, cost: float = 0.0) -> dict:
-    """Return a fake Elasticsearch user bucket matching the enrichment aggregation format."""
+def _es_bucket(email: str, cost: float = 0.0, *, settled: int = 10, unsettled: int = 0) -> dict:
+    """Return a fake Elasticsearch user bucket matching the enrichment aggregation format.
+
+    The two coverage counts are part of that format: the money `sum` skips every request whose cost
+    never settled, so the aggregation asks for them alongside it and the read decides from all three
+    whether the figure is whole. `settled=0` is the live shape for streaming-only traffic - the sum
+    returns 0.0 and it means *nothing settled*, not *nothing was spent*.
+    """
     return {
         "user_email": {"top": [{"metrics": {"attributes.user_email.keyword": email}}]},
-        "cost_bucket": {"total_cost": {"value": cost}},
+        "cost_bucket": {
+            "total_cost": {"value": cost},
+            "money_settled": {"value": settled},
+            "money_unsettled": {"doc_count": unsettled},
+        },
     }
 
 
@@ -242,6 +252,85 @@ class TestAggregateUserRowsByEnrichmentField:
 
         assert len(result) == 1
         assert result[0]["country"] == "Poland"
+
+    @pytest.mark.asyncio
+    async def test_a_dimension_whose_members_never_settled_a_cost_has_no_figure(self, handler):
+        """`$0.00` against a job title would read as *this discipline costs nothing*."""
+        handler.repository.execute_aggregation_query.return_value = _es_result(
+            [_es_bucket("alice@example.com", 0.0, settled=0, unsettled=400)]
+        )
+
+        with patch(
+            f"{_HANDLER_MODULE}.user_enrichment_repository.get_by_emails",
+            AsyncMock(return_value={"alice@example.com": _enrichment("country", "Poland")}),
+        ):
+            result = await handler._aggregate_user_rows_by_enrichment_field("country", None, None, None, None, None)
+
+        assert result[0]["total_cost"] is None
+        assert result[0]["spend_unavailable"] is True
+        # The head count is a fact and is unaffected by what the money did.
+        assert result[0]["user_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_one_unsettled_member_makes_the_dimension_total_a_subtotal(self, handler):
+        """The group is short by one member's whole spend, and the row says so rather than looking whole."""
+        handler.repository.execute_aggregation_query.return_value = _es_result(
+            [
+                _es_bucket("alice@example.com", 0.0, settled=0, unsettled=400),
+                _es_bucket("bob@example.com", 25.0),
+            ]
+        )
+        enrichment_map = {
+            "alice@example.com": _enrichment("country", "Poland"),
+            "bob@example.com": _enrichment("country", "Poland"),
+        }
+
+        with patch(
+            f"{_HANDLER_MODULE}.user_enrichment_repository.get_by_emails",
+            AsyncMock(return_value=enrichment_map),
+        ):
+            result = await handler._aggregate_user_rows_by_enrichment_field("country", None, None, None, None, None)
+
+        assert result[0]["total_cost"] == 25.0
+        assert result[0]["spend_unavailable"] is True
+        assert result[0]["spend_partial"] is True
+        assert result[0]["user_count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_a_dimension_with_no_figure_is_ordered_last_not_at_zero(self, handler):
+        handler.repository.execute_aggregation_query.return_value = _es_result(
+            [
+                _es_bucket("alice@example.com", 0.0, settled=0, unsettled=400),
+                _es_bucket("bob@example.com", 0.5),
+            ]
+        )
+        enrichment_map = {
+            "alice@example.com": _enrichment("country", "Unknown-Cost"),
+            "bob@example.com": _enrichment("country", "Cheap"),
+        }
+
+        with patch(
+            f"{_HANDLER_MODULE}.user_enrichment_repository.get_by_emails",
+            AsyncMock(return_value=enrichment_map),
+        ):
+            result = await handler._aggregate_user_rows_by_enrichment_field("country", None, None, None, None, None)
+
+        assert [row["country"] for row in result] == ["Cheap", "Unknown-Cost"]
+
+    @pytest.mark.asyncio
+    async def test_a_measured_zero_stays_an_unqualified_zero(self, handler):
+        """A request that settled at zero cost is a measurement, and the row publishes it bare."""
+        handler.repository.execute_aggregation_query.return_value = _es_result([_es_bucket("alice@example.com", 0.0)])
+
+        with patch(
+            f"{_HANDLER_MODULE}.user_enrichment_repository.get_by_emails",
+            AsyncMock(return_value={"alice@example.com": _enrichment("country", "Poland")}),
+        ):
+            result = await handler._aggregate_user_rows_by_enrichment_field("country", None, None, None, None, None)
+
+        assert result[0]["total_cost"] == 0.0
+        assert result[0]["spend_unavailable"] is False
+        assert result[0]["spend_partial"] is False
 
     @pytest.mark.asyncio
     async def test_works_with_job_title_field(self, handler):

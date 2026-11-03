@@ -14,66 +14,24 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import uuid
 from datetime import datetime, timezone
-from decimal import Decimal
 from typing import Any
 
+from codemie.clients.postgres import get_async_session
 from codemie.service.budget.budget_enums import BudgetCategory
-
-from sqlalchemy.ext.asyncio import AsyncSession
+from codemie.service.budget.daily_reset_reconciliation_service import daily_budget_reset_reconciliation_service
+from codemie.service.spend.budget_period import budget_period_range
+from codemie.service.spend.coverage import SpendResult, TimeRange
+from codemie.service.spend.identity_bridge import resolve_identity
+from codemie.service.spend.ledger import PersonalHolder
+from codemie.service.spend.rendering import FIELD_MISSING, FIELD_PARTIAL, FIELD_UNAVAILABLE, spend_row_fields
+from codemie.service.spend.spend_service import spend_service
 
 logger = logging.getLogger(__name__)
 
-
-def _compute_spend_delta(
-    fresh_spend: Decimal,
-    prev_row: Any | None,
-    budget: Any | None = None,
-    snapshot_at: datetime | None = None,
-) -> tuple[Decimal, Decimal]:
-    """Compute daily_spend and cumulative_spend for a new budget tracking row.
-
-    Delegates to LiteLLMSpendCollectorService helpers so the logic is identical
-    to the batch-collector path, including budget-table reset detection.
-    """
-    from codemie.service.spend_tracking.spend_collector_service import (
-        InvalidSpendSnapshotError,
-        LiteLLMSpendCollectorService,
-    )
-
-    q = LiteLLMSpendCollectorService._quantize_spend
-    fresh_spend = q(fresh_spend)
-
-    if prev_row is None:
-        return fresh_spend, fresh_spend
-
-    prev_period = q(prev_row.budget_period_spend)
-    prev_cumulative = q(prev_row.cumulative_spend)
-    _snapshot_at = snapshot_at or datetime.now(timezone.utc)
-
-    if LiteLLMSpendCollectorService._did_budget_reset(prev_row, budget, _snapshot_at):
-        logger.debug(
-            f"Budget reset detected for budget_id={prev_row.budget_id!r} via budget table; "
-            f"using current period spend as daily delta"
-        )
-        daily = fresh_spend
-    elif fresh_spend >= prev_period:
-        daily = q(fresh_spend - prev_period)
-    else:
-        logger.warning(
-            f"Budget-period spend decreased for budget_id={prev_row.budget_id!r}: "
-            f"current={fresh_spend} < prev={prev_period}; treating as reset"
-        )
-        daily = fresh_spend
-
-    daily = q(daily)
-    cumulative = q(prev_cumulative + daily)
-    if cumulative < prev_cumulative:
-        raise InvalidSpendSnapshotError(f"cumulative spend decreased: computed={cumulative} < prev={prev_cumulative}")
-    return daily, cumulative
+#: The keys a row carries beside its figure, in the order the mapping defines them.
+_ANNOTATION_FIELDS = (FIELD_UNAVAILABLE, FIELD_PARTIAL, FIELD_MISSING)
 
 
 def _get_key_spending_columns() -> list[dict]:
@@ -112,7 +70,7 @@ def _get_key_spending_columns() -> list[dict]:
             "label": "Budget Limit ($)",
             "type": "number",
             "format": "currency",
-            "description": "Soft budget limit (warning threshold)",
+            "description": "Maximum budget for the period (hard limit)",
         },
         {
             "id": "total",
@@ -147,19 +105,60 @@ def _calculate_time_until_reset(budget_reset_at: str | None) -> str | None:
         return None
 
 
-def _build_spending_row(label: str, spending: dict[str, Any], is_default: bool = False) -> dict[str, Any]:
-    """Build a single spending table row from a spending dict."""
-    current = spending.get("total_spend", 0.0)
-    percent_numerator = spending.get("percent_spend", current)
+def _spend_annotation(spending: dict, figure: float | None) -> dict[str, object]:
+    """The row's three companion keys - passed through when the caller carried them, else derived.
+
+    A caller reading through the spend port merges `spend_row_fields` into `spending`, and those
+    values are the truth about its figure: a truncated total is a number **and** unavailable, which
+    the number alone cannot say. The LiteLLM-fed callers in the analytics router carry no annotation,
+    so there the figure is the only fact available - an absent one is unavailable, and one that
+    arrived unqualified is exact. Defaulting that second case to unavailable would brand every live
+    figure on that screen a truncated total.
+    """
+    no_figure = spend_row_fields(None)
+    derived = no_figure if figure is None else {**no_figure, FIELD_UNAVAILABLE: False}
+    return {name: spending.get(name, derived[name]) for name in _ANNOTATION_FIELDS}
+
+
+def _build_spending_row(label: str, spending: dict, is_default: bool = False) -> dict[str, Any]:
+    """Build one spending table row, **without inventing any figure it was not given**.
+
+    Two absences used to be filled in with numbers, and both read as facts on a screen:
+
+    - a **missing spend** became `0.0`, saying the holder spent nothing when the truth is that their
+      consumption is unknown. An absent figure is *unavailable*, never zero;
+    - a **missing or zero limit** made the consumed percentage `0.0`, which renders as *0% consumed*
+      for a holder whose consumption is simply not known. There is no percentage of an absent limit,
+      so none is reported.
+
+    The precedent for the limit half already existed three lines from the old code, in
+    `_limit_value`: *"None means 'no limit configured'. Never substitute 0 - 0 is a real limit and
+    would render as fully consumed."* The absent-**spend** case had simply never been reasoned the
+    same way.
+
+    **This function is shared with the analytics router on purpose.** It existed there as a
+    byte-identical copy, and that duplication was itself the finding: correcting one copy leaves the
+    other rendering the old zeros, on a screen nobody would think to re-check.
+    """
+    current = spending.get("total_spend")
     limit = spending.get("max_budget")
     reset_at = spending.get("budget_reset_at") or None
+
+    # An enforcement-off project row measures its bar against the project total, not the member's spend.
+    percent_numerator = spending.get("percent_spend", current)
+    consumed_percent = None
+    if percent_numerator is not None and limit:
+        consumed_percent = round(percent_numerator / limit * 100, 2)
+
     return {
         "project_name": label,
-        "current_spending": round(current, 2),
+        # Unrounded: the UI formats money, and rounding here turned a real sub-cent spend into 0.
+        "current_spending": current,
         "budget_reset_at": reset_at,
         "time_until_reset": _calculate_time_until_reset(reset_at) if reset_at else None,
         "budget_limit": round(limit, 2) if limit is not None else None,
-        "total": round(percent_numerator / limit * 100, 2) if limit and limit > 0 else 0.0,
+        "total": consumed_percent,
+        **_spend_annotation(spending, current),
         "is_default": is_default,
     }
 
@@ -193,10 +192,14 @@ def _expand_project_rows(
                 "total_spend": project[category.value],
                 "max_budget": limit,
                 "budget_reset_at": project.get(f"{category.value}_reset_at"),
+                **{
+                    field: project[f"{category.value}_{field}"]
+                    for field in _ANNOTATION_FIELDS
+                    if f"{category.value}_{field}" in project
+                },
             }
-            percent_spend = project.get(f"{category.value}_percent_spend")
-            if percent_spend is not None:
-                spending["percent_spend"] = percent_spend
+            if f"{category.value}_percent_spend" in project:
+                spending["percent_spend"] = project[f"{category.value}_percent_spend"]
             rows.append(
                 _build_spending_row(_category_label(project["project_name"], category.value), spending, is_default)
             )
@@ -210,174 +213,79 @@ def _build_budget_usage_rows(
     spend_map: dict,
     is_default: bool = False,
 ) -> tuple[list[dict], list[dict]]:
-    """Build tabular budget usage data from personal budget assignments."""
+    """Build tabular budget usage data from personal budget assignments.
+
+    `spend_map` maps budget_id to the port's `SpendResult`. A budget_id it does not hold, and a
+    result whose `figure` is None, both mean *no figure exists* - which `_build_spending_row`
+    renders as unavailable rather than as zero.
+
+    Each result's annotation travels with its figure, so a truncated total does not reach the screen
+    looking like a whole one.
+    """
     rows = []
 
     for assignment in sorted(assignments, key=lambda a: _CATEGORY_RANK.get(a.category, len(_CATEGORY_RANK))):
         budget = budgets_map.get(assignment.budget_id)
         if budget is None:
             continue
-        spend_row = spend_map.get(assignment.budget_id)
+        spend_result = spend_map.get(assignment.budget_id)
+        figure = spend_result.figure if spend_result is not None else None
         label = _category_label(user_label, assignment.category)
         spending = {
-            "total_spend": float(spend_row.budget_period_spend) if spend_row else 0.0,
+            "total_spend": float(figure) if figure is not None else None,
             "max_budget": budget.max_budget,
             "budget_reset_at": budget.budget_reset_at,
+            **spend_row_fields(spend_result),
         }
         rows.append(_build_spending_row(label, spending, is_default))
 
     return _get_key_spending_columns(), rows
 
 
-def _maybe_update_budget_reset(
-    session: Any,
-    budget_id: str,
-    budget: Any,
-    fresh_reset_at: str | None,
-) -> bool:
-    """Update budget.budget_reset_at when it changed; return True if updated."""
-    if not fresh_reset_at or not budget or budget.budget_reset_at == fresh_reset_at:
-        return False
-    logger.debug(
-        f"Updating budget_reset_at for budget_id={budget_id!r}: {budget.budget_reset_at!r} → {fresh_reset_at!r}"
-    )
-    budget.budget_reset_at = fresh_reset_at
-    session.add(budget)
-    return True
+def _budget_category(category: str) -> BudgetCategory | None:
+    """The assignment's category as the enum the port requires, or None if it names no category.
 
-
-def _compute_spend_delta_safe(
-    assignment: Any,
-    fresh_spend: Decimal,
-    prev_row: Any,
-    budget: Any,
-    now: datetime,
-    subject_label: str,
-    allow_zero: bool = False,
-) -> tuple | None:
-    """Return (daily_spend, cumulative_spend), or None to skip the row."""
-    from codemie.service.spend_tracking.spend_collector_service import InvalidSpendSnapshotError
-
+    `user_budget_assignments.category` is a free-form varchar with no database-level vocabulary, so
+    a value outside `BudgetCategory` is reachable. It identifies no budget holder, so that row
+    renders with an absent figure rather than failing the whole read.
+    """
     try:
-        daily_spend, cumulative_spend = _compute_spend_delta(fresh_spend, prev_row, budget=budget, snapshot_at=now)
-    except InvalidSpendSnapshotError as exc:
-        logger.warning(
-            f"Skipping invalid budget snapshot for budget_id={assignment.budget_id!r} subject={subject_label}: {exc}"
-        )
+        return BudgetCategory(category)
+    except ValueError:
+        logger.warning(f"budget_usage: assignment category {category!r} names no budget category; no figure for it")
         return None
-    if daily_spend == Decimal("0") and not allow_zero:
-        logger.debug(
-            f"Zero daily delta for budget_id={assignment.budget_id!r} subject={subject_label}; skipping insert"
-        )
-        return None
-    return daily_spend, cumulative_spend
-
-
-def _is_reset_transition(prev_row: Any, budget: Any, fresh_spend: Decimal, now: datetime) -> bool:
-    """Return True when fresh_spend represents a reset from a previously non-zero period."""
-    from codemie.service.spend_tracking.spend_collector_service import LiteLLMSpendCollectorService
-
-    return LiteLLMSpendCollectorService.is_reset_transition(prev_row, budget, fresh_spend, now)
-
-
-def _collect_spend_rows(
-    session: Any,
-    fetch_assignments: list,
-    results: list,
-    budgets_map: dict,
-    current_spend_map: dict,
-    prev_day_map: dict,
-    subject_user_id: str,
-    subject_label: str,
-    now: datetime,
-) -> tuple[list, list, bool]:
-    """Process LiteLLM fetch results into tracking rows, unchanged IDs, and budget-update flag."""
-    from codemie.service.spend_tracking.spend_models import ProjectSpendTracking
-
-    rows_to_insert: list = []
-    unchanged_budget_ids: list = []
-    has_budget_updates = False
-
-    for assignment, result in zip(fetch_assignments, results, strict=False):
-        if isinstance(result, BaseException):
-            logger.warning(f"LiteLLM fetch failed for category={assignment.category} subject={subject_label}: {result}")
-            continue
-        if result is None:
-            continue
-        fresh_spend = Decimal(str(result.get("total_spend", 0.0)))
-        budget = budgets_map.get(assignment.budget_id)
-        if _maybe_update_budget_reset(session, assignment.budget_id, budget, result.get("budget_reset_at")):
-            has_budget_updates = True
-        existing = current_spend_map.get(assignment.budget_id)
-        spend_unchanged = existing is not None and round(existing.budget_period_spend, 4) == round(fresh_spend, 4)
-        if spend_unchanged:
-            logger.debug(
-                f"Spend unchanged for budget_id={assignment.budget_id} "
-                f"category={assignment.category} spend={fresh_spend}, touching spend_date."
-            )
-            unchanged_budget_ids.append(assignment.budget_id)
-            continue
-        prev_row = existing if existing is not None else prev_day_map.get(assignment.category)
-        delta = _compute_spend_delta_safe(
-            assignment,
-            fresh_spend,
-            prev_row,
-            budget,
-            now,
-            subject_label,
-            allow_zero=existing is None or _is_reset_transition(prev_row, budget, fresh_spend, now),
-        )
-        if delta is None:
-            continue
-        daily_spend, cumulative_spend = delta
-        rows_to_insert.append(
-            ProjectSpendTracking(
-                id=uuid.uuid4(),
-                project_name=subject_label,
-                user_id=subject_user_id,
-                spend_date=now,
-                budget_period_spend=fresh_spend,
-                budget_id=assignment.budget_id,
-                budget_category=assignment.category,
-                spend_subject_type="budget",
-                daily_spend=daily_spend,
-                cumulative_spend=cumulative_spend,
-            )
-        )
-    return rows_to_insert, unchanged_budget_ids, has_budget_updates
 
 
 class BudgetUsageService:
-    """Service for retrieving budget usage with lazy LiteLLM refresh.
+    """Budget usage for one person, read through the spend port.
 
-    On each request, checks if the spend data in DB is older than the threshold.
-    If stale, pulls fresh data from LiteLLM, persists it, and returns it.
-    Falls back gracefully to DB data if LiteLLM is unavailable.
+    Every figure comes from `spend_service`; this service resolves *which* holder and *which*
+    period to ask about and renders the answer. It computes, fetches and caches no spend of its
+    own (AD-1).
     """
 
     async def get_budget_usage(
         self,
-        session: AsyncSession,
         subject_user_id: str,
         subject_label: str,
         subject_email: str | None = None,
     ) -> tuple[list[dict], list[dict]]:
         """Return (columns, rows) for the budget usage tabular response.
 
-        Performs a lazy refresh from LiteLLM if spend data is older than
-        config.BUDGET_USAGE_STALENESS_THRESHOLD_MS milliseconds.
+        Owns its sessions and closes each before the provider or the ledger is called: a session
+        held open across `refresh_overdue` (a LiteLLM call) and the ledger read (which checks out a
+        connection of its own) kept two pooled connections per request (EPMCDME-15537).
         Rows are ordered default project, personal, then the remaining projects.
         """
+        from codemie.repository.budget_repository import budget_repository
         from codemie.service.analytics.handlers.member_spend_service import member_spend_service
 
-        default_project, default_is_personal = await self._resolve_default_project(
-            session, subject_user_id, subject_email
-        )
+        default_project, default_is_personal = await self._resolve_default_project(subject_user_id, subject_email)
 
         try:
             project_rows = _expand_project_rows(
                 await member_spend_service.get_user_project_rows(
-                    session, subject_user_id, effective_limits=True, with_reset=True, user_scoped_refresh=True
+                    subject_user_id, effective_limits=True, with_reset=True
                 ),
                 default_project,
             )
@@ -386,33 +294,20 @@ class BudgetUsageService:
                 f"Failed to fetch project rows for user {subject_user_id}: {e}. Returning personal rows only."
             )
             project_rows = []
-            try:
-                await session.rollback()
-            except Exception as rollback_error:
-                logger.warning(f"Rollback after failed project row fetch also failed: {rollback_error}")
 
-        assignments, budgets_map, spend_map, prev_day_map = await self._load_from_db(
-            session, subject_user_id, subject_label
-        )
-
-        needs_refresh = self._needs_refresh(spend_map) and self._is_litellm_enabled()
-        if needs_refresh:
-            logger.info(
-                f"Refreshing budget spend from LiteLLM for subject={subject_user_id} subject_label={subject_label}"
-            )
-        else:
-            logger.info(
-                f"Returning cached budget spend from DB for subject={subject_user_id} subject_label={subject_label}"
-            )
-        if needs_refresh and assignments:
-            spend_map = await self._refresh_from_litellm(
-                session, subject_user_id, subject_label, assignments, spend_map, budgets_map, prev_day_map
-            )
-            # session.commit() inside insert_budget_entries expires all previously
-            # loaded ORM objects; rollback clears any error state from a failed
-            # insert, then reload fresh objects for _build_budget_usage_rows.
-            await session.rollback()
-            assignments, budgets_map, _, __ = await self._load_from_db(session, subject_user_id, subject_label)
+        async with get_async_session() as session:
+            assignments = await budget_repository.get_user_category_assignments(session, subject_user_id)
+            budgets_map = await budget_repository.get_by_ids(session, [a.budget_id for a in assignments])
+            # Resolved once for the subject and passed through unchanged. `None` is meaningful: it says
+            # this person's pre-rollout rows cannot be identified, which the port labels on the figure.
+            # An empty set would instead claim they have no fallback identities.
+            aliases = (await resolve_identity(session, subject_user_id)).aliases
+        refreshed = await daily_budget_reset_reconciliation_service.refresh_overdue(budgets_map.values())
+        if refreshed:
+            # Re-read rather than refreshed: the rows left with their closed session (EPMCDME-15537).
+            async with get_async_session() as session:
+                budgets_map.update(await budget_repository.get_by_ids(session, list(refreshed)))
+        spend_map = await self._consumed_per_budget(subject_user_id, assignments, budgets_map, aliases)
 
         columns, personal_rows = _build_budget_usage_rows(
             subject_label, assignments, budgets_map, spend_map, default_is_personal
@@ -422,183 +317,71 @@ class BudgetUsageService:
         return columns, default_rows + personal_rows + other_rows
 
     @staticmethod
-    async def _resolve_default_project(
-        session: AsyncSession, subject_user_id: str, subject_email: str | None
-    ) -> tuple[str | None, bool]:
+    async def _resolve_default_project(subject_user_id: str, subject_email: str | None) -> tuple[str | None, bool]:
         """Return (default project name, whether it is a personal project); (None, False) on any failure."""
         from codemie.repository.application_repository import application_repository
         from codemie.repository.user_project_repository import user_project_repository
         from codemie.rest_api.security.user import resolve_membership_default
 
         try:
-            memberships = await user_project_repository.aget_by_user_id(session, subject_user_id)
-            default_project = resolve_membership_default(memberships, subject_email)
-            if default_project is None:
-                return None, False
-            personal_names = await application_repository.aget_personal_project_names(session, [default_project])
+            async with get_async_session() as session:
+                memberships = await user_project_repository.aget_by_user_id(session, subject_user_id)
+                default_project = resolve_membership_default(memberships, subject_email)
+                if default_project is None:
+                    return None, False
+                personal_names = await application_repository.aget_personal_project_names(session, [default_project])
             return default_project, default_project in personal_names
         except Exception as e:
             logger.warning(f"Failed to resolve default project for user {subject_user_id}: {e}")
-            try:
-                await session.rollback()
-            except Exception as rollback_error:
-                logger.warning(f"Rollback after failed default project resolution also failed: {rollback_error}")
             return None, False
 
-    def _needs_refresh(self, spend_map: dict) -> bool:
-        """Return True if spend_map is empty or the most recent row is older than the threshold."""
-        from codemie.configs.config import config
-
-        if not spend_map:
-            return True
-        latest = max(row.spend_date for row in spend_map.values())
-        if latest.tzinfo is None:
-            latest = latest.replace(tzinfo=timezone.utc)
-        age_ms = (datetime.now(timezone.utc) - latest).total_seconds() * 1000
-        return age_ms > config.BUDGET_USAGE_STALENESS_THRESHOLD_MS
-
     @staticmethod
-    def _is_litellm_enabled() -> bool:
-        try:
-            from codemie.enterprise.litellm.dependencies import is_litellm_enabled
-
-            return is_litellm_enabled()
-        except ImportError:
-            return False
-
-    async def _load_from_db(
-        self,
-        session: AsyncSession,
+    async def _consumed_per_budget(
         subject_user_id: str,
-        subject_label: str,
-    ) -> tuple[list, dict, dict, dict]:
-        """Load all DB data needed for budget usage in parallel.
-
-        Returns (assignments, budgets_map, spend_map, prev_day_map).
-        """
-        from codemie.repository.budget_repository import budget_repository
-        from codemie.repository.project_spend_tracking_repository import ProjectSpendTrackingRepository
-
-        tracking_repo = ProjectSpendTrackingRepository()
-        assignments = await budget_repository.get_user_category_assignments(session, subject_user_id)
-        budget_ids = [a.budget_id for a in assignments]
-        budget_categories = [a.category for a in assignments]
-
-        budgets_map, spend_map, prev_day_map = await asyncio.gather(
-            budget_repository.get_by_ids(session, budget_ids),
-            tracking_repo.get_latest_by_budget_ids(session, budget_ids, subject_label),
-            tracking_repo.get_latest_before_today_by_budget_categories(session, budget_categories, subject_label),
-        )
-        return assignments, budgets_map, spend_map, prev_day_map
-
-    async def _refresh_from_litellm(
-        self,
-        session: AsyncSession,
-        subject_user_id: str,
-        subject_label: str,
         assignments: list,
-        current_spend_map: dict,
         budgets_map: dict,
-        prev_day_map: dict,
-    ) -> dict:
-        """Fetch fresh spend from LiteLLM, persist to DB, and return updated spend_map.
+        aliases: frozenset[str] | None,
+    ) -> dict[str, SpendResult]:
+        """What the subject consumed per budget, keyed by budget_id.
 
-        On any LiteLLM error, logs a warning and returns the original (stale) spend_map.
+        A budget_id absent from the result has **no figure** - never a zero - and was deliberately
+        not asked about.
         """
-        from codemie.enterprise.litellm.dependencies import (
-            get_customer_spending,
-            get_premium_customer_spending,
-            get_proxy_customer_spending,
-        )
-        from codemie.repository.project_spend_tracking_repository import ProjectSpendTrackingRepository
-
-        tracking_repo = ProjectSpendTrackingRepository()
-        budget_ids = [a.budget_id for a in assignments]
-
-        # on_raise intentionally omitted (defaults to False): LiteLLM errors are
-        # returned as None and handled gracefully — we fall back to stale DB data
-        # rather than raising. The old /spending endpoint used on_raise=True because
-        # it had no fallback; the lazy-refresh path does.
-        category_fetchers = {
-            "platform": lambda: asyncio.to_thread(get_customer_spending, subject_label),
-            "cli": lambda: asyncio.to_thread(get_proxy_customer_spending, subject_label),
-            "premium_models": lambda: asyncio.to_thread(get_premium_customer_spending, subject_label),
-        }
-
-        try:
-            fetch_tasks, fetch_assignments = self._build_fetch_tasks(assignments, category_fetchers)
-            results = await asyncio.gather(*fetch_tasks, return_exceptions=True)
-            now = datetime.now(timezone.utc)
-            rows_to_insert, unchanged_budget_ids, has_budget_updates = _collect_spend_rows(
-                session,
-                fetch_assignments,
-                results,
-                budgets_map,
-                current_spend_map,
-                prev_day_map,
-                subject_user_id,
-                subject_label,
-                now,
-            )
-
-            if has_budget_updates:
-                await session.flush()
-
-            if unchanged_budget_ids:
-                await tracking_repo.touch_budget_spend_dates(session, unchanged_budget_ids, subject_label, now)
-
-            fallback = await self._persist_tracking_rows(session, tracking_repo, subject_user_id, rows_to_insert)
-            if fallback is not None:
-                return fallback
-
-            # touch_budget_spend_dates and insert_budget_entries each commit; if neither
-            # ran but budget_reset_at was updated, commit those changes explicitly.
-            if has_budget_updates and not unchanged_budget_ids and not rows_to_insert:
-                await session.commit()
-
-            return await tracking_repo.get_latest_by_budget_ids(session, budget_ids, subject_label)
-
-        except Exception as e:
-            logger.warning(f"LiteLLM refresh failed for subject={subject_user_id}: {e}. Returning stale DB data.")
-            return await tracking_repo.get_latest_by_budget_ids(session, budget_ids, subject_label)
-
-    @staticmethod
-    def _build_fetch_tasks(assignments: list, category_fetchers: dict) -> tuple[list, list]:
-        """Pair each assignment with its LiteLLM fetch coroutine, skipping unsupported categories."""
-        fetch_tasks: list = []
-        fetch_assignments: list = []
+        budget_ids: dict[PersonalHolder, str] = {}
+        holders_by_period: dict[TimeRange, list[PersonalHolder]] = {}
         for assignment in assignments:
-            fetcher = category_fetchers.get(assignment.category)
-            if fetcher is not None:
-                fetch_tasks.append(fetcher())
-                fetch_assignments.append(assignment)
-        return fetch_tasks, fetch_assignments
+            budget = budgets_map.get(assignment.budget_id)
+            category = _budget_category(assignment.category)
+            if budget is None or category is None:
+                continue
+            # The one definition of a budget period. An inline `[now - duration, now)` is a rolling
+            # window that answers a different question just as convincingly. `None` means no period
+            # is derivable, and then there is no figure: this row is not queried at all.
+            period = budget_period_range(
+                budget_reset_at=budget.budget_reset_at,
+                budget_duration=budget.budget_duration,
+                pinned_reset_at=budget.pinned_reset_at,
+                pinned_period_start=budget.pinned_period_start,
+                effective_from=assignment.spend_reset_at,
+            )
+            if period is None:
+                logger.warning(
+                    f"budget_usage: no budget period derivable for budget_id={assignment.budget_id!r} "
+                    f"(reset_at={budget.budget_reset_at!r} duration={budget.budget_duration!r}); "
+                    "reporting no figure rather than guessing a window"
+                )
+                continue
+            holder = PersonalHolder(user_id=subject_user_id, category=category, aliases=aliases)
+            budget_ids[holder] = assignment.budget_id
+            holders_by_period.setdefault(period, []).append(holder)
 
-    @staticmethod
-    async def _persist_tracking_rows(
-        session: AsyncSession,
-        tracking_repo: Any,
-        subject_user_id: str,
-        rows_to_insert: list,
-    ) -> dict | None:
-        """Persist spend rows to DB. Returns an in-memory fallback map on DB error, None on success."""
-        if not rows_to_insert:
-            logger.info(f"LiteLLM refresh returned no data for subject={subject_user_id}, nothing persisted.")
-            return None
-        try:
-            await tracking_repo.insert_budget_entries(session, rows_to_insert)
-            categories = [r.budget_category for r in rows_to_insert]
-            logger.info(
-                f"LiteLLM refresh persisted {len(rows_to_insert)} row(s) for "
-                f"subject={subject_user_id} categories={categories}"
-            )
-            return None
-        except Exception as db_err:
-            logger.warning(
-                f"DB write failed after LiteLLM fetch for subject={subject_user_id}: {db_err}. "
-                "Returning fresh LiteLLM data without persisting."
-            )
-            return {row.budget_id: row for row in rows_to_insert}
+        # One round trip per distinct period, not per row: budgets on the same reset schedule
+        # collapse to the same range, and all holders in one call must share one period.
+        spend_map: dict[str, SpendResult] = {}
+        for period, holders in holders_by_period.items():
+            for holder, result in (await spend_service.consumed_for_holders(holders, period)).items():
+                spend_map[budget_ids[holder]] = result
+        return spend_map
 
 
 budget_usage_service = BudgetUsageService()

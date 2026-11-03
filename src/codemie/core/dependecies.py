@@ -43,7 +43,10 @@ from codemie.rest_api.models.settings import DialCredentials, LiteLLMContext
 from codemie.service.llm_service.llm_service import llm_service, LLMService
 
 
-def get_embeddings_model(embedding_model: str = llm_service.default_embedding_model) -> Any:
+def get_embeddings_model(
+    embedding_model: str = llm_service.default_embedding_model,
+    request_id: Optional[str] = None,
+) -> Any:
     """Return an embeddings model instance for the given embedding model name.
 
     Routing rules:
@@ -67,6 +70,7 @@ def get_embeddings_model(embedding_model: str = llm_service.default_embedding_mo
         litellm_context=context,
         user_email=user_email,
         user_id=user_id,
+        request_id=request_id,
     )
 
     if litellm_embeddings:
@@ -290,6 +294,9 @@ def get_llm_by_credentials(
     user_email = _resolve_user_email(current_user_email.get())
     user_id = logging_user_id.get(None)
 
+    # `request_id` reaches a header for the first time here. It was previously consumed only to
+    # build the token callback below, so no per-request value ever left this function - which is
+    # why delivering it widens this call and the two beneath it.
     litellm_llm = get_litellm_chat_model(
         llm_model_details=llm_model_details,
         litellm_context=context,
@@ -298,6 +305,7 @@ def get_llm_by_credentials(
         temperature=temperature,
         top_p=top_p,
         streaming=streaming,
+        request_id=request_id,
     )
 
     if litellm_llm:

@@ -669,7 +669,7 @@ def get_proxy_customer_spending(user_email: str, on_raise: bool = False) -> dict
 
 def get_customer_spending(user_id: str, on_raise: bool = False):
     """
-    Get customer spending information from LiteLLM.
+    Get the customer's budget **policy** from LiteLLM: its limit and its reset window.
 
     This function wraps the enterprise service call with error handling.
 
@@ -678,10 +678,12 @@ def get_customer_spending(user_id: str, on_raise: bool = False):
         on_raise: If True, raises exceptions on errors. If False, returns None on errors.
 
     Returns:
-        Dictionary with spending data, or None if service not enabled or error occurred (when on_raise=False)
+        Dictionary with the budget policy (``max_budget``, ``budget_duration``,
+        ``budget_reset_at``), or None if service not enabled or error occurred (when
+        on_raise=False)
 
     Raises:
-        Exception: If a backend error occurs while fetching spending data (only when on_raise=True)
+        Exception: If a backend error occurs while fetching the policy (only when on_raise=True)
     """
     from codemie.configs import logger
 
@@ -691,41 +693,22 @@ def get_customer_spending(user_id: str, on_raise: bool = False):
         return None
 
     try:
-        return litellm.get_customer_spending(user_id)
+        policy = litellm.get_customer_spending(user_id)
     except Exception as e:
-        logger.error(f"Error getting customer spending for {user_id}: {e}")
+        logger.error(f"Error getting customer budget policy for {user_id}: {e}")
         if on_raise:
             raise
         return None
 
-
-def get_customer_list_spending(on_raise: bool = False):
-    """Get all customer budget entries from LiteLLM /customer/list.
-
-    Used by the budget-based spend collector to derive personal-project spending rows.
-    One entry is returned per budget bucket per customer.
-
-    Args:
-        on_raise: If True, raises exceptions on errors. If False, returns None on errors.
-
-    Returns:
-        List of PersonalBudgetEntry objects, or None if service not enabled or error occurred.
-
-    Raises:
-        Exception: If a backend error occurs while fetching data (only when on_raise=True)
-    """
-    litellm = get_litellm_service_or_none()
-    if litellm is None:
-        logger.debug(_LITELLM_NOT_AVAILABLE_MSG)
+    if policy is None:
         return None
 
-    try:
-        return litellm.get_customer_list()
-    except Exception as e:
-        logger.error(f"Error getting customer list spending: {e}")
-        if on_raise:
-            raise
-        return None
+    # LiteLLM's own counter is an enforcement input, never a reported figure (AD-10), and every
+    # money figure core reports comes from the spend port (AD-1). A `total_spend` travelling
+    # through core is an invitation to the next reader, and one figure with two routes is exactly
+    # what the port exists to prevent - the more so because this dict has no way to say a figure is
+    # absent or partial, so a consumer rendering it cannot tell a truncated total from a whole one.
+    return {name: value for name, value in policy.items() if name != "total_spend"}
 
 
 def get_all_keys_spending(api_keys: list[str], on_raise: bool = False) -> list[dict] | None:

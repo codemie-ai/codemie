@@ -26,6 +26,7 @@ from codemie.rest_api.security.user import User
 from codemie.service.llm_service.llm_service import llm_service
 from codemie.service.monitoring.datasource_monitoring_service import DatasourceMonitoringService
 from codemie.service.request_summary_manager import LLMRun, request_summary_manager
+from codemie.service.spend.routing import LLMCallClass, uses_litellm
 
 
 class DatasourceMonitoringCallback(DatasourceProcessorCallback):
@@ -75,6 +76,48 @@ class DatasourceMonitoringCallback(DatasourceProcessorCallback):
                 return
             self._estimated_embedding_tokens += batch_tokens
 
+    def _estimated_embedding_money_spent(self, llm_model: str) -> Optional[float]:
+        """Money for embeddings that completed but whose own usage was never captured.
+
+        On the LiteLLM path the real cost is recorded in ``litellm_spend_logs.spend`` and has
+        not arrived yet, so the money is **unsettled**: ``None`` (AD-28), settled later by the
+        ledger. Never a zero - these embeddings succeeded and were billed - and never a local
+        estimate, because LiteLLM already priced them (AD-4). Off that path the local price
+        table *is* the ledger, so the estimate is the right answer and survives (C2).
+
+        Embeddings are 92.4% of ledger rows, which makes an estimate here the platform's
+        highest-volume re-pricing site.
+        """
+        if uses_litellm(LLMCallClass.EMBEDDINGS):
+            return None
+        return self._local_embedding_estimate(llm_model)
+
+    def _failed_embedding_money_spent(self, llm_model: str) -> float:
+        """Money for an indexing run that **failed** with no embedding usage captured at all.
+
+        **On the LiteLLM path this is a real, measured zero** - nothing was billed, and AD-20 says a
+        failure row contributes zero to any spend total. It is deliberately *not* the completion
+        branch's unsettled `None`: zero means *no charge*, `None` means *the charge exists and has
+        not arrived*, and reporting one as the other either fabricates money or loses it.
+
+        **Off that path the estimate stands, and the gate is why.** AD-20 scopes itself to the ledger
+        (*"counts come from the ledger, never from the callback"*), and this branch's own condition -
+        no proxy data captured - is the **ordinary** case for a non-LiteLLM deployment, where proxy
+        data never exists. So an unconditional zero here would replace the only figure such a
+        deployment ever had for a failed index with a claim that it cost nothing.
+        """
+        if uses_litellm(LLMCallClass.EMBEDDINGS):
+            return 0.0
+        return self._local_embedding_estimate(llm_model)
+
+    def _local_embedding_estimate(self, llm_model: str) -> float:
+        """The local price table applied to the estimated token count - the non-LiteLLM authority.
+
+        Shared by the two branches above so that "what the local estimate is" has one definition,
+        while "when it applies" stays each branch's own answer.
+        """
+        return self._estimated_embedding_tokens * llm_service.get_embeddings_model_cost(llm_model).input
+
     def on_complete(self, result):
         """
         Send indexing metrics indicating completion.
@@ -116,12 +159,11 @@ class DatasourceMonitoringCallback(DatasourceProcessorCallback):
             # Last-resort fallback: no actual LLM proxy data captured — use token estimation
             elif self._estimated_embedding_tokens > 0:
                 llm_model = self.index.embeddings_model
-                model_costs = llm_service.get_embeddings_model_cost(llm_model)
                 llm_run = LLMRun(
                     run_id=str(uuid.uuid4()),
                     input_tokens=self._estimated_embedding_tokens,
                     output_tokens=0,
-                    money_spent=self._estimated_embedding_tokens * model_costs.input,
+                    money_spent=self._estimated_embedding_money_spent(llm_model),
                     llm_model=llm_model,
                 )
                 DatasourceMonitoringService.send_datasource_tokens_usage_metrics_by_model(
@@ -176,12 +218,15 @@ class DatasourceMonitoringCallback(DatasourceProcessorCallback):
             # Last-resort fallback: no actual LLM proxy data captured — use token estimation
             elif self._estimated_embedding_tokens > 0:
                 llm_model = self.index.embeddings_model
-                model_costs = llm_service.get_embeddings_model_cost(llm_model)
                 llm_run = LLMRun(
                     run_id=str(uuid.uuid4()),
                     input_tokens=self._estimated_embedding_tokens,
                     output_tokens=0,
-                    money_spent=self._estimated_embedding_tokens * model_costs.input,
+                    # A measured zero on the LiteLLM path, the local estimate off it - see
+                    # `_failed_embedding_money_spent`, which is a separate helper from the
+                    # completion branch's on purpose: the two differ in their LiteLLM-side
+                    # answer (a zero versus an unsettled `None`) even though they share a gate.
+                    money_spent=self._failed_embedding_money_spent(llm_model),
                     llm_model=llm_model,
                 )
                 DatasourceMonitoringService.send_datasource_tokens_usage_metrics_by_model(

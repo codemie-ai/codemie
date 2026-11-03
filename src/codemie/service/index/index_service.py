@@ -69,7 +69,15 @@ class IndexStatusService:
         content = "### Tokens usage\n"
         content += f"#### Input tokens: {datasource.tokens_usage.input_tokens}\n"
         content += f"#### Output Tokens: {datasource.tokens_usage.output_tokens}\n"
-        content += f"#### Money spent: ${datasource.tokens_usage.money_spent}\n"
+        if datasource.tokens_usage.money_spent_pending:
+            # The old line printed money_spent as final, but while pending it is only a settled
+            # subtotal (often 0.0) - say a figure is still coming, not that this is the cost.
+            content += "#### Money spent: awaiting final cost\n"
+        elif datasource.tokens_usage.money_spent_unavailable:
+            # Unlike pending, no figure will ever arrive for this record - say so, don't imply one is coming.
+            content += "#### Money spent: final cost unavailable\n"
+        else:
+            content += f"#### Money spent: ${datasource.tokens_usage.money_spent}\n"
         return content
 
     @staticmethod

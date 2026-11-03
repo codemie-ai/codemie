@@ -244,6 +244,45 @@ def test_send_datasource_tokens_usage_metric_with_additional_attributes(
 
 
 @patch.object(DatasourceMonitoringService, "send_count_metric")
+def test_send_datasource_tokens_usage_metric_omits_money_when_pending(
+    mock_send_count_metric, mock_index_info, mock_user
+):
+    """AD-28/AD-29: a metric emitted while cost is pending carries no money attribute."""
+    pending_tokens_usage = TokensUsage(
+        input_tokens=100,
+        output_tokens=50,
+        cached_tokens=0,
+        money_spent=0.0,
+        cached_tokens_money_spent=0.0,
+        money_spent_pending=True,
+    )
+
+    DatasourceMonitoringService.send_datasource_tokens_usage_metric(
+        index_info=mock_index_info,
+        tokens_usage=pending_tokens_usage,
+        user=mock_user,
+    )
+
+    attributes = mock_send_count_metric.call_args.kwargs["attributes"]
+    assert MetricsAttributes.MONEY_SPENT not in attributes
+
+
+@patch.object(DatasourceMonitoringService, "send_count_metric")
+def test_send_datasource_tokens_usage_metric_includes_money_when_settled(
+    mock_send_count_metric, mock_index_info, mock_user, mock_tokens_usage
+):
+    """A settled TokensUsage still emits the money attribute with its value."""
+    DatasourceMonitoringService.send_datasource_tokens_usage_metric(
+        index_info=mock_index_info,
+        tokens_usage=mock_tokens_usage,
+        user=mock_user,
+    )
+
+    attributes = mock_send_count_metric.call_args.kwargs["attributes"]
+    assert attributes[MetricsAttributes.MONEY_SPENT] == mock_tokens_usage.money_spent
+
+
+@patch.object(DatasourceMonitoringService, "send_count_metric")
 def test_send_datasource_tokens_usage_metrics_by_model(mock_send_count_metric, mock_index_info, mock_user):
     """Test sending per-model datasource token usage metrics."""
     # Create mock LLM runs for different models
@@ -311,3 +350,148 @@ def test_send_datasource_tokens_usage_metrics_by_model(mock_send_count_metric, m
     ][0]
     assert embedding_call.kwargs['attributes'][MetricsAttributes.INPUT_TOKENS] == 100
     assert embedding_call.kwargs['attributes'][MetricsAttributes.OUTPUT_TOKENS] == 0
+
+
+@patch.object(DatasourceMonitoringService, "send_count_metric")
+def test_send_datasource_tokens_usage_metrics_by_model_omits_money_when_a_run_is_unsettled(
+    mock_send_count_metric, mock_index_info, mock_user
+):
+    """AD-28/AD-29: one unsettled run makes the model's cost unavailable, so **no** money attribute.
+
+    **Re-baselined, and the old name and assertion encoded the defect.** It was
+    `..._skips_unsettled_runs` and asserted `MONEY_SPENT == 0.001` — the *settled part* of the model's
+    cost, emitted as though it were the whole. A metric document has no annotation slot to say "this
+    figure is short", and **nothing re-emits it when the ledger settles**, so the truncated total froze
+    into history exactly as a fabricated zero would. Tokens are unaffected: they are complete.
+    """
+    llm_runs = [
+        LLMRun(
+            run_id="run1",
+            llm_model="gpt-4o-2024-08-06",
+            input_tokens=100,
+            output_tokens=25,
+            cached_tokens=0,
+            money_spent=0.001,
+        ),
+        LLMRun(
+            run_id="run2",
+            llm_model="gpt-4o-2024-08-06",
+            input_tokens=50,
+            output_tokens=10,
+            cached_tokens=0,
+            money_spent=None,
+        ),
+    ]
+
+    DatasourceMonitoringService.send_datasource_tokens_usage_metrics_by_model(
+        index_info=mock_index_info,
+        llm_runs=llm_runs,
+        user=mock_user,
+    )
+
+    call = mock_send_count_metric.call_args_list[0]
+    assert call.kwargs['attributes'][MetricsAttributes.INPUT_TOKENS] == 150
+    assert MetricsAttributes.MONEY_SPENT not in call.kwargs['attributes']
+
+
+@patch.object(DatasourceMonitoringService, 'send_count_metric')
+def test_send_datasource_tokens_usage_metrics_by_model_omits_money_when_nothing_settled(
+    mock_send_count_metric, mock_index_info, mock_user
+):
+    """Every run unsettled must emit no money attribute — never the accumulator's seed `0.0`.
+
+    This is the sharper half of the same defect: with no settled run the sum never moved off its
+    initial value, so the document went out claiming the model cost nothing.
+    """
+    llm_runs = [
+        LLMRun(
+            run_id="run1",
+            llm_model="gpt-4o-2024-08-06",
+            input_tokens=100,
+            output_tokens=25,
+            cached_tokens=0,
+            money_spent=None,
+        ),
+    ]
+
+    DatasourceMonitoringService.send_datasource_tokens_usage_metrics_by_model(
+        index_info=mock_index_info,
+        llm_runs=llm_runs,
+        user=mock_user,
+    )
+
+    attributes = mock_send_count_metric.call_args_list[0].kwargs['attributes']
+    assert attributes[MetricsAttributes.INPUT_TOKENS] == 100
+    assert MetricsAttributes.MONEY_SPENT not in attributes
+
+
+@patch.object(DatasourceMonitoringService, 'send_count_metric')
+def test_send_datasource_tokens_usage_metrics_by_model_keeps_money_when_every_run_settled(
+    mock_send_count_metric, mock_index_info, mock_user
+):
+    """The mirror case: a fix that omits money from every document is the same defect inverted."""
+    llm_runs = [
+        LLMRun(
+            run_id="run1",
+            llm_model="gpt-4o-2024-08-06",
+            input_tokens=100,
+            output_tokens=25,
+            cached_tokens=0,
+            money_spent=0.001,
+        ),
+        LLMRun(
+            run_id="run2",
+            llm_model="gpt-4o-2024-08-06",
+            input_tokens=50,
+            output_tokens=10,
+            cached_tokens=0,
+            money_spent=0.002,
+        ),
+    ]
+
+    DatasourceMonitoringService.send_datasource_tokens_usage_metrics_by_model(
+        index_info=mock_index_info,
+        llm_runs=llm_runs,
+        user=mock_user,
+    )
+
+    attributes = mock_send_count_metric.call_args_list[0].kwargs['attributes']
+    assert attributes[MetricsAttributes.MONEY_SPENT] == pytest.approx(0.003)
+
+
+@patch.object(DatasourceMonitoringService, 'send_count_metric')
+def test_send_datasource_tokens_usage_metrics_by_model_scopes_unsettledness_to_its_own_model(
+    mock_send_count_metric, mock_index_info, mock_user
+):
+    """One model's unsettled run must not suppress a different model's complete figure."""
+    llm_runs = [
+        LLMRun(
+            run_id="run1",
+            llm_model="gpt-4o-2024-08-06",
+            input_tokens=100,
+            output_tokens=25,
+            cached_tokens=0,
+            money_spent=None,
+        ),
+        LLMRun(
+            run_id="run2",
+            llm_model="claude-4-5-sonnet",
+            input_tokens=50,
+            output_tokens=10,
+            cached_tokens=0,
+            money_spent=0.005,
+        ),
+    ]
+
+    DatasourceMonitoringService.send_datasource_tokens_usage_metrics_by_model(
+        index_info=mock_index_info,
+        llm_runs=llm_runs,
+        user=mock_user,
+    )
+
+    by_model = {
+        call.kwargs['attributes'][MetricsAttributes.LLM_MODEL]: call.kwargs['attributes']
+        for call in mock_send_count_metric.call_args_list
+    }
+    assert MetricsAttributes.MONEY_SPENT not in by_model["gpt-4o-2024-08-06"]
+    assert by_model["claude-4-5-sonnet"][MetricsAttributes.MONEY_SPENT] == pytest.approx(0.005)

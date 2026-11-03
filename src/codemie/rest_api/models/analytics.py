@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 # Field descriptions
 RESPONSE_METADATA_DESC = "Response metadata"
@@ -49,6 +49,15 @@ class PaginationMetadata(BaseModel):
 
 class Metric(BaseModel):
     """Individual metric data point."""
+
+    # A money metric carries its spend annotation (`spend_unavailable`, `spend_partial`,
+    # `spend_missing_amount`) in the same dict as its figure, and without this a plain `BaseModel`
+    # drops those keys on the way to the wire - a qualified or truncated figure then arrives looking
+    # like a whole one. Three declared optional fields would instead emit `null` for them on **every**
+    # metric of **every** analytics endpoint, a blanket response change for the sake of three
+    # surfaces; `extra="allow"` emits them only where a builder set them, which is the same
+    # convention the tabular money rows already use.
+    model_config = ConfigDict(extra="allow")
 
     id: str = Field(..., description="Unique metric identifier")
     label: str = Field(..., description="Human-readable metric name")

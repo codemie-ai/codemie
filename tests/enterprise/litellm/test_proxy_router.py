@@ -45,7 +45,9 @@ from codemie.core.constants import (
 )
 from codemie.enterprise.litellm.budget_categories import BudgetCategory
 from codemie.enterprise.litellm.credentials import ResolvedLiteLLMUserCredentials
+from codemie.enterprise.litellm.runtime_budget_selection import RuntimeBudgetMode
 from codemie.enterprise.litellm.proxy_router import (
+    LITELLM_CALL_ID_HEADER,
     LITELLM_CUSTOMER_ID_HEADER,
     _augment_models_list_response,
     _build_premium_budget_error_body,
@@ -1087,6 +1089,21 @@ class TestPrepareProxyHeaders:
         assert HEADER_CODEMIE_CLI_BRANCH.lower() not in result
         assert "content-type" in result
 
+    def test_an_inbound_litellm_call_id_is_stripped(self):
+        """A failure row's key is LiteLLM's call id; a client must not get to choose it."""
+        mock_request = MagicMock()
+        mock_request.headers = Headers({"content-type": "application/json", LITELLM_CALL_ID_HEADER: "attacker-chosen"})
+        with patch("codemie.enterprise.litellm.proxy_router.config") as mock_config:
+            mock_config.LITE_LLM_APP_KEY = "test-app-key"
+            mock_config.LITE_LLM_PROXY_APP_KEY = ""
+            with patch("codemie.enterprise.litellm.proxy_router.litellm_context") as mock_ctx:
+                mock_ctx.get.side_effect = LookupError()
+                result = _prepare_proxy_headers(mock_request)
+
+        forwarded = {k.lower() for k in result}
+        assert LITELLM_CALL_ID_HEADER not in forwarded
+        assert "content-type" in forwarded
+
     def test_all_codemie_internal_headers_are_stripped(self):
         """All nine HEADER_CODEMIE_* headers must be stripped before forwarding."""
         mock_request = MagicMock()
@@ -1531,6 +1548,55 @@ class TestResolveBudgetAttributionStream:
         assert request_info.get("budget_provider_base_url") == "https://proxy.example.com"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "mode", [RuntimeBudgetMode.PROJECT_BUDGET_WITH_MEMBER_TRACKING, RuntimeBudgetMode.PROJECT_BUDGET_PROJECT_ONLY]
+    )
+    async def test_a_call_billed_to_a_project_budget_records_its_category_for_the_attribution_header(self, mode):
+        """Without it the header carries no identity, and the row is attributed only if its customer key parses."""
+        from codemie.enterprise.litellm.proxy_router import (
+            SPEND_ATTRIBUTION_CATEGORY,
+            _resolve_budget_attribution_stream,
+        )
+
+        user = MagicMock()
+        user.id = "user-1"
+        user.username = "user@example.com"
+        request_info = {
+            "llm_model": "gpt-4.1-mini",
+            "request_id": "request-456",
+            "client_type": "codemie-cli",
+            CODEMIE_CLI: "",
+            PROJECT: "project-a",
+        }
+        runtime = SimpleNamespace(
+            headers={"x-litellm-customer-id": "codemie:project:project-a:category:cli:user:user-1"}
+        )
+
+        with (
+            patch("codemie.enterprise.litellm.proxy_router.get_premium_username", return_value=None),
+            patch(
+                "codemie.enterprise.litellm.proxy_router.budget_service.get_all_category_budget_ids_for_request",
+                new=AsyncMock(return_value={"platform": None, "cli": None, "premium_models": None}),
+            ),
+            patch(
+                "codemie.enterprise.litellm.proxy_router._probe_project_budget_scopes",
+                new=AsyncMock(return_value={BudgetCategory.CLI}),
+            ),
+            patch(
+                "codemie.enterprise.litellm.proxy_router._resolve_project_budget_runtime",
+                new=AsyncMock(return_value=runtime),
+            ),
+            patch(
+                "codemie.enterprise.litellm.proxy_router.select_runtime_budget_mode",
+                return_value=SimpleNamespace(mode=mode),
+            ),
+            patch("codemie.enterprise.litellm.proxy_router._stream_body_bytes"),
+        ):
+            await _resolve_budget_attribution_stream(body_bytes=b"{}", user=user, request_info=request_info)
+
+        assert request_info[SPEND_ATTRIBUTION_CATEGORY] == BudgetCategory.CLI.value
+
+    @pytest.mark.asyncio
     async def test_project_runtime_stream_passes_body_and_sets_customer_id(self):
         from codemie.enterprise.litellm.runtime_budget_selection import RuntimeBudgetMode
 
@@ -1589,87 +1655,99 @@ class TestParseUsageWithCost:
 
     @pytest.mark.asyncio
     async def test_parse_usage_with_cost_success(self):
-        """Test parsing usage with cost calculation."""
+        """Test the parsed usage, including a settled cost, is returned unchanged."""
         from codemie.enterprise.litellm.proxy_router import _parse_usage_with_cost
 
         response_content = b'{"usage": {"prompt_tokens": 100, "completion_tokens": 50}}'
 
-        mock_cost_config = {
-            "input": 0.01,
-            "output": 0.02,
-        }
+        with patch("codemie.enterprise.litellm.proxy_router.parse_usage_from_response") as mock_parse:
+            mock_parse.return_value = {
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "cached_tokens": 0,
+                "money_spent": 2.0,
+                "cached_tokens_money_spent": 0.0,
+            }
 
-        with patch("codemie.enterprise.litellm.proxy_router.llm_service") as mock_llm_service:
-            mock_llm_service.get_model_cost.return_value = mock_cost_config
-            with patch("codemie.enterprise.litellm.proxy_router.parse_usage_from_response") as mock_parse:
-                mock_parse.return_value = {
-                    "input_tokens": 100,
-                    "output_tokens": 50,
-                    "cached_tokens": 0,
-                    "money_spent": 2.0,
-                    "cached_tokens_money_spent": 0.0,
-                }
-
-                result = await _parse_usage_with_cost(
-                    response_content=response_content,
-                    llm_model="gpt-4",
-                    is_streaming=False,
-                )
+            result = await _parse_usage_with_cost(
+                response_content=response_content,
+                llm_model="gpt-4",
+                is_streaming=False,
+            )
 
         assert result["input_tokens"] == 100
         assert result["output_tokens"] == 50
         assert result["money_spent"] == 2.0
-        mock_llm_service.get_model_cost.assert_called_once_with("gpt-4")
+        # No local price table is fetched or handed over: this is the LiteLLM path, so the
+        # cost is read off the response and never re-priced here.
+        assert "cost_config" not in mock_parse.call_args.kwargs
+        assert "cost_calculator" not in mock_parse.call_args.kwargs
 
     @pytest.mark.asyncio
-    async def test_parse_usage_with_cost_error(self):
-        """Test parsing usage when cost config fails."""
+    async def test_parse_usage_forwards_unsettled_cost_untouched(self):
+        """Test an unsettled cost stays an absence instead of being filled in locally."""
         from codemie.enterprise.litellm.proxy_router import _parse_usage_with_cost
 
-        response_content = b'{"usage": {"prompt_tokens": 100}}'
+        response_content = b'{"usage": {"prompt_tokens": 100, "completion_tokens": 50}}'
 
-        with patch("codemie.enterprise.litellm.proxy_router.llm_service") as mock_llm_service:
-            mock_llm_service.get_model_cost.side_effect = Exception("Model not found")
-            with patch("codemie.enterprise.litellm.proxy_router.parse_usage_from_response") as mock_parse:
-                mock_parse.return_value = {
-                    "input_tokens": 100,
-                    "output_tokens": 0,
-                    "cached_tokens": 0,
-                    "money_spent": 0.0,
-                    "cached_tokens_money_spent": 0.0,
-                }
+        with patch("codemie.enterprise.litellm.proxy_router.parse_usage_from_response") as mock_parse:
+            mock_parse.return_value = {
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "cached_tokens": 0,
+                "money_spent": None,
+                "cached_tokens_money_spent": 0.0,
+            }
 
-                result = await _parse_usage_with_cost(
-                    response_content=response_content,
-                    llm_model="unknown-model",
-                    is_streaming=False,
-                )
+            result = await _parse_usage_with_cost(
+                response_content=response_content,
+                llm_model="claude-sonnet-5",
+                is_streaming=True,
+            )
 
-        # Should still return usage data even if cost config fails
+        assert result["money_spent"] is None
+        # Tokens are final at this point and must not be lost with the figure.
         assert result["input_tokens"] == 100
+        assert result["output_tokens"] == 50
+
+    @pytest.mark.asyncio
+    async def test_parse_usage_without_enterprise_package_reports_unknown_cost(self):
+        """Test the enterprise-absent fallback admits it knows nothing about the cost.
+
+        Zero would claim the call was free; this deployment simply cannot answer.
+        """
+        from codemie.enterprise.litellm.proxy_router import _parse_usage_with_cost
+
+        with patch("codemie.enterprise.litellm.proxy_router.parse_usage_from_response", None):
+            result = await _parse_usage_with_cost(
+                response_content=b'{"usage": {"prompt_tokens": 100}}',
+                llm_model="gpt-4",
+                is_streaming=False,
+            )
+
+        assert result["money_spent"] is None
+        assert result["input_tokens"] == 0
 
     @pytest.mark.asyncio
     async def test_parse_usage_marks_litellm_cache_key_response_as_cache_hit(self):
         """LiteLLM's cache-key response header indicates a whole-response cache hit."""
         from codemie.enterprise.litellm.proxy_router import _parse_usage_with_cost
 
-        with patch("codemie.enterprise.litellm.proxy_router.llm_service") as mock_llm_service:
-            mock_llm_service.get_model_cost.return_value = {}
-            with patch("codemie.enterprise.litellm.proxy_router.parse_usage_from_response") as mock_parse:
-                mock_parse.return_value = {
-                    "input_tokens": 100,
-                    "output_tokens": 50,
-                    "cached_tokens": 0,
-                    "money_spent": 0.0,
-                    "cached_tokens_money_spent": 0.0,
-                }
+        with patch("codemie.enterprise.litellm.proxy_router.parse_usage_from_response") as mock_parse:
+            mock_parse.return_value = {
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "cached_tokens": 0,
+                "money_spent": 0.0,
+                "cached_tokens_money_spent": 0.0,
+            }
 
-                result = await _parse_usage_with_cost(
-                    response_content=b'{"usage": {"prompt_tokens": 100, "completion_tokens": 50}}',
-                    llm_model="gpt-4",
-                    is_streaming=True,
-                    response_headers={"x-litellm-cache-key": "cache-key-hash"},
-                )
+            result = await _parse_usage_with_cost(
+                response_content=b'{"usage": {"prompt_tokens": 100, "completion_tokens": 50}}',
+                llm_model="gpt-4",
+                is_streaming=True,
+                response_headers={"x-litellm-cache-key": "cache-key-hash"},
+            )
 
         assert result["cache_hit"] is True
 
@@ -3056,6 +3134,116 @@ class TestLiteLLMCacheHitUsageTracking:
                 ]
 
         mock_background_tasks.add_task.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_streaming_unsettled_cost_still_queues_usage_tracking(self):
+        """An unsettled cost must not lose the token counts nor raise inside the debug logs.
+
+        Both usage debug lines format the cost, and a TypeError there would propagate out of
+        the streaming generator and take the request path down.
+        """
+        from codemie.core.routing_info import RoutingInfo
+        from codemie.enterprise.litellm.proxy_router import _streaming_response_with_usage_tracking
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.headers = httpx.Headers({"content-type": "text/event-stream"})
+
+        async def mock_iter():
+            yield b'data: {"choices": [{"delta": {"content": "Streamed"}}]}\n\n'
+            yield b'data: [DONE]\n\n'
+
+        mock_response.aiter_raw = mock_iter
+        mock_response.aclose = AsyncMock()
+        mock_background_tasks = MagicMock()
+        router_session = MagicMock()
+        router_session.routing_info.return_value = RoutingInfo()
+
+        with patch("codemie.enterprise.litellm.proxy_router.logger.debug") as mock_logger_debug:
+            with patch("codemie.enterprise.litellm.proxy_router.config") as mock_config:
+                mock_config.LLM_PROXY_TRACK_USAGE = True
+                with patch("codemie.enterprise.litellm.proxy_router._parse_usage_with_cost") as mock_parse:
+                    mock_parse.return_value = {
+                        "input_tokens": 10,
+                        "output_tokens": 5,
+                        "cached_tokens": 0,
+                        "cache_creation_tokens": 0,
+                        "money_spent": None,
+                        "cached_tokens_money_spent": 0.0,
+                        "cache_hit": False,
+                    }
+                    [
+                        chunk
+                        async for chunk in _streaming_response_with_usage_tracking(
+                            downstream_response=mock_response,
+                            user=MagicMock(),
+                            endpoint="/v1/chat/completions",
+                            request_info={},
+                            llm_model="claude-sonnet-5",
+                            background_tasks=mock_background_tasks,
+                            router_session=router_session,
+                        )
+                    ]
+
+        mock_background_tasks.add_task.assert_called_once()
+        assert mock_background_tasks.add_task.call_args.kwargs["money_spent"] is None
+        assert mock_background_tasks.add_task.call_args.kwargs["input_tokens"] == 10
+        assert mock_background_tasks.add_task.call_args.kwargs["output_tokens"] == 5
+        mock_logger_debug.assert_any_call(
+            "[USAGE-PARSE-RESULT] session=None, request=None, input=10, output=5, cached=0, cost=unsettled"
+        )
+
+    @pytest.mark.asyncio
+    async def test_streaming_cache_hit_log_survives_unsettled_cost(self):
+        """The cache-hit skip log formats the same cost and must not raise on an absence."""
+        from codemie.core.routing_info import RoutingInfo
+        from codemie.enterprise.litellm.proxy_router import _streaming_response_with_usage_tracking
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.headers = httpx.Headers({"content-type": "text/event-stream", "x-litellm-cache-hit": "true"})
+
+        async def mock_iter():
+            yield b'data: {"choices": [{"delta": {"content": "Cached"}}]}\n\n'
+            yield b'data: [DONE]\n\n'
+
+        mock_response.aiter_raw = mock_iter
+        mock_response.aclose = AsyncMock()
+        mock_background_tasks = MagicMock()
+        router_session = MagicMock()
+        router_session.routing_info.return_value = RoutingInfo()
+
+        with patch("codemie.enterprise.litellm.proxy_router.logger.debug") as mock_logger_debug:
+            with patch("codemie.enterprise.litellm.proxy_router.config") as mock_config:
+                mock_config.LLM_PROXY_TRACK_USAGE = True
+                with patch("codemie.enterprise.litellm.proxy_router._parse_usage_with_cost") as mock_parse:
+                    mock_parse.return_value = {
+                        "input_tokens": 10,
+                        "output_tokens": 5,
+                        "cached_tokens": 0,
+                        "cache_creation_tokens": 0,
+                        "money_spent": None,
+                        "cached_tokens_money_spent": 0.0,
+                        "cache_hit": True,
+                    }
+                    [
+                        chunk
+                        async for chunk in _streaming_response_with_usage_tracking(
+                            downstream_response=mock_response,
+                            user=MagicMock(),
+                            endpoint="/v1/chat/completions",
+                            request_info={},
+                            llm_model="claude-sonnet-5",
+                            background_tasks=mock_background_tasks,
+                            router_session=router_session,
+                        )
+                    ]
+
+        mock_background_tasks.add_task.assert_not_called()
+        mock_logger_debug.assert_any_call(
+            "[USAGE-SKIP-CACHE-HIT] session=None, request=None, model=claude-sonnet-5, "
+            "input=10, output=5, cached=0, cost=unsettled"
+        )
 
 
 class TestModelsListEndpoint:

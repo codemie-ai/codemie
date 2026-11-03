@@ -163,7 +163,7 @@ async def get_cost_center_budget_rollup(
         project_names = await application_repository.aget_project_names_by_cost_center_name(
             async_session, cost_center_name
         )
-        return await get_cost_center_budget_summary(async_session, project_names)
+    return await get_cost_center_budget_summary(project_names)
 
 
 @router.patch("/{costCenterId}", response_model=CostCenterResponse)

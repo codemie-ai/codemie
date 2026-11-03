@@ -115,6 +115,12 @@ def _materialize_execution_reference(message: GeneratedMessage, workflow_id: Opt
         input_tokens=execution.tokens_usage.input_tokens if execution.tokens_usage else None,
         output_tokens=execution.tokens_usage.output_tokens if execution.tokens_usage else None,
         money_spent=execution.tokens_usage.money_spent if execution.tokens_usage else None,
+        # **The flags travel with the figure.** This is a read path: it lifts the stored figure onto
+        # the message being returned, and carrying the number without them hands a caller a settled
+        # SUBTOTAL that is indistinguishable from a final cost. A dropped flag one layer out is the
+        # same producer/consumer gap in a new place.
+        money_spent_pending=execution.tokens_usage.money_spent_pending if execution.tokens_usage else None,
+        money_spent_unavailable=(execution.tokens_usage.money_spent_unavailable if execution.tokens_usage else None),
         workflow_execution_ref=True,
         execution_id=execution_id,
         execution_status=execution.overall_status,

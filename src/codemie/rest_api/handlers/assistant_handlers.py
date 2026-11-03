@@ -1104,8 +1104,14 @@ class StandardAssistantHandler(AssistantRequestHandler):
                 assistant=AssistantDetails(id=self.assistant.id, name=self.assistant.name),
             )
         )
+        # The worker builds the agent on a pool thread that copies no context, and the background
+        # task itself runs in the outer request context where the router's origin block never
+        # applied - so the worker is handed a snapshot of this context, the way the chat-naming task
+        # is, and the run's models read the same origin the first turn would have.
+        context = contextvars.copy_context()
         background_tasks.add_task(
             run_assistant_in_thread_pool,
+            context.run,
             self._background_generate,
             request,
             background_task_id,

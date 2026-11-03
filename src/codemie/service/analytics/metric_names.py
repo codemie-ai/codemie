@@ -185,7 +185,7 @@ MetricName.ACTIVITY_METRICS = [
 ]
 
 # Platform metrics - cost-bearing non-CLI metrics (conversation, workflow, datasource, generators, tools).
-# Used by both the summary platform_llm_cost widget and the Platform Spent by User breakdown.
+# Used by the spend port's platform group below the coverage floor and the Platform Spent by User breakdown.
 MetricName.PLATFORM_METRICS = [
     MetricName.CONVERSATION_ASSISTANT_USAGE,
     MetricName.WORKFLOW_EXECUTION_TOTAL,

@@ -823,6 +823,64 @@ class TestUpdateProjectClearDescription:
         assert result.description == "keep me"
 
 
+class TestAgetPersonalProjectNames:
+    """aget_personal_project_names asks only about the given names (EPMCDME-15537)."""
+
+    @pytest.mark.asyncio
+    async def test_empty_names_issue_no_query(self):
+        mock_session = AsyncMock()
+
+        result = await application_repository.aget_personal_project_names(mock_session, [])
+
+        assert result == set()
+        mock_session.execute.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_selects_the_non_deleted_personal_projects_among_the_names(self):
+        mock_session = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = ["me@corp.com"]
+        mock_session.execute = AsyncMock(return_value=mock_result)
+
+        result = await application_repository.aget_personal_project_names(mock_session, ["atlas-core", "me@corp.com"])
+
+        assert result == {"me@corp.com"}
+        query_text = _compile_sql(mock_session.execute.await_args.args[0])
+        assert "applications.name in ('atlas-core', 'me@corp.com')" in query_text
+        assert "applications.deleted_at is null" in query_text
+        assert "applications.project_type = 'personal'" in query_text
+
+
+class TestAgetPersonalProjectOwners:
+    """The owners of the personal projects named, for the spend filters (pass H UD-H-D2, UA-H-D3)."""
+
+    @pytest.mark.asyncio
+    async def test_empty_names_issue_no_query(self):
+        mock_session = AsyncMock()
+
+        result = await application_repository.aget_personal_project_owners(mock_session, [])
+
+        assert result == set()
+        mock_session.execute.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_returns_the_distinct_creators_soft_deleted_projects_included(self):
+        """An email change soft-deletes the old personal project while its spend history keeps the name."""
+        mock_session = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = ["u-1"]
+        mock_session.execute = AsyncMock(return_value=mock_result)
+
+        result = await application_repository.aget_personal_project_owners(mock_session, ["atlas-core", "me@corp.com"])
+
+        assert result == {"u-1"}
+        query_text = _compile_sql(mock_session.execute.await_args.args[0])
+        assert "select distinct applications.created_by" in query_text
+        assert "applications.name in ('atlas-core', 'me@corp.com')" in query_text
+        assert "applications.project_type = 'personal'" in query_text
+        assert "deleted_at" not in query_text
+
+
 class TestUpdateProjectCreatedBy:
     """Tests for update_project created_by parameter (EPMCDME-15951)."""
 

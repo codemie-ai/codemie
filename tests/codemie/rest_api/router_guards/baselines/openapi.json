@@ -7044,6 +7044,28 @@
             "title": "Conversation Id",
             "type": "string"
           },
+          "money_spent_pending": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Money Spent Pending"
+          },
+          "money_spent_unavailable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Money Spent Unavailable"
+          },
           "total_classifier_cost_usd": {
             "anyOf": [
               {
@@ -7514,8 +7536,15 @@
             "title": "Budget Duration"
           },
           "current_spending": {
-            "title": "Current Spending",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Spending"
           },
           "excluded_count": {
             "default": 0,
@@ -7534,6 +7563,27 @@
             "title": "Soft Budget",
             "type": "number"
           },
+          "spend_missing_amount": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spend Missing Amount"
+          },
+          "spend_partial": {
+            "default": false,
+            "title": "Spend Partial",
+            "type": "boolean"
+          },
+          "spend_unavailable": {
+            "default": false,
+            "title": "Spend Unavailable",
+            "type": "boolean"
+          },
           "unsynced_count": {
             "default": 0,
             "title": "Unsynced Count",
@@ -7545,14 +7595,13 @@
           "soft_budget",
           "max_budget",
           "member_count",
-          "allocated_member_budget_total",
-          "current_spending"
+          "allocated_member_budget_total"
         ],
         "title": "CostCenterAssignedBudgetSummary",
         "type": "object"
       },
       "CostCenterBudgetSummary": {
-        "description": "Combined budget summary aggregated across a cost center's linked projects.\n\nMirrors ProjectSpendingSummary (current_spending, budget_limit, total_percent)\nplus a per-category breakdown list, for data-contract parity with the existing\nproject-level pattern in rest_api/models/project.py and\nservice/project/project_spending_service.py.",
+        "description": "Combined budget summary aggregated across a cost center's linked projects.\n\nMirrors ProjectSpendingSummary (current_spending, budget_limit, total_percent and the spend_*\nannotation) plus a per-category breakdown list, for data-contract parity with the existing\nproject-level pattern in rest_api/models/project.py and\nservice/project/project_spending_service.py.",
         "properties": {
           "budget_limit": {
             "anyOf": [
@@ -7573,17 +7622,50 @@
             "type": "array"
           },
           "current_spending": {
-            "title": "Current Spending",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Spending"
+          },
+          "spend_missing_amount": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spend Missing Amount"
+          },
+          "spend_partial": {
+            "default": false,
+            "title": "Spend Partial",
+            "type": "boolean"
+          },
+          "spend_unavailable": {
+            "default": false,
+            "title": "Spend Unavailable",
+            "type": "boolean"
           },
           "total_percent": {
-            "title": "Total Percent",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Percent"
           }
         },
         "required": [
-          "current_spending",
-          "total_percent",
           "budgets"
         ],
         "title": "CostCenterBudgetSummary",
@@ -10858,6 +10940,28 @@
             ],
             "title": "Moneyspent"
           },
+          "moneySpentPending": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Moneyspentpending"
+          },
+          "moneySpentUnavailable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Moneyspentunavailable"
+          },
           "operatorMark": {
             "anyOf": [
               {
@@ -10878,6 +10982,17 @@
               }
             ],
             "title": "Outputtokens"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requestid"
           },
           "responseTime": {
             "anyOf": [
@@ -11145,6 +11260,28 @@
             ],
             "title": "Moneyspent"
           },
+          "moneySpentPending": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Moneyspentpending"
+          },
+          "moneySpentUnavailable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Moneyspentunavailable"
+          },
           "operatorMark": {
             "anyOf": [
               {
@@ -11165,6 +11302,17 @@
               }
             ],
             "title": "Outputtokens"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requestid"
           },
           "responseTime": {
             "anyOf": [
@@ -18819,6 +18967,7 @@
         "type": "object"
       },
       "Metric": {
+        "additionalProperties": true,
         "description": "Individual metric data point.",
         "properties": {
           "description": {
@@ -19736,32 +19885,6 @@
           "pagination"
         ],
         "title": "PaginatedProjectListResponse",
-        "type": "object"
-      },
-      "PaginatedSpendsResponse": {
-        "description": "Paginated response for GET /projects/{projectName}/spends.",
-        "properties": {
-          "pagination": {
-            "$ref": "#/components/schemas/codemie__rest_api__models__project__PaginationInfo"
-          },
-          "rows": {
-            "items": {
-              "$ref": "#/components/schemas/SpendTrackingRow"
-            },
-            "title": "Rows",
-            "type": "array"
-          },
-          "total_spend": {
-            "title": "Total Spend",
-            "type": "number"
-          }
-        },
-        "required": [
-          "total_spend",
-          "rows",
-          "pagination"
-        ],
-        "title": "PaginatedSpendsResponse",
         "type": "object"
       },
       "PaginatedUserListResponse": {
@@ -20780,6 +20903,27 @@
           "soft_budget": {
             "title": "Soft Budget",
             "type": "number"
+          },
+          "spend_missing_amount": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spend Missing Amount"
+          },
+          "spend_partial": {
+            "default": false,
+            "title": "Spend Partial",
+            "type": "boolean"
+          },
+          "spend_unavailable": {
+            "default": false,
+            "title": "Spend Unavailable",
+            "type": "boolean"
           }
         },
         "required": [
@@ -22316,13 +22460,37 @@
             ],
             "title": "Budget Reset At"
           },
-          "cumulative_spend": {
-            "title": "Cumulative Spend",
-            "type": "number"
-          },
           "current_spending": {
-            "title": "Current Spending",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Spending"
+          },
+          "spend_missing_amount": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spend Missing Amount"
+          },
+          "spend_partial": {
+            "default": false,
+            "title": "Spend Partial",
+            "type": "boolean"
+          },
+          "spend_unavailable": {
+            "default": false,
+            "title": "Spend Unavailable",
+            "type": "boolean"
           },
           "time_until_reset": {
             "anyOf": [
@@ -22336,15 +22504,17 @@
             "title": "Time Until Reset"
           },
           "total": {
-            "title": "Total",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total"
           }
         },
-        "required": [
-          "current_spending",
-          "cumulative_spend",
-          "total"
-        ],
         "title": "ProjectSpendingDetail",
         "type": "object"
       },
@@ -22363,18 +22533,49 @@
             "title": "Budget Limit"
           },
           "current_spending": {
-            "title": "Current Spending",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Spending"
+          },
+          "spend_missing_amount": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spend Missing Amount"
+          },
+          "spend_partial": {
+            "default": false,
+            "title": "Spend Partial",
+            "type": "boolean"
+          },
+          "spend_unavailable": {
+            "default": false,
+            "title": "Spend Unavailable",
+            "type": "boolean"
           },
           "total_percent": {
-            "title": "Total Percent",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Percent"
           }
         },
-        "required": [
-          "current_spending",
-          "total_percent"
-        ],
         "title": "ProjectSpendingSummary",
         "type": "object"
       },
@@ -23931,6 +24132,28 @@
               }
             ],
             "title": "Inputtokens"
+          },
+          "moneySpentPending": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Moneyspentpending"
+          },
+          "moneySpentUnavailable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Moneyspentunavailable"
           },
           "outputTokens": {
             "anyOf": [
@@ -26999,47 +27222,6 @@
         "title": "SortOrder",
         "type": "string"
       },
-      "SpendTrackingRow": {
-        "description": "A single project_spend_tracking row returned by the spends endpoint.",
-        "properties": {
-          "budget_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Budget Id"
-          },
-          "budget_period_spend": {
-            "title": "Budget Period Spend",
-            "type": "number"
-          },
-          "cumulative_spend": {
-            "title": "Cumulative Spend",
-            "type": "number"
-          },
-          "daily_spend": {
-            "title": "Daily Spend",
-            "type": "number"
-          },
-          "spend_date": {
-            "format": "date-time",
-            "title": "Spend Date",
-            "type": "string"
-          }
-        },
-        "required": [
-          "spend_date",
-          "daily_spend",
-          "cumulative_spend",
-          "budget_period_spend"
-        ],
-        "title": "SpendTrackingRow",
-        "type": "object"
-      },
       "SpendingWidgetColumn": {
         "properties": {
           "description": {
@@ -27144,12 +27326,40 @@
             "title": "Budget Reset At"
           },
           "current_spending": {
-            "title": "Current Spending",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Spending"
           },
           "is_assigned": {
             "default": true,
             "title": "Is Assigned",
+            "type": "boolean"
+          },
+          "spend_missing_amount": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spend Missing Amount"
+          },
+          "spend_partial": {
+            "default": false,
+            "title": "Spend Partial",
+            "type": "boolean"
+          },
+          "spend_unavailable": {
+            "default": false,
+            "title": "Spend Unavailable",
             "type": "boolean"
           },
           "time_until_reset": {
@@ -27164,14 +27374,19 @@
             "title": "Time Until Reset"
           },
           "total": {
-            "title": "Total",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total"
           }
         },
         "required": [
-          "budget_id",
-          "current_spending",
-          "total"
+          "budget_id"
         ],
         "title": "SpendingWidgetRow",
         "type": "object"
@@ -27947,6 +28162,16 @@
           "money_spent": {
             "title": "Money Spent",
             "type": "number"
+          },
+          "money_spent_pending": {
+            "default": false,
+            "title": "Money Spent Pending",
+            "type": "boolean"
+          },
+          "money_spent_unavailable": {
+            "default": false,
+            "title": "Money Spent Unavailable",
+            "type": "boolean"
           },
           "output_tokens": {
             "title": "Output Tokens",
@@ -31046,6 +31271,27 @@
               }
             ],
             "title": "Max Budget"
+          },
+          "spend_missing_amount": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spend Missing Amount"
+          },
+          "spend_partial": {
+            "default": false,
+            "title": "Spend Partial",
+            "type": "boolean"
+          },
+          "spend_unavailable": {
+            "default": false,
+            "title": "Spend Unavailable",
+            "type": "boolean"
           }
         },
         "required": [
@@ -39660,35 +39906,6 @@
         "summary": "Reset Project Budget",
         "tags": [
           "Project Budgets"
-        ]
-      }
-    },
-    "/v1/admin/spend-tracking/collect": {
-      "post": {
-        "operationId": "trigger_spend_collection_v1_admin_spend_tracking_collect_post",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BaseResponseWithData"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "security": [
-          {
-            "user-id": []
-          },
-          {
-            "X-Bind-Key": []
-          }
-        ],
-        "summary": "Trigger Spend Collection",
-        "tags": [
-          "Admin"
         ]
       }
     },
@@ -57804,7 +58021,7 @@
     },
     "/v1/assistants/metrics/{conversation_id}": {
       "get": {
-        "description": "Get metrics of the conversation with Assistant or Workflow",
+        "description": "Get metrics of the conversation with Assistant or Workflow\n\nA total still pending when it was written is settled from the ledger here (AD-28 rule 7):\nthis is the read behind the chat's \"Usage details\", so it is where \"awaiting final cost\"\nturns into the figure once the ledger row has landed.\n\nGated like the conversation itself: the totals are that conversation's tokens and money, and\nthe read can write the settled figures back, so a caller who may not view the conversation\ngets neither.",
         "operationId": "conversation_metrics_v1_assistants_metrics__conversation_id__get",
         "parameters": [
           {
@@ -57839,6 +58056,14 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
         "summary": "Conversation Metrics",
         "tags": [
           "Assistant"
@@ -71480,150 +71705,6 @@
           }
         ],
         "summary": "Update Project Ownership",
-        "tags": [
-          "Projects"
-        ]
-      }
-    },
-    "/v1/projects/{projectName}/spends": {
-      "get": {
-        "description": "Return paginated spend rows and period total for a project.\n\nAccessible to global admins, global maintainers, and project admins.\nReturns 404 (not 403) to avoid revealing project existence to unauthorized callers.\nWhen spend_subject_type is omitted, project_budget rows are excluded to prevent\ndouble-counting against member_budget rows.",
-        "operationId": "get_project_spends_v1_projects__projectName__spends_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "projectName",
-            "required": true,
-            "schema": {
-              "title": "Projectname",
-              "type": "string"
-            }
-          },
-          {
-            "description": "Inclusive start date (YYYY-MM-DD)",
-            "in": "query",
-            "name": "period_from",
-            "required": true,
-            "schema": {
-              "description": "Inclusive start date (YYYY-MM-DD)",
-              "format": "date",
-              "title": "Period From",
-              "type": "string"
-            }
-          },
-          {
-            "description": "Inclusive end date (YYYY-MM-DD)",
-            "in": "query",
-            "name": "period_to",
-            "required": true,
-            "schema": {
-              "description": "Inclusive end date (YYYY-MM-DD)",
-              "format": "date",
-              "title": "Period To",
-              "type": "string"
-            }
-          },
-          {
-            "description": "Page number (0-indexed)",
-            "in": "query",
-            "name": "page",
-            "required": false,
-            "schema": {
-              "default": 0,
-              "description": "Page number (0-indexed)",
-              "minimum": 0,
-              "title": "Page",
-              "type": "integer"
-            }
-          },
-          {
-            "description": "Items per page (10-100)",
-            "in": "query",
-            "name": "per_page",
-            "required": false,
-            "schema": {
-              "default": 20,
-              "description": "Items per page (10-100)",
-              "maximum": 100,
-              "minimum": 10,
-              "title": "Per Page",
-              "type": "integer"
-            }
-          },
-          {
-            "description": "Filter by budget category (cli, platform, premium_models)",
-            "in": "query",
-            "name": "budget_category",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "$ref": "#/components/schemas/BudgetCategory"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Filter by budget category (cli, platform, premium_models)",
-              "title": "Budget Category"
-            }
-          },
-          {
-            "description": "Filter by spend subject type",
-            "in": "query",
-            "name": "spend_subject_type",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "enum": [
-                    "key",
-                    "budget",
-                    "project_budget",
-                    "member_budget"
-                  ],
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Filter by spend subject type",
-              "title": "Spend Subject Type"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PaginatedSpendsResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "security": [
-          {
-            "user-id": []
-          },
-          {
-            "X-Bind-Key": []
-          }
-        ],
-        "summary": "Get Project Spends",
         "tags": [
           "Projects"
         ]

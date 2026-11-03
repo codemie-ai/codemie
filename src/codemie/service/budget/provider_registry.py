@@ -36,9 +36,6 @@ from codemie.service.budget.provider import (
     BudgetRuntimeProviderResult,
     PersonalBudgetEntry,
     GlobalBudgetState,
-    MemberBudgetSpendSnapshot,
-    PersonalSpendEntry,
-    ProjectBudgetSpendSnapshot,
     ProjectBudgetState,
 )
 
@@ -257,33 +254,6 @@ class _NoopBudgetEnforcementProvider:
     ) -> BudgetRuntimeProviderResult:
         return self._noop_runtime_result(context)
 
-    async def collect_project_budget_spend(self) -> list[ProjectBudgetSpendSnapshot]:
-        return []
-
-    async def collect_project_budget_spend_for_projects(
-        self,
-        project_names: list[str],
-    ) -> list[ProjectBudgetSpendSnapshot]:
-        _ = project_names
-        return []
-
-    async def collect_member_budget_spend(self) -> list[MemberBudgetSpendSnapshot]:
-        return []
-
-    async def collect_member_budget_spend_for_refs(
-        self,
-        provider_member_refs: set[str],
-    ) -> list[MemberBudgetSpendSnapshot]:
-        _ = provider_member_refs
-        return []
-
-    async def collect_member_budget_spend_for_allocations(
-        self,
-        allocations: list[ProjectMemberBudgetAssignment],
-    ) -> list[MemberBudgetSpendSnapshot]:
-        _ = allocations
-        return []
-
     async def reconcile_budget_reset_timestamps(
         self,
         *,
@@ -301,9 +271,6 @@ class _NoopBudgetEnforcementProvider:
                 for target in targets
             ]
         )
-
-    async def collect_personal_spend(self) -> list[PersonalSpendEntry]:
-        return []
 
     async def get_project_budget_state_by_ref(
         self,

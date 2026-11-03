@@ -25,6 +25,8 @@ from codemie.service.monitoring.metrics_constants import (
 )
 from codemie.service.request_summary_manager import RequestSummary
 from codemie.service.skill_service import SkillService
+from codemie.service.spend.origin_context import current_origin
+from codemie.service.spend.traffic_class import TrafficOrigin
 
 _SKILL_SVC = "codemie.service.skill_service"
 
@@ -199,3 +201,46 @@ class TestGenerateInstructionsTokenMetrics(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestGenerateInstructionsSpendOrigin(unittest.TestCase):
+    """generate_instructions publishes the skill generator origin before the model is built."""
+
+    def setUp(self):
+        self.mock_user = MagicMock()
+        self.mock_user.id = "user-1"
+        self.observed = []
+
+    @patch(f"{_SKILL_SVC}.request_summary_manager")
+    @patch(f"{_SKILL_SVC}.emit_llm_token_metric")
+    @patch(f"{_SKILL_SVC}.SkillMonitoringService")
+    @patch(f"{_SKILL_SVC}.SkillService._invoke_llm_and_validate")
+    @patch(f"{_SKILL_SVC}.get_llm_by_credentials")
+    def test_publishes_skill_generator(self, mock_get_llm, mock_invoke, _monitoring, _emit, _rsm):
+        def record(*_args, **_kwargs):
+            self.observed.append(current_origin())
+            return MagicMock()
+
+        mock_get_llm.side_effect = record
+        mock_invoke.return_value = "## Overview\n\nGenerated instructions"
+
+        SkillService.generate_instructions(description="A skill for testing", user=self.mock_user)
+
+        self.assertEqual(self.observed, [TrafficOrigin.SKILL_GENERATOR])
+        self.assertIsNone(current_origin())
+
+    @patch(f"{_SKILL_SVC}.request_summary_manager")
+    @patch(f"{_SKILL_SVC}.SkillMonitoringService")
+    @patch(f"{_SKILL_SVC}.get_llm_by_credentials")
+    def test_origin_is_restored_when_generation_fails(self, mock_get_llm, _monitoring, _rsm):
+        def record_and_fail(*_args, **_kwargs):
+            self.observed.append(current_origin())
+            raise RuntimeError("LLM failure")
+
+        mock_get_llm.side_effect = record_and_fail
+
+        with self.assertRaises(ExtendedHTTPException):
+            SkillService.generate_instructions(description="A skill for testing", user=self.mock_user)
+
+        self.assertEqual(self.observed, [TrafficOrigin.SKILL_GENERATOR])
+        self.assertIsNone(current_origin())

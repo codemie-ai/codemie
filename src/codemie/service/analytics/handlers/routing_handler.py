@@ -23,9 +23,18 @@ from typing import Any
 from codemie.core.routing_info import normalize_decision_source
 from codemie.repository.metrics_elastic_repository import MetricsElasticRepository
 from codemie.rest_api.security.user import User
+from codemie.service.analytics.handlers.money_coverage import money_coverage_aggs, read_money_coverage
 from codemie.service.analytics.metric_names import MetricName
-from codemie.service.analytics.query_pipeline import AnalyticsQueryFilters, AnalyticsQueryPipeline
+from codemie.service.analytics.query_pipeline import AnalyticsQueryFilters, AnalyticsQueryPipeline, EnrichedRows
 from codemie.service.analytics.response_formatter import ResponseFormatter
+from codemie.service.spend.rendering import (
+    FIELD_MISSING,
+    FIELD_PARTIAL,
+    FIELD_UNAVAILABLE,
+    RenderedSpend,
+    spend_fields,
+    spend_footer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +48,85 @@ TIER_KEYWORD = "attributes.tier.keyword"
 DECISION_SOURCE_KEYWORD = "attributes.decision_source.keyword"
 CONVERSATION_ID_KEYWORD = "attributes.conversation_id.keyword"
 REQUEST_ID_KEYWORD = "attributes.request_id.keyword"
+
+CLASSIFIER_COST_FIELD = "attributes.classifier_cost_usd"
+ORIGINAL_COST_FIELD = "attributes.original_cost_usd"
+ESTIMATED_MAX_COST_FIELD = "attributes.estimated_max_cost_usd"
+POTENTIAL_SAVINGS_FIELD = "attributes.potential_savings_usd"
+MONEY_SUM_AGG = "total"
+
+#: The documents each money attribute is expected on, so a document lacking it counts as unsettled
+#: rather than as one that never had a cost. The three counterfactual figures are written together on
+#: every call routed against a counterfactual model, and left off when its cost has not settled.
+COUNTERFACTUAL_BEARING = {"exists": {"field": "attributes.counterfactual_model"}}
+#: Only an LLM-classifier decision makes a classifier sub-call; the emitter writes decision sources
+#: already normalized, so the one spelling is the whole set.
+LLM_CLASSIFIER_BEARING = {"term": {DECISION_SOURCE_KEYWORD: "llm-classifier"}}
+
+#: The routing-paths money columns and the attribute each sums - one mapping, so the aggregation and
+#: the parser cannot drift.
+PATH_MONEY_COLUMNS = {
+    "actual_cost_usd": ORIGINAL_COST_FIELD,
+    "estimated_max_cost_usd": ESTIMATED_MAX_COST_FIELD,
+    "potential_savings_usd": POTENTIAL_SAVINGS_FIELD,
+}
+
+
+def _money_agg(field: str, cost_bearing: dict) -> dict:
+    """One money `sum` with the coverage counts that say whether it is whole.
+
+    In a bucket of its own because the coverage sub-aggregations have fixed names and these routing
+    aggregations carry up to four money sums side by side; `match_all` keeps the parent's scope.
+    """
+    return {
+        "filter": {"match_all": {}},
+        "aggs": {
+            MONEY_SUM_AGG: {"sum": {"field": field}},
+            **money_coverage_aggs(field, cost_bearing=cost_bearing),
+        },
+    }
+
+
+def _read_money(bucket: dict, name: str) -> RenderedSpend:
+    """A `_money_agg` bucket as a qualified figure: None when nothing settled, partial when some did not.
+
+    Savings go negative whenever the routed call cost more than the counterfactual, and a sub-cent
+    negative sum rounds to `-0.0`, which renders as "-$0.00"; a zero is published unsigned.
+    """
+    rendered = read_money_coverage(bucket.get(name, {}), MONEY_SUM_AGG)
+    return rendered.with_figure(0.0) if rendered.figure == 0 else rendered
+
+
+def _money_cells(column: str, rendered: RenderedSpend) -> dict[str, Any]:
+    """A money cell with its qualification keyed by the column, as `spend_footer` keys a footer's.
+
+    Prefixed because one row carries three independent figures: an unprefixed triple would say
+    *something on this row is short* without naming which column.
+    """
+    return {column: rendered.figure, **{f"{column}_{key}": value for key, value in spend_fields(rendered).items()}}
+
+
+def _cell_spend(row: dict[str, Any], column: str) -> RenderedSpend:
+    """Read back the figure `_money_cells` wrote, so a footer is combined from exactly what the rows show."""
+    return RenderedSpend(
+        figure=row[column],
+        unavailable=row[f"{column}_{FIELD_UNAVAILABLE}"],
+        partial=row[f"{column}_{FIELD_PARTIAL}"],
+        missing_amount=row[f"{column}_{FIELD_MISSING}"],
+    )
+
+
+async def _foot_routing_paths(rows: list[dict], _start_dt: datetime, _end_dt: datetime) -> EnrichedRows:
+    """Foot the money columns from their qualified cells, keeping the rows and their order as they are.
+
+    `TotalsCalculator` skips an absent cell, so a footer over unsettled paths would read `$0.00` and one
+    over partly settled paths would read as a whole total. `spend_footer` omits the money key when no
+    row has a figure and carries the qualification otherwise - the rule every spending table follows.
+    """
+    totals: dict[str, Any] = {}
+    for column in PATH_MONEY_COLUMNS:
+        totals.update(spend_footer(column, [_cell_spend(row, column) for row in rows]))
+    return EnrichedRows(rows=rows, columns=tuple(PATH_MONEY_COLUMNS), totals=totals)
 
 
 class RoutingHandler:
@@ -251,6 +339,7 @@ class RoutingHandler:
             ],
             flattening_multiplier=10,
             sort_keys=[("request_count", True), ("router", False), ("routed_model", False)],
+            row_enricher=_foot_routing_paths,
             filters=AnalyticsQueryFilters(
                 metric_filters=[ROUTING_METRIC],
                 time_period=time_period,
@@ -278,9 +367,8 @@ class RoutingHandler:
                                 "tiers": {
                                     "terms": {"field": TIER_KEYWORD, "size": fetch_size, "order": {"_count": "desc"}},
                                     "aggs": {
-                                        "actual_cost": {"sum": {"field": "attributes.original_cost_usd"}},
-                                        "estimated_max_cost": {"sum": {"field": "attributes.estimated_max_cost_usd"}},
-                                        "potential_savings": {"sum": {"field": "attributes.potential_savings_usd"}},
+                                        column: _money_agg(field, COUNTERFACTUAL_BEARING)
+                                        for column, field in PATH_MONEY_COLUMNS.items()
                                     },
                                 }
                             },
@@ -296,29 +384,16 @@ class RoutingHandler:
         for router_bucket in result.get("aggregations", {}).get("routers", {}).get("buckets", []):
             for model_bucket in router_bucket.get("models", {}).get("buckets", []):
                 for tier_bucket in model_bucket.get("tiers", {}).get("buckets", []):
-                    rows.append(
-                        {
-                            "router": router_bucket.get("key"),
-                            "routed_model": model_bucket.get("key"),
-                            "tier": tier_bucket.get("key"),
-                            "request_count": tier_bucket.get("doc_count", 0),
-                            "actual_cost_usd": RoutingHandler._normalize_cost(
-                                tier_bucket.get("actual_cost", {}).get("value")
-                            ),
-                            "estimated_max_cost_usd": RoutingHandler._normalize_cost(
-                                tier_bucket.get("estimated_max_cost", {}).get("value")
-                            ),
-                            "potential_savings_usd": RoutingHandler._normalize_cost(
-                                tier_bucket.get("potential_savings", {}).get("value")
-                            ),
-                        }
-                    )
+                    row = {
+                        "router": router_bucket.get("key"),
+                        "routed_model": model_bucket.get("key"),
+                        "tier": tier_bucket.get("key"),
+                        "request_count": tier_bucket.get("doc_count", 0),
+                    }
+                    for column in PATH_MONEY_COLUMNS:
+                        row.update(_money_cells(column, _read_money(tier_bucket, column)))
+                    rows.append(row)
         return rows
-
-    @staticmethod
-    def _normalize_cost(value: Any) -> float:
-        numeric_value = float(value or 0.0)
-        return 0.0 if round(numeric_value, 2) == 0 else numeric_value
 
     def _build_routing_summary_agg(self, query: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -327,10 +402,10 @@ class RoutingHandler:
             "aggs": {
                 "session_count": {"cardinality": {"field": CONVERSATION_ID_KEYWORD}},
                 "request_count": {"value_count": {"field": REQUEST_ID_KEYWORD}},
-                "total_classifier_cost": {"sum": {"field": "attributes.classifier_cost_usd"}},
-                "total_original_cost": {"sum": {"field": "attributes.original_cost_usd"}},
-                "total_estimated_max_cost": {"sum": {"field": "attributes.estimated_max_cost_usd"}},
-                "total_potential_savings": {"sum": {"field": "attributes.potential_savings_usd"}},
+                "total_classifier_cost": _money_agg(CLASSIFIER_COST_FIELD, LLM_CLASSIFIER_BEARING),
+                "total_original_cost": _money_agg(ORIGINAL_COST_FIELD, COUNTERFACTUAL_BEARING),
+                "total_estimated_max_cost": _money_agg(ESTIMATED_MAX_COST_FIELD, COUNTERFACTUAL_BEARING),
+                "total_potential_savings": _money_agg(POTENTIAL_SAVINGS_FIELD, COUNTERFACTUAL_BEARING),
                 "decision_source_counts": {"terms": {"field": DECISION_SOURCE_KEYWORD, "size": 10}},
             },
         }
@@ -346,34 +421,42 @@ class RoutingHandler:
             decision_source_counts[source_key] = decision_source_counts.get(source_key, 0) + int(
                 bucket.get("doc_count", 0)
             )
+        original_cost = _read_money(aggs, "total_original_cost")
+        classifier_cost = _read_money(aggs, "total_classifier_cost")
+        estimated_max_cost = _read_money(aggs, "total_estimated_max_cost")
+        potential_savings = _read_money(aggs, "total_potential_savings")
         return [
             {
                 "id": "total_original_cost",
                 "label": "Total Original Cost ($)",
                 "type": "number",
                 "format": "currency",
-                "value": aggs.get("total_original_cost", {}).get("value") or 0.0,
+                "value": original_cost.figure,
+                **spend_fields(original_cost),
             },
             {
                 "id": "total_classifier_cost",
                 "label": "Total Classifier Cost ($)",
                 "type": "number",
                 "format": "currency",
-                "value": aggs.get("total_classifier_cost", {}).get("value") or 0.0,
+                "value": classifier_cost.figure,
+                **spend_fields(classifier_cost),
             },
             {
                 "id": "total_estimated_max_cost",
                 "label": "Total Estimated Max Cost ($)",
                 "type": "number",
                 "format": "currency",
-                "value": aggs.get("total_estimated_max_cost", {}).get("value") or 0.0,
+                "value": estimated_max_cost.figure,
+                **spend_fields(estimated_max_cost),
             },
             {
                 "id": "total_potential_savings",
                 "label": "Total Potential Savings ($)",
                 "type": "number",
                 "format": "currency",
-                "value": aggs.get("total_potential_savings", {}).get("value") or 0.0,
+                "value": potential_savings.figure,
+                **spend_fields(potential_savings),
             },
             {
                 "id": "request_count",
@@ -670,7 +753,7 @@ class RoutingHandler:
             "query": query,
             "size": 0,
             "aggs": {
-                "total_classifier_cost": {"sum": {"field": "attributes.classifier_cost_usd"}},
+                "total_classifier_cost": _money_agg(CLASSIFIER_COST_FIELD, LLM_CLASSIFIER_BEARING),
                 "total_input_tokens": {"sum": {"field": "attributes.classifier_input_tokens"}},
                 "total_output_tokens": {"sum": {"field": "attributes.classifier_output_tokens"}},
                 "total_cached_tokens": {"sum": {"field": "attributes.classifier_cached_tokens"}},
@@ -679,12 +762,14 @@ class RoutingHandler:
 
     def _parse_classifier_overhead(self, result: dict[str, Any]) -> list[dict[str, Any]]:
         aggs = result.get("aggregations", {})
+        classifier_cost = _read_money(aggs, "total_classifier_cost")
         return [
             {
                 "id": "total_classifier_cost",
                 "label": "Classifier Cost",
                 "type": "currency",
-                "value": aggs.get("total_classifier_cost", {}).get("value") or 0.0,
+                "value": classifier_cost.figure,
+                **spend_fields(classifier_cost),
             },
             {
                 "id": "total_input_tokens",

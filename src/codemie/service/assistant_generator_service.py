@@ -51,6 +51,8 @@ from codemie.service.monitoring.metrics_constants import (
     MetricsAttributes,
 )
 from codemie.service.request_summary_manager import request_summary_manager
+from codemie.service.spend.origin_context import spend_origin
+from codemie.service.spend.traffic_class import TrafficOrigin
 from codemie.service.tools.tools_info_service import ToolsInfoService
 from codemie.templates.agents.assistant_generator_prompt import (
     ASSISTANT_GENERATOR_CATEGORY,
@@ -142,64 +144,65 @@ class AssistantGeneratorService:
         Returns:
             AssistantGeneratorResponse: Generated assistant details
         """
-        try:
-            base_template = (
-                ASSISTANT_GENERATOR_TEMPLATE if include_tools else ASSISTANT_GENERATOR_TEMPLATE_WITHOUT_TOOLS
-            )
+        with spend_origin(TrafficOrigin.ASSISTANT_GENERATOR):
+            try:
+                base_template = (
+                    ASSISTANT_GENERATOR_TEMPLATE if include_tools else ASSISTANT_GENERATOR_TEMPLATE_WITHOUT_TOOLS
+                )
 
-            chain = PromptGeneratorChain.from_prompt_template(base_template, request_id, llm_model)
+                chain = PromptGeneratorChain.from_prompt_template(base_template, request_id, llm_model)
 
-            chain.add_toolkits(user, include_tools)
-            chain.add_categories(include_categories=include_categories)
+                chain.add_toolkits(user, include_tools)
+                chain.add_categories(include_categories=include_categories)
 
-            response = chain.invoke_with_model(AssistantDetails, {"text": text})
+                response = chain.invoke_with_model(AssistantDetails, {"text": text})
 
-            # Ensure we have exactly 4 conversation starters
-            conversation_starters = cls._validate_conversation_starters(response.conversation_starters)
+                # Ensure we have exactly 4 conversation starters
+                conversation_starters = cls._validate_conversation_starters(response.conversation_starters)
 
-            categories = cls._validate_categories_for_refine(response.categories) if response.categories else []
+                categories = cls._validate_categories_for_refine(response.categories) if response.categories else []
 
-            emit_llm_token_metric(
-                name=ASSISTANT_GENERATOR_TOTAL_METRIC,
-                request_id=request_id,
-                base_attributes={
-                    MetricsAttributes.LLM_MODEL: llm_model or "default",
-                    MetricsAttributes.USER_ID: logging_user_id.get("-"),
-                    MetricsAttributes.USER_NAME: current_user_email.get("-"),
-                    MetricsAttributes.PROJECT: get_project_for_metric(),
-                },
-            )
+                emit_llm_token_metric(
+                    name=ASSISTANT_GENERATOR_TOTAL_METRIC,
+                    request_id=request_id,
+                    base_attributes={
+                        MetricsAttributes.LLM_MODEL: llm_model or "default",
+                        MetricsAttributes.USER_ID: logging_user_id.get("-"),
+                        MetricsAttributes.USER_NAME: current_user_email.get("-"),
+                        MetricsAttributes.PROJECT: get_project_for_metric(),
+                    },
+                )
 
-            # Create the response
-            return AssistantGeneratorResponse(
-                name=response.name,
-                description=response.description,
-                conversation_starters=conversation_starters,
-                system_prompt=response.system_prompt,
-                toolkits=response.toolkits if include_tools else [],
-                categories=categories,
-            )
+                # Create the response
+                return AssistantGeneratorResponse(
+                    name=response.name,
+                    description=response.description,
+                    conversation_starters=conversation_starters,
+                    system_prompt=response.system_prompt,
+                    toolkits=response.toolkits if include_tools else [],
+                    categories=categories,
+                )
 
-        except Exception as e:
-            logger.error(f"Failed to generate assistant details: {e}", exc_info=True)
-            send_log_metric(
-                name=ASSISTANT_GENERATOR_ERRORS_METRIC,
-                attributes={
-                    MetricsAttributes.LLM_MODEL: llm_model or "default",
-                    MetricsAttributes.USER_ID: logging_user_id.get("-"),
-                    MetricsAttributes.USER_NAME: current_user_email.get("-"),
-                    MetricsAttributes.PROJECT: get_project_for_metric(),
-                },
-            )
-            raise ExtendedHTTPException(
-                code=500,
-                message="Failed to generate assistant details",
-                details=f"An error occurred while generating assistant details: {str(e)}",
-                help=HELP_MESSAGE,
-            )
-        finally:
-            if request_id:
-                request_summary_manager.clear_summary(request_id)
+            except Exception as e:
+                logger.error(f"Failed to generate assistant details: {e}", exc_info=True)
+                send_log_metric(
+                    name=ASSISTANT_GENERATOR_ERRORS_METRIC,
+                    attributes={
+                        MetricsAttributes.LLM_MODEL: llm_model or "default",
+                        MetricsAttributes.USER_ID: logging_user_id.get("-"),
+                        MetricsAttributes.USER_NAME: current_user_email.get("-"),
+                        MetricsAttributes.PROJECT: get_project_for_metric(),
+                    },
+                )
+                raise ExtendedHTTPException(
+                    code=500,
+                    message="Failed to generate assistant details",
+                    details=f"An error occurred while generating assistant details: {str(e)}",
+                    help=HELP_MESSAGE,
+                )
+            finally:
+                if request_id:
+                    request_summary_manager.clear_summary(request_id)
 
     @classmethod
     def generate_assistant_prompt(
@@ -229,69 +232,70 @@ class AssistantGeneratorService:
         Returns:
             PromptGeneratorResponse: Generated/refined system prompt
         """
-        try:
-            # Build chain with prompt refine template
-            chain = PromptGeneratorChain.from_prompt_template(
-                PROMPT_REFINE_TEMPLATE,
-                request_id,
-                llm_model,
-            )
+        with spend_origin(TrafficOrigin.PROMPT_GENERATOR):
+            try:
+                # Build chain with prompt refine template
+                chain = PromptGeneratorChain.from_prompt_template(
+                    PROMPT_REFINE_TEMPLATE,
+                    request_id,
+                    llm_model,
+                )
 
-            # Add datasource context (fetches available datasources internally)
-            chain.add_context(user, project, None)
+                # Add datasource context (fetches available datasources internally)
+                chain.add_context(user, project, None)
 
-            # Add refine instructions (handles both modes: user instructions or automatic review)
-            chain.add_prompt_refine_instructions(text)
+                # Add refine instructions (handles both modes: user instructions or automatic review)
+                chain.add_prompt_refine_instructions(text)
 
-            # Invoke with PromptDetails model (just system_prompt field)
-            response = chain.invoke_with_model(
-                PromptDetails,
-                {"system_prompt": existing_prompt or "No existing prompt. Create an intelligent, friendly chatbot"},
-            )
+                # Invoke with PromptDetails model (just system_prompt field)
+                response = chain.invoke_with_model(
+                    PromptDetails,
+                    {"system_prompt": existing_prompt or "No existing prompt. Create an intelligent, friendly chatbot"},
+                )
 
-            logger.info(
-                f"Generated/refined prompt: "
-                f"had_existing={existing_prompt is not None}, "
-                f"had_instructions={text is not None}, "
-                f"prompt_length={len(response.system_prompt)}"
-            )
+                logger.info(
+                    f"Generated/refined prompt: "
+                    f"had_existing={existing_prompt is not None}, "
+                    f"had_instructions={text is not None}, "
+                    f"prompt_length={len(response.system_prompt)}"
+                )
 
-            emit_llm_token_metric(
-                name=PROMPT_GENERATOR_TOTAL_METRIC,
-                request_id=request_id,
-                base_attributes={
-                    MetricsAttributes.LLM_MODEL: llm_model or "default",
-                    MetricsAttributes.USER_ID: logging_user_id.get("-"),
-                    MetricsAttributes.USER_NAME: current_user_email.get("-"),
-                    MetricsAttributes.PROJECT: get_project_for_metric(),
-                },
-            )
+                emit_llm_token_metric(
+                    name=PROMPT_GENERATOR_TOTAL_METRIC,
+                    request_id=request_id,
+                    base_attributes={
+                        MetricsAttributes.LLM_MODEL: llm_model or "default",
+                        MetricsAttributes.USER_ID: logging_user_id.get("-"),
+                        MetricsAttributes.USER_NAME: current_user_email.get("-"),
+                        MetricsAttributes.PROJECT: get_project_for_metric(),
+                    },
+                )
 
-            # Return response with refined system_prompt
-            return PromptGeneratorResponse(
-                system_prompt=response.system_prompt,
-            )
+                # Return response with refined system_prompt
+                return PromptGeneratorResponse(
+                    system_prompt=response.system_prompt,
+                )
 
-        except Exception as e:
-            logger.error(f"Failed to generate/refine prompt: {e}", exc_info=True)
-            send_log_metric(
-                name=PROMPT_GENERATOR_ERRORS_METRIC,
-                attributes={
-                    MetricsAttributes.LLM_MODEL: llm_model or "default",
-                    MetricsAttributes.USER_ID: logging_user_id.get("-"),
-                    MetricsAttributes.USER_NAME: current_user_email.get("-"),
-                    MetricsAttributes.PROJECT: get_project_for_metric(),
-                },
-            )
-            raise ExtendedHTTPException(
-                code=500,
-                message="Failed to generate/refine system prompt",
-                details=f"An error occurred: {str(e)}",
-                help=HELP_MESSAGE,
-            )
-        finally:
-            if request_id:
-                request_summary_manager.clear_summary(request_id)
+            except Exception as e:
+                logger.error(f"Failed to generate/refine prompt: {e}", exc_info=True)
+                send_log_metric(
+                    name=PROMPT_GENERATOR_ERRORS_METRIC,
+                    attributes={
+                        MetricsAttributes.LLM_MODEL: llm_model or "default",
+                        MetricsAttributes.USER_ID: logging_user_id.get("-"),
+                        MetricsAttributes.USER_NAME: current_user_email.get("-"),
+                        MetricsAttributes.PROJECT: get_project_for_metric(),
+                    },
+                )
+                raise ExtendedHTTPException(
+                    code=500,
+                    message="Failed to generate/refine system prompt",
+                    details=f"An error occurred: {str(e)}",
+                    help=HELP_MESSAGE,
+                )
+            finally:
+                if request_id:
+                    request_summary_manager.clear_summary(request_id)
 
     @classmethod
     def generate_refine_prompt(
@@ -306,95 +310,98 @@ class AssistantGeneratorService:
         include_categories: bool = False,
         llm_model: str = llm_service.default_llm_model,
     ) -> RefineGeneratorResponse:
-        try:
-            chain = PromptGeneratorChain.from_prompt_template(REFINE_PROMPT_TEMPLATE, request_id, llm_model)
+        with spend_origin(TrafficOrigin.ASSISTANT_GENERATOR):
+            try:
+                chain = PromptGeneratorChain.from_prompt_template(REFINE_PROMPT_TEMPLATE, request_id, llm_model)
 
-            # Deliberately `True`, not `_include_tools`: the UI only sets
-            # `include_tools` when the assistant already has toolkits, so
-            # honouring the caller's flag here stops refine suggesting any
-            # toolkit at all for a toolkit-less assistant. The parameter is kept
-            # (underscore-prefixed) for the router's call signature only.
-            chain.add_toolkits(user, True, REFINE_TOOLKITS_PROMPT_TEMPLATE, refine_details.toolkits)
-            chain.add_context(user, project, refine_details.context)
-            chain.add_categories(refine_details.categories, include_categories)
-            chain.add_refine_prompt(refine_prompt)
+                # Deliberately `True`, not `_include_tools`: the UI only sets
+                # `include_tools` when the assistant already has toolkits, so
+                # honouring the caller's flag here stops refine suggesting any
+                # toolkit at all for a toolkit-less assistant. The parameter is kept
+                # (underscore-prefixed) for the router's call signature only.
+                chain.add_toolkits(user, True, REFINE_TOOLKITS_PROMPT_TEMPLATE, refine_details.toolkits)
+                chain.add_context(user, project, refine_details.context)
+                chain.add_categories(refine_details.categories, include_categories)
+                chain.add_refine_prompt(refine_prompt)
 
-            result = chain.invoke_with_model(
-                RefineGeneratorResponse,
-                {
-                    "text": REFINE_GENERATOR_RESPONSE_TEMPLATE_EXAMPLE.format(
-                        name=refine_details.name,
-                        description=refine_details.description,
-                        categories=refine_details.categories,
-                        system_prompt=refine_details.system_prompt,
-                        conversation_starters=refine_details.conversation_starters,
-                        toolkits=refine_details.toolkits,
-                        context=refine_details.context,
-                    ),
-                },
-            )
+                result = chain.invoke_with_model(
+                    RefineGeneratorResponse,
+                    {
+                        "text": REFINE_GENERATOR_RESPONSE_TEMPLATE_EXAMPLE.format(
+                            name=refine_details.name,
+                            description=refine_details.description,
+                            categories=refine_details.categories,
+                            system_prompt=refine_details.system_prompt,
+                            conversation_starters=refine_details.conversation_starters,
+                            toolkits=refine_details.toolkits,
+                            context=refine_details.context,
+                        ),
+                    },
+                )
 
-            emit_llm_token_metric(
-                name=ASSISTANT_GENERATOR_TOTAL_METRIC,
-                request_id=request_id,
-                base_attributes={
-                    MetricsAttributes.LLM_MODEL: llm_model or "default",
-                    MetricsAttributes.USER_ID: logging_user_id.get("-"),
-                    MetricsAttributes.USER_NAME: current_user_email.get("-"),
-                    MetricsAttributes.PROJECT: get_project_for_metric(),
-                },
-            )
+                emit_llm_token_metric(
+                    name=ASSISTANT_GENERATOR_TOTAL_METRIC,
+                    request_id=request_id,
+                    base_attributes={
+                        MetricsAttributes.LLM_MODEL: llm_model or "default",
+                        MetricsAttributes.USER_ID: logging_user_id.get("-"),
+                        MetricsAttributes.USER_NAME: current_user_email.get("-"),
+                        MetricsAttributes.PROJECT: get_project_for_metric(),
+                    },
+                )
 
-            # Get original values from refine_details for comparison
-            original_values = {
-                "name": refine_details.name,
-                "description": refine_details.description,
-                "categories": refine_details.categories,
-                "system_prompt": refine_details.system_prompt,
-                "conversation_starters": refine_details.conversation_starters,
-            }
+                # Get original values from refine_details for comparison
+                original_values = {
+                    "name": refine_details.name,
+                    "description": refine_details.description,
+                    "categories": refine_details.categories,
+                    "system_prompt": refine_details.system_prompt,
+                    "conversation_starters": refine_details.conversation_starters,
+                }
 
-            for field in result.fields:
-                cls._process_field_recommendation(field, original_values)
+                for field in result.fields:
+                    cls._process_field_recommendation(field, original_values)
 
-            # Filter out fields with "keep" action from the response
-            result.fields = [field for field in result.fields if field.action != RecommendationAction.Keep]
+                # Filter out fields with "keep" action from the response
+                result.fields = [field for field in result.fields if field.action != RecommendationAction.Keep]
 
-            # Filter out toolkits that have all tools with "keep" action
-            result.toolkits = cls._filter_keep_toolkits(result.toolkits)
+                # Filter out toolkits that have all tools with "keep" action
+                result.toolkits = cls._filter_keep_toolkits(result.toolkits)
 
-            # Filter out context items with "keep" action
-            result.context = [ctx for ctx in result.context if ctx.action != RecommendationAction.Keep]
+                # Filter out context items with "keep" action
+                result.context = [ctx for ctx in result.context if ctx.action != RecommendationAction.Keep]
 
-            # Filter out invalid delete recommendations for datasources that aren't currently enabled
-            current_datasource_names = [ctx.name for ctx in refine_details.context] if refine_details.context else []
-            result.context = cls._filter_invalid_delete_recommendations(result.context, current_datasource_names)
+                # Filter out invalid delete recommendations for datasources that aren't currently enabled
+                current_datasource_names = (
+                    [ctx.name for ctx in refine_details.context] if refine_details.context else []
+                )
+                result.context = cls._filter_invalid_delete_recommendations(result.context, current_datasource_names)
 
-            # Validate that all suggested datasources actually exist in the project
-            result.context = cls._validate_context_recommendations(result.context, user, project)
+                # Validate that all suggested datasources actually exist in the project
+                result.context = cls._validate_context_recommendations(result.context, user, project)
 
-            return result
+                return result
 
-        except Exception as e:
-            logger.error(f"Failed to refine assistant: {e}", exc_info=True)
+            except Exception as e:
+                logger.error(f"Failed to refine assistant: {e}", exc_info=True)
 
-            send_log_metric(
-                name=ASSISTANT_GENERATOR_ERRORS_METRIC,
-                attributes={
-                    MetricsAttributes.LLM_MODEL: llm_model or "default",
-                    MetricsAttributes.USER_ID: logging_user_id.get("-"),
-                    MetricsAttributes.USER_NAME: current_user_email.get("-"),
-                    MetricsAttributes.PROJECT: get_project_for_metric(),
-                },
-            )
-            raise ExtendedHTTPException(
-                code=500,
-                message="Failed to refine assistant",
-                details=f"An error occurred while refining: {str(e)}",
-                help=HELP_MESSAGE,
-            )
-        finally:
-            request_summary_manager.clear_summary(request_id)
+                send_log_metric(
+                    name=ASSISTANT_GENERATOR_ERRORS_METRIC,
+                    attributes={
+                        MetricsAttributes.LLM_MODEL: llm_model or "default",
+                        MetricsAttributes.USER_ID: logging_user_id.get("-"),
+                        MetricsAttributes.USER_NAME: current_user_email.get("-"),
+                        MetricsAttributes.PROJECT: get_project_for_metric(),
+                    },
+                )
+                raise ExtendedHTTPException(
+                    code=500,
+                    message="Failed to refine assistant",
+                    details=f"An error occurred while refining: {str(e)}",
+                    help=HELP_MESSAGE,
+                )
+            finally:
+                request_summary_manager.clear_summary(request_id)
 
     @classmethod
     def validate_assistant_for_publish(
@@ -423,27 +430,70 @@ class AssistantGeneratorService:
         Raises:
             ExtendedHTTPException: If validation fails due to service errors
         """
-        try:
-            logger.info(f"Starting marketplace validation workflow for assistant: {assistant.name}")
+        # LangGraph copies the context into its parallel branches, so this one block covers every
+        # validation node's model.
+        with spend_origin(TrafficOrigin.MARKETPLACE_VALIDATION):
+            try:
+                logger.info(f"Starting marketplace validation workflow for assistant: {assistant.name}")
 
-            # Initialize and execute workflow
-            workflow = AssistantValidationWorkflow(llm_model=llm_model, request_id=request_id)
-            decision, recommendations = workflow.validate(
-                assistant=assistant,
-                user=user,
-                request_id=request_id,
-            )
+                # Initialize and execute workflow
+                workflow = AssistantValidationWorkflow(llm_model=llm_model, request_id=request_id)
+                decision, recommendations = workflow.validate(
+                    assistant=assistant,
+                    user=user,
+                    request_id=request_id,
+                )
 
-            # Build QualityValidationResult from workflow output
-            validation_result = QualityValidationResult(
-                decision=decision,
-                recommendations=recommendations,
-            )
+                # Build QualityValidationResult from workflow output
+                validation_result = QualityValidationResult(
+                    decision=decision,
+                    recommendations=recommendations,
+                )
 
-            # Track metrics
-            if validation_result.decision == "accept":
+                # Track metrics
+                if validation_result.decision == "accept":
+                    send_log_metric(
+                        name=MARKETPLACE_ASSISTANT_VALIDATION_SUCCESS_METRIC,
+                        attributes={
+                            MetricsAttributes.LLM_MODEL: llm_model,
+                            MetricsAttributes.USER_ID: user.id,
+                            MetricsAttributes.USER_NAME: user.name,
+                            MetricsAttributes.USER_EMAIL: user.username,
+                            MetricsAttributes.ASSISTANT_ID: assistant.id,
+                            MetricsAttributes.PROJECT: get_project_for_metric(),
+                        },
+                    )
+                elif validation_result.decision == "reject":
+                    send_log_metric(
+                        name=MARKETPLACE_ASSISTANT_VALIDATION_FAILED_METRIC,
+                        attributes={
+                            MetricsAttributes.LLM_MODEL: llm_model,
+                            MetricsAttributes.USER_ID: user.id,
+                            MetricsAttributes.USER_NAME: user.name,
+                            MetricsAttributes.USER_EMAIL: user.username,
+                            MetricsAttributes.ASSISTANT_ID: assistant.id,
+                            MetricsAttributes.PROJECT: get_project_for_metric(),
+                        },
+                    )
+
+                emit_llm_token_metric(
+                    name=MARKETPLACE_ASSISTANT_VALIDATION_TOTAL_METRIC,
+                    request_id=request_id,
+                    base_attributes={
+                        MetricsAttributes.LLM_MODEL: llm_model,
+                        MetricsAttributes.USER_ID: user.id,
+                        MetricsAttributes.USER_NAME: user.name,
+                        MetricsAttributes.PROJECT: get_project_for_metric(),
+                    },
+                )
+
+                logger.info(f"Marketplace validation for assistant {assistant.name} completed: decision={decision}")
+                return validation_result
+
+            except Exception as e:
+                logger.error(f"Marketplace validation for assistant {assistant.name} failed: error={str(e)}")
                 send_log_metric(
-                    name=MARKETPLACE_ASSISTANT_VALIDATION_SUCCESS_METRIC,
+                    name=MARKETPLACE_ASSISTANT_VALIDATION_ERROR_METRIC,
                     attributes={
                         MetricsAttributes.LLM_MODEL: llm_model,
                         MetricsAttributes.USER_ID: user.id,
@@ -453,56 +503,16 @@ class AssistantGeneratorService:
                         MetricsAttributes.PROJECT: get_project_for_metric(),
                     },
                 )
-            elif validation_result.decision == "reject":
-                send_log_metric(
-                    name=MARKETPLACE_ASSISTANT_VALIDATION_FAILED_METRIC,
-                    attributes={
-                        MetricsAttributes.LLM_MODEL: llm_model,
-                        MetricsAttributes.USER_ID: user.id,
-                        MetricsAttributes.USER_NAME: user.name,
-                        MetricsAttributes.USER_EMAIL: user.username,
-                        MetricsAttributes.ASSISTANT_ID: assistant.id,
-                        MetricsAttributes.PROJECT: get_project_for_metric(),
-                    },
+
+                raise ExtendedHTTPException(
+                    code=500,
+                    message="Failed to validate assistant for publication (v2 workflow)",
+                    details=f"An error occurred during v2 quality validation: {str(e)}",
+                    help="Please try again later. If the issue persists, contact support.",
                 )
-
-            emit_llm_token_metric(
-                name=MARKETPLACE_ASSISTANT_VALIDATION_TOTAL_METRIC,
-                request_id=request_id,
-                base_attributes={
-                    MetricsAttributes.LLM_MODEL: llm_model,
-                    MetricsAttributes.USER_ID: user.id,
-                    MetricsAttributes.USER_NAME: user.name,
-                    MetricsAttributes.PROJECT: get_project_for_metric(),
-                },
-            )
-
-            logger.info(f"Marketplace validation for assistant {assistant.name} completed: decision={decision}")
-            return validation_result
-
-        except Exception as e:
-            logger.error(f"Marketplace validation for assistant {assistant.name} failed: error={str(e)}")
-            send_log_metric(
-                name=MARKETPLACE_ASSISTANT_VALIDATION_ERROR_METRIC,
-                attributes={
-                    MetricsAttributes.LLM_MODEL: llm_model,
-                    MetricsAttributes.USER_ID: user.id,
-                    MetricsAttributes.USER_NAME: user.name,
-                    MetricsAttributes.USER_EMAIL: user.username,
-                    MetricsAttributes.ASSISTANT_ID: assistant.id,
-                    MetricsAttributes.PROJECT: get_project_for_metric(),
-                },
-            )
-
-            raise ExtendedHTTPException(
-                code=500,
-                message="Failed to validate assistant for publication (v2 workflow)",
-                details=f"An error occurred during v2 quality validation: {str(e)}",
-                help="Please try again later. If the issue persists, contact support.",
-            )
-        finally:
-            if request_id:
-                request_summary_manager.clear_summary(request_id)
+            finally:
+                if request_id:
+                    request_summary_manager.clear_summary(request_id)
 
     @classmethod
     def _process_field_recommendation(cls, field, original_values: dict[str, Any]):

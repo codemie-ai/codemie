@@ -91,6 +91,7 @@ def _register_iam_token_event(
 class PostgresClient:
     _engines = {}
     _async_engines = {}
+    _ledger_async_engines = {}
     initial_pid = os.getpid()
 
     @classmethod
@@ -201,17 +202,9 @@ class PostgresClient:
         """
         pid = os.getpid()
         if pid not in cls._async_engines:
-            cls._async_engines[pid] = create_async_engine(
-                url=cls._get_connection_string(async_mode=True),
-                echo=False,
-                pool_pre_ping=True,
-                pool_size=config.PG_POOL_SIZE if cls.initial_pid == pid else 2,
-                max_overflow=0,
-                json_serializer=lambda v: json.dumps(v, default=pydantic_encoder),
-                connect_args={"server_settings": {"search_path": f"{config.DEFAULT_DB_SCHEMA},public"}},
+            cls._async_engines[pid] = cls._create_async_engine(
+                pool_size=config.PG_POOL_SIZE if cls.initial_pid == pid else 2
             )
-            if config.PG_IAM_AUTH_PROVIDER:
-                _register_iam_token_event(cls._async_engines[pid])
             atexit.register(cls.cleanup_async_engine)
         return cls._async_engines[pid]
 
@@ -221,6 +214,67 @@ class PostgresClient:
         engine = cls._async_engines.pop(pid, None)
         if engine is not None:
             engine.sync_engine.dispose()
+
+    @classmethod
+    def get_ledger_async_engine(cls):
+        """The async engine spend-ledger reads run on: the application's unless SPEND_LEDGER_POOL_SIZE isolates them.
+
+        EPMCDME-15537: prepared, not active. While a ledger read can take tens of seconds, a pool of
+        its own (and the statement timeout it alone may carry) would turn slow figures into missing
+        ones, so the default keeps sharing the application pool exactly as before.
+        """
+        if config.SPEND_LEDGER_POOL_SIZE <= 0:
+            return cls.get_async_engine()
+        pid = os.getpid()
+        if pid not in cls._ledger_async_engines:
+            statement_timeout_ms = config.SPEND_LEDGER_STATEMENT_TIMEOUT_MS
+            statement_timeout = {"statement_timeout": str(statement_timeout_ms)} if statement_timeout_ms > 0 else None
+            cls._ledger_async_engines[pid] = cls._create_async_engine(
+                pool_size=config.SPEND_LEDGER_POOL_SIZE,
+                pool_timeout=config.SPEND_LEDGER_POOL_TIMEOUT_SECONDS,
+                extra_server_settings=statement_timeout,
+            )
+            atexit.register(cls.cleanup_ledger_async_engine)
+        return cls._ledger_async_engines[pid]
+
+    @classmethod
+    def cleanup_ledger_async_engine(cls):
+        pid = os.getpid()
+        engine = cls._ledger_async_engines.pop(pid, None)
+        if engine is not None:
+            engine.sync_engine.dispose()
+
+    @classmethod
+    def _create_async_engine(
+        cls,
+        pool_size: int,
+        pool_timeout: float | None = None,
+        extra_server_settings: dict[str, str] | None = None,
+    ):
+        """One capped asyncpg engine against the application database, IAM-authenticated when configured.
+
+        `pool_timeout` is passed only when given, so an engine built without one keeps SQLAlchemy's
+        own default rather than a copy of it here.
+        """
+        pool_options = {"pool_timeout": pool_timeout} if pool_timeout is not None else {}
+        engine = create_async_engine(
+            url=cls._get_connection_string(async_mode=True),
+            echo=False,
+            pool_pre_ping=True,
+            pool_size=pool_size,
+            max_overflow=0,
+            json_serializer=lambda v: json.dumps(v, default=pydantic_encoder),
+            connect_args={
+                "server_settings": {
+                    "search_path": f"{config.DEFAULT_DB_SCHEMA},public",
+                    **(extra_server_settings or {}),
+                }
+            },
+            **pool_options,
+        )
+        if config.PG_IAM_AUTH_PROVIDER:
+            _register_iam_token_event(engine)
+        return engine
 
 
 def alembic_upgrade_postgres() -> None:
@@ -366,4 +420,17 @@ async def get_async_session():
         AsyncSession: SQLAlchemy async session for database operations.
     """
     async with AsyncSession(PostgresClient.get_async_engine()) as session:
+        yield session
+
+
+@asynccontextmanager
+async def get_ledger_async_session():
+    """
+    Async context manager for spend-ledger read sessions.
+
+    Yields:
+        AsyncSession: a session on `PostgresClient.get_ledger_async_engine()` - the application
+        pool unless SPEND_LEDGER_POOL_SIZE gives ledger reads one of their own.
+    """
+    async with AsyncSession(PostgresClient.get_ledger_async_engine()) as session:
         yield session

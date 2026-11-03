@@ -322,6 +322,48 @@ class TestCheckUserBudget:
                 assert result is mock_customer
 
 
+class TestGetCustomerSpending:
+    """Test get_customer_spending() function."""
+
+    def test_returns_budget_policy_without_the_provider_spend_field(self):
+        """The accessor surfaces budget policy to core, never LiteLLM's own spend counter.
+
+        That counter is an enforcement input and never a reported figure (AD-10); every money
+        figure core reports comes from the spend port (AD-1). The policy fields keep their exact
+        shape, because their consumers read the limit and the reset window from this dict.
+        """
+        mock_service = MagicMock()
+        mock_service.get_customer_spending.return_value = {
+            "customer_id": "user@example.com",
+            "total_spend": 42.5,
+            "max_budget": 100.0,
+            "budget_duration": "30d",
+            "budget_reset_at": "2026-09-01T00:00:00Z",
+        }
+
+        with patch("codemie.enterprise.litellm.dependencies.get_litellm_service_or_none", return_value=mock_service):
+            from codemie.enterprise.litellm.dependencies import get_customer_spending
+
+            result = get_customer_spending("user@example.com")
+
+        assert result == {
+            "customer_id": "user@example.com",
+            "max_budget": 100.0,
+            "budget_duration": "30d",
+            "budget_reset_at": "2026-09-01T00:00:00Z",
+        }
+
+    def test_returns_none_when_customer_is_unknown(self):
+        """No customer is no policy - and an empty dict would read as a policy with no limit."""
+        mock_service = MagicMock()
+        mock_service.get_customer_spending.return_value = None
+
+        with patch("codemie.enterprise.litellm.dependencies.get_litellm_service_or_none", return_value=mock_service):
+            from codemie.enterprise.litellm.dependencies import get_customer_spending
+
+            assert get_customer_spending("user@example.com") is None
+
+
 class TestGetAvailableModels:
     """Test get_available_models() function."""
 

@@ -38,6 +38,7 @@ from dataclasses import dataclass, field
 
 from codemie.service.leaderboard.collector import RawUserMetrics
 from codemie.service.leaderboard.config import DimensionDefinition, LeaderboardSettings, leaderboard_settings
+from codemie.service.spend.rendering import RenderedSpend, spend_fields
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +80,24 @@ def _tiered(value: float, thresholds: list[float]) -> float:
         return 0.0
     idx = bisect.bisect_right(thresholds, value)
     return min(idx / len(thresholds), 1.0)
+
+
+def _spend_summary(prefix: str, spend: RenderedSpend) -> dict:
+    """One money figure keyed `<prefix>_spend`, and the three keys that qualify it.
+
+    The figure stays `None` when the port produced none, and is never coerced to `0.0`: a fabricated
+    zero says the person spent nothing, which is a different fact from *we do not know* and the one
+    the leaderboard would otherwise print as `$0.00` beside their rank.
+
+    Keyed per figure - `total_spend_unavailable`, `cli_spend_unavailable` - because one row carries
+    two money figures and one unsuffixed set of annotation keys could not say which it qualifies.
+    Spelled exactly as the project-member spend table spells it, so a screen reading both learns one
+    convention.
+    """
+    return {
+        f"{prefix}_spend": spend.figure,
+        **{f"{prefix}_{key}": value for key, value in spend_fields(spend).items()},
+    }
 
 
 def _percentile_rank(value: float, sorted_values: list[float]) -> float:
@@ -153,7 +172,9 @@ class LeaderboardScorer:
             "cli_lines_added": [],
             "cli_files_changed": [],
             "cli_repos": [],
-            "cli_total_spend": [],
+            # No money array. No component percentile-ranks spend, and the only way to build one
+            # would be to substitute a zero for every person whose figure is absent - which is the
+            # fabricated zero this rewire removes, arriving through the cohort instead of the score.
         }
 
         for u in users:
@@ -182,7 +203,6 @@ class LeaderboardScorer:
         stats["cli_lines_added"].append(float(user.cli.get("cli_lines_added", 0) or 0))
         stats["cli_files_changed"].append(float(user.cli.get("cli_files_changed", 0) or 0))
         stats["cli_repos"].append(float(user.cli.get("cli_repos", 0) or 0))
-        stats["cli_total_spend"].append(float(user.cli.get("cli_total_spend", 0) or 0))
 
     # ── Dimension scoring ────────────────────────────────────────────
 
@@ -440,7 +460,9 @@ class LeaderboardScorer:
         lines_added = float(user.cli.get("cli_lines_added", 0) or 0)
         files_changed = float(user.cli.get("cli_files_changed", 0) or 0)
         total_tokens = float(user.cli.get("cli_total_tokens", 0) or 0)
-        cli_spend = float(user.cli.get("cli_total_spend", 0) or 0)
+        # The same figure the summary displays, from the same read. `None` means the port produced no
+        # figure - not that nothing was spent.
+        cli_spend = user.spend.cli.figure
 
         if sessions == 0:
             components = [
@@ -458,7 +480,6 @@ class LeaderboardScorer:
         cli_sessions_sorted = cohort.get("cli_sessions", [])
         cli_lines_sorted = cohort.get("cli_lines_added", [])
         cli_files_sorted = cohort.get("cli_files_changed", [])
-        efficiency, eff_display = self._cli_efficiency_metrics(lines_added, files_changed, total_tokens, cli_spend)
 
         unique_tools = float(user.usage.get("unique_tools", 0) or 0)
         unique_mcps = float(user.usage.get("unique_mcps_used", 0) or 0)
@@ -498,14 +519,7 @@ class LeaderboardScorer:
                 _percentile_rank(files_changed, cli_files_sorted),
                 display_value=str(int(files_changed)),
             ),
-            self._component(
-                "delivery_efficiency",
-                "Delivery Efficiency",
-                0.18,
-                round(efficiency, 2),
-                efficiency,
-                display_value=eff_display,
-            ),
+            *self._delivery_efficiency_component(lines_added, files_changed, total_tokens, cli_spend),
             self._component(
                 "tool_sophistication",
                 "Agent/Skill/MCP Sophistication",
@@ -715,10 +729,11 @@ class LeaderboardScorer:
                 ),
             ),
         }
-        summary["total_spend"] = float(user.litellm_spend.get("total_spend", 0) or 0) + float(
-            user.usage.get("web_money_spent", 0) or 0
-        )
-        summary["cli_spend"] = float(user.litellm_spend.get("cli_spend", 0) or 0)
+        # Two port reads, and no addition. `PersonTotalHolder` already spans both pots and every
+        # category, so the Elasticsearch web-spend aggregate that used to be added to this figure had
+        # nothing left to add - it was double-counting the same money from a second source.
+        summary.update(_spend_summary("total", user.spend.total))
+        summary.update(_spend_summary("cli", user.spend.cli))
         return summary
 
     @staticmethod
@@ -850,9 +865,51 @@ class LeaderboardScorer:
             return 0.65
         return 1.0
 
+    def _delivery_efficiency_component(
+        self, lines_added: float, files_changed: float, total_tokens: float, cli_spend: float | None
+    ) -> tuple[dict, ...]:
+        """The delivery-efficiency component, or **nothing at all** when the CLI figure is absent.
+
+        Unpacked into the component list, so an absent figure leaves the dimension with five scored
+        components rather than a sixth carrying a manufactured one. It then contributes neither a zero
+        nor a clamped value to the weighted sum, which is the point: a ranking that reads *we do not
+        know what they spent* as *they spent nothing* puts that person **first**, because a
+        lines-per-dollar ratio over a substituted denominator saturates the `min(…, 1.0)` cap.
+        """
+        metrics = self._cli_efficiency_metrics(lines_added, files_changed, total_tokens, cli_spend)
+        if metrics is None:
+            return ()
+        efficiency, eff_display = metrics
+        return (
+            self._component(
+                "delivery_efficiency",
+                "Delivery Efficiency",
+                0.18,
+                round(efficiency, 2),
+                efficiency,
+                display_value=eff_display,
+            ),
+        )
+
     def _cli_efficiency_metrics(
-        self, lines_added: float, files_changed: float, total_tokens: float, cli_spend: float
-    ) -> tuple[float, str]:
+        self, lines_added: float, files_changed: float, total_tokens: float, cli_spend: float | None
+    ) -> tuple[float, str] | None:
+        """Efficiency and its display line, or None when the person's CLI money is not known.
+
+        **The two money clamps are gone and their absence is the correctness fix.** `max(cli_spend, 1)`
+        and `max(cli_spend, 0.01)` stopped a division by zero *and* substituted a denominator: with an
+        unknown spend they drove efficiency to the cap and printed a lines-per-dollar figure derived
+        from a dollar amount nobody measured. Both divisions below are guarded by `cli_spend > 0`
+        already, so nothing here needs a substitute - what needs answering is *is there a figure at
+        all*, and the answer to no is no component.
+
+        A **measured** zero is not an absent figure. It divides into nothing, so it contributes no
+        money part - exactly as a zero token count contributes no token part - and the component still
+        stands on whichever part is measurable.
+        """
+        if cli_spend is None:
+            return None
+
         efficiency = 0.0
         eff_parts: list[float] = []
         if (
@@ -862,12 +919,12 @@ class LeaderboardScorer:
             if total_tokens > 0:
                 eff_parts.append(min(lines_added / max(total_tokens / 1000, 1) / 10.0, 1.0))
             if cli_spend > 0:
-                eff_parts.append(min(lines_added / max(cli_spend, 1) / 100.0, 1.0))
+                eff_parts.append(min(lines_added / cli_spend / 100.0, 1.0))
         if eff_parts:
             efficiency = sum(eff_parts) / len(eff_parts)
 
         lines_per_token = lines_added / max(total_tokens, 1) if total_tokens > 0 else 0.0
-        lines_per_dollar = lines_added / max(cli_spend, 0.01) if cli_spend > 0 else 0.0
+        lines_per_dollar = lines_added / cli_spend if cli_spend > 0 else 0.0
         return efficiency, f"{lines_per_token:.5f} lines/token · {lines_per_dollar:.2f} lines/$"
 
     @staticmethod

@@ -103,3 +103,31 @@ async def test_invoke_workflow_default_task(httpx_mock, mock_bind_key, mock_logg
     requests_made = httpx_mock.get_requests()
     assert json.loads(requests_made[0].content)['user_input'] == 'Do it'
     assert mock_logger.info.call_args_list == expected_calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tokens_usage", "expected_money"),
+    [
+        # Still pending when the execution answered: the zero beside the flag is a placeholder.
+        (
+            {"input_tokens": 10, "output_tokens": 5, "money_spent": 0.0, "money_spent_pending": True},
+            {"cost": None, "moneySpentPending": True, "moneySpentUnavailable": False},
+        ),
+        # A body without the flag keys reads as unflagged, its cost as sent.
+        (
+            {"input_tokens": 10, "output_tokens": 5, "money_spent": 0.12},
+            {"cost": 0.12, "moneySpentPending": False, "moneySpentUnavailable": False},
+        ),
+    ],
+)
+async def test_invoke_workflow_snapshot_stores_cost_with_its_flags(
+    httpx_mock, mock_bind_key, mock_logger, tokens_usage, expected_money
+) -> None:
+    httpx_mock.add_response(
+        method='POST', url=URL, status_code=200, json={"execution_id": "exec-1", "tokens_usage": tokens_usage}
+    )
+
+    result = await invoke_workflow(workflow_id=WORKFLOW_ID, user_id=USER_ID, job_id=JOB_ID)
+
+    assert result["metrics"] == {"inputTokens": 10, "outputTokens": 5, **expected_money}

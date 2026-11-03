@@ -15,8 +15,8 @@
 """Unit tests for /v1/projects visibility, creation, assignment, delete, and update endpoints."""
 
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, UTC
-from datetime import date as date_type
+from datetime import datetime, UTC
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -36,28 +36,46 @@ from codemie.rest_api.models.project import (
     ProjectOwnershipUpdateRequest,
     ProjectUpdateRequest,
     PaginatedProjectListResponse,
-    PaginatedSpendsResponse,
+    ProjectAssignedBudgetSummary,
+    ProjectSpendingDetail,
+    ProjectSpendingSummary,
+    SpendingWidgetRow,
 )
 from codemie.rest_api.routers.projects import router as projects_router
 from codemie.rest_api.routers.projects._common import _authorize_project_access, _raise_project_not_found
-from codemie.service.project.project_spending_service import is_budget_period_open
+from codemie.service.project.project_spending_service import (
+    attach_project_detail_spending,
+    attach_project_spending_summaries,
+)
 from codemie.rest_api.routers.projects.management import delete_project, update_project, update_project_ownership
 from codemie.rest_api.routers.projects.membership import (
     assign_user_to_project,
     remove_user_from_project,
     update_user_project_assignment,
 )
-from codemie.rest_api.routers.projects.spending import get_project_spends
 from codemie.rest_api.routers.projects.crud import (
+    _attach_assigned_budget_summaries,
     _build_project_detail_response,
     create_project,
     get_project_detail,
     list_projects,
 )
 from codemie.configs import config
-from codemie.core.models import Application
 from codemie.rest_api.security.user import User
 from codemie.service.budget.budget_enums import BudgetCategory
+from codemie.service.spend.coverage import Portion, SpendDimension, SpendResult, TimeRange
+from codemie.service.spend.ledger import ProjectHolder
+
+
+@pytest.fixture(autouse=True)
+def _no_budget_reset_refresh():
+    """The reset reconciliation is a provider call; it moves nothing unless a test patches it itself."""
+    with patch(
+        "codemie.service.project.project_spending_service.daily_budget_reset_reconciliation_service.refresh_overdue",
+        new_callable=AsyncMock,
+        return_value=set(),
+    ):
+        yield
 
 
 @asynccontextmanager
@@ -376,23 +394,8 @@ class TestProjectsVisibilityEndpoints:
         new_callable=AsyncMock,
     )
     @patch("codemie.rest_api.routers.projects._common.config")
-    @patch(
-        "codemie.service.project.project_spending_service.budget_repository.get_all_keyed_by_id",
-        new_callable=AsyncMock,
-    )
-    @patch("codemie.service.project.project_spending_service.spend_repo.get_lifetime_spend", new_callable=AsyncMock)
-    @patch(
-        "codemie.service.project.project_spending_service.spend_repo.get_latest_project_budget_rows_by_category",
-        new_callable=AsyncMock,
-    )
-    @patch(
-        "codemie.service.project.project_spending_service.spend_repo.get_latest_budget_rows_for_project",
-        new_callable=AsyncMock,
-    )
-    @patch(
-        "codemie.service.project.project_spending_service.spend_repo.get_latest_key_spending_for_project",
-        new_callable=AsyncMock,
-    )
+    @patch("codemie.service.project.project_spending_service.spend_service")
+    @patch("codemie.service.project.project_spending_service.project_budget_assignment_repository")
     @patch("codemie.service.project.project_spending_service.get_async_session")
     @patch("codemie.rest_api.routers.projects.crud._get_project_detail_sync")
     @pytest.mark.anyio
@@ -400,11 +403,8 @@ class TestProjectsVisibilityEndpoints:
         self,
         mock_get_project_detail_sync,
         mock_get_async_session,
-        mock_get_latest_key_spending,
-        mock_get_latest_budget_rows,
-        mock_get_category_rows,
-        mock_get_lifetime_spend,
-        mock_get_all_keyed_by_id,
+        mock_project_budget_repo,
+        mock_spend_service,
         mock_config,
         mock_assigned_budgets,
     ):
@@ -421,12 +421,10 @@ class TestProjectsVisibilityEndpoints:
             "members": [],
             "is_project_admin": True,
         }
-        mock_get_latest_key_spending.return_value = None
-        mock_get_latest_budget_rows.return_value = []
-        mock_get_category_rows.return_value = []
-        mock_get_lifetime_spend.return_value = 0.0
-        mock_get_all_keyed_by_id.return_value = {}
-        mock_get_async_session.return_value = _mock_session_ctx(AsyncMock())
+        mock_project_budget_repo.get_removed_budget_summaries_for_projects = AsyncMock(return_value={})
+        mock_project_budget_repo.get_assigned_budget_summaries_for_projects = AsyncMock(return_value={})
+        mock_spend_service.consumed_for_holders = AsyncMock(return_value={})
+        mock_get_async_session.side_effect = lambda: _mock_session_ctx(AsyncMock())
         project_admin_user = User(
             id="user-1",
             username="user1",
@@ -440,14 +438,12 @@ class TestProjectsVisibilityEndpoints:
             request=MagicMock(method="GET", url=SimpleNamespace(path="/v1/projects/proj-a")),
             project_name="proj-a",
             include_spending=True,
+            spending_rows_limit=50,
             user=project_admin_user,
         )
 
         assert isinstance(result, ProjectDetailResponse)
-        mock_get_latest_key_spending.assert_awaited_once()
-        mock_get_category_rows.assert_awaited_once()
-        assert mock_get_category_rows.await_args.args[1] == ["proj-a"]
-        assert mock_get_latest_budget_rows.await_count == 1
+        mock_project_budget_repo.get_assigned_budget_summaries_for_projects.assert_awaited_once()
 
     @patch("codemie.rest_api.routers.projects._common.config")
     @patch("codemie.rest_api.routers.projects.crud.SettingsService.get_enforce_member_spend_limits")
@@ -645,8 +641,9 @@ class TestProjectsVisibilityEndpoints:
     @patch("codemie.rest_api.routers.projects._common.config")
     @patch("codemie.rest_api.routers.projects.crud.config")
     @patch("codemie.rest_api.routers.projects.crud.get_active_provider")
-    @patch("codemie.rest_api.routers.projects.crud.project_budget_assignment_repository")
-    @patch("codemie.rest_api.routers.projects.crud.get_async_session")
+    @patch("codemie.rest_api.routers.projects.crud.spend_service")
+    @patch("codemie.service.project.project_spending_service.project_budget_assignment_repository")
+    @patch("codemie.service.project.project_spending_service.get_async_session")
     @patch("codemie.rest_api.routers.projects.crud.get_session")
     @patch("codemie.rest_api.routers.projects.crud.project_visibility_service")
     @pytest.mark.anyio
@@ -656,6 +653,7 @@ class TestProjectsVisibilityEndpoints:
         mock_get_session,
         mock_async_session,
         mock_project_budget_repo,
+        mock_spend_service,
         mock_get_active_provider,
         mock_config,
         mock_common_config,
@@ -681,23 +679,27 @@ class TestProjectsVisibilityEndpoints:
             1,
         )
         mock_async_session.return_value = AsyncMock()
+        mock_project_budget_repo.get_removed_budget_summaries_for_projects = AsyncMock(return_value={})
         mock_project_budget_repo.get_assigned_budget_summaries_for_projects = AsyncMock(
             return_value={
                 "shared-proj": [
                     SimpleNamespace(
+                        project_name="shared-proj",
                         budget_id="budget-1",
                         name="CLI Budget",
                         budget_category="cli",
                         soft_budget=10.0,
                         max_budget=20.0,
                         budget_duration="30d",
-                        budget_reset_at="2026-04-23T10:10:00Z",
+                        budget_reset_at="2099-04-23T10:10:00Z",
                         provider_sync_status="ok",
                         member_count=2,
                         allocated_member_budget_total=20.0,
-                        current_spending=5.0,
+                        budget_created_at=None,
+                        budget_spend_reset_at=None,
                     ),
                     SimpleNamespace(
+                        project_name="shared-proj",
                         budget_id="budget-2",
                         name="Broken Budget",
                         budget_category="not-a-category",
@@ -708,9 +710,15 @@ class TestProjectsVisibilityEndpoints:
                         provider_sync_status="failed",
                         member_count=0,
                         allocated_member_budget_total=0.0,
-                        current_spending=0.0,
+                        budget_created_at=None,
+                        budget_spend_reset_at=None,
                     ),
                 ]
+            }
+        )
+        mock_spend_service.consumed_for_holders = AsyncMock(
+            return_value={
+                ProjectHolder(project="shared-proj", category=BudgetCategory.CLI): SpendResult(figure=Decimal("5.0")),
             }
         )
 
@@ -731,102 +739,7 @@ class TestProjectsVisibilityEndpoints:
         assert len(result.data[0].budgets) == 1
         assert result.data[0].budgets[0].budget_id == "budget-1"
         assert result.data[0].budgets[0].budget_category == BudgetCategory.CLI
-
-    @patch(
-        "codemie.service.project.project_spending_service.project_budget_assignment_repository."
-        "get_assigned_budget_summaries_for_projects",
-        new_callable=AsyncMock,
-    )
-    @patch("codemie.rest_api.routers.projects._common.config")
-    @patch("codemie.service.project.project_spending_service.budget_repository")
-    @patch("codemie.service.project.project_spending_service.get_async_session")
-    @patch("codemie.rest_api.routers.projects.crud.get_session")
-    @patch("codemie.rest_api.routers.projects.crud.project_visibility_service")
-    @patch("codemie.service.project.project_spending_service.spend_repo")
-    @pytest.mark.anyio
-    async def test_list_projects_builds_spending_summary_from_latest_key_and_budget_rows(
-        self,
-        mock_spend_repo,
-        mock_visibility_service,
-        mock_get_session,
-        mock_async_session,
-        mock_budget_repository,
-        mock_config,
-        mock_assigned_budgets,
-        super_admin_user,
-    ):
-        mock_assigned_budgets.return_value = {}
-        mock_config.ENABLE_USER_MANAGEMENT = True
-        mock_session = MagicMock()
-        mock_get_session.return_value.__enter__.return_value = mock_session
-        mock_visibility_service.list_visible_projects_paginated.return_value = (
-            [
-                {
-                    "name": "shared-proj",
-                    "description": "desc",
-                    "project_type": "shared",
-                    "created_by": "owner-1",
-                    "created_at": datetime(2026, 2, 10, tzinfo=UTC),
-                    "user_count": 3,
-                    "admin_count": 1,
-                    "is_project_admin": True,
-                }
-            ],
-            1,
-        )
-        mock_async_session.return_value = AsyncMock()
-        latest_key_row = MagicMock(
-            project_name="shared-proj",
-            budget_id="key-budget",
-            budget_period_spend=5.0,
-            spend_date=datetime(2026, 4, 11, tzinfo=UTC),
-        )
-        stale_key_row = MagicMock(
-            project_name="shared-proj",
-            budget_id="key-budget",
-            budget_period_spend=4.0,
-            spend_date=datetime(2026, 4, 10, tzinfo=UTC),
-        )
-        latest_budget_row = MagicMock(
-            project_name="shared-proj",
-            budget_id="budget-1",
-            budget_period_spend=3.0,
-            spend_date=datetime(2026, 4, 11, tzinfo=UTC),
-        )
-        stale_budget_row = MagicMock(
-            project_name="shared-proj",
-            budget_id="budget-1",
-            budget_period_spend=2.0,
-            spend_date=datetime(2026, 4, 10, tzinfo=UTC),
-        )
-        mock_spend_repo.get_latest_spending_by_project = AsyncMock(
-            side_effect=[[stale_key_row, latest_key_row], [stale_budget_row, latest_budget_row]]
-        )
-        mock_spend_repo.get_latest_project_budget_rows_by_category = AsyncMock(return_value=[])
-        mock_budget = MagicMock()
-        mock_budget.max_budget = 16.0
-        mock_budget.budget_reset_at = None
-        mock_budget.deleted_at = None
-        mock_budget_repository.get_all_keyed_by_id = AsyncMock(return_value={"key-budget": mock_budget})
-
-        result = await list_projects(
-            search=None,
-            page=0,
-            per_page=20,
-            include_counters=True,
-            include_spending=True,
-            include_budgets=False,
-            has_assigned_budgets=False,
-            budget_category=None,
-            sort_by=None,
-            sort_order="asc",
-            user=super_admin_user,
-        )
-
-        assert result.data[0].spending is not None
-        assert result.data[0].spending.current_spending == pytest.approx(8.0)
-        assert result.data[0].spending.budget_limit == pytest.approx(16.0)
-        assert result.data[0].spending.total_percent == pytest.approx(50.0)
+        assert result.data[0].budgets[0].current_spending == pytest.approx(5.0)
 
     @patch("codemie.rest_api.routers.projects._common.config")
     @patch("codemie.rest_api.routers.projects.crud.get_session")
@@ -873,6 +786,799 @@ class TestProjectsVisibilityEndpoints:
         assert result.admin_count == 2
         assert result.created_at == datetime(2026, 1, 15, 10, 0, 0, tzinfo=UTC)
         assert len(result.members) == 2
+
+
+#: Inside the derived 2099-03-24T10:10Z..2099-04-23T10:10Z period, and before it, for the rows below.
+_CREATED_MID_PERIOD = datetime(2099, 4, 2, 12, 2, 14, tzinfo=UTC)
+_CREATED_BEFORE_PERIOD = datetime(2099, 1, 1, tzinfo=UTC)
+#: A period-scoped project portion the ledger sizes (EPMCDME-15237): a budget figure must not show it.
+_PROJECT_HOLE = Portion(
+    spend=Decimal("133.97"),
+    rows=12,
+    sub_range=TimeRange(datetime(2099, 3, 24, 10, 10, tzinfo=UTC), datetime(2099, 4, 2, tzinfo=UTC)),
+)
+
+
+class TestAssignedBudgetSpendFigures:
+    """The project-list budget summaries report exactly what the spend port says was consumed."""
+
+    #: 2099-04-23T10:10:00Z minus the 30d duration - the period budget_period_range derives.
+    PERIOD = TimeRange(datetime(2099, 3, 24, 10, 10, tzinfo=UTC), datetime(2099, 4, 23, 10, 10, tzinfo=UTC))
+    HOLDER = ProjectHolder(project="proj-a", category=BudgetCategory.CLI)
+
+    @staticmethod
+    def _budget_row(**overrides) -> SimpleNamespace:
+        fields = {
+            "project_name": "proj-a",
+            "budget_id": "budget-1",
+            "name": "CLI Budget",
+            "budget_category": "cli",
+            "soft_budget": 10.0,
+            "max_budget": 20.0,
+            "budget_duration": "30d",
+            "budget_reset_at": "2099-04-23T10:10:00Z",
+            "provider_sync_status": "ok",
+            "member_count": 0,
+            "allocated_member_budget_total": 0.0,
+            "budget_created_at": None,
+            "budget_spend_reset_at": None,
+        }
+        fields.update(overrides)
+        return SimpleNamespace(**fields)
+
+    @staticmethod
+    def _item() -> ProjectListItem:
+        return ProjectListItem(name="proj-a", project_type="shared", user_count=1, admin_count=1)
+
+    @staticmethod
+    def _stub_repository(mock_project_budget_repo, mock_async_session, row) -> None:
+        mock_async_session.return_value = AsyncMock()
+        mock_project_budget_repo.get_assigned_budget_summaries_for_projects = AsyncMock(return_value={"proj-a": [row]})
+        mock_project_budget_repo.get_removed_budget_summaries_for_projects = AsyncMock(return_value={})
+
+    @patch("codemie.rest_api.routers.projects.crud.spend_service")
+    @patch("codemie.service.project.project_spending_service.project_budget_assignment_repository")
+    @patch("codemie.service.project.project_spending_service.get_async_session")
+    @pytest.mark.anyio
+    async def test_absent_figure_renders_as_no_spending(
+        self,
+        mock_async_session,
+        mock_project_budget_repo,
+        mock_spend_service,
+    ):
+        """An absent figure must not become 0.0 - unknown consumption is not zero consumption."""
+        self._stub_repository(mock_project_budget_repo, mock_async_session, self._budget_row())
+        mock_spend_service.consumed_for_holders = AsyncMock(
+            return_value={self.HOLDER: SpendResult.no_figure(self.PERIOD)}
+        )
+        items = [self._item()]
+
+        await _attach_assigned_budget_summaries(items, budget_category=None)
+
+        assert items[0].budgets[0].current_spending is None
+        # The blank must say why it is blank: a missing number alone reads as "nothing was spent".
+        assert items[0].budgets[0].spend_unavailable is True
+
+    @patch("codemie.rest_api.routers.projects.crud.spend_service")
+    @patch("codemie.service.project.project_spending_service.project_budget_assignment_repository")
+    @patch("codemie.service.project.project_spending_service.get_async_session")
+    @pytest.mark.anyio
+    async def test_measured_zero_renders_as_zero(
+        self,
+        mock_async_session,
+        mock_project_budget_repo,
+        mock_spend_service,
+    ):
+        """A measured zero is a real figure and must render as 0.0, not as an absent one."""
+        self._stub_repository(mock_project_budget_repo, mock_async_session, self._budget_row())
+        mock_spend_service.consumed_for_holders = AsyncMock(
+            return_value={self.HOLDER: SpendResult(figure=Decimal("0"))}
+        )
+        items = [self._item()]
+
+        await _attach_assigned_budget_summaries(items, budget_category=None)
+
+        assert items[0].budgets[0].current_spending == 0.0
+        mock_spend_service.consumed_for_holders.assert_awaited_once_with([self.HOLDER], self.PERIOD)
+
+    @patch("codemie.rest_api.routers.projects.crud.spend_service")
+    @patch("codemie.service.project.project_spending_service.project_budget_assignment_repository")
+    @patch("codemie.service.project.project_spending_service.get_async_session")
+    @pytest.mark.anyio
+    async def test_budget_without_derivable_period_is_never_queried(
+        self,
+        mock_async_session,
+        mock_project_budget_repo,
+        mock_spend_service,
+    ):
+        """No reset instant means no budget period, so there is no figure to ask the port for."""
+        self._stub_repository(mock_project_budget_repo, mock_async_session, self._budget_row(budget_reset_at=None))
+        mock_spend_service.consumed_for_holders = AsyncMock()
+        items = [self._item()]
+
+        await _attach_assigned_budget_summaries(items, budget_category=None)
+
+        assert items[0].budgets[0].current_spending is None
+        # Never asked is the same fact to a reader as no figure available, and is reported as such.
+        assert items[0].budgets[0].spend_unavailable is True
+        mock_spend_service.consumed_for_holders.assert_not_awaited()
+
+    @patch("codemie.rest_api.routers.projects.crud.spend_service")
+    @patch("codemie.service.project.project_spending_service.project_budget_assignment_repository")
+    @patch("codemie.service.project.project_spending_service.get_async_session")
+    @pytest.mark.anyio
+    async def test_exact_figure_carries_no_qualification(
+        self,
+        mock_async_session,
+        mock_project_budget_repo,
+        mock_spend_service,
+    ):
+        """The one state safe to render bare: a figure over the whole range, complete in every dimension."""
+        self._stub_repository(mock_project_budget_repo, mock_async_session, self._budget_row())
+        mock_spend_service.consumed_for_holders = AsyncMock(
+            return_value={self.HOLDER: SpendResult(figure=Decimal("7.25"))}
+        )
+        items = [self._item()]
+
+        await _attach_assigned_budget_summaries(items, budget_category=None)
+
+        summary = items[0].budgets[0]
+        assert summary.current_spending == pytest.approx(7.25)
+        assert summary.spend_unavailable is False
+        assert summary.spend_partial is False
+        assert summary.spend_missing_amount is None
+
+    @patch("codemie.rest_api.routers.projects.crud.spend_service")
+    @patch("codemie.service.project.project_spending_service.project_budget_assignment_repository")
+    @patch("codemie.service.project.project_spending_service.get_async_session")
+    @pytest.mark.anyio
+    async def test_truncated_figure_survives_and_is_flagged(
+        self,
+        mock_async_session,
+        mock_project_budget_repo,
+        mock_spend_service,
+    ):
+        """A figure covering only part of the range is a subtotal, and must not render as a total."""
+        self._stub_repository(mock_project_budget_repo, mock_async_session, self._budget_row())
+        mock_spend_service.consumed_for_holders = AsyncMock(
+            return_value={
+                self.HOLDER: SpendResult(
+                    figure=Decimal("5.0"),
+                    unavailable=TimeRange(self.PERIOD.start, datetime(2099, 4, 1, tzinfo=UTC)),
+                )
+            }
+        )
+        items = [self._item()]
+
+        await _attach_assigned_budget_summaries(items, budget_category=None)
+
+        summary = items[0].budgets[0]
+        assert summary.current_spending == pytest.approx(5.0)
+        assert summary.spend_unavailable is True
+
+    @patch("codemie.rest_api.routers.projects.crud.spend_service")
+    @patch("codemie.service.project.project_spending_service.project_budget_assignment_repository")
+    @patch("codemie.service.project.project_spending_service.get_async_session")
+    @pytest.mark.anyio
+    async def test_uncomputable_partial_portion_reports_an_unknown_missing_amount(
+        self,
+        mock_async_session,
+        mock_project_budget_repo,
+        mock_spend_service,
+    ):
+        """An unresolvable alias set has no rows to sum, so the missing amount is unknown - not zero."""
+        self._stub_repository(mock_project_budget_repo, mock_async_session, self._budget_row())
+        mock_spend_service.consumed_for_holders = AsyncMock(
+            return_value={
+                self.HOLDER: SpendResult(
+                    figure=Decimal("5.0"),
+                    partial={SpendDimension.IDENTITY_BRIDGE: Portion(spend=None, rows=None)},
+                )
+            }
+        )
+        items = [self._item()]
+
+        await _attach_assigned_budget_summaries(items, budget_category=None)
+
+        summary = items[0].budgets[0]
+        assert summary.current_spending == pytest.approx(5.0)
+        assert summary.spend_partial is True
+        assert summary.spend_missing_amount is None
+        assert summary.spend_unavailable is False
+
+    @patch("codemie.rest_api.routers.projects.crud.spend_service")
+    @patch("codemie.service.project.project_spending_service.project_budget_assignment_repository")
+    @patch("codemie.service.project.project_spending_service.get_async_session")
+    @pytest.mark.anyio
+    async def test_a_budget_created_mid_period_is_asked_about_from_its_creation(
+        self,
+        mock_async_session,
+        mock_project_budget_repo,
+        mock_spend_service,
+    ):
+        """The project key counts from the budget's creation, so the period must not start earlier."""
+        self._stub_repository(
+            mock_project_budget_repo, mock_async_session, self._budget_row(budget_created_at=_CREATED_MID_PERIOD)
+        )
+        mock_spend_service.consumed_for_holders = AsyncMock(
+            return_value={self.HOLDER: SpendResult(figure=Decimal("1"))}
+        )
+
+        await _attach_assigned_budget_summaries([self._item()], budget_category=None)
+
+        mock_spend_service.consumed_for_holders.assert_awaited_once_with(
+            [self.HOLDER], TimeRange(_CREATED_MID_PERIOD, self.PERIOD.end)
+        )
+
+    @patch("codemie.rest_api.routers.projects.crud.spend_service")
+    @patch("codemie.service.project.project_spending_service.project_budget_assignment_repository")
+    @patch("codemie.service.project.project_spending_service.get_async_session")
+    @pytest.mark.anyio
+    async def test_a_budget_created_before_the_period_keeps_the_derived_period(
+        self,
+        mock_async_session,
+        mock_project_budget_repo,
+        mock_spend_service,
+    ):
+        """The clamp only ever moves the start later: an older budget keeps the derived period."""
+        self._stub_repository(
+            mock_project_budget_repo, mock_async_session, self._budget_row(budget_created_at=_CREATED_BEFORE_PERIOD)
+        )
+        mock_spend_service.consumed_for_holders = AsyncMock(
+            return_value={self.HOLDER: SpendResult(figure=Decimal("1"))}
+        )
+
+        await _attach_assigned_budget_summaries([self._item()], budget_category=None)
+
+        mock_spend_service.consumed_for_holders.assert_awaited_once_with([self.HOLDER], self.PERIOD)
+
+    @patch("codemie.rest_api.routers.projects.crud.spend_service")
+    @patch("codemie.service.project.project_spending_service.project_budget_assignment_repository")
+    @patch("codemie.service.project.project_spending_service.get_async_session")
+    @pytest.mark.anyio
+    async def test_a_project_hole_is_flagged_but_not_sized(
+        self,
+        mock_async_session,
+        mock_project_budget_repo,
+        mock_spend_service,
+    ):
+        """The hole is sized over the whole project, not this budget, so its amount would mislead here."""
+        self._stub_repository(mock_project_budget_repo, mock_async_session, self._budget_row())
+        mock_spend_service.consumed_for_holders = AsyncMock(
+            return_value={
+                self.HOLDER: SpendResult(figure=Decimal("5.0"), partial={SpendDimension.PROJECT: _PROJECT_HOLE})
+            }
+        )
+        items = [self._item()]
+
+        await _attach_assigned_budget_summaries(items, budget_category=None)
+
+        summary = items[0].budgets[0]
+        assert summary.current_spending == pytest.approx(5.0)
+        assert summary.spend_partial is True
+        assert summary.spend_missing_amount is None
+
+    @staticmethod
+    def test_annotation_fields_are_additive():
+        """Every other client of this model constructs it without the annotation and must keep working."""
+        summary = ProjectAssignedBudgetSummary(
+            budget_id="budget-1",
+            name="CLI Budget",
+            budget_category=BudgetCategory.CLI,
+            soft_budget=10.0,
+            max_budget=20.0,
+            budget_duration="30d",
+            member_count=0,
+            allocated_member_budget_total=0.0,
+        )
+
+        assert (summary.spend_unavailable, summary.spend_partial, summary.spend_missing_amount) == (False, False, None)
+
+
+class TestProjectTotalSpendFigures:
+    """A project's total is the sum over its assigned budget categories, on every surface.
+
+    The list summary, the detail summary and the widget derive from one row set and one port answer,
+    so each case here asserts both summaries at once: three surfaces deriving one figure from three
+    row sets is how they came to disagree, and a test that checks only one cannot see that again.
+
+    There is no API-key term in the total. The traffic the old "key" pot reported now reaches the
+    ledger carrying a budget category, so it is already inside the per-category figures.
+    """
+
+    #: 2099-04-23T10:10:00Z minus the 30d duration - the period budget_period_range derives.
+    PERIOD = TimeRange(datetime(2099, 3, 24, 10, 10, tzinfo=UTC), datetime(2099, 4, 23, 10, 10, tzinfo=UTC))
+    CLI_HOLDER = ProjectHolder(project="proj-a", category=BudgetCategory.CLI)
+    PLATFORM_HOLDER = ProjectHolder(project="proj-a", category=BudgetCategory.PLATFORM)
+    ENRICHED = [{"name": "proj-a", "is_project_admin": True, "project_type": "shared"}]
+
+    @staticmethod
+    def _budget_row(**overrides) -> SimpleNamespace:
+        fields = {
+            "project_name": "proj-a",
+            "budget_id": "budget-1",
+            "name": "CLI Budget",
+            "budget_category": "cli",
+            "soft_budget": 10.0,
+            "max_budget": 20.0,
+            "budget_duration": "30d",
+            "budget_reset_at": "2099-04-23T10:10:00Z",
+            "provider_sync_status": "ok",
+            "member_count": 0,
+            "allocated_member_budget_total": 0.0,
+            "budget_created_at": None,
+            "budget_spend_reset_at": None,
+        }
+        fields.update(overrides)
+        return SimpleNamespace(**fields)
+
+    @classmethod
+    def _stub(cls, mock_project_budget_repo, mock_async_session, mock_spend_service, rows, spend_by_holder) -> None:
+        mock_async_session.return_value = AsyncMock()
+        mock_project_budget_repo.get_removed_budget_summaries_for_projects = AsyncMock(return_value={})
+        mock_project_budget_repo.get_assigned_budget_summaries_for_projects = AsyncMock(
+            return_value={"proj-a": rows} if rows else {}
+        )
+        mock_spend_service.consumed_for_holders = AsyncMock(return_value=spend_by_holder)
+
+    @classmethod
+    async def _run_both_surfaces(cls, user, *, spending_rows_limit: int = 50) -> tuple:
+        """Both project surfaces over the same stubbed rows, so a disagreement fails the test."""
+        items = [ProjectListItem(name="proj-a", project_type="shared", user_count=1, admin_count=1)]
+        await attach_project_spending_summaries(items, cls.ENRICHED, user)
+
+        response = ProjectDetailResponse(name="proj-a", project_type="shared", user_count=1, admin_count=1, members=[])
+        await attach_project_detail_spending(
+            response=response, project_name="proj-a", spending_rows_limit=spending_rows_limit
+        )
+        return items[0].spending, response
+
+    @patch("codemie.service.project.project_spending_service.spend_service")
+    @patch("codemie.service.project.project_spending_service.project_budget_assignment_repository")
+    @patch("codemie.service.project.project_spending_service.get_async_session")
+    @pytest.mark.anyio
+    async def test_exact_figure_carries_no_qualification(
+        self,
+        mock_async_session,
+        mock_project_budget_repo,
+        mock_spend_service,
+        super_admin_user,
+    ):
+        """The one state safe to render bare: a figure over the whole period, complete in every dimension."""
+        self._stub(
+            mock_project_budget_repo,
+            mock_async_session,
+            mock_spend_service,
+            [self._budget_row()],
+            {self.CLI_HOLDER: SpendResult(figure=Decimal("7.25"))},
+        )
+
+        summary, response = await self._run_both_surfaces(super_admin_user)
+
+        for figure in (summary, response.spending):
+            assert figure.current_spending == pytest.approx(7.25)
+            assert (figure.spend_unavailable, figure.spend_partial, figure.spend_missing_amount) == (False, False, None)
+        assert summary.total_percent == pytest.approx(36.25)
+        assert response.spending.total == pytest.approx(36.25)
+        assert response.spending.budget_reset_at == datetime(2099, 4, 23, 10, 10, tzinfo=UTC)
+
+    @patch("codemie.service.project.project_spending_service.spend_service")
+    @patch("codemie.service.project.project_spending_service.project_budget_assignment_repository")
+    @patch("codemie.service.project.project_spending_service.get_async_session")
+    @pytest.mark.anyio
+    async def test_absent_figure_is_never_a_zero_total(
+        self,
+        mock_async_session,
+        mock_project_budget_repo,
+        mock_spend_service,
+        super_admin_user,
+    ):
+        """No figure for any category means no total - 0.0 would claim nothing was spent."""
+        self._stub(
+            mock_project_budget_repo,
+            mock_async_session,
+            mock_spend_service,
+            [self._budget_row()],
+            {self.CLI_HOLDER: SpendResult.no_figure(self.PERIOD)},
+        )
+
+        summary, response = await self._run_both_surfaces(super_admin_user)
+
+        for figure in (summary, response.spending):
+            assert figure.current_spending is None
+            # The blank must say why it is blank: a missing number alone reads as "nothing was spent".
+            assert figure.spend_unavailable is True
+        # A percentage of an unknown figure is not 0% consumed; it is not computed at all.
+        assert summary.total_percent is None
+        assert response.spending.total is None
+
+    @patch("codemie.service.project.project_spending_service.spend_service")
+    @patch("codemie.service.project.project_spending_service.project_budget_assignment_repository")
+    @patch("codemie.service.project.project_spending_service.get_async_session")
+    @pytest.mark.anyio
+    async def test_measured_zero_renders_as_zero(
+        self,
+        mock_async_session,
+        mock_project_budget_repo,
+        mock_spend_service,
+        super_admin_user,
+    ):
+        """A measured zero is a real figure: it must render as 0.0, never as an absent one."""
+        self._stub(
+            mock_project_budget_repo,
+            mock_async_session,
+            mock_spend_service,
+            [self._budget_row()],
+            {self.CLI_HOLDER: SpendResult(figure=Decimal("0"))},
+        )
+
+        summary, response = await self._run_both_surfaces(super_admin_user)
+
+        assert summary.current_spending == 0.0
+        assert response.spending.current_spending == 0.0
+        assert summary.total_percent == 0.0
+        mock_spend_service.consumed_for_holders.assert_awaited_with([self.CLI_HOLDER], self.PERIOD)
+
+    @patch("codemie.service.project.project_spending_service.spend_service")
+    @patch("codemie.service.project.project_spending_service.project_budget_assignment_repository")
+    @patch("codemie.service.project.project_spending_service.get_async_session")
+    @pytest.mark.anyio
+    async def test_truncated_total_survives_and_is_flagged(
+        self,
+        mock_async_session,
+        mock_project_budget_repo,
+        mock_spend_service,
+        super_admin_user,
+    ):
+        """A figure covering only part of the period is a subtotal and must not render as a total."""
+        self._stub(
+            mock_project_budget_repo,
+            mock_async_session,
+            mock_spend_service,
+            [self._budget_row()],
+            {
+                self.CLI_HOLDER: SpendResult(
+                    figure=Decimal("5.0"),
+                    unavailable=TimeRange(self.PERIOD.start, datetime(2099, 4, 1, tzinfo=UTC)),
+                )
+            },
+        )
+
+        summary, response = await self._run_both_surfaces(super_admin_user)
+
+        for figure in (summary, response.spending):
+            assert figure.current_spending == pytest.approx(5.0)
+            assert figure.spend_unavailable is True
+
+    @patch("codemie.service.project.project_spending_service.spend_service")
+    @patch("codemie.service.project.project_spending_service.project_budget_assignment_repository")
+    @patch("codemie.service.project.project_spending_service.get_async_session")
+    @pytest.mark.anyio
+    async def test_total_sums_every_assigned_category(
+        self,
+        mock_async_session,
+        mock_project_budget_repo,
+        mock_spend_service,
+        super_admin_user,
+    ):
+        """Two categories, two figures, one total - and nothing qualifies it."""
+        rows = [
+            self._budget_row(),
+            self._budget_row(budget_id="budget-2", name="Platform Budget", budget_category="platform"),
+        ]
+        self._stub(
+            mock_project_budget_repo,
+            mock_async_session,
+            mock_spend_service,
+            rows,
+            {
+                self.CLI_HOLDER: SpendResult(figure=Decimal("4.0")),
+                self.PLATFORM_HOLDER: SpendResult(figure=Decimal("1.5")),
+            },
+        )
+
+        summary, response = await self._run_both_surfaces(super_admin_user)
+
+        for figure in (summary, response.spending):
+            assert figure.current_spending == pytest.approx(5.5)
+            assert figure.spend_partial is False
+            assert figure.spend_unavailable is False
+
+    @patch("codemie.service.project.project_spending_service.spend_service")
+    @patch("codemie.service.project.project_spending_service.project_budget_assignment_repository")
+    @patch("codemie.service.project.project_spending_service.get_async_session")
+    @pytest.mark.anyio
+    async def test_total_short_by_one_category_is_flagged_partial(
+        self,
+        mock_async_session,
+        mock_project_budget_repo,
+        mock_spend_service,
+        super_admin_user,
+    ):
+        """One category answered and one did not: the total is short, and a short total must say so."""
+        rows = [
+            self._budget_row(),
+            self._budget_row(budget_id="budget-2", name="Platform Budget", budget_category="platform"),
+        ]
+        self._stub(
+            mock_project_budget_repo,
+            mock_async_session,
+            mock_spend_service,
+            rows,
+            {
+                self.CLI_HOLDER: SpendResult(figure=Decimal("4.0")),
+                self.PLATFORM_HOLDER: SpendResult.no_figure(self.PERIOD),
+            },
+        )
+
+        summary, response = await self._run_both_surfaces(super_admin_user)
+
+        for figure in (summary, response.spending):
+            assert figure.current_spending == pytest.approx(4.0)
+            assert figure.spend_partial is True
+            assert figure.spend_unavailable is True
+
+    @patch("codemie.service.project.project_spending_service.spend_service")
+    @patch("codemie.service.project.project_spending_service.project_budget_assignment_repository")
+    @patch("codemie.service.project.project_spending_service.get_async_session")
+    @pytest.mark.anyio
+    async def test_budget_without_derivable_period_is_never_queried(
+        self,
+        mock_async_session,
+        mock_project_budget_repo,
+        mock_spend_service,
+        super_admin_user,
+    ):
+        """No reset instant means no budget period, so there is no figure to ask the port for."""
+        self._stub(
+            mock_project_budget_repo,
+            mock_async_session,
+            mock_spend_service,
+            [self._budget_row(budget_reset_at=None)],
+            {},
+        )
+
+        summary, response = await self._run_both_surfaces(super_admin_user)
+
+        for figure in (summary, response.spending):
+            assert figure.current_spending is None
+            # Never asked is the same fact to a reader as no figure available, and is reported as such.
+            assert figure.spend_unavailable is True
+        mock_spend_service.consumed_for_holders.assert_not_awaited()
+
+    @patch("codemie.service.project.project_spending_service.spend_service")
+    @patch("codemie.service.project.project_spending_service.project_budget_assignment_repository")
+    @patch("codemie.service.project.project_spending_service.get_async_session")
+    @pytest.mark.anyio
+    async def test_project_without_assigned_budgets_has_no_spending(
+        self,
+        mock_async_session,
+        mock_project_budget_repo,
+        mock_spend_service,
+        super_admin_user,
+    ):
+        """Unchanged behaviour: nothing to sum over means no spending block at all, not a zero one."""
+        self._stub(mock_project_budget_repo, mock_async_session, mock_spend_service, [], {})
+
+        summary, response = await self._run_both_surfaces(super_admin_user)
+
+        assert summary is None
+        assert response.spending is None
+        assert response.spending_widget is None
+
+    @patch("codemie.service.project.project_spending_service.spend_service")
+    @patch("codemie.service.project.project_spending_service.project_budget_assignment_repository")
+    @patch("codemie.service.project.project_spending_service.get_async_session")
+    @pytest.mark.anyio
+    async def test_widget_has_one_row_per_assigned_budget_and_no_key_row(
+        self,
+        mock_async_session,
+        mock_project_budget_repo,
+        mock_spend_service,
+        super_admin_user,
+    ):
+        """The "Key" row is gone: its traffic is inside the per-category rows, so it would double-count."""
+        rows = [
+            self._budget_row(),
+            self._budget_row(budget_id="budget-2", name="Platform Budget", budget_category="platform"),
+        ]
+        self._stub(
+            mock_project_budget_repo,
+            mock_async_session,
+            mock_spend_service,
+            rows,
+            {
+                self.CLI_HOLDER: SpendResult(figure=Decimal("4.0")),
+                self.PLATFORM_HOLDER: SpendResult(figure=Decimal("1.5")),
+            },
+        )
+
+        _, response = await self._run_both_surfaces(super_admin_user)
+
+        widget_rows = response.spending_widget.data.rows
+        assert [row.budget_id for row in widget_rows] == ["budget-1", "budget-2"]
+        assert all(row.budget_id != "Key" for row in widget_rows)
+        assert [row.current_spending for row in widget_rows] == [pytest.approx(4.0), pytest.approx(1.5)]
+
+    @patch("codemie.service.project.project_spending_service.spend_service")
+    @patch("codemie.service.project.project_spending_service.project_budget_assignment_repository")
+    @patch("codemie.service.project.project_spending_service.get_async_session")
+    @pytest.mark.anyio
+    async def test_widget_row_without_a_figure_reports_no_percentage(
+        self,
+        mock_async_session,
+        mock_project_budget_repo,
+        mock_spend_service,
+        super_admin_user,
+    ):
+        """A widget row with no figure shows no consumption share - not 0% of its limit."""
+        self._stub(
+            mock_project_budget_repo,
+            mock_async_session,
+            mock_spend_service,
+            [self._budget_row()],
+            {self.CLI_HOLDER: SpendResult.no_figure(self.PERIOD)},
+        )
+
+        _, response = await self._run_both_surfaces(super_admin_user)
+
+        widget_row = response.spending_widget.data.rows[0]
+        assert widget_row.current_spending is None
+        assert widget_row.total is None
+        assert widget_row.budget_limit == pytest.approx(20.0)
+        assert widget_row.spend_unavailable is True
+
+    @patch("codemie.service.project.project_spending_service.spend_service")
+    @patch("codemie.service.project.project_spending_service.project_budget_assignment_repository")
+    @patch("codemie.service.project.project_spending_service.get_async_session")
+    @pytest.mark.anyio
+    async def test_uncomputable_partial_portion_reports_an_unknown_missing_amount(
+        self,
+        mock_async_session,
+        mock_project_budget_repo,
+        mock_spend_service,
+        super_admin_user,
+    ):
+        """An unresolvable alias set has no rows to sum, so the missing amount is unknown - not zero."""
+        self._stub(
+            mock_project_budget_repo,
+            mock_async_session,
+            mock_spend_service,
+            [self._budget_row()],
+            {
+                self.CLI_HOLDER: SpendResult(
+                    figure=Decimal("5.0"),
+                    partial={SpendDimension.IDENTITY_BRIDGE: Portion(spend=None, rows=None)},
+                )
+            },
+        )
+
+        summary, response = await self._run_both_surfaces(super_admin_user)
+
+        for figure in (summary, response.spending):
+            assert figure.current_spending == pytest.approx(5.0)
+            assert figure.spend_partial is True
+            assert figure.spend_missing_amount is None
+            assert figure.spend_unavailable is False
+
+    @patch("codemie.service.project.project_spending_service.spend_service")
+    @patch("codemie.service.project.project_spending_service.project_budget_assignment_repository")
+    @patch("codemie.service.project.project_spending_service.get_async_session")
+    @pytest.mark.anyio
+    async def test_a_budget_created_mid_period_is_asked_about_from_its_creation(
+        self,
+        mock_async_session,
+        mock_project_budget_repo,
+        mock_spend_service,
+        super_admin_user,
+    ):
+        """The project key counts from the budget's creation, so neither surface's period starts earlier."""
+        self._stub(
+            mock_project_budget_repo,
+            mock_async_session,
+            mock_spend_service,
+            [self._budget_row(budget_created_at=_CREATED_MID_PERIOD)],
+            {self.CLI_HOLDER: SpendResult(figure=Decimal("1"))},
+        )
+
+        await self._run_both_surfaces(super_admin_user)
+
+        assert [call.args for call in mock_spend_service.consumed_for_holders.await_args_list] == [
+            ([self.CLI_HOLDER], TimeRange(_CREATED_MID_PERIOD, self.PERIOD.end))
+        ] * 2
+
+    @patch("codemie.service.project.project_spending_service.spend_service")
+    @patch("codemie.service.project.project_spending_service.project_budget_assignment_repository")
+    @patch("codemie.service.project.project_spending_service.get_async_session")
+    @pytest.mark.anyio
+    async def test_a_budget_created_before_the_period_keeps_the_derived_period(
+        self,
+        mock_async_session,
+        mock_project_budget_repo,
+        mock_spend_service,
+        super_admin_user,
+    ):
+        """The clamp only ever moves the start later: an older budget keeps the derived period."""
+        self._stub(
+            mock_project_budget_repo,
+            mock_async_session,
+            mock_spend_service,
+            [self._budget_row(budget_created_at=_CREATED_BEFORE_PERIOD)],
+            {self.CLI_HOLDER: SpendResult(figure=Decimal("1"))},
+        )
+
+        await self._run_both_surfaces(super_admin_user)
+
+        assert [call.args for call in mock_spend_service.consumed_for_holders.await_args_list] == [
+            ([self.CLI_HOLDER], self.PERIOD)
+        ] * 2
+
+    @patch("codemie.service.project.project_spending_service.spend_service")
+    @patch("codemie.service.project.project_spending_service.project_budget_assignment_repository")
+    @patch("codemie.service.project.project_spending_service.get_async_session")
+    @pytest.mark.anyio
+    async def test_a_project_hole_is_flagged_but_not_sized_on_every_surface(
+        self,
+        mock_async_session,
+        mock_project_budget_repo,
+        mock_spend_service,
+        super_admin_user,
+    ):
+        """The hole is sized over the whole project, not these budgets, so its amount would mislead here."""
+        self._stub(
+            mock_project_budget_repo,
+            mock_async_session,
+            mock_spend_service,
+            [self._budget_row()],
+            {self.CLI_HOLDER: SpendResult(figure=Decimal("5.0"), partial={SpendDimension.PROJECT: _PROJECT_HOLE})},
+        )
+
+        summary, response = await self._run_both_surfaces(super_admin_user)
+
+        for figure in (summary, response.spending, response.spending_widget.data.rows[0]):
+            assert figure.current_spending == pytest.approx(5.0)
+            assert figure.spend_partial is True
+            assert figure.spend_missing_amount is None
+
+    @patch("codemie.service.project.project_spending_service.spend_service")
+    @patch("codemie.service.project.project_spending_service.project_budget_assignment_repository")
+    @patch("codemie.service.project.project_spending_service.get_async_session")
+    @pytest.mark.anyio
+    async def test_a_sub_cent_figure_is_sent_unrounded(
+        self,
+        mock_async_session,
+        mock_project_budget_repo,
+        mock_spend_service,
+        super_admin_user,
+    ):
+        """Rounded to cents, a real sub-cent spend would read as nothing spent."""
+        self._stub(
+            mock_project_budget_repo,
+            mock_async_session,
+            mock_spend_service,
+            [self._budget_row()],
+            {self.CLI_HOLDER: SpendResult(figure=Decimal("0.0042"))},
+        )
+
+        summary, response = await self._run_both_surfaces(super_admin_user)
+
+        assert summary.current_spending == pytest.approx(0.0042)
+        assert response.spending.current_spending == pytest.approx(0.0042)
+        # 0.021 unrounded, 0.0 if derived from the cent-rounded figure.
+        assert summary.total_percent == 0.02
+        assert response.spending.total == 0.02
+
+    @staticmethod
+    def test_annotation_fields_are_additive():
+        """Every other client of these models constructs them without the annotation and must keep working."""
+        models = [
+            ProjectSpendingSummary(current_spending=1.0, budget_limit=2.0, total_percent=50.0),
+            ProjectSpendingDetail(current_spending=1.0, budget_limit=2.0, total=50.0),
+            SpendingWidgetRow(budget_id="budget-1", current_spending=1.0, budget_limit=2.0, total=50.0),
+        ]
+
+        for model in models:
+            assert (model.spend_unavailable, model.spend_partial, model.spend_missing_amount) == (False, False, None)
 
 
 class TestProjectAssignmentEndpoints:
@@ -2149,28 +2855,33 @@ class TestValidateUsersFromCsvEndpoint:
 # ---------------------------------------------------------------------------
 
 
-def _make_budget_spend_row(
+#: 2099-04-23T10:10:00Z minus the 30d duration - the period budget_period_range derives for the rows below.
+_PERSONAL_PERIOD = TimeRange(datetime(2099, 3, 24, 10, 10, tzinfo=UTC), datetime(2099, 4, 23, 10, 10, tzinfo=UTC))
+
+
+def _make_assigned_budget_row(
     project_name: str,
     budget_id: str = 'default',
-    budget_period_spend: float = 3.50,
-    cumulative_spend: float = 12.75,
+    budget_category: str = 'platform',
     max_budget: float | None = 50.0,
-    soft_budget: float | None = None,
-    budget_reset_at: datetime | None = None,
-) -> MagicMock:
-    """Return a mock ProjectSpendTracking row with spend_subject_type='budget'."""
-    row = MagicMock()
-    row.project_name = project_name
-    row.budget_id = budget_id
-    row.spend_subject_type = 'budget'
-    row.budget_period_spend = budget_period_spend
-    row.cumulative_spend = cumulative_spend
-    row.max_budget = max_budget
-    row.soft_budget = soft_budget
-    row.budget_duration = 'monthly'
-    row.budget_reset_at = budget_reset_at
-    row.spend_date = datetime(2026, 4, 10, 12, 0, 0, tzinfo=UTC)
-    return row
+    budget_reset_at: str | None = '2099-04-23T10:10:00Z',
+) -> SimpleNamespace:
+    """Return an assigned project budget row in the shape the budget repository yields."""
+    return SimpleNamespace(
+        project_name=project_name,
+        budget_id=budget_id,
+        name=f'{budget_id} budget',
+        budget_category=budget_category,
+        soft_budget=10.0,
+        max_budget=max_budget,
+        budget_duration='30d',
+        budget_reset_at=budget_reset_at,
+        provider_sync_status='ok',
+        member_count=0,
+        allocated_member_budget_total=0.0,
+        budget_created_at=None,
+        budget_spend_reset_at=None,
+    )
 
 
 def _make_personal_project_detail(owner_id: str = 'user1@example.com') -> dict:
@@ -2198,19 +2909,19 @@ class TestPersonalProjectSpending:
         new_callable=AsyncMock,
     )
     @patch('codemie.rest_api.routers.projects._common.config')
-    @patch('codemie.service.project.project_spending_service.budget_repository')
+    @patch('codemie.service.project.project_spending_service.spend_service')
     @patch('codemie.service.project.project_spending_service.get_async_session')
     @patch('codemie.rest_api.routers.projects.crud.get_session')
     @patch('codemie.rest_api.routers.projects.crud.project_visibility_service')
-    @patch('codemie.service.project.project_spending_service.spend_repo')
+    @patch('codemie.service.project.project_spending_service.project_budget_assignment_repository')
     @pytest.mark.anyio
     async def test_personal_project_owner_sees_spending_in_list(
         self,
-        mock_spend_repo,
+        mock_project_budget_repo,
         mock_visibility_service,
         mock_get_session,
         mock_async_session,
-        mock_budget_repository,
+        mock_spend_service,
         mock_config,
         mock_assigned_budgets,
         regular_user,
@@ -2240,19 +2951,14 @@ class TestPersonalProjectSpending:
             1,
         )
 
-        budget_row = _make_budget_spend_row(project_name=personal_name)
+        budget_row = _make_assigned_budget_row(project_name=personal_name)
         mock_async_session.return_value = AsyncMock()
-        mock_spend_repo.get_latest_spending_by_project = AsyncMock(
-            side_effect=lambda session, names, spend_subject_type=None: (
-                [budget_row] if spend_subject_type == 'budget' else []
-            )
+        mock_project_budget_repo.get_removed_budget_summaries_for_projects = AsyncMock(return_value={})
+        mock_project_budget_repo.get_assigned_budget_summaries_for_projects = AsyncMock(
+            return_value={personal_name: [budget_row]}
         )
-        mock_spend_repo.get_latest_project_budget_rows_by_category = AsyncMock(return_value=[])
-        mock_budget_obj = MagicMock()
-        mock_budget_obj.max_budget = 50.0
-        mock_budget_obj.budget_reset_at = None
-        mock_budget_obj.deleted_at = None
-        mock_budget_repository.get_all_keyed_by_id = AsyncMock(return_value={'default': mock_budget_obj})
+        holder = ProjectHolder(project=personal_name, category=BudgetCategory.PLATFORM)
+        mock_spend_service.consumed_for_holders = AsyncMock(return_value={holder: SpendResult(figure=Decimal('3.50'))})
 
         result = await list_projects(
             search=None,
@@ -2281,25 +2987,24 @@ class TestPersonalProjectSpending:
         new_callable=AsyncMock,
     )
     @patch('codemie.rest_api.routers.projects._common.config')
-    @patch('codemie.service.project.project_spending_service.budget_repository')
+    @patch('codemie.service.project.project_spending_service.spend_service')
     @patch('codemie.service.project.project_spending_service.get_async_session')
     @patch('codemie.rest_api.routers.projects.crud.get_session')
     @patch('codemie.rest_api.routers.projects.crud.project_visibility_service')
-    @patch('codemie.service.project.project_spending_service.spend_repo')
+    @patch('codemie.service.project.project_spending_service.project_budget_assignment_repository')
     @pytest.mark.anyio
-    async def test_personal_project_detail_returns_cumulative_and_period_spend(
+    async def test_personal_project_detail_returns_period_spend_and_budget_limit(
         self,
-        mock_spend_repo,
+        mock_project_budget_repo,
         mock_visibility_service,
         mock_get_session,
         mock_async_session,
-        mock_budget_repository,
+        mock_spend_service,
         mock_config,
         mock_assigned_budgets,
         regular_user,
     ):
-        """Personal project owner can fetch detail with cumulative_spend and current_spending."""
-        mock_assigned_budgets.return_value = {}
+        """Personal project owner can fetch detail with current_spending and budget_limit."""
         mock_config.ENABLE_USER_MANAGEMENT = True
         mock_session = MagicMock()
         mock_get_session.return_value.__enter__.return_value = mock_session
@@ -2309,27 +3014,14 @@ class TestPersonalProjectSpending:
             owner_id=personal_name
         )
 
-        budget_row = _make_budget_spend_row(
-            project_name=personal_name,
-            budget_id='default',
-            budget_period_spend=3.50,
-            cumulative_spend=12.75,
-            max_budget=50.0,
-        )
+        budget_row = _make_assigned_budget_row(project_name=personal_name, budget_id='default', max_budget=50.0)
         mock_async_session.return_value = AsyncMock()
-        mock_spend_repo.get_latest_key_spending_for_project = AsyncMock(return_value=None)
-        mock_spend_repo.get_latest_project_budget_rows_by_category = AsyncMock(return_value=[])
-        mock_spend_repo.get_latest_budget_rows_for_project = AsyncMock(
-            side_effect=lambda session, name, rows_limit=50, spend_subject_type='budget': (
-                [budget_row] if spend_subject_type == 'budget' else []
-            )
+        mock_project_budget_repo.get_removed_budget_summaries_for_projects = AsyncMock(return_value={})
+        mock_project_budget_repo.get_assigned_budget_summaries_for_projects = AsyncMock(
+            return_value={personal_name: [budget_row]}
         )
-        mock_spend_repo.get_lifetime_spend = AsyncMock(return_value=12.75)
-        mock_default_budget = MagicMock()
-        mock_default_budget.max_budget = 50.0
-        mock_default_budget.budget_reset_at = None
-        mock_default_budget.deleted_at = None
-        mock_budget_repository.get_all_keyed_by_id = AsyncMock(return_value={'default': mock_default_budget})
+        holder = ProjectHolder(project=personal_name, category=BudgetCategory.PLATFORM)
+        mock_spend_service.consumed_for_holders = AsyncMock(return_value={holder: SpendResult(figure=Decimal('3.50'))})
 
         result = await get_project_detail(
             request=MagicMock(method='GET', url=SimpleNamespace(path=f'/v1/projects/{personal_name}')),
@@ -2342,7 +3034,6 @@ class TestPersonalProjectSpending:
         assert result.project_type == 'personal'
         assert result.spending is not None
         assert result.spending.current_spending == pytest.approx(3.50)
-        assert result.spending.cumulative_spend == pytest.approx(12.75)
         assert result.spending.budget_limit == pytest.approx(50.0)
 
     @patch(
@@ -2351,19 +3042,19 @@ class TestPersonalProjectSpending:
         new_callable=AsyncMock,
     )
     @patch('codemie.rest_api.routers.projects._common.config')
-    @patch('codemie.service.project.project_spending_service.budget_repository')
+    @patch('codemie.service.project.project_spending_service.spend_service')
     @patch('codemie.service.project.project_spending_service.get_async_session')
     @patch('codemie.rest_api.routers.projects.crud.get_session')
     @patch('codemie.rest_api.routers.projects.crud.project_visibility_service')
-    @patch('codemie.service.project.project_spending_service.spend_repo')
+    @patch('codemie.service.project.project_spending_service.project_budget_assignment_repository')
     @pytest.mark.anyio
     async def test_personal_project_detail_returns_spending_widget_with_budget_rows(
         self,
-        mock_spend_repo,
+        mock_project_budget_repo,
         mock_visibility_service,
         mock_get_session,
         mock_async_session,
-        mock_budget_repository,
+        mock_spend_service,
         mock_config,
         mock_assigned_budgets,
         regular_user,
@@ -2380,26 +3071,25 @@ class TestPersonalProjectSpending:
         )
 
         rows = [
-            _make_budget_spend_row(
-                personal_name, budget_id='default', budget_period_spend=3.50, cumulative_spend=12.75
-            ),
-            _make_budget_spend_row(
-                personal_name, budget_id='premium', budget_period_spend=1.20, cumulative_spend=4.80, max_budget=20.0
+            _make_assigned_budget_row(personal_name, budget_id='default', budget_category='platform'),
+            _make_assigned_budget_row(
+                personal_name, budget_id='premium', budget_category='premium_models', max_budget=20.0
             ),
         ]
         mock_async_session.return_value = AsyncMock()
-        mock_spend_repo.get_latest_key_spending_for_project = AsyncMock(return_value=None)
-        mock_spend_repo.get_latest_project_budget_rows_by_category = AsyncMock(return_value=[])
-        mock_spend_repo.get_latest_budget_rows_for_project = AsyncMock(
-            side_effect=lambda session, name, rows_limit=50, spend_subject_type='budget': (
-                rows if spend_subject_type == 'budget' else []
-            )
+        mock_project_budget_repo.get_removed_budget_summaries_for_projects = AsyncMock(return_value={})
+        mock_project_budget_repo.get_assigned_budget_summaries_for_projects = AsyncMock(
+            return_value={personal_name: rows}
         )
-        mock_spend_repo.get_lifetime_spend = AsyncMock(return_value=17.55)
-        mock_default_budget = MagicMock(max_budget=50.0, budget_reset_at='2026-09-01T00:00:00Z', deleted_at=None)
-        mock_premium_budget = MagicMock(max_budget=20.0, budget_reset_at='2026-08-15T00:00:00Z', deleted_at=None)
-        mock_budget_repository.get_all_keyed_by_id = AsyncMock(
-            return_value={'default': mock_default_budget, 'premium': mock_premium_budget}
+        mock_spend_service.consumed_for_holders = AsyncMock(
+            return_value={
+                ProjectHolder(project=personal_name, category=BudgetCategory.PLATFORM): SpendResult(
+                    figure=Decimal('3.50')
+                ),
+                ProjectHolder(project=personal_name, category=BudgetCategory.PREMIUM_MODELS): SpendResult(
+                    figure=Decimal('1.20')
+                ),
+            }
         )
 
         result = await get_project_detail(
@@ -2451,500 +3141,6 @@ class TestPersonalProjectSpending:
 
         assert result.spending is None
         assert result.spending_widget is None
-
-
-class TestGetProjectSpends:
-    @patch("codemie.rest_api.routers.projects._common.config")
-    @patch("codemie.rest_api.routers.projects.spending.get_async_session")
-    @patch("codemie.rest_api.routers.projects.spending.get_session")
-    @patch("codemie.rest_api.routers.projects.spending.application_repository")
-    @patch("codemie.rest_api.routers.projects.spending.spend_repo")
-    @pytest.mark.anyio
-    async def test_returns_paginated_spends_for_project_admin(
-        self,
-        mock_spend_repo,
-        mock_app_repo,
-        mock_get_session,
-        mock_get_async_session,
-        mock_config,
-    ):
-        mock_config.ENABLE_USER_MANAGEMENT = True
-        project_admin = User(
-            id="user-1",
-            username="user1",
-            email="user1@example.com",
-            is_admin=False,
-            admin_project_names=["proj-a"],
-            project_names=["proj-a"],
-        )
-        mock_project = MagicMock()
-        mock_project.deleted_at = None
-        mock_get_session.return_value.__enter__.return_value = MagicMock()
-        mock_app_repo.get_by_name.return_value = mock_project
-        mock_get_async_session.return_value = _mock_session_ctx(AsyncMock())
-        spend_row = SimpleNamespace(
-            spend_date=datetime(2026, 1, 1, tzinfo=UTC),
-            daily_spend=5.5,
-            cumulative_spend=10.0,
-            budget_period_spend=5.5,
-            budget_id="budget-1",
-        )
-        mock_spend_repo.get_spend_for_period = AsyncMock(return_value=(5.5, 1, [spend_row]))
-
-        result = await get_project_spends(
-            project_name="proj-a",
-            period_from=date_type(2026, 1, 1),
-            period_to=date_type(2026, 1, 31),
-            page=0,
-            per_page=20,
-            user=project_admin,
-        )
-
-        assert isinstance(result, PaginatedSpendsResponse)
-        assert result.total_spend == 5.5
-        assert len(result.rows) == 1
-        assert result.rows[0].daily_spend == 5.5
-        assert result.rows[0].budget_id == "budget-1"
-        assert result.pagination.total == 1
-        assert result.pagination.page == 0
-        assert result.pagination.per_page == 20
-
-    @patch("codemie.rest_api.routers.projects._common.config")
-    @patch("codemie.rest_api.routers.projects.spending.get_async_session")
-    @patch("codemie.rest_api.routers.projects.spending.get_session")
-    @patch("codemie.rest_api.routers.projects.spending.application_repository")
-    @patch("codemie.rest_api.routers.projects.spending.spend_repo")
-    @patch("codemie.rest_api.security.user.config")
-    @pytest.mark.anyio
-    async def test_returns_paginated_spends_for_global_admin(
-        self,
-        mock_user_config,
-        mock_spend_repo,
-        mock_app_repo,
-        mock_get_session,
-        mock_get_async_session,
-        mock_config,
-    ):
-        mock_config.ENABLE_USER_MANAGEMENT = True
-        mock_user_config.ENV = "production"
-        mock_user_config.ENABLE_USER_MANAGEMENT = True
-        admin = User(id="admin-1", username="admin", email="admin@example.com", is_admin=True)
-        mock_project = MagicMock()
-        mock_project.deleted_at = None
-        mock_get_session.return_value.__enter__.return_value = MagicMock()
-        mock_app_repo.get_by_name.return_value = mock_project
-        mock_get_async_session.return_value = _mock_session_ctx(AsyncMock())
-        mock_spend_repo.get_spend_for_period = AsyncMock(return_value=(0.0, 0, []))
-
-        result = await get_project_spends(
-            project_name="proj-a",
-            period_from=date_type(2026, 1, 1),
-            period_to=date_type(2026, 1, 31),
-            page=0,
-            per_page=20,
-            user=admin,
-        )
-
-        assert isinstance(result, PaginatedSpendsResponse)
-        assert result.total_spend == 0.0
-        assert result.rows == []
-        assert result.pagination.total == 0
-
-    @patch("codemie.rest_api.routers.projects._common.config")
-    @patch("codemie.rest_api.routers.projects.spending.get_async_session")
-    @patch("codemie.rest_api.routers.projects.spending.get_session")
-    @patch("codemie.rest_api.routers.projects.spending.application_repository")
-    @patch("codemie.rest_api.routers.projects.spending.spend_repo")
-    @pytest.mark.anyio
-    async def test_returns_paginated_spends_for_global_maintainer(
-        self,
-        mock_spend_repo,
-        mock_app_repo,
-        mock_get_session,
-        mock_get_async_session,
-        mock_config,
-    ):
-        mock_config.ENABLE_USER_MANAGEMENT = True
-        maintainer = User(
-            id="maintainer-1",
-            username="maintainer",
-            email="maintainer@example.com",
-            is_admin=True,
-            is_maintainer=True,
-        )
-        mock_project = MagicMock()
-        mock_project.deleted_at = None
-        mock_get_session.return_value.__enter__.return_value = MagicMock()
-        mock_app_repo.get_by_name.return_value = mock_project
-        mock_get_async_session.return_value = _mock_session_ctx(AsyncMock())
-        mock_spend_repo.get_spend_for_period = AsyncMock(return_value=(7.5, 1, []))
-
-        result = await get_project_spends(
-            project_name="proj-a",
-            period_from=date_type(2026, 1, 1),
-            period_to=date_type(2026, 1, 31),
-            page=0,
-            per_page=20,
-            user=maintainer,
-        )
-
-        assert isinstance(result, PaginatedSpendsResponse)
-        assert result.total_spend == 7.5
-
-    @patch("codemie.rest_api.routers.projects._common.config")
-    @patch("codemie.rest_api.routers.projects.spending.get_session")
-    @patch("codemie.rest_api.routers.projects.spending.application_repository")
-    @pytest.mark.anyio
-    async def test_returns_404_when_project_not_found(
-        self,
-        mock_app_repo,
-        mock_get_session,
-        mock_config,
-    ):
-        mock_config.ENABLE_USER_MANAGEMENT = True
-        admin = User(id="admin-1", username="admin", email="admin@example.com", is_admin=True)
-        mock_get_session.return_value.__enter__.return_value = MagicMock()
-        mock_app_repo.get_by_name.return_value = None
-
-        with pytest.raises(ExtendedHTTPException) as exc_info:
-            await get_project_spends(
-                project_name="nonexistent",
-                period_from=date_type(2026, 1, 1),
-                period_to=date_type(2026, 1, 31),
-                page=0,
-                per_page=20,
-                user=admin,
-            )
-
-        assert exc_info.value.code == 404
-
-    @patch("codemie.rest_api.routers.projects._common.config")
-    @patch("codemie.rest_api.routers.projects.spending.get_session")
-    @patch("codemie.rest_api.routers.projects.spending.application_repository")
-    @pytest.mark.anyio
-    async def test_returns_404_when_project_is_soft_deleted(
-        self,
-        mock_app_repo,
-        mock_get_session,
-        mock_config,
-    ):
-        mock_config.ENABLE_USER_MANAGEMENT = True
-        admin = User(id="admin-1", username="admin", email="admin@example.com", is_admin=True)
-        mock_project = MagicMock()
-        mock_project.deleted_at = datetime(2026, 1, 1, tzinfo=UTC)
-        mock_get_session.return_value.__enter__.return_value = MagicMock()
-        mock_app_repo.get_by_name.return_value = mock_project
-
-        with pytest.raises(ExtendedHTTPException) as exc_info:
-            await get_project_spends(
-                project_name="deleted-proj",
-                period_from=date_type(2026, 1, 1),
-                period_to=date_type(2026, 1, 31),
-                page=0,
-                per_page=20,
-                user=admin,
-            )
-
-        assert exc_info.value.code == 404
-
-    @patch("codemie.rest_api.routers.projects._common.config")
-    @patch("codemie.rest_api.routers.projects.spending.get_session")
-    @patch("codemie.rest_api.routers.projects.spending.application_repository")
-    @patch("codemie.rest_api.security.user.config")
-    @pytest.mark.anyio
-    async def test_returns_404_when_user_is_not_project_admin(
-        self,
-        mock_user_config,
-        mock_app_repo,
-        mock_get_session,
-        mock_config,
-    ):
-        mock_config.ENABLE_USER_MANAGEMENT = True
-        mock_user_config.ENV = "production"
-        mock_user_config.ENABLE_USER_MANAGEMENT = True
-        non_admin = User(id="user-2", username="user2", email="user2@example.com", is_admin=False)
-        mock_project = MagicMock()
-        mock_project.deleted_at = None
-        mock_get_session.return_value.__enter__.return_value = MagicMock()
-        mock_app_repo.get_by_name.return_value = mock_project
-
-        with pytest.raises(ExtendedHTTPException) as exc_info:
-            await get_project_spends(
-                project_name="proj-a",
-                period_from=date_type(2026, 1, 1),
-                period_to=date_type(2026, 1, 31),
-                page=0,
-                per_page=20,
-                user=non_admin,
-            )
-
-        assert exc_info.value.code == 404
-
-    @patch("codemie.rest_api.routers.projects._common.config")
-    @pytest.mark.anyio
-    async def test_returns_400_when_period_from_after_period_to(self, mock_config):
-        mock_config.ENABLE_USER_MANAGEMENT = True
-        admin = User(id="admin-1", username="admin", email="admin@example.com", is_admin=True)
-
-        with pytest.raises(ExtendedHTTPException) as exc_info:
-            await get_project_spends(
-                project_name="proj-a",
-                period_from=date_type(2026, 2, 1),
-                period_to=date_type(2026, 1, 1),
-                page=0,
-                per_page=20,
-                user=admin,
-            )
-
-        assert exc_info.value.code == 400
-
-    @patch("codemie.rest_api.routers.projects._common.config")
-    @patch("codemie.rest_api.routers.projects.spending.get_async_session")
-    @patch("codemie.rest_api.routers.projects.spending.get_session")
-    @patch("codemie.rest_api.routers.projects.spending.application_repository")
-    @patch("codemie.rest_api.routers.projects.spending.spend_repo")
-    @pytest.mark.anyio
-    async def test_returns_spends_for_personal_project_owner(
-        self,
-        mock_spend_repo,
-        mock_app_repo,
-        mock_get_session,
-        mock_get_async_session,
-        mock_config,
-    ):
-        mock_config.ENABLE_USER_MANAGEMENT = True
-        personal_project_owner = User(
-            id="user-1",
-            username="user1",
-            email="user1@example.com",
-            is_admin=False,
-            admin_project_names=[],
-            project_names=["my-personal-proj"],
-        )
-        mock_project = MagicMock()
-        mock_project.deleted_at = None
-        mock_project.project_type = Application.ProjectType.PERSONAL
-        mock_get_session.return_value.__enter__.return_value = MagicMock()
-        mock_app_repo.get_by_name.return_value = mock_project
-        mock_get_async_session.return_value = _mock_session_ctx(AsyncMock())
-        mock_spend_repo.get_spend_for_period = AsyncMock(return_value=(12.5, 2, []))
-
-        result = await get_project_spends(
-            project_name="my-personal-proj",
-            period_from=date_type(2026, 1, 1),
-            period_to=date_type(2026, 1, 31),
-            page=0,
-            per_page=20,
-            user=personal_project_owner,
-        )
-
-        assert isinstance(result, PaginatedSpendsResponse)
-        assert result.total_spend == 12.5
-
-    @patch("codemie.rest_api.routers.projects._common.config")
-    @patch("codemie.rest_api.routers.projects.spending.get_session")
-    @patch("codemie.rest_api.routers.projects.spending.application_repository")
-    @patch("codemie.rest_api.security.user.config")
-    @pytest.mark.anyio
-    async def test_returns_404_for_non_member_of_personal_project(
-        self,
-        mock_user_config,
-        mock_app_repo,
-        mock_get_session,
-        mock_config,
-    ):
-        mock_config.ENABLE_USER_MANAGEMENT = True
-        mock_user_config.ENV = "production"
-        mock_user_config.ENABLE_USER_MANAGEMENT = True
-        non_member = User(
-            id="user-2",
-            username="user2",
-            email="user2@example.com",
-            is_admin=False,
-            admin_project_names=[],
-            project_names=[],
-        )
-        mock_project = MagicMock()
-        mock_project.deleted_at = None
-        mock_project.project_type = Application.ProjectType.PERSONAL
-        mock_get_session.return_value.__enter__.return_value = MagicMock()
-        mock_app_repo.get_by_name.return_value = mock_project
-
-        with pytest.raises(ExtendedHTTPException) as exc_info:
-            await get_project_spends(
-                project_name="someone-elses-personal-proj",
-                period_from=date_type(2026, 1, 1),
-                period_to=date_type(2026, 1, 31),
-                page=0,
-                per_page=20,
-                user=non_member,
-            )
-
-        assert exc_info.value.code == 404
-
-    @patch("codemie.rest_api.routers.projects._common.config")
-    @patch("codemie.rest_api.routers.projects.spending.get_async_session")
-    @patch("codemie.rest_api.routers.projects.spending.get_session")
-    @patch("codemie.rest_api.routers.projects.spending.application_repository")
-    @patch("codemie.rest_api.routers.projects.spending.spend_repo")
-    @patch("codemie.rest_api.security.user.config")
-    @pytest.mark.anyio
-    async def test_budget_category_filter_forwarded_to_repo(
-        self,
-        mock_user_config,
-        mock_spend_repo,
-        mock_app_repo,
-        mock_get_session,
-        mock_get_async_session,
-        mock_config,
-    ):
-        mock_config.ENABLE_USER_MANAGEMENT = True
-        mock_user_config.ENV = "production"
-        mock_user_config.ENABLE_USER_MANAGEMENT = True
-        admin = User(id="admin-1", username="admin", email="admin@example.com", is_admin=True)
-        mock_project = MagicMock()
-        mock_project.deleted_at = None
-        mock_get_session.return_value.__enter__.return_value = MagicMock()
-        mock_app_repo.get_by_name.return_value = mock_project
-        mock_get_async_session.return_value = _mock_session_ctx(AsyncMock())
-        mock_spend_repo.get_spend_for_period = AsyncMock(return_value=(0.0, 0, []))
-
-        await get_project_spends(
-            project_name="proj-a",
-            period_from=date_type(2026, 1, 1),
-            period_to=date_type(2026, 1, 31),
-            page=0,
-            per_page=20,
-            budget_category=BudgetCategory.CLI,
-            spend_subject_type=None,
-            user=admin,
-        )
-
-        assert mock_spend_repo.get_spend_for_period.call_args.kwargs["budget_category"] == BudgetCategory.CLI
-        assert mock_spend_repo.get_spend_for_period.call_args.kwargs["spend_subject_type"] is None
-
-    @patch("codemie.rest_api.routers.projects._common.config")
-    @patch("codemie.rest_api.routers.projects.spending.get_async_session")
-    @patch("codemie.rest_api.routers.projects.spending.get_session")
-    @patch("codemie.rest_api.routers.projects.spending.application_repository")
-    @patch("codemie.rest_api.routers.projects.spending.spend_repo")
-    @patch("codemie.rest_api.security.user.config")
-    @pytest.mark.anyio
-    async def test_spend_subject_type_filter_forwarded_to_repo(
-        self,
-        mock_user_config,
-        mock_spend_repo,
-        mock_app_repo,
-        mock_get_session,
-        mock_get_async_session,
-        mock_config,
-    ):
-        mock_config.ENABLE_USER_MANAGEMENT = True
-        mock_user_config.ENV = "production"
-        mock_user_config.ENABLE_USER_MANAGEMENT = True
-        admin = User(id="admin-1", username="admin", email="admin@example.com", is_admin=True)
-        mock_project = MagicMock()
-        mock_project.deleted_at = None
-        mock_get_session.return_value.__enter__.return_value = MagicMock()
-        mock_app_repo.get_by_name.return_value = mock_project
-        mock_get_async_session.return_value = _mock_session_ctx(AsyncMock())
-        mock_spend_repo.get_spend_for_period = AsyncMock(return_value=(0.0, 0, []))
-
-        await get_project_spends(
-            project_name="proj-a",
-            period_from=date_type(2026, 1, 1),
-            period_to=date_type(2026, 1, 31),
-            page=0,
-            per_page=20,
-            budget_category=None,
-            spend_subject_type="member_budget",
-            user=admin,
-        )
-
-        assert mock_spend_repo.get_spend_for_period.call_args.kwargs["spend_subject_type"] == "member_budget"
-        assert mock_spend_repo.get_spend_for_period.call_args.kwargs["budget_category"] is None
-
-    @patch("codemie.rest_api.routers.projects._common.config")
-    @patch("codemie.rest_api.routers.projects.spending.get_async_session")
-    @patch("codemie.rest_api.routers.projects.spending.get_session")
-    @patch("codemie.rest_api.routers.projects.spending.application_repository")
-    @patch("codemie.rest_api.routers.projects.spending.spend_repo")
-    @patch("codemie.rest_api.security.user.config")
-    @pytest.mark.anyio
-    async def test_both_filters_forwarded_to_repo(
-        self,
-        mock_user_config,
-        mock_spend_repo,
-        mock_app_repo,
-        mock_get_session,
-        mock_get_async_session,
-        mock_config,
-    ):
-        mock_config.ENABLE_USER_MANAGEMENT = True
-        mock_user_config.ENV = "production"
-        mock_user_config.ENABLE_USER_MANAGEMENT = True
-        admin = User(id="admin-1", username="admin", email="admin@example.com", is_admin=True)
-        mock_project = MagicMock()
-        mock_project.deleted_at = None
-        mock_get_session.return_value.__enter__.return_value = MagicMock()
-        mock_app_repo.get_by_name.return_value = mock_project
-        mock_get_async_session.return_value = _mock_session_ctx(AsyncMock())
-        mock_spend_repo.get_spend_for_period = AsyncMock(return_value=(0.0, 0, []))
-
-        await get_project_spends(
-            project_name="proj-a",
-            period_from=date_type(2026, 1, 1),
-            period_to=date_type(2026, 1, 31),
-            page=0,
-            per_page=20,
-            budget_category=BudgetCategory.PLATFORM,
-            spend_subject_type="budget",
-            user=admin,
-        )
-
-        assert mock_spend_repo.get_spend_for_period.call_args.kwargs["budget_category"] == BudgetCategory.PLATFORM
-        assert mock_spend_repo.get_spend_for_period.call_args.kwargs["spend_subject_type"] == "budget"
-
-    @patch("codemie.rest_api.routers.projects._common.config")
-    @patch("codemie.rest_api.routers.projects.spending.get_async_session")
-    @patch("codemie.rest_api.routers.projects.spending.get_session")
-    @patch("codemie.rest_api.routers.projects.spending.application_repository")
-    @patch("codemie.rest_api.routers.projects.spending.spend_repo")
-    @patch("codemie.rest_api.security.user.config")
-    @pytest.mark.anyio
-    async def test_no_filters_passes_none_to_repo(
-        self,
-        mock_user_config,
-        mock_spend_repo,
-        mock_app_repo,
-        mock_get_session,
-        mock_get_async_session,
-        mock_config,
-    ):
-        mock_config.ENABLE_USER_MANAGEMENT = True
-        mock_user_config.ENV = "production"
-        mock_user_config.ENABLE_USER_MANAGEMENT = True
-        admin = User(id="admin-1", username="admin", email="admin@example.com", is_admin=True)
-        mock_project = MagicMock()
-        mock_project.deleted_at = None
-        mock_get_session.return_value.__enter__.return_value = MagicMock()
-        mock_app_repo.get_by_name.return_value = mock_project
-        mock_get_async_session.return_value = _mock_session_ctx(AsyncMock())
-        mock_spend_repo.get_spend_for_period = AsyncMock(return_value=(0.0, 0, []))
-
-        await get_project_spends(
-            project_name="proj-a",
-            period_from=date_type(2026, 1, 1),
-            period_to=date_type(2026, 1, 31),
-            page=0,
-            per_page=20,
-            budget_category=None,
-            spend_subject_type=None,
-            user=admin,
-        )
-
-        assert mock_spend_repo.get_spend_for_period.call_args.kwargs["budget_category"] is None
-        assert mock_spend_repo.get_spend_for_period.call_args.kwargs["spend_subject_type"] is None
 
 
 class TestProjectDisplayNameEndpoints:
@@ -3688,277 +3884,420 @@ class TestProjectDescriptionOptional:
         assert not any("description" in str(e["loc"]) for e in errors), "Description error must not appear"
 
 
-class TestIsBudgetPeriodOpen:
-    _NOW = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
+class TestAssignedBudgetRowsAreReconciledBeforeUse:
+    """Every period on the project screens is derived from the stored reset instant, so an overdue
+    one is reconciled first and the rows read again - otherwise last period's spend shows as current."""
 
-    def test_future_reset_is_open(self):
-        assert is_budget_period_open(SimpleNamespace(budget_reset_at="2026-10-01T00:00:00Z"), self._NOW) is True
+    @staticmethod
+    def _rows(reset_at: str) -> dict:
+        return {"proj-a": [SimpleNamespace(budget_id="b-1", budget_reset_at=reset_at, provider_metadata={})]}
 
-    def test_past_reset_is_closed(self):
-        assert is_budget_period_open(SimpleNamespace(budget_reset_at="2026-09-30T00:00:00Z"), self._NOW) is False
+    @staticmethod
+    def _session():
+        @asynccontextmanager
+        async def _session():
+            yield AsyncMock()
 
-    def test_missing_budget_or_reset_is_closed(self):
-        assert is_budget_period_open(None, self._NOW) is False
-        assert is_budget_period_open(SimpleNamespace(budget_reset_at=None), self._NOW) is False
+        return _session
 
+    @pytest.mark.anyio
+    async def test_rows_are_read_again_when_a_reset_moved(self) -> None:
+        from codemie.service.project.project_spending_service import assigned_budget_rows
 
-def _category_row(budget_id: str, category: str, spend: float) -> SimpleNamespace:
-    return SimpleNamespace(
-        project_name="project-3",
-        budget_id=budget_id,
-        budget_category=category,
-        budget_period_spend=spend,
-        cumulative_spend=spend,
-        spend_date=datetime(2026, 9, 30, 7, 15, tzinfo=UTC),
-    )
-
-
-def _category_budget(budget_id: str, max_budget: float, reset_at: datetime, deleted: bool = False) -> SimpleNamespace:
-    return SimpleNamespace(
-        budget_id=budget_id,
-        max_budget=max_budget,
-        budget_reset_at=reset_at.isoformat(),
-        deleted_at=datetime(2026, 9, 30, 7, 15, tzinfo=UTC) if deleted else None,
-    )
-
-
-def _assigned(budget_id: str, category: str, max_budget: float, reset_at: datetime) -> SimpleNamespace:
-    return SimpleNamespace(
-        budget_id=budget_id,
-        budget_category=category,
-        max_budget=max_budget,
-        budget_reset_at=reset_at.isoformat(),
-    )
-
-
-class TestUnassignedCategorySpend:
-    _ACTIVE_RESET = datetime.now(UTC) + timedelta(days=5)
-    _PLATFORM_ID = "project-3-platform-3b1d0290"
-    _REMOVED_ID = "project-3-premium_models-8ebdcd4c"
-    _READDED_ID = "project-3-premium_models-2559cf02"
-
-    async def _detail(self, *, rows, budgets, assigned, lifetime=0.18):
+        stale, current = self._rows("2026-09-01T00:00:00Z"), self._rows("2026-10-01T00:00:00Z")
+        read = AsyncMock(side_effect=[stale, current])
+        refresh = AsyncMock(return_value={"b-1"})
         with (
-            patch("codemie.rest_api.routers.projects._common.config") as mock_config,
-            patch("codemie.rest_api.routers.projects.crud._get_project_detail_sync") as mock_detail,
-            patch("codemie.service.project.project_spending_service.get_async_session") as mock_session,
-            patch("codemie.service.project.project_spending_service.spend_repo") as mock_spend_repo,
-            patch("codemie.service.project.project_spending_service.budget_repository") as mock_budget_repo,
             patch(
                 "codemie.service.project.project_spending_service.project_budget_assignment_repository."
                 "get_assigned_budget_summaries_for_projects",
-                new=AsyncMock(return_value={"project-3": assigned}),
+                read,
             ),
+            patch(
+                "codemie.service.project.project_spending_service.daily_budget_reset_reconciliation_service.refresh_overdue",
+                refresh,
+            ),
+            patch("codemie.service.project.project_spending_service.get_async_session", self._session()),
         ):
-            mock_config.ENABLE_USER_MANAGEMENT = True
-            mock_detail.return_value = {
-                "name": "project-3",
-                "description": "",
-                "project_type": "shared",
-                "created_by": "owner-1",
-                "created_at": datetime(2026, 9, 1, tzinfo=UTC),
-                "user_count": 1,
-                "admin_count": 1,
-                "members": [],
-                "is_project_admin": True,
-            }
-            mock_session.return_value = _mock_session_ctx(AsyncMock())
-            mock_spend_repo.get_latest_key_spending_for_project = AsyncMock(return_value=None)
-            mock_spend_repo.get_latest_project_budget_rows_by_category = AsyncMock(return_value=rows)
-            mock_spend_repo.get_latest_budget_rows_for_project = AsyncMock(return_value=[])
-            mock_spend_repo.get_lifetime_spend = AsyncMock(return_value=lifetime)
-            mock_budget_repo.get_all_keyed_by_id = AsyncMock(return_value=budgets)
-            return await get_project_detail(
-                request=MagicMock(method="GET", url=SimpleNamespace(path="/v1/projects/project-3")),
-                project_name="project-3",
-                include_spending=True,
-                spending_rows_limit=50,
-                user=User(
-                    id="user-1",
-                    username="user1",
-                    email="user1@example.com",
-                    is_admin=False,
-                    admin_project_names=["project-3"],
-                    project_names=["project-3"],
-                ),
-            )
+            assert await assigned_budget_rows(["proj-a"], "cli") is current
+
+        assert list(refresh.await_args.args[0]) == stale["proj-a"]
+        assert read.await_args.kwargs == {"budget_category": "cli"}
 
     @pytest.mark.anyio
-    async def test_removed_category_spend_counts_and_is_flagged_unassigned(self):
-        result = await self._detail(
-            rows=[
-                _category_row(self._PLATFORM_ID, "platform", 0.0355),
-                _category_row(self._REMOVED_ID, "premium_models", 0.1444),
-            ],
-            budgets={
-                self._PLATFORM_ID: _category_budget(self._PLATFORM_ID, 55.0, self._ACTIVE_RESET),
-                self._REMOVED_ID: _category_budget(self._REMOVED_ID, 100.0, self._ACTIVE_RESET, deleted=True),
-            },
-            assigned=[_assigned(self._PLATFORM_ID, "platform", 55.0, self._ACTIVE_RESET)],
-        )
+    async def test_rows_are_read_once_when_nothing_moved(self) -> None:
+        from codemie.service.project.project_spending_service import assigned_budget_rows
 
-        assert result.spending.current_spending == pytest.approx(0.18)
-        assert result.spending.budget_limit == pytest.approx(55.0)
-        rows = {row.budget_category: row for row in result.spending_widget.data.rows}
-        assert rows["platform"].is_assigned is True
-        premium = rows["premium_models"]
-        assert premium.is_assigned is False
-        assert premium.budget_id == self._REMOVED_ID
-        assert premium.current_spending == pytest.approx(0.1444)
-        assert premium.budget_limit is None
-        assert premium.total == 0
-
-    @pytest.mark.anyio
-    async def test_removed_category_is_dropped_after_its_period_ends(self):
-        result = await self._detail(
-            rows=[
-                _category_row(self._PLATFORM_ID, "platform", 0.0355),
-                _category_row(self._REMOVED_ID, "premium_models", 0.1444),
-            ],
-            budgets={
-                self._PLATFORM_ID: _category_budget(self._PLATFORM_ID, 55.0, self._ACTIVE_RESET),
-                self._REMOVED_ID: _category_budget(
-                    self._REMOVED_ID, 100.0, datetime.now(UTC) - timedelta(hours=1), deleted=True
-                ),
-            },
-            assigned=[_assigned(self._PLATFORM_ID, "platform", 55.0, self._ACTIVE_RESET)],
-        )
-
-        assert result.spending.current_spending == pytest.approx(0.04)
-        assert [row.budget_category for row in result.spending_widget.data.rows] == ["platform"]
-
-    @pytest.mark.anyio
-    async def test_removed_category_without_spend_is_dropped(self):
-        result = await self._detail(
-            rows=[
-                _category_row(self._PLATFORM_ID, "platform", 0.0355),
-                _category_row(self._REMOVED_ID, "premium_models", 0.0),
-            ],
-            budgets={
-                self._PLATFORM_ID: _category_budget(self._PLATFORM_ID, 55.0, self._ACTIVE_RESET),
-                self._REMOVED_ID: _category_budget(self._REMOVED_ID, 100.0, self._ACTIVE_RESET, deleted=True),
-            },
-            assigned=[_assigned(self._PLATFORM_ID, "platform", 55.0, self._ACTIVE_RESET)],
-        )
-
-        assert [row.budget_category for row in result.spending_widget.data.rows] == ["platform"]
-
-    @pytest.mark.anyio
-    async def test_readded_category_yields_one_row_under_the_new_budget(self):
-        result = await self._detail(
-            rows=[_category_row(self._READDED_ID, "premium_models", 0.1444)],
-            budgets={self._READDED_ID: _category_budget(self._READDED_ID, 220.0, self._ACTIVE_RESET)},
-            assigned=[_assigned(self._READDED_ID, "premium_models", 220.0, self._ACTIVE_RESET)],
-        )
-
-        (row,) = result.spending_widget.data.rows
-        assert row.budget_id == self._READDED_ID
-        assert row.is_assigned is True
-        assert row.budget_limit == pytest.approx(220.0)
-
-    @pytest.mark.anyio
-    async def test_readded_category_before_collector_reports_previous_row_under_active_budget(self):
-        result = await self._detail(
-            rows=[_category_row(self._REMOVED_ID, "premium_models", 0.1444)],
-            budgets={
-                self._REMOVED_ID: _category_budget(self._REMOVED_ID, 100.0, self._ACTIVE_RESET, deleted=True),
-                self._READDED_ID: _category_budget(self._READDED_ID, 220.0, self._ACTIVE_RESET),
-            },
-            assigned=[_assigned(self._READDED_ID, "premium_models", 220.0, self._ACTIVE_RESET)],
-        )
-
-        (row,) = result.spending_widget.data.rows
-        assert row.budget_id == self._READDED_ID
-        assert row.is_assigned is True
-        assert row.current_spending == pytest.approx(0.1444)
-        assert row.budget_limit == pytest.approx(220.0)
-        assert result.spending.current_spending == pytest.approx(0.14)
-
-    @pytest.mark.anyio
-    async def test_stale_row_of_previous_budget_is_not_counted_after_readd_past_reset(self):
-        result = await self._detail(
-            rows=[
-                _category_row(self._PLATFORM_ID, "platform", 0.0355),
-                _category_row(self._REMOVED_ID, "premium_models", 0.1444),
-            ],
-            budgets={
-                self._PLATFORM_ID: _category_budget(self._PLATFORM_ID, 55.0, self._ACTIVE_RESET),
-                self._REMOVED_ID: _category_budget(
-                    self._REMOVED_ID, 100.0, datetime.now(UTC) - timedelta(days=3), deleted=True
-                ),
-                self._READDED_ID: _category_budget(self._READDED_ID, 220.0, self._ACTIVE_RESET),
-            },
-            assigned=[
-                _assigned(self._PLATFORM_ID, "platform", 55.0, self._ACTIVE_RESET),
-                _assigned(self._READDED_ID, "premium_models", 220.0, self._ACTIVE_RESET),
-            ],
-        )
-
-        assert result.spending.current_spending == pytest.approx(0.04)
-        assert [row.budget_category for row in result.spending_widget.data.rows] == ["platform"]
-
-    @pytest.mark.anyio
-    async def test_project_list_counts_removed_category_spend(self, super_admin_user):
+        rows = self._rows("2026-11-01T00:00:00Z")
+        read = AsyncMock(return_value=rows)
         with (
-            patch("codemie.rest_api.routers.projects._common.config") as mock_config,
-            patch("codemie.rest_api.routers.projects.crud.get_session") as mock_get_session,
-            patch("codemie.rest_api.routers.projects.crud.project_visibility_service") as mock_visibility,
-            patch("codemie.service.project.project_spending_service.get_async_session") as mock_async_session,
-            patch("codemie.service.project.project_spending_service.spend_repo") as mock_spend_repo,
-            patch("codemie.service.project.project_spending_service.budget_repository") as mock_budget_repo,
             patch(
                 "codemie.service.project.project_spending_service.project_budget_assignment_repository."
                 "get_assigned_budget_summaries_for_projects",
-                new=AsyncMock(
-                    return_value={"project-3": [_assigned(self._PLATFORM_ID, "platform", 55.0, self._ACTIVE_RESET)]}
-                ),
+                read,
             ),
+            patch(
+                "codemie.service.project.project_spending_service.daily_budget_reset_reconciliation_service.refresh_overdue",
+                AsyncMock(return_value=set()),
+            ),
+            patch("codemie.service.project.project_spending_service.get_async_session", self._session()),
         ):
-            mock_config.ENABLE_USER_MANAGEMENT = True
-            mock_get_session.return_value.__enter__.return_value = MagicMock()
-            mock_visibility.list_visible_projects_paginated.return_value = (
-                [
-                    {
-                        "name": "project-3",
-                        "description": "",
-                        "project_type": "shared",
-                        "created_by": "owner-1",
-                        "created_at": datetime(2026, 9, 1, tzinfo=UTC),
-                        "user_count": 1,
-                        "admin_count": 1,
-                        "is_project_admin": True,
-                    }
-                ],
-                1,
-            )
-            mock_async_session.return_value = AsyncMock()
-            mock_spend_repo.get_latest_spending_by_project = AsyncMock(return_value=[])
-            mock_spend_repo.get_latest_project_budget_rows_by_category = AsyncMock(
-                return_value=[
-                    _category_row(self._PLATFORM_ID, "platform", 0.0355),
-                    _category_row(self._REMOVED_ID, "premium_models", 0.1444),
-                ]
-            )
-            mock_budget_repo.get_all_keyed_by_id = AsyncMock(
-                return_value={
-                    self._PLATFORM_ID: _category_budget(self._PLATFORM_ID, 55.0, self._ACTIVE_RESET),
-                    self._REMOVED_ID: _category_budget(self._REMOVED_ID, 100.0, self._ACTIVE_RESET, deleted=True),
-                }
+            assert await assigned_budget_rows(["proj-a"]) is rows
+
+        read.assert_awaited_once()
+
+
+class TestEveryProjectScreenReadsItsRowsThroughTheReconciledSeam:
+    """A screen reading its rows from the repository directly would derive its periods from an overdue
+    reset instant again, so each of the three is pinned to `assigned_budget_rows`."""
+
+    SEAM = "codemie.service.project.project_spending_service.assigned_budget_rows"
+
+    @pytest.mark.anyio
+    async def test_the_list_budget_summaries(self) -> None:
+        from codemie.rest_api.routers.projects.crud import _attach_assigned_budget_summaries
+
+        with (
+            patch("codemie.rest_api.routers.projects.crud.assigned_budget_rows", AsyncMock(return_value={})) as seam,
+            patch("codemie.rest_api.routers.projects.crud.removed_budget_rows", AsyncMock(return_value={})),
+        ):
+            await _attach_assigned_budget_summaries([SimpleNamespace(name="proj-a", budgets=None)], BudgetCategory.CLI)
+
+        seam.assert_awaited_once_with(["proj-a"], "cli")
+
+    @pytest.mark.anyio
+    async def test_the_list_spending_summaries(self) -> None:
+        from codemie.service.project.project_spending_service import attach_project_spending_summaries
+
+        with (
+            patch(self.SEAM, AsyncMock(return_value={})) as seam,
+            patch("codemie.service.project.project_spending_service.removed_budget_rows", AsyncMock(return_value={})),
+            patch("codemie.service.project.project_spending_service._removed_budget_spend", AsyncMock(return_value={})),
+        ):
+            await attach_project_spending_summaries(
+                [SimpleNamespace(name="proj-a", spending=None)],
+                [{"name": "proj-a"}],
+                SimpleNamespace(is_admin=True),
             )
 
-            result = await list_projects(
-                search=None,
-                page=0,
-                per_page=20,
-                include_counters=False,
-                include_spending=True,
-                include_budgets=False,
-                has_assigned_budgets=False,
-                budget_category=None,
-                sort_by=None,
-                sort_order="asc",
-                user=super_admin_user,
-            )
+        seam.assert_awaited_once_with(["proj-a"])
 
-        assert result.data[0].spending.current_spending == pytest.approx(0.18)
-        assert result.data[0].spending.budget_limit == pytest.approx(55.0)
+    @pytest.mark.anyio
+    async def test_the_project_detail_spending(self) -> None:
+        from codemie.service.project.project_spending_service import attach_project_detail_spending
+
+        with (
+            patch(self.SEAM, AsyncMock(return_value={})) as seam,
+            patch("codemie.service.project.project_spending_service.removed_budget_rows", AsyncMock(return_value={})),
+            patch("codemie.service.project.project_spending_service._removed_budget_spend", AsyncMock(return_value={})),
+        ):
+            await attach_project_detail_spending(response=MagicMock(), project_name="proj-a", spending_rows_limit=5)
+
+        seam.assert_awaited_once_with(["proj-a"])
+
+
+class TestRemovedCategorySpend:
+    """A category removed during a budget period that is still open keeps counting (EPMCDME-15048).
+
+    Removing a category ends its budget, not the period its spend belongs to, so until the removed
+    budget's reset instant its spend stays in the project total and shows as an unassigned widget row.
+    Each case runs both surfaces over one stub, like `TestProjectTotalSpendFigures`.
+    """
+
+    TOTALS = TestProjectTotalSpendFigures
+    PLATFORM_HOLDER = TestProjectTotalSpendFigures.PLATFORM_HOLDER
+    CLI_HOLDER = TestProjectTotalSpendFigures.CLI_HOLDER
+
+    @classmethod
+    def _removed_row(cls, **overrides) -> SimpleNamespace:
+        fields = {"budget_id": "budget-removed", "name": "Platform Budget", "budget_category": "platform"}
+        fields["max_budget"] = 100.0
+        fields.update(overrides)
+        return cls.TOTALS._budget_row(**fields)
+
+    @classmethod
+    def _stub(cls, repo, session, spend_service, *, assigned, removed, spend_by_holder) -> None:
+        cls.TOTALS._stub(repo, session, spend_service, assigned, {})
+        repo.get_removed_budget_summaries_for_projects = AsyncMock(return_value={"proj-a": removed} if removed else {})
+        spend_service.consumed_for_holders = AsyncMock(
+            side_effect=lambda holders, period: {holder: spend_by_holder[holder] for holder in holders}
+        )
+
+    @patch("codemie.service.project.project_spending_service.spend_service")
+    @patch("codemie.service.project.project_spending_service.project_budget_assignment_repository")
+    @patch("codemie.service.project.project_spending_service.get_async_session")
+    @pytest.mark.anyio
+    async def test_removed_category_spend_counts_and_is_flagged_unassigned(
+        self, mock_async_session, mock_project_budget_repo, mock_spend_service, super_admin_user
+    ):
+        self._stub(
+            mock_project_budget_repo,
+            mock_async_session,
+            mock_spend_service,
+            assigned=[self.TOTALS._budget_row()],
+            removed=[self._removed_row()],
+            spend_by_holder={
+                self.CLI_HOLDER: SpendResult(figure=Decimal("7.25")),
+                self.PLATFORM_HOLDER: SpendResult(figure=Decimal("2.75")),
+            },
+        )
+
+        summary, response = await self.TOTALS._run_both_surfaces(super_admin_user)
+
+        for figure in (summary, response.spending):
+            assert figure.current_spending == pytest.approx(10.0)
+            # The limit stays the sum of the assigned budgets: the removed one's limit ended with it.
+            assert figure.budget_limit == pytest.approx(20.0)
+        assert summary.total_percent == pytest.approx(50.0)
+        rows = {row.budget_category: row for row in response.spending_widget.data.rows}
+        assert (rows["cli"].is_assigned, rows["cli"].budget_limit) == (True, 20.0)
+        removed = rows["platform"]
+        assert (removed.budget_id, removed.is_assigned, removed.current_spending) == ("budget-removed", False, 2.75)
+        assert (removed.budget_limit, removed.total) == (None, None)
+
+    @patch("codemie.service.project.project_spending_service.spend_service")
+    @patch("codemie.service.project.project_spending_service.project_budget_assignment_repository")
+    @patch("codemie.service.project.project_spending_service.get_async_session")
+    @pytest.mark.anyio
+    async def test_removed_category_is_not_read_after_its_period_ended(
+        self, mock_async_session, mock_project_budget_repo, mock_spend_service, super_admin_user
+    ):
+        self._stub(
+            mock_project_budget_repo,
+            mock_async_session,
+            mock_spend_service,
+            assigned=[self.TOTALS._budget_row()],
+            removed=[self._removed_row(budget_reset_at="2020-01-01T00:00:00Z")],
+            spend_by_holder={self.CLI_HOLDER: SpendResult(figure=Decimal("7.25"))},
+        )
+
+        summary, response = await self.TOTALS._run_both_surfaces(super_admin_user)
+
+        assert summary.current_spending == pytest.approx(7.25)
+        assert [row.budget_category for row in response.spending_widget.data.rows] == ["cli"]
+        for call in mock_spend_service.consumed_for_holders.await_args_list:
+            assert self.PLATFORM_HOLDER not in call.args[0]
+
+    @patch("codemie.service.project.project_spending_service.spend_service")
+    @patch("codemie.service.project.project_spending_service.project_budget_assignment_repository")
+    @patch("codemie.service.project.project_spending_service.get_async_session")
+    @pytest.mark.anyio
+    async def test_removed_category_with_a_known_zero_is_left_out(
+        self, mock_async_session, mock_project_budget_repo, mock_spend_service, super_admin_user
+    ):
+        self._stub(
+            mock_project_budget_repo,
+            mock_async_session,
+            mock_spend_service,
+            assigned=[self.TOTALS._budget_row()],
+            removed=[self._removed_row()],
+            spend_by_holder={
+                self.CLI_HOLDER: SpendResult(figure=Decimal("7.25")),
+                self.PLATFORM_HOLDER: SpendResult(figure=Decimal("0")),
+            },
+        )
+
+        _, response = await self.TOTALS._run_both_surfaces(super_admin_user)
+
+        assert [row.budget_category for row in response.spending_widget.data.rows] == ["cli"]
+
+    @patch("codemie.service.project.project_spending_service.spend_service")
+    @patch("codemie.service.project.project_spending_service.project_budget_assignment_repository")
+    @patch("codemie.service.project.project_spending_service.get_async_session")
+    @pytest.mark.anyio
+    async def test_removed_category_with_an_absent_figure_is_kept_and_flags_the_total(
+        self, mock_async_session, mock_project_budget_repo, mock_spend_service, super_admin_user
+    ):
+        """An absent figure may hide spend: leaving it out would shorten the total with nothing saying so."""
+        self._stub(
+            mock_project_budget_repo,
+            mock_async_session,
+            mock_spend_service,
+            assigned=[self.TOTALS._budget_row()],
+            removed=[self._removed_row()],
+            spend_by_holder={
+                self.CLI_HOLDER: SpendResult(figure=Decimal("7.25")),
+                self.PLATFORM_HOLDER: SpendResult.no_figure(self.TOTALS.PERIOD),
+            },
+        )
+
+        summary, response = await self.TOTALS._run_both_surfaces(super_admin_user)
+
+        for figure in (summary, response.spending):
+            assert (figure.current_spending, figure.spend_unavailable) == (pytest.approx(7.25), True)
+        removed = next(row for row in response.spending_widget.data.rows if not row.is_assigned)
+        assert (removed.current_spending, removed.spend_unavailable) == (None, True)
+
+    #: Creations inside `PERIOD` (2099-03-24T10:10Z .. 2099-04-23T10:10Z): two removed budgets, then the active one.
+    FIRST_CREATED = datetime(2099, 4, 1, tzinfo=UTC)
+    SECOND_CREATED = datetime(2099, 4, 5, tzinfo=UTC)
+    ACTIVE_CREATED = datetime(2099, 4, 10, tzinfo=UTC)
+
+    @staticmethod
+    def _asked_periods(spend_service) -> set[TimeRange]:
+        return {call.args[1] for call in spend_service.consumed_for_holders.await_args_list}
+
+    @patch("codemie.service.project.project_spending_service.spend_service")
+    @patch("codemie.service.project.project_spending_service.project_budget_assignment_repository")
+    @patch("codemie.service.project.project_spending_service.get_async_session")
+    @pytest.mark.anyio
+    async def test_category_assigned_again_counts_from_its_first_budget_this_period(
+        self, mock_async_session, mock_project_budget_repo, mock_spend_service, super_admin_user
+    ):
+        """Removing a category keeps its project key, whose counter runs on to the reset: re-adding it within
+        the period is answered by the active budget alone, over the spend since the period's first budget of
+        the category - not since the re-add, which would show LiteLLM's counted spend as never spent."""
+        self._stub(
+            mock_project_budget_repo,
+            mock_async_session,
+            mock_spend_service,
+            assigned=[self.TOTALS._budget_row(budget_id="budget-new", budget_created_at=self.ACTIVE_CREATED)],
+            removed=[
+                self._removed_row(budget_category="cli", budget_created_at=self.SECOND_CREATED),
+                self._removed_row(
+                    budget_id="budget-first", budget_category="cli", budget_created_at=self.FIRST_CREATED
+                ),
+            ],
+            spend_by_holder={self.CLI_HOLDER: SpendResult(figure=Decimal("7.25"))},
+        )
+
+        summary, response = await self.TOTALS._run_both_surfaces(super_admin_user)
+
+        (row,) = response.spending_widget.data.rows
+        assert (row.budget_id, row.is_assigned, row.budget_limit) == ("budget-new", True, 20.0)
+        assert summary.current_spending == pytest.approx(7.25)
+        assert self._asked_periods(mock_spend_service) == {TimeRange(self.FIRST_CREATED, self.TOTALS.PERIOD.end)}
+
+    @patch("codemie.rest_api.routers.projects.crud.spend_service")
+    @patch("codemie.service.project.project_spending_service.project_budget_assignment_repository")
+    @patch("codemie.service.project.project_spending_service.get_async_session")
+    @pytest.mark.anyio
+    async def test_the_list_budget_column_counts_a_category_assigned_again_from_its_first_budget(
+        self, mock_async_session, mock_project_budget_repo, mock_spend_service
+    ):
+        """The projects list's per-budget figures derive their period by the same rule as the detail page."""
+        self._stub(
+            mock_project_budget_repo,
+            mock_async_session,
+            mock_spend_service,
+            assigned=[self.TOTALS._budget_row(budget_id="budget-new", budget_created_at=self.ACTIVE_CREATED)],
+            removed=[self._removed_row(budget_category="cli", budget_created_at=self.FIRST_CREATED)],
+            spend_by_holder={self.CLI_HOLDER: SpendResult(figure=Decimal("7.25"))},
+        )
+        item = SimpleNamespace(name="proj-a", budgets=None)
+
+        await _attach_assigned_budget_summaries([item], None)
+
+        (budget,) = item.budgets
+        assert (budget.budget_id, budget.current_spending) == ("budget-new", pytest.approx(7.25))
+        assert self._asked_periods(mock_spend_service) == {TimeRange(self.FIRST_CREATED, self.TOTALS.PERIOD.end)}
+
+    @patch("codemie.service.project.project_spending_service.spend_service")
+    @patch("codemie.service.project.project_spending_service.project_budget_assignment_repository")
+    @patch("codemie.service.project.project_spending_service.get_async_session")
+    @pytest.mark.anyio
+    async def test_another_categorys_removal_leaves_an_active_budgets_period_alone(
+        self, mock_async_session, mock_project_budget_repo, mock_spend_service, super_admin_user
+    ):
+        """Each category has its own project key: a removed platform budget says nothing about the cli one."""
+        self._stub(
+            mock_project_budget_repo,
+            mock_async_session,
+            mock_spend_service,
+            assigned=[self.TOTALS._budget_row(budget_created_at=self.ACTIVE_CREATED)],
+            removed=[self._removed_row(budget_created_at=self.FIRST_CREATED)],
+            spend_by_holder={
+                self.CLI_HOLDER: SpendResult(figure=Decimal("7.25")),
+                self.PLATFORM_HOLDER: SpendResult(figure=Decimal("2.75")),
+            },
+        )
+
+        await self.TOTALS._run_both_surfaces(super_admin_user)
+
+        period_by_holder = {
+            holder: call.args[1]
+            for call in mock_spend_service.consumed_for_holders.await_args_list
+            for holder in call.args[0]
+        }
+        assert period_by_holder == {
+            self.CLI_HOLDER: TimeRange(self.ACTIVE_CREATED, self.TOTALS.PERIOD.end),
+            self.PLATFORM_HOLDER: TimeRange(self.FIRST_CREATED, self.TOTALS.PERIOD.end),
+        }
+
+    @patch("codemie.service.project.project_spending_service.spend_service")
+    @patch("codemie.service.project.project_spending_service.project_budget_assignment_repository")
+    @patch("codemie.service.project.project_spending_service.get_async_session")
+    @pytest.mark.anyio
+    async def test_a_removal_from_an_earlier_period_does_not_reach_into_this_one(
+        self, mock_async_session, mock_project_budget_repo, mock_spend_service, super_admin_user
+    ):
+        """Only a removal sharing the active budget's reset instant belongs to its period."""
+        self._stub(
+            mock_project_budget_repo,
+            mock_async_session,
+            mock_spend_service,
+            assigned=[self.TOTALS._budget_row(budget_id="budget-new", budget_created_at=self.ACTIVE_CREATED)],
+            removed=[
+                self._removed_row(
+                    budget_category="cli", budget_created_at=self.FIRST_CREATED, budget_reset_at="2099-03-24T10:10:00Z"
+                )
+            ],
+            spend_by_holder={self.CLI_HOLDER: SpendResult(figure=Decimal("7.25"))},
+        )
+
+        await self.TOTALS._run_both_surfaces(super_admin_user)
+
+        assert self._asked_periods(mock_spend_service) == {TimeRange(self.ACTIVE_CREATED, self.TOTALS.PERIOD.end)}
+
+    @patch("codemie.service.project.project_spending_service.spend_service")
+    @patch("codemie.service.project.project_spending_service.project_budget_assignment_repository")
+    @patch("codemie.service.project.project_spending_service.get_async_session")
+    @pytest.mark.anyio
+    async def test_a_category_removed_twice_counts_from_its_first_budget(
+        self, mock_async_session, mock_project_budget_repo, mock_spend_service, super_admin_user
+    ):
+        """The latest removal stands for the category; its spend reaches back to the period's first budget."""
+        self._stub(
+            mock_project_budget_repo,
+            mock_async_session,
+            mock_spend_service,
+            assigned=[],
+            removed=[
+                self._removed_row(budget_created_at=self.SECOND_CREATED),
+                self._removed_row(budget_id="budget-first", budget_created_at=self.FIRST_CREATED),
+            ],
+            spend_by_holder={self.PLATFORM_HOLDER: SpendResult(figure=Decimal("2.75"))},
+        )
+
+        summary, response = await self.TOTALS._run_both_surfaces(super_admin_user)
+
+        (row,) = response.spending_widget.data.rows
+        assert (row.budget_id, row.is_assigned, row.current_spending) == ("budget-removed", False, pytest.approx(2.75))
+        assert summary.current_spending == pytest.approx(2.75)
+        assert self._asked_periods(mock_spend_service) == {TimeRange(self.FIRST_CREATED, self.TOTALS.PERIOD.end)}
+
+    @patch("codemie.service.project.project_spending_service.spend_service")
+    @patch("codemie.service.project.project_spending_service.project_budget_assignment_repository")
+    @patch("codemie.service.project.project_spending_service.get_async_session")
+    @pytest.mark.anyio
+    async def test_project_with_only_removed_categories_still_reports_their_spend(
+        self, mock_async_session, mock_project_budget_repo, mock_spend_service, super_admin_user
+    ):
+        """Deleting the whole budget group is removing every category at once."""
+        self._stub(
+            mock_project_budget_repo,
+            mock_async_session,
+            mock_spend_service,
+            assigned=[],
+            removed=[self._removed_row()],
+            spend_by_holder={self.PLATFORM_HOLDER: SpendResult(figure=Decimal("2.75"))},
+        )
+
+        summary, response = await self.TOTALS._run_both_surfaces(super_admin_user)
+
+        for figure in (summary, response.spending):
+            assert figure.current_spending == pytest.approx(2.75)
+            assert figure.budget_limit is None
+        assert summary.total_percent is None
+        (row,) = response.spending_widget.data.rows
+        assert row.is_assigned is False

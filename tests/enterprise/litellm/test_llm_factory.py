@@ -18,6 +18,8 @@ import pytest
 
 from unittest.mock import MagicMock, patch
 
+from codemie.service.budget.budget_enums import BudgetCategory as _CoreBudgetCategory
+
 
 class TestGenerateLiteLLMHeadersFromContext:
     """Test generate_litellm_headers_from_context() function."""
@@ -315,7 +317,13 @@ class TestCreateLiteLLMChatModel:
                                 with patch.object(config, "LITE_LLM_PROJECTS_TO_TAGS_LIST", ""):
                                     with patch(
                                         "codemie.enterprise.litellm.llm_factory._resolve_direct_project_budget_runtime",
-                                        return_value=({"x-litellm-customer-id": "member-user-123"}, None, None, True),
+                                        return_value=(
+                                            {"x-litellm-customer-id": "member-user-123"},
+                                            None,
+                                            None,
+                                            True,
+                                            _CoreBudgetCategory.PLATFORM,
+                                        ),
                                     ):
                                         with patch(
                                             "codemie.enterprise.litellm.llm_factory.LiteLLMChatOpenAI"
@@ -624,6 +632,7 @@ class TestResolveDirectProjectBudgetRuntime:
             "runtime-api-key",
             "https://runtime.example",
             True,
+            _CoreBudgetCategory.PLATFORM,
         )
         mock_sync.assert_called_once_with(
             user_id="user-1",
@@ -721,7 +730,8 @@ class TestResolveDirectProjectBudgetRuntime:
                         user_email=user_email,
                     )
 
-        assert result == ({}, None, None, False)
+        # The 5th element is the category the routing selected - None where it selected none.
+        assert result == ({}, None, None, False, None)
         mock_sync.assert_not_called()
         mock_resolve.assert_not_called()
         mock_dispatch.assert_not_called()
@@ -773,6 +783,7 @@ class TestResolveDirectProjectBudgetRuntime:
             "runtime-api-key",
             "https://runtime.example",
             True,
+            CoreBudgetCategory.PREMIUM_MODELS,
         )
         mock_sync.assert_called_once_with(
             user_id="user-1",
@@ -866,7 +877,8 @@ class TestResolveDirectProjectBudgetRuntime:
                             user_email="user@example.com",
                         )
 
-        assert result == ({}, None, None, False)
+        # The 5th element is the category the routing selected - None where it selected none.
+        assert result == ({}, None, None, False, None)
         mock_sync.assert_not_called()
         mock_resolve.assert_not_called()
         mock_dispatch.assert_not_called()
@@ -1029,7 +1041,13 @@ class TestConfigureDirectRuntimeOverrides:
         merged_headers: dict = {}
 
         with patch("codemie.enterprise.litellm.llm_factory._resolve_direct_project_budget_runtime") as mock_resolve:
-            mock_resolve.return_value = ({"x-litellm-customer-id": "member-ref-123"}, "runtime-key", None, True)
+            mock_resolve.return_value = (
+                {"x-litellm-customer-id": "member-ref-123"},
+                "runtime-key",
+                None,
+                True,
+                _CoreBudgetCategory.PLATFORM,
+            )
 
             _configure_direct_runtime_overrides(
                 llm_model_details=MagicMock(),
@@ -1102,7 +1120,7 @@ class TestConfigureDirectRuntimeOverridesPremiumNoProject:
 
         with patch(
             "codemie.enterprise.litellm.llm_factory._resolve_direct_project_budget_runtime",
-            return_value=({}, None, None, False),
+            return_value=({}, None, None, False, None),
         ):
             _configure_direct_runtime_overrides(
                 llm_model_details=llm_model_details,
@@ -1257,6 +1275,40 @@ class TestConfigureDirectRuntimeOverridesPremiumNoProject:
         assert call_kwargs["category"] == CoreBudgetCategory.PREMIUM_MODELS
         assert call_kwargs["user_id"] == "uid-1"
 
+    def test_mirror_budget_assignment_receives_the_provisioned_customer(self):
+        """The customer `check_user_budget` provisions is what gets mirrored.
+
+        The threshold comparison inside `check_user_budget` was removed (AD-10); the provisioning it
+        performs is the part the request path depends on, and this asserts that the customer it hands
+        back still reaches the mirror rather than being dropped with the comparison.
+        """
+        provisioned_customer = MagicMock()
+
+        with (
+            patch(
+                "codemie.enterprise.litellm.dependencies.get_premium_username",
+                return_value="alice@example.com_codemie_premium_models",
+            ),
+            patch(
+                "codemie.enterprise.litellm.llm_factory._get_direct_request_category_budget_id",
+                return_value=None,
+            ),
+            patch(
+                "codemie.enterprise.litellm.dependencies.get_category_budget_id",
+                return_value="default_premium_models",
+            ),
+            patch(
+                "codemie.enterprise.litellm.dependencies.check_user_budget",
+                return_value=provisioned_customer,
+            ),
+            patch(
+                "codemie.enterprise.litellm.llm_factory._mirror_budget_assignment",
+            ) as mock_mirror,
+        ):
+            self._invoke()
+
+        assert mock_mirror.call_args.kwargs["customer"] is provisioned_customer
+
     def test_premium_model_personal_assignment_enforced_without_default_config(self):
         """Personal PREMIUM_MODELS assignment is enforced even when no default config entry exists."""
         with (
@@ -1343,7 +1395,7 @@ class TestConfigureDirectRuntimeOverridesPremiumWithProjectContext:
 
         with patch(
             "codemie.enterprise.litellm.llm_factory._resolve_direct_project_budget_runtime",
-            return_value=({}, None, None, has_project_budget_scopes),
+            return_value=({}, None, None, has_project_budget_scopes, None),
         ):
             _configure_direct_runtime_overrides(
                 llm_model_details=llm_model_details,

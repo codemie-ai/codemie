@@ -21,6 +21,7 @@ from typing import Any, ClassVar
 from langchain_core.messages import ToolMessage
 from pydantic import BaseModel
 
+from codemie.agents.agent_runtime_utils import with_captured_origin
 from codemie.agents.tool_confirmation.models import ToolCallPendingEvent
 from codemie.agents.tool_confirmation.utils import agent_op_span
 from codemie.chains.base import StreamedGenerationResult, Thought, ThoughtAuthorType
@@ -98,6 +99,7 @@ class ToolCallConfirmationMixin:
         return last_message, False
 
     @agent_op_span("agent.resume_from_interrupt")
+    @with_captured_origin
     def resume_from_interrupt(self) -> None:
         """Resume the interrupted graph, allowing the pending tool call to execute."""
         set_logging_info(
@@ -163,6 +165,7 @@ class ToolCallConfirmationMixin:
         )
 
     @agent_op_span("agent.reject_tool_call")
+    @with_captured_origin
     def reject_tool_call(self, pending: ToolCallPendingEvent | None) -> None:
         """Inject denial ToolMessage then resume graph via resume_from_interrupt."""
         if pending is None:

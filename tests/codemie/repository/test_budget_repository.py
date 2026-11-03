@@ -14,10 +14,12 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlalchemy.dialects import postgresql
 
 from codemie.repository.budget_repository import BudgetRepository
 from codemie.service.budget.budget_enums import BudgetCategory
@@ -200,3 +202,33 @@ def test_clear_project_on_deleted_budgets_flushes_without_commit(repository: Bud
 
     session.flush.assert_called_once()
     session.commit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_mark_user_category_spend_reset_updates_only_the_users_row_for_that_category(
+    repository: BudgetRepository,
+):
+    session = AsyncMock()
+    reset_at = datetime(2026, 11, 2, 10, 30, 0, tzinfo=timezone.utc)
+
+    await repository.mark_user_category_spend_reset(session, "user-1", BudgetCategory.CLI, reset_at)
+
+    stmt = session.execute.call_args[0][0]
+    compiled = stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})
+    sql_text = " ".join(str(compiled).lower().split())
+    assert sql_text.startswith("update user_budget_assignments set spend_reset_at=")
+    assert "2026-11-02 10:30:00" in sql_text
+    assert "user_budget_assignments.user_id = 'user-1'" in sql_text
+    assert f"user_budget_assignments.category = '{BudgetCategory.CLI.value}'" in sql_text
+
+
+@pytest.mark.asyncio
+async def test_mark_user_category_spend_reset_flushes_without_commit(repository: BudgetRepository):
+    session = AsyncMock()
+
+    await repository.mark_user_category_spend_reset(
+        session, "user-1", BudgetCategory.CLI, datetime(2026, 11, 2, tzinfo=timezone.utc)
+    )
+
+    session.flush.assert_awaited_once()
+    session.commit.assert_not_awaited()

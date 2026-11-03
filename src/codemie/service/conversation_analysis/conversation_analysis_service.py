@@ -29,6 +29,8 @@ from codemie.core.dependecies import get_llm_by_credentials, set_disable_prompt_
 from codemie.service.monitoring.base_monitoring_service import emit_llm_token_metric
 from codemie.service.monitoring.metrics_constants import CONVERSATION_ANALYSIS_TOTAL_METRIC, MetricsAttributes
 from codemie.service.request_summary_manager import request_summary_manager
+from codemie.service.spend.origin_context import spend_origin
+from codemie.service.spend.traffic_class import TrafficOrigin
 from codemie.repository.conversation_analysis_queue_repository import ConversationAnalysisQueueRepository
 from codemie.repository.conversation_analytics_repository import ConversationAnalyticsRepository
 from codemie.rest_api.models.conversation import Conversation
@@ -169,33 +171,36 @@ class ConversationAnalysisService:
         updated_count = 0
         created_count = 0
 
-        for queue_item in claimed_items:
-            try:
-                # Analyze conversation
-                # Use asyncio.to_thread to prevent blocking the event loop during LLM/DB operations
-                analytics = await asyncio.to_thread(self._analyze_conversation, queue_item.conversation_id)
+        # asyncio.to_thread copies the context, so the origin published here reaches the model built
+        # in _analyze_conversation on the worker thread.
+        with spend_origin(TrafficOrigin.CONVERSATION_ANALYSIS):
+            for queue_item in claimed_items:
+                try:
+                    # Analyze conversation
+                    # Use asyncio.to_thread to prevent blocking the event loop during LLM/DB operations
+                    analytics = await asyncio.to_thread(self._analyze_conversation, queue_item.conversation_id)
 
-                # Save result to PostgreSQL (UPSERT)
-                saved_analytics, is_new = await self.analytics_repo.upsert_analysis(analytics)
+                    # Save result to PostgreSQL (UPSERT)
+                    saved_analytics, is_new = await self.analytics_repo.upsert_analysis(analytics)
 
-                # Index to Elasticsearch for analytics/dashboard queries
-                # Use asyncio.to_thread for Elasticsearch I/O (non-critical, errors logged but not raised)
-                await asyncio.to_thread(ConversationAnalyticsElasticsearchService.index_analytics, saved_analytics)
+                    # Index to Elasticsearch for analytics/dashboard queries
+                    # Use asyncio.to_thread for Elasticsearch I/O (non-critical, errors logged but not raised)
+                    await asyncio.to_thread(ConversationAnalyticsElasticsearchService.index_analytics, saved_analytics)
 
-                if is_new:
-                    created_count += 1
-                else:
-                    updated_count += 1
+                    if is_new:
+                        created_count += 1
+                    else:
+                        updated_count += 1
 
-                # Mark queue item as completed
-                await self.queue_repo.mark_completed(queue_item.id)
+                    # Mark queue item as completed
+                    await self.queue_repo.mark_completed(queue_item.id)
 
-                success_count += 1
+                    success_count += 1
 
-            except Exception as e:
-                logger.error(f"Failed to analyze conversation {queue_item.conversation_id}: {e}", exc_info=True)
-                await self.queue_repo.mark_failed(queue_item.id, error_message=str(e))
-                failure_count += 1
+                except Exception as e:
+                    logger.error(f"Failed to analyze conversation {queue_item.conversation_id}: {e}", exc_info=True)
+                    await self.queue_repo.mark_failed(queue_item.id, error_message=str(e))
+                    failure_count += 1
 
         logger.info(
             f"Batch processing complete: {success_count} successful "

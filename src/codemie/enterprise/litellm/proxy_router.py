@@ -71,6 +71,11 @@ from codemie.rest_api.security.authentication import BEARER_AUTHORIZATION_HEADER
 from codemie.rest_api.security.user import User
 from codemie.enterprise.litellm.dependencies import check_user_budget
 from codemie.service.budget.budget_enums import BudgetCategory as CoreBudgetCategory
+from codemie.service.spend.spend_logs_metadata import (
+    SPEND_LOGS_METADATA_HEADER,
+    spend_logs_metadata_header,
+)
+from codemie.service.spend.traffic_class import TrafficOrigin
 from codemie.service.budget.budget_resolution_service import (
     BudgetScope,
     ResolvedBudgetContext,
@@ -91,7 +96,7 @@ from .dependencies import (
     is_litellm_enabled,
     is_premium_models_enabled,
 )
-from .llm_factory import generate_litellm_headers_from_context
+from .llm_factory import generate_litellm_headers_from_context, resolve_mirrored_budget_id
 from .project_member_runtime_sync import ensure_project_member_runtime_ready
 from .runtime_budget_selection import RuntimeBudgetMode, select_runtime_budget_mode
 from codemie.repository.project_budget_repository import project_budget_assignment_repository
@@ -115,8 +120,17 @@ LITELLM_CACHE_KEY_HEADER = "x-litellm-cache-key"
 ROUTED_MODEL_HEADER = "x-litellm-router-routed-model"
 UNKNOWN = "unknown"
 
+#: Key under which the resolved budget category travels on `request_info` to the header builder.
+SPEND_ATTRIBUTION_CATEGORY = "spend_attribution_category"
+
 # HTTP headers that should NOT be forwarded between proxies (hop-by-hop headers)
 # See: https://datatracker.ietf.org/doc/html/rfc2616#section-13.5.1
+#: LiteLLM's own per-call identifier. On a failure row it is the row's `request_id`, and a row key is
+#: LiteLLM's to mint, never a client's to choose - so any inbound value is stripped. CodeMie sets none
+#: either: correlation rides in the spend-logs metadata header, and LiteLLM ignores this one for the
+#: row key on success (measured 2026-08-24).
+LITELLM_CALL_ID_HEADER = "x-litellm-call-id"
+
 PROXY_HOP_BY_HOP_HEADERS = {
     "connection",
     "keep-alive",
@@ -142,6 +156,12 @@ PROXY_HOP_BY_HOP_HEADERS = {
     HEADER_CODEMIE_CLI_PROJECT.lower(),
     BEARER_AUTHORIZATION_HEADER.lower(),
     LITELLM_CUSTOMER_ID_HEADER.lower(),
+    # **Release-blocking, and an attribution-integrity control rather than hygiene.** This header
+    # now carries identity, so a client able to set it could book its own spend against ANOTHER
+    # PROJECT'S BUDGET - both readings well-formed, nothing failing. Listing it here strips any
+    # inbound value; `_apply_spend_logs_metadata_header` then sets the one CodeMie vouches for.
+    SPEND_LOGS_METADATA_HEADER.lower(),
+    LITELLM_CALL_ID_HEADER,
 }
 
 # Hop-by-hop headers that must NOT be forwarded from upstream responses to clients.
@@ -255,8 +275,6 @@ def _augment_models_list_response(body: bytes) -> bytes:
     if not isinstance(data, list):
         return body
 
-    from codemie.service.llm_service.llm_service import llm_service  # local import: avoid import cycle
-
     existing_ids = {entry.get("id") for entry in data if isinstance(entry, dict)}
     template = next((entry for entry in data if isinstance(entry, dict)), None)
 
@@ -342,6 +360,76 @@ def _apply_budget_provider_headers(headers: dict, request_info: dict | None) -> 
             f"budget_event=proxy_provider_headers_applied component=proxy_router "
             f"provider_header_names={sorted(request_info['budget_provider_headers'].keys())!r}"
         )
+
+
+def _apply_spend_logs_metadata_header(headers: dict, request_info: dict | None, user: User | None) -> None:
+    """Set the correlation and identity CodeMie vouches for on this proxied call.
+
+    Any client-supplied value was already dropped by the not-forwarded set above; this is the
+    "reset" half of that strip, and the two must stay together.
+
+    **The dimension key is deliberately absent.** Nothing on this path knows a workflow - the
+    request metadata carries client type, session, request id, model, user agent and CLI details and
+    no workflow - so it is omitted rather than invented. A proxy row is natively identifiable by its
+    category instead.
+
+    **The origin and the category answer two different questions and are allowed to disagree.** The
+    category says which budget paid; the origin says what the request was for. A CLI session calling
+    a premium model is billed `premium_models` - correctly, because that is the budget that was
+    charged - and is still CLI traffic, so the origin is keyed on the client type alone. Until this
+    key existed the category was the only word a row had for "CLI", and every CLI call that a
+    premium or platform budget paid for was lost to the CLI split. Every other proxied call is
+    `proxy`, so no row of a known kind on this path lands NULL by design.
+
+    **The run id is minted here** because one inbound proxied request is exactly one outbound LLM
+    call. Minting it is not cosmetic: without it every attempt row carries a NULL run id and each
+    counts as its own request, inflating request volume for precisely the calls the provider
+    retried. With it, the attempts share one id, are summed for money, and counted once.
+    """
+    if request_info is None:
+        return
+
+    # The category comes from the budget routing that already ran for this request, never from a
+    # second derivation here - one rule, one place. Every routing path records it, the own-credentials
+    # bypass included; where none ran, the identity triple is omitted whole rather than completed with a
+    # guess.
+    category = request_info.get(SPEND_ATTRIBUTION_CATEGORY)
+
+    # **The run id is recorded on `request_info`, not merely sent.** AD-29's join key must exist on
+    # BOTH sides of the ledger/metric-store union: the ledger gets it from this header, and the
+    # metric emission reads it back from here. Minted inline and discarded, the metric side would
+    # emit None for every proxy request and the union's NULL branch would have nothing to join on -
+    # which is the gap obligation (a) exists to close.
+    run_id = str(uuid.uuid4())
+    request_info[MetricsAttributes.RUN_ID] = run_id
+
+    headers.update(
+        spend_logs_metadata_header(
+            request_id=request_info.get(REQUEST_ID),
+            run_id=run_id,
+            user_id=user.id if user else None,
+            category=category,
+            project=_proxy_project_in_context(request_info, user),
+            origin=(TrafficOrigin.CLI if _is_cli_request(request_info) else TrafficOrigin.PROXY).value,
+        )
+    )
+
+
+def _proxy_project_in_context(request_info: dict, user: User | None) -> str | None:
+    """The project this proxied call was made inside, or None.
+
+    The request metadata's project falls back to the caller's **username** when no project header
+    was sent, and a header naming the caller's personal project carries their **email**, so it is
+    not always a project. Sent as `codemie_project` either would attribute a person's spend to a
+    "project" named after them - a well-formed row pointing at something that is not a project.
+    Both are checked because they differ wherever the identity provider's username is not the email.
+    """
+    project = request_info.get(PROJECT) or None
+    if not project:
+        return None
+    if user and project in {user.username, user.email}:
+        return None
+    return project
 
 
 def _apply_context_headers(headers: dict) -> None:
@@ -728,6 +816,26 @@ def _is_cli_request(request_info: dict) -> bool:
     }
 
 
+def _classify_proxy_traffic(user: User, request_info: dict) -> BudgetCategory:
+    """What KIND of traffic this proxied call is, independent of which budget pays for it.
+
+    **The resolvers below deliberately tangle the two questions and this one deliberately does not.**
+    They pick a category *in order to select a budget*, so a CLI call with no CLI budget available is
+    billed as platform - correct there, because the category must agree with what was billed. On the
+    own-credentials bypass no CodeMie budget is consulted, so asking them would answer `platform` for
+    everything, **including CLI traffic** - and `attr_category = 'cli'` is the native discriminator a
+    CLI-scoped report depends on, so that bucket would quietly empty for every bypass user.
+
+    Do not rewire the budget-selecting resolvers onto this function.
+    """
+    llm_model = request_info.get(LLM_MODEL, UNKNOWN)
+    if get_premium_username(user.username, llm_model) is not None:
+        return BudgetCategory.PREMIUM_MODELS
+    if _is_cli_request(request_info):
+        return BudgetCategory.CLI
+    return BudgetCategory.PLATFORM
+
+
 def _resolve_cli_tracking_identity(
     *,
     user: User,
@@ -834,6 +942,11 @@ async def _resolve_budget_attribution_stream(
             f"mode={RuntimeBudgetMode.USER_CREDENTIALS_BYPASS.value!r} "
             f"reason=user_credentials setting_alias={user_credentials.alias!r}"
         )
+        # **Enforcement is bypassed; attribution is not.** The row still names who made the call, so
+        # `attr_user_id` is populated rather than left NULL forever - a NULL there makes the
+        # project-member holder blind to this traffic and leaves the rest depending on the alias set.
+        # Classified by traffic kind, since no budget is selected on this path to agree with.
+        request_info[SPEND_ATTRIBUTION_CATEGORY] = _classify_proxy_traffic(user, request_info).value
         return await _resolve_bypass_mode_stream(body_bytes)
 
     if user_credentials is not None:
@@ -850,6 +963,12 @@ async def _resolve_budget_attribution_stream(
         request_info=request_info,
         availability=availability,
     )
+    # Carried to the header builder on `request_info` so the attribution header names the category this
+    # routing chose rather than deriving it a second time - a second derivation is a second answer the
+    # first time either branch changes. Recorded before the project-budget branch returns: a project's
+    # call left without it would carry no identity at all, and its row would depend on the customer key
+    # being parseable to be attributed.
+    request_info[SPEND_ATTRIBUTION_CATEGORY] = category.value
 
     project_runtime = await _resolve_project_budget_runtime(
         user=user,
@@ -939,11 +1058,6 @@ async def _create_global_budget_body_stream(
 ):
     """Handle body stream creation for the global/personal budget path."""
     budget_id = tracking_budget_id or get_category_budget_id(category)
-    await budget_service.track_proxy_budget_assignment_for_request(
-        user_id=user.id,
-        category=category,
-        budget_id=tracking_budget_id,
-    )
 
     if budget_id:
         logger.debug(
@@ -960,7 +1074,12 @@ async def _create_global_budget_body_stream(
         f"budget_id={budget_id!r} model={llm_model!r}"
     )
 
-    check_user_budget(user_email=username, budget_id=budget_id, user_id=user.id)
+    customer = check_user_budget(user_email=username, budget_id=budget_id, user_id=user.id)
+    await budget_service.track_proxy_budget_assignment_for_request(
+        user_id=user.id,
+        category=category,
+        budget_id=resolve_mirrored_budget_id(customer, category),
+    )
     username_is_valid = bool(username and username.strip())
     if username_is_valid:
         request_info["litellm_customer_id"] = username
@@ -1042,6 +1161,7 @@ def _prepare_proxy_headers(
     request: Request,
     request_info: dict | None = None,
     user_credentials: ResolvedLiteLLMUserCredentials | None = None,
+    user: User | None = None,
 ) -> dict | Response:
     """
     Prepare headers for proxying (uses codemie services).
@@ -1060,6 +1180,7 @@ def _prepare_proxy_headers(
         return auth_error
     _apply_budget_provider_headers(headers, request_info)
     _apply_context_headers(headers)
+    _apply_spend_logs_metadata_header(headers, request_info, user)
 
     return headers
 
@@ -1108,7 +1229,7 @@ async def _parse_usage_with_cost(
     response_headers: dict | None = None,
 ) -> dict:
     """
-    Thin wrapper: Get cost config from codemie service and call pure enterprise logic.
+    Thin wrapper: call pure enterprise usage parsing and add cache-hit detection.
 
     Args:
         response_content: Response bytes
@@ -1119,33 +1240,29 @@ async def _parse_usage_with_cost(
             ``x-litellm-response-cost``; pass ``None`` for SSE streaming.
 
     Returns:
-        dict: Usage data with costs
+        dict: Usage data whose ``money_spent`` is LiteLLM's own recorded cost, or ``None``
+            while that cost has not been settled yet.
     """
     # Check if enterprise package is available
     if parse_usage_from_response is None:
-        # Fallback: return zero usage
+        # Fallback: nothing was parsed, so nothing is known about the cost either. `None`,
+        # not a zero - a zero here would claim the call was free rather than admit that this
+        # deployment cannot answer.
         return {
             "input_tokens": 0,
             "output_tokens": 0,
             "cached_tokens": 0,
             "cache_creation_tokens": 0,
-            "money_spent": 0.0,
+            "money_spent": None,
             "cached_tokens_money_spent": 0.0,
         }
 
-    # Get cost config from codemie service
-    try:
-        cost_config = llm_service.get_model_cost(llm_model)
-    except Exception as e:
-        logger.warning(f"Failed to get cost config for {llm_model}: {e}")
-        cost_config = {}
-
-    # Call pure enterprise business logic with codemie callback
+    # Call pure enterprise business logic. No local cost calculator is handed over: this is
+    # the LiteLLM path by definition, so the cost is read off the response and never
+    # re-priced here.
     usage_data = parse_usage_from_response(
         response_content=response_content,
         is_streaming=is_streaming,
-        cost_config=cost_config,
-        cost_calculator=calculate_token_cost,
         llm_model=llm_model,
         response_headers=response_headers,
     )
@@ -1249,6 +1366,15 @@ def _resolve_routed_model(
     return routed_model
 
 
+def _cost_text(money_spent: float | None) -> str:
+    """A call's cost as a log line shows it.
+
+    An unsettled cost has no number to format, and a TypeError raised inside a debug line would take
+    the request path down with it.
+    """
+    return f"${money_spent:.6f}" if money_spent is not None else "unsettled"
+
+
 def _queue_usage_tracking(
     *,
     usage_data: dict,
@@ -1261,12 +1387,16 @@ def _queue_usage_tracking(
     session_id: str | None,
     request_id: str | None,
 ) -> None:
-    """Queue the usage-tracking background task, unless this was a cache hit or empty."""
+    """Queue the usage-tracking background task, unless this was a cache hit or empty.
+
+    The gate is about tokens, not money: a call with tokens and no settled cost still emits its token
+    counts, with the money attribute simply absent.
+    """
     if usage_data.get("cache_hit"):
         logger.debug(
             f"[USAGE-SKIP-CACHE-HIT] session={session_id}, request={request_id}, model={llm_model}, "
             f"input={usage_data['input_tokens']}, output={usage_data['output_tokens']}, "
-            f"cached={usage_data['cached_tokens']}, cost=${usage_data['money_spent']:.6f}"
+            f"cached={usage_data['cached_tokens']}, cost={_cost_text(usage_data['money_spent'])}"
         )
         return
     if usage_data["input_tokens"] <= 0 and usage_data["output_tokens"] <= 0:
@@ -1415,7 +1545,7 @@ async def _finalize_stream_usage_tracking(
     logger.debug(
         f"[USAGE-PARSE-RESULT] session={session_id}, request={request_id}, "
         f"input={usage_data['input_tokens']}, output={usage_data['output_tokens']}, "
-        f"cached={usage_data['cached_tokens']}, cost=${usage_data['money_spent']:.6f}"
+        f"cached={usage_data['cached_tokens']}, cost={_cost_text(usage_data['money_spent'])}"
     )
 
     _queue_usage_tracking(
@@ -1917,7 +2047,7 @@ async def _proxy_to_llm_proxy(
     )
 
     # Prepare headers (uses codemie services)
-    headers = _prepare_proxy_headers(request, request_info, user_credentials=user_credentials)
+    headers = _prepare_proxy_headers(request, request_info, user_credentials=user_credentials, user=user)
     if isinstance(headers, Response):
         return headers
 

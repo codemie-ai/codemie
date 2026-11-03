@@ -37,6 +37,8 @@ from codemie.service.aws_bedrock.bedrock_orchestration_service import BedrockOrc
 from codemie.service.security.token_providers.base_provider import BrokerAuthRequiredException
 from codemie.service.guardrail.guardrail_service import GuardrailService
 from codemie.service.request_summary_manager import request_summary_manager
+from codemie.service.spend.origin_context import spend_origin
+from codemie.service.spend.traffic_class import TrafficOrigin
 from codemie.service.assistant.assistant_version_service import AssistantVersionService
 from codemie.service.assistant.tool_output_visibility import apply_to_response, is_hidden, strip_response
 
@@ -232,14 +234,18 @@ def _ask_virtual_assistant(
             user=user.as_user_model(),
         )
 
-        handler = get_request_handler(assistant, user, request_uuid)
-        response = handler.process_request(
-            request,
-            background_tasks,
-            raw_request,
-            include_tool_errors=include_tool_errors,
-            error_detail_level=error_detail_level,
-        )
+        # The streaming and sync branches build the agent, and the agent its model, on this thread;
+        # the background branch hands a copy of this context to its worker. The header the model
+        # sends reads the origin where it is constructed and again on every call it makes.
+        with spend_origin(TrafficOrigin.CONVERSATION):
+            handler = get_request_handler(assistant, user, request_uuid)
+            response = handler.process_request(
+                request,
+                background_tasks,
+                raw_request,
+                include_tool_errors=include_tool_errors,
+                error_detail_level=error_detail_level,
+            )
         return apply_to_response(assistant, response)
 
     except MCPAuthenticationRequiredException:
@@ -329,15 +335,19 @@ def _ask_assistant(
             user=user.as_user_model(),
         )
 
-        handler = get_request_handler(assistant, user, request_uuid)
-        # Pass error handling options to handler
-        response = handler.process_request(
-            request,
-            background_tasks,
-            raw_request,
-            include_tool_errors=include_tool_errors,
-            error_detail_level=error_detail_level,
-        )
+        # The streaming and sync branches build the agent, and the agent its model, on this thread;
+        # the background branch hands a copy of this context to its worker. The header the model
+        # sends reads the origin where it is constructed and again on every call it makes.
+        with spend_origin(TrafficOrigin.CONVERSATION):
+            handler = get_request_handler(assistant, user, request_uuid)
+            # Pass error handling options to handler
+            response = handler.process_request(
+                request,
+                background_tasks,
+                raw_request,
+                include_tool_errors=include_tool_errors,
+                error_detail_level=error_detail_level,
+            )
         hidden = is_hidden(assistant) if hide_tool_outputs is None else hide_tool_outputs
         return strip_response(response) if hidden else response
 

@@ -23,6 +23,11 @@ from codemie.configs.logger import current_user_email, logging_user_id
 from codemie.configs.script_call_log_guard import allow_metric_record
 from codemie.service.monitoring.metrics_constants import MetricsAttributes
 
+#: Histogram bucket boundaries in seconds (EPMCDME-15537). `record_duration_metric` records seconds,
+#: while the OTel default boundaries (0, 5, 10, 25, ...) are scaled for milliseconds and would put
+#: every sample under 5 s into one bucket, leaving no percentile readable.
+DURATION_BUCKET_BOUNDARIES_SECONDS = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120)
+
 
 def limit_string(input_string, max_length: int = 500):
     """
@@ -75,23 +80,36 @@ def emit_llm_token_metric(name: str, request_id: Optional[str], base_attributes:
 
     summary = request_summary_manager.get_summary(request_id) if request_id else None
     tokens = summary.tokens_usage if summary else None
+    token_attributes: dict = {}
+    if tokens:
+        token_attributes = {
+            MetricsAttributes.INPUT_TOKENS: tokens.input_tokens,
+            MetricsAttributes.OUTPUT_TOKENS: tokens.output_tokens,
+            MetricsAttributes.CACHE_READ_INPUT_TOKENS: tokens.cached_tokens,
+            MetricsAttributes.CACHED_TOKENS_MONEY_SPENT: tokens.cached_tokens_money_spent,
+            MetricsAttributes.CACHE_CREATION_TOKENS_MONEY_SPENT: tokens.cached_tokens_creation_money_spent,
+        }
+        # AD-28: while cost is unsettled `money_spent` is a truthful **subtotal**, not a total - its
+        # own field comment says so - and nothing re-emits this document once the ledger settles, so
+        # emitting it here freezes a partial (a zero, where nothing settled) into metric history
+        # uncorrectably. The four sibling emitters in this package are gated on exactly this pair.
+        #
+        # **Why it matters beyond the dashboard, which is what makes this worth the deviation below:**
+        # `DefaultSpendLedger` sums this very attribute as money (`default_ledger.MONEY_FIELD`), so an
+        # ungated subtotal is not merely displayed short - it is read back *through the spend port* as
+        # though it were the whole cost. Token counts are unaffected; they are final here.
+        #
+        # `cached_tokens_money_spent` and `cache_creation_tokens_money_spent` stay unconditional: this
+        # is their only emitter and dropping them would break historical Elasticsearch mapping, which
+        # is what `inventory.md`'s row for these lines exists to protect.
+        if not (tokens.money_spent_pending or tokens.money_spent_unavailable):
+            token_attributes[MetricsAttributes.MONEY_SPENT] = tokens.money_spent
     send_log_metric(
         name=name,
         attributes={
             **base_attributes,
             MetricsAttributes.USER_EMAIL: current_user_email.get("-"),
-            **(
-                {
-                    MetricsAttributes.INPUT_TOKENS: tokens.input_tokens,
-                    MetricsAttributes.OUTPUT_TOKENS: tokens.output_tokens,
-                    MetricsAttributes.CACHE_READ_INPUT_TOKENS: tokens.cached_tokens,
-                    MetricsAttributes.MONEY_SPENT: tokens.money_spent,
-                    MetricsAttributes.CACHED_TOKENS_MONEY_SPENT: tokens.cached_tokens_money_spent,
-                    MetricsAttributes.CACHE_CREATION_TOKENS_MONEY_SPENT: tokens.cached_tokens_creation_money_spent,
-                }
-                if tokens
-                else {}
-            ),
+            **token_attributes,
         },
     )
 
@@ -114,7 +132,12 @@ class BaseMonitoringService:
     def _get_or_create_histogram(cls, name: str, description: str = "", unit: str = "s"):
         if name not in cls._histograms:
             meter = metrics.get_meter(cls.METER_NAME)
-            cls._histograms[name] = meter.create_histogram(name=name, description=description, unit=unit)
+            cls._histograms[name] = meter.create_histogram(
+                name=name,
+                description=description,
+                unit=unit,
+                explicit_bucket_boundaries_advisory=DURATION_BUCKET_BOUNDARIES_SECONDS,
+            )
         return cls._histograms[name]
 
     @classmethod
@@ -176,13 +199,19 @@ class BaseMonitoringService:
         duration_seconds: float,
         description: str = "",
         attributes: Optional[dict] = None,
+        *,
+        per_user: bool = True,
     ):
-        """Record operation duration as an OTel Histogram (exposed as Prometheus histogram)."""
+        """Record operation duration as an OTel Histogram (exposed as Prometheus histogram).
+
+        `per_user=False` leaves out the calling user: an infrastructure duration (EPMCDME-15537) is
+        not about who asked, and a user attribute would multiply its series by every user.
+        """
         try:
             histogram = cls._get_or_create_histogram(name, description)
             attributes = attributes or {}
             _add_budget_fallback_attribute(attributes)
-            if not attributes.get(MetricsAttributes.USER_ID):
+            if per_user and not attributes.get(MetricsAttributes.USER_ID):
                 attributes.update({MetricsAttributes.USER_ID: logging_user_id.get("-")})
             attributes.update({"env": config.ENV})
             attributes = {k: limit_string(v) if isinstance(v, str) else v for k, v in attributes.items()}

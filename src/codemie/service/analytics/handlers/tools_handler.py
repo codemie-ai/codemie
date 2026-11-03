@@ -157,7 +157,10 @@ class ToolsHandler:
                 ),
                 "aggs": {
                     "4-metric": {
-                        "cardinality": {"field": "attributes.assistant_name.keyword"},
+                        # AD-29: cardinality on the stable id, not the mutable name - a
+                        # rename would otherwise inflate this count by splitting one
+                        # assistant's history across two keyword values.
+                        "cardinality": {"field": "attributes.assistant_id.keyword"},
                     },
                 },
             },

@@ -58,6 +58,8 @@ from codemie.core.workflow_models import (
 )
 from codemie.rest_api.security.user import User
 from codemie.rest_api.models.assistant import Assistant, VirtualAssistant
+from codemie.service.spend.origin_context import publish_origin, reset_origin
+from codemie.service.spend.traffic_class import TrafficOrigin
 from codemie.service.workflow_execution import WorkflowExecutionService, ThoughtConsumer
 from codemie.service.workflow_service import WorkflowService
 from codemie.workflows.callbacks.graph_callback import LanggraphNodeCallback
@@ -1000,6 +1002,12 @@ class WorkflowExecutor:
                 f"execution_id={self.execution_id}, project={self.workflow_config.project}"
             )
 
+        # Every model this run builds is created on this thread, so the origin belongs here too.
+        # Unlike set_current_workflow_id above, which overwrites and is cleared to None, the origin
+        # is restored from a token: a sub-workflow re-enters this method on the parent's thread, and
+        # clearing on the way out would leave the rest of the parent's run with no origin at all.
+        origin_token = publish_origin(TrafficOrigin.WORKFLOW)
+
         # propagated_span() attaches the OTel context captured in __init__ (HTTP handler thread)
         # so that workflow.execute and the ThoughtConsumer thread (which does DB writes) both
         # become children of the HTTP request span even though this method runs in a background
@@ -1045,6 +1053,7 @@ class WorkflowExecutor:
             # outside a workflow entirely).
             set_current_user(None)
             set_current_workflow_id(None)
+            reset_origin(origin_token)
 
     def _start_thought_consumer_if_enabled(self, enable_verbose_consumer: bool):
         """Start ThoughtConsumer for database persistence if enabled."""

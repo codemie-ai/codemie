@@ -31,13 +31,14 @@ _BASE_MON = "codemie.service.monitoring.base_monitoring_service"
 
 
 class TestMarketplaceValidationTokensPlatformLlmCost(unittest.TestCase):
-    def test_metric_in_platform_llm_cost_terms_filter(self):
+    def test_metric_in_the_platform_group_below_the_coverage_floor(self):
         import inspect
-        import codemie.service.analytics.handlers.summary_handler as sh_module
+        import codemie.service.spend.default_ledger as ledger_module
 
-        source = inspect.getsource(sh_module)
-        # summary_handler uses PLATFORM_METRICS constant; verify the constant is referenced
-        # and that it includes MARKETPLACE_ASSISTANT_VALIDATION_TOTAL
+        source = inspect.getsource(ledger_module)
+        # The platform card is a spend-port group now; below the coverage floor the metric-store
+        # adapter answers it over PLATFORM_METRICS, so the constant must still include this metric
+        # for its money to reach the card.
         self.assertIn("PLATFORM_METRICS", source)
         self.assertIn(
             MetricName.MARKETPLACE_ASSISTANT_VALIDATION_TOTAL,

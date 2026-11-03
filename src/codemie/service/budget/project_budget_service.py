@@ -1447,19 +1447,18 @@ class ProjectBudgetService:
             changed_by=actor_id,
             models=existing_models or None,
         )
-        budget = await budget_repository.update(
-            session,
-            budget_id,
-            {
-                "budget_reset_at": state.budget_reset_at,
-                "provider_metadata": self._build_provider_metadata(
-                    provider=state.provider,
-                    provider_budget_ref=state.provider_budget_ref,
-                    sync_status=state.sync_status,
-                    raw=state.metadata,
-                ),
-            },
-        )
+        update_fields = {
+            "budget_reset_at": state.budget_reset_at,
+            "provider_metadata": self._build_provider_metadata(
+                provider=state.provider,
+                provider_budget_ref=state.provider_budget_ref,
+                sync_status=state.sync_status,
+                raw=state.metadata,
+            ),
+        }
+        if state.sync_status == SyncStatus.OK:
+            update_fields["spend_reset_at"] = datetime.now(timezone.utc)
+        budget = await budget_repository.update(session, budget_id, update_fields)
         from codemie.service.settings.settings import SettingsService
 
         enforce_limit = SettingsService.get_enforce_member_spend_limits(assignment.project_name)

@@ -26,6 +26,8 @@ from codemie.core.dependecies import get_elasticsearch
 from codemie.core.models import AssistantChatRequest
 from codemie.service.llm_service.llm_service import llm_service
 from codemie.service.search_and_rerank.tool import SearchAndRerankTool
+from codemie.service.spend.origin_context import spend_origin
+from codemie.service.spend.traffic_class import TrafficOrigin
 
 
 class ToolkitLookupService:
@@ -48,14 +50,19 @@ class ToolkitLookupService:
         Returns:
             Number of tools indexed
         """
-        logger.info("Starting tool indexing (ToolSearch)")
+        # Indexing CodeMie's own tool catalog is embedding work like any datasource's - the class
+        # split already files it there by call type - so it says so: platform-owned rather than a
+        # customer's, but not a different kind of spend, and a row that names its origin is not
+        # re-guessed from its native columns.
+        with spend_origin(TrafficOrigin.DATASOURCE_INDEXING):
+            logger.info("Starting tool indexing (ToolSearch)")
 
-        # Get metadata and prepare documents
-        tools_metadata = cls._get_tools_metadata()
-        documents = cls._prepare_tool_documents(tools_metadata)
+            # Get metadata and prepare documents
+            tools_metadata = cls._get_tools_metadata()
+            documents = cls._prepare_tool_documents(tools_metadata)
 
-        # Set up indexing configuration and index documents
-        return cls._index_documents(documents)
+            # Set up indexing configuration and index documents
+            return cls._index_documents(documents)
 
     @classmethod
     def _get_tools_metadata(cls) -> List[dict]:

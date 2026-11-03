@@ -20,6 +20,7 @@ import httpx
 
 from codemie.configs import logger
 from codemie.core.workflow_models import CreateWorkflowExecutionRequest
+from codemie.rest_api.models.scheduler_run import RunMetrics
 from codemie.rest_api.security.authentication import sign_internal_request
 from codemie.triggers.config import BASE_API_URL
 
@@ -55,11 +56,15 @@ async def invoke_workflow(
             result["resource_execution_id"] = body["execution_id"]
         tokens = body.get("tokens_usage") or {}
         if tokens.get("input_tokens") is not None:
-            result["metrics"] = {
-                "inputTokens": tokens.get("input_tokens"),
-                "outputTokens": tokens.get("output_tokens"),
-                "cost": tokens.get("money_spent"),
-            }
+            # The flags are stored with the cost: without them the snapshot would freeze the
+            # "nothing settled yet" zero of a still-pending execution as a final $0.
+            result["metrics"] = RunMetrics.from_usage(
+                tokens.get("input_tokens"),
+                tokens.get("output_tokens"),
+                tokens.get("money_spent"),
+                pending=bool(tokens.get("money_spent_pending")),
+                unavailable=bool(tokens.get("money_spent_unavailable")),
+            ).model_dump()
         return result or None
     except (httpx.HTTPError, httpx.InvalidURL) as e:
         logger.error('Failed to invoke workflow. job_id: %s, workflow_id: %s, error: %s', job_id, workflow_id, str(e))

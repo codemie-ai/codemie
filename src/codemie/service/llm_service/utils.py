@@ -148,6 +148,7 @@ def set_llm_context(
         litellm_context = LiteLLMContext(
             credentials=litellm_creds,
             current_project=user.email if fallback_from else effective_project,
+            principal_email=user.email,
             personal_project=user.email,
             budget_fallback_from=fallback_from,
         )

@@ -21,6 +21,8 @@ from elasticsearch import ApiError
 from langchain_core.documents import Document
 
 from codemie.service.search_and_rerank.tool import SearchAndRerankTool
+from codemie.service.spend.origin_context import current_origin, spend_origin
+from codemie.service.spend.traffic_class import TrafficOrigin
 
 
 class TestSearchAndRerankTool:
@@ -741,3 +743,41 @@ class TestSearchAndRerankTool:
 
         # Assertions - should return empty list or handle error
         assert isinstance(result, list)
+
+
+class TestSearchAndRerankToolSpendOrigin:
+    """The tool-catalog query embedding is search traffic like any other."""
+
+    @pytest.fixture
+    def tool_instance(self):
+        return SearchAndRerankTool(query="test query", top_k=5, index_name="tools_index")
+
+    def test_knn_search_runs_under_search_embedding(self, mocker, tool_instance):
+        observed = []
+        mocker.patch.object(
+            SearchAndRerankTool,
+            "_knn_vector_search",
+            side_effect=lambda: observed.append(current_origin()) or [],
+        )
+        mocker.patch.object(SearchAndRerankTool, "_text_search", return_value=[])
+
+        tool_instance.execute()
+
+        assert observed == [TrafficOrigin.SEARCH_EMBEDDING]
+        assert current_origin() is None
+
+    def test_search_restores_the_enclosing_origin(self, mocker, tool_instance):
+        """Tool lookup runs inside other work, which must get its origin back."""
+        observed = []
+        mocker.patch.object(
+            SearchAndRerankTool,
+            "_knn_vector_search",
+            side_effect=lambda: observed.append(current_origin()) or [],
+        )
+        mocker.patch.object(SearchAndRerankTool, "_text_search", return_value=[])
+
+        with spend_origin(TrafficOrigin.MARKETPLACE_VALIDATION):
+            tool_instance.execute()
+
+            assert observed == [TrafficOrigin.SEARCH_EMBEDDING]
+            assert current_origin() == TrafficOrigin.MARKETPLACE_VALIDATION

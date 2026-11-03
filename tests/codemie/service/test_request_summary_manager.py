@@ -347,3 +347,55 @@ def test_routing_call_usage_metric_name():
     from codemie.service.analytics.metric_names import MetricName
 
     assert MetricName.ROUTING_CALL_USAGE.value == "routing_call_usage"
+
+
+def test_llm_run_money_spent_defaults_to_unsettled():
+    """AD-28 rule 1: a run with no money_spent given is *not settled* - not specifically
+    pending or unavailable - rather than fabricating a zero cost."""
+    llm_run = LLMRun(
+        run_id="run-unsettled",
+        input_tokens=100,
+        output_tokens=50,
+        llm_model="claude-3-7",
+    )
+
+    assert llm_run.money_spent is None
+
+
+def test_request_summary_calculate_sums_settled_runs_only(sample_request_id):
+    """AD-28 rule 2: an unsettled run (money_spent=None) must not raise TypeError, and must
+    not count toward the settled subtotal - which stays a truthful partial."""
+    llm_runs = [
+        LLMRun(
+            run_id="run-settled",
+            input_tokens=1000,
+            output_tokens=500,
+            money_spent=0.012,
+            llm_model="claude-3-7",
+        ),
+        LLMRun(
+            run_id="run-unsettled",
+            input_tokens=200,
+            output_tokens=100,
+            money_spent=None,
+            llm_model="claude-3-7",
+        ),
+    ]
+    request_summary = RequestSummary(request_id=sample_request_id, llm_runs=llm_runs)
+
+    request_summary.calculate()
+
+    assert request_summary.tokens_usage.input_tokens == 1200
+    assert abs(request_summary.tokens_usage.money_spent - 0.012) < 0.00001
+    assert request_summary.tokens_usage.money_spent_pending is True
+    assert request_summary.tokens_usage.money_spent_unavailable is False
+
+
+def test_request_summary_calculate_all_settled_is_not_pending(sample_request_id, sample_llm_runs):
+    """AD-28: money_spent_pending must stay False when every run has settled."""
+    request_summary = RequestSummary(request_id=sample_request_id, llm_runs=sample_llm_runs)
+
+    request_summary.calculate()
+
+    assert request_summary.tokens_usage.money_spent_pending is False
+    assert request_summary.tokens_usage.money_spent_unavailable is False

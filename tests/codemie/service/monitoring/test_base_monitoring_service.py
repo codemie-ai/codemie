@@ -16,7 +16,14 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from codemie.service.monitoring.base_monitoring_service import BaseMonitoringService, send_log_metric
+from codemie.configs.logger import logging_user_id
+from codemie.service.monitoring.base_monitoring_service import (
+    DURATION_BUCKET_BOUNDARIES_SECONDS,
+    BaseMonitoringService,
+    emit_llm_token_metric,
+    send_log_metric,
+)
+from codemie.service.monitoring.metrics_constants import MetricsAttributes
 
 
 @pytest.fixture
@@ -147,3 +154,108 @@ def test_send_log_metric_handles_missing_cached_tokens_money_spent(mock_logger_i
 
     # Field should not exist
     assert "cached_tokens_money_spent" not in logged_data["attributes"]
+
+
+class TestEmitLlmTokenMetricMoneyGate:
+    """AD-28: `emit_llm_token_metric` must not freeze an unsettled cost into metric history.
+
+    This helper is the shared emitter behind fifteen call sites across the generator, tool-execution
+    and conversation-analysis services, so one ungated emission is one defect on fifteen paths. It
+    matters beyond the dashboard: `DefaultSpendLedger` sums this very attribute as money, so an
+    ungated subtotal is read back **through the spend port** as though it were the whole cost.
+    """
+
+    @staticmethod
+    def _tokens(**overrides):
+        from codemie.core.models import TokensUsage
+
+        defaults = {
+            "input_tokens": 100,
+            "output_tokens": 25,
+            "cached_tokens": 5,
+            "money_spent": 0.5,
+        }
+        return TokensUsage(**{**defaults, **overrides})
+
+    def _emit(self, tokens):
+        summary = MagicMock()
+        summary.tokens_usage = tokens
+        with patch(
+            "codemie.service.request_summary_manager.request_summary_manager.get_summary",
+            return_value=summary,
+        ):
+            with patch("codemie.service.monitoring.base_monitoring_service.send_log_metric") as emitted:
+                emit_llm_token_metric(name="some_metric", request_id="req-1", base_attributes={"a": 1})
+        return emitted.call_args.kwargs["attributes"]
+
+    def test_settled_cost_is_emitted(self):
+        """The mirror case first: a fix that drops money from every document is the same defect."""
+        attributes = self._emit(self._tokens())
+
+        assert attributes[MetricsAttributes.MONEY_SPENT] == 0.5
+        assert attributes[MetricsAttributes.INPUT_TOKENS] == 100
+
+    def test_pending_cost_emits_no_money_attribute(self):
+        attributes = self._emit(self._tokens(money_spent=0.5, money_spent_pending=True))
+
+        assert MetricsAttributes.MONEY_SPENT not in attributes
+        # Tokens are final at this point and must survive the gate.
+        assert attributes[MetricsAttributes.INPUT_TOKENS] == 100
+        assert attributes[MetricsAttributes.OUTPUT_TOKENS] == 25
+
+    def test_unavailable_cost_emits_no_money_attribute(self):
+        attributes = self._emit(self._tokens(money_spent=0.0, money_spent_unavailable=True))
+
+        # The sharpest form: nothing settled, so the subtotal is 0.0 and would have gone out as a
+        # claim that the work was free.
+        assert MetricsAttributes.MONEY_SPENT not in attributes
+
+    def test_the_cache_money_fields_stay_unconditional(self):
+        """`inventory.md` keeps these emitting so historical Elasticsearch mapping holds."""
+        attributes = self._emit(self._tokens(money_spent_pending=True))
+
+        assert MetricsAttributes.CACHED_TOKENS_MONEY_SPENT in attributes
+        assert MetricsAttributes.CACHE_CREATION_TOKENS_MONEY_SPENT in attributes
+
+
+class TestRecordDurationMetric:
+    """Durations are recorded in seconds, and per user only where the caller asks (EPMCDME-15537)."""
+
+    DURATION_METRIC = "a_duration"
+    DURATION_SECONDS = 0.2
+    CALLING_USER = "user-1"
+
+    @pytest.fixture
+    def histogram(self, mock_meter):
+        with patch.dict(BaseMonitoringService._histograms, clear=True):
+            yield mock_meter.return_value.create_histogram.return_value
+
+    def _record(self, **kwargs):
+        token = logging_user_id.set(self.CALLING_USER)
+        try:
+            BaseMonitoringService.record_duration_metric(self.DURATION_METRIC, self.DURATION_SECONDS, **kwargs)
+        finally:
+            logging_user_id.reset(token)
+
+    def test_the_histogram_gets_seconds_scale_buckets(self, mock_meter, histogram):
+        self._record()
+
+        mock_meter.return_value.create_histogram.assert_called_once_with(
+            name=self.DURATION_METRIC,
+            description="",
+            unit="s",
+            explicit_bucket_boundaries_advisory=DURATION_BUCKET_BOUNDARIES_SECONDS,
+        )
+        histogram.record.assert_called_once()
+
+    def test_a_sample_names_the_calling_user_by_default(self, histogram):
+        self._record()
+
+        assert histogram.record.call_args.args[1][MetricsAttributes.USER_ID] == self.CALLING_USER
+
+    def test_an_infrastructure_sample_names_no_user(self, histogram):
+        self._record(per_user=False)
+
+        duration, attributes = histogram.record.call_args.args
+        assert duration == self.DURATION_SECONDS
+        assert MetricsAttributes.USER_ID not in attributes

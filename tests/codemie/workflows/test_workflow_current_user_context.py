@@ -26,6 +26,8 @@ from unittest.mock import Mock, patch
 
 from codemie.core.workflow_models import WorkflowConfig
 from codemie.rest_api.security.user_context import get_current_user, set_current_user
+from codemie.service.spend.origin_context import current_origin, spend_origin
+from codemie.service.spend.traffic_class import TrafficOrigin
 from codemie.workflows.workflow import WorkflowExecutor
 
 EXECUTION_ID = "exec_ctx_123"
@@ -187,3 +189,98 @@ class TestWorkflowCurrentUserContext:
         # During the run the new user wins over the stale one; afterwards the var is cleared.
         assert captured.get("user") is mock_user
         assert get_current_user() is None
+
+
+class TestWorkflowSpendOrigin:
+    """The workflow run publishes its spend origin on the same thread that builds its node models."""
+
+    @patch('codemie.workflows.workflow.get_observability_provider')
+    @patch.object(WorkflowExecutor, '_auto_delete_execution')
+    @patch.object(WorkflowExecutor, '_run_workflow_execution')
+    @patch.object(WorkflowExecutor, '_build_graph_config')
+    @patch.object(WorkflowExecutor, '_start_thought_consumer_if_enabled')
+    def test_origin_is_workflow_during_execution_and_gone_after(
+        self,
+        mock_consumer,
+        mock_config,
+        mock_run,
+        mock_auto_delete,
+        mock_obs,
+        basic_workflow_config,
+        mock_user,
+        mock_thought_queue,
+    ):
+        """Node models are built inside the graph run, so the origin must be live there."""
+        executor = _make_executor(basic_workflow_config, mock_user, mock_thought_queue)
+
+        captured = {}
+        mock_run.side_effect = lambda *a, **kw: captured.update(origin=current_origin())
+
+        executor._execute_workflow_stream()
+
+        assert captured.get("origin") is TrafficOrigin.WORKFLOW
+        assert current_origin() is None
+
+    @patch('codemie.workflows.workflow.get_observability_provider')
+    @patch.object(WorkflowExecutor, '_auto_delete_execution')
+    @patch.object(WorkflowExecutor, '_build_graph_config')
+    @patch.object(WorkflowExecutor, '_start_thought_consumer_if_enabled')
+    def test_sub_workflow_hands_the_parent_origin_back(
+        self,
+        mock_consumer,
+        mock_config,
+        mock_auto_delete,
+        mock_obs,
+        basic_workflow_config,
+        mock_user,
+        mock_thought_queue,
+    ):
+        """A sub-workflow re-enters this body on the parent's thread; returning must not clear the origin.
+
+        This is where the origin parts company with `set_current_workflow_id`, which the child
+        overwrites and clears to None on the way out.
+        """
+        parent = _make_executor(basic_workflow_config, mock_user, mock_thought_queue)
+        child = _make_executor(basic_workflow_config, mock_user, mock_thought_queue)
+
+        captured = {}
+        child._run_workflow_execution = lambda *a, **kw: captured.update(inside_child=current_origin())
+
+        def run_child(*_args, **_kwargs):
+            child._execute_workflow_stream()
+            captured.update(parent_after_child=current_origin())
+
+        parent._run_workflow_execution = run_child
+
+        parent._execute_workflow_stream()
+
+        assert captured.get("inside_child") is TrafficOrigin.WORKFLOW
+        assert captured.get("parent_after_child") is TrafficOrigin.WORKFLOW
+
+    @patch('codemie.workflows.workflow.get_observability_provider')
+    @patch.object(WorkflowExecutor, '_auto_delete_execution')
+    @patch.object(WorkflowExecutor, '_run_workflow_execution')
+    @patch.object(WorkflowExecutor, '_build_graph_config')
+    @patch.object(WorkflowExecutor, '_start_thought_consumer_if_enabled')
+    def test_enclosing_origin_is_restored_not_cleared(
+        self,
+        mock_consumer,
+        mock_config,
+        mock_run,
+        mock_auto_delete,
+        mock_obs,
+        basic_workflow_config,
+        mock_user,
+        mock_thought_queue,
+    ):
+        """A workflow reached from work that already published an origin gives that origin back."""
+        executor = _make_executor(basic_workflow_config, mock_user, mock_thought_queue)
+
+        captured = {}
+        mock_run.side_effect = lambda *a, **kw: captured.update(origin=current_origin())
+
+        with spend_origin(TrafficOrigin.CONVERSATION):
+            executor._execute_workflow_stream()
+
+            assert captured.get("origin") is TrafficOrigin.WORKFLOW
+            assert current_origin() is TrafficOrigin.CONVERSATION

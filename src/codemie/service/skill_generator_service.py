@@ -35,6 +35,8 @@ from codemie.service.monitoring.metrics_constants import (
     MetricsAttributes,
 )
 from codemie.service.request_summary_manager import request_summary_manager
+from codemie.service.spend.origin_context import spend_origin
+from codemie.service.spend.traffic_class import TrafficOrigin
 from codemie.service.tools.tools_info_service import ToolsInfoService
 from codemie.templates.agents.skill_generator_prompt import (
     SKILL_GENERATOR_CATEGORY,
@@ -105,71 +107,72 @@ class SkillGeneratorService:
         if not llm_model:
             llm_model = llm_service.default_llm_model
 
-        try:
-            base_template = SKILL_GENERATOR_TEMPLATE if include_tools else SKILL_GENERATOR_TEMPLATE_WITHOUT_TOOLS
+        with spend_origin(TrafficOrigin.SKILL_GENERATOR):
+            try:
+                base_template = SKILL_GENERATOR_TEMPLATE if include_tools else SKILL_GENERATOR_TEMPLATE_WITHOUT_TOOLS
 
-            llm = get_llm_by_credentials(llm_model=llm_model, request_id=request_id)
-            if not llm:
-                raise RuntimeError(f"LLM model '{llm_model}' not found")
+                llm = get_llm_by_credentials(llm_model=llm_model, request_id=request_id)
+                if not llm:
+                    raise RuntimeError(f"LLM model '{llm_model}' not found")
 
-            chain_input: dict = {}
+                chain_input: dict = {}
 
-            # Inject toolkits if requested
-            if include_tools:
-                toolkits = ToolsInfoService.get_tools_info(user=user)
-                toolkits = cls._transform_toolkits(toolkits)
-                chain_input["toolkits"] = toolkits
+                # Inject toolkits if requested
+                if include_tools:
+                    toolkits = ToolsInfoService.get_tools_info(user=user)
+                    toolkits = cls._transform_toolkits(toolkits)
+                    chain_input["toolkits"] = toolkits
 
-            # Inject skill categories
-            chain_input["categories"] = SKILL_GENERATOR_CATEGORY.format(
-                include_categories=True,
-                categories=_SKILL_CATEGORIES,
-            )
+                # Inject skill categories
+                chain_input["categories"] = SKILL_GENERATOR_CATEGORY.format(
+                    include_categories=True,
+                    categories=_SKILL_CATEGORIES,
+                )
 
-            chain = base_template | llm.with_structured_output(SkillDetails)
-            response: SkillDetails = chain.invoke({**chain_input, "text": text})  # pyright: ignore
+                chain = base_template | llm.with_structured_output(SkillDetails)
+                response: SkillDetails = chain.invoke({**chain_input, "text": text})  # pyright: ignore
 
-            categories = cls._validate_categories(response.categories)
+                categories = cls._validate_categories(response.categories)
 
-            emit_llm_token_metric(
-                name=SKILL_GENERATOR_TOTAL_METRIC,
-                request_id=request_id,
-                base_attributes={
-                    MetricsAttributes.LLM_MODEL: llm_model,
-                    MetricsAttributes.USER_ID: logging_user_id.get("-"),
-                    MetricsAttributes.USER_NAME: current_user_email.get("-"),
-                    MetricsAttributes.PROJECT: get_project_for_metric(),
-                },
-            )
+                emit_llm_token_metric(
+                    name=SKILL_GENERATOR_TOTAL_METRIC,
+                    request_id=request_id,
+                    base_attributes={
+                        MetricsAttributes.LLM_MODEL: llm_model,
+                        MetricsAttributes.USER_ID: logging_user_id.get("-"),
+                        MetricsAttributes.USER_NAME: current_user_email.get("-"),
+                        MetricsAttributes.PROJECT: get_project_for_metric(),
+                    },
+                )
 
-            return SkillGeneratorResponse(
-                name=response.name,
-                description=response.description,
-                instructions=response.instructions,
-                categories=categories,
-                toolkits=response.toolkits if include_tools else [],
-            )
+                return SkillGeneratorResponse(
+                    name=response.name,
+                    description=response.description,
+                    instructions=response.instructions,
+                    categories=categories,
+                    toolkits=response.toolkits if include_tools else [],
+                )
 
-        except Exception as e:
-            logger.error(f"Failed to generate skill details: {e}", exc_info=True)
-            send_log_metric(
-                name=SKILL_GENERATOR_ERRORS_METRIC,
-                attributes={
-                    MetricsAttributes.LLM_MODEL: llm_model or "default",
-                    MetricsAttributes.USER_ID: logging_user_id.get("-"),
-                    MetricsAttributes.USER_NAME: current_user_email.get("-"),
-                    MetricsAttributes.PROJECT: get_project_for_metric(),
-                },
-            )
-            raise ExtendedHTTPException(
-                code=500,
-                message="Failed to generate skill details",
-                details=f"An error occurred while generating skill details: {str(e)}",
-                help=HELP_MESSAGE,
-            )
-        finally:
-            if request_id:
-                request_summary_manager.clear_summary(request_id)
+            except Exception as e:
+                logger.error(f"Failed to generate skill details: {e}", exc_info=True)
+                send_log_metric(
+                    name=SKILL_GENERATOR_ERRORS_METRIC,
+                    attributes={
+                        MetricsAttributes.LLM_MODEL: llm_model or "default",
+                        MetricsAttributes.USER_ID: logging_user_id.get("-"),
+                        MetricsAttributes.USER_NAME: current_user_email.get("-"),
+                        MetricsAttributes.PROJECT: get_project_for_metric(),
+                    },
+                )
+                raise ExtendedHTTPException(
+                    code=500,
+                    message="Failed to generate skill details",
+                    details=f"An error occurred while generating skill details: {str(e)}",
+                    help=HELP_MESSAGE,
+                )
+            finally:
+                if request_id:
+                    request_summary_manager.clear_summary(request_id)
 
     @classmethod
     def _validate_categories(cls, categories: list[str]) -> list[str]:
@@ -241,73 +244,74 @@ class SkillGeneratorService:
         if not llm_model:
             llm_model = llm_service.default_llm_model
 
-        try:
-            chain = PromptGeneratorChain.from_prompt_template(SKILL_REFINE_PROMPT_TEMPLATE, request_id, llm_model)
-            chain.add_toolkits(user, True, REFINE_TOOLKITS_PROMPT_TEMPLATE, toolkits)
+        with spend_origin(TrafficOrigin.SKILL_GENERATOR):
+            try:
+                chain = PromptGeneratorChain.from_prompt_template(SKILL_REFINE_PROMPT_TEMPLATE, request_id, llm_model)
+                chain.add_toolkits(user, True, REFINE_TOOLKITS_PROMPT_TEMPLATE, toolkits)
 
-            result = chain.invoke_with_model(
-                RefineGeneratorResponse,
-                {
-                    "text": SKILL_REFINE_INPUT_TEMPLATE.format(
-                        name=name or "",
-                        description=description or "",
-                        categories=categories or [],
-                        instructions=instructions or "",
-                        toolkits=toolkits or [],
-                    ),
-                    "categories": SKILL_GENERATOR_CATEGORY.format(
-                        include_categories=True,
-                        categories=_SKILL_CATEGORIES,
-                    ),
-                    "user_refine_instructions": SKILL_USER_REFINE_PROMPT.format(
-                        refine_prompt=refine_prompt or "",
-                    ),
-                },
-            )
+                result = chain.invoke_with_model(
+                    RefineGeneratorResponse,
+                    {
+                        "text": SKILL_REFINE_INPUT_TEMPLATE.format(
+                            name=name or "",
+                            description=description or "",
+                            categories=categories or [],
+                            instructions=instructions or "",
+                            toolkits=toolkits or [],
+                        ),
+                        "categories": SKILL_GENERATOR_CATEGORY.format(
+                            include_categories=True,
+                            categories=_SKILL_CATEGORIES,
+                        ),
+                        "user_refine_instructions": SKILL_USER_REFINE_PROMPT.format(
+                            refine_prompt=refine_prompt or "",
+                        ),
+                    },
+                )
 
-            # Validate categories against SkillCategory enum
-            cls._apply_field_category_recommendations(result.fields)
+                # Validate categories against SkillCategory enum
+                cls._apply_field_category_recommendations(result.fields)
 
-            # Filter keep actions and empty context
-            result.fields = [f for f in result.fields if f.action != RecommendationAction.Keep]
-            result.toolkits = cls._filter_keep_toolkits(result.toolkits)
-            result.context = []
+                # Filter keep actions and empty context
+                result.fields = [f for f in result.fields if f.action != RecommendationAction.Keep]
+                result.toolkits = cls._filter_keep_toolkits(result.toolkits)
+                result.context = []
 
-            emit_llm_token_metric(
-                name=SKILL_GENERATOR_TOTAL_METRIC,
-                request_id=request_id,
-                base_attributes={
-                    MetricsAttributes.LLM_MODEL: llm_model or "default",
-                    MetricsAttributes.USER_ID: logging_user_id.get("-"),
-                    MetricsAttributes.USER_NAME: current_user_email.get("-"),
-                    MetricsAttributes.PROJECT: get_project_for_metric(),
-                },
-            )
+                emit_llm_token_metric(
+                    name=SKILL_GENERATOR_TOTAL_METRIC,
+                    request_id=request_id,
+                    base_attributes={
+                        MetricsAttributes.LLM_MODEL: llm_model or "default",
+                        MetricsAttributes.USER_ID: logging_user_id.get("-"),
+                        MetricsAttributes.USER_NAME: current_user_email.get("-"),
+                        MetricsAttributes.PROJECT: get_project_for_metric(),
+                    },
+                )
 
-            return result
+                return result
 
-        except ExtendedHTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Failed to refine skill details: {e}", exc_info=True)
-            send_log_metric(
-                name=SKILL_GENERATOR_ERRORS_METRIC,
-                attributes={
-                    MetricsAttributes.LLM_MODEL: llm_model or "default",
-                    MetricsAttributes.USER_ID: logging_user_id.get("-"),
-                    MetricsAttributes.USER_NAME: current_user_email.get("-"),
-                    MetricsAttributes.PROJECT: get_project_for_metric(),
-                },
-            )
-            raise ExtendedHTTPException(
-                code=500,
-                message="Failed to refine skill details",
-                details=f"An error occurred while refining skill details: {str(e)}",
-                help=HELP_MESSAGE,
-            )
-        finally:
-            if request_id:
-                request_summary_manager.clear_summary(request_id)
+            except ExtendedHTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Failed to refine skill details: {e}", exc_info=True)
+                send_log_metric(
+                    name=SKILL_GENERATOR_ERRORS_METRIC,
+                    attributes={
+                        MetricsAttributes.LLM_MODEL: llm_model or "default",
+                        MetricsAttributes.USER_ID: logging_user_id.get("-"),
+                        MetricsAttributes.USER_NAME: current_user_email.get("-"),
+                        MetricsAttributes.PROJECT: get_project_for_metric(),
+                    },
+                )
+                raise ExtendedHTTPException(
+                    code=500,
+                    message="Failed to refine skill details",
+                    details=f"An error occurred while refining skill details: {str(e)}",
+                    help=HELP_MESSAGE,
+                )
+            finally:
+                if request_id:
+                    request_summary_manager.clear_summary(request_id)
 
     @classmethod
     def _transform_toolkits(cls, toolkits: list[dict]) -> list[dict]:

@@ -16,14 +16,48 @@
 
 from __future__ import annotations
 
+import contextlib
+import json
+from datetime import datetime, timezone
+from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from codemie.repository.metrics_elastic_repository import MetricsElasticRepository
 from codemie.rest_api.security.user import User
-from codemie.service.analytics.handlers.user_handler import UserHandler
+from codemie.service.analytics.access_filter import AccessFilter
+from codemie.service.analytics.handlers.money_coverage import SETTLED_AGG, UNSETTLED_AGG
+from codemie.service.analytics.handlers.user_handler import (
+    BY_USER_MONEY_SUM,
+    INPUT_TOKENS_FIELD,
+    MONEY_SPENT_FIELD,
+    UserHandler,
+)
 from codemie.service.analytics.metric_names import MetricName
+from codemie.service.spend.coverage import Portion, SpendDimension, SpendResult, TimeRange
+from codemie.service.spend.ledger import AccessScope, PersonTotalHolder, ReportFilter, UserTerm
+from codemie.service.spend.spend_group import SpendGroup
+
+#: The boundary the `mock_user` fixture below is entitled to: a plain member of no project at all.
+#: **Restricted with an empty project set, which matches nothing rather than everything** - the rule
+#: `AccessScope` holds and `SecureQueryBuilder`'s `minimum_should_match=0` already applied to the very
+#: candidate buckets this table's figures foot.
+_EXPECTED_SCOPE = AccessScope(unrestricted=False, user_id="test-user-id")
+
+
+@pytest.fixture(autouse=True)
+def _fresh_access_context():
+    """Every test derives its own access context from its own `mock_user`.
+
+    `AccessFilter` caches contexts on the class, keyed by user id, and every test here shares one id:
+    without this, a test that made its user an admin leaks an unrestricted scope into whichever test
+    the same worker runs next, and a boundary assertion fails or passes by test order.
+    """
+    AccessFilter._context_cache.clear()
+    yield
+    AccessFilter._context_cache.clear()
 
 
 @pytest.fixture
@@ -56,7 +90,7 @@ class TestGetUsersSpending:
     """Tests for get_users_spending method."""
 
     def test_get_users_spending_aggregates_by_user_email(self, handler):
-        """Verify users are grouped by user_id and placeholder users are filtered out."""
+        """Users are grouped by user_id, placeholders filtered out, and no money is aggregated."""
         # Arrange
         query = {"bool": {"filter": []}}
 
@@ -74,11 +108,14 @@ class TestGetUsersSpending:
         users_agg = agg_body["aggs"]["paginated_results"]
         assert users_agg["terms"]["field"] == "attributes.user_id.keyword"
         assert users_agg["terms"]["size"] == 20
-        # Verify ordered by total_cost descending
-        assert users_agg["terms"]["order"] == {"total_cost": "desc"}
+        # Candidates are selected by activity: the money field they used to be ordered by is gone
+        assert users_agg["terms"]["order"] == {"_count": "desc"}
+        # No sub-aggregation survives — every one of them was a money sum
+        assert "aggs" not in users_agg
+        assert MONEY_SPENT_FIELD not in json.dumps(agg_body)
 
-    def test_parse_users_spending_result_rounds_cost(self, handler):
-        """Verify cost is returned as-is from Elasticsearch."""
+    def test_parse_users_spending_result_leaves_money_absent(self, handler):
+        """The money cell is left absent for the spend port; Elasticsearch supplies identities only."""
         # Arrange
         result = {
             "aggregations": {
@@ -99,17 +136,17 @@ class TestGetUsersSpending:
         }
 
         # Act
-        rows = handler._parse_users_spending_result(result, cli_costs_by_user={})
+        rows = handler._parse_users_spending_result(result)
 
         # Assert
         assert len(rows) == 2
         assert rows[0]["user_email"] == "user1@example.com"
-        assert rows[0]["total_cost_usd"] == 123.456789
+        assert rows[0]["total_cost_usd"] is None
         assert rows[1]["user_email"] == "user2@example.com"
-        assert rows[1]["total_cost_usd"] == 45.999
+        assert rows[1]["total_cost_usd"] is None
 
-    def test_parse_users_spending_result_handles_none_cost(self, handler):
-        """Verify None cost is handled."""
+    def test_parse_users_spending_result_never_substitutes_zero_for_money(self, handler):
+        """An unfilled money cell stays None: a zero here would claim the user spent nothing."""
         # Arrange
         result = {
             "aggregations": {
@@ -126,11 +163,11 @@ class TestGetUsersSpending:
         }
 
         # Act
-        rows = handler._parse_users_spending_result(result, cli_costs_by_user={})
+        rows = handler._parse_users_spending_result(result)
 
         # Assert
         assert len(rows) == 1
-        assert rows[0]["total_cost_usd"] == 0
+        assert rows[0]["total_cost_usd"] is None
 
     def test_parse_users_spending_result_skips_empty_keys(self, handler):
         """Verify empty user keys are skipped (not mapped to 'unknown')."""
@@ -158,17 +195,15 @@ class TestGetUsersSpending:
         }
 
         # Act
-        rows = handler._parse_users_spending_result(result, cli_costs_by_user={})
+        rows = handler._parse_users_spending_result(result)
 
         # Assert — empty key bucket is skipped entirely
         assert len(rows) == 2
         assert rows[0]["user_email"] == "user1@example.com"
-        assert rows[0]["total_cost_usd"] == 10.50
         assert rows[1]["user_email"] == "user2@example.com"
-        assert rows[1]["total_cost_usd"] == 5.25
 
-    def test_parse_users_spending_rows_raw_stores_cli_cost_original(self, handler):
-        """Raw parser must store _cli_cost_original and not apply adjustment."""
+    def test_parse_users_spending_rows_raw_returns_identity_and_no_money(self, handler):
+        """Parser returns the identity and an absent money cell — no bucket money is read."""
         result = {
             "aggregations": {
                 "paginated_results": {
@@ -191,12 +226,8 @@ class TestGetUsersSpending:
         rows = handler._parse_users_spending_rows_raw(result)
 
         assert len(rows) == 2
-        assert rows[0]["user_email"] == "user1@example.com"
-        assert rows[0]["total_cost_usd"] == 500.0
-        assert rows[0]["_cli_cost_original"] == 100.0
-        assert rows[1]["user_email"] == "user2@example.com"
-        assert rows[1]["total_cost_usd"] == 200.0
-        assert rows[1]["_cli_cost_original"] == 0.0
+        assert rows[0] == {"user_email": "user1@example.com", "total_cost_usd": None}
+        assert rows[1] == {"user_email": "user2@example.com", "total_cost_usd": None}
 
     def test_parse_users_spending_rows_raw_skips_empty_keys(self, handler):
         """Empty user keys are skipped (same as existing parser)."""
@@ -219,10 +250,10 @@ class TestGetUsersSpending:
         assert rows[0]["user_email"] == "user1@example.com"
 
     @pytest.mark.asyncio
-    async def test_get_users_spending_applies_cli_adjustment_after_gather(self, handler):
-        """get_users_spending must apply CLI adjustment to gathered rows and strip temp field."""
+    async def test_get_users_spending_returns_raw_total_without_cli_adjustment(self, handler):
+        """get_users_spending returns the pipeline total untouched — no CLI adjustment term."""
         raw_rows = [
-            {"user_email": "user1", "total_cost_usd": 500.0, "_cli_cost_original": 100.0},
+            {"user_email": "user1", "total_cost_usd": 500.0},
         ]
         mock_pipeline_result = {
             "data": {"rows": raw_rows, "columns": []},
@@ -230,19 +261,13 @@ class TestGetUsersSpending:
             "pagination": {"page": 0, "per_page": 20, "total_count": 1, "has_more": False},
         }
 
-        with (
-            patch.object(handler._pipeline, "execute_tabular_query", new=AsyncMock(return_value=mock_pipeline_result)),
-            patch.object(handler, "get_cli_costs_grouped_by", new=AsyncMock(return_value={"user1": 10.0})),
-            patch(
-                "codemie.service.analytics.handlers.user_handler.UserIdentityResolver.resolve_rows",
-                new=AsyncMock(),
-            ),
+        with patch.object(
+            handler._pipeline, "execute_enriched_tabular_query", new=AsyncMock(return_value=mock_pipeline_result)
         ):
             result = await handler.get_users_spending(time_period="last_30_days")
 
         rows = result["data"]["rows"]
-        assert rows[0]["total_cost_usd"] == pytest.approx(410.0)  # 500 + (10 - 100)
-        assert "_cli_cost_original" not in rows[0]
+        assert rows == [{"user_email": "user1", "total_cost_usd": 500.0}]
 
 
 class TestGetUsersActivity:
@@ -920,7 +945,7 @@ class TestGetUsersPlatformSpendingMetrics:
         }
         with (
             patch.object(
-                handler._pipeline, "execute_tabular_query", new=AsyncMock(return_value=mock_result)
+                handler._pipeline, "execute_enriched_tabular_query", new=AsyncMock(return_value=mock_result)
             ) as mock_exec,
             patch(
                 "codemie.service.analytics.handlers.user_handler.UserIdentityResolver.resolve_rows",
@@ -943,7 +968,7 @@ class TestGetUsersPlatformSpendingMetrics:
         }
         with (
             patch.object(
-                handler._pipeline, "execute_tabular_query", new=AsyncMock(return_value=mock_result)
+                handler._pipeline, "execute_enriched_tabular_query", new=AsyncMock(return_value=mock_result)
             ) as mock_exec,
             patch(
                 "codemie.service.analytics.handlers.user_handler.UserIdentityResolver.resolve_rows",
@@ -955,3 +980,649 @@ class TestGetUsersPlatformSpendingMetrics:
         _, kwargs = mock_exec.call_args
         metric_filters = kwargs["filters"].metric_filters or []
         assert MetricName.CLI_LLM_USAGE_TOTAL.value not in metric_filters
+
+
+PERIOD_START = datetime(2026, 8, 1, tzinfo=timezone.utc)
+PERIOD_END = datetime(2026, 8, 31, tzinfo=timezone.utc)
+PERIOD = TimeRange(PERIOD_START, PERIOD_END)
+
+
+def _user_record(user_id: str, username: str, email: str):
+    return SimpleNamespace(id=user_id, username=username, email=email, name=username)
+
+
+@contextlib.asynccontextmanager
+async def _fake_session():
+    yield MagicMock()
+
+
+def _ledger_total(total: SpendResult) -> AsyncMock:
+    """An aggregate_by_spend_group stub whose TOTAL is `total`, held to the caller's own boundary.
+
+    The filter is asserted empty because these tests filter on nothing: a handler that dropped the
+    dashboard's filter, or invented one, fails here rather than footing a filtered table unfiltered.
+    """
+
+    async def _call(period, *, access, report_filter):
+        assert period == PERIOD
+        assert access == _EXPECTED_SCOPE, "the ledger total must be narrowed by the caller's own boundary"
+        assert report_filter == ReportFilter()
+        return {group: SpendResult.no_figure(PERIOD) for group in SpendGroup} | {SpendGroup.TOTAL: total}
+
+    return AsyncMock(side_effect=_call)
+
+
+def _patched_users_port(records: dict, consumed: AsyncMock, ledger_total: AsyncMock | None = None):
+    """Patch the identity read that names the holders, and the spend port itself.
+
+    The scope's ledger total defaults to no figure, which leaves every footer exactly as its rows made it.
+    """
+    stack = contextlib.ExitStack()
+    stack.enter_context(
+        patch("codemie.service.analytics.handlers.user_handler.UserIdentityResolver.resolve_rows", new=AsyncMock())
+    )
+    stack.enter_context(patch("codemie.service.analytics.handlers.user_handler.get_async_session", _fake_session))
+    stack.enter_context(
+        patch(
+            "codemie.service.analytics.handlers.user_handler.user_repository.afind_users_by_identifiers",
+            new=AsyncMock(return_value=records),
+        )
+    )
+    # Every project these tests name is shared: none is a personal project read through its owner.
+    stack.enter_context(
+        patch(
+            "codemie.repository.application_repository.application_repository.aget_personal_project_owners",
+            new=AsyncMock(return_value=set()),
+        )
+    )
+    stack.enter_context(
+        patch("codemie.service.analytics.handlers.user_handler.spend_service.consumed_for_holders", new=consumed)
+    )
+    stack.enter_context(
+        patch(
+            "codemie.service.analytics.handlers.user_handler.spend_service.aggregate_by_spend_group",
+            new=ledger_total or _ledger_total(SpendResult.no_figure(PERIOD)),
+        )
+    )
+    return stack
+
+
+#: The filter of a dashboard with nothing selected - what every test not about filtering asks with.
+NO_FILTER = ReportFilter()
+
+
+def _answers(expected_filter: ReportFilter = NO_FILTER, /, **by_user_id: SpendResult):
+    """A consumed_for_holders stub answering per user id.
+
+    `access` and `report_filter` are taken as **required keywords**, so a handler that stopped threading
+    either fails here: `PersonTotalHolder` is a person's total across everything, while the rows it foots
+    are already narrowed to what the caller may see and to what the dashboard asked about.
+    """
+
+    async def _call(holders, period, *, access, report_filter):
+        assert period == PERIOD
+        assert access == _EXPECTED_SCOPE, "the figure must be narrowed by the caller's own boundary"
+        assert report_filter == expected_filter, "the figure must be narrowed by the dashboard's own filter"
+        return {holder: by_user_id[holder.user_id] for holder in holders if holder.user_id in by_user_id}
+
+    return AsyncMock(side_effect=_call)
+
+
+class TestUsersSpendingFromLedger:
+    """The users table reads money from the spend port, one call for every candidate."""
+
+    ADA = _user_record("u-ada", "ada", "ada@example.com")
+    BOB = _user_record("u-bob", "bob", "bob@example.com")
+
+    @pytest.mark.asyncio
+    async def test_person_total_holder_carries_both_aliases(self, handler):
+        rows = [{"user_email": "ada@example.com"}]
+
+        with _patched_users_port({"ada@example.com": self.ADA}, AsyncMock()):
+            holders = await handler._person_total_holders(rows)
+
+        assert holders == {
+            "ada@example.com": PersonTotalHolder(user_id="u-ada", aliases=frozenset({"ada", "ada@example.com"}))
+        }
+
+    @pytest.mark.asyncio
+    async def test_exact_figure_renders_with_clean_annotations(self, handler):
+        rows = [{"user_email": "ada@example.com", "total_cost_usd": None}]
+
+        with _patched_users_port(
+            {"ada@example.com": self.ADA}, _answers(**{"u-ada": SpendResult(figure=Decimal("42.5"))})
+        ):
+            enriched = await handler._enrich_users_spending(rows, PERIOD_START, PERIOD_END)
+
+        assert enriched.rows[0]["total_cost_usd"] == 42.5
+        assert enriched.rows[0]["spend_unavailable"] is False
+        assert enriched.rows[0]["spend_partial"] is False
+        assert enriched.rows[0]["spend_missing_amount"] is None
+        assert enriched.totals["total_cost_usd"] == 42.5
+
+    @pytest.mark.asyncio
+    async def test_no_figure_renders_absent_and_unavailable(self, handler):
+        rows = [{"user_email": "ada@example.com", "total_cost_usd": None}]
+
+        with _patched_users_port({"ada@example.com": self.ADA}, _answers(**{"u-ada": SpendResult.no_figure(PERIOD)})):
+            enriched = await handler._enrich_users_spending(rows, PERIOD_START, PERIOD_END)
+
+        assert enriched.rows[0]["total_cost_usd"] is None
+        assert enriched.rows[0]["spend_unavailable"] is True
+
+    @pytest.mark.asyncio
+    async def test_measured_zero_is_a_zero_and_leaves_the_table(self, handler):
+        rows = [{"user_email": "ada@example.com", "total_cost_usd": None}]
+
+        with _patched_users_port(
+            {"ada@example.com": self.ADA}, _answers(**{"u-ada": SpendResult(figure=Decimal("0"))})
+        ):
+            enriched = await handler._enrich_users_spending(rows, PERIOD_START, PERIOD_END)
+
+        # The cell is a measured zero, never an absence — and a zero-spend user is not listed,
+        # exactly as the Elasticsearch zero-cost selector used to leave them out.
+        assert rows[0]["total_cost_usd"] == 0.0
+        assert enriched.rows == []
+
+    @pytest.mark.asyncio
+    async def test_truncated_figure_keeps_its_number_and_its_label(self, handler):
+        rows = [{"user_email": "ada@example.com", "total_cost_usd": None}]
+        truncated = SpendResult(figure=Decimal("11.75"), unavailable=PERIOD)
+
+        with _patched_users_port({"ada@example.com": self.ADA}, _answers(**{"u-ada": truncated})):
+            enriched = await handler._enrich_users_spending(rows, PERIOD_START, PERIOD_END)
+
+        assert enriched.rows[0]["total_cost_usd"] == 11.75
+        assert enriched.rows[0]["spend_unavailable"] is True
+
+    @pytest.mark.asyncio
+    async def test_rows_are_ordered_by_the_ledger_figure_not_by_doc_count(self, handler):
+        rows = [
+            {"user_email": "ada@example.com", "total_cost_usd": None},
+            {"user_email": "bob@example.com", "total_cost_usd": None},
+        ]
+        records = {"ada@example.com": self.ADA, "bob@example.com": self.BOB}
+        consumed = _answers(**{"u-ada": SpendResult(figure=Decimal("1")), "u-bob": SpendResult(figure=Decimal("50"))})
+
+        with _patched_users_port(records, consumed):
+            enriched = await handler._enrich_users_spending(rows, PERIOD_START, PERIOD_END)
+
+        assert [row["user_email"] for row in enriched.rows] == ["bob@example.com", "ada@example.com"]
+        assert enriched.totals["total_cost_usd"] == 51.0
+
+    @pytest.mark.asyncio
+    async def test_absent_figure_sorts_last_and_is_never_sorted_as_zero(self, handler):
+        rows = [
+            {"user_email": "ada@example.com", "total_cost_usd": None},
+            {"user_email": "bob@example.com", "total_cost_usd": None},
+        ]
+        records = {"ada@example.com": self.ADA, "bob@example.com": self.BOB}
+        consumed = _answers(**{"u-ada": SpendResult.no_figure(PERIOD), "u-bob": SpendResult(figure=Decimal("0.01"))})
+
+        with _patched_users_port(records, consumed):
+            enriched = await handler._enrich_users_spending(rows, PERIOD_START, PERIOD_END)
+
+        assert [row["user_email"] for row in enriched.rows] == ["bob@example.com", "ada@example.com"]
+        # No figure was invented to make the row sortable.
+        assert enriched.rows[1]["total_cost_usd"] is None
+        # ...and the footer says the total it shows is short.
+        assert enriched.totals["total_cost_usd"] == 0.01
+        assert enriched.totals["total_cost_usd_spend_partial"] is True
+
+    @pytest.mark.asyncio
+    async def test_unresolvable_identity_has_no_figure(self, handler):
+        rows = [{"user_email": "ghost@example.com", "total_cost_usd": None}]
+        consumed = AsyncMock()
+
+        with _patched_users_port({}, consumed):
+            enriched = await handler._enrich_users_spending(rows, PERIOD_START, PERIOD_END)
+
+        consumed.assert_not_awaited()
+        assert enriched.rows[0]["total_cost_usd"] is None
+        assert enriched.rows[0]["spend_unavailable"] is True
+
+    @pytest.mark.asyncio
+    async def test_unknown_hole_keeps_the_missing_amount_unknown(self, handler):
+        rows = [{"user_email": "ada@example.com", "total_cost_usd": None}]
+        with_hole = SpendResult(
+            figure=Decimal("8"),
+            partial={SpendDimension.IDENTITY_BRIDGE: Portion(spend=None, rows=None)},
+        )
+
+        with _patched_users_port({"ada@example.com": self.ADA}, _answers(**{"u-ada": with_hole})):
+            enriched = await handler._enrich_users_spending(rows, PERIOD_START, PERIOD_END)
+
+        assert enriched.rows[0]["total_cost_usd"] == 8.0
+        assert enriched.rows[0]["spend_partial"] is True
+        assert enriched.rows[0]["spend_missing_amount"] is None
+
+    @pytest.mark.asyncio
+    async def test_all_figures_absent_omits_the_footer_money_key(self, handler):
+        rows = [{"user_email": "ada@example.com", "total_cost_usd": None}]
+
+        with _patched_users_port({"ada@example.com": self.ADA}, _answers(**{"u-ada": SpendResult.no_figure(PERIOD)})):
+            enriched = await handler._enrich_users_spending(rows, PERIOD_START, PERIOD_END)
+
+        assert "total_cost_usd" not in enriched.totals
+        assert enriched.totals["total_cost_usd_spend_unavailable"] is True
+
+    @pytest.mark.asyncio
+    async def test_annotation_keys_stay_off_the_advertised_columns(self, handler):
+        assert [column["id"] for column in handler._get_users_spending_columns()] == ["user_email", "total_cost_usd"]
+
+    @pytest.mark.asyncio
+    async def test_a_client_source_filter_asks_the_port_nothing_and_keeps_the_row_absent(
+        self, handler, mock_repository
+    ):
+        """No ledger row records a client, so the figure would be the person's whole spend under one
+        client's label. The candidate stays listed: dropping it would treat an absence as a zero."""
+        mock_repository.execute_aggregation_query.return_value = {
+            "aggregations": {"paginated_results": {"buckets": [{"key": "ada@example.com", "doc_count": 3}]}}
+        }
+        consumed = _answers(**{"u-ada": SpendResult(figure=Decimal("42.5"))})
+
+        with _patched_users_port({"ada@example.com": self.ADA}, consumed):
+            result = await handler.get_users_spending(
+                start_date=PERIOD_START, end_date=PERIOD_END, client_source="teams"
+            )
+
+        consumed.assert_not_awaited()
+        assert result["data"]["rows"] == [
+            {
+                "user_email": "ada@example.com",
+                "total_cost_usd": None,
+                "spend_unavailable": True,
+                "spend_partial": False,
+                "spend_missing_amount": None,
+            }
+        ]
+        assert "total_cost_usd" not in result["data"]["totals"]
+        assert result["data"]["totals"]["total_cost_usd_spend_unavailable"] is True
+
+
+class TestUsersSpendingFooterAgainstTheLedger:
+    """The users table's footer is checked against the ledger's figure for the same question.
+
+    Elasticsearch enumerates the rows and the ledger fills them, so a user with ledger spend and no
+    metric document in the window has money in the scope's total and no row to carry it.
+    """
+
+    ADA = _user_record("u-ada", "ada", "ada@example.com")
+
+    async def _footer(
+        self,
+        handler,
+        ledger_total: AsyncMock,
+        row_figure: str = "24.12",
+        expected_filter: ReportFilter = NO_FILTER,
+        **enrich_kwargs,
+    ) -> dict:
+        rows = [{"user_email": "ada@example.com", "total_cost_usd": None}]
+        consumed = _answers(expected_filter, **{"u-ada": SpendResult(figure=Decimal(row_figure))})
+        with _patched_users_port({"ada@example.com": self.ADA}, consumed, ledger_total):
+            enriched = await handler._enrich_users_spending(rows, PERIOD_START, PERIOD_END, **enrich_kwargs)
+        return enriched.totals
+
+    @pytest.mark.asyncio
+    async def test_a_footer_short_of_the_ledger_total_is_partial_by_the_difference(self, handler):
+        totals = await self._footer(handler, _ledger_total(SpendResult(figure=Decimal("25.92"))))
+
+        assert totals["total_cost_usd"] == 24.12
+        assert totals["total_cost_usd_spend_partial"] is True
+        assert totals["total_cost_usd_spend_missing_amount"] == 1.8
+
+    @pytest.mark.asyncio
+    async def test_a_footer_equal_to_the_ledger_total_stays_exact(self, handler):
+        totals = await self._footer(handler, _ledger_total(SpendResult(figure=Decimal("24.12"))))
+
+        assert totals["total_cost_usd_spend_partial"] is False
+        assert totals["total_cost_usd_spend_missing_amount"] is None
+
+    @pytest.mark.asyncio
+    async def test_a_half_cent_footer_equal_to_the_ledger_total_is_not_short_by_a_rounding_cent(self, handler):
+        half_cent = "0.125"
+
+        totals = await self._footer(
+            handler, _ledger_total(SpendResult(figure=Decimal(half_cent))), row_figure=half_cent
+        )
+
+        assert totals["total_cost_usd_spend_partial"] is False
+        assert totals["total_cost_usd_spend_missing_amount"] is None
+
+    @pytest.mark.asyncio
+    async def test_a_short_ledger_total_makes_the_footer_partial_by_an_unknown_amount(self, handler):
+        short = SpendResult(
+            figure=Decimal("25.92"),
+            partial={SpendDimension.IDENTITY_BRIDGE: Portion(spend=None, rows=None)},
+        )
+
+        totals = await self._footer(handler, _ledger_total(short))
+
+        assert totals["total_cost_usd_spend_partial"] is True
+        assert totals["total_cost_usd_spend_missing_amount"] is None
+
+    @pytest.mark.asyncio
+    async def test_an_unavailable_ledger_total_leaves_the_footer_untouched(self, handler):
+        totals = await self._footer(handler, _ledger_total(SpendResult.no_figure(PERIOD)))
+
+        assert totals["total_cost_usd"] == 24.12
+        assert totals["total_cost_usd_spend_partial"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_report_without_a_period_reads_no_ledger_total(self, handler):
+        ledger_total = _ledger_total(SpendResult(figure=Decimal("25.92")))
+
+        totals = await self._footer(handler, ledger_total, client_source="teams")
+
+        ledger_total.assert_not_awaited()
+        assert "total_cost_usd" not in totals
+
+    @pytest.mark.asyncio
+    async def test_the_ledger_total_is_read_with_the_dashboards_own_filter(self, handler):
+        ledger_total = AsyncMock(return_value={SpendGroup.TOTAL: SpendResult(figure=Decimal("24.12"))})
+
+        await self._footer(handler, ledger_total, expected_filter=ReportFilter(projects=("alpha",)), projects=["alpha"])
+
+        _, kwargs = ledger_total.call_args
+        assert kwargs["access"] == _EXPECTED_SCOPE
+        assert kwargs["report_filter"] == ReportFilter(projects=("alpha",))
+
+    @pytest.mark.asyncio
+    async def test_the_endpoint_hands_its_users_and_projects_filters_to_the_ledger_total(
+        self, handler, mock_repository
+    ):
+        """The filters reach the ledger read through the endpoint, the users one resolved to a person."""
+        _answer_buckets(mock_repository, [{"key": "ada@example.com", "doc_count": 3}])
+        asked = ReportFilter(
+            users=(UserTerm(user_id="u-ada", aliases=frozenset({"ada", "ada@example.com"})),),
+            projects=("alpha",),
+        )
+        consumed = _answers(asked, **{"u-ada": SpendResult(figure=Decimal("24.12"))})
+        ledger_total = AsyncMock(return_value={SpendGroup.TOTAL: SpendResult(figure=Decimal("24.12"))})
+
+        with (
+            _patched_users_port({"ada@example.com": self.ADA}, consumed, ledger_total),
+            patch("codemie.service.analytics.handlers.report_filter.get_async_session", _fake_session),
+        ):
+            await handler.get_users_spending(
+                start_date=PERIOD_START, end_date=PERIOD_END, users=["ada@example.com"], projects=["alpha"]
+            )
+
+        _, kwargs = ledger_total.call_args
+        assert kwargs["report_filter"] == asked
+        consumed.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_person_filtered_to_one_project_is_read_for_that_project_alone(self, handler):
+        """The defect this pins: an admin filtering the dashboard to one project was shown a person's
+        spend across every project, because the holder read carried the boundary and not the filter."""
+        consumed = AsyncMock(return_value={})
+        ledger_total = AsyncMock(return_value={SpendGroup.TOTAL: SpendResult.no_figure(PERIOD)})
+        rows = [{"user_email": "ada@example.com", "total_cost_usd": None}]
+
+        with _patched_users_port({"ada@example.com": self.ADA}, consumed, ledger_total):
+            await handler._enrich_users_spending(rows, PERIOD_START, PERIOD_END, projects=["spend-e2e"])
+
+        _, kwargs = consumed.call_args
+        assert kwargs["access"] == _EXPECTED_SCOPE
+        assert kwargs["report_filter"] == ReportFilter(projects=("spend-e2e",))
+
+    @pytest.mark.asyncio
+    async def test_the_filter_is_built_once_and_both_reads_are_handed_that_one(self, handler):
+        """Building it costs an identity lookup, and two builds a request apart are two chances to foot
+        one table's rows and its total on different people."""
+        asked = ReportFilter(projects=("alpha",))
+        build = AsyncMock(return_value=asked)
+        consumed = AsyncMock(return_value={})
+        ledger_total = AsyncMock(return_value={SpendGroup.TOTAL: SpendResult.no_figure(PERIOD)})
+        rows = [{"user_email": "ada@example.com", "total_cost_usd": None}]
+
+        with (
+            _patched_users_port({"ada@example.com": self.ADA}, consumed, ledger_total),
+            patch("codemie.service.analytics.handlers.user_handler.report_filter_for", new=build),
+        ):
+            await handler._enrich_users_spending(rows, PERIOD_START, PERIOD_END, projects=["alpha"])
+
+        build.assert_awaited_once_with(None, ["alpha"])
+        assert consumed.call_args.kwargs["report_filter"] is asked
+        assert ledger_total.call_args.kwargs["report_filter"] is asked
+
+    @pytest.mark.asyncio
+    async def test_an_empty_table_pays_no_identity_lookup(self, handler):
+        """With no row neither the per-person read nor the footer total runs, so building the filter
+        would spend a lookup on nothing."""
+        build = AsyncMock()
+        consumed = AsyncMock()
+        ledger_total = AsyncMock()
+
+        with (
+            _patched_users_port({}, consumed, ledger_total),
+            patch("codemie.service.analytics.handlers.user_handler.report_filter_for", new=build),
+        ):
+            await handler._enrich_users_spending([], PERIOD_START, PERIOD_END, users=["ada@example.com"])
+
+        build.assert_not_awaited()
+        consumed.assert_not_awaited()
+        ledger_total.assert_not_awaited()
+
+
+def _money_bucket(total: float, *, settled: int, unsettled: int) -> dict:
+    """A by-users money bucket as Elasticsearch answers it: a sum of nothing is `0.0`, not null."""
+    return {
+        BY_USER_MONEY_SUM: {"value": total},
+        SETTLED_AGG: {"value": settled},
+        UNSETTLED_AGG: {"doc_count": unsettled},
+    }
+
+
+def _answer_buckets(mock_repository, buckets: list[dict]) -> None:
+    mock_repository.execute_aggregation_query.return_value = {
+        "aggregations": {"paginated_results": {"buckets": buckets}}
+    }
+
+
+def _sent_terms_aggregation(mock_repository) -> dict:
+    (agg_body,), _ = mock_repository.execute_aggregation_query.call_args
+    return agg_body["aggs"]["paginated_results"]
+
+
+@pytest.fixture
+def unresolved_identities():
+    with patch("codemie.service.analytics.handlers.user_handler.UserIdentityResolver.resolve_rows", new=AsyncMock()):
+        yield
+
+
+@pytest.mark.usefixtures("unresolved_identities")
+class TestPlatformSpendingByUsersCoverage:
+    """Platform Spent by User sums an attribute written only once a cost settles, so it says how whole it is."""
+
+    @staticmethod
+    def _platform_bucket(user: str, money: dict) -> dict:
+        return {"key": user, "doc_count": 5, **money}
+
+    @pytest.mark.asyncio
+    async def test_a_user_with_no_settled_money_reads_unavailable_never_zero(self, handler, mock_repository):
+        _answer_buckets(mock_repository, [self._platform_bucket("ada", _money_bucket(0.0, settled=0, unsettled=3))])
+
+        result = await handler.get_users_platform_spending()
+
+        assert result["data"]["rows"] == [
+            {
+                "user_email": "ada",
+                "total_cost_usd": None,
+                "spend_unavailable": True,
+                "spend_partial": False,
+                "spend_missing_amount": None,
+            }
+        ]
+        assert "total_cost_usd" not in result["data"]["totals"]
+        assert result["data"]["totals"]["total_cost_usd_spend_unavailable"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_user_with_unsettled_documents_reads_partial(self, handler, mock_repository):
+        _answer_buckets(mock_repository, [self._platform_bucket("ada", _money_bucket(1.25, settled=2, unsettled=1))])
+
+        result = await handler.get_users_platform_spending()
+
+        row = result["data"]["rows"][0]
+        assert row["total_cost_usd"] == 1.25
+        assert row["spend_partial"] is True
+        assert row["spend_unavailable"] is False
+        assert result["data"]["totals"]["total_cost_usd_spend_partial"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_fully_settled_user_reads_exact_and_so_does_the_footer(self, handler, mock_repository):
+        _answer_buckets(mock_repository, [self._platform_bucket("ada", _money_bucket(1.25, settled=2, unsettled=0))])
+
+        result = await handler.get_users_platform_spending()
+
+        assert result["data"]["rows"] == [
+            {
+                "user_email": "ada",
+                "total_cost_usd": 1.25,
+                "spend_unavailable": False,
+                "spend_partial": False,
+                "spend_missing_amount": None,
+            }
+        ]
+        assert result["data"]["totals"] == {
+            "total_cost_usd": 1.25,
+            "total_cost_usd_spend_unavailable": False,
+            "total_cost_usd_spend_partial": False,
+            "total_cost_usd_spend_missing_amount": None,
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_footer_beside_an_unavailable_user_is_partial(self, handler, mock_repository):
+        _answer_buckets(
+            mock_repository,
+            [
+                self._platform_bucket("ada", _money_bucket(0.0, settled=0, unsettled=4)),
+                self._platform_bucket("bob", _money_bucket(2.0, settled=3, unsettled=0)),
+            ],
+        )
+
+        result = await handler.get_users_platform_spending()
+
+        # The figure ranks first; the user nobody has a figure for is listed last, not as a zero.
+        assert [row["user_email"] for row in result["data"]["rows"]] == ["bob", "ada"]
+        assert result["data"]["totals"]["total_cost_usd"] == 2.0
+        assert result["data"]["totals"]["total_cost_usd_spend_partial"] is True
+        assert result["pagination"]["total_count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_a_measured_zero_user_stays_listed_as_this_table_always_listed_them(self, handler, mock_repository):
+        _answer_buckets(mock_repository, [self._platform_bucket("ada", _money_bucket(0.0, settled=2, unsettled=0))])
+
+        result = await handler.get_users_platform_spending()
+
+        assert result["data"]["rows"][0]["total_cost_usd"] == 0.0
+        assert result["data"]["rows"][0]["spend_unavailable"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_user_with_no_cost_bearing_document_reads_a_measured_zero_and_keeps_the_footer_exact(
+        self, handler, mock_repository
+    ):
+        _answer_buckets(
+            mock_repository,
+            [
+                self._platform_bucket("bob", _money_bucket(2.0, settled=3, unsettled=0)),
+                # Tool-usage documents only: nothing settled, and nothing was owed either.
+                self._platform_bucket("ada", _money_bucket(0.0, settled=0, unsettled=0)),
+            ],
+        )
+
+        result = await handler.get_users_platform_spending()
+
+        assert result["data"]["rows"][1] == {
+            "user_email": "ada",
+            "total_cost_usd": 0.0,
+            "spend_unavailable": False,
+            "spend_partial": False,
+            "spend_missing_amount": None,
+        }
+        assert result["data"]["totals"]["total_cost_usd"] == 2.0
+        assert result["data"]["totals"]["total_cost_usd_spend_partial"] is False
+        assert result["data"]["totals"]["total_cost_usd_spend_unavailable"] is False
+
+    @pytest.mark.asyncio
+    async def test_the_unsettled_count_is_narrowed_to_documents_carrying_token_counts(self, handler, mock_repository):
+        _answer_buckets(mock_repository, [])
+
+        await handler.get_users_platform_spending()
+
+        unsettled = _sent_terms_aggregation(mock_repository)["aggs"][UNSETTLED_AGG]["filter"]["bool"]
+        assert unsettled["filter"] == [{"exists": {"field": INPUT_TOKENS_FIELD}}]
+        assert unsettled["must_not"] == [{"exists": {"field": MONEY_SPENT_FIELD}}]
+
+
+@pytest.mark.usefixtures("unresolved_identities")
+class TestCliSpendingByUsersCoverage:
+    """CLI Spent by User: a streaming proxy call never carries a settled cost, so it must not read as zero."""
+
+    @staticmethod
+    def _cli_bucket(user: str, money: dict) -> dict:
+        return {"key": user, "doc_count": 5, "cli_request_filter": {"doc_count": 5, **money}}
+
+    @pytest.mark.asyncio
+    async def test_a_user_with_only_unsettled_money_is_kept_and_reads_unavailable(self, handler, mock_repository):
+        _answer_buckets(mock_repository, [self._cli_bucket("ada", _money_bucket(0.0, settled=0, unsettled=5))])
+
+        result = await handler.get_users_cli_spending()
+
+        assert result["data"]["rows"] == [
+            {
+                "user_name": "ada",
+                "total_cost_usd": None,
+                "spend_unavailable": True,
+                "spend_partial": False,
+                "spend_missing_amount": None,
+            }
+        ]
+        assert result["data"]["totals"]["total_cost_usd_spend_unavailable"] is True
+
+    @pytest.mark.asyncio
+    async def test_the_selector_keeps_users_by_cli_requests_not_by_settled_cost(self, handler, mock_repository):
+        _answer_buckets(mock_repository, [])
+
+        await handler.get_users_cli_spending()
+
+        selector = _sent_terms_aggregation(mock_repository)["aggs"]["has_cli_request"]["bucket_selector"]
+        assert selector["buckets_path"] == {"requests": "cli_request_filter>_count"}
+        assert selector["script"] == "params.requests > 0"
+
+    @pytest.mark.asyncio
+    async def test_a_partly_settled_user_reads_partial_and_so_does_the_footer(self, handler, mock_repository):
+        _answer_buckets(
+            mock_repository,
+            [
+                self._cli_bucket("ada", _money_bucket(0.37, settled=3, unsettled=2)),
+                self._cli_bucket("bob", _money_bucket(1.0, settled=1, unsettled=0)),
+            ],
+        )
+
+        result = await handler.get_users_cli_spending()
+
+        rows = {row["user_name"]: row for row in result["data"]["rows"]}
+        assert rows["ada"]["total_cost_usd"] == 0.37
+        assert rows["ada"]["spend_partial"] is True
+        assert rows["bob"]["spend_partial"] is False
+        assert result["data"]["totals"]["total_cost_usd"] == 1.37
+        assert result["data"]["totals"]["total_cost_usd_spend_partial"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_user_who_measurably_spent_nothing_leaves_the_table(self, handler, mock_repository):
+        _answer_buckets(mock_repository, [self._cli_bucket("ada", _money_bucket(0.0, settled=4, unsettled=0))])
+
+        result = await handler.get_users_cli_spending()
+
+        assert result["data"]["rows"] == []
+        assert result["pagination"]["total_count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_a_sub_cent_spend_is_kept_rather_than_rounded_into_a_zero(self, handler, mock_repository):
+        _answer_buckets(mock_repository, [self._cli_bucket("ada", _money_bucket(0.004, settled=1, unsettled=0))])
+
+        result = await handler.get_users_cli_spending()
+
+        assert result["data"]["rows"][0]["total_cost_usd"] == 0.004

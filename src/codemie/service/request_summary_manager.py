@@ -30,7 +30,10 @@ class LLMRun(BaseModel):
     input_tokens: int
     output_tokens: int
     cached_tokens: int = 0
-    money_spent: float
+    # AD-28 rule 1: `None` means *not settled* - not specifically pending. Which unsettled
+    # state that is gets decided once, from ledger readiness, at presentation (`calculate`
+    # below) - a second boolean here would be a second place to derive the same state.
+    money_spent: float | None = None
     cached_tokens_money_spent: float = 0.0
     cached_tokens_creation_cost: float = 0.0
     llm_model: str
@@ -49,7 +52,14 @@ class RequestSummary(BaseModel):
         total_input_tokens = sum(run.input_tokens for run in self.llm_runs)
         total_output_tokens = sum(run.output_tokens for run in self.llm_runs)
         total_cached_tokens = sum(run.cached_tokens for run in self.llm_runs)
-        total_money_spent = sum(run.money_spent for run in self.llm_runs)
+
+        # AD-28 rule 2: a run costs `None` while unsettled, so summing every run
+        # unconditionally raises TypeError on the first one. Sum only the settled runs -
+        # a truthful partial - and remember whether any run was left out of it.
+        settled_runs = [run for run in self.llm_runs if run.money_spent is not None]
+        total_money_spent = sum(run.money_spent for run in settled_runs)
+        any_run_unsettled = len(settled_runs) < len(self.llm_runs)
+
         total_cached_tokens_money_spent = sum(run.cached_tokens_money_spent for run in self.llm_runs)
         total_cached_tokens_creation_money_spent = sum(run.cached_tokens_creation_cost for run in self.llm_runs)
 
@@ -67,6 +77,14 @@ class RequestSummary(BaseModel):
             cached_tokens_money_spent=total_cached_tokens_money_spent,
             cached_tokens_creation_money_spent=total_cached_tokens_creation_money_spent,
             routing=routing if not routing.is_empty() else None,
+            # AD-28 rule 3b: an unsettled run is `pending` while its ledger is activated and
+            # `unavailable` while it is not - a distinction driven by `LedgerCoverage.activated`
+            # (coverage.py), not a per-read guess. That signal is not yet reachable from this
+            # in-memory call site (it lives behind the LiteLLM adapter, not built yet), so
+            # `pending` is used here as the correct state for the case this is exercised by
+            # today - a streamed chat call whose cost has not landed (AD-22) - pending open
+            # question: wire `money_spent_unavailable` once a synchronous readiness read exists.
+            money_spent_pending=any_run_unsettled,
         )
 
         logger.debug(

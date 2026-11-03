@@ -12,35 +12,131 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for leaderboard collector helpers and ES aggregation logic."""
+"""Unit tests for leaderboard collector helpers, ES aggregation logic and the spend-port reads."""
 
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
+from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from codemie.service.budget.budget_enums import BudgetCategory
 from codemie.service.monitoring.metrics_constants import INVOKED_BY_SCRIPT, MetricsAttributes
-
 from codemie.service.leaderboard.collector import (
     ATTR_ASSISTANT_ID_KEYWORD,
     ATTR_CLI_REQUEST,
     ATTR_MCP_NAME_KEYWORD,
-    ATTR_MONEY_SPENT,
     ATTR_USER_ID_KEYWORD,
     CLI_ASSISTANT_ID,
     METRIC_NAME_KEYWORD,
     LeaderboardCollector,
     RawUserMetrics,
+    UserSpend,
     _creator_email_sql,
     _creator_name_sql,
     _creator_user_id_sql,
     _validate_column,
 )
+from codemie.service.spend.coverage import SpendResult, TimeRange
+from codemie.service.spend.ledger import ComposedScope, PersonalHolder, PersonTotalHolder
+from codemie.service.spend.rendering import render_spend
+from codemie.service.spend.traffic_class import TrafficClass
 
 MODULE = "codemie.service.leaderboard.collector"
+
+PERIOD = TimeRange(datetime(2026, 3, 1, tzinfo=timezone.utc), datetime(2026, 4, 1, tzinfo=timezone.utc))
+
+# One person's spend, split the two ways that matter. The **project-budget** CLI row is the whole
+# point: `PersonalHolder(user, CLI)` is what the person's own customer was charged and cannot see it,
+# so a CLI figure read through that holder silently under-reports every CLI call made against a
+# project budget.
+PRINCIPAL_CLI = 3.0
+PROJECT_CLI = 4.0
+PROJECT_PLATFORM = 5.0
+WHOLE_CLI = PRINCIPAL_CLI + PROJECT_CLI
+WHOLE_TOTAL = PRINCIPAL_CLI + PROJECT_CLI + PROJECT_PLATFORM
+
+
+def _figure(amount: float) -> SpendResult:
+    return SpendResult(figure=Decimal(str(amount)))
+
+
+def _holder_total(holder) -> float:
+    """What each holder's own predicate would sum over the rows above.
+
+    Encodes the asymmetry the port's docstrings state: `PersonTotalHolder` spans the personal **and**
+    project pots across every category, while `PersonalHolder` is the person's own customer only.
+    """
+    if isinstance(holder, PersonTotalHolder):
+        return WHOLE_TOTAL
+    if isinstance(holder, PersonalHolder):
+        return PRINCIPAL_CLI if holder.category is BudgetCategory.CLI else PROJECT_PLATFORM
+    raise AssertionError(f"the leaderboard has no business reading {holder!r}")
+
+
+class FakeSpendService:
+    """A tiny ledger over the rows above, answering each port read by its documented meaning.
+
+    It records what it was asked, so a test can assert *which* read served a figure - which is what
+    makes swapping the composed CLI read for `PersonalHolder(user, CLI)` fail rather than pass with a
+    quietly smaller number.
+    """
+
+    def __init__(self) -> None:
+        self.holders_read: list = []
+        self.composed_scopes: list[ComposedScope] = []
+        self.access_seen: list = []
+
+    async def consumed_for_holders(self, holders, period, **passed):
+        assert period == PERIOD
+        self.holders_read.extend(holders)
+        # Recorded rather than accepted silently: this collector is a **tenant-wide snapshot with no
+        # per-request caller**, so an access boundary arriving here could only be whoever happened to
+        # trigger the snapshot - and the leaderboard would then shrink to their own visibility.
+        self.access_seen.append(passed)
+        return {holder: _figure(_holder_total(holder)) for holder in holders}
+
+    async def consumed_for_holder(self, holder, period, **passed):
+        assert period == PERIOD
+        self.holders_read.append(holder)
+        self.access_seen.append(passed)
+        return _figure(_holder_total(holder))
+
+    async def aggregate_composed_by_traffic_class(self, period, scope):
+        assert period == PERIOD
+        self.composed_scopes.append(scope)
+        return {
+            TrafficClass.CLI: _figure(WHOLE_CLI),
+            TrafficClass.WORKFLOW: _figure(0.0),
+            TrafficClass.ASSISTANT: _figure(0.0),
+            TrafficClass.DATASOURCE: _figure(0.0),
+        }
+
+
+def _user_record(user_id: str, username: str, email: str) -> SimpleNamespace:
+    return SimpleNamespace(id=user_id, username=username, email=email, name=username)
+
+
+@pytest.fixture
+def fake_spend():
+    return FakeSpendService()
+
+
+@pytest.fixture
+def resolvable_users():
+    """A repository that resolves every identifier it is handed."""
+    repo = MagicMock()
+    repo.afind_users_by_identifiers = AsyncMock(
+        side_effect=lambda _session, identifiers: {
+            identifier: _user_record(identifier, f"{identifier}-name", f"{identifier}@epam.com")
+            for identifier in identifiers
+        }
+    )
+    return repo
 
 
 @pytest.fixture
@@ -133,7 +229,7 @@ class TestCollectorStaticHelpers:
             "projects": ["gamma"],
         }
 
-    def test_build_raw_metrics_merges_pg_es_and_cost_payloads(self, collector):
+    def test_build_raw_metrics_merges_pg_es_and_spend_payloads(self, collector):
         users = {
             "u1": {"user_name": "John Smith", "user_email": None, "projects": ["alpha"]},
         }
@@ -152,12 +248,12 @@ class TestCollectorStaticHelpers:
                 "usage": {"active_days": 7},
                 "creation": {"datasources_created": 8},
                 "workflow_usage": {"workflow_successes": 9},
-                "cli": {"cli_total_spend": 10.5},
+                "cli": {"cli_lines_added": 40},
             }
         }
-        cost_metrics = {"u1": {"total_spend": 11.5}}
+        spend_metrics = {"u1": UserSpend(total=render_spend(_figure(11.5)), cli=render_spend(_figure(7.5)))}
 
-        result = collector._build_raw_metrics(users, pg_metrics, es_metrics, cost_metrics)
+        result = collector._build_raw_metrics(users, pg_metrics, es_metrics, spend_metrics)
 
         assert result == [
             RawUserMetrics(
@@ -169,11 +265,22 @@ class TestCollectorStaticHelpers:
                 creation={"assistants_created": 1, "datasources_created": 8},
                 workflow_usage={"workflow_executions": 2, "workflow_successes": 9},
                 workflow_creation={"workflows_created": 4},
-                cli={"cli_sessions": 5, "cli_total_spend": 10.5},
+                cli={"cli_sessions": 5, "cli_lines_added": 40},
                 impact={"kata_completed": 6},
-                litellm_spend={"total_spend": 11.5},
+                spend=UserSpend(total=render_spend(_figure(11.5)), cli=render_spend(_figure(7.5))),
             )
         ]
+
+    def test_build_raw_metrics_leaves_an_unread_person_with_no_figure(self, collector):
+        """A person the spend read never answered for carries absence, never a zero."""
+        users = {"u1": {"user_name": "John Smith", "user_email": None, "projects": []}}
+
+        result = collector._build_raw_metrics(users, {}, {}, {})
+
+        assert result[0].spend.total.figure is None
+        assert result[0].spend.cli.figure is None
+        assert result[0].spend.total.unavailable is True
+        assert result[0].spend.cli.unavailable is True
 
 
 class TestQueryBuilders:
@@ -225,12 +332,13 @@ class TestQueryBuilders:
         should = query["query"]["bool"]["must"][1]["bool"]["should"]
         assert collector._metric_term("codemie_tools_usage_total") in should
 
-    def test_build_cli_query_uses_money_and_cli_constants(self, collector):
+    def test_build_cli_query_aggregates_no_money(self, collector):
+        """AD-29: money never comes from Elasticsearch, so the CLI query asks for none."""
         query = collector._build_cli_query({"range": "value"})
 
-        cli_spend = query["aggs"]["by_user"]["aggs"]["cli_spend"]
-        assert {"term": {ATTR_CLI_REQUEST: True}} in cli_spend["filter"]["bool"]["must"]
-        assert cli_spend["aggs"]["total_spend"]["sum"]["field"] == ATTR_MONEY_SPENT
+        sub_aggs = query["aggs"]["by_user"]["aggs"]
+        assert set(sub_aggs) == {"sessions", "tool_usage"}
+        assert "money_spent" not in repr(query)
 
 
 class TestAggregationMergers:
@@ -312,7 +420,6 @@ class TestAggregationMergers:
                                 "output_tokens": {"value": 50},
                                 "cache_read_tokens": {"value": 25},
                             },
-                            "cli_spend": {"total_spend": {"value": 12.5}},
                         }
                     ]
                 }
@@ -328,49 +435,112 @@ class TestAggregationMergers:
             "cli_lines_removed": 10,
             "cli_files_changed": 6,
             "cli_total_tokens": 175,
-            "cli_total_spend": 12.5,
         }
+        # No money key at all. The person's CLI spend is a spend-port read, and an ES copy of it
+        # beside the port's figure is the second answer to one question this rewire removed.
+        assert "cli_total_spend" not in result["u1"]["cli"]
 
 
-class TestCostMetrics:
+class TestSpendCollection:
+    """The money figures, and the one read that serves each."""
+
     @pytest.mark.asyncio
-    async def test_collect_cost_metrics_builds_result_from_es_buckets(self, collector, mock_es_repository):
-        mock_es_repository.execute_aggregation_query.return_value = {
-            "aggregations": {
-                "by_user": {
-                    "buckets": [
-                        {
-                            "key": "u1",
-                            "total_spend": {"value": 12.5},
-                            "cli_spend": {"amount": {"value": 7.5}},
-                            "platform_spend": {"amount": {"value": 5.0}},
-                        }
-                    ]
-                }
-            }
-        }
+    async def test_person_total_is_one_holder_read_over_both_pots(self, collector, fake_spend, resolvable_users):
+        """`summary["total_spend"]`'s source: one `PersonTotalHolder` read, with nothing added to it."""
+        with patch(f"{MODULE}.spend_service", fake_spend), patch(f"{MODULE}.user_repository", resolvable_users):
+            spend = await collector._collect_spend({"u1"}, PERIOD)
 
-        result = await collector._collect_cost_metrics("2026-03-01", "2026-03-31")
+        assert spend["u1"].total.figure == WHOLE_TOTAL
+        # One holder, and it is the one spanning both pots and every category - so the figure needs no
+        # second aggregate added to it, which is what the ES web-spend addition used to be.
+        assert [type(holder) for holder in fake_spend.holders_read] == [PersonTotalHolder]
+        assert fake_spend.holders_read[0].user_id == "u1"
+        assert fake_spend.holders_read[0].aliases == frozenset({"u1-name", "u1@epam.com"})
 
-        assert result == {
-            "u1": {
-                "total_spend": 12.5,
-                "cli_spend": 7.5,
-                "platform_spend": 5.0,
-            }
-        }
-        body = mock_es_repository.execute_aggregation_query.await_args.args[0]
-        assert body["aggs"]["by_user"]["aggs"]["total_spend"]["sum"]["field"] == ATTR_MONEY_SPENT
-        assert body["aggs"]["by_user"]["aggs"]["cli_spend"]["filter"] == {"term": {ATTR_CLI_REQUEST: True}}
+    @pytest.mark.asyncio
+    async def test_the_snapshot_passes_no_access_boundary_and_must_not(
+        self, collector, fake_spend, resolvable_users
+    ) -> None:
+        """**A snapshot read is not a report and is not narrowed.**
+
+        The two caller-facing spend tables hand `consumed_for_holders` the caller's boundary, because
+        the rows beside their figures are already narrowed to what that caller may see. This collector
+        has no caller at all: it runs tenant-wide, off the request path, and the figures it writes are
+        read back by everyone. A boundary here would silently shrink the whole leaderboard to whoever
+        triggered the snapshot - and an absent figure is never a zero, so the rows would not even look
+        wrong.
+        """
+        with patch(f"{MODULE}.spend_service", fake_spend), patch(f"{MODULE}.user_repository", resolvable_users):
+            await collector._collect_spend({"u1"}, PERIOD)
+
+        assert fake_spend.access_seen, "the port was not read at all, so this asserts nothing"
+        assert all(passed == {} for passed in fake_spend.access_seen)
+
+    @pytest.mark.asyncio
+    async def test_cli_figure_includes_a_project_scoped_row(self, collector, fake_spend, resolvable_users):
+        """THE TRAP. The CLI figure is *all* of a person's CLI traffic, project-scoped rows included.
+
+        `PersonalHolder(user, BudgetCategory.CLI)` looks like the read for this and compiles, but it is
+        what the person's own customer was charged, so it would return only `PRINCIPAL_CLI` and drop
+        every CLI call the person made against a project budget. The composed
+        class split spans both pots, which is why it and not a holder serves this figure.
+        """
+        with patch(f"{MODULE}.spend_service", fake_spend), patch(f"{MODULE}.user_repository", resolvable_users):
+            spend = await collector._collect_spend({"u1"}, PERIOD)
+
+        assert spend["u1"].cli.figure == WHOLE_CLI
+        assert spend["u1"].cli.figure > PRINCIPAL_CLI, "the project-scoped CLI row is missing from the figure"
+        # Read as a composed scope naming only the person - no holder was consulted for the CLI split.
+        assert len(fake_spend.composed_scopes) == 1
+        scope = fake_spend.composed_scopes[0]
+        assert scope.user.user_id == "u1"
+        assert (scope.project, scope.dimension, scope.traffic_class) == (None, None, None)
+        assert not any(isinstance(holder, PersonalHolder) for holder in fake_spend.holders_read)
+
+    @pytest.mark.asyncio
+    async def test_both_cli_uses_share_a_single_read(self, collector, fake_spend, resolvable_users):
+        """One aggregation for one quantity: the ranking and the summary read the same object."""
+        with patch(f"{MODULE}.spend_service", fake_spend), patch(f"{MODULE}.user_repository", resolvable_users):
+            spend = await collector._collect_spend({"u1", "u2"}, PERIOD)
+
+        # One composed read per person, not two - the ranking figure and the display figure are the
+        # same `RenderedSpend`, so they cannot disagree.
+        assert len(fake_spend.composed_scopes) == 2
+        assert {entry.cli.figure for entry in spend.values()} == {WHOLE_CLI}
+
+    @pytest.mark.asyncio
+    async def test_unresolvable_person_carries_no_figure(self, collector, fake_spend):
+        """A person the identity bridge cannot resolve is not asked about, and is not a zero."""
+        repo = MagicMock()
+        repo.afind_users_by_identifiers = AsyncMock(
+            return_value={"known": _user_record("known", "known-name", "known@epam.com")}
+        )
+
+        with patch(f"{MODULE}.spend_service", fake_spend), patch(f"{MODULE}.user_repository", repo):
+            spend = await collector._collect_spend({"known", "deleted-user"}, PERIOD)
+
+        assert "deleted-user" not in spend
+        assert render_spend(None).figure is None
+        assert [holder.user_id for holder in fake_spend.holders_read] == ["known"]
+        assert len(fake_spend.composed_scopes) == 1
+
+    @pytest.mark.asyncio
+    async def test_unreadable_period_reads_nothing(self, collector, fake_spend, resolvable_users):
+        with patch(f"{MODULE}.spend_service", fake_spend), patch(f"{MODULE}.user_repository", resolvable_users):
+            assert await collector._collect_spend({"u1"}, None) == {}
+
+        assert fake_spend.holders_read == []
+        assert fake_spend.composed_scopes == []
 
     @pytest.mark.asyncio
     @patch(f"{MODULE}.logger")
-    async def test_collect_cost_metrics_returns_empty_dict_on_exception(
-        self, mock_logger, collector, mock_es_repository
-    ):
-        mock_es_repository.execute_aggregation_query.side_effect = RuntimeError("ES down")
+    async def test_a_failing_ledger_leaves_every_figure_absent(self, mock_logger, collector, resolvable_users):
+        """A ledger outage degrades the figures and never fails the snapshot - and never reports zero."""
+        exploding = MagicMock()
+        exploding.consumed_for_holders = AsyncMock(side_effect=RuntimeError("ledger down"))
 
-        result = await collector._collect_cost_metrics("2026-03-01", "2026-03-31")
+        with patch(f"{MODULE}.spend_service", exploding), patch(f"{MODULE}.user_repository", resolvable_users):
+            spend = await collector._collect_spend_or_nothing({"u1"}, PERIOD)
 
-        assert result == {}
+        assert spend == {}
         mock_logger.warning.assert_called_once()

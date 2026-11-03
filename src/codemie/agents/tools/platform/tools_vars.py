@@ -50,8 +50,16 @@ GET_RAW_CONVERSATIONS_TOOL = ToolMetadata(
 GET_SPENDING_TOOL = ToolMetadata(
     name="get_spending",
     label="Get Spending Analytics",
-    description="""Retrieve spending analytics aggregated by dimension (user, project, assistant, workflow).
-    Combines conversation metrics data with LiteLLM customer spending.""",
+    description="""Retrieve spending analytics for a named subject, aggregated by dimension.
+    Requires at least one of user_name, project, assistant_id or workflow_id - a spending question with
+    no subject is not answered with the whole platform's spend. assistant_id and workflow_id are
+    mutually exclusive: ask about one dimension per call.
+    Every money value may be null, which means NO FIGURE IS AVAILABLE and never that nothing was spent
+    (when user_name cannot be resolved to an account, or a personal project's owner cannot be looked up,
+    every total is null and no breakdown is given);
+    the spend_unavailable, spend_partial and spend_missing_amount fields beside it say whether a figure
+    that is present is incomplete and by how much. Report those qualifications rather than a bare
+    number.""",
 )
 
 GET_KEY_SPENDING_TOOL = ToolMetadata(

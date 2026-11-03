@@ -142,7 +142,7 @@ class AnalyticsService:
     def _budget_handler(self) -> BudgetHandler:
         """Lazy-load budget handler."""
         if self._budget_handler_instance is None:
-            self._budget_handler_instance = BudgetHandler(self._user, self._repository)
+            self._budget_handler_instance = BudgetHandler(self._user)
         return self._budget_handler_instance
 
     @property

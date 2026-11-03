@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -587,3 +587,157 @@ def test_raise_conflict_raises_409():
     with pytest.raises(ExtendedHTTPException) as exc_info:
         raise_conflict("Cannot delete a running run")
     assert exc_info.value.code == 409
+
+
+# ── EPMCDME-13429: run cost carries its money flags ───────────────────────────
+
+
+def _run(**fields) -> SchedulerRun:
+    """A finished run with no scheduler id, so building its detail needs no settings lookup."""
+    run = _make_run(scheduler_id=None)
+    for name, value in fields.items():
+        setattr(run, name, value)
+    return run
+
+
+def _run_detail(run: SchedulerRun):
+    with patch("codemie.service.scheduler_run_service.SchedulerRunRepository") as mock_repo:
+        mock_repo.return_value.get_by_id.return_value = run
+        return SchedulerRunService().get_run_detail(run.id)
+
+
+def _money(detail) -> tuple:
+    return detail.metrics.cost, detail.metrics.moneySpentPending, detail.metrics.moneySpentUnavailable
+
+
+def _usage(money_spent: float, *, pending: bool = False, unavailable: bool = False):
+    from codemie.core.models import TokensUsage
+
+    return TokensUsage(
+        input_tokens=100,
+        output_tokens=20,
+        money_spent=money_spent,
+        money_spent_pending=pending,
+        money_spent_unavailable=unavailable,
+    )
+
+
+def _conversation_row(total_money_spent, *, pending: bool = False, unavailable: bool = False):
+    from codemie.rest_api.models.conversation import ConversationMetrics
+
+    return ConversationMetrics(
+        conversation_id="conv-1",
+        total_input_tokens=100,
+        total_output_tokens=20,
+        total_money_spent=total_money_spent,
+        money_spent_pending=pending,
+        money_spent_unavailable=unavailable,
+    )
+
+
+def _timed_out(coro, **_kwargs):
+    coro.close()
+    return None
+
+
+# The end-of-run snapshot froze the pending placeholder; a live source must win over it.
+_PLACEHOLDER_SNAPSHOT = {"inputTokens": 100, "outputTokens": 20, "cost": 0.0}
+
+
+@pytest.fixture
+def workflow_run():
+    """A workflow run whose execution's stored usage the test sets on the yielded execution."""
+    execution = MagicMock(execution_id="exec-1")
+    with patch(
+        "codemie.core.workflow_models.workflow_execution.WorkflowExecution.get_by_execution_id",
+        return_value=[execution],
+    ):
+        yield _run(resource_execution_id="exec-1", metrics=_PLACEHOLDER_SNAPSHOT), execution
+
+
+@pytest.fixture
+def conversation_run():
+    """An assistant run whose stored metrics row the test sets on the yielded lookup mock."""
+    with (
+        patch("codemie.rest_api.models.conversation.ConversationMetrics.get_by_conversation_id") as get_row,
+        patch("codemie.rest_api.models.conversation.Conversation.find_by_id", return_value=MagicMock()),
+    ):
+        yield _run(conversation_id="conv-1"), get_row
+
+
+@pytest.mark.parametrize(
+    ("hydrated", "expected"),
+    [
+        (_usage(0.42), (0.42, False, False)),
+        # The ledger cannot answer: the placeholder zero is no figure, and the reader is told why.
+        (_usage(0.0, unavailable=True), (None, False, True)),
+    ],
+)
+def test_run_detail_serves_the_hydrated_workflow_cost_with_its_flags(workflow_run, hydrated, expected):
+    run, execution = workflow_run
+    execution.tokens_usage = _usage(0.0, pending=True)
+    with patch(
+        "codemie.service.workflow_service.WorkflowService.hydrate_execution_cost",
+        new=AsyncMock(return_value=hydrated),
+    ):
+        detail = _run_detail(run)
+
+    assert _money(detail) == expected
+    assert detail.executionCost == expected[0]
+
+
+def test_run_detail_serves_a_pending_conversation_total_as_no_figure(conversation_run):
+    run, get_row = conversation_run
+    get_row.return_value = _conversation_row(None, pending=True)
+    with patch(
+        "codemie.service.conversation_service.ConversationService.hydrate_conversation_metrics",
+        new=AsyncMock(side_effect=lambda _conversation, row: row),
+    ):
+        detail = _run_detail(run)
+
+    assert _money(detail) == (None, True, False)
+    assert detail.executionCost is None
+
+
+def test_run_detail_serves_the_hydrated_conversation_cost_over_the_stored_pending_row(conversation_run):
+    """The stored row still holds the pending placeholder; the ledger's settled figure must win over it."""
+    run, get_row = conversation_run
+    get_row.return_value = _conversation_row(0.0, pending=True)
+    with patch(
+        "codemie.service.conversation_service.ConversationService.hydrate_conversation_metrics",
+        new=AsyncMock(return_value=_conversation_row(0.7)),
+    ):
+        detail = _run_detail(run)
+
+    assert _money(detail) == (0.7, False, False)
+    assert detail.executionCost == 0.7
+
+
+def test_run_detail_falls_back_to_the_stored_workflow_usage_with_its_flags_on_timeout(workflow_run):
+    run, execution = workflow_run
+    execution.tokens_usage = _usage(0.25, pending=True)
+    with patch("codemie.service.scheduler_run_service.run_coroutine_blocking", side_effect=_timed_out):
+        detail = _run_detail(run)
+
+    assert _money(detail) == (0.25, True, False)
+
+
+def test_run_detail_falls_back_to_the_stored_conversation_total_with_its_flags_on_timeout(conversation_run):
+    run, get_row = conversation_run
+    get_row.return_value = _conversation_row(0.5, unavailable=True)
+    with patch("codemie.service.scheduler_run_service.run_coroutine_blocking", side_effect=_timed_out):
+        detail = _run_detail(run)
+
+    assert _money(detail) == (0.5, False, True)
+
+
+@pytest.mark.parametrize(
+    ("snapshot", "expected"),
+    [
+        # Written before the flags were stored: read as unflagged, its cost as it was.
+        ({"inputTokens": 100, "outputTokens": 20, "cost": 0.3}, (0.3, False, False)),
+        ({"inputTokens": 100, "outputTokens": 20, "cost": None, "moneySpentPending": True}, (None, True, False)),
+    ],
+)
+def test_run_detail_reads_a_snapshot_with_its_stored_flags(snapshot, expected):
+    assert _money(_run_detail(_run(metrics=snapshot))) == expected

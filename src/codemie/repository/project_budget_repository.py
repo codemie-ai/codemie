@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import text, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,7 +27,6 @@ from codemie.service.budget.budget_models import (
     ProjectBudgetGroup,
     ProjectMemberBudgetAssignment,
 )
-from codemie.service.spend_tracking.spend_models import ProjectSpendTracking
 
 
 @dataclass
@@ -57,7 +57,12 @@ class ProjectAssignedBudgetSummaryRow:
     provider_sync_status: str | None
     member_count: int
     allocated_member_budget_total: float
-    current_spending: float | None
+    # Carried for the reset reconciliation a screen runs before deriving a period from this row.
+    provider_metadata: dict[str, Any] | None = None
+    # When the budget began: a project's periods start no earlier than this (EPMCDME-15236).
+    budget_created_at: datetime | None = None
+    # When an admin last reset the budget's spend: its periods count from no earlier than this.
+    budget_spend_reset_at: datetime | None = None
 
 
 @dataclass
@@ -183,59 +188,18 @@ class ProjectBudgetAssignmentRepository:
         project_names: list[str],
         budget_category: str | None = None,
     ) -> dict[str, list[ProjectAssignedBudgetSummaryRow]]:
-        """Return compact budget summaries for the given projects."""
+        """Return compact budget summaries for the given projects.
+
+        Budget policy only: what was spent is not selected here. A repository whose subject is
+        budgets does not read the spend ledger - the caller fills the figure in through the spend
+        port, which is the single sanctioned read of consumed amounts.
+        """
         if not project_names:
             return {}
 
         from sqlalchemy import and_, func
-        from sqlalchemy.sql.selectable import Subquery
 
         from codemie.service.budget.budget_models import Budget
-
-        def _latest_spend_subquery(spend_subject_type: str) -> Subquery:
-            latest_spend_dates_subq = (
-                select(
-                    ProjectSpendTracking.project_name.label("project_name"),
-                    ProjectSpendTracking.budget_id.label("budget_id"),
-                    ProjectSpendTracking.budget_category.label("budget_category"),
-                    func.max(ProjectSpendTracking.spend_date).label("max_spend_date"),
-                )
-                .where(ProjectSpendTracking.project_name.in_(project_names))
-                .where(ProjectSpendTracking.spend_subject_type == spend_subject_type)
-                .group_by(
-                    ProjectSpendTracking.project_name,
-                    ProjectSpendTracking.budget_id,
-                    ProjectSpendTracking.budget_category,
-                )
-                .subquery()
-            )
-
-            return (
-                select(
-                    ProjectSpendTracking.project_name.label("project_name"),
-                    ProjectSpendTracking.budget_id.label("budget_id"),
-                    ProjectSpendTracking.budget_category.label("budget_category"),
-                    ProjectSpendTracking.budget_period_spend.label("current_spending"),
-                )
-                .join(
-                    latest_spend_dates_subq,
-                    and_(
-                        ProjectSpendTracking.project_name == latest_spend_dates_subq.c.project_name,
-                        ProjectSpendTracking.budget_id == latest_spend_dates_subq.c.budget_id,
-                        ProjectSpendTracking.budget_category == latest_spend_dates_subq.c.budget_category,
-                        ProjectSpendTracking.spend_date == latest_spend_dates_subq.c.max_spend_date,
-                    ),
-                )
-                .where(ProjectSpendTracking.spend_subject_type == spend_subject_type)
-                .subquery()
-            )
-
-        latest_project_budget_spend_subq = _latest_spend_subquery("project_budget")
-        latest_legacy_budget_spend_subq = _latest_spend_subquery("budget")
-        current_spending_expr = func.coalesce(
-            latest_project_budget_spend_subq.c.current_spending,
-            latest_legacy_budget_spend_subq.c.current_spending,
-        ).label("current_spending")
 
         stmt = (
             select(
@@ -248,29 +212,14 @@ class ProjectBudgetAssignmentRepository:
                 Budget.budget_duration,
                 Budget.budget_reset_at,
                 Budget.provider_metadata,
-                current_spending_expr,
+                Budget.created_at.label("budget_created_at"),
+                Budget.spend_reset_at.label("budget_spend_reset_at"),
                 func.count(ProjectMemberBudgetAssignment.id).label("member_count"),
                 func.coalesce(func.sum(ProjectMemberBudgetAssignment.allocated_max_budget), 0.0).label(
                     "allocated_member_budget_total",
                 ),
             )
             .join(Budget, Budget.budget_id == ProjectBudgetAssignment.budget_id)
-            .outerjoin(
-                latest_project_budget_spend_subq,
-                and_(
-                    latest_project_budget_spend_subq.c.project_name == ProjectBudgetAssignment.project_name,
-                    latest_project_budget_spend_subq.c.budget_id == Budget.budget_id,
-                    latest_project_budget_spend_subq.c.budget_category == ProjectBudgetAssignment.budget_category,
-                ),
-            )
-            .outerjoin(
-                latest_legacy_budget_spend_subq,
-                and_(
-                    latest_legacy_budget_spend_subq.c.project_name == ProjectBudgetAssignment.project_name,
-                    latest_legacy_budget_spend_subq.c.budget_id == Budget.budget_id,
-                    latest_legacy_budget_spend_subq.c.budget_category == ProjectBudgetAssignment.budget_category,
-                ),
-            )
             .outerjoin(
                 ProjectMemberBudgetAssignment,
                 and_(
@@ -295,8 +244,8 @@ class ProjectBudgetAssignmentRepository:
                 Budget.budget_duration,
                 Budget.budget_reset_at,
                 Budget.provider_metadata,
-                latest_project_budget_spend_subq.c.current_spending,
-                latest_legacy_budget_spend_subq.c.current_spending,
+                Budget.created_at,
+                Budget.spend_reset_at,
             )
             .order_by(ProjectBudgetAssignment.project_name.asc(), Budget.budget_category.asc())
         )
@@ -319,7 +268,78 @@ class ProjectBudgetAssignmentRepository:
                 provider_sync_status=provider_metadata.get("sync_status"),
                 member_count=row["member_count"],
                 allocated_member_budget_total=row["allocated_member_budget_total"],
-                current_spending=float(row["current_spending"]) if row["current_spending"] is not None else None,
+                provider_metadata=provider_metadata,
+                budget_created_at=row["budget_created_at"],
+                budget_spend_reset_at=row["budget_spend_reset_at"],
+            )
+            summaries.setdefault(summary.project_name, []).append(summary)
+        return summaries
+
+    async def get_removed_budget_summaries_for_projects(
+        self,
+        session: AsyncSession,
+        project_names: list[str],
+    ) -> dict[str, list[ProjectAssignedBudgetSummaryRow]]:
+        """The budgets of each project's removed assignments, the latest removal first within each category.
+
+        Removing a category soft-deletes its assignment and budget but keeps the budget's reset
+        instant, so a caller can still tell whether the removed budget's period is open
+        (EPMCDME-15048) - and, from every removal sharing it, since when the category's project key
+        has counted this period. A row is returned whether or not the category was assigned again
+        since: that is the caller's call. Budget policy only, like
+        `get_assigned_budget_summaries_for_projects`; a removed budget has no members, so its member
+        figures are zero.
+        """
+        if not project_names:
+            return {}
+
+        from codemie.service.budget.budget_models import Budget
+
+        stmt = (
+            select(
+                ProjectBudgetAssignment.project_name,
+                Budget.budget_id,
+                Budget.name,
+                ProjectBudgetAssignment.budget_category,
+                Budget.soft_budget,
+                Budget.max_budget,
+                Budget.budget_duration,
+                Budget.budget_reset_at,
+                Budget.provider_metadata,
+                Budget.created_at.label("budget_created_at"),
+                Budget.spend_reset_at.label("budget_spend_reset_at"),
+            )
+            .join(Budget, Budget.budget_id == ProjectBudgetAssignment.budget_id)
+            .where(
+                ProjectBudgetAssignment.project_name.in_(project_names),
+                ProjectBudgetAssignment.deleted_at.is_not(None),
+            )
+            .order_by(
+                ProjectBudgetAssignment.project_name,
+                ProjectBudgetAssignment.budget_category,
+                ProjectBudgetAssignment.deleted_at.desc(),
+            )
+        )
+
+        result = await session.execute(stmt)
+        summaries: dict[str, list[ProjectAssignedBudgetSummaryRow]] = {}
+        for row in result.mappings().all():
+            provider_metadata = row["provider_metadata"] or {}
+            summary = ProjectAssignedBudgetSummaryRow(
+                project_name=row["project_name"],
+                budget_id=row["budget_id"],
+                name=row["name"],
+                budget_category=row["budget_category"],
+                soft_budget=row["soft_budget"],
+                max_budget=row["max_budget"],
+                budget_duration=row["budget_duration"],
+                budget_reset_at=row["budget_reset_at"],
+                provider_sync_status=provider_metadata.get("sync_status"),
+                member_count=0,
+                allocated_member_budget_total=0.0,
+                provider_metadata=provider_metadata,
+                budget_created_at=row["budget_created_at"],
+                budget_spend_reset_at=row["budget_spend_reset_at"],
             )
             summaries.setdefault(summary.project_name, []).append(summary)
         return summaries

@@ -33,9 +33,9 @@ from codemie.chains.base import Thought
 from codemie.clients.postgres import get_session
 from codemie.configs import config, logger
 from codemie.core.dependecies import get_stt_openai_client
+from codemie.core.event_loop import run_coroutine_blocking
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import AssistantChatRequest, UpdateConversationRequest, UpdateAiMessageRequest, TokensUsage
-from codemie.core.utils import safe_divide
 from codemie.rest_api.utils.client_context import ClientSource
 from codemie.rest_api.models.base import ConversationStatus
 from codemie.rest_api.models.conversation import (
@@ -68,6 +68,11 @@ from codemie.service.conversation.history_materializer import materialize_workfl
 from codemie.service.llm_service.llm_service import LLMService
 from codemie.service.monitoring.conversation_monitoring_service import ConversationMonitoringService
 from codemie.service.monitoring.routing_monitoring_service import RoutingMonitoringService
+from codemie.service.spend.coverage import SpendDimension, SpendResult, TimeRange
+from codemie.service.spend.hydration import Hydrated, hydrate_request_cost
+from codemie.service.spend.ledger import ComposedScope, DimensionScope, UserTerm
+from codemie.service.spend.rendering import RenderedSpend, render_composed_spend, render_spend, spend_fields
+from codemie.service.spend.spend_service import spend_service
 
 if TYPE_CHECKING:
     from codemie.rest_api.models.assistant import Assistant
@@ -113,24 +118,116 @@ _CLIENT_TYPE_TO_IMPORT_SOURCE: dict[str, str] = {
 }
 
 
+async def _composed_per_dimension_value(
+    dimension: SpendDimension,
+    values: List[str],
+    user_term: Optional[UserTerm],
+    project: Optional[str],
+    project_owners: tuple[str, ...],
+    period: TimeRange,
+) -> dict[str, SpendResult]:
+    """One composed read per dimension value, all within a single trip onto the app loop."""
+    return {
+        value: await spend_service.aggregate_composed(
+            period,
+            ComposedScope(
+                user=user_term,
+                project=project,
+                dimension=DimensionScope(dimension, value),
+                project_owners=project_owners,
+            ),
+        )
+        for value in values
+    }
+
+
+def _spend_per_dimension_value(
+    dimension: SpendDimension,
+    values: List[str],
+    *,
+    user_term: Optional[UserTerm],
+    project: Optional[str],
+    period: Optional[TimeRange],
+    project_owners: tuple[str, ...] = (),
+) -> List[RenderedSpend]:
+    """Each value's own figure, read with the report's **whole** scope carried on every one of them.
+
+    **Deliberately not `aggregate_by_dimension`.** That read is a dashboard table's: it narrows by a
+    dashboard's `ReportFilter` at most and never by this report's `ComposedScope`, so using it here would
+    silently drop this report's own conjunction and foot one person's rows with every other person's
+    spend on the same assistant. One `aggregate_composed` per value keeps the conjunction the report was
+    asked for. The value set is what *this* filter matched, so the round-trip count is the breakdown's
+    own row count and nothing wider.
+
+    A `None` period means the port is not asked at all, and a timeout means it did not answer: both
+    yield an absent figure per row rather than a zero, because a zero is a claim that nothing was
+    spent. `run_coroutine_blocking` returns `None` on timeout instead of raising for exactly this -
+    a slow ledger degrades a figure rather than failing the request.
+
+    (A near-copy of `WorkflowService._workflow_breakdown_spend`. Kept a copy rather than shared,
+    because the alternative is one of these two services importing the other for a bridge neither
+    owns; the rule they must not diverge on - the whole scope on every value - is written out in
+    both.)
+    """
+    if period is None or not values:
+        return [render_spend(None) for _ in values]
+
+    results = run_coroutine_blocking(
+        _composed_per_dimension_value(dimension, values, user_term, project, project_owners, period),
+        on_timeout=f"{dimension.value} spending breakdown spend read",
+    )
+    if results is None:
+        return [render_spend(None) for _ in values]
+    # One composed scope's figure per row: partial, never sized (`render_composed_spend`).
+    return [render_composed_spend(results.get(value)) for value in values]
+
+
+def _average_cost(figure: Optional[float], item_count: int) -> Optional[float]:
+    """The per-item cost, or **nothing at all** where no such cost exists.
+
+    Two absences used to arrive as `0.0`, and on a report a zero is a claim: *this dimension costs
+    nothing per item*. Neither absence supports it - no items means there is no ratio to state, and an
+    unknown numerator makes the quotient unknown too. A figure that exists but is *qualified* does
+    yield a ratio, which inherits the qualification from the row's annotation exactly as the figure
+    does: it is the same money, divided.
+    """
+    if figure is None or item_count <= 0:
+        return None
+    return round(figure / item_count, 5)
+
+
 class SpendingGroupBreakdown(BaseModel):
-    """Spending breakdown by dimension."""
+    """Spending breakdown by dimension.
+
+    `money_spent` is one spend-port figure for this dimension value within the report's own scope,
+    and it carries the port's three states: `None` is **no figure** and never a zero, and the
+    `spend_*` triple says whether the figure is short and by how much.
+    """
 
     dimension_type: str  # "assistant" or "workflow"
     dimension_id: str
     dimension_name: str
-    money_spent: float
+    money_spent: Optional[float] = None
     input_tokens: int
     output_tokens: int
     conversation_count: Optional[int] = None  # For assistants
     workflow_execution_count: Optional[int] = None  # For workflows
-    average_cost_per_item: float
+    average_cost_per_item: Optional[float] = None
+    spend_unavailable: bool = False
+    spend_partial: bool = False
+    spend_missing_amount: Optional[float] = None
 
 
 class SpendingAnalyticsResult(BaseModel):
-    """Result of spending analytics query from ConversationMetrics."""
+    """Result of spending analytics query from ConversationMetrics.
 
-    total_money_spent: float
+    **Carries no money total, deliberately.** The one money figure this report has is read once, over
+    the whole filter conjunction, by the caller that owns the report - `GetSpendingTool`. A total here
+    would be the conversation half of a sum, and a sum of two independently floored figures is not a
+    figure at all (AD-29): if either half were short the total would be short by an unknown amount and
+    would say nothing about it. Only `spending_breakdown` carries money, one port figure per assistant.
+    """
+
     total_input_tokens: int
     total_output_tokens: int
     total_conversations: int
@@ -450,6 +547,13 @@ class ConversationService:
                 input_tokens=params.tokens_usage.input_tokens,
                 output_tokens=params.tokens_usage.output_tokens,
                 money_spent=params.tokens_usage.money_spent,
+                # The same object already carries the qualification that
+                # `send_conversation_metric` below consults; the persisted turn must not be the
+                # one place that drops it. An in-progress turn has run nothing yet: its zero is the
+                # flagged placeholder, not a measured $0, until the completed turn replaces it.
+                money_spent_pending=params.tokens_usage.money_spent_pending or in_progress,
+                money_spent_unavailable=params.tokens_usage.money_spent_unavailable,
+                request_id=params.request_id,
                 user_message_received_at=params.user_message_received_at,
                 a2ui_envelopes=params.a2ui_envelopes,
                 # getattr: the request-side A2UI intake fields arrive with the
@@ -722,6 +826,74 @@ class ConversationService:
             )
             conversation_metrics.calculate_metrics(conversation)
             conversation_metrics.save()
+
+    @classmethod
+    async def hydrate_conversation_metrics(
+        cls, conversation: Conversation, metrics: ConversationMetrics
+    ) -> ConversationMetrics:
+        """The metrics row with every pending turn settled from the ledger where it can be.
+
+        AD-28 rule 7: a turn written as pending hydrates by its own request id, never re-prices.
+        Turns the ledger has settled are written back - onto the message and into the metrics row
+        - and the row is recomputed from the conversation so the persisted total can never carry a
+        settled turn it does not include. A turn the ledger cannot answer for, or one persisted
+        before turns carried their request id, is *presented* as unavailable on the returned row
+        and stored untouched: a transient ledger failure must not silence every later read.
+        """
+        if not metrics.money_spent_pending:
+            return metrics
+
+        outcomes = [(message, await cls._hydrate_turn(message)) for message in cls._pending_turns(conversation)]
+        if cls._settle_turns(outcomes):
+            # A read settling a cost is not usage: bumping update_date would reorder the recency-sorted
+            # conversation list every time someone looks at an old chat's cost.
+            conversation.update(columns=["history"], touch_timestamp=False)
+            metrics.calculate_metrics(conversation)
+            metrics.save()
+        cls._present_unavailable_turns(outcomes)
+        # Recomputed in memory only: the presented flags are for this response, not for the row.
+        metrics.calculate_metrics(conversation)
+        return metrics
+
+    @staticmethod
+    def _pending_turns(conversation: Conversation) -> list[GeneratedMessage]:
+        """Pending turns the ledger may settle; one still generating is left to the upsert completing it,
+        since a ledger answer now would settle a partial cost or write over the turn mid-generation."""
+        return [
+            message
+            for message in conversation.history
+            if isinstance(message, GeneratedMessage)
+            and not message.in_progress
+            and message.money_spent is not None
+            and message.money_spent_pending
+        ]
+
+    @staticmethod
+    async def _hydrate_turn(message: GeneratedMessage) -> Hydrated:
+        return await hydrate_request_cost(
+            request_id=message.request_id,
+            money_spent=message.money_spent,
+            pending=bool(message.money_spent_pending),
+            unavailable=bool(message.money_spent_unavailable),
+        )
+
+    @staticmethod
+    def _settle_turns(outcomes: list[tuple[GeneratedMessage, Hydrated]]) -> bool:
+        """Write the figures the ledger settled onto their turns; True when any did."""
+        settled = [(message, hydrated) for message, hydrated in outcomes if hydrated.settled_now]
+        for message, hydrated in settled:
+            message.money_spent = hydrated.money_spent
+            message.money_spent_pending = False
+            message.money_spent_unavailable = False
+        return bool(settled)
+
+    @staticmethod
+    def _present_unavailable_turns(outcomes: list[tuple[GeneratedMessage, Hydrated]]) -> None:
+        """Flag, for this read only, the turns no figure is coming for."""
+        for message, hydrated in outcomes:
+            if not hydrated.settled_now and hydrated.unavailable:
+                message.money_spent_pending = False
+                message.money_spent_unavailable = True
 
     @classmethod
     def _handle_conversation_folder(cls, folder: str, user_id: str) -> None:
@@ -1469,31 +1641,42 @@ class ConversationService:
     @classmethod
     def get_spending_analytics(
         cls,
-        user_name: Optional[str] = None,
         assistant_id: Optional[str] = None,
         project: Optional[str] = None,
         since_date: Optional[datetime] = None,
         include_breakdown: bool = False,
+        *,
+        user_term: Optional[UserTerm] = None,
+        period: Optional[TimeRange] = None,
+        project_owners: tuple[str, ...] = (),
     ) -> SpendingAnalyticsResult:
         """
-        Aggregate spending data from conversations.
+        Aggregate conversation activity, and read each assistant's money from the spend port.
 
         Data sources:
-        ConversationMetrics: Token counts, conversation counts, spending details by assistants
+        ConversationMetrics: Token counts and conversation counts.
+        SpendLedger (via `spend_service`): every money figure, per assistant.
 
         Args:
-            user_name: Filter by user name (case-insensitive)
             assistant_id: Filter by assistant ID
             project: Filter by project name
-            since_date: Filter by creation date (>=)
+            since_date: Filter by creation date (>=) - the activity half only
             include_breakdown: Include detailed breakdown by assistants
+            user_term: The person every figure names, already resolved to the canonical id and alias
+                set. Resolved once by the caller and passed through unchanged, so the activity and the
+                money on one response name the same person; `None` means unconstrained.
+            period: The window every money figure covers. `None` is the whole of *do not ask the
+                port* - no window it can read - and every figure is then
+                absent rather than zero.
+            project_owners: The `users.id`s owning `project` when it is a personal project: the port can
+                match its money only through them (`ComposedScope.project_owners`).
 
         Returns:
-            SpendingAnalyticsResult with conversation spending data
+            SpendingAnalyticsResult with conversation activity and per-assistant spend
         """
-        # Step 1: Get ConversationMetrics data (tokens, conversations, spending details)
+        # Step 1: Get ConversationMetrics data (tokens, conversations) - no money lives here.
         metrics_data = cls._get_conversation_metrics_data(
-            user_name=user_name,
+            user_id=user_term.user_id if user_term else None,
             assistant_id=assistant_id,
             project=project,
             since_date=since_date,
@@ -1503,14 +1686,15 @@ class ConversationService:
         spending_breakdown = []
         if include_breakdown:
             spending_breakdown = cls._get_assistant_spending_breakdown(
-                user_name=user_name,
                 assistant_id=assistant_id,
                 project=project,
                 since_date=since_date,
+                user_term=user_term,
+                period=period,
+                project_owners=project_owners,
             )
 
         return SpendingAnalyticsResult(
-            total_money_spent=metrics_data['total_money_spent'],
             total_input_tokens=metrics_data['total_input_tokens'],
             total_output_tokens=metrics_data['total_output_tokens'],
             total_conversations=metrics_data['total_conversations'],
@@ -1520,21 +1704,29 @@ class ConversationService:
     @classmethod
     def _get_conversation_metrics_data(
         cls,
-        user_name: Optional[str] = None,
+        user_id: Optional[str] = None,
         assistant_id: Optional[str] = None,
         project: Optional[str] = None,
         since_date: Optional[datetime] = None,
     ) -> dict:
         """
-        Get aggregated data from ConversationMetrics.
+        Get aggregated activity data from ConversationMetrics.
+
+        **No money.** `ConversationMetrics.total_money_spent` is a persisted copy of a figure whose
+        source of truth is the spend port, and summing copies here is the second route to one number
+        this refactor removes. The caller reads the money it needs from `spend_service`.
+
+        **Keyed on `users.id`, never on the stored display name.** The money beside these counts is
+        read for one resolved person; a display-name match would count a different population - none
+        at all for a username or an email, and everybody sharing the name for a display name.
 
         Returns:
-            Dict with keys: total_money_spent, total_input_tokens, total_output_tokens, total_conversations
+            Dict with keys: total_input_tokens, total_output_tokens, total_conversations
         """
         filters = []
 
-        if user_name:
-            filters.append(func.lower(ConversationMetrics.user_name) == user_name.lower())
+        if user_id:
+            filters.append(ConversationMetrics.user_id == user_id)
 
         if project:
             filters.append(ConversationMetrics.project == project)
@@ -1547,7 +1739,6 @@ class ConversationService:
 
         with get_session() as session:
             total_stmt = select(
-                func.sum(ConversationMetrics.total_money_spent).label('total_money'),
                 func.sum(ConversationMetrics.total_input_tokens).label('total_input'),
                 func.sum(ConversationMetrics.total_output_tokens).label('total_output'),
                 func.count(func.distinct(ConversationMetrics.conversation_id)).label('total_conversations'),
@@ -1565,7 +1756,6 @@ class ConversationService:
             result = session.exec(total_stmt).one()
 
         return {
-            'total_money_spent': float(result.total_money or 0),
             'total_input_tokens': int(result.total_input or 0),
             'total_output_tokens': int(result.total_output or 0),
             'total_conversations': int(result.total_conversations or 0),
@@ -1574,20 +1764,24 @@ class ConversationService:
     @classmethod
     def _get_assistant_spending_breakdown(
         cls,
-        user_name: Optional[str] = None,
         assistant_id: Optional[str] = None,
         project: Optional[str] = None,
         since_date: Optional[datetime] = None,
+        *,
+        user_term: Optional[UserTerm] = None,
+        period: Optional[TimeRange] = None,
+        project_owners: tuple[str, ...] = (),
     ) -> List[SpendingGroupBreakdown]:
         """
         Get spending breakdown by assistant.
 
-        Aggregates spending data from ConversationMetrics, grouping by assistant IDs.
-        Since assistant_ids is a JSONB array in Conversation, we fetch the data and
-        aggregate in Python to avoid raw SQL.
+        Activity (tokens, conversation counts) is aggregated from ConversationMetrics, grouping by
+        assistant IDs. Since assistant_ids is a JSONB array in Conversation, we fetch the data and
+        aggregate in Python to avoid raw SQL. **Money is not aggregated here at all**: each assistant's
+        figure is one spend-port read carrying this report's whole scope.
 
         Note: To prevent memory issues, this method limits results to 10,000 conversations.
-        For larger datasets, use additional filters (date range, project, user_name).
+        For larger datasets, use additional filters (date range, project, user).
 
         Returns:
             List of assistant spending breakdowns
@@ -1597,8 +1791,9 @@ class ConversationService:
         # Build filters for query
         filters = []
 
-        if user_name:
-            filters.append(func.lower(ConversationMetrics.user_name) == user_name.lower())
+        if user_term:
+            # The person each row's money is read for, by id - see `_get_conversation_metrics_data`.
+            filters.append(ConversationMetrics.user_id == user_term.user_id)
 
         if project:
             filters.append(ConversationMetrics.project == project)
@@ -1626,10 +1821,10 @@ class ConversationService:
 
             results = session.exec(stmt).all()
 
-        # Aggregate spending by assistant in Python
+        # Aggregate *activity* by assistant in Python. No money key: a per-assistant sum of
+        # `ConversationMetrics.total_money_spent` is a second route to a figure the port owns.
         assistant_data = defaultdict(
             lambda: {
-                "money_spent": 0.0,
                 "input_tokens": 0,
                 "output_tokens": 0,
                 "conversation_ids": set(),
@@ -1639,7 +1834,6 @@ class ConversationService:
         for metric, assistant_ids in results:
             # Distribute metrics across all assistants in the conversation
             for aid in assistant_ids or []:
-                assistant_data[aid]["money_spent"] += metric.total_money_spent or 0.0
                 assistant_data[aid]["input_tokens"] += metric.total_input_tokens or 0
                 assistant_data[aid]["output_tokens"] += metric.total_output_tokens or 0
                 assistant_data[aid]["conversation_ids"].add(metric.conversation_id)
@@ -1647,26 +1841,32 @@ class ConversationService:
         # Batch fetch all assistant names to avoid N+1 queries
         assistant_names = cls._batch_fetch_assistant_names(list(assistant_data.keys()))
 
-        # Transform aggregated data to SpendingGroupBreakdown
-        breakdown = []
-        for assistant_id_str, data in assistant_data.items():
-            conv_count = len(data["conversation_ids"])
-            avg_cost = safe_divide(data["money_spent"], conv_count)
+        assistant_ids_in_order = list(assistant_data.keys())
+        spend = _spend_per_dimension_value(
+            SpendDimension.ASSISTANT,
+            assistant_ids_in_order,
+            user_term=user_term,
+            project=project,
+            period=period,
+            project_owners=project_owners,
+        )
 
-            breakdown.append(
-                cls._create_assistant_spending_breakdown(
-                    assistant_id=assistant_id_str,
-                    assistant_name=assistant_names.get(assistant_id_str, assistant_id_str),
-                    money_spent=data["money_spent"],
-                    input_tokens=data["input_tokens"],
-                    output_tokens=data["output_tokens"],
-                    conversation_count=conv_count,
-                    average_cost=avg_cost,
-                )
+        breakdown = [
+            cls._create_assistant_spending_breakdown(
+                assistant_id=assistant_id_str,
+                assistant_name=assistant_names.get(assistant_id_str, assistant_id_str),
+                spend=rendered,
+                input_tokens=assistant_data[assistant_id_str]["input_tokens"],
+                output_tokens=assistant_data[assistant_id_str]["output_tokens"],
+                conversation_count=len(assistant_data[assistant_id_str]["conversation_ids"]),
             )
+            for assistant_id_str, rendered in zip(assistant_ids_in_order, spend, strict=True)
+        ]
 
-        # Sort by money spent (descending)
-        breakdown.sort(key=lambda x: x.money_spent, reverse=True)
+        # Ordered by the port figure, descending. An absent figure sorts **last** rather than as a
+        # zero: the first key separates the two outright, so no row nobody has a figure for is
+        # ranked among the figures.
+        breakdown.sort(key=lambda row: (row.money_spent is not None, row.money_spent or 0.0), reverse=True)
 
         return breakdown
 
@@ -1700,11 +1900,10 @@ class ConversationService:
         cls,
         assistant_id: str,
         assistant_name: str,
-        money_spent: float,
+        spend: RenderedSpend,
         input_tokens: int,
         output_tokens: int,
         conversation_count: int,
-        average_cost: float,
     ) -> SpendingGroupBreakdown:
         """
         Create SpendingGroupBreakdown for an assistant.
@@ -1712,11 +1911,12 @@ class ConversationService:
         Args:
             assistant_id: The assistant ID
             assistant_name: The assistant name (pre-fetched)
-            money_spent: Total money spent
+            spend: This assistant's spend-port figure and the two annotations that qualify it. The
+                figure and its annotation are written in the same pass so a short total cannot reach
+                a reader looking like a whole one.
             input_tokens: Total input tokens
             output_tokens: Total output tokens
             conversation_count: Number of conversations
-            average_cost: Average cost per conversation
 
         Returns:
             SpendingGroupBreakdown instance
@@ -1725,12 +1925,13 @@ class ConversationService:
             dimension_type="assistant",
             dimension_id=assistant_id,
             dimension_name=assistant_name,
-            money_spent=money_spent,
+            money_spent=spend.figure,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             conversation_count=conversation_count,
             workflow_execution_count=None,
-            average_cost_per_item=average_cost,
+            average_cost_per_item=_average_cost(spend.figure, conversation_count),
+            **spend_fields(spend),
         )
 
     @classmethod

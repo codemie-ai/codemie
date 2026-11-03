@@ -724,7 +724,17 @@ class LeaderboardHandler:
             dim_id = dim_data.get("id")
             if dim_id:
                 row[f"{dim_id}_score"] = round(float(dim_data.get("score", 0)) * 100, 1)
-        row["total_spend"] = float((entry.summary_metrics or {}).get("total_spend", 0))
+        # `float(...get("total_spend", 0))` raised `TypeError` the moment a ranked user had no ledger
+        # figure: `scorer._spend_summary` writes `total_spend: None` **deliberately** (a fabricated
+        # zero would say the person spent nothing beside their rank), and `dict.get` returns that
+        # `None` rather than the default, because the key is present. The endpoint's error handler
+        # then turned the whole table into an error. The figure passes through as-is instead, and the
+        # three keys the scorer already wrote travel with it so the cell can say why it is absent -
+        # keyed with the column id, the form `readSpendQualification` reads for a named column.
+        summary = entry.summary_metrics or {}
+        row["total_spend"] = summary.get("total_spend")
+        for suffix in ("spend_unavailable", "spend_partial", "spend_missing_amount"):
+            row[f"total_spend_{suffix}"] = summary.get(f"total_{suffix}")
         row["usage_intent"] = entry.usage_intent
         intent_meta = get_intent_by_id(entry.usage_intent or "explorer")
         row["usage_intent_label"] = f"{intent_meta.get('emoji', '')} {intent_meta.get('label', '')}".strip()

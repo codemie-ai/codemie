@@ -12,8 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import contextlib
 import json
 from dataclasses import dataclass, field
+from functools import wraps
 from typing import Any, Sequence
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
@@ -27,6 +29,7 @@ from codemie.agents.agent_log_utils import (
 from codemie.agents.utils import validate_json_schema
 from codemie.configs.logger import logger
 from codemie.core.constants import ChatRole
+from codemie.service.spend.origin_context import spend_origin
 
 
 def preprocess_output_schema(
@@ -218,3 +221,25 @@ def serialize_inputs(inputs: dict[str, Any], *, messages_key: str) -> str:
 
 def serialize_response(response: Any) -> str:
     return truncate_log_content(str(response))
+
+
+def with_captured_origin(method):
+    """Re-publish the origin the agent captured at construction around an agent entry point.
+
+    The agent and its own model are built where the entry point published an origin, but the run
+    is handed to `assistant_executor`, a plain thread pool that copies no context. Every model built
+    during the run - a tool's own LLM, a history-compaction summary, a retrieval embedding - is
+    therefore constructed on a thread where nothing is published and would send no origin at all.
+    Publishing the captured value again on the invoking thread gives all of them the origin the run
+    started with, and the token form restores whatever the pooled thread carried before, so a
+    finished run leaves nothing behind for the next one. Lives here rather than on an agent class
+    because the tool-call-resume mixin needs it too, and the mixin is imported by the agents.
+    """
+
+    @wraps(method)
+    def invoke_with_origin(self, *args, **kwargs):
+        origin = getattr(self, "_origin", None)
+        with spend_origin(origin) if origin else contextlib.nullcontext():
+            return method(self, *args, **kwargs)
+
+    return invoke_with_origin

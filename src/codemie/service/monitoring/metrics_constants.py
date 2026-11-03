@@ -74,6 +74,10 @@ WORKFLOW_AI_REFINE_TOTAL_METRIC = "codemie_workflow_ai_refine_total"
 
 CONVERSATION_ANALYSIS_TOTAL_METRIC = "codemie_conversation_analysis_total"
 
+SPEND_LEDGER_READ_FAILURES_METRIC = "codemie_spend_ledger_read_failures_total"
+SPEND_LEDGER_READ_DURATION_METRIC = "codemie_spend_ledger_read_duration_seconds"
+SPEND_LEDGER_CONNECTION_WAIT_METRIC = "codemie_spend_ledger_connection_wait_seconds"
+EVENT_LOOP_LAG_METRIC = "codemie_event_loop_lag_seconds"
 MODEL_AVAILABILITY_VALIDATIONS_TOTAL_METRIC = "codemie_model_availability_validations_total"
 MODEL_AVAILABILITY_FALLBACKS_TOTAL_METRIC = "codemie_model_availability_fallbacks_total"
 
@@ -145,6 +149,9 @@ class MetricsAttributes:
     CONVERSATION_ID = "conversation_id"
     REQUEST_UUID = "request_uuid"
     REQUEST_ID = "request_id"
+    # AD-29's two-stage join needs codemie_run_id on the metric side too - it did not
+    # exist before this attribute was added for llm_proxy_monitoring_service.py.
+    RUN_ID = "run_id"
     SESSION_ID = "session_id"
     WEBHOOK_ID = "webhook_id"
     WEBHOOK_ALIAS = "webhook_alias"

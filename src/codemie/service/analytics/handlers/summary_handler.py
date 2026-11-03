@@ -16,17 +16,21 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
+from collections.abc import Mapping
 from datetime import datetime
 
 from codemie.repository.metrics_elastic_repository import MetricsElasticRepository
 from codemie.rest_api.security.user import User
-from codemie.service.analytics.handlers.cli_cost_processor import CLICostAdjustmentMixin
+from codemie.service.analytics.handlers.report_filter import report_filter_for
 from codemie.service.analytics.metric_names import MetricName
 from codemie.service.analytics.query_pipeline import AnalyticsQueryFilters, AnalyticsQueryPipeline
 from codemie.service.analytics.time_parser import TimeParser
+from codemie.service.spend.coverage import SpendResult
+from codemie.service.spend.rendering import RenderedSpend, render_spend, report_period_or_none, spend_fields
+from codemie.service.spend.spend_group import SpendGroup
+from codemie.service.spend.spend_service import spend_service
 
 logger = logging.getLogger(__name__)
 
@@ -34,12 +38,21 @@ logger = logging.getLogger(__name__)
 INPUT_TOKENS_FIELD = "attributes.input_tokens"
 OUTPUT_TOKENS_FIELD = "attributes.output_tokens"
 CACHED_INPUT_TOKENS_FIELD = "attributes.cache_read_input_tokens"
-MONEY_SPENT_FIELD = "attributes.money_spent"
-CLI_REQUEST_FIELD = "attributes.cli_request"
 METRIC_NAME_KEYWORD_FIELD = "metric_name.keyword"
 
 
-class SummaryHandler(CLICostAdjustmentMixin):
+def _money_text(rendered: RenderedSpend) -> str:
+    """How a qualified money figure reads in a log line.
+
+    A log is a surface too: a subtotal printed as a bare amount is the same misreading there as on a
+    card, and an absent figure printed as `$0.00` is the same false claim.
+    """
+    if rendered.figure is None:
+        return "unavailable"
+    return f"${rendered.figure:.2f}{' (subtotal)' if rendered.partial else ''}"
+
+
+class SummaryHandler:
     """Handler for summary metrics: tokens, costs, usage statistics."""
 
     def __init__(self, user: User, repository: MetricsElasticRepository):
@@ -73,27 +86,34 @@ class SummaryHandler(CLICostAdjustmentMixin):
 
         start_dt, end_dt = TimeParser.parse(time_period, start_date, end_date)
 
-        # Execute independent queries concurrently to reduce latency
-        unique_users_count, cli_adjusted = await asyncio.gather(
-            self._get_unique_users_count(
-                time_period=time_period,
-                start_date=start_date,
-                end_date=end_date,
-                users=users,
-                projects=projects,
-                client_source=client_source,
-            ),
-            self.get_cli_costs_with_adjustment(
-                start_dt, end_dt, users, projects, include_cache_costs=False, client_source=client_source
-            ),
+        unique_users_count = await self._get_unique_users_count(
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            client_source=client_source,
         )
-        cli_adjusted_total = cli_adjusted["total_cost"]
+
+        # Read here rather than inside the metrics builder: the builder runs on whatever
+        # Elasticsearch returned, and the money on these cards no longer depends on that result at
+        # all. A window the port cannot accept, or a client-source filter it cannot apply, leaves the
+        # port unasked and every money card absent, which is the rule every spending table applies -
+        # never a fabricated zero.
+        period = report_period_or_none(start_dt, end_dt, client_source)
+        groups = (
+            await spend_service.aggregate_by_spend_group(
+                period,
+                access=self._pipeline.access_scope,
+                report_filter=await report_filter_for(users, projects),
+            )
+            if period is not None
+            else {}
+        )
 
         return await self._pipeline.execute_summary_query(
             agg_builder=self._build_summaries_aggregation,
-            metrics_builder=lambda result: self._build_summaries_metrics(
-                result, unique_users_count, cli_adjusted_total
-            ),
+            metrics_builder=lambda result: self._build_summaries_metrics(result, unique_users_count, groups),
             filters=AnalyticsQueryFilters(
                 metric_filters=None,
                 time_period=None,
@@ -107,7 +127,11 @@ class SummaryHandler(CLICostAdjustmentMixin):
         )
 
     def _build_summaries_aggregation(self, query: dict) -> dict:
-        """Build aggregation for summaries (web + current CLI metrics)."""
+        """Build the token and count aggregation for summaries (web + current CLI metrics).
+
+        No money field is named here any more: every currency card is served by the spend port, so
+        this query counts tokens and invocations only.
+        """
         agg_body = {
             "query": query,
             "size": 0,
@@ -121,21 +145,6 @@ class SummaryHandler(CLICostAdjustmentMixin):
                         "cache_creation_tokens": {"sum": {"field": "attributes.cache_creation_tokens"}},
                     },
                 },
-                "total_money_spent": {
-                    "filter": {"match_all": {}},
-                    "aggs": {
-                        "sum": {"sum": {"field": MONEY_SPENT_FIELD}},
-                    },
-                },
-                # Platform LLM cost — uses shared PLATFORM_METRICS to stay consistent with breakdown widgets.
-                "platform_llm_cost": {
-                    "filter": {
-                        "terms": {METRIC_NAME_KEYWORD_FIELD: MetricName.to_list_from_group(MetricName.PLATFORM_METRICS)}
-                    },
-                    "aggs": {
-                        "money_spent": {"sum": {"field": MONEY_SPENT_FIELD}},
-                    },
-                },
                 # Unique counts with metric-specific filters
                 "unique_assistants": {
                     "filter": {"term": {METRIC_NAME_KEYWORD_FIELD: "conversation_assistant_usage"}},
@@ -145,27 +154,10 @@ class SummaryHandler(CLICostAdjustmentMixin):
                     "filter": {"term": {METRIC_NAME_KEYWORD_FIELD: "workflow_execution_total"}},
                     "aggs": {"count": {"cardinality": {"field": "attributes.workflow_name.keyword"}}},
                 },
-                # Embedding metrics (filtered to datasource_tokens_usage only)
+                # Embedding tokens (filtered to datasource_tokens_usage only)
                 "embedding_metrics": {
                     "filter": {"term": {METRIC_NAME_KEYWORD_FIELD: MetricName.DATASOURCE_TOKENS_USAGE.value}},
-                    "aggs": {
-                        "input_tokens": {"sum": {"field": INPUT_TOKENS_FIELD}},
-                        "money_spent": {"sum": {"field": MONEY_SPENT_FIELD}},
-                    },
-                },
-                # CLI-specific cost (for transparency into CLI operations cost)
-                "cli_cost": {
-                    "filter": {
-                        "bool": {
-                            "filter": [
-                                {"term": {METRIC_NAME_KEYWORD_FIELD: MetricName.CLI_LLM_USAGE_TOTAL.value}},
-                                {"term": {CLI_REQUEST_FIELD: True}},
-                            ]
-                        }
-                    },
-                    "aggs": {
-                        "money_spent": {"sum": {"field": MONEY_SPENT_FIELD}},
-                    },
+                    "aggs": {"input_tokens": {"sum": {"field": INPUT_TOKENS_FIELD}}},
                 },
                 # CLI invocations count (matches Kibana: doc_count of llm_proxy_*_total docs)
                 "cli_invoked": {
@@ -266,22 +258,30 @@ class SummaryHandler(CLICostAdjustmentMixin):
         return int(unique_users)
 
     def _build_summaries_metrics(
-        self, result: dict, unique_users_count: int, cli_adjusted_total: float = 0.0
+        self,
+        result: dict,
+        unique_users_count: int,
+        groups: Mapping[SpendGroup, SpendResult],
     ) -> list[dict]:
-        """Build metrics list from ES result.
+        """Build metrics list from the ES result and the spend port's group figures.
 
-        Combines web + CLI tokens for LLM operations, excludes embeddings.
-
-        Returns 17 metrics:
+        Returns 15 metrics:
         - LLM Tokens (5): total_tokens, total_input_tokens, total_cache_creation_tokens,
                           total_cached_input_tokens, total_output_tokens
-        - Embedding Tokens (1): embedding_input_tokens
-        - Counts (3): unique_active_users, unique_assistants_invoked, unique_workflows_invoked
-        - Money (4): platform_cost, cli_cost, embedding_cost, total_money_spent
+        - Counts (2): unique_assistants_invoked, unique_workflows_invoked
+        - Money (4): total_money_spent, platform_cost, cli_cost, embedding_cost
         - CLI (1): cli_invoked
         - Integrations (3): mcps_invoked, webhooks_invoked, skills_invoked
 
-        Note: platform_cost = llm_cost - cli_cost (conversation + workflow only, excludes CLI)
+        **The four money figures come from the port, never from this aggregation.** `platform_cost` is
+        the port's PLATFORM group - every non-CLI row, embeddings included - and not `llm_cost -
+        cli_cost`: subtracting two independently floored figures in a consumer produces a number whose
+        qualification belongs to neither operand. The port answers all four in one scan, so the total
+        and the cards cut from it foot by construction; `spend_group` says why the four are not a
+        partition.
+
+        An empty `groups` is a window the port was never asked about, and every money card is then
+        absent rather than zero.
         """
         aggs = result.get("aggregations", {})
 
@@ -293,31 +293,27 @@ class SummaryHandler(CLICostAdjustmentMixin):
         total_cache_creation_tokens = int(total_tokens_data.get("cache_creation_tokens", {}).get("value", 0))
         total_tokens = input_tokens + output_tokens + cached_input_tokens + total_cache_creation_tokens
 
-        # Total money spent with CLI cutoff adjustment (matches user/project spending totals)
-        money_spent_raw = float(aggs.get("total_money_spent", {}).get("sum", {}).get("value", 0.0))
-        cli_money_spent_raw = float(aggs.get("cli_cost", {}).get("money_spent", {}).get("value", 0.0))
-        money_spent = money_spent_raw - cli_money_spent_raw + cli_adjusted_total
+        # A group the port did not answer renders as absent, not as zero: `render_spend(None)` is the
+        # "never asked" state, and a $0.00 there would claim the window cost nothing.
+        total_spend = render_spend(groups.get(SpendGroup.TOTAL))
+        platform_spend = render_spend(groups.get(SpendGroup.PLATFORM))
+        cli_spend = render_spend(groups.get(SpendGroup.CLI))
+        embedding_spend = render_spend(groups.get(SpendGroup.EMBEDDING))
 
         # Extract unique counts
         unique_users = unique_users_count
         unique_assistants = int(aggs.get("unique_assistants", {}).get("count", {}).get("value", 0))
         unique_workflows = int(aggs.get("unique_workflows", {}).get("count", {}).get("value", 0))
 
-        # Extract embedding metrics
+        # Extract embedding tokens
         embedding_aggs = aggs.get("embedding_metrics", {})
         embedding_input_tokens = int(embedding_aggs.get("input_tokens", {}).get("value", 0))
-        embedding_money_spent = float(embedding_aggs.get("money_spent", {}).get("value", 0.0))
-
-        cli_money_spent = cli_money_spent_raw
 
         # Extract new usage counts
         cli_invoked_count = int(aggs.get("cli_invoked", {}).get("doc_count", 0))
         mcps_invoked_count = int(aggs.get("mcps_invoked", {}).get("count", {}).get("value", 0))
         webhooks_invoked_count = int(aggs.get("webhooks_invoked", {}).get("count", {}).get("value", 0))
         skills_invoked_count = int(aggs.get("skills_invoked", {}).get("count", {}).get("value", 0))
-
-        # Platform LLM cost (conversation + workflow + datasource, direct from dedicated agg)
-        platform_money_spent = float(aggs.get("platform_llm_cost", {}).get("money_spent", {}).get("value", 0.0))
 
         logger.debug(
             f"Parsed summary metrics: "
@@ -327,10 +323,10 @@ class SummaryHandler(CLICostAdjustmentMixin):
             f"cache_creation_tokens={total_cache_creation_tokens}, "
             f"total_tokens={total_tokens}, "
             f"embedding_input_tokens={embedding_input_tokens}, "
-            f"platform_cost=${platform_money_spent:.2f}, "
-            f"cli_cost=${cli_money_spent:.2f}, "
-            f"embedding_cost=${embedding_money_spent:.4f}, "
-            f"total_money_spent=${money_spent:.2f}, "
+            f"platform_cost={_money_text(platform_spend)}, "
+            f"cli_cost={_money_text(cli_spend)}, "
+            f"embedding_cost={_money_text(embedding_spend)}, "
+            f"total_money_spent={_money_text(total_spend)}, "
             f"unique_users={unique_users}, "
             f"unique_assistants={unique_assistants}, "
             f"unique_workflows={unique_workflows}, "
@@ -345,25 +341,40 @@ class SummaryHandler(CLICostAdjustmentMixin):
                 "id": "total_money_spent",
                 "label": "Total Money Spent",
                 "type": "number",
-                "value": round(money_spent, 2),
+                # The annotation travels in the card beside the number: a total short by the rows
+                # the port could not read otherwise renders indistinguishably from the whole one.
+                # An absent figure stays absent - never 0.
+                "value": total_spend.figure,
                 "format": "currency",
                 "description": "Total cost across all usage types",
+                **spend_fields(total_spend),
             },
             {
                 "id": "platform_cost",
                 "label": "Platform LLM Cost",
                 "type": "number",
-                "value": round(platform_money_spent, 2),
+                "value": platform_spend.figure,
                 "format": "currency",
-                "description": "Platform LLM cost (conversations, workflows)",
+                "description": "Platform cost (everything but CLI, embeddings included)",
+                **spend_fields(platform_spend),
             },
             {
                 "id": "cli_cost",
                 "label": "CLI Cost",
                 "type": "number",
-                "value": round(cli_money_spent, 2),
+                "value": cli_spend.figure,
                 "format": "currency",
                 "description": "CLI operations cost",
+                **spend_fields(cli_spend),
+            },
+            {
+                "id": "embedding_cost",
+                "label": "Embedding Cost",
+                "type": "number",
+                "value": embedding_spend.figure,
+                "format": "currency",
+                "description": "Embedding (datasource indexing) cost",
+                **spend_fields(embedding_spend),
             },
             {
                 "id": "total_tokens",

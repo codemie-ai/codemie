@@ -48,6 +48,8 @@ from codemie.rest_api.utils.default_applications import ensure_application_exist
 from codemie.service.llm_service.llm_service import llm_service
 from codemie.service.guardrail.guardrail_service import GuardrailService
 from codemie.service.request_summary_manager import LLMRun, request_summary_manager
+from codemie.service.spend.origin_context import spend_origin
+from codemie.service.spend.traffic_class import TrafficOrigin
 
 
 class DatasourceBatchProcessingResult(BaseModel):
@@ -178,10 +180,16 @@ class BaseDatasourceProcessor(ABC):
             Exception: If any error occurs during processing, it is logged, and the error state is set
             on the index before re-raising the exception.
         """
-        with propagated_span(
-            self._otel_context,
-            "datasource.process",
-            {"codemie.datasource_name": self.datasource_name},
+        # The whole run is indexing traffic. The chunk fan-out pool does not copy context variables,
+        # but the embedding store is built on this thread before the fan-out and handed to the workers,
+        # so the header still reads the origin where the model is constructed.
+        with (
+            spend_origin(TrafficOrigin.DATASOURCE_INDEXING),
+            propagated_span(
+                self._otel_context,
+                "datasource.process",
+                {"codemie.datasource_name": self.datasource_name},
+            ),
         ):
             try:
                 self._load_stats_persisted = False

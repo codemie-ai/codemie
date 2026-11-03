@@ -31,6 +31,8 @@ from codemie.service.request_summary_manager import request_summary_manager
 from codemie.enterprise.observability import get_observability_provider
 from codemie.service.search_and_rerank.base import SearchAndRerankBase, es_response_to_document
 from codemie.service.search_and_rerank.rrf import RRF
+from codemie.service.spend.origin_context import spend_origin
+from codemie.service.spend.traffic_class import TrafficOrigin
 from codemie.templates.kb_sources_selector_prompt import KB_SOURCES_SELECTOR_PROMPT
 
 # NOTE: observe is captured at import time from the singleton provider.
@@ -129,8 +131,13 @@ class SearchAndRerankKB(SearchAndRerankBase):
         if routing_field_name is None:
             routing_field_name = self.ROUTING_FIELD_NAME_DEFAULT
 
-        # Collect search results from vector search
-        search_results = self._knn_vector_search()
+        # Collect search results from vector search. The block covers the query embedding only:
+        # the source routing below builds a chat model, which keeps the enclosing origin. Search
+        # embeddings emit no token metric of their own - the request summary records the run, and
+        # the header is what classifies its spend.
+        with spend_origin(TrafficOrigin.SEARCH_EMBEDDING):
+            search_results = self._knn_vector_search()
+
         # Get document paths from LLM source routing
         doc_paths = self._get_llm_sources(routing_field_name)
 
@@ -346,7 +353,7 @@ class SearchAndRerankKB(SearchAndRerankBase):
         try:
             # Get the appropriate embeddings model
             embeddings_model = llm_service.get_embedding_deployment_name(self.kb_index.embeddings_model)
-            embeddings = get_embeddings_model(embeddings_model)
+            embeddings = get_embeddings_model(embeddings_model, request_id=self.request_id or None)
 
             # Create embedding vector from the query
             query_vector = embeddings.embed_query(self.query)

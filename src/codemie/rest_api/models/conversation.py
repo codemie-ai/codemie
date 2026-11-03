@@ -14,7 +14,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import List, Literal, Optional
 
@@ -66,12 +66,78 @@ class ChatTurnData:
     output_tokens: int
     file_names: list[str]
     money_spent: float
+    #: The two flags travel with the figure, spelled exactly as on `TokensUsage` (their producer)
+    #: and on `GeneratedMessage` (their consumer). Both default False so a caller that never sets
+    #: them keeps meaning "settled", unchanged.
+    money_spent_pending: bool = False
+    money_spent_unavailable: bool = False
+    #: The request this turn ran under - the key a pending `money_spent` is settled by later
+    #: (AD-28 rule 7), and the same uuid the LLM calls carried to the ledger as `codemie_request_id`.
+    request_id: Optional[str] = None
     user_message_received_at: datetime | None = None
     a2ui_envelopes: Optional[list[dict]] = None
     a2ui_action: Optional[dict] = None
     a2ui_data_model: Optional[dict] = None
     in_progress: bool = False
     status: ConversationStatus = ConversationStatus.SUCCESS
+
+
+@dataclass(frozen=True)
+class MoneySpentTotal:
+    """A conversation's money figure together with whether that figure is the whole of it.
+
+    `total` is `None` when the conversation measured nothing - AD-23: an absent figure is never a
+    zero. The two flags are spelled exactly as on `TokensUsage` and `GeneratedMessage`, their
+    producer and their carrier, and are the union of the per-turn flags: one pending turn makes the
+    whole total a subtotal even when every other turn settled. A reader renders `pending` first
+    (`ChatHeader.formatMoneySpentSuffix`, `index_service`), because "a figure is coming" is the
+    claim a later read can honour and "no figure is coming" is the one it cannot.
+    """
+
+    total: Optional[float]
+    pending: bool
+    unavailable: bool
+
+
+@dataclass
+class SettledMoney:
+    """The settled subtotals seen so far, and whether their sum is a total or only part of one.
+
+    One accumulator for `Conversation.get_money_spent` and its workflow twin in the assistant router,
+    so the rule that keeps two zeros apart is written once. A **measured** zero - a turn or execution
+    that really cost nothing, both flags false - is a figure and is summed like any other. A
+    **flagged** zero is what `RequestSummary.calculate` writes when no run has settled yet, which on
+    the LiteLLM streaming path is the normal case for every turn: an absence wearing a number, which
+    `money_spent is not None` cannot tell from the first - only the flag beside it can. A sum made
+    only of flagged zeros has measured nothing and is no figure at all, never `$0.00` (AD-23).
+    """
+
+    subtotals: list[float] = field(default_factory=list)
+    measured_anything: bool = False
+    pending: bool = False
+    unavailable: bool = False
+
+    def add(self, money_spent: float, *, pending: bool, unavailable: bool) -> None:
+        """One settled subtotal with the two flags its carrier recorded beside it."""
+        self.subtotals.append(money_spent)
+        # Each carrier's own flag is carried through, not collapsed into one "qualified" bit: the
+        # reader renders "awaiting" and "unavailable" differently and must be told which.
+        self.pending = self.pending or pending
+        self.unavailable = self.unavailable or unavailable
+        # Unflagged, or flagged and not zero: measured. A flagged zero is the placeholder.
+        self.measured_anything = self.measured_anything or not (pending or unavailable) or bool(money_spent)
+
+    def mark_unavailable(self) -> None:
+        """A carrier with nothing settled at all: the sum is short by an amount nobody knows."""
+        self.unavailable = True
+
+    def total(self) -> MoneySpentTotal:
+        """The sum of what was measured, or no figure at all - never a zero nobody measured."""
+        return MoneySpentTotal(
+            total=sum(self.subtotals) if self.measured_anything else None,
+            pending=self.pending,
+            unavailable=self.unavailable,
+        )
 
 
 class Operator(BaseModel):
@@ -126,6 +192,19 @@ class GeneratedMessage(ChatMessage):
     cache_creation_input_tokens: Optional[int] = None  # Cache write tokens (Claude prompt caching)
     cache_read_input_tokens: Optional[int] = None  # Cache read tokens (Claude prompt caching)
     money_spent: Optional[float] = None
+    #: Whether `money_spent` above is final. Both default to None (absent), so every existing
+    #: producer and consumer keeps meaning exactly what it meant - additive, like the same pair on
+    #: `TokensUsage`. They are MUTUALLY EXCLUSIVE and say different things to a reader: pending means
+    #: a figure is coming and a later read will carry it; unavailable means no figure is coming for
+    #: this record and the number shown is the settled part only. Rendering the second as the first
+    #: promises a human something that never arrives; rendering neither presents a subtotal as a
+    #: total.
+    money_spent_pending: Optional[bool] = None
+    money_spent_unavailable: Optional[bool] = None
+    #: The request id of the turn that produced this assistant message: what a pending
+    #: `money_spent` above hydrates by (AD-28 rule 7). None on user messages and on every turn
+    #: persisted before it was recorded - those can never settle and are presented as unavailable.
+    request_id: Optional[str] = None
     user_mark: Optional[UserMark] = None
     operator_mark: Optional[UserMark] = None
     ## User message fields
@@ -209,6 +288,14 @@ class ConversationMetrics(BaseModelWithSQLSupport, table=True):
     total_input_tokens: Optional[int] = None
     total_output_tokens: Optional[int] = None
     total_money_spent: Optional[float] = None
+    #: Whether `total_money_spent` above is the whole cost. Without them a persisted subtotal is
+    #: indistinguishable from a final cost - for this endpoint's reader and for every SQL consumer
+    #: that sums the column (`leaderboard/collector.py`). Nullable and defaulting to None so a row
+    #: written before this pair existed keeps meaning exactly what it meant: the response omits the
+    #: fields (`response_model_exclude_none`) rather than asserting "settled" for a figure nobody
+    #: qualified.
+    money_spent_pending: Optional[bool] = None
+    money_spent_unavailable: Optional[bool] = None
 
     @classmethod
     def get_by_conversation_id(cls, conversation_id: str) -> ConversationMetrics:
@@ -231,7 +318,12 @@ class ConversationMetrics(BaseModelWithSQLSupport, table=True):
         self.number_of_messages = len(conversation.history)
         self.total_input_tokens = conversation.get_total_input_tokens()
         self.total_output_tokens = conversation.get_total_output_tokens()
-        self.total_money_spent = conversation.get_total_money_spent()
+        # The figure and its qualification are read together, from one pass over the same messages,
+        # so the persisted row can never carry a subtotal that looks exact.
+        money_spent = conversation.get_money_spent()
+        self.total_money_spent = money_spent.total
+        self.money_spent_pending = money_spent.pending
+        self.money_spent_unavailable = money_spent.unavailable
         self.avg_response_time = conversation.get_average_response_time()
 
 
@@ -243,6 +335,9 @@ class ConversationMetricsOut(BaseModel):
     total_output_tokens: int | None = None
     total_money_spent: float | None = None
     total_classifier_cost_usd: float | None = None
+    #: Whether `total_money_spent` above is the whole cost, spelled exactly as on `ConversationMetrics`.
+    money_spent_pending: bool | None = None
+    money_spent_unavailable: bool | None = None
 
 
 class Conversation(BaseModelWithSQLSupport, Owned, table=True):
@@ -346,12 +441,38 @@ class Conversation(BaseModelWithSQLSupport, Owned, table=True):
                 tokens.append(message.output_tokens)
         return sum(tokens) if tokens else 0
 
-    def get_total_money_spent(self):
-        money_spent = []
+    def get_money_spent(self) -> MoneySpentTotal:
+        """The money this conversation measured, and whether that is all of it.
+
+        Every assistant message carries its turn's settled subtotal plus the two flags that qualify
+        it, so the conversation total is the sum of the subtotals and its qualification is the union
+        of the flags. `SettledMoney` holds the rule that keeps a measured zero apart from a flagged
+        one, so a conversation made only of flagged zeros reports `None` and not the `$0.0000` the
+        usage card used to show for every streamed chat.
+
+        A missing figure (`money_spent is None`) is skipped rather than flagged: every user message
+        has one, as does every assistant message recorded before costs were tracked at all, and
+        flagging those would stamp "cost unavailable" on conversations that were simply never priced
+        this way.
+        """
+        money = SettledMoney()
         for message in self.history:
-            if isinstance(message, GeneratedMessage) and message.money_spent:
-                money_spent.append(message.money_spent)
-        return sum(money_spent) if money_spent else 0
+            if not isinstance(message, GeneratedMessage) or message.money_spent is None:
+                continue
+            money.add(
+                message.money_spent,
+                pending=bool(message.money_spent_pending),
+                unavailable=bool(message.money_spent_unavailable),
+            )
+        return money.total()
+
+    def get_total_money_spent(self) -> Optional[float]:
+        """The measured total alone; `get_money_spent` also says whether it is the whole of it.
+
+        A caller that publishes this number to a human needs the qualification too - without it a
+        subtotal is indistinguishable from a final cost.
+        """
+        return self.get_money_spent().total
 
     def get_total_classifier_cost_usd(self) -> float:
         total = 0.0
@@ -425,6 +546,12 @@ class Conversation(BaseModelWithSQLSupport, Owned, table=True):
             input_tokens=turn.input_tokens,
             output_tokens=turn.output_tokens,
             money_spent=turn.money_spent,
+            # A settled subtotal without its flags is indistinguishable from a final cost, and on
+            # the LiteLLM path a streamed turn with no cost header is the normal case - dropping
+            # them here publishes "this turn was free".
+            money_spent_pending=turn.money_spent_pending,
+            money_spent_unavailable=turn.money_spent_unavailable,
+            request_id=turn.request_id,
             response_time=turn.time_elapsed if not turn.in_progress else None,
             history_index=turn.history_index,
             thoughts=turn.thoughts,

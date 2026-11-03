@@ -76,6 +76,7 @@ from codemie.agents.agent_runtime_utils import (
     serialize_tool_calls,
     transform_history,
     truncate_log_value,
+    with_captured_origin,
 )
 from codemie.agents.agent_callback_factory import build_supervisor_callbacks, build_tool_callbacks
 from codemie.agents.assistant_agent import TaskResult
@@ -113,6 +114,8 @@ from codemie.service.dynamic_config_service import DynamicConfigService
 from codemie.service.file_service.image_service import ImageService
 from codemie.service.llm_service.llm_service import LLMService
 from codemie.service.llm_service.utils import set_llm_context
+from codemie.service.spend.origin_context import current_origin
+from codemie.service.spend.traffic_class import TrafficOrigin
 from codemie.templates.agents.assistant_base import markdown_response_prompt, supervisor_result_synthesis_prompt
 from codemie.core.exceptions import (
     MCPAuthenticationRequiredException,
@@ -134,6 +137,10 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
     ASSISTANT_NAME_MAX_LENGTH = 64
     INTERRUPT_BEFORE_TOOLS = ["tools"]
     SUPERVISOR_NODE_NAME = "supervisor"
+
+    #: The origin in force where this agent was built, replayed on the thread that runs it. Class
+    #: level so an agent assembled without `__init__` still answers None rather than raising.
+    _origin: TrafficOrigin | None = None
 
     @staticmethod
     def _is_conversation_replay_v2_enabled() -> bool:
@@ -201,6 +208,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
         self.assistant = assistant
         self.override_global_checkpointer = override_global_checkpointer
         self.trace_context = trace_context
+        self._origin = current_origin()
         self._current_llm_run_id: uuid.UUID | None = None  # tracks active LLM invocation
         self._last_truncated: bool = False
         self._sub_assistant_name_mapping: dict[str, str] = {}
@@ -725,6 +733,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
             "codemie.conversation_id": self.conversation_id or "",
         },
     )
+    @with_captured_origin
     def generate(self, background_task_id: str = "") -> GenerationResult:
         """
         Executes the AI agent and returns the generated output along with performance metadata.
@@ -791,6 +800,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
 
             return self._build_generation_result(user_message, success=False, time_elapsed=time_elapsed)
 
+    @with_captured_origin
     def stream(self):
         """
         This method enables assistant streaming, with the stream’s destination generally being a user interface (UI).

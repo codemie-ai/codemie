@@ -214,7 +214,7 @@ def get_workflow_executions(
     response_model=WorkflowExecutionResponse,
     response_model_by_alias=True,
 )
-def get_workflow_execution(execution_id: str, user: User = Depends(authenticate)):
+async def get_workflow_execution(execution_id: str, user: User = Depends(authenticate)):
     execution = WorkflowService().find_workflow_execution_by_id(execution_id)
 
     if not execution:
@@ -228,7 +228,10 @@ def get_workflow_execution(execution_id: str, user: User = Depends(authenticate)
     if not Ability(user).can(Action.READ, execution):
         raise_access_denied("view")
 
-    return WorkflowExecutionResponse(**execution.model_dump())
+    # The Info popup reads this route, so a cost still pending when the run ended settles here
+    # (AD-28 rule 7); the usage shown is the hydrated one, which the row carries only once settled.
+    tokens_usage = await WorkflowService.hydrate_execution_cost(execution)
+    return WorkflowExecutionResponse(**{**execution.model_dump(), "tokens_usage": tokens_usage})
 
 
 @router.post(

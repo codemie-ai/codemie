@@ -51,6 +51,8 @@ from codemie.service.assistant_service import AssistantService
 from codemie.service.monitoring.base_monitoring_service import emit_llm_token_metric
 from codemie.service.monitoring.metrics_constants import TOOLS_USAGE_TOKENS_METRIC, MetricsAttributes
 from codemie.service.request_summary_manager import request_summary_manager
+from codemie.service.spend.origin_context import spend_origin
+from codemie.service.spend.traffic_class import TrafficOrigin
 from codemie.service.tools.discovery import ToolDiscoveryService, ToolInfo
 from codemie.service.tools.tool_service import ToolsService
 from codemie.service.tools.toolkit_service import ToolkitService
@@ -134,50 +136,52 @@ class ToolExecutionService:
         """
         Invoke a search operation on a specific datasource.
         """
-        search_tool = cls.get_search_tool(datasource, request)
-        search_tool.metadata = {
-            'llm_model': request.llm_model,
-            REQUEST_ID: request.request_id or "",
-        }
-        try:
-            return search_tool.execute(query=request.query)
-        finally:
-            if request.request_id:
-                emit_llm_token_metric(
-                    name=TOOLS_USAGE_TOKENS_METRIC,
-                    request_id=request.request_id,
-                    base_attributes={
-                        MetricsAttributes.LLM_MODEL: request.llm_model or "default",
-                        MetricsAttributes.TOOL_NAME: search_tool.name,
-                        MetricsAttributes.PROJECT: datasource.project_name,
-                    },
-                )
-                request_summary_manager.clear_summary(request.request_id)
+        with spend_origin(TrafficOrigin.TOOLS):
+            search_tool = cls.get_search_tool(datasource, request)
+            search_tool.metadata = {
+                'llm_model': request.llm_model,
+                REQUEST_ID: request.request_id or "",
+            }
+            try:
+                return search_tool.execute(query=request.query)
+            finally:
+                if request.request_id:
+                    emit_llm_token_metric(
+                        name=TOOLS_USAGE_TOKENS_METRIC,
+                        request_id=request.request_id,
+                        base_attributes={
+                            MetricsAttributes.LLM_MODEL: request.llm_model or "default",
+                            MetricsAttributes.TOOL_NAME: search_tool.name,
+                            MetricsAttributes.PROJECT: datasource.project_name,
+                        },
+                    )
+                    request_summary_manager.clear_summary(request.request_id)
 
     @classmethod
     def invoke_tool_with_direct_creds(cls, request: ToolInvokeRequest, tool_name: str):
-        tool = cls.get_tool_with_direct_creds(request, tool_name)
-        try:
-            cls.validate_tool_args(tool, request.tool_args)
-            logger.info(f"Tool `{tool_name}` executed with arg keys: {sorted(request.tool_args)}")
-            if request.tool_attributes:
-                tool = cls.update_tool_attributes(tool, request.tool_attributes)
-            return cls.execute_tool(tool, request.tool_args)
-        except Exception as e:
-            logger.error(f"Error occurred on tool invocation: {str(e)}", exc_info=True)
-            raise e
-        finally:
-            if request.request_id:
-                emit_llm_token_metric(
-                    name=TOOLS_USAGE_TOKENS_METRIC,
-                    request_id=request.request_id,
-                    base_attributes={
-                        MetricsAttributes.LLM_MODEL: request.llm_model or "default",
-                        MetricsAttributes.TOOL_NAME: tool_name,
-                        MetricsAttributes.PROJECT: request.project or "-",
-                    },
-                )
-                request_summary_manager.clear_summary(request.request_id)
+        with spend_origin(TrafficOrigin.TOOLS):
+            tool = cls.get_tool_with_direct_creds(request, tool_name)
+            try:
+                cls.validate_tool_args(tool, request.tool_args)
+                logger.info(f"Tool `{tool_name}` executed with arg keys: {sorted(request.tool_args)}")
+                if request.tool_attributes:
+                    tool = cls.update_tool_attributes(tool, request.tool_attributes)
+                return cls.execute_tool(tool, request.tool_args)
+            except Exception as e:
+                logger.error(f"Error occurred on tool invocation: {str(e)}", exc_info=True)
+                raise e
+            finally:
+                if request.request_id:
+                    emit_llm_token_metric(
+                        name=TOOLS_USAGE_TOKENS_METRIC,
+                        request_id=request.request_id,
+                        base_attributes={
+                            MetricsAttributes.LLM_MODEL: request.llm_model or "default",
+                            MetricsAttributes.TOOL_NAME: tool_name,
+                            MetricsAttributes.PROJECT: request.project or "-",
+                        },
+                    )
+                    request_summary_manager.clear_summary(request.request_id)
 
     @classmethod
     def get_tool_with_direct_creds(cls, request: ToolInvokeRequest, tool_name: str) -> BaseTool:
@@ -254,40 +258,41 @@ class ToolExecutionService:
     @classmethod
     def invoke_tool_with_system_integration(cls, request: ToolInvokeRequest, tool_name: str, user: User):
         assistant = None
-        try:
-            assistant = VirtualAssistantService.create_from_tool_invocation(
-                tool_name=tool_name,
-                user=user,
-                project_name=request.project,
-                integration_alias=request.tool_creds.get("integration_alias") if request.tool_creds else None,
-                datasource_id=request.datasource_id,
-            )
-            if not assistant:
-                raise ValueError(f"Failed to create virtual assistant for tool `{tool_name}` execution")
-
-            tool = cls.get_tool_with_system_integration(request, tool_name, assistant, user)
-            cls.validate_tool_args(tool, request.tool_args)
-            logger.info(f"Tool `{tool_name}` executed with arg keys: {sorted(request.tool_args)}")
-            if request.tool_attributes:
-                tool = cls.update_tool_attributes(tool, request.tool_attributes)
-            return cls.execute_tool(tool, request.tool_args)
-        except Exception as e:
-            logger.error(f"Error occurred on tool invocation: {str(e)}", exc_info=True)
-            raise e
-        finally:
-            if request.request_id:
-                emit_llm_token_metric(
-                    name=TOOLS_USAGE_TOKENS_METRIC,
-                    request_id=request.request_id,
-                    base_attributes={
-                        MetricsAttributes.LLM_MODEL: request.llm_model or "default",
-                        MetricsAttributes.TOOL_NAME: tool_name,
-                        MetricsAttributes.PROJECT: request.project or "-",
-                    },
+        with spend_origin(TrafficOrigin.TOOLS):
+            try:
+                assistant = VirtualAssistantService.create_from_tool_invocation(
+                    tool_name=tool_name,
+                    user=user,
+                    project_name=request.project,
+                    integration_alias=request.tool_creds.get("integration_alias") if request.tool_creds else None,
+                    datasource_id=request.datasource_id,
                 )
-                request_summary_manager.clear_summary(request.request_id)
-            if assistant:
-                VirtualAssistantService.delete(assistant.id)
+                if not assistant:
+                    raise ValueError(f"Failed to create virtual assistant for tool `{tool_name}` execution")
+
+                tool = cls.get_tool_with_system_integration(request, tool_name, assistant, user)
+                cls.validate_tool_args(tool, request.tool_args)
+                logger.info(f"Tool `{tool_name}` executed with arg keys: {sorted(request.tool_args)}")
+                if request.tool_attributes:
+                    tool = cls.update_tool_attributes(tool, request.tool_attributes)
+                return cls.execute_tool(tool, request.tool_args)
+            except Exception as e:
+                logger.error(f"Error occurred on tool invocation: {str(e)}", exc_info=True)
+                raise e
+            finally:
+                if request.request_id:
+                    emit_llm_token_metric(
+                        name=TOOLS_USAGE_TOKENS_METRIC,
+                        request_id=request.request_id,
+                        base_attributes={
+                            MetricsAttributes.LLM_MODEL: request.llm_model or "default",
+                            MetricsAttributes.TOOL_NAME: tool_name,
+                            MetricsAttributes.PROJECT: request.project or "-",
+                        },
+                    )
+                    request_summary_manager.clear_summary(request.request_id)
+                if assistant:
+                    VirtualAssistantService.delete(assistant.id)
 
     @classmethod
     def get_search_tool(cls, datasource: IndexInfo, request: DatasourceSearchInvokeRequest):
@@ -513,47 +518,48 @@ class ToolExecutionService:
         Returns:
             Result of tool execution
         """
-        try:
-            file_urls = request.tool_args.pop("file_names", [])
-            if not file_urls:
-                error_msg = """
+        with spend_origin(TrafficOrigin.TOOLS):
+            try:
+                file_urls = request.tool_args.pop("file_names", [])
+                if not file_urls:
+                    error_msg = """
                     "Tool requires uploaded file. Supported formats: PPTX, DOCX, XLSX, XLSB, PDF, CSV, JPEG, PNG,
                     JPG, GIF, HTML, ZIP archives. Other files types will be treated as plain text files.
                 """
-                raise ValueError(error_msg)
+                    raise ValueError(error_msg)
 
-            file_objects = build_unique_file_objects_list(file_urls)
-            llm = get_llm_by_credentials(llm_model=request.llm_model, request_id=request.request_id)
-            if tool_name == IMAGE_TOOL.name:
-                toolkit = VisionToolkit.get_toolkit(files=file_objects, chat_model=llm)
-            else:
-                toolkit = FileAnalysisToolkit.get_toolkit(files=file_objects, chat_model=llm)
+                file_objects = build_unique_file_objects_list(file_urls)
+                llm = get_llm_by_credentials(llm_model=request.llm_model, request_id=request.request_id)
+                if tool_name == IMAGE_TOOL.name:
+                    toolkit = VisionToolkit.get_toolkit(files=file_objects, chat_model=llm)
+                else:
+                    toolkit = FileAnalysisToolkit.get_toolkit(files=file_objects, chat_model=llm)
 
-            tools = toolkit.get_tools()
-            tool = ToolsService.find_tool(tool_name, tools)
+                tools = toolkit.get_tools()
+                tool = ToolsService.find_tool(tool_name, tools)
 
-            cls.validate_tool_args(tool, request.tool_args)
-            logger.debug(f"Tool `{tool_name}` executed with args: {request.tool_args}")
-            if request.tool_attributes:
-                tool = cls.update_tool_attributes(tool, request.tool_attributes)
-            result = tool.execute(**request.tool_args)
+                cls.validate_tool_args(tool, request.tool_args)
+                logger.debug(f"Tool `{tool_name}` executed with args: {request.tool_args}")
+                if request.tool_attributes:
+                    tool = cls.update_tool_attributes(tool, request.tool_attributes)
+                result = tool.execute(**request.tool_args)
 
-            emit_llm_token_metric(
-                name=TOOLS_USAGE_TOKENS_METRIC,
-                request_id=request.request_id,
-                base_attributes={
-                    MetricsAttributes.LLM_MODEL: request.llm_model or "default",
-                    MetricsAttributes.TOOL_NAME: tool_name,
-                    MetricsAttributes.PROJECT: request.project or "-",
-                },
-            )
-            return result
-        except Exception as e:
-            logger.error(f"Error occurred on tool invocation: {str(e)}", exc_info=True)
-            raise e
-        finally:
-            if request.request_id:
-                request_summary_manager.clear_summary(request.request_id)
+                emit_llm_token_metric(
+                    name=TOOLS_USAGE_TOKENS_METRIC,
+                    request_id=request.request_id,
+                    base_attributes={
+                        MetricsAttributes.LLM_MODEL: request.llm_model or "default",
+                        MetricsAttributes.TOOL_NAME: tool_name,
+                        MetricsAttributes.PROJECT: request.project or "-",
+                    },
+                )
+                return result
+            except Exception as e:
+                logger.error(f"Error occurred on tool invocation: {str(e)}", exc_info=True)
+                raise e
+            finally:
+                if request.request_id:
+                    request_summary_manager.clear_summary(request.request_id)
 
     @classmethod
     def _is_file_dependent_tool(cls, tool_name: str) -> bool:

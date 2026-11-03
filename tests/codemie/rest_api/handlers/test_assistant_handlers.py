@@ -26,7 +26,10 @@ from codemie.core.errors import AgentErrorDetails, ErrorCode, ErrorDetailLevel, 
 from codemie.core.models import AssistantChatRequest
 from codemie.rest_api.handlers.assistant_handlers import ChatHistoryData, StandardAssistantHandler
 from codemie.rest_api.utils.client_context import ClientSource, clear_client_source, set_client_source
+from codemie.rest_api.routers.utils import run_assistant_in_thread_pool
 from codemie.rest_api.security.user import User
+from codemie.service.spend.origin_context import current_origin, spend_origin
+from codemie.service.spend.traffic_class import TrafficOrigin
 
 
 class TestFormatErrors:
@@ -1040,3 +1043,40 @@ class TestGuardConversationNotFinished:
 
         assert exc_info.value.code == status.HTTP_409_CONFLICT
         mock_build_agent.assert_not_called()
+
+
+class TestABackgroundRunCarriesTheRequestsOrigin:
+    """The worker builds its agent on a pool thread that copies no context, and the background task
+    runs in the outer request context where the router's origin block never applied - so the origin
+    reaches the worker only through the snapshot the handler takes."""
+
+    @pytest.fixture
+    def handler(self):
+        user = Mock(spec=User, id="user-123")
+        assistant = Mock(id="assistant-123", project="test-project")
+        assistant.name = "Test assistant"
+        return StandardAssistantHandler(assistant, user, "request-uuid")
+
+    def test_the_worker_is_run_inside_a_snapshot_of_the_publishing_context(self, handler):
+        from concurrent.futures import ThreadPoolExecutor
+
+        background_tasks = Mock()
+        with (
+            patch("codemie.rest_api.handlers.assistant_handlers.BackgroundTasksService") as service,
+            patch("codemie.rest_api.handlers.assistant_handlers.BackgroundTaskRequest"),
+            patch("codemie.rest_api.handlers.assistant_handlers.AssistantDetails"),
+            spend_origin(TrafficOrigin.CONVERSATION),
+        ):
+            service.return_value.save.return_value = "task-1"
+            handler._handle_background(
+                AssistantChatRequest(text="Hello"), background_tasks, raw_request=Mock(), execution_start=time()
+            )
+
+        submitted = background_tasks.add_task.call_args.args
+        assert submitted[0] is run_assistant_in_thread_pool
+        assert submitted[2] == handler._background_generate
+        run_in_snapshot = submitted[1]
+        # A bare pool thread sees nothing; run through the snapshot it sees what the request published.
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            assert pool.submit(current_origin).result() is None
+            assert pool.submit(run_in_snapshot, current_origin).result() is TrafficOrigin.CONVERSATION

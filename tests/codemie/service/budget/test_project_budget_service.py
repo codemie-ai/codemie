@@ -1047,6 +1047,50 @@ def _reset_provider():
     )
 
 
+async def _reset_project_and_capture_update_fields(sync_status):
+    service = ProjectBudgetService()
+    budget = SimpleNamespace(
+        budget_id="proj-budget-1",
+        budget_type="project",
+        budget_category="cli",
+        budget_duration="30d",
+        budget_reset_at="2026-04-22T10:00:00Z",
+        provider_metadata={"provider": "litellm", "provider_budget_ref": "key-alias-1", "sync_status": "ok"},
+        soft_budget=4000.0,
+        max_budget=5000.0,
+    )
+    assignment = SimpleNamespace(project_name="proj-a", budget_category="cli")
+    provider = _reset_provider()
+    provider.reset_project_budget_spend.return_value.sync_status = sync_status
+
+    with (
+        patch.object(service, "get_project_budget", new=AsyncMock(return_value=(budget, assignment, []))),
+        patch("codemie.service.budget.project_budget_service.get_active_provider", return_value=provider),
+        patch(
+            "codemie.service.budget.project_budget_service.budget_repository.update",
+            new=AsyncMock(return_value=budget),
+        ) as mock_update,
+        patch.object(SettingsService, "get_enforce_member_spend_limits", return_value=True),
+    ):
+        await service.reset_project_budget(session=AsyncMock(), budget_id="proj-budget-1", actor_id="actor-1")
+
+    return mock_update.await_args.args[2]
+
+
+@pytest.mark.asyncio
+async def test_project_reset_records_reset_time_when_provider_succeeds():
+    fields = await _reset_project_and_capture_update_fields(SyncStatus.OK)
+
+    assert fields["spend_reset_at"].tzinfo is not None
+
+
+@pytest.mark.asyncio
+async def test_project_reset_records_no_reset_time_when_provider_fails():
+    fields = await _reset_project_and_capture_update_fields(SyncStatus.FAILED)
+
+    assert "spend_reset_at" not in fields
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("allocation_mode", "enforce_limit", "expected_max"),

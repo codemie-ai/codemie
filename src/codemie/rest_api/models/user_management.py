@@ -293,6 +293,14 @@ class UserBudgetAssignmentInfo(BaseModel):
     budget_duration: Optional[str] = None
     budget_reset_at: Optional[str] = None
     current_spending: Optional[float] = None
+    # A figure cannot say by itself that it is truncated or dimension-incomplete, so it travels with
+    # both annotations the spend port returns beside it. Defaulted so every other client keeps
+    # deserialising, and `spend_unavailable` defaults to False because a caller that never had a port
+    # answer must not brand its figure suspect. `spend_missing_amount` stays None while
+    # `spend_partial` is set when the missing amount itself is unknown - that is a state, not a gap.
+    spend_unavailable: bool = False
+    spend_partial: bool = False
+    spend_missing_amount: Optional[float] = None
 
 
 class AdminUserListItem(BaseModel):

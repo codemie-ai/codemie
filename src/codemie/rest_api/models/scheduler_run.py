@@ -25,6 +25,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
 from codemie.rest_api.models.base import PaginationData
+from codemie.rest_api.models.conversation import SettledMoney
 
 
 class SchedulerRunStatus(StrEnum):
@@ -145,7 +146,40 @@ class RunResult(BaseModel):
 class RunMetrics(BaseModel):
     inputTokens: Optional[int] = None
     outputTokens: Optional[int] = None
+    #: `None` when nothing settled: a run whose cost is still pending has no figure, not a free one.
     cost: Optional[float] = None
+    #: Whether `cost` is the whole of it - meant exactly as `money_spent_pending` / `money_spent_unavailable`
+    #: on `TokensUsage`, camelCased like their siblings. Without them a pending subtotal reads as a final
+    #: cost and an absent one as a crash in the run's detail view.
+    moneySpentPending: Optional[bool] = None
+    moneySpentUnavailable: Optional[bool] = None
+
+    @classmethod
+    def from_usage(
+        cls,
+        input_tokens: Optional[int],
+        output_tokens: Optional[int],
+        money_spent: Optional[float],
+        *,
+        pending: bool,
+        unavailable: bool,
+    ) -> RunMetrics:
+        """One usage record as run metrics, its money read through `SettledMoney` like every other total.
+
+        The snapshot writers and the run-detail reader all build through here, so the stored snapshot
+        and the served metrics cannot disagree on the rule that a flagged zero is the "nothing settled
+        yet" placeholder and no figure at all. A missing `money_spent` stays missing: nobody measured it.
+        """
+        money = SettledMoney()
+        if money_spent is not None:
+            money.add(money_spent, pending=pending, unavailable=unavailable)
+        return cls(
+            inputTokens=input_tokens,
+            outputTokens=output_tokens,
+            cost=money.total().total,
+            moneySpentPending=pending,
+            moneySpentUnavailable=unavailable,
+        )
 
 
 class LogEntry(BaseModel):

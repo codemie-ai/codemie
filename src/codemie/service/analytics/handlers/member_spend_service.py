@@ -15,31 +15,27 @@
 from __future__ import annotations
 
 import asyncio
-
-from datetime import datetime, timezone
 from typing import Any, Callable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from codemie.configs import logger
+from codemie.clients.postgres import get_async_session
 from codemie.repository.application_repository import application_repository
 from codemie.repository.budget_repository import budget_repository
 from codemie.repository.project_budget_repository import (
     project_budget_assignment_repository,
     project_member_budget_assignment_repository,
 )
-from codemie.repository.project_spend_tracking_repository import project_spend_tracking_repository
 from codemie.repository.user_project_repository import user_project_repository
-from codemie.service.analytics.handlers.project_total_refresh import (
-    latest_active_total_rows,
-    refresh_user_project_totals,
-)
-from codemie.service.analytics.handlers.spend_snapshot_rows import _is_stale, _rows_to_write, _snapshot_to_row
 from codemie.service.budget.budget_enums import AllocationMode, BudgetCategory
 from codemie.service.budget.budget_models import member_effective_max_budget
+from codemie.service.budget.daily_reset_reconciliation_service import daily_budget_reset_reconciliation_service
 from codemie.service.budget.project_budget_service import ProjectBudgetService
-from codemie.service.budget.provider_registry import get_active_provider
-from codemie.service.spend_tracking.spend_models import ProjectSpendTracking
+from codemie.service.spend.budget_period import budget_period_range, later_start
+from codemie.service.spend.coverage import SpendResult, TimeRange
+from codemie.service.spend.ledger import ProjectHolder, ProjectMemberHolder
+from codemie.service.spend.rendering import render_budget_spend, spend_fields
+from codemie.service.spend.spend_service import spend_service
 
 _CATEGORY_LABELS = {
     BudgetCategory.PLATFORM.value: "Platform",
@@ -48,13 +44,13 @@ _CATEGORY_LABELS = {
 }
 
 
-def _category_columns(key_column_id: str, key_column_label: str) -> list[dict[str, Any]]:
+def _category_columns(key_column_id: str, key_column_label: str) -> list[dict]:
     """Build the column descriptors: one key column followed by one column per budget category.
 
     Generated from BudgetCategory rather than hardcoded so a new category appears in
     both columns[] and the rows without a frontend release.
     """
-    columns: list[dict[str, Any]] = [{"id": key_column_id, "label": key_column_label, "type": "string", "format": None}]
+    columns: list[dict] = [{"id": key_column_id, "label": key_column_label, "type": "string", "format": None}]
     for category in BudgetCategory:
         columns.append(
             {
@@ -67,15 +63,15 @@ def _category_columns(key_column_id: str, key_column_label: str) -> list[dict[st
     return columns
 
 
-def _spend_value(spend_row: Any | None) -> float:
-    """Return the row's current-period spend, or 0 when no snapshot exists.
+def _spend_cell(result: SpendResult | None) -> float | None:
+    """Render one consumed figure, keeping "no figure" distinct from "measured zero".
 
-    Absent rows mean "no recorded spend", which must render as 0 rather than being
-    omitted — omitting it would make the project or member disappear from the table.
+    None means the port produced no figure — no derivable budget period, or a ledger that
+    could not answer. Never substitute 0: a fabricated zero reads as "spent nothing", which is
+    a different fact from "unknown", and a client that renders it cannot tell them apart.
+    Decimal("0") is a real measured zero and passes through as 0.0.
     """
-    if spend_row is None:
-        return 0
-    return float(spend_row.budget_period_spend)
+    return render_budget_spend(result).figure
 
 
 def _limit_value(allocation: Any | None) -> float | None:
@@ -91,48 +87,37 @@ def _limit_value(allocation: Any | None) -> float | None:
 
 def _build_row(
     key_values: dict[str, Any],
-    spend_by_category: dict[str, Any],
+    spend_by_category: dict[str, SpendResult | None],
     allocation_by_category: dict[str, Any],
     reset_by_category: dict[str, str | None] | None = None,
 ) -> dict[str, Any]:
-    """Build one table row: key columns, then per-category spend and limit."""
+    """Build one table row: key columns, then per-category spend, limit and spend annotation."""
     row: dict[str, Any] = dict(key_values)
     for category in BudgetCategory:
         name = category.value
-        row[name] = _spend_value(spend_by_category.get(name))
+        result = spend_by_category.get(name)
+        row[name] = _spend_cell(result)
         row[f"{name}_limit"] = _limit_value(allocation_by_category.get(name))
+        # Keyed per category like `<category>_limit`: one row holds every category's figure, so one
+        # unsuffixed set of keys could not say which of them it qualifies.
+        row.update({f"{name}_{field}": value for field, value in spend_fields(render_budget_spend(result)).items()})
         if reset_by_category is not None:
             row[f"{name}_reset_at"] = reset_by_category.get(name)
     return row
 
 
-def _drop_rows_before_cutoff(
-    spend_map: dict[tuple[str, str], Any],
-    cutoff_for: Callable[[tuple[str, str]], datetime | None],
-) -> dict[tuple[str, str], Any]:
-    """Drop rows at or before the cutoff ``cutoff_for`` returns for their key; keep the rest.
-
-    Cutoffs come from ``get_project_reset_cutoffs``; see
-    ``LiteLLMSpendCollectorService.is_reset_transition`` for why a reset is recorded at all.
-    """
-    kept: dict[tuple[str, str], Any] = {}
-    for key, row in spend_map.items():
-        cutoff = cutoff_for(key)
-        spend_date = row.spend_date if row.spend_date.tzinfo else row.spend_date.replace(tzinfo=timezone.utc)
-        if cutoff is not None and spend_date <= cutoff:
-            continue
-        kept[key] = row
-    return kept
-
-
 def _build_spend_rows(
     row_keys: list[str],
     key_column_id: str,
-    spend_map: dict[tuple[str, str], Any],
+    spend_map: dict[tuple[str, str], SpendResult],
     allocation_map: dict[tuple[str, str], Any],
     reset_map: dict[tuple[str, str], str | None] | None = None,
 ) -> list[dict[str, Any]]:
-    """Project one row per key, left-joining spend and allocation limits onto it."""
+    """Project one row per key, left-joining spend and allocation limits onto it.
+
+    A key absent from spend_map and a key whose figure is None mean the same thing — no figure —
+    and both must still yield a row, or the project or member disappears from the table.
+    """
     rows = []
     for row_key in row_keys:
         spend_by_category = {c.value: spend_map.get((row_key, c.value)) for c in BudgetCategory}
@@ -144,9 +129,114 @@ def _build_spend_rows(
     return rows
 
 
-def _newest_spend_date(spend_map: dict[tuple[str, str], Any], project_names: set[str]) -> datetime | None:
-    dates = [row.spend_date for (project_name, _), row in spend_map.items() if project_name in project_names]
-    return max(dates, default=None)
+def _governing_budget(
+    key: tuple[str, str],
+    allocation_map: dict[tuple[str, str], Any],
+    budgets: dict[str, Any],
+    budget_id_by_key: dict[tuple[str, str], str] | None,
+) -> Any | None:
+    """The budget whose period a (row key, category) is read over, or None when there is none."""
+    if budget_id_by_key is not None and key in budget_id_by_key:
+        return budgets.get(budget_id_by_key[key])
+    allocation = allocation_map.get(key)
+    return budgets.get(allocation.project_budget_id) if allocation is not None else None
+
+
+def _budget_period(budget: Any | None) -> TimeRange | None:
+    if budget is None:
+        return None
+    return budget_period_range(
+        budget_reset_at=budget.budget_reset_at,
+        budget_duration=budget.budget_duration,
+        effective_from=later_start(budget.created_at, budget.spend_reset_at),
+    )
+
+
+async def _consumed_by_key(
+    row_keys: list[str],
+    allocation_map: dict[tuple[str, str], Any],
+    budgets: dict[str, Any],
+    holder_for: Callable[[str, BudgetCategory], ProjectMemberHolder],
+    budget_id_by_key: dict[tuple[str, str], str] | None = None,
+) -> dict[tuple[str, str], SpendResult]:
+    """Read every (row key, category)'s consumed amount through the spend port.
+
+        The whole `SpendResult` is kept rather than its `figure`: a truncated or dimension-incomplete
+    total is a number *plus* an annotation, and dropping the annotation here would leave it
+    rendering exactly like an exact figure.
+
+    The period comes from the allocation's project category budget, which is the row that
+    carries the whole schedule: child budgets copy their duration from it, and the daily reset
+    reconciliation treats a member reset instant drifting from its parent's as a defect. A pair
+    whose budget yields no period is left out entirely — there is no figure for it, and a range
+    built inline instead would answer a rolling-window question convincingly and wrongly. The
+    period starts no earlier than that budget's creation, so a member figure covers the same window
+    as its project's figure: the budget card, Budget Period Spend and the member allocations agree
+    (EPMCDME-15237 AC3).
+
+    Holders are grouped by period so the port is asked once per distinct period rather than once
+    per holder; budgets on the same reset schedule collapse to the same range, so a project's
+    whole member table is normally one round trip.
+
+    `budgets` are those project category budgets keyed by budget_id, read by the caller in a session
+    it has already closed: neither the provider call that reconciles an overdue reset nor the ledger
+    read runs while a pooled connection is held for them (EPMCDME-15537). A budget whose reset that
+    reconciliation moved is re-read in a short session of its own before any period is derived.
+
+    `budget_id_by_key` names the budget whose period a (row key, category) is read over, in place of
+    its allocation's; an enforcement-off project row may have no allocation at all.
+    """
+    refreshed = await daily_budget_reset_reconciliation_service.refresh_overdue(budgets.values())
+    if refreshed:
+        async with get_async_session() as session:
+            budgets.update(await budget_repository.get_by_ids(session, list(refreshed)))
+
+    holders_by_period: dict[TimeRange, list[ProjectMemberHolder]] = {}
+    key_by_holder: dict[ProjectMemberHolder, tuple[str, str]] = {}
+    for row_key in row_keys:
+        # Iterating the enum rather than the allocations' raw budget_category strings keeps an
+        # unrecognised category out of the holder, which only accepts a BudgetCategory.
+        for category in BudgetCategory:
+            key = (row_key, category.value)
+            period = _budget_period(_governing_budget(key, allocation_map, budgets, budget_id_by_key))
+            if period is None:
+                continue
+            holder = holder_for(row_key, category)
+            key_by_holder[holder] = key
+            holders_by_period.setdefault(period, []).append(holder)
+
+    consumed: dict[tuple[str, str], SpendResult] = {}
+    for period, holders in holders_by_period.items():
+        results = await spend_service.consumed_for_holders(holders, period)
+        for holder in holders:
+            consumed[key_by_holder[holder]] = results[holder]
+    return consumed
+
+
+async def _project_totals(
+    budget_ids: dict[tuple[str, str], str],
+    budgets: dict[str, Any],
+) -> dict[tuple[str, str], SpendResult]:
+    """Each (project, category)'s project total over its project budget's period, read through the port."""
+    holders_by_period: dict[TimeRange, list[ProjectHolder]] = {}
+    for (project_name, category_value), budget_id in budget_ids.items():
+        budget = budgets.get(budget_id)
+        if budget is None or category_value not in _CATEGORY_LABELS:
+            continue
+        period = budget_period_range(
+            budget_reset_at=budget.budget_reset_at,
+            budget_duration=budget.budget_duration,
+            effective_from=later_start(budget.created_at, budget.spend_reset_at),
+        )
+        if period is not None:
+            holders_by_period.setdefault(period, []).append(ProjectHolder(project_name, BudgetCategory(category_value)))
+
+    totals: dict[tuple[str, str], SpendResult] = {}
+    for period, holders in holders_by_period.items():
+        results = await spend_service.consumed_for_holders(holders, period)
+        for holder in holders:
+            totals[(holder.project, holder.category.value)] = results[holder]
+    return totals
 
 
 def _apply_unenforced_limit(
@@ -154,84 +244,87 @@ def _apply_unenforced_limit(
     name: str,
     budget: Any,
     allocation: Any | None,
-    project_total: float,
+    project_total: SpendResult | None,
     with_reset: bool,
 ) -> None:
-    """Set one category's limit, bar numerator and reset date on an enforcement-off project row."""
+    """Set one category's limit, bar numerator and reset date on an enforcement-off project row.
+
+    Without enforcement the provider stops a member only at the project budget, or at a fixed
+    override capped by what is left of the project budget. A non-override row's bar measures the
+    project total against the project budget, so it gets ``<category>_percent_spend``; an absent
+    total stays absent. A fixed override whose cap cannot be derived keeps the override itself.
+    """
     limit = member_effective_max_budget(allocation, budget, enforce_limit=False)
+    total = render_budget_spend(project_total).figure
     if getattr(allocation, "allocation_mode", None) == AllocationMode.FIXED.value:
-        project_cap = row[name] + max(0.0, budget.max_budget - project_total)
+        member_spend = row[name]
+        if member_spend is None or total is None:
+            row[f"{name}_limit"] = limit
+            return
+        project_cap = member_spend + max(0.0, budget.max_budget - total)
         row[f"{name}_limit"] = min(limit, project_cap)
         if with_reset and project_cap < limit:
             row[f"{name}_reset_at"] = budget.budget_reset_at
         return
     row[f"{name}_limit"] = limit
-    row[f"{name}_percent_spend"] = project_total
+    row[f"{name}_percent_spend"] = total
     if with_reset:
         row[f"{name}_reset_at"] = budget.budget_reset_at
 
 
 class MemberSpendService:
-    """Per-project member spend analytics with lazy global refresh from LiteLLM.
+    """Per-project member spend analytics, read from the ledger through the spend port.
 
-    Mirrors BudgetUsageService: read from the DB, refresh from the provider only when
-    the data is stale, and fall back to whatever the DB holds if the provider fails.
-
-    The refresh is global because the upstream call (/customer/list) is global — it
-    returns every customer regardless of what was asked for. Writing all of it means
-    one admin click warms the cache for every subsequent request.
+    Both readers are pure reads: membership drives the rows, the port supplies the figures, and a
+    row whose figure is absent keeps its place in the table with an empty spend cell.
     """
-
-    def __init__(self) -> None:
-        self._last_checked_at: datetime | None = None
-        self._refresh_lock = asyncio.Lock()
 
     async def get_user_project_spend(
         self,
-        session: AsyncSession,
         user_id: str,
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    ) -> tuple[list[dict], list[dict]]:
         """Return (columns, rows) — one row per shared project the user belongs to."""
-        return _category_columns("project_name", "Project"), await self.get_user_project_rows(session, user_id)
+        return _category_columns("project_name", "Project"), await self.get_user_project_rows(user_id)
 
     async def get_user_project_rows(
         self,
-        session: AsyncSession,
         user_id: str,
         *,
         enforced_only: bool = False,
         with_reset: bool = False,
-        user_scoped_refresh: bool = False,
         effective_limits: bool = False,
     ) -> list[dict[str, Any]]:
-        """Return one dict per shared project the user belongs to.
+        """Return one row per shared project the user belongs to.
 
-        With ``user_scoped_refresh`` only this user's member spend is refreshed, keyed on
-        the newest of their own rows, instead of the global ``_ensure_fresh`` refresh.
+        ``enforced_only`` keeps only the projects that enforce member spend limits; ``with_reset``
+        adds each category's ``<category>_reset_at``, taken from the budget that governs the member.
 
-        Without ``effective_limits`` each limit is the stored member allocation. With it,
-        rows carry the limit the provider actually enforces, and the selection becomes the
-        enforcement-on projects plus the enforcement-off projects that have an active project
-        budget (``enforced_only`` is then ignored). Enforcement-on rows are unchanged. For an
-        enforcement-off project, see ``_apply_unenforced_limits``.
+        With ``effective_limits`` rows carry the limit the provider actually enforces, and the
+        selection becomes the enforcement-on projects plus the enforcement-off projects that have an
+        active project budget (``enforced_only`` is then ignored). Enforcement-on rows are unchanged;
+        for an enforcement-off project, see ``_apply_unenforced_limit``.
 
-        Personal projects are always excluded. Their spend is metered against the user
-        (spend_subject_type='budget', keyed by username) rather than the project, so a
-        personal-project row could only ever read 0 — which reads as "spent nothing"
-        when the truth is "not tracked here". That spend is reported by
-        /v1/analytics/budget_usage instead.
+        Personal projects are excluded. Their spend is metered against the user rather than
+        against a project member budget, so a personal-project row could only ever read empty —
+        which reads as "spent nothing" when the truth is "not tracked here". That spend is
+        reported by /v1/analytics/budget_usage instead.
         """
-        if not user_scoped_refresh:
-            await self._ensure_fresh(session)
+        async with get_async_session() as session:
+            memberships = await user_project_repository.aget_by_user_id(session, user_id)
+            if not memberships:
+                return []
 
-        memberships = await user_project_repository.aget_by_user_id(session, user_id)
-        if not memberships:
-            return []
+            allocations = await project_member_budget_assignment_repository.get_active_by_user(session, user_id)
+            # Only the user's own memberships are asked about: loading every application to find the
+            # personal ones read ~45k rows per call (EPMCDME-15537).
+            personal_projects = await application_repository.aget_personal_project_names(
+                session, [m.project_name for m in memberships]
+            )
+            budgets = await budget_repository.get_by_ids(session, list({a.project_budget_id for a in allocations}))
+            allocation_map = {(a.project_name, a.budget_category): a for a in allocations}
+            reset_map = await self._reset_dates(session, allocation_map) if with_reset else None
 
-        member_project_names = [m.project_name for m in memberships]
-        personal_projects = await application_repository.aget_personal_project_names(session, member_project_names)
-        project_names = [name for name in member_project_names if name not in personal_projects]
-
+        project_names = [m.project_name for m in memberships if m.project_name not in personal_projects]
         enforced: set[str] = set()
         if (enforced_only or effective_limits) and project_names:
             from codemie.service.settings.settings import SettingsService
@@ -241,9 +334,16 @@ class MemberSpendService:
             )
         unenforced_budget_ids: dict[tuple[str, str], str] = {}
         if effective_limits:
-            unenforced_budget_ids = await self._active_project_budget_ids(
-                session, [name for name in project_names if name not in enforced]
-            )
+            unenforced = [name for name in project_names if name not in enforced]
+            if unenforced:
+                async with get_async_session() as session:
+                    assignments = await project_budget_assignment_repository.get_active_for_projects(
+                        session, unenforced
+                    )
+                    unenforced_budget_ids = {(a.project_name, a.budget_category): a.budget_id for a in assignments}
+                    budgets.update(
+                        await budget_repository.get_by_ids(session, list(set(unenforced_budget_ids.values())))
+                    )
             budgeted = {project for project, _ in unenforced_budget_ids}
             project_names = [name for name in project_names if name in enforced or name in budgeted]
         elif enforced_only:
@@ -251,69 +351,35 @@ class MemberSpendService:
         if not project_names:
             return []
 
-        selected = set(project_names)
-        cutoffs_by_project = await project_spend_tracking_repository.get_project_reset_cutoffs_for_projects(
-            session, project_names
+        spend_map = await _consumed_by_key(
+            project_names,
+            allocation_map,
+            budgets,
+            lambda project_name, category: ProjectMemberHolder(
+                project=project_name,
+                category=category,
+                user_id=user_id,
+            ),
+            unenforced_budget_ids,
         )
-        if user_scoped_refresh and unenforced_budget_ids and self._is_litellm_enabled():
-            await refresh_user_project_totals(session, unenforced_budget_ids, cutoffs_by_project)
-            await session.rollback()
-        allocations = await self._selected_allocations(session, user_id, selected)
-        spend_map = await project_spend_tracking_repository.get_latest_member_rows_for_user(session, user_id)
-
-        if (
-            user_scoped_refresh
-            and allocations
-            and _is_stale(_newest_spend_date(spend_map, selected))
-            and self._is_litellm_enabled()
-        ):
-            await self._refresh_user_member_spend(session, user_id, allocations, cutoffs_by_project)
-            # The refresh commits, which expires every ORM object loaded so far; reload them.
-            await session.rollback()
-            allocations = await self._selected_allocations(session, user_id, selected)
-            spend_map = await project_spend_tracking_repository.get_latest_member_rows_for_user(session, user_id)
-
-        spend_map = _drop_rows_before_cutoff(spend_map, lambda key: cutoffs_by_project.get(key[0], {}).get(key[1]))
-        allocation_map = {(a.project_name, a.budget_category): a for a in allocations}
-
-        reset_map = await self._reset_dates(session, allocation_map) if with_reset else None
         rows = _build_spend_rows(project_names, "project_name", spend_map, allocation_map, reset_map)
         if unenforced_budget_ids:
-            await self._apply_unenforced_limits(session, rows, unenforced_budget_ids, allocation_map, with_reset)
+            await self._apply_unenforced_limits(rows, unenforced_budget_ids, budgets, allocation_map, with_reset)
         return rows
 
     @staticmethod
-    async def _active_project_budget_ids(session: AsyncSession, project_names: list[str]) -> dict[tuple[str, str], str]:
-        """Return the active project budget id per (project, category).
-
-        Plain ids are returned so a later commit, which expires loaded ORM objects, cannot
-        invalidate them.
-        """
-        assignments = await project_budget_assignment_repository.get_active_for_projects(session, project_names)
-        return {(a.project_name, a.budget_category): a.budget_id for a in assignments}
-
-    @staticmethod
     async def _apply_unenforced_limits(
-        session: AsyncSession,
         rows: list[dict[str, Any]],
         budget_ids: dict[tuple[str, str], str],
+        budgets: dict[str, Any],
         allocation_map: dict[tuple[str, str], Any],
         with_reset: bool,
     ) -> None:
         """Replace the limits of enforcement-off project rows with the limit the provider enforces.
 
-        Without enforcement the provider stops a member only at the project budget, or at a
-        fixed override capped by what is left of the project budget. A category without an
-        active project budget has no limit. Non-override categories also get
-        ``{category}_percent_spend``, the project total that the project budget is measured
-        against. A project total row of any other budget than the active one counts as 0.
-        The reset date is the project budget's, unless a fixed override is itself the limit.
+        A category without an active project budget has no limit.
         """
-        budgets_map = await budget_repository.get_by_ids(session, list(set(budget_ids.values())))
-        totals = {
-            (r.project_name, r.budget_category): float(r.budget_period_spend)
-            for r in await latest_active_total_rows(session, budget_ids)
-        }
+        totals = await _project_totals(budget_ids, budgets)
         budgeted = {project for project, _ in budget_ids}
         for row in rows:
             project = row["project_name"]
@@ -321,75 +387,13 @@ class MemberSpendService:
                 continue
             for category in BudgetCategory:
                 key = (project, category.value)
-                budget = budgets_map.get(budget_ids.get(key))
+                budget = budgets.get(budget_ids.get(key))
                 if budget is None:
                     row[f"{category.value}_limit"] = None
                 else:
                     _apply_unenforced_limit(
-                        row, category.value, budget, allocation_map.get(key), totals.get(key, 0.0), with_reset
+                        row, category.value, budget, allocation_map.get(key), totals.get(key), with_reset
                     )
-
-    @staticmethod
-    async def _selected_allocations(session: AsyncSession, user_id: str, project_names: set[str]) -> list[Any]:
-        allocations = await project_member_budget_assignment_repository.get_active_by_user(session, user_id)
-        return [a for a in allocations if a.project_name in project_names]
-
-    async def _refresh_user_member_spend(
-        self,
-        session: AsyncSession,
-        user_id: str,
-        allocations: list[Any],
-        cutoffs_by_project: dict[str, dict[str, datetime]],
-    ) -> None:
-        """Refresh one user's member spend from the provider, like personal spend refreshes.
-
-        Changed spend inserts a row; unchanged spend moves the latest row's spend_date to
-        now so the freshness check holds for the TTL. Never raises: on failure the stored
-        rows are left as they are.
-        """
-        try:
-            if not await project_spend_tracking_repository.try_lock_member_refresh(session, user_id):
-                logger.info(f"Member spend refresh for user={user_id!r} already running elsewhere; serving DB data")
-                return
-
-            project_names = {a.project_name for a in allocations}
-            latest = await project_spend_tracking_repository.get_latest_member_rows_for_user(session, user_id)
-            if not _is_stale(_newest_spend_date(latest, project_names)):
-                return
-
-            snapshots = await get_active_provider().collect_member_budget_spend_for_allocations(allocations)
-            if not snapshots:
-                logger.info(f"Provider returned no member spend for user={user_id!r}")
-                return
-
-            now = datetime.now(timezone.utc)
-            prev_rows = await project_spend_tracking_repository.get_latest_before_by_member_budget_ids(
-                session, [(s.project_name, s.budget_id, s.user_id) for s in snapshots], now
-            )
-            budgets_map = await budget_repository.get_by_ids(session, list({s.budget_id for s in snapshots}))
-            rows, touch_ids = _rows_to_write(
-                snapshots,
-                prev_rows,
-                lambda s: (s.project_name, s.budget_id, s.user_id),
-                budgets_map,
-                cutoffs_by_project,
-                now,
-                "member_budget",
-            )
-
-            if rows:
-                await project_spend_tracking_repository.insert_member_budget_entries(session, rows)
-            if touch_ids:
-                await project_spend_tracking_repository.touch_member_spend_dates(session, touch_ids, now)
-            logger.info(
-                f"Refreshed member spend for user={user_id!r}: {len(rows)} inserted, {len(touch_ids)} unchanged"
-            )
-        except Exception as e:
-            logger.warning(f"Member spend refresh for user={user_id!r} failed: {e}. Returning stale DB data.")
-            try:
-                await session.rollback()
-            except Exception as rollback_error:
-                logger.warning(f"Rollback after failed member spend refresh also failed: {rollback_error}")
 
     @staticmethod
     async def _reset_dates(
@@ -410,29 +414,35 @@ class MemberSpendService:
 
     async def get_project_member_spend(
         self,
-        session: AsyncSession,
         project_name: str,
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    ) -> tuple[list[dict], list[dict]]:
         """Return (columns, rows) — one row per member of the project, keyed by user_id.
 
         user_id matches the id returned by GET /v1/admin/users, which is the join key
         the frontend uses against the existing member rows.
         """
-        await self._ensure_fresh(session)
+        async with get_async_session() as session:
+            members = await user_project_repository.aget_by_project_name(session, project_name)
+            columns = _category_columns("user_id", "User")
+            if not members:
+                return columns, []
 
-        members = await user_project_repository.aget_by_project_name(session, project_name)
-        columns = _category_columns("user_id", "User")
-        if not members:
-            return columns, []
-
-        spend_map = await project_spend_tracking_repository.get_latest_member_rows_for_project(session, project_name)
-        cutoffs = await project_spend_tracking_repository.get_project_reset_cutoffs(session, project_name)
-        spend_map = _drop_rows_before_cutoff(spend_map, lambda key: cutoffs.get(key[1]))
-        allocations = await project_member_budget_assignment_repository.get_active_by_project(session, project_name)
+            allocations = await project_member_budget_assignment_repository.get_active_by_project(session, project_name)
+            budgets = await budget_repository.get_by_ids(session, list({a.project_budget_id for a in allocations}))
 
         # The endpoint paginates, so rows need a stable order or pages skip and repeat members.
         user_ids = sorted(m.user_id for m in members)
         allocation_map = {(a.user_id, a.budget_category): a for a in allocations}
+        spend_map = await _consumed_by_key(
+            user_ids,
+            allocation_map,
+            budgets,
+            lambda member_user_id, category: ProjectMemberHolder(
+                project=project_name,
+                category=category,
+                user_id=member_user_id,
+            ),
+        )
         return columns, _build_spend_rows(user_ids, "user_id", spend_map, allocation_map)
 
     @staticmethod
@@ -451,85 +461,6 @@ class MemberSpendService:
                 user_project_repository.get_project_names_for_user(session, str(db_user.id)) if db_user else set()
             )
         return db_user, set(project_names)
-
-    async def _ensure_fresh(self, session: AsyncSession) -> None:
-        """Refresh all member spend from LiteLLM if the stored data is stale.
-
-        Never raises: a provider failure degrades to serving stale DB rows.
-
-        Must be called BEFORE any other read on this session. insert_member_budget_entries
-        commits internally, and with expire_on_commit=True that expires every ORM object
-        already loaded in the identity map. Callers therefore refresh first, then read.
-
-        Freshness is the per-process ``_last_checked_at`` marker alone. The newest
-        member row cannot serve as the marker: the personal page refreshes one user at a
-        time, and its fresh rows would make everyone else's look fresh. Accepted cost: each
-        process (and each restart) pays one full provider refresh on its first admin-page
-        request per TTL, and refreshes in different processes can overlap.
-        """
-        if not (_is_stale(self._last_checked_at) and self._is_litellm_enabled()):
-            logger.info(f"Returning cached member spend from DB (last checked={self._last_checked_at})")
-            return
-
-        async with self._refresh_lock:
-            if not _is_stale(self._last_checked_at):
-                logger.info(f"Returning cached member spend from DB after lock (last checked={self._last_checked_at})")
-                return
-
-            logger.info(f"Refreshing member spend from LiteLLM (last checked={self._last_checked_at})")
-            try:
-                await self._refresh_all_member_spend(session)
-            except Exception as e:
-                logger.warning(f"Member spend refresh failed: {e}. Returning stale DB data.")
-                try:
-                    await session.rollback()
-                except Exception as rollback_error:
-                    logger.warning(f"Rollback after failed member spend refresh also failed: {rollback_error}")
-            finally:
-                self._last_checked_at = datetime.now(timezone.utc)
-
-    @staticmethod
-    def _is_litellm_enabled() -> bool:
-        try:
-            from codemie.enterprise.litellm.dependencies import is_litellm_enabled
-
-            return is_litellm_enabled()
-        except ImportError:
-            return False
-
-    async def _refresh_all_member_spend(self, session: AsyncSession) -> None:
-        """Fetch every member snapshot from LiteLLM and persist the ones whose spend moved.
-
-        Reuses the budget provider's bulk collector and the spend collector's delta helpers
-        so the lazy path and the nightly batch job write identical rows.
-        """
-        await project_spend_tracking_repository.lock_all_member_refresh(session)
-        snapshots = await get_active_provider().collect_member_budget_spend()
-        if not snapshots:
-            logger.info("Provider returned no member spend snapshots")
-            return
-
-        now = datetime.now(timezone.utc)
-        triples = [(s.project_name, s.budget_id, s.user_id) for s in snapshots]
-        budgets_map = await budget_repository.get_all_keyed_by_id(session)
-        prev_rows = await project_spend_tracking_repository.get_latest_before_by_member_budget_ids(
-            session, triples, now
-        )
-
-        rows: list[ProjectSpendTracking] = []
-        for snapshot in snapshots:
-            prev_row = prev_rows.get((snapshot.project_name, snapshot.budget_id, snapshot.user_id))
-            row = _snapshot_to_row(snapshot, prev_row, budgets_map.get(snapshot.budget_id), now)
-            if row is not None:
-                rows.append(row)
-
-        skipped = len(snapshots) - len(rows)
-        if not rows:
-            logger.info(f"No member spend changed since the last snapshot ({skipped} unchanged)")
-            return
-
-        await project_spend_tracking_repository.insert_member_budget_entries(session, rows)
-        logger.info(f"Persisted {len(rows)} member spend rows from LiteLLM ({skipped} unchanged)")
 
 
 member_spend_service = MemberSpendService()

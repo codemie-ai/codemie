@@ -15,6 +15,8 @@
 from unittest.mock import Mock, patch
 
 from codemie.service.platform.platform_indexing_service import PlatformIndexingService
+from codemie.service.spend.origin_context import current_origin
+from codemie.service.spend.traffic_class import TrafficOrigin
 from codemie.datasource.platform.assistant_datasource_processor import AssistantDatasourceProcessor
 
 
@@ -106,3 +108,20 @@ class TestPlatformIndexingService:
         # Assert
         mock_processor_class.assert_called_once_with(datasource_name='marketplace_assistants', user=None)
         mock_processor.remove_single_entity.assert_called_once_with('asst_123', 'Test Assistant')
+
+
+class TestASingleAssistantIsIndexedUnderTheDatasourceIndexingOrigin:
+    """The single-entity path bypasses `process()`, whose own block covers a full sync, so it must
+    publish for itself or the embedding model it builds lands with no origin."""
+
+    @patch('codemie.service.platform.platform_indexing_service.AssistantDatasourceProcessor')
+    def test_index_single_entity_runs_inside_the_block_and_nothing_leaks_after_it(self, mock_processor_class):
+        seen = []
+        mock_processor_class.return_value.index_single_entity.side_effect = lambda *a, **k: seen.append(
+            current_origin()
+        )
+
+        PlatformIndexingService.index_single_assistant("assistant-1")
+
+        assert seen == [TrafficOrigin.DATASOURCE_INDEXING]
+        assert current_origin() is None

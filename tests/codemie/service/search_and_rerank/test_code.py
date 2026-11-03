@@ -18,6 +18,8 @@ from langchain_core.documents import Document
 from codemie.service.search_and_rerank import SearchAndRerankCode
 from codemie.core.models import CodeFields
 from codemie.core.constants import CodeIndexType
+from codemie.service.spend.origin_context import current_origin, spend_origin
+from codemie.service.spend.traffic_class import TrafficOrigin
 
 
 class TestSearchAndRerankCode:
@@ -436,3 +438,48 @@ class TestCodeEmbeddingTracking:
             request_id="req-code-002",
             llm_run=mock_llm_run,
         )
+
+
+class TestSearchAndRerankCodeSpendOrigin:
+    """The query embedding of a code search is search traffic."""
+
+    _MOD = 'codemie.service.search_and_rerank.code'
+
+    @pytest.fixture
+    def code_instance(self, mocker):
+        mocker.patch(f'{self._MOD}.get_indexed_repo').return_value.get_identifier.return_value = 'idx'
+        return SearchAndRerankCode(
+            query="find stuff",
+            keywords_list=[],
+            file_path=[],
+            code_fields=CodeFields(app_name='app', repo_name='repo', index_type=CodeIndexType.CODE),
+            top_k=5,
+        )
+
+    def test_knn_search_runs_under_search_embedding(self, mocker, code_instance):
+        observed = []
+        mocker.patch.object(
+            SearchAndRerankCode,
+            '_knn_vector_search',
+            side_effect=lambda: observed.append(current_origin()) or [],
+        )
+
+        code_instance.execute()
+
+        assert observed == [TrafficOrigin.SEARCH_EMBEDDING]
+        assert current_origin() is None
+
+    def test_search_restores_the_enclosing_origin(self, mocker, code_instance):
+        """A code search inside a conversation hands the conversation origin back when it returns."""
+        observed = []
+        mocker.patch.object(
+            SearchAndRerankCode,
+            '_knn_vector_search',
+            side_effect=lambda: observed.append(current_origin()) or [],
+        )
+
+        with spend_origin(TrafficOrigin.CONVERSATION):
+            code_instance.execute()
+
+            assert observed == [TrafficOrigin.SEARCH_EMBEDDING]
+            assert current_origin() == TrafficOrigin.CONVERSATION

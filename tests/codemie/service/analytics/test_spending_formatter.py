@@ -16,6 +16,7 @@
 
 import logging
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from typing import get_args, get_type_hints
 from unittest.mock import patch
 
@@ -23,6 +24,7 @@ import pytest
 
 from codemie.service.analytics import spending_formatter
 from codemie.service.analytics.response_formatter import ResponseFormatter
+from codemie.service.spend.coverage import SpendResult
 
 # 16 hours: with a 4-hour fixture ``% 86400`` -> ``% 43200`` would be an equivalent mutation. The 30 seconds of slack
 # keep the minute term stable while the test runs; the clock is not patched.
@@ -32,7 +34,7 @@ EXPIRED_TEXT = "0 days 0 hours 0 mins"
 
 METRIC_TEXT = {
     "current_spending": ("Current Spending ($)", "Total amount spent in current budget period"),
-    "budget_limit": ("Budget Limit ($)", "Soft budget limit (warning threshold)"),
+    "budget_limit": ("Budget Limit ($)", "Maximum budget for the period (hard limit)"),
     "budget_reset_at": ("Budget Reset Date", "Timestamp when budget will reset"),
     "time_until_reset": ("Time Until Reset", "Time remaining until budget resets"),
 }
@@ -44,6 +46,20 @@ def _metric(metric_id: str, value, value_type: str, format_type: str | None = No
     if format_type:
         metric["format"] = format_type
     return metric
+
+
+def _money(metric_id: str, value, *, unavailable: bool = False) -> dict:
+    """A currency metric as the spend port renders it: the figure plus the three companion keys."""
+    return {
+        **_metric(metric_id, value, "number", "currency"),
+        "spend_unavailable": unavailable,
+        "spend_partial": False,
+        "spend_missing_amount": None,
+    }
+
+
+def _spend(figure: float) -> SpendResult:
+    return SpendResult(figure=Decimal(str(figure)))
 
 
 def _future_reset(delta: timedelta = RESET_DELTA) -> str:
@@ -70,7 +86,7 @@ class TestBuildSpendingMetric:
         ("metric_id", "label", "description"),
         [
             pytest.param("current_spending", "Current Spending ($)", "Total amount spent in current budget period"),
-            pytest.param("budget_limit", "Budget Limit ($)", "Soft budget limit (warning threshold)"),
+            pytest.param("budget_limit", "Budget Limit ($)", "Maximum budget for the period (hard limit)"),
             pytest.param("budget_reset_at", "Budget Reset Date", "Timestamp when budget will reset"),
             pytest.param("time_until_reset", "Time Until Reset", "Time remaining until budget resets"),
         ],
@@ -120,33 +136,38 @@ class TestBuildSpendingMetric:
 
 class TestBuildSpendingMetrics:
     UNAVAILABLE = [
-        _metric("current_spending", 0.0, "number", "currency"),
+        _money("current_spending", None, unavailable=True),
         _metric("budget_limit", "N/A", "string"),
         _metric("budget_reset_at", "N/A", "string"),
         _metric("time_until_reset", "N/A", "string"),
     ]
 
     def test_none_data_is_unavailable(self, logged):
-        metrics = spending_formatter.build_spending_metrics(None, "u1")
+        metrics = spending_formatter.build_spending_metrics(None, None, "u1")
 
         assert metrics == self.UNAVAILABLE
         assert logged() == [("INFO", "Budget tracking not available for user u1")]
 
     def test_empty_dict_is_unavailable_pinned_quirk(self, logged):
-        metrics = spending_formatter.build_spending_metrics({}, "u1")
+        metrics = spending_formatter.build_spending_metrics({}, None, "u1")
 
         assert metrics == self.UNAVAILABLE
         assert logged() == [("INFO", "Budget tracking not available for user u1")]
+
+    def test_no_policy_still_renders_the_ledger_figure(self):
+        metrics = spending_formatter.build_spending_metrics(None, _spend(15.5), "u1")
+
+        assert metrics[0] == _money("current_spending", 15.5)
 
     def test_data_with_a_future_reset_fills_all_four_metrics(self, logged):
         reset = _future_reset()
 
         metrics = spending_formatter.build_spending_metrics(
-            {"total_spend": 15.5, "max_budget": 100.0, "budget_reset_at": reset}, "u1"
+            {"max_budget": 100.0, "budget_reset_at": reset}, _spend(15.5), "u1"
         )
 
         assert metrics == [
-            _metric("current_spending", 15.5, "number", "currency"),
+            _money("current_spending", 15.5),
             _metric("budget_limit", 100.0, "number", "currency"),
             _metric("budget_reset_at", reset, "date", "timestamp"),
             _metric("time_until_reset", RESET_TEXT, "string"),
@@ -160,29 +181,36 @@ class TestBuildSpendingMetrics:
 
     def test_missing_budget_limit_stays_a_number_metric_holding_none(self):
         metrics = spending_formatter.build_spending_metrics(
-            {"total_spend": 1.0, "max_budget": None, "budget_reset_at": _future_reset()}, "u1"
+            {"max_budget": None, "budget_reset_at": _future_reset()}, _spend(1.0), "u1"
         )
 
         assert metrics[1] == _metric("budget_limit", None, "number", "currency")
 
     def test_absent_budget_limit_key_also_holds_none(self):
-        metrics = spending_formatter.build_spending_metrics({"total_spend": 1.0}, "u1")
+        metrics = spending_formatter.build_spending_metrics({"budget_reset_at": _future_reset()}, _spend(1.0), "u1")
 
         assert metrics[1] == _metric("budget_limit", None, "number", "currency")
 
-    def test_missing_total_spend_counts_as_zero(self):
-        metrics = spending_formatter.build_spending_metrics({"max_budget": 100.0}, "u1")
+    def test_total_spend_in_the_policy_is_not_read(self):
+        metrics = spending_formatter.build_spending_metrics({"total_spend": 99.0, "max_budget": 100.0}, None, "u1")
 
-        assert metrics[0] == _metric("current_spending", 0.0, "number", "currency")
+        assert metrics[0] == _money("current_spending", None, unavailable=True)
+
+    def test_absent_figure_is_logged_as_unavailable(self, logged):
+        spending_formatter.build_spending_metrics({"max_budget": 100.0}, None, "u1")
+
+        assert logged() == [
+            ("INFO", "Spending analytics retrieved for user u1: spend=unavailable, budget=100.0, time_until_reset=N/A")
+        ]
 
     @pytest.mark.parametrize("reset", [None, ""])
     def test_no_reset_date_gives_string_metrics_without_a_format(self, reset, logged):
         metrics = spending_formatter.build_spending_metrics(
-            {"total_spend": 15.5, "max_budget": 100.0, "budget_reset_at": reset}, "u1"
+            {"max_budget": 100.0, "budget_reset_at": reset}, _spend(15.5), "u1"
         )
 
         assert metrics == [
-            _metric("current_spending", 15.5, "number", "currency"),
+            _money("current_spending", 15.5),
             _metric("budget_limit", 100.0, "number", "currency"),
             _metric("budget_reset_at", "N/A", "string"),
             _metric("time_until_reset", "N/A", "string"),
@@ -194,7 +222,7 @@ class TestBuildSpendingMetrics:
 
     def test_an_unparsable_reset_date_keeps_the_date_metric_and_has_no_time_until_reset(self, logged):
         metrics = spending_formatter.build_spending_metrics(
-            {"total_spend": 1.0, "max_budget": 100.0, "budget_reset_at": "not-a-date"}, "u1"
+            {"max_budget": 100.0, "budget_reset_at": "not-a-date"}, _spend(1.0), "u1"
         )
 
         assert metrics[2] == _metric("budget_reset_at", "not-a-date", "date", "timestamp")

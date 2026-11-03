@@ -36,6 +36,7 @@ from codemie_tools.base.file_object import FileObject
 from codemie.configs import logger, config
 from codemie.configs.llm_config import CostConfig
 from codemie.service.llm_service.llm_service import llm_service
+from codemie.service.spend.routing import LLMCallClass, uses_litellm
 
 
 def sanitize_string(input_string: str) -> str:
@@ -198,8 +199,14 @@ def build_embedding_llm_run(embeddings, text: str, model: str):
 
     If ``embeddings`` exposes ``consume_last_usage()`` (i.e. it is a
     ``LiteLLMAzureOpenAIEmbeddings`` instance) and it returns non-None data,
-    the proxy's pre-calculated cost is used.  Otherwise falls back to
-    ``calculate_tokens() × model_cost.input``.
+    the proxy's pre-calculated cost is used - already the authoritative figure.
+
+    With no proxy usage in hand the answer depends on where the embedding actually went.
+    On the LiteLLM path the real cost is recorded in ``litellm_spend_logs.spend`` and has
+    simply not arrived, so the money is **unsettled**: ``None`` (AD-28), which the ledger
+    settles later. Never a zero - that would assert the embedding was free - and never a
+    local estimate, because LiteLLM already priced it (AD-4). Off that path the local price
+    table *is* the ledger, so ``calculate_tokens() × model_cost.input`` stands.
     """
     import uuid
     from codemie.service.request_summary_manager import LLMRun
@@ -207,23 +214,29 @@ def build_embedding_llm_run(embeddings, text: str, model: str):
     proxy_usage = None
     if hasattr(embeddings, "consume_last_usage"):
         proxy_usage = embeddings.consume_last_usage()
+    # The id the embedding call carried to LiteLLM, so the run joins its ledger row.
+    carried_run_id = getattr(embeddings, "codemie_run_id", None)
+    run_id = carried_run_id if isinstance(carried_run_id, str) and carried_run_id else str(uuid.uuid4())
 
     if proxy_usage is not None:
         return LLMRun(
-            run_id=str(uuid.uuid4()),
+            run_id=run_id,
             input_tokens=proxy_usage.input_tokens,
             output_tokens=0,
             money_spent=proxy_usage.cost,
             llm_model=model,
         )
 
-    model_costs = llm_service.get_embeddings_model_cost(model)
     input_tokens = calculate_tokens(text)
+    if uses_litellm(LLMCallClass.EMBEDDINGS):
+        money_spent = None
+    else:
+        money_spent = input_tokens * llm_service.get_embeddings_model_cost(model).input
     return LLMRun(
-        run_id=str(uuid.uuid4()),
+        run_id=run_id,
         input_tokens=input_tokens,
         output_tokens=0,
-        money_spent=input_tokens * model_costs.input,
+        money_spent=money_spent,
         llm_model=model,
     )
 
@@ -482,59 +495,6 @@ def calculate_token_cost(
     )
 
     return total_cost, cached_tokens_cost, cache_creation_cost
-
-
-def calculate_cli_metric_cost(attributes: dict) -> tuple[float, float, float]:
-    """Calculate cost for CLI metrics from attributes dictionary.
-
-    Wrapper around calculate_token_cost() that extracts token counts from CLI metric attributes.
-    CLI sends Claude's native format with separate token types:
-    - total_input_tokens: Pure prompt tokens only (no cache included)
-    - total_cache_creation_tokens: Tokens used to CREATE cache (1.25x price for Claude)
-    - total_cache_read_input_tokens: Tokens READ from cache (0.1x price for Claude)
-    - total_output_tokens: Output tokens generated
-
-    Args:
-        attributes: CLI metric attributes dict containing token counts and model name
-
-    Returns:
-        tuple[float, float, float]: (total_cost, cache_read_cost, cache_creation_cost)
-
-    Example:
-        >>> attrs = {
-        ...     'llm_model': 'claude-3-5-sonnet-20241022',
-        ...     'total_input_tokens': 7,
-        ...     'total_cache_creation_tokens': 37202,
-        ...     'total_cache_read_input_tokens': 18504,
-        ...     'total_output_tokens': 17
-        ... }
-        >>> total, cached, creation = calculate_cli_metric_cost(attrs)
-    """
-    from codemie.service.llm_service.llm_service import llm_service
-
-    try:
-        llm_model = attributes.get('llm_model', 'unknown')
-        input_tokens = int(attributes.get('total_input_tokens', 0))
-        cache_creation_tokens = int(attributes.get('total_cache_creation_tokens', 0))
-        cache_read_tokens = int(attributes.get('total_cache_read_input_tokens', 0))
-        output_tokens = int(attributes.get('total_output_tokens', 0))
-
-        # Get model cost configuration
-        cost_config = llm_service.get_model_cost(llm_model)
-
-        # Use unified cost calculation (handles Claude native format)
-        return calculate_token_cost(
-            llm_model=llm_model,
-            cost_config=cost_config,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cached_tokens=cache_read_tokens,
-            cache_creation_tokens=cache_creation_tokens,
-        )
-
-    except Exception as e:
-        logger.warning(f"Failed to calculate CLI metric cost: {e}")
-        return 0.0, 0.0, 0.0
 
 
 def _process_file_names_to_objects(file_names: list[str], unique_files_dict: dict[str, FileObject]) -> None:

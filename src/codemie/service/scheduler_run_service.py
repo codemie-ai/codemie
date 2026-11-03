@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from codemie.core.event_loop import run_coroutine_blocking
 from codemie.repository.scheduler_run_repository import SchedulerRunRepository
 from codemie.rest_api.models.scheduler_run import (
     LogEntry,
@@ -59,42 +60,93 @@ class SchedulerRunService:
         self.get_run(run_id)  # raises 404 if missing
         return self._repo.get_logs_page(run_id, page, per_page)
 
+    @classmethod
+    def _build_metrics(cls, run: SchedulerRun) -> RunMetrics | None:
+        """The run's figures from the row its cost settles into where it has one, else its snapshot.
+
+        The snapshot is taken as the run ends - on the LiteLLM path before the ledger has settled the
+        run's cost - so it freezes a pending figure. The workflow execution and the conversation
+        metrics row are what that cost settles into (AD-28 rule 7), so they are read hydrated and
+        win; the snapshot answers only for a run with neither, such as datasource indexing.
+        """
+        if run.resource_execution_id and (metrics := cls._workflow_metrics(run.resource_execution_id)):
+            return metrics
+        if run.conversation_id and (metrics := cls._conversation_metrics(run.conversation_id)):
+            return metrics
+        return cls._snapshot_metrics(run.metrics)
+
     @staticmethod
-    def _build_metrics(run: SchedulerRun) -> RunMetrics | None:
-        if run.metrics:
-            return RunMetrics(
-                inputTokens=run.metrics.get("inputTokens"),
-                outputTokens=run.metrics.get("outputTokens"),
-                cost=run.metrics.get("cost"),
-            )
-        if run.conversation_id:
-            try:
-                from codemie.rest_api.models.conversation import ConversationMetrics
+    def _workflow_metrics(execution_id: str) -> RunMetrics | None:
+        from codemie.core.workflow_models.workflow_execution import WorkflowExecution
+        from codemie.service.workflow_service import WorkflowService
 
-                cm = ConversationMetrics.get_by_conversation_id(run.conversation_id)
-                return RunMetrics(
-                    inputTokens=cm.total_input_tokens,
-                    outputTokens=cm.total_output_tokens,
-                    cost=cm.total_money_spent,
+        try:
+            executions = WorkflowExecution.get_by_execution_id(execution_id)
+            stored = executions[0].tokens_usage if executions else None
+            if stored is None:
+                return None
+            # Hydration replaces the row's usage rather than editing it, so `stored` is still the
+            # unhydrated usage when a timeout falls back to it - flags and all, never a zero.
+            usage = (
+                run_coroutine_blocking(
+                    WorkflowService.hydrate_execution_cost(executions[0]),
+                    on_timeout="scheduler run workflow cost hydration",
                 )
-            except Exception:
-                pass
-        if run.resource_execution_id:
-            try:
-                from codemie.core.workflow_models.workflow_execution import WorkflowExecution
+                or stored
+            )
+            return RunMetrics.from_usage(
+                usage.input_tokens,
+                usage.output_tokens,
+                usage.money_spent,
+                pending=usage.money_spent_pending,
+                unavailable=usage.money_spent_unavailable,
+            )
+        except Exception:
+            return None
 
-                executions = WorkflowExecution.get_by_execution_id(run.resource_execution_id)
-                if executions:
-                    tu = executions[0].tokens_usage
-                    if tu:
-                        return RunMetrics(
-                            inputTokens=tu.input_tokens,
-                            outputTokens=tu.output_tokens,
-                            cost=tu.money_spent,
-                        )
-            except Exception:
-                pass
-        return None
+    @classmethod
+    def _conversation_metrics(cls, conversation_id: str) -> RunMetrics | None:
+        from codemie.rest_api.models.conversation import Conversation, ConversationMetrics
+        from codemie.service.conversation_service import ConversationService
+
+        try:
+            row = ConversationMetrics.get_by_conversation_id(conversation_id)
+            # Read before hydrating, which recomputes the row in place: a timeout must fall back to
+            # the stored figure with its stored flags, not to whatever a cancelled hydration reached.
+            stored = cls._conversation_row_metrics(row)
+            conversation = Conversation.find_by_id(conversation_id)
+            if conversation is None:
+                return stored
+            hydrated = run_coroutine_blocking(
+                ConversationService.hydrate_conversation_metrics(conversation, row),
+                on_timeout="scheduler run conversation cost hydration",
+            )
+            return stored if hydrated is None else cls._conversation_row_metrics(hydrated)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _conversation_row_metrics(row) -> RunMetrics:
+        return RunMetrics.from_usage(
+            row.total_input_tokens,
+            row.total_output_tokens,
+            row.total_money_spent,
+            pending=bool(row.money_spent_pending),
+            unavailable=bool(row.money_spent_unavailable),
+        )
+
+    @staticmethod
+    def _snapshot_metrics(snapshot: dict[str, Any] | None) -> RunMetrics | None:
+        if not snapshot:
+            return None
+        # A snapshot written before the flags were stored has no keys for them and reads as unflagged.
+        return RunMetrics.from_usage(
+            snapshot.get("inputTokens"),
+            snapshot.get("outputTokens"),
+            snapshot.get("cost"),
+            pending=bool(snapshot.get("moneySpentPending")),
+            unavailable=bool(snapshot.get("moneySpentUnavailable")),
+        )
 
     @staticmethod
     def _build_logs(run: SchedulerRun) -> list[LogEntry]:

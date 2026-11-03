@@ -23,6 +23,8 @@ from codemie.core.models import KnowledgeBase
 from codemie.service.llm_service.llm_service import llm_service
 from codemie.service.request_summary_manager import LLMRun
 from codemie.service.search_and_rerank.kb import SearchAndRerankKB, LLMSourcesRouting
+from codemie.service.spend.origin_context import current_origin, spend_origin
+from codemie.service.spend.traffic_class import TrafficOrigin
 
 
 class TestSearchAndRerankKB:
@@ -1157,3 +1159,51 @@ class TestKBEmbeddingTracking:
             request_id="req-kb-002",
             llm_run=mock_llm_run,
         )
+
+
+class TestSearchAndRerankKBSpendOrigin:
+    """The query embedding is search traffic; the source routing that follows is not."""
+
+    @pytest.fixture
+    def kb_instance(self):
+        kb_index = MagicMock()
+        kb_index.embeddings_model = 'test-embeddings'
+        kb_index.get_index_identifier.return_value = 'test_index'
+        return SearchAndRerankKB(
+            query="test query", kb_index=kb_index, llm_model="gpt-4o", top_k=10, request_id="req-origin-1"
+        )
+
+    def test_knn_search_runs_under_search_embedding(self, mocker, kb_instance):
+        observed = []
+        mocker.patch(
+            'codemie.service.search_and_rerank.kb.SearchAndRerankKB._knn_vector_search',
+            side_effect=lambda: observed.append(current_origin()) or [],
+        )
+        mocker.patch('codemie.service.search_and_rerank.kb.SearchAndRerankKB._text_search', return_value=[])
+        mocker.patch(
+            'codemie.service.search_and_rerank.kb.SearchAndRerankKB._get_llm_sources',
+            side_effect=lambda _field: observed.append(current_origin()) or [],
+        )
+        mocker.patch('codemie.service.search_and_rerank.kb.RRF')
+
+        kb_instance.execute()
+
+        assert observed == [TrafficOrigin.SEARCH_EMBEDDING, None]
+        assert current_origin() is None
+
+    def test_search_restores_the_enclosing_origin(self, mocker, kb_instance):
+        """A search inside a conversation must hand the conversation origin back when it returns."""
+        observed = []
+        mocker.patch(
+            'codemie.service.search_and_rerank.kb.SearchAndRerankKB._knn_vector_search',
+            side_effect=lambda: observed.append(current_origin()) or [],
+        )
+        mocker.patch('codemie.service.search_and_rerank.kb.SearchAndRerankKB._text_search', return_value=[])
+        mocker.patch('codemie.service.search_and_rerank.kb.SearchAndRerankKB._get_llm_sources', return_value=[])
+        mocker.patch('codemie.service.search_and_rerank.kb.RRF')
+
+        with spend_origin(TrafficOrigin.CONVERSATION):
+            kb_instance.execute()
+
+            assert observed == [TrafficOrigin.SEARCH_EMBEDDING]
+            assert current_origin() == TrafficOrigin.CONVERSATION

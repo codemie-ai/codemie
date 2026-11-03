@@ -20,13 +20,12 @@ from datetime import datetime
 
 from codemie.repository.metrics_elastic_repository import MetricsElasticRepository
 from codemie.rest_api.security.user import User
-from codemie.service.analytics.handlers.cli_cost_processor import CLICostAdjustmentMixin
 from codemie.service.analytics.query_pipeline import AnalyticsQueryFilters, AnalyticsQueryPipeline
 from codemie.service.analytics.response_formatter import ResponseFormatter
 from codemie.service.analytics.time_parser import TimeParser
 
 
-class CLIBaseHandler(CLICostAdjustmentMixin):
+class CLIBaseHandler:
     """Base handler for CLI analytics."""
 
     def __init__(self, user: User, repository: MetricsElasticRepository) -> None:

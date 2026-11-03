@@ -63,14 +63,6 @@ def _plain_user() -> User:
         )
 
 
-def _mock_session_ctx() -> MagicMock:
-    """Return a mock async context manager yielding a session."""
-    ctx = MagicMock()
-    ctx.__aenter__ = AsyncMock(return_value=AsyncMock())
-    ctx.__aexit__ = AsyncMock(return_value=False)
-    return ctx
-
-
 def _patch_lookup(db_user, project_names):
     """Patch the sync user/membership lookup the route runs via asyncio.to_thread."""
     return patch(
@@ -125,7 +117,6 @@ class TestUserProjectSpendingEndpoint:
 
         with (
             _patch_lookup(_target_user(), set()),
-            patch("codemie.clients.postgres.get_async_session", return_value=_mock_session_ctx()),
             patch(
                 "codemie.service.analytics.handlers.member_spend_service.member_spend_service.get_user_project_spend",
                 new=AsyncMock(return_value=(USER_COLUMNS, [])),
@@ -143,7 +134,6 @@ class TestUserProjectSpendingEndpoint:
         rows = [{"project_name": "atlas-core", "platform": 0, "cli": 0, "premium_models": 0}]
         with (
             _patch_lookup(_target_user(), {"atlas-core"}),
-            patch("codemie.clients.postgres.get_async_session", return_value=_mock_session_ctx()),
             patch(
                 "codemie.service.analytics.handlers.member_spend_service.member_spend_service.get_user_project_spend",
                 new=AsyncMock(return_value=(USER_COLUMNS, rows)),
@@ -162,7 +152,6 @@ class TestUserProjectSpendingEndpoint:
         spend = AsyncMock(return_value=(USER_COLUMNS, []))
         with (
             _patch_lookup(_target_user("resolved-id"), {"atlas-core"}),
-            patch("codemie.clients.postgres.get_async_session", return_value=_mock_session_ctx()),
             patch(
                 "codemie.service.analytics.handlers.member_spend_service.member_spend_service.get_user_project_spend",
                 new=spend,
@@ -172,7 +161,7 @@ class TestUserProjectSpendingEndpoint:
                 user=_admin_user(), users=" someone@example.com , other@example.com ", **PAGE_ARGS
             )
 
-        assert spend.await_args.args[1] == "resolved-id"
+        assert spend.await_args.args[0] == "resolved-id"
         assert response["metadata"]["filters_applied"] == {"users": "someone@example.com"}
 
     @pytest.mark.asyncio
@@ -191,7 +180,6 @@ class TestUserProjectSpendingEndpoint:
 
         with (
             _patch_lookup(_target_user(), {"atlas-core", "other-project"}),
-            patch("codemie.clients.postgres.get_async_session", return_value=_mock_session_ctx()),
             patch(
                 "codemie.service.analytics.handlers.member_spend_service.member_spend_service.get_user_project_spend",
                 new=AsyncMock(return_value=(USER_COLUMNS, [])),
@@ -221,17 +209,21 @@ class TestProjectMemberSpendingEndpoint:
     async def test_returns_200_with_empty_rows_for_project_with_no_members(self):
         from codemie.rest_api.routers.analytics.spending import get_project_member_spending
 
+        spend = AsyncMock(return_value=(MEMBER_COLUMNS, []))
         with (
-            patch("codemie.clients.postgres.get_async_session", return_value=_mock_session_ctx()),
+            patch("codemie.rest_api.routers.analytics.spending.get_async_session") as router_session,
             patch(
                 "codemie.service.analytics.handlers.member_spend_service.member_spend_service.get_project_member_spend",
-                new=AsyncMock(return_value=(MEMBER_COLUMNS, [])),
+                new=spend,
             ),
         ):
             response = await get_project_member_spending(user=_admin_user(), projects="empty-project", **PAGE_ARGS)
 
         assert response["data"]["rows"] == []
         assert response["data"]["columns"][0]["id"] == "user_id"
+        assert spend.await_args.args == ("empty-project",)
+        # The service owns short sessions of its own (EPMCDME-15537).
+        router_session.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_paginates_rows(self):
@@ -239,7 +231,6 @@ class TestProjectMemberSpendingEndpoint:
 
         rows = [{"user_id": f"u-{i}", "platform": 0, "cli": 0, "premium_models": 0} for i in range(5)]
         with (
-            patch("codemie.clients.postgres.get_async_session", return_value=_mock_session_ctx()),
             patch(
                 "codemie.service.analytics.handlers.member_spend_service.member_spend_service.get_project_member_spend",
                 new=AsyncMock(return_value=(MEMBER_COLUMNS, rows)),
@@ -257,7 +248,6 @@ class TestProjectMemberSpendingEndpoint:
 
         rows = [{"user_id": f"u-{i}"} for i in range(5)]
         with (
-            patch("codemie.clients.postgres.get_async_session", return_value=_mock_session_ctx()),
             patch(
                 "codemie.service.analytics.handlers.member_spend_service.member_spend_service.get_project_member_spend",
                 new=AsyncMock(return_value=(MEMBER_COLUMNS, rows)),
@@ -273,7 +263,6 @@ class TestProjectMemberSpendingEndpoint:
         from codemie.rest_api.routers.analytics.spending import get_project_member_spending
 
         with (
-            patch("codemie.clients.postgres.get_async_session", return_value=_mock_session_ctx()),
             patch(
                 "codemie.service.analytics.handlers.member_spend_service.member_spend_service.get_project_member_spend",
                 new=AsyncMock(return_value=(MEMBER_COLUMNS, [])),
@@ -334,7 +323,7 @@ class TestUserProjectSpendingLookupClosure:
                 return_value={"shared", "other"},
             ) as get_projects,
             patch("codemie.clients.postgres.get_session"),
-            patch("codemie.rest_api.routers.analytics.spending.get_async_session"),
+            patch("codemie.rest_api.routers.analytics.spending.get_async_session") as router_session,
             patch(
                 "codemie.service.analytics.handlers.member_spend_service.member_spend_service.get_user_project_spend",
                 new=spend,
@@ -345,7 +334,10 @@ class TestUserProjectSpendingLookupClosure:
         assert response["data"]["rows"] == []
         # The membership lookup must be keyed on the TARGET, never the caller.
         assert get_projects.call_args[0][1] == "target-1"
-        assert spend.await_args.args[1] == "target-1"
+        assert spend.await_args.args[0] == "target-1"
+        # The service owns short sessions of its own; one held here stayed idle across its provider
+        # call and ledger read (EPMCDME-15537).
+        router_session.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_project_admin_denied_when_target_shares_no_admin_project(self):

@@ -112,6 +112,7 @@ class TestLiteLLMContext:
         expected = {
             "credentials": {"api_key": "key", "url": "https://test.com"},
             "current_project": "test-project",
+            "principal_email": None,
             "personal_project": None,
             "budget_fallback_from": None,
         }

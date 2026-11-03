@@ -86,6 +86,27 @@ def test_send_tool_metrics_success(mock_send_count_metric):
 
 
 @patch.object(AgentMonitoringService, "send_count_metric")
+def test_send_tool_metrics_carries_the_assistant_id_when_the_caller_sent_one(mock_send_count_metric):
+    """The stable key beside the mutable one.
+
+    A tool-usage table grouped on `assistant_name` re-buckets its entire history when an assistant is
+    renamed, so the id has to reach the metric for that table to be keyed on anything better. Both
+    agent runtimes now put it in the tool metadata; only `langgraph_agent` used to.
+    """
+    AgentMonitoringService.send_tool_metrics(
+        "test_tool",
+        True,
+        0,
+        {"agent_name": "test", "assistant_id": "asst-42"},
+        None,
+    )
+
+    attributes = mock_send_count_metric.call_args_list[0].kwargs["attributes"]
+    assert attributes["assistant_id"] == "asst-42"
+    assert attributes["assistant_name"] == "test"
+
+
+@patch.object(AgentMonitoringService, "send_count_metric")
 def test_send_tool_metrics_writes_assistant_and_workflow_ids_when_the_run_has_them(mock_send_count_metric):
     AgentMonitoringService.send_tool_metrics("t", True, tool_metadata={"assistant_id": "asst-1", "workflow_id": "wf-1"})
 

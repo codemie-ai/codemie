@@ -690,6 +690,148 @@ def test_upsert_chat_history_with_missing_history_index(
     mock_conv_update.assert_called_once()
 
 
+@patch(
+    "codemie.service.monitoring.conversation_monitoring_service.ConversationMonitoringService.send_conversation_metric"
+)
+@patch("codemie.rest_api.models.conversation.ConversationMetrics.calculate_metrics")
+@patch("codemie.rest_api.models.conversation.ConversationMetrics.update")
+@patch("codemie.rest_api.models.conversation.ConversationMetrics.save")
+@patch("codemie.rest_api.models.conversation.Conversation.update")
+@patch("codemie.rest_api.models.conversation.Conversation.find_by_id")
+@patch("codemie.rest_api.models.conversation.ConversationMetrics.get_by_conversation_id")
+@patch("codemie.rest_api.models.conversation.Conversation.update_chat_history")
+def test_upsert_chat_history_hands_the_money_qualification_to_the_turn(
+    mock_update_chat_history,
+    mock_metrics_get,
+    mock_conv_find,
+    mock_conv_update,
+    mock_metrics_save,
+    mock_metrics_update,
+    mock_calculate_metrics,
+    _mock_metrics,
+    mock_assistant,
+    mock_admin_user,
+):
+    """The usage object carries the qualification; the persisted turn must not drop it."""
+    conversation = Conversation(id="test-id", conversation_id="test-id", history=[])
+    mock_conv_find.return_value = conversation
+    mock_metrics_get.return_value = ConversationMetrics(conversation_id="test-id")
+    mock_conv_update.return_value = True
+    mock_metrics_update.return_value = True
+
+    ConversationService.upsert_chat_history(
+        assistant_response="It's sunny today!",
+        user=mock_admin_user,
+        thoughts=[],
+        time_elapsed=0,
+        tokens_usage=TokensUsage(output_tokens=0, input_tokens=0, money_spent=0.0, money_spent_pending=True),
+        assistant=mock_assistant,
+        request=AssistantChatRequest(conversation_id="test-id", text="What's the weather like?", history=[]),
+    )
+
+    turn = mock_update_chat_history.call_args.args[0]
+    assert turn.money_spent == 0.0, "the settled subtotal still travels"
+    assert turn.money_spent_pending is True
+    assert turn.money_spent_unavailable is False
+
+
+@patch(
+    "codemie.service.monitoring.conversation_monitoring_service.ConversationMonitoringService.send_conversation_metric"
+)
+@patch("codemie.rest_api.models.conversation.ConversationMetrics.calculate_metrics")
+@patch("codemie.rest_api.models.conversation.ConversationMetrics.update")
+@patch("codemie.rest_api.models.conversation.ConversationMetrics.save")
+@patch("codemie.rest_api.models.conversation.Conversation.update")
+@patch("codemie.rest_api.models.conversation.Conversation.find_by_id")
+@patch("codemie.rest_api.models.conversation.ConversationMetrics.get_by_conversation_id")
+@patch("codemie.rest_api.models.conversation.Conversation.update_chat_history")
+def test_upsert_chat_history_hands_the_request_id_to_the_turn(
+    mock_update_chat_history,
+    mock_metrics_get,
+    mock_conv_find,
+    mock_conv_update,
+    mock_metrics_save,
+    mock_metrics_update,
+    mock_calculate_metrics,
+    _mock_metrics,
+    mock_assistant,
+    mock_admin_user,
+):
+    """The request id is the key a pending cost is settled by later (AD-28 rule 7); the turn must keep it."""
+    conversation = Conversation(id="test-id", conversation_id="test-id", history=[])
+    mock_conv_find.return_value = conversation
+    mock_metrics_get.return_value = ConversationMetrics(conversation_id="test-id")
+    mock_conv_update.return_value = True
+    mock_metrics_update.return_value = True
+
+    ConversationService.upsert_chat_history(
+        assistant_response="It's sunny today!",
+        user=mock_admin_user,
+        thoughts=[],
+        time_elapsed=0,
+        tokens_usage=TokensUsage(output_tokens=0, input_tokens=0, money_spent=0.0, money_spent_pending=True),
+        assistant=mock_assistant,
+        request=AssistantChatRequest(conversation_id="test-id", text="What's the weather like?", history=[]),
+        request_id="req-1",
+    )
+
+    assert mock_update_chat_history.call_args.args[0].request_id == "req-1"
+
+
+@patch(
+    "codemie.service.monitoring.conversation_monitoring_service.ConversationMonitoringService.send_conversation_metric"
+)
+@patch("codemie.rest_api.models.conversation.ConversationMetrics.calculate_metrics")
+@patch("codemie.rest_api.models.conversation.ConversationMetrics.update")
+@patch("codemie.rest_api.models.conversation.ConversationMetrics.save")
+@patch("codemie.rest_api.models.conversation.Conversation.update")
+@patch("codemie.rest_api.models.conversation.Conversation.find_by_id")
+@patch("codemie.rest_api.models.conversation.ConversationMetrics.get_by_conversation_id")
+@patch("codemie.service.conversation_service.AgentWorkspaceService.sync_uploaded_files")
+def test_upsert_chat_history_persists_an_in_progress_turn_as_pending_until_it_completes(
+    _mock_sync_uploaded_files,
+    mock_metrics_get,
+    mock_conv_find,
+    _mock_conv_update,
+    _mock_metrics_save,
+    _mock_metrics_update,
+    _mock_calculate_metrics,
+    _mock_metrics,
+    mock_assistant,
+    mock_admin_user,
+):
+    """No run exists yet when the in-progress turn is written: its default zero is no figure, not a free turn."""
+    conversation = Conversation(id="test-id", conversation_id="test-id", history=[])
+    mock_conv_find.return_value = conversation
+    mock_metrics_get.return_value = ConversationMetrics(conversation_id="test-id")
+    request = AssistantChatRequest(conversation_id="test-id", text="What's the weather like?", history=[])
+
+    ConversationService.upsert_chat_history(
+        UpsertChatHistoryParams(request=request, assistant=mock_assistant, user=mock_admin_user, in_progress=True)
+    )
+
+    in_progress_turn = conversation.history[-1]
+    assert (in_progress_turn.money_spent_pending, in_progress_turn.money_spent_unavailable) == (True, False)
+
+    ConversationService.upsert_chat_history(
+        UpsertChatHistoryParams(
+            request=request,
+            assistant=mock_assistant,
+            user=mock_admin_user,
+            assistant_response="It's sunny today!",
+            tokens_usage=TokensUsage(output_tokens=5, input_tokens=7, money_spent=0.25),
+        )
+    )
+
+    assert len(conversation.history) == 2, "the completed turn replaces the placeholder"
+    completed_turn = conversation.history[-1]
+    assert (completed_turn.money_spent, completed_turn.money_spent_pending, completed_turn.money_spent_unavailable) == (
+        0.25,
+        False,
+        False,
+    )
+
+
 @patch("codemie.rest_api.models.assistant.Assistant.get_by_ids")
 def test_build_new_conversation_with_assistant(
     mock_get_by_ids,

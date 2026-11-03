@@ -44,10 +44,12 @@ class TestBuildEmbeddingLLMRun:
         mock_embeddings.consume_last_usage.assert_called_once()
 
     def test_fallback_path_uses_calculated_tokens(self, mocker):
+        """Off the LiteLLM path the local price table *is* the ledger, so the estimate stands."""
         from codemie.core.utils import build_embedding_llm_run
         from codemie.service.request_summary_manager import LLMRun
 
         mock_embeddings = _NoProxyEmbeddings()
+        mocker.patch("codemie.core.utils.uses_litellm", return_value=False)
 
         mocker.patch("codemie.core.utils.llm_service.get_embeddings_model_cost").return_value = MagicMock(input=0.0002)
         mocker.patch("codemie.core.utils.calculate_tokens", return_value=50)
@@ -64,6 +66,7 @@ class TestBuildEmbeddingLLMRun:
 
         mock_embeddings = MagicMock()
         mock_embeddings.consume_last_usage.return_value = None
+        mocker.patch("codemie.core.utils.uses_litellm", return_value=False)
 
         mocker.patch("codemie.core.utils.llm_service.get_embeddings_model_cost").return_value = MagicMock(input=0.0002)
         mocker.patch("codemie.core.utils.calculate_tokens", return_value=30)
@@ -86,6 +89,40 @@ class TestBuildEmbeddingLLMRun:
 
         assert result.output_tokens == 0
 
+    def test_litellm_embeddings_without_proxy_usage_are_unsettled_not_zero(self, mocker):
+        """AD-28: on the LiteLLM path the real cost is in the ledger, so the money is absent.
+
+        The embedding succeeded and was billed, so a zero would be a lie; and LiteLLM already
+        priced it, so a local estimate would be a second, disagreeing number (AD-4).
+        """
+        from codemie.core.utils import build_embedding_llm_run
+
+        mock_embeddings = _NoProxyEmbeddings()
+        mocker.patch("codemie.core.utils.uses_litellm", return_value=True)
+        mock_model_cost = mocker.patch("codemie.core.utils.llm_service.get_embeddings_model_cost")
+        mocker.patch("codemie.core.utils.calculate_tokens", return_value=50)
+
+        result = build_embedding_llm_run(mock_embeddings, "test query", "ada-002")
+
+        assert result.money_spent is None
+        assert not isinstance(result.money_spent, float)
+        # The price table is never even consulted on this path.
+        mock_model_cost.assert_not_called()
+        # The token count is real and stays.
+        assert result.input_tokens == 50
+
+    def test_uses_litellm_is_asked_about_embeddings_not_chat(self, mocker):
+        """AD-2: embeddings route on four terms, chat on three - the class must be explicit."""
+        from codemie.core.utils import build_embedding_llm_run
+        from codemie.service.spend.routing import LLMCallClass
+
+        mock_uses_litellm = mocker.patch("codemie.core.utils.uses_litellm", return_value=True)
+        mocker.patch("codemie.core.utils.calculate_tokens", return_value=1)
+
+        build_embedding_llm_run(_NoProxyEmbeddings(), "q", "ada-002")
+
+        mock_uses_litellm.assert_called_once_with(LLMCallClass.EMBEDDINGS)
+
     def test_each_call_produces_unique_run_id(self, mocker):
         from codemie.core.utils import build_embedding_llm_run
 
@@ -99,3 +136,15 @@ class TestBuildEmbeddingLLMRun:
         r2 = build_embedding_llm_run(mock_embeddings, "x", "model")
 
         assert r1.run_id != r2.run_id
+
+    def test_run_id_is_the_one_the_embedding_call_carried(self):
+        from codemie.core.utils import build_embedding_llm_run
+
+        mock_usage = MagicMock()
+        mock_usage.input_tokens = 10
+        mock_usage.cost = 0.000001
+        mock_embeddings = MagicMock()
+        mock_embeddings.consume_last_usage.return_value = mock_usage
+        mock_embeddings.codemie_run_id = "run-from-litellm-headers"
+
+        assert build_embedding_llm_run(mock_embeddings, "x", "model").run_id == "run-from-litellm-headers"

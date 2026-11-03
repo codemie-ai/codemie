@@ -21,6 +21,8 @@ import pytest
 from langchain_core.documents import Document
 
 from codemie.core.models import AssistantChatRequest
+from codemie.service.spend.origin_context import current_origin
+from codemie.service.spend.traffic_class import TrafficOrigin
 from codemie.service.tools.toolkit_lookup_service import ToolkitLookupService
 from codemie_tools.base.models import Tool, ToolKit
 
@@ -513,3 +515,22 @@ class TestToolkitLookupService:
             assert doc.metadata["name"] in doc.page_content
             assert "tokenized name" in doc.page_content
             assert doc.metadata["description"] in doc.page_content
+
+
+class TestTheToolCatalogIndexesUnderTheDatasourceIndexingOrigin:
+    def test_the_documents_are_indexed_inside_the_origin_block_and_nothing_leaks_after_it(self):
+        seen = []
+
+        def record(documents):
+            seen.append(current_origin())
+            return len(documents)
+
+        with (
+            patch.object(ToolkitLookupService, "_get_tools_metadata", return_value=[]),
+            patch.object(ToolkitLookupService, "_prepare_tool_documents", return_value=["doc"]),
+            patch.object(ToolkitLookupService, "_index_documents", side_effect=record),
+        ):
+            assert ToolkitLookupService.index_all_tools() == 1
+
+        assert seen == [TrafficOrigin.DATASOURCE_INDEXING]
+        assert current_origin() is None

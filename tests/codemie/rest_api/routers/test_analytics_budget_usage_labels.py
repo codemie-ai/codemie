@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -44,23 +44,17 @@ async def test_budget_usage_uses_username_as_subject_label():
         },
     ]
 
-    mock_session = AsyncMock()
-    mock_ctx = MagicMock()
-    mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_ctx.__aexit__ = AsyncMock(return_value=False)
-
     captured_label = {}
 
-    async def capture_get_budget_usage(session, subject_user_id, subject_label, subject_email=None):
+    async def capture_get_budget_usage(subject_user_id, subject_label, subject_email=None):
         captured_label["value"] = subject_label
         return _get_key_spending_columns(), mock_rows
 
-    with patch("codemie.clients.postgres.get_async_session", return_value=mock_ctx):
-        with patch(
-            "codemie.service.analytics.handlers.budget_usage_service.BudgetUsageService.get_budget_usage",
-            side_effect=capture_get_budget_usage,
-        ):
-            await get_user_budget_usage(user=mock_user, user_id=None)
+    with patch(
+        "codemie.service.analytics.handlers.budget_usage_service.BudgetUsageService.get_budget_usage",
+        side_effect=capture_get_budget_usage,
+    ):
+        await get_user_budget_usage(user=mock_user, user_id=None)
 
     assert (
         captured_label["value"] == "john_doe"
@@ -82,23 +76,17 @@ async def test_budget_usage_uses_username_even_when_email_differs():
     )
 
     mock_rows = []
-    mock_session = AsyncMock()
-    mock_ctx = MagicMock()
-    mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_ctx.__aexit__ = AsyncMock(return_value=False)
-
     captured_label = {}
 
-    async def capture_get_budget_usage(session, subject_user_id, subject_label, subject_email=None):
+    async def capture_get_budget_usage(subject_user_id, subject_label, subject_email=None):
         captured_label["value"] = subject_label
         return _get_key_spending_columns(), mock_rows
 
-    with patch("codemie.clients.postgres.get_async_session", return_value=mock_ctx):
-        with patch(
-            "codemie.service.analytics.handlers.budget_usage_service.BudgetUsageService.get_budget_usage",
-            side_effect=capture_get_budget_usage,
-        ):
-            await get_user_budget_usage(user=mock_user, user_id=None)
+    with patch(
+        "codemie.service.analytics.handlers.budget_usage_service.BudgetUsageService.get_budget_usage",
+        side_effect=capture_get_budget_usage,
+    ):
+        await get_user_budget_usage(user=mock_user, user_id=None)
 
     assert captured_label["value"] == "jsmith"
     assert captured_label["value"] != "john.smith@client.org"
@@ -107,21 +95,15 @@ async def test_budget_usage_uses_username_even_when_email_differs():
 def _patched_budget_usage(captured):
     from codemie.service.analytics.handlers.budget_usage_service import _get_key_spending_columns
 
-    async def capture(session, subject_user_id, subject_label, subject_email=None):
+    async def capture(subject_user_id, subject_label, subject_email=None):
         captured["user_id"] = subject_user_id
         captured["label"] = subject_label
         captured["email"] = subject_email
         return _get_key_spending_columns(), []
 
-    mock_ctx = MagicMock()
-    mock_ctx.__aenter__ = AsyncMock(return_value=AsyncMock())
-    mock_ctx.__aexit__ = AsyncMock(return_value=False)
-    return (
-        patch("codemie.clients.postgres.get_async_session", return_value=mock_ctx),
-        patch(
-            "codemie.service.analytics.handlers.budget_usage_service.BudgetUsageService.get_budget_usage",
-            side_effect=capture,
-        ),
+    return patch(
+        "codemie.service.analytics.handlers.budget_usage_service.BudgetUsageService.get_budget_usage",
+        side_effect=capture,
     )
 
 
@@ -137,9 +119,7 @@ async def test_budget_usage_passes_caller_email_as_subject_email():
         admin_project_names=[],
     )
     captured = {}
-    ctx_patch, usage_patch = _patched_budget_usage(captured)
-
-    with ctx_patch, usage_patch:
+    with _patched_budget_usage(captured):
         await get_user_budget_usage(user=mock_user, user_id=None)
 
     assert captured["email"] == "john.smith@client.org"
@@ -155,11 +135,8 @@ async def test_budget_usage_admin_view_passes_target_email_as_subject_email():
     admin = User(id="admin-id", username="admin", email="admin@corp.com", project_names=[], admin_project_names=[])
     target = SimpleNamespace(id="target-id", username="target_user", email="target@corp.com")
     captured = {}
-    ctx_patch, usage_patch = _patched_budget_usage(captured)
-
     with (
-        ctx_patch,
-        usage_patch,
+        _patched_budget_usage(captured),
         patch.object(spending.config, "ENABLE_USER_MANAGEMENT", True),
         patch("codemie.clients.postgres.get_session"),
         patch(
