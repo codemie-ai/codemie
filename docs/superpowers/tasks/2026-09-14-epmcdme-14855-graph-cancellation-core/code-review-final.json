@@ -1,0 +1,118 @@
+{
+  "decision": "request-changes",
+  "rationale": "All 5 review artifacts (blind, edge-case, verification-gap, acceptance, standards) parsed cleanly against a present spec, and every candidate was verified against current source. 8 blocking findings survive: 4 critical (A.1's truncation check silently skips generate_structured_response and per-sub-agent nodes; the MCP-auth exception path never resets SupervisorCoordinator, unlike the sibling generic-exception path; the new exception-path stream.close() now runs before record_exception_on_span, per the codebase's own documented OTEL-demotion comment, so genuine errors silently lose their trace status; _send_error_to_thread streams the raw AgentErrorDetails.stacktrace regardless of HIDE_AGENT_STREAMING_EXCEPTIONS) and 4 major (an unguarded stream.close() in the new finally that can mask the original exception; the success-path final chunk never sets success=True, asymmetric with the new success=False on the error path; two test-coverage gaps for the new subagents-truncation and tool_errors-mapping code paths). 5 lens findings were dismissed as unreachable or already-accepted risk (no defer): the supervisor-coordinator None concern, the moot _build_final_chunk-removal regression (it always returned None in production per spec's own B.8 rationale), the tuple-unpack shape concern (guarded 1:1 by the same self.subagents flag), the ThreadedGenerator send/close race (spec.md's Open Risks section pre-accepts this exact scenario as non-blocking), and the buffered-supervisor-contexts cleanup gap (agents are constructed fresh per request, no reuse found).",
+  "confidence": "high",
+  "risk_flags": ["security"],
+  "business_review": [
+    {"kind": "spec", "item": "A.1: a finished AI message truncated by max_tokens is detected inside _stream_graph's own loop even when it carries no tool calls", "status": "partial", "notes": "Only checks agent/supervisor node; misses generate_structured_response and per-sub-agent nodes in supervisor mode (CR-006)"},
+    {"kind": "spec", "item": "A.2: stream.close() runs on every exit from _stream_graph's loop with OTEL demotion-before-close ordering preserved", "status": "pass", "notes": "Holds for the hedging-cancel exit; the new plain-exception exit has no demotion at all and closes before record_exception_on_span runs (CR-004, CR-005)"},
+    {"kind": "spec", "item": "A.3: on a fatal error, SupervisorCoordinator's active/pending/run_bindings are fully cleared; no dangling active handoff remains resolvable via binding_for", "status": "pass", "notes": "Holds for the generic except-Exception branch; the except-MCPAuthenticationRequiredException branch never calls reset() (CR-002)"},
+    {"kind": "spec", "item": "A.4: ThreadedGenerator.send() called after close() is a silent no-op (no enqueue, no exception, no _process_thought)", "status": "pass", "notes": "core/thread.py:72-74 guard verified; covered by new tests/codemie/core/test_thread.py cases"},
+    {"kind": "spec", "item": "B.7: _send_error_to_thread sends success=False and populated agent_error/tool_errors/error_details reflecting handle_agent_exception's classification", "status": "pass", "notes": "Wiring verified at langgraph_agent.py:830-846; agent_error's unconditional stacktrace is a separate finding (CR-003)"},
+    {"kind": "spec", "item": "B.8: _build_final_chunk no longer exists; neither handler references agent.last_generation_result or _build_final_chunk anywhere", "status": "pass", "notes": "Repo-wide grep confirms zero remaining references in src/ or tests/"},
+    {"kind": "spec", "item": "B.8: existing tests for _stream_agent_path's and _serve_data's normal-completion branches pass with the final-chunk logic removed", "status": "pending-stage-7", "notes": "Code removal is clean; an actual green test-run is runtime evidence not available to static review"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "All 6 commit subjects in range follow the documented 'EPMCDME-####: Description' format per git-workflow.md"},
+    {"kind": "code-quality", "status": "pass", "notes": "New/modified files carry the Apache 2.0 header; modern union type hints used; dead-code removal leaves zero remaining references (repo-wide grep)"},
+    {"kind": "security", "status": "pass", "notes": "No hardcoded credentials, logged secrets, or auth/authz changes introduced by the changed lines per security-patterns.md checklist"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/agents/langgraph_agent.py",
+      "line": 772,
+      "title": "Success path never sets StreamedGenerationResult.success",
+      "problem": "stream()'s try-block final send() (the happy-path StreamedGenerationResult, last=True) never sets success, so it stays at the field's Optional[bool] default of None. This diff wires success=False into the sibling error-path send in _send_error_to_thread but leaves the success path untouched.",
+      "impact": "StreamedGenerationResult.success is documented as 'None until final chunk' (chains/base.py:137), implying it should be populated by the time last=True. After this diff, a client can see success=False (real failure) or success=None (both 'still running' and 'finished successfully') but never success=True — the asymmetry newly introduced by this diff makes the field unable to positively confirm a successful completion.",
+      "recommendation": "Set success=True on the happy-path StreamedGenerationResult sent in stream()'s try block, mirroring the success=False wiring added for _send_error_to_thread."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/agents/langgraph_agent.py",
+      "line": 784,
+      "title": "MCP-auth exception path skips supervisor coordinator reset",
+      "problem": "The new self._supervisor_coordinator.reset() call was only added to the generic `except Exception as e:` branch (line 789). The sibling `except MCPAuthenticationRequiredException as e:` branch (line 784-787), which also ends the run fatally (closes thread_generator with the error and re-raises), never calls reset().",
+      "impact": "Per spec A.3, SupervisorCoordinator's active/pending/run_bindings state must be fully cleared 'on a fatal error' (unqualified by exception type). An MCP-auth failure that occurs while a supervisor handoff is active leaves that handoff resolvable via binding_for after the run has ended, exactly the dangling-handoff state A.3 exists to prevent.",
+      "recommendation": "Call self._supervisor_coordinator.reset() in the except MCPAuthenticationRequiredException branch too (or hoist the reset into the shared finally block so it runs on every fatal exit)."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/agents/langgraph_agent.py",
+      "line": 830,
+      "title": "Agent error stacktrace bypasses HIDE_AGENT_STREAMING_EXCEPTIONS",
+      "problem": "agent_error = error_response.agent_error is sent to the client unmodified whenever category == AGENT. AgentErrorClassifier.build_agent_error_dict (core/errors.py:606-611) unconditionally sets stacktrace=traceback.format_exc() on every AgentErrorDetails, so the full server-side traceback is embedded in agent_error and reaches the client via model_dump_json(). This is a brand-new field/path added by this diff's B.7 wiring; it did not exist on the streaming error chunk before.",
+      "impact": "Two lines earlier in the very same method, user_message is explicitly redacted when config.HIDE_AGENT_STREAMING_EXCEPTIONS is True (line 824-827) — but the new agent_error field bypasses that same control entirely, so an operator who sets HIDE_AGENT_STREAMING_EXCEPTIONS=True to hide raw errors from streaming clients still leaks the full Python stacktrace (file paths, internal call structure) to every client that hits a category==AGENT fatal error.",
+      "recommendation": "Strip or redact agent_error.stacktrace (e.g. agent_error.model_copy(update={'stacktrace': None})) before sending whenever config.HIDE_AGENT_STREAMING_EXCEPTIONS is True, mirroring the gate already applied to user_message."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/agents/langgraph_agent.py",
+      "line": 933,
+      "title": "Bare finally: stream.close() can mask the original exception",
+      "problem": "The new `finally: stream.close()` block (langgraph_agent.py:933-934) has no protection around the close() call itself. If stream.close() raises (e.g. the LangGraph generator errors on teardown), that new exception replaces the original one that triggered the finally (e.g. a real RuntimeError from process_chunk or a TokenLimitExceededException from the new A.1 check).",
+      "impact": "The actual defect that ended the run (the one _send_error_to_thread and the client are supposed to see) is silently discarded and replaced by an unrelated teardown error, breaking error attribution for genuine failures.",
+      "recommendation": "Wrap stream.close() in try/except inside the finally block, log any close failure, and re-raise (or suppress) it without letting it shadow an in-flight exception."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/agents/langgraph_agent.py",
+      "line": 933,
+      "title": "Exception-path stream.close() now runs before span error is recorded",
+      "problem": "On any exception raised inside _stream_graph's loop, the new `finally: stream.close()` (line 933-934) now runs immediately, before the exception propagates up through stream()'s except block to _send_error_to_thread, whose first line is record_exception_on_span(e) (line 819). The pre-existing comment at langgraph_agent.py:920-926 (retained from before this diff, describing the hedging-cancel branch) documents that closing the stream ends the LangChain-managed spans and drops OTEL's current span to a non-recording NoOp span, at which point neither span.set_attribute nor equivalent calls land on a real span.",
+      "impact": "record_exception_on_span's `trace.get_current_span().is_recording()` check (core/otel_tracing.py:172-177) uses the exact same OTEL primitive the pre-existing comment warns about. Per that documented mechanism, once stream.close() has run first, is_recording() is False and the exception is never recorded on the span nor does the span get marked ERROR — real (non-cancellation) fatal errors silently stop showing up correctly in tracing, which is precisely the ordering A.2 required to preserve ('any exception-path close must still close last relative to trace-cancellation bookkeeping needed for correct span-error-level behavior').",
+      "recommendation": "Record the exception on the span (or otherwise perform the trace-cancellation bookkeeping) before the stream is closed on the exception path — e.g. catch the exception inside _stream_graph's loop, call record_exception_on_span (or an equivalent) there, then re-raise, with stream.close() still guaranteed by the finally."
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/agents/langgraph_agent.py",
+      "line": 1106,
+      "title": "_check_truncation_in_chunk misses generate_structured_response and sub-agent nodes",
+      "problem": "_check_truncation_in_chunk only reads value.get(target_field) where target_field is \"agent\" or \"supervisor\". The sibling, pre-existing _get_last_ai_message_content (langgraph_agent.py:1123-1133) additionally handles an `elif response := value.get(\"generate_structured_response\")` branch for structured-output runs, which _check_truncation_in_chunk has no equivalent for. In supervisor/multi-agent mode, a truncated AI message produced inside an individual sub-agent's own node (keyed by that sub-agent's node name, not \"supervisor\") is likewise never inspected.",
+      "impact": "The method's own docstring claims to detect truncation for 'any finished AI message' (A.1's stated scope), but a max-token cutoff during structured-response generation, or inside a delegated sub-agent's node in a supervisor graph, silently passes through _stream_graph's loop undetected — exactly the class of orphaned-run bug this slice exists to fix. The acceptance lens independently scored spec criterion A.1 as 'partial' for the sub-agent-node gap.",
+      "recommendation": "Extend _check_truncation_in_chunk to check the same generate_structured_response branch _get_last_ai_message_content already uses, and to inspect all node keys present in an \"updates\" chunk in supervisor mode (not just the fixed \"supervisor\" key), reusing the raw-message extraction rather than only target_field."
+    },
+    {
+      "id": "CR-007",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/agents/test_langgraph_truncation.py",
+      "line": 531,
+      "title": "No test covers truncation detection when self.subagents is truthy",
+      "problem": "TestCheckTruncationInChunk's two new tests both set agent.subagents = None, exercising only the 2-tuple/\"agent\" branch. No test calls _check_truncation_in_chunk with self.subagents truthy and an actually-truncated AIMessage under the \"supervisor\" key to confirm the 3-tuple unpack and target_field=\"supervisor\" mapping actually raise TokenLimitExceededException.",
+      "impact": "A regression in the 3-tuple unpack or the supervisor-key mapping would not be caught by any existing test; test_stream_graph_with_subagents in test_langgraph_multi_assistant_supervisor.py exercises the real code path but its AIMessage carries no finish_reason metadata, so no assertion there ever observes truncation firing on the subagents branch either.",
+      "recommendation": "Add a test that sets agent.subagents to a truthy value and passes a 3-tuple chunk with a truncated AIMessage under the \"supervisor\" key, asserting TokenLimitExceededException is raised."
+    },
+    {
+      "id": "CR-008",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/agents/test_langgraph_truncation.py",
+      "line": 604,
+      "title": "No test asserts tool_errors mapping in _send_error_to_thread",
+      "problem": "test_send_error_to_thread_populates_error_fields, the only direct unit test of _send_error_to_thread, passes a TokenLimitExceededException (AGENT category, tool_errors left None) and asserts only on sent[\"success\"], sent[\"agent_error\"][\"error_code\"], and sent[\"error_details\"]. It never drives an exception whose ErrorResponse.tool_errors is non-empty, and never asserts on sent[\"tool_errors\"].",
+      "impact": "The new tool_errors = [err.to_full() for err in error_response.tool_errors] mapping (langgraph_agent.py:831) is completely unverified; a bug in the attribute name, the to_full() call, or the list comprehension would break the error-reporting send for tool-classified fatal errors without any test failing.",
+      "recommendation": "Add a test that drives _send_error_to_thread with an exception whose handle_agent_exception classification yields non-empty tool_errors, and assert sent[\"tool_errors\"] matches the expected formatted list."
+    }
+  ]
+}

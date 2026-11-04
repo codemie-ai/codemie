@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "generated": "2026-09-16T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 24,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 17,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "8 production files across 4+ components and several subsystems: agent streaming callback (per-author error-streak and in-flight run-id tracking), LangGraph agent (truncation check per updates node, consecutive-tool-error abort), supervisor coordinator (handoff tracker reset on fatal error), core ThreadedGenerator (close(error, reason) + cancellation_reason contract), core exceptions (new MaxConsecutiveToolErrorsExceededException), config, plus assistant and hedged REST stream handlers. Shared foundations (core/thread.py, core/exceptions.py) are modified, which is why this lands at XL rather than L." },
+    { "dimension": "technical_risk", "reason": "No exact precedent for converting a token-limit / context-overflow condition into a terminated run with a typed error. The change lives in the streaming/threading path: thought finalization ordering (the erroring tool's thought must be closed before the abort raises, CR-003), concurrent same-author tool calls vs sequential retries (CR-002), hedging cancellation reason plumbing, and OTel span-liveness ordering around stream.close(). Behaviour is gated by AI_AGENT_MAX_CONSECUTIVE_TOOL_ERRORS, which keeps rollback tractable but does not remove the correctness risk. No security or persistence surface." },
+    { "dimension": "file_change_estimate", "reason": "17 code files (8 production + 9 test) after excluding the 8 previous-slice SDLC doc artifacts committed on the shared branch. 17 crosses the 16+ XXL threshold by one file; the split is modification-heavy (few or no new files) and the 2437/69 diffstat is inflated by the doc artifacts, so this is the weakest of the high scores and sits right on the XL/XXL line." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from L (4) to XL (5): change is in the real-time streaming/SSE path (streaming callback thought lifecycle, hedged stream coordination)",
+    "Doc-artifact exclusion applied: 8 files under docs/superpowers/tasks/2026-09-14-epmcdme-14855-graph-cancellation-core/ are the previous slice's SDLC artifacts, not this slice's work — excluded from file count and layer scoring"
+  ],
+  "split_recommendation": null
+}

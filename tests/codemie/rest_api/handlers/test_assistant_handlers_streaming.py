@@ -22,6 +22,7 @@ are properly included in StreamedGenerationResult final chunks.
 from __future__ import annotations
 
 import json
+import queue
 from time import time
 from unittest.mock import Mock, patch
 
@@ -485,6 +486,123 @@ class TestStreamingErrorIntegration:
 
         assert len(captured) == 1
         assert captured[0].is_closed()
+
+
+def test_serve_data_queue_empty_yields_final_chunk_and_saves_history(mock_user, mock_assistant):
+    handler = StandardAssistantHandler(assistant=mock_assistant, user=mock_user, request_uuid="test-uuid")
+    generator_queue = ThreadedGenerator()
+    generator_queue.queue.get = Mock(side_effect=queue.Empty)
+
+    with patch.object(handler, "save_chat_history") as mock_save:
+        chunks = list(
+            handler._serve_data(
+                stream=lambda: None,
+                generator_queue=generator_queue,
+                request=AssistantChatRequest(text="run", stream=True),
+                execution_start=0.0,
+            )
+        )
+
+    assert len(chunks) == 1
+    data = json.loads(chunks[0])
+    assert data["last"] is True
+    assert data["success"] is False
+    mock_save.assert_called_once()
+
+
+def test_serve_data_queue_empty_respects_include_tool_errors_false(mock_user, mock_assistant):
+    """Timeout branch must honor include_tool_errors=False (backward-compat default)."""
+    handler = StandardAssistantHandler(assistant=mock_assistant, user=mock_user, request_uuid="test-uuid")
+    generator_queue = ThreadedGenerator()
+    generator_queue.queue.get = Mock(side_effect=queue.Empty)
+
+    with patch.object(handler, "save_chat_history"):
+        chunks = list(
+            handler._serve_data(
+                stream=lambda: None,
+                generator_queue=generator_queue,
+                request=AssistantChatRequest(text="run", stream=True),
+                execution_start=0.0,
+                include_tool_errors=False,
+            )
+        )
+
+    data = json.loads(chunks[0])
+    # The short agent_error and execution_error are always sent; only the full error_details stays gated.
+    assert data["agent_error"]["error_code"] == "agent_timeout"
+    assert data["execution_error"] == "agent_timeout"
+    assert data["error_details"] is None
+
+
+def test_serve_data_queue_empty_respects_include_tool_errors_true(mock_user, mock_assistant):
+    """Timeout branch must surface agent_error/error_details when include_tool_errors=True."""
+    handler = StandardAssistantHandler(assistant=mock_assistant, user=mock_user, request_uuid="test-uuid")
+    generator_queue = ThreadedGenerator()
+    generator_queue.queue.get = Mock(side_effect=queue.Empty)
+
+    with patch.object(handler, "save_chat_history"):
+        chunks = list(
+            handler._serve_data(
+                stream=lambda: None,
+                generator_queue=generator_queue,
+                request=AssistantChatRequest(text="run", stream=True),
+                execution_start=0.0,
+                include_tool_errors=True,
+            )
+        )
+
+    data = json.loads(chunks[0])
+    assert data["agent_error"] is not None
+    assert data["error_details"] is not None
+
+
+def test_serve_data_queue_empty_closes_abandoned_producer_queue(mock_user, mock_assistant):
+    """Timeout must close the generator queue so the abandoned producer thread's future
+    sends become no-ops instead of leaking into a queue nobody drains anymore."""
+    handler = StandardAssistantHandler(assistant=mock_assistant, user=mock_user, request_uuid="test-uuid")
+    generator_queue = ThreadedGenerator()
+    generator_queue.queue.get = Mock(side_effect=queue.Empty)
+
+    with patch.object(handler, "save_chat_history"):
+        list(
+            handler._serve_data(
+                stream=lambda: None,
+                generator_queue=generator_queue,
+                request=AssistantChatRequest(text="run", stream=True),
+                execution_start=0.0,
+            )
+        )
+
+    assert generator_queue.is_closed()
+
+
+def test_serve_data_queue_poll_timeout_is_sourced_from_dynamic_config(mock_user, mock_assistant):
+    """CR-010: the queue-poll timeout must come from DynamicConfigService at call
+    time, not the hardcoded module constant -- an operator must be able to raise
+    or lower how long an abandoned run is allowed to block before the client sees
+    a timeout, without a code deploy."""
+    handler = StandardAssistantHandler(assistant=mock_assistant, user=mock_user, request_uuid="test-uuid")
+    generator_queue = ThreadedGenerator()
+    generator_queue.queue.get = Mock(side_effect=queue.Empty)
+
+    with (
+        patch.object(handler, "save_chat_history"),
+        patch(
+            "codemie.rest_api.handlers.assistant_handlers.DynamicConfigService.get_typed_value_safe",
+            return_value=42,
+        ) as mock_get,
+    ):
+        list(
+            handler._serve_data(
+                stream=lambda: None,
+                generator_queue=generator_queue,
+                request=AssistantChatRequest(text="run", stream=True),
+                execution_start=0.0,
+            )
+        )
+
+    generator_queue.queue.get.assert_called_once_with(timeout=42)
+    mock_get.assert_called_once()
 
 
 class TestThoughtFinalizationOnSuccess:

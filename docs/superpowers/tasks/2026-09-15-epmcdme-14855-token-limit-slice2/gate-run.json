@@ -1,0 +1,132 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-14855_CodeMie-thought-remains-in-progress",
+  "head": "e6f75b985aec914312bc40a97b71808cf419c9a5",
+  "runner": "poetry",
+  "started_at": "2026-09-16T05:58:42Z",
+  "completed_at": "2026-09-16T06:03:45Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1000,
+      "command": "make ruff",
+      "exit_code": 0,
+      "notes": "Clean at this HEAD: 'ruff format' reports '2551 files left unchanged' (no mutation this time - the previously-uncommitted reformat of tests/codemie/agents/test_langgraph_tool_error_cap.py is now committed as e6f75b985). ruff check --fix and ruff check both pass with no findings."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2000,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 300,
+      "command": "make license-check",
+      "exit_code": 0,
+      "notes": "Checked 2269 files, 0 missing license headers."
+    },
+    {
+      "id": "secrets",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 15300,
+      "command": "make gitleaks",
+      "exit_code": 0,
+      "notes": "Docker available; full working-tree dir scan via ghcr.io/gitleaks/gitleaks:v8.30.1 against e6f75b985, no leaks found. The guide's companion 'local pre-commit gate' (codemie-gitleaks, gitleaks protect --staged) was not separately re-run: nothing is staged, so a staged-diff scan would be vacuous. See pre_commit_staged_gitleaks below."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 106000,
+      "command": "make test",
+      "exit_code": 2,
+      "notes": "Re-run against e6f75b985: identical result to the prior run against 73c1ab9f3 - 55 failed, 16409 passed, 189 skipped, same 55 test IDs (all in tests/enterprise/mcp_auth/* plus tests/codemie/service/mcp/test_toolkit_service_auth_resolver.py x2 and tests/codemie/service/oauth/adapters/test_provider_adapters.py x2), same root cause: ModuleNotFoundError/ImportError for 'codemie_enterprise' (optional extra, private GCP Artifact Registry, not installed here). WAIVER RECORDED: user decided not to pursue GCP auth or the gitbud.epam.com enterprise-checkout workaround; this is accepted as a pre-existing environment gap via sdlc-gate (feature.verification = approve, with rationale). Status is kept FAIL here per this gate's mechanical pass/fail criteria (an environment prerequisite being missing is an explicit Fail condition in quality-gates.md) - the waiver is a policy decision recorded separately by the caller/sdlc-gate, not something this file overrides to PASS/SKIPPED."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make coverage",
+      "exit_code": null,
+      "notes": "Guide Skip-if: user did not request coverage. Not requested for this Stage 7 run."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 200,
+      "command": "make sonar-local",
+      "exit_code": 0,
+      "notes": "Self-skip: command exited 0 without scanning. Exact line: '[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.' To enable locally: export SONAR_TOKEN for https://sonar.core.kuberocketci.io (project key 'codemie', per .sonarlint/connectedMode.json) and ensure the host is reachable. Recorded SKIPPED, not PASS, per the self-skipping-gates rule; CI/SonarQube server-side quality gate is still owed."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 118000,
+      "command": "make verify",
+      "exit_code": 2,
+      "notes": "Aggregate of ruff+license+gitleaks+test (Makefile: verify: ruff license gitleaks test) re-run against e6f75b985. ruff/license/gitleaks sub-steps passed silently (consistent with their standalone runs above); make stopped on the same 'test' sub-target failure as the unit gate (identical 55 failures, same waived root cause: missing codemie_enterprise). Redundant confirmation of the unit gate's result."
+    },
+    {
+      "id": "test_harness",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "exit_code": null,
+      "notes": "Guide Skip-if: not opening a merge request (local iteration only) - this Stage 7 run is gate execution, not MR creation. Also requires infrastructure not available here (docker compose stack up, superadmin fixtures, ~/.codemie/test-harness.json Bearer-hijack patch)."
+    },
+    {
+      "id": "commit_msg",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 50,
+      "command": "bash scripts/git-hooks/commit_msg.sh <msgfile-containing-HEAD-commit-message>",
+      "exit_code": 0,
+      "notes": "codemie-commit-msg hook (.pre-commit-config.yaml) enforces 'EPMCDME-<n>:' subject prefix; not otherwise named in quality-gates.md. Verified against e6f75b985's actual message: 'EPMCDME-14855: Apply ruff formatting to tool-error cap test'. Note: .git/hooks contains only *.sample files - pre-commit is not actually installed on this checkout, so this and the other .pre-commit-config.yaml hooks did not literally execute at commit time; this run exercises the script directly to verify what would have been enforced."
+    },
+    {
+      "id": "pre_commit_staged_ruff",
+      "source": "hook",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "bash scripts/git-hooks/_ruff_staged.sh",
+      "exit_code": null,
+      "notes": "codemie-pre-commit hook's fast staged-only formatting check. Nothing is staged at e6f75b985 (working tree clean of the prior ruff diff; only unrelated pre-existing modifications remain), so a staged-scoped check is not meaningful right now; the full-tree 'make ruff' (lint gate above) already covers formatting/lint for HEAD."
+    },
+    {
+      "id": "pre_commit_staged_gitleaks",
+      "source": "hook",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": null,
+      "notes": "codemie-gitleaks hook runs 'gitleaks protect --staged'. Nothing is staged, so this would be a vacuous pass, not a real check. The full working-tree 'make gitleaks' dir scan (secrets gate above) already covers HEAD's committed content, including e6f75b985."
+    },
+    {
+      "id": "ci_wait_init",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": ".gitlab-ci.yml wait-ci-init (extends .wait-ci-init-template; EXPECTED_CONTEXTS: ci-pipeline, compliance-report)",
+      "exit_code": null,
+      "notes": "Only runs under CI_PIPELINE_SOURCE == merge_request_event with target branch main inside GitLab; it waits on external status contexts from other pipelines rather than performing a local check. Cannot be executed from this checkout. quality-gates.md itself notes 'No pipeline in this repository runs these gates' for .gitlab-ci.yml/.github/workflows, confirming this job is a merge-sequencing guard, not an additional quality gate to satisfy locally."
+    }
+  ],
+  "failures": {
+    "unit": "FAILED tests/enterprise/mcp_auth/test_discovery_probe_bridge.py::test_discovered_auth_gate_registration_failures_return_config_error_payload[no_supported_registration_mechanism-attempted_mechanisms0]\nFAILED tests/enterprise/mcp_auth/test_discovery_probe_bridge.py::test_discovered_auth_gate_registration_failures_return_config_error_payload[dcr_timeout-attempted_mechanisms1]\nFAILED tests/enterprise/mcp_auth/test_discovery_probe_bridge.py::test_discovered_auth_gate_registration_failures_return_config_error_payload[dcr_unavailable-attempted_mechanisms2]\nFAILED tests/enterprise/mcp_auth/test_discovery_probe_bridge.py::test_discovery_probe_bridge_does_not_await_async_db_engine_in_worker_loop\nFAILED tests/enterprise/mcp_auth/test_insufficient_scope_recovery_bridge.py::test_bridge_maps_real_assistant_recovery_payload_snapshot\nFAILED tests/enterprise/mcp_auth/test_mcp_auth_status_bridge.py::test_build_discovered_auth_status_response_uses_flow_store_and_tms[False-authentication_required]\nFAILED tests/enterprise/mcp_auth/test_mcp_auth_status_bridge.py::test_build_discovered_auth_status_response_uses_flow_store_and_tms[True-authenticated]\nFAILED tests/enterprise/mcp_auth/test_mcp_auth_status_bridge.py::test_build_discovered_auth_status_response_returns_config_error_snapshot\nFAILED tests/enterprise/mcp_auth/test_oauth2_callback_bridge.py::test_callback_entry_log_state_prefix_joins_to_initiate\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_initiate_route_recovery_attempt_three_returns_auth_required_envelope\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_build_oauth2_initiate_response_passes_canonical_resource_to_enterprise_builder\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_raise_client_error_logs_warning_with_sanitized_details_before_raising\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_static_oauth2_initiate_logs_info_with_state_prefix_and_authorize_fields\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_static_oauth2_initiate_info_log_never_contains_full_state\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_saml_initiate_logs_info_with_state_prefix_and_authorize_fields\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_build_saml_initiate_passes_mcp_config_id_as_required_param\nFAILED tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py::test_static_initiate_survives_malformed_authorize_url\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_returns_retry_header_after_successful_force_refresh\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_retry_401_and_does_not_force_refresh_twice\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-token_not_found]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-reauth_required0]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-tms_unavailable]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-tms_persistence_error0]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-token_refresh_error]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-reauth_required1]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-tms_persistence_error1]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-warning-token_not_found]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-warning-reauth_required0]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-error-tms_unavailable]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-error-tms_persistence_error0]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-error-token_refresh_error]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-warning-reauth_required1]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-error-tms_persistence_error1]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_without_calling_tms_for_no_refresh_decisions[None-missing_www_authenticate]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_without_calling_tms_for_no_refresh_decisions[Bearer error=\"invalid_request\"-unsupported_bearer_error]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_detects_configured_discovered_identity_conflict\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_non_oauth_config_without_oauth_payload\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_normalizes_or_rejects_refreshed_token_type[bearer-Bearer fresh-access-None]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_normalizes_or_rejects_refreshed_token_type[Basic-None-refresh_result_invalid]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_when_oauth2_identity_is_incomplete[execution_context0-missing_user_id]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_prompts_when_oauth2_identity_is_incomplete[execution_context1-missing_auth_config_id]\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_uses_discovered_oauth2_identity_when_no_configured_id\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_rejects_env_delivered_oauth2_refresh\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_omits_initiate_url_for_workflow_payload\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_uses_live_discovered_snapshot_for_reauth_initiate_url\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_rebuilds_discovered_snapshot_from_exact_flow_config\nFAILED tests/enterprise/mcp_auth/test_post_auth_401_bridge.py::test_post_auth_401_bridge_discovered_snapshot_missing_without_exact_config_is_non_resumable\nFAILED tests/enterprise/mcp_auth/test_private_network_allowlist_bridge.py::test_private_network_allowlist_reader_output_passes_to_enterprise_as_discovery\n=== 55 failed, 16409 passed, 189 skipped, 219 warnings in 102.23s (0:01:42) ====\nmake: *** [test] Error 1\n\nRoot cause (unchanged from prior run against 73c1ab9f3, re-confirmed at e6f75b985): ModuleNotFoundError/ImportError for 'codemie_enterprise' submodules (e.g. \"No module named 'codemie_enterprise.mcp_auth.discovery'\"; \"cannot import name 'MCPAuthTokenExchangeError' from 'codemie_enterprise.mcp_auth'\") plus one downstream 503 from a route that depends on that import succeeding. WAIVED by user decision (recorded via sdlc-gate, feature.verification = approve with rationale): GCP Artifact Registry credentials and the gitbud.epam.com enterprise-checkout workaround were both explicitly declined; this is accepted as a pre-existing environment gap, not pursued further.",
+    "verify": "Same 'test' sub-target failure as the unit gate, re-run at e6f75b985 (55 failed, 16409 passed, 189 skipped, 219 warnings in 96.85s). ruff/license/gitleaks sub-targets completed without printing failures before make stopped at 'test'. See failures.unit for the full FAILED list, root cause, and the recorded waiver; this entry exists only because 'make verify' is its own gate per quality-gates.md and re-executes 'test' as part of its dependency chain (verify: ruff license gitleaks test)."
+  }
+}

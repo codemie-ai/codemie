@@ -9706,6 +9706,7 @@
           "platform_error",
           "agent_timeout",
           "agent_token_limit",
+          "agent_tool_error_limit",
           "agent_budget_exceeded",
           "agent_callback_failure",
           "agent_network_error",

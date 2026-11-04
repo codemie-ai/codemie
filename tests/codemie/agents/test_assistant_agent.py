@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import json
+from functools import partial
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -21,6 +22,7 @@ from pydantic import BaseModel
 from codemie.agents.assistant_agent import AIToolsAgent, TaskResult
 from codemie.chains.base import GenerationResult
 from codemie.core.constants import ChatRole
+from codemie.core.errors import ErrorDetailLevel
 from codemie.core.models import AssistantChatRequest, ChatMessage
 from codemie.rest_api.models.assistant import AssistantType
 
@@ -330,3 +332,20 @@ class TestResolveLlmModel:
             assert agent._resolve_llm_model() == "blocked"
 
         for_project.assert_not_called()
+
+
+@patch(f"{_AGENT_MOD}.set_logging_info")
+@patch(f"{_AGENT_MOD}.AIToolsAgent._agent_streaming")
+@patch(f"{_AGENT_MOD}.AIToolsAgent.is_pure_chain", return_value=False)
+def test_stream_accepts_error_keywords_passed_by_streaming_handlers(_mock_pure, mock_streaming, _mock_logging):
+    """assistant_handlers and hedged_handler call agent.stream(include_tool_errors=..., error_detail_level=...)
+    for every agent type; AIToolsAgent (Bedrock, ReAct, non-LangGraph) must accept them (EPMCDME-14855)."""
+    agent = _make_agentcore_agent()
+    agent.thread_generator = MagicMock()
+    agent.thread_context = {}
+
+    stream = partial(agent.stream, include_tool_errors=True, error_detail_level=ErrorDetailLevel.FULL)
+    stream()
+
+    mock_streaming.assert_called_once()
+    agent.thread_generator.close.assert_called_once()

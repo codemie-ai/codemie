@@ -53,7 +53,7 @@ from codemie.agents.langgraph_event_adapter import (
 from codemie.agents.tool_confirmation.tool_call_confirmation_mixin import ToolCallConfirmationMixin
 from codemie.agents.tools.agent import WorkspaceAwareAgent
 from codemie.core.models import ToolCallPolicy
-from codemie.core.errors import ErrorResponse
+from codemie.core.errors import AgentErrorDetails, ErrorCategory, ErrorDetailLevel, ErrorResponse
 from codemie.core.exceptions import SubagentToolConfirmationUnsupportedException
 from codemie.enterprise.litellm.proxy_router import handle_agent_exception
 from codemie_tools.base.file_object import FileObject
@@ -109,7 +109,10 @@ from codemie.rest_api.security.user import User
 from codemie.service.background_tasks_service import BackgroundTasksService
 from codemie.service.request_summary_manager import request_summary_manager
 from codemie.service.conversation.history_compaction_service import ConversationHistoryCompactionService
-from codemie.service.constants import AI_AGENT_CONVERSATION_REPLAY_V2_ENABLED_KEY
+from codemie.service.constants import (
+    AI_AGENT_CONVERSATION_REPLAY_V2_ENABLED_KEY,
+    AI_AGENT_MAX_CONSECUTIVE_TOOL_ERRORS_KEY,
+)
 from codemie.service.dynamic_config_service import DynamicConfigService
 from codemie.service.file_service.image_service import ImageService
 from codemie.service.llm_service.llm_service import LLMService
@@ -119,6 +122,7 @@ from codemie.service.spend.traffic_class import TrafficOrigin
 from codemie.templates.agents.assistant_base import markdown_response_prompt, supervisor_result_synthesis_prompt
 from codemie.core.exceptions import (
     MCPAuthenticationRequiredException,
+    MaxConsecutiveToolErrorsExceededException,
     StreamAbortedException,
     TokenLimitExceededException,
 )
@@ -148,6 +152,16 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
             AI_AGENT_CONVERSATION_REPLAY_V2_ENABLED_KEY,
             default=config.AI_AGENT_CONVERSATION_REPLAY_V2_ENABLED,
         )
+
+    def _get_max_consecutive_tool_errors(self) -> int:
+        if self._max_consecutive_tool_errors_cache is None:
+            value = DynamicConfigService.get_typed_value_safe(
+                AI_AGENT_MAX_CONSECUTIVE_TOOL_ERRORS_KEY,
+                int,
+                default=config.AI_AGENT_MAX_CONSECUTIVE_TOOL_ERRORS,
+            )
+            self._max_consecutive_tool_errors_cache = max(1, value)
+        return self._max_consecutive_tool_errors_cache
 
     def __init__(
         self,
@@ -201,6 +215,15 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
         self.conversation_id = request.conversation_id
         self.handle_tool_error = handle_tool_error
         self.throw_truncated_error = throw_truncated_error
+        # Keyed by author (None for the top-level/single-agent case) so each subagent,
+        # including one per parallel Send branch, tracks its own independent consecutive
+        # tool-error streak instead of sharing one instance-wide scalar. See AC6/CR-002.
+        self._consecutive_tool_error_count: dict[str | None, int] = {}
+        # Maps author -> run_ids started but not yet ended/errored, so a parallel tool-call
+        # batch (parallel_tool_calls) counts as ONE failed round instead of N. Mirrors
+        # AgentStreamingCallback._inflight_run_ids. See R3-CR-005.
+        self._inflight_tool_run_ids: dict[str | None, set[str]] = {}
+        self._max_consecutive_tool_errors_cache: int | None = None
         self.callbacks = callbacks
         self.thread_context = None
         self.supervisor_callbacks = supervisor_callbacks or []
@@ -801,7 +824,11 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
             return self._build_generation_result(user_message, success=False, time_elapsed=time_elapsed)
 
     @with_captured_origin
-    def stream(self):
+    def stream(
+        self,
+        include_tool_errors: bool = False,
+        error_detail_level: ErrorDetailLevel = ErrorDetailLevel.STANDARD,
+    ):
         """
         This method enables assistant streaming, with the stream’s destination generally being a user interface (UI).
         To handle the incoming stream content, you can use a thread generator.
@@ -861,10 +888,12 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
                         context=self.thread_context,
                         money_spent=_tokens.money_spent if _tokens else None,
                         routing=_tokens.routing if _tokens else None,
+                        success=True,
                     ).model_dump_json()
                 )
             except MCPAuthenticationRequiredException as e:
                 auth_required_error = e
+                self._supervisor_coordinator.reset()
                 self.thread_generator.close(e)
                 raise
             except StreamAbortedException as e:
@@ -873,7 +902,14 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
                 # send an error to.
                 logger.info(f"Stream for {self.agent_name} aborted: {e}")
             except Exception as e:
-                self._send_error_to_thread(e, execution_start, chunks_collector)
+                self._supervisor_coordinator.reset()
+                self._send_error_to_thread(
+                    e,
+                    execution_start,
+                    chunks_collector,
+                    include_tool_errors=include_tool_errors,
+                    error_detail_level=error_detail_level,
+                )
             finally:
                 if auth_required_error is None:
                     self.thread_generator.close()
@@ -900,8 +936,32 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
 
         return "".join(chunks_collector), None
 
-    def _send_error_to_thread(self, e: Exception, execution_start: float, chunks_collector: list[str]) -> None:
-        """Format *e* as a user error and push the final SSE chunk to thread_generator."""
+    def _send_error_to_thread(
+        self,
+        e: Exception,
+        execution_start: float,
+        chunks_collector: list[str],
+        include_tool_errors: bool = False,
+        error_detail_level: ErrorDetailLevel = ErrorDetailLevel.STANDARD,
+    ) -> None:
+        """Format *e* as a user error and push the final SSE chunk to thread_generator.
+
+        The richer structured fields (tool_errors, full error_details -- per-tool payloads
+        without any stacktrace or traceback, which are always redacted) are only populated
+        when include_tool_errors is True, mirroring the gate
+        StandardAssistantHandler._format_errors applies on the sync paths (CR-004,
+        ea2e7d1a1); the timeout chunk applies the same rules in _build_timeout_result.
+        A short {error_code, message} agent_error is always populated,
+        regardless of include_tool_errors. Agent-category errors use the classified message;
+        internal errors use the fixed AGENT_MSG_INTERNAL_ERROR text with the internal error_code,
+        never the exception text or the model's partial output. Both messages come from the
+        configured AGENT_MSG_* texts and error_code is always sent as execution_error, so this
+        discloses nothing new. It lets the client show that short text instead of falling back to
+        `generated`, which after partial output holds the model's answer and not the error.
+        The message is appended to `generated` only when nothing was streamed or on a
+        token-limit/cap error (see below), so it is not always present there.
+        EPMCDME-14855, 2026-09-22.
+        """
         record_exception_on_span(e)
         time_elapsed = time() - execution_start
         error_response = handle_agent_exception(e)
@@ -911,14 +971,38 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
             if config.HIDE_AGENT_STREAMING_EXCEPTIONS
             else self.extended_error(error_response, e)
         )
-        if not "".join(chunks_collector).strip():
-            # Only surface the error text when nothing succeeded yet. If a sub-agent already
-            # streamed a complete answer and a later model call then raised, concatenating the
-            # raw/friendly error onto that answer would corrupt an otherwise successful
-            # user-facing response (EPMCDME-14859 secondary defect). execution_error below still
-            # carries llm_error_code regardless, so the failure is still tracked internally.
+        # Surface the error text when nothing succeeded yet, or when the failure is a truncation/limit
+        # exit (the partial text is incomplete, so the user needs the explanation). If a sub-agent already
+        # streamed a complete answer and a later model call raised something else, appending the error
+        # would corrupt an otherwise successful response (EPMCDME-14859 secondary defect).
+        # execution_error below still carries llm_error_code regardless.
+        no_content = not "".join(chunks_collector).strip()
+        if no_content or isinstance(e, (TokenLimitExceededException, MaxConsecutiveToolErrorsExceededException)):
+            # Without a separator the prior partial text runs straight into user_message.
+            if chunks_collector and not chunks_collector[-1].endswith(("\n", " ")):
+                chunks_collector.append("\n\n")
             chunks_collector.append(user_message)
         generated, execution_error = self._process_chunks(chunks_collector, config, llm_error_code)
+        # Tracebacks never go to the client, whatever include_tool_errors or HIDE_AGENT_STREAMING_EXCEPTIONS say:
+        # strips agent_error.stacktrace and internal details['traceback'] in place on error_response itself
+        # (F2 + R3-CR-003), so error_details built below from get_error() can't leak them.
+        error_response.redact_for_streaming()
+        raw_agent_error = error_response.agent_error if error_response.category == ErrorCategory.AGENT else None
+        agent_error = None
+        if raw_agent_error is not None:
+            agent_error = AgentErrorDetails(error_code=raw_agent_error.error_code, message=raw_agent_error.message)
+        elif error_response.category == ErrorCategory.INTERNAL:
+            # INTERNAL: a fixed message, so the client never shows the model's partial output as the error.
+            agent_error = AgentErrorDetails(
+                error_code=error_response.get_error().error_code, message=config.AGENT_MSG_INTERNAL_ERROR
+            )
+        tool_errors = None
+        error_details = None
+        if include_tool_errors:
+            if error_response.tool_errors:
+                tool_errors = [err.format_for_level(error_detail_level) for err in error_response.tool_errors]
+            error_payload = error_response.get_error()
+            error_details = error_payload.model_dump(mode="json") if error_payload else None
         self.thread_generator.send(
             StreamedGenerationResult(
                 generated=generated,
@@ -927,6 +1011,10 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
                 time_elapsed=time_elapsed,
                 context=self.thread_context,
                 execution_error=execution_error,
+                success=False,
+                agent_error=agent_error,
+                tool_errors=tool_errors,
+                error_details=error_details,
             ).model_dump_json()
         )
 
@@ -1000,43 +1088,37 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
                         chunk, chunks_collector, last_message, has_structured_response
                     )
                     if should_stop:
-                        stream.close()
                         break
-            except Exception:
+            except Exception as exc:
+                # Record on the span BEFORE the finally below closes the stream: once closed,
+                # the LangChain callback has ended its spans and the OTEL current-span falls
+                # back to a non-recording NoOp span (see comment above), so span-error status
+                # for genuine failures must be captured here while the span is still live.
+                record_exception_on_span(exc)
                 # EPMCDME-16233: mark the run aborted on the shared thread_generator - not a
                 # per-instance flag, since a sibling sub-agent is its own separate LangGraphAgent
                 # (built by AssistantFactory) and would never see one. Set here, while `stream`
-                # is still a live local - not in a `finally` elsewhere, where it would run only
-                # after the generator has already been torn down and its BackgroundExecutor has
-                # waited for every other running node (e.g. a sibling's in-flight handoff) to
-                # finish. A still-running sibling's next pre_model_hook call sees the flag before
-                # that sibling asks its model again.
+                # is still live and before the finally below closes it (close() waits for every
+                # other running node, e.g. a sibling's in-flight handoff): a still-running
+                # sibling's next pre_model_hook call sees the flag before it asks its model again.
                 #
                 # Deliberately `except Exception` (not a narrower StreamAbortedException-only
                 # catch): every exception that reaches here already ends the whole invocation -
                 # _invoke_agent's own except clauses either re-raise (MCPAuthenticationRequired)
-                # or swallow into a success=False result (everything else, including this
-                # ticket's own TokenLimitExceededException for a truncated tool call) - so there
-                # is no case where this fires without the overall turn also ending. Excluding
-                # TokenLimitExceededException specifically would silently reintroduce this
-                # ticket's own headline bug for a multi-sub-agent run.
-                # `except Exception`, not `BaseException`, is still correct: GeneratorExit is
-                # never raised out of a `next()` call to its caller (only thrown *into* a
-                # suspended generator via close()/throw()/GC) and `_stream_graph` is not itself a
-                # generator, so it cannot reach this clause through the `for chunk in stream`
-                # statement above.
+                # or swallow into a success=False result (everything else, including
+                # TokenLimitExceededException for a truncated tool call and
+                # MaxConsecutiveToolErrorsExceededException, both raised on the consumer side in
+                # process_chunk) - so there is no case where this fires without the overall turn
+                # also ending. `except Exception`, not `BaseException`, is still correct:
+                # GeneratorExit is never raised out of a `next()` call to its caller.
                 if self.thread_generator is not None:
                     self.thread_generator.mark_consumer_aborted()
-                # Close here too, not just in the should_stop branch above: otherwise this
-                # generator (and whatever LLM/tool connections it holds) is torn down only via
-                # GC, on whatever later turn finally drops the last reference to the exception's
-                # traceback. close() itself swallowed, not the original exception: the mark+raise
-                # above must still be what the caller sees.
-                import contextlib
-
-                with contextlib.suppress(Exception):
-                    stream.close()
                 raise
+            finally:
+                try:
+                    stream.close()
+                except Exception:
+                    logger.exception("Error closing LangGraph stream; ignoring in favor of the original exception")
 
         if not last_message and self._last_subassistant_answer:
             # The supervisor's own final turn produced no text of its own after a handoff
@@ -1070,6 +1152,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
             return last_message, has_structured_response, False
 
         self.process_chunk(chunk, chunks_collector)
+        self._check_truncation_in_chunk(chunk)
         chunk = self._prepare_chunk_for_processing(chunk)
         current_message = self._get_last_ai_message_content(chunk)
 
@@ -1079,23 +1162,8 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
         if not self._should_stop_streaming():
             return last_message, has_structured_response, False
 
-        self._demote_trace_before_stream_close()
+        self._demote_trace_if_cancelled_by_hedging()
         return last_message, has_structured_response, True
-
-    def _demote_trace_before_stream_close(self) -> None:
-        # Demote BEFORE stream.close(): once the stream is closed, the
-        # LangChain callback has ended its spans and the OTEL current-span
-        # falls back to a non-recording NoOp span — at which point neither
-        # set_current_trace_io nor span.set_attribute land on any real span.
-        # GeneratorExit is registered as a Langfuse control-flow exception,
-        # so on_chain_error writes DEFAULT level (not ERROR), meaning our
-        # earlier DEFAULT-level update is not overwritten.
-        cancelled_by_hedging = self.thread_generator.cancellation_reason == HedgingCancellationReason.FAST_PATH_WON
-        if cancelled_by_hedging:
-            mark_trace_cancelled_by_hedging(
-                user_input=self.request.text,
-                request_uuid=self.request_uuid,
-            )
 
     def _should_stop_streaming(self) -> bool:
         """Check if streaming should stop due to user disconnection or hedging cancellation."""
@@ -1106,6 +1174,22 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
                 logger.info(f"Stopping agent {self.agent_name}, user is disconnected")
             return True
         return False
+
+    def _demote_trace_if_cancelled_by_hedging(self) -> None:
+        """Mark the trace as cancelled-by-hedging when the fast path won the race."""
+        if self.thread_generator.cancellation_reason != HedgingCancellationReason.FAST_PATH_WON:
+            return
+        # Demote BEFORE stream.close(): once the stream is closed, the
+        # LangChain callback has ended its spans and the OTEL current-span
+        # falls back to a non-recording NoOp span — at which point neither
+        # set_current_trace_io nor span.set_attribute land on any real span.
+        # GeneratorExit is registered as a Langfuse control-flow exception,
+        # so on_chain_error writes DEFAULT level (not ERROR), meaning our
+        # earlier DEFAULT-level update is not overwritten.
+        mark_trace_cancelled_by_hedging(
+            user_input=self.request.text,
+            request_uuid=self.request_uuid,
+        )
 
     def _prepare_chunk_for_processing(self, chunk):
         """Prepare chunk for processing by extracting relevant data for subagents."""
@@ -1199,6 +1283,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
             )
             return response
         except MCPAuthenticationRequiredException:
+            self._supervisor_coordinator.reset()
             raise
         except StreamAbortedException as e:
             # EPMCDME-16233: mirrors stream()'s quiet swallow - the owning stream was
@@ -1208,6 +1293,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
             logger.info(f"Agent {self.agent_name} invocation aborted: {e}")
             return self._build_generation_result("", success=False)
         except Exception as e:
+            self._supervisor_coordinator.reset()
             return self._build_generation_result(self._get_user_error_message(e), success=False)
 
     def _get_run_config(self):
@@ -1264,6 +1350,38 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
             system_prompt = system_prompt + " " + markdown_response_prompt
 
         return system_prompt
+
+    def _check_truncation_in_chunk(self, chunk: tuple[str, str, Any] | tuple[str, Any]) -> None:
+        """Detect max-token truncation for a finished AI message that carries tool calls (A.1).
+
+        Inspects every node key present in the "updates" payload rather than a single fixed
+        target_field, so a truncated AIMessage is caught regardless of which node produced it:
+        the "agent"/"supervisor" node, a per-sub-agent node in supervisor mode, or the
+        generate_structured_response node (mirroring _get_last_ai_message_content's coverage).
+        """
+        if len(chunk) > 2:
+            # R3-CR-004: key the namespace strip on the actual chunk shape, not the subagents
+            # flag — subgraphs=bool(self.subagents) keeps them in sync today, but a shape
+            # mismatch must degrade to a no-op strip instead of crashing the unpack.
+            _, *chunk = chunk
+        chunk_type, value = chunk
+        if chunk_type != "updates" or not isinstance(value, dict):
+            return
+        for node_state in value.values():
+            if not isinstance(node_state, dict):
+                continue
+            messages = node_state.get("messages")
+            if messages and isinstance(messages[-1], AIMessage) and self._has_tool_call_payload(messages[-1]):
+                self._safe_check_for_truncation(messages[-1])
+
+    @staticmethod
+    def _has_tool_call_payload(message: AIMessage) -> bool:
+        """True when the message carries tool calls, valid or cut mid-JSON (invalid_tool_calls).
+
+        A text-only answer cut at the output-token limit is kept, not failed (EPMCDME-15787); the
+        same condition _finalize_truncated_text and parse_update_type use.
+        """
+        return bool(message.tool_calls or message.invalid_tool_calls)
 
     def _get_last_ai_message_content(self, chunk) -> str | BaseModel | dict:
         chunk_type, value = chunk
@@ -1459,7 +1577,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
         except Exception as e:
             logger.error(f"Unexpected error during terminal truncation detection: {e}", exc_info=True)
 
-    def _safe_check_for_truncation(self, message: AIMessage) -> None:
+    def _safe_check_for_truncation(self, message: AIMessage, author: str | None = None) -> None:
         """
         Safely check for truncation with error handling.
 
@@ -1473,7 +1591,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
             TokenLimitExceededException: If response was truncated (expected, stops execution)
         """
         try:
-            self._check_for_truncated_response(message)
+            self._check_for_truncated_response(message, author=author)
         except TokenLimitExceededException:
             # Re-raise token limit exceptions as they're expected and should stop execution
             raise
@@ -1521,7 +1639,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
 
         return f"while generating {', '.join(incomplete_tools)} arguments"
 
-    def _check_for_truncated_response(self, message: AIMessage) -> None:
+    def _check_for_truncated_response(self, message: AIMessage, author: str | None = None) -> None:
         """
         Validate that LLM response wasn't truncated due to max_tokens limit.
 
@@ -1554,6 +1672,9 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
         )
 
         tool_context = self._log_incomplete_tool_calls(message)
+        # The thought of this exact LLM call (keyed by the message id) is the one that failed.
+        if message.id:
+            self._callback_bridge.on_thought_failed(message.id, author=author)
 
         error_message = (
             f"\n⚠️ TOKEN LIMIT EXCEEDED\n"
@@ -1600,6 +1721,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
         author: str | None = None,
         metadata: dict[str, Any] | None = None,
     ):
+        self._inflight_tool_run_ids.setdefault(author, set()).add(str(run_id))
         self._callback_bridge.on_tool_start(tool_name, input_str, run_id=run_id, author=author, metadata=metadata)
 
     def _on_tool_end(
@@ -1609,6 +1731,12 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
         author: str | None = None,
         artifact=None,
     ):
+        # Remove from every bucket, not just this callback's author: the resume
+        # replay path starts the tool under author=None while the real end event
+        # carries the adapter-resolved author (R3-CR-002).
+        for inflight in self._inflight_tool_run_ids.values():
+            inflight.discard(str(run_id))
+        self._consecutive_tool_error_count[author] = 0
         self._callback_bridge.on_tool_end(output, run_id, author=author, artifact=artifact)
 
     def _on_supervisor_handoff(
@@ -1635,7 +1763,24 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
         self._callback_bridge.on_subassistant_back(output, run_id=run_id, author=author)
 
     def _on_tool_error(self, output, run_id: UUID | None = None, author: str | None = None):
+        # Same all-buckets cleanup as _on_tool_end (R3-CR-002): replay starts the
+        # tool under author=None, the error event may arrive under a resolved author.
+        for inflight in self._inflight_tool_run_ids.values():
+            inflight.discard(str(run_id))
+        inflight = self._inflight_tool_run_ids.setdefault(author, set())
+        count = self._consecutive_tool_error_count.get(author, 0)
+        # Still-in-flight siblings of the same author mean this error was concurrent with
+        # them (one parallel batch = one failed round), so the streak advances only for the
+        # call that empties the set. See R3-CR-005.
+        if not inflight:
+            count += 1
+            self._consecutive_tool_error_count[author] = count
+        # Finalize the triggering tool's thought (in_progress False / error True, sent to
+        # the client) unconditionally, before deciding whether to abort. Otherwise the one
+        # call that ends the run would be left permanently "in progress" in the UI. See CR-003.
         self._callback_bridge.on_tool_error(output, run_id=run_id, author=author)
+        if count >= self._get_max_consecutive_tool_errors():
+            raise MaxConsecutiveToolErrorsExceededException(f"{count} consecutive tool errors; aborting run.")
 
     def _on_chain_end(self, output):
         self._callback_bridge.on_chain_end(output)

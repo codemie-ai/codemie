@@ -75,6 +75,12 @@ class _SupervisorHandoffTracker:
     def clear_pending(self) -> None:
         self.pending.clear()
 
+    def reset(self) -> None:
+        """Clear all handoff state for the current agent run (fatal-error path)."""
+        self.run_bindings.clear()
+        self.pending.clear()
+        self.active.clear()
+
     def queue_pending(self, raw_author: str, handoff: PendingHandoff) -> None:
         self.pending.setdefault(raw_author, deque()).append(handoff)
 
@@ -167,6 +173,10 @@ class SupervisorCoordinator:
 
     def binding_for(self, author: str | None) -> HandoffRunBinding | None:
         return self.tracker.binding_for(author)
+
+    def reset(self) -> None:
+        """Clear the handoff tracker wholesale — called once a fatal error ends the run."""
+        self.tracker.reset()
 
     def queue_supervisor_handoffs(self, handoff_calls: list[dict[str, Any]], author: str | None = None) -> None:
         self.tracker.clear_pending()

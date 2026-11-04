@@ -1,0 +1,157 @@
+{
+  "decision": "request-changes",
+  "rationale": "Genuine no-spec round (no story/spec artifact) forces business_review empty and confidence: low; the standards audit ran cleanly with coverage_gap: false. 11 blocking findings surfaced (1 critical: LangGraphAgent.stream()/_send_error_to_thread unconditionally leaks agent/tool error detail past the include_tool_errors=False default; 10 major, including a dead-code subagent-echo dedup guard in langgraph_event_adapter.py that compares strings against compiled graph objects, an unreset supervisor-coordinator on the non-streaming invoke path, an abandoned background thread after the new fixed 300s queue timeout with no cancellation, and 2 standards violations — commit-format and an unannotated new parameter). 5 lens candidates were dismissed as unreachable or below the emission floor (a chunk-shape assumption already relied on elsewhere in the codebase, a docstring nuance, two bounded/speculative concurrency concerns, and a deliberate close()-in-finally tradeoff); 0 findings deferred.",
+  "confidence": "low",
+  "risk_flags": ["security", "breaking-change", "public-api"],
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "partial",
+      "notes": "16/27 commits match 'EPMCDME-####: Description'; 7 insert a [F#] tag before the colon, 2 use lowercase non-ticket subjects — none match git-workflow.md's documented format."
+    },
+    {
+      "kind": "code-quality",
+      "status": "partial",
+      "notes": "Ruff-clean; one new method (_check_truncation_in_chunk) leaves its duck-typed chunk param unannotated, violating code-quality.md's Types And Imports rule for new code."
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "Auth untouched. F2 redacts stacktrace, fixing a leak (positive). F10's lenient JSON parsing is on an internal queue message, not attacker-controlled input crossing a boundary."
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/agents/callbacks/agent_streaming_callback.py",
+      "line": 408,
+      "title": "Stale in-flight run_id never cleared",
+      "problem": "on_tool_error's early return (`if thought is None: return` at line 408-409) exits before reaching the new `_inflight_run_ids.get(author, set()).discard(str(run_id))` cleanup added later in the method (line ~422), so a run_id whose thought is already gone from that author's storage is never removed from `_inflight_run_ids[author]`.",
+      "impact": "The stale run_id makes every subsequent tool error for that author see a non-empty `concurrent_siblings` set (line 421), permanently defeating the new consecutive-error-streak aliasing for that author for the rest of the run. The concrete trigger (e.g. an author reassignment via `_rebind_author_to_active_handoff` between on_tool_start and on_tool_error for the same run_id) was not fully traced within budget, so this is graded uncertain and capped at major.",
+      "recommendation": "Move the `_inflight_run_ids` discard (and `_active_error_streak` pop) before the `if thought is None: return` early exit, so a stale run_id is always cleared regardless of whether its thought is still in storage."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/agents/langgraph_agent.py",
+      "line": 142,
+      "title": "Dynamic-config lookup uncached per error",
+      "problem": "`_get_max_consecutive_tool_errors()` calls `DynamicConfigService.get_typed_value_safe`, which opens a new DB session and runs a SELECT (`DynamicConfigService.get`) on every invocation, with no caching.",
+      "impact": "`_on_tool_error` calls this on every single tool failure; a chatty agent loop or an error burst across concurrent runs adds a synchronous DB round-trip per tool error, adding latency to error handling and DB load under failure storms.",
+      "recommendation": "Cache the resolved value for the lifetime of the request/agent instance (e.g. a lazily-computed instance attribute) or apply a short TTL cache."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/agents/langgraph_agent.py",
+      "line": 142,
+      "title": "No floor on tool-error-cap config value",
+      "problem": "`_get_max_consecutive_tool_errors()` returns `DynamicConfigService.get_typed_value_safe(...)` unclamped; the real code has no lower bound (no `max(1, ...)` guard).",
+      "impact": "If `AI_AGENT_MAX_CONSECUTIVE_TOOL_ERRORS` is misconfigured to 0 or negative, `_on_tool_error`'s `count >= self._get_max_consecutive_tool_errors()` (count starts at 1) is true on the very first tool error, aborting every run on any single tool failure and defeating the 'consecutive' threshold semantics entirely.",
+      "recommendation": "Clamp the returned value with `max(1, value)` before use."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/agents/langgraph_agent.py",
+      "line": 848,
+      "title": "Tool-error details bypass include_tool_errors gate",
+      "problem": "`_send_error_to_thread` (and `stream()`'s success block) builds `tool_errors`, `agent_error`, and `error_details` unconditionally and sends them via `self.thread_generator.send(...)`, with no `include_tool_errors`/`error_detail_level` parameter at all; `StandardAssistantHandler._serve_data` and `HedgedAssistantHandler._stream_agent_path` yield that chunk verbatim with no filtering. Only the separate `queue.Empty` timeout path (`_build_timeout_result` -> `_format_errors`) still applies the gate. The prior single gatekeeper, `_build_final_chunk`, was deleted in this diff with nothing replacing the check on this call path.",
+      "impact": "Every streaming client using the default `include_tool_errors=False` ('backward compatibility' per `_format_errors`' own docstring) now still receives full `agent_error`/`tool_errors`/`error_details` in the final SSE chunk whenever the agent itself raises (not just on timeout) — a real regression in the documented default-redaction contract; none of the existing tests exercise this call site with `include_tool_errors=False`.",
+      "recommendation": "Thread `include_tool_errors`/`error_detail_level` through to `LangGraphAgent.stream()`/`_send_error_to_thread` (or apply `_format_errors`' gate to the chunk in `_serve_data`/`_stream_agent_path` before yielding), so the default suppresses these fields exactly as the timeout path already does."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/agents/langgraph_agent.py",
+      "line": 1075,
+      "title": "Supervisor handoff state not reset on fatal invoke",
+      "problem": "`_invoke_agent`'s `except Exception as e: return self._build_generation_result(...)` (used by `invoke`/`invoke_task`/`generate`) never calls `self._supervisor_coordinator.reset()`; the reset was added in this diff only to `stream()`'s exception handlers.",
+      "impact": "A fatal error in supervisor/subagent mode on the non-streaming invoke/generate path leaves dangling active-handoff bindings in `_supervisor_coordinator` that only `stream()` clears; a later invocation of the same agent instance inherits corrupted handoff state.",
+      "recommendation": "Call `self._supervisor_coordinator.reset()` in `_invoke_agent`'s `except Exception` branch as well, mirroring `stream()`."
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/agents/langgraph_agent.py",
+      "line": 1133,
+      "title": "New method's chunk parameter left untyped",
+      "problem": "`_check_truncation_in_chunk(self, chunk) -> None` leaves `chunk` unannotated even though the body branches on its shape depending on `self.subagents`.",
+      "impact": "Violates code-quality.md's documented rule to spell out the accepted union for a duck-typed parameter on new code — a blocking standards violation per the standards audit.",
+      "recommendation": "Annotate `chunk` with the concrete accepted type/union already used by the sibling `_get_last_ai_message_content`."
+    },
+    {
+      "id": "CR-007",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/agents/langgraph_event_adapter.py",
+      "line": 229,
+      "title": "Subagent-echo dedup guard never matches",
+      "problem": "`parse_supervisor_update_type`'s new guard — `if author is None and any(key in self.agent.subagents for key in value): return` — checks whether a string node-name key is `in self.agent.subagents`. `self.agent.subagents` is `list[CompiledStateGraph]` (confirmed via `assistant_engine_builder.create_subagent_executors`'s return type and the `mock_subagent = mock_agent_tool._agent.agent_executor` test fixture), not a collection of names. Neither `CompiledStateGraph`, `Pregel`, nor `Runnable` defines `__eq__` (confirmed in the installed langgraph package), so `in` falls back to identity comparison and a string key can never equal a compiled graph object.",
+      "impact": "The guard is dead code: `any(...)` is always False, so it can never suppress anything. The double-counting scenario it was added to prevent — a subagent's completed step being re-processed under the shared `author=None` key when LangGraph echoes the branch's full state diff at the top level — is not actually fixed by this diff. No test in the diff exercises a `value` key equal to an actual subagent name, so this went unnoticed.",
+      "recommendation": "Compare against the subagents' names, e.g. `key in {a.name for a in self.agent.subagents}` (computed once), and add a test where `value`'s key equals a real subagent's `.name` to prove the echo is filtered."
+    },
+    {
+      "id": "CR-008",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/core/exceptions.py",
+      "line": 296,
+      "title": "Fragile string coupling to token-limit classifier",
+      "problem": "`MaxConsecutiveToolErrorsExceededException`'s message is deliberately engineered (per its own docstring) to contain the substring `AgentErrorClassifier._try_token_limit` matches ('token limit'), coupling two files via an unenforced substring with no shared constant.",
+      "impact": "A run aborted by repeated tool failures is now classified and surfaced to users/observability as `ErrorCode.AGENT_TOKEN_LIMIT` ('Token limit exceeded') — a misleading root cause that will confuse users and skew error-rate dashboards, and the coupling can silently break if either message's wording changes.",
+      "recommendation": "Give `MaxConsecutiveToolErrorsExceededException` its own `ErrorCode` (e.g. `AGENT_TOOL_ERROR_LIMIT`) classified directly by type/isinstance in `AgentErrorClassifier`, rather than via a matched substring."
+    },
+    {
+      "id": "CR-009",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/core/thread.py",
+      "line": 72,
+      "title": "Unsynchronized is_closed/send race in ThreadedGenerator",
+      "problem": "`send()`'s new `if self.is_closed(): return` check and the subsequent `self.queue.put(data)` are not protected by any lock shared with `close()`; `close()` can run on another thread between the check and the put.",
+      "impact": "One late item can land in the queue immediately after `close()`'s `StopIteration` sentinel, but nobody drains the queue after `_serve_data`/`_stream_agent_path` has already broken out of its loop — that item is silently lost.",
+      "recommendation": "Guard the `is_closed()` check and the `put()` with the same lock `close()` uses (or add one), so the check-then-act is atomic."
+    },
+    {
+      "id": "CR-010",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/handlers/assistant_handlers.py",
+      "line": 409,
+      "title": "Abandoned agent thread keeps running after timeout",
+      "problem": "`QUEUE_POLL_TIMEOUT_SECONDS = 300` is a fixed value with no dynamic-config override (unlike the tool-error cap added in the same diff), and `_build_timeout_result` only calls `generator_queue.close()` — it never signals the background agent thread to stop. `ThreadedGenerator.send`'s new no-op-after-close guard only prevents further queuing; it does not interrupt whatever tool/LLM call the agent thread is currently blocked on, which `_stream_graph`'s own `_should_stop_streaming()` check only reaches once the current step completes and the next chunk is yielded.",
+      "impact": "A tool call or LLM turn that legitimately runs longer than 5 minutes gets reported to the client as a timeout error while the abandoned background thread keeps executing tool calls and spending LLM budget, unmonitored, until its current step finishes on its own.",
+      "recommendation": "Make the poll timeout dynamic-config-overridable like the tool-error cap, and/or thread an explicit cancellation signal into the tool-execution path (not just the chunk-loop check) so a timed-out run is actually interrupted, not just orphaned."
+    },
+    {
+      "id": "CR-011",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "unknown",
+      "title": "Commit subjects violate documented format",
+      "problem": "9 of 27 commits in the review range don't match git-workflow.md's documented 'EPMCDME-####: Description' subject format: 7 insert a bracket tag between the ticket and colon (e.g. 'EPMCDME-14855 [F10]: ...', '[F9]', '[F7+F8]', '[F3]', '[F5+F6-REFRAME]', '[F2]', '[F1]'), and 2 use a lowercase non-ticket-prefixed subject ('epmcdme-14855-token-limit-slice2: add planning artifacts', 'epmcdme-14855-graph-cancellation-core: add planning artifacts').",
+      "impact": "A documented, blocking commit-format standard is violated for roughly a third of the commits in this range.",
+      "recommendation": "Reword the affected subjects to drop the bracket tags (move the [F#] label into the commit body) and prefix the two planning-artifact commits with the ticket in the documented form."
+    }
+  ]
+}

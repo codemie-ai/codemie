@@ -357,8 +357,9 @@ class TestTruncatedTextResponses:
         with pytest.raises(RuntimeError, match="token limit"):
             LangGraphEventAdapter(agent).parse_update_type({"agent": {"messages": [message]}})
 
+        agent._callback_bridge.on_thought_failed.assert_called_once_with("msg-8", author=None)
         agent._on_llm_end.assert_called_once_with(response=message, run_id="msg-8", author=None)
-        agent._safe_check_for_truncation.assert_called_once_with(message)
+        agent._safe_check_for_truncation.assert_called_once_with(message, author=None)
         mock_logger.warning.assert_not_called()
 
     def test_supervisor_handoff_back_not_treated_as_truncated(self, agent, mock_logger):

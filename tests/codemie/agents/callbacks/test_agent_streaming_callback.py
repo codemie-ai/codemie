@@ -350,6 +350,7 @@ def test_on_tool_error_sends_with_error_flag(mock_streamed_result, mock_logging)
     run_id = uuid.uuid4()
     mock_thought = Mock(spec=Thought)
     mock_thought.metadata = None
+    mock_thought.id = str(run_id)
     callback.thoughts_storage[str(run_id)] = mock_thought
 
     callback.on_tool_error(Exception("tool failed"), run_id=run_id)
@@ -361,6 +362,85 @@ def test_on_tool_error_sends_with_error_flag(mock_streamed_result, mock_logging)
 
 
 @patch('codemie.agents.callbacks.agent_streaming_callback.set_logging_info')
+@patch('codemie.agents.callbacks.agent_streaming_callback.StreamedGenerationResult')
+def test_on_tool_error_consecutive_calls_reuse_same_thought_id(mock_streamed_result, mock_logging):
+    mock_queue = MagicMock()
+    mock_streamed_result.return_value = Mock(model_dump_json=Mock(return_value='{}'))
+    callback = AgentStreamingCallback(gen=mock_queue)
+
+    run_id_1, run_id_2 = uuid.uuid4(), uuid.uuid4()
+    callback.thoughts_storage[str(run_id_1)] = Mock(spec=Thought, id=str(run_id_1), metadata=None)
+    callback.thoughts_storage[str(run_id_2)] = Mock(spec=Thought, id=str(run_id_2), metadata=None)
+
+    callback.on_tool_error(Exception("boom 1"), run_id=run_id_1)
+    first_thought = mock_streamed_result.call_args.kwargs['thought']
+    callback.on_tool_error(Exception("boom 2"), run_id=run_id_2)
+    second_thought = mock_streamed_result.call_args.kwargs['thought']
+
+    assert first_thought.id == second_thought.id
+
+
+@patch('codemie.agents.callbacks.agent_streaming_callback.set_logging_info')
+def test_on_tool_error_consecutive_calls_close_original_thought_in_generator(
+    mock_logging, real_thread_generator: ThreadedGenerator
+) -> None:
+    """Regression for F1: the second (and later) run_id in a consecutive-error streak
+    has its thought.id aliased onto the first error's id, but the thought opened under
+    its own id via on_tool_start must still be closed under that original id in the
+    real ThreadedGenerator — otherwise the client-side entry for run_id_2 never
+    receives a matching update and stays in_progress=True forever."""
+    callback = AgentStreamingCallback(gen=real_thread_generator)
+
+    run_id_1, run_id_2 = uuid.uuid4(), uuid.uuid4()
+
+    callback.on_tool_start({"name": "tool_one"}, "input 1", run_id=run_id_1)
+    callback.on_tool_error(Exception("boom 1"), run_id=run_id_1)
+
+    callback.on_tool_start({"name": "tool_one"}, "input 2", run_id=run_id_2)
+    callback.on_tool_error(Exception("boom 2"), run_id=run_id_2)
+
+    second_run_thought = next(t for t in real_thread_generator.thoughts if t['id'] == str(run_id_2))
+    assert second_run_thought['in_progress'] is False
+
+
+@patch('codemie.agents.callbacks.agent_streaming_callback.set_logging_info')
+def test_on_tool_end_success_starts_a_new_streak(mock_logging):
+    mock_queue = MagicMock()
+    callback = AgentStreamingCallback(gen=mock_queue)
+    callback._active_error_streak[None] = "some-old-id"
+
+    callback.thoughts_storage[str(uuid.uuid4())] = Mock(spec=Thought, metadata=None)
+    run_id = list(callback.thoughts_storage)[0]
+    callback.on_tool_end("ok", run_id=run_id)
+
+    assert None not in callback._active_error_streak
+
+
+@patch('codemie.agents.callbacks.agent_streaming_callback.set_logging_info')
+@patch('codemie.agents.callbacks.agent_streaming_callback.StreamedGenerationResult')
+def test_on_tool_error_concurrent_same_author_calls_do_not_merge_thought_id(mock_streamed_result, mock_logging):
+    """Two tool calls from the same author that are in flight at the same time
+    (parallel_tool_calls) and both error must keep their own distinct thought ids;
+    only a genuine sequential retry (one call fully resolved before the next
+    starts) may alias onto the shared streak id (regression for CR-001)."""
+    mock_queue = MagicMock()
+    mock_streamed_result.return_value = Mock(model_dump_json=Mock(return_value='{}'))
+    callback = AgentStreamingCallback(gen=mock_queue)
+
+    run_id_1, run_id_2 = uuid.uuid4(), uuid.uuid4()
+    # Both tool calls are started (and thus in flight) before either resolves.
+    callback.on_tool_start({"name": "tool_one"}, "input 1", run_id=run_id_1, author="author_x")
+    callback.on_tool_start({"name": "tool_two"}, "input 2", run_id=run_id_2, author="author_x")
+
+    callback.on_tool_error(Exception("boom 1"), run_id=run_id_1, author="author_x")
+    first_thought = mock_streamed_result.call_args.kwargs['thought']
+    callback.on_tool_error(Exception("boom 2"), run_id=run_id_2, author="author_x")
+    second_thought = mock_streamed_result.call_args.kwargs['thought']
+
+    assert first_thought.id != second_thought.id
+
+
+@patch('codemie.agents.callbacks.agent_streaming_callback.set_logging_info')
 def test_on_tool_error_unknown_run_id_is_noop(mock_logging) -> None:
     mock_queue = MagicMock()
     callback = AgentStreamingCallback(gen=mock_queue)
@@ -368,6 +448,54 @@ def test_on_tool_error_unknown_run_id_is_noop(mock_logging) -> None:
     callback.on_tool_error(Exception("error"), run_id=uuid.uuid4())
 
     mock_queue.send.assert_not_called()
+
+
+@patch('codemie.agents.callbacks.agent_streaming_callback.set_logging_info')
+def test_on_tool_error_unknown_run_id_still_clears_inflight_bookkeeping(mock_logging) -> None:
+    """Regression for CR-001: if the thought for run_id is already gone from storage
+    (e.g. an author reassignment happened between on_tool_start and on_tool_error), the
+    early `if thought is None: return` must not skip clearing this run_id out of
+    _inflight_run_ids[author] -- otherwise it leaks there forever."""
+    mock_queue = MagicMock()
+    callback = AgentStreamingCallback(gen=mock_queue)
+    run_id = uuid.uuid4()
+    author = "author_x"
+    callback._inflight_run_ids.setdefault(author, set()).add(str(run_id))
+
+    callback.on_tool_error(Exception("error"), run_id=run_id, author=author)
+
+    assert str(run_id) not in callback._inflight_run_ids.get(author, set())
+
+
+@patch('codemie.agents.callbacks.agent_streaming_callback.set_logging_info')
+def test_on_tool_end_clears_run_id_from_all_author_buckets(mock_logging) -> None:
+    """R3-CR-002: the resume replay path fires on_tool_start without an author
+    (bucket None), while the real on_tool_end arrives with the adapter-resolved
+    author. Discarding only from the end's own bucket leaves the run_id leaking
+    in the None bucket forever -- it must be removed from every bucket."""
+    mock_queue = MagicMock()
+    callback = AgentStreamingCallback(gen=mock_queue)
+    run_id = uuid.uuid4()
+    callback.on_tool_start({"name": "tool_one"}, "input", run_id=run_id)  # replay: author=None
+
+    callback.on_tool_end("ok", run_id=run_id, author="author_x")
+
+    assert callback._inflight_run_ids.get(None, set()) == set()
+    assert callback._inflight_run_ids.get("author_x", set()) == set()
+
+
+@patch('codemie.agents.callbacks.agent_streaming_callback.set_logging_info')
+def test_on_tool_error_clears_run_id_from_all_author_buckets(mock_logging) -> None:
+    """R3-CR-002, error path: same mismatch must not leak either."""
+    mock_queue = MagicMock()
+    callback = AgentStreamingCallback(gen=mock_queue)
+    run_id = uuid.uuid4()
+    callback.on_tool_start({"name": "tool_one"}, "input", run_id=run_id)  # replay: author=None
+
+    callback.on_tool_error(Exception("boom"), run_id=run_id, author="author_x")
+
+    assert callback._inflight_run_ids.get(None, set()) == set()
+    assert callback._inflight_run_ids.get("author_x", set()) == set()
 
 
 # ---------------------------------------------------------------------------
@@ -574,6 +702,44 @@ def test_on_tool_start_without_real_tool_name_keeps_metadata(_mock_replay_v2) ->
     thought = callback.thoughts_storage[str(run_id)]
     assert thought.metadata["tool_name"] == "search_docs"
     assert thought.author_name == "Search Docs"
+
+
+class TestOnThoughtFailed:
+    """on_thought_failed flags exactly the open thought of a known-failed LLM call."""
+
+    def test_flags_open_thought_and_persists_error_without_duplicating_text(
+        self, real_thread_generator: ThreadedGenerator
+    ) -> None:
+        callback = AgentStreamingCallback(gen=real_thread_generator)
+        run_id = uuid.uuid4()
+        callback.on_llm_new_token("partial answer", run_id=run_id)
+
+        callback.on_thought_failed(run_id=run_id)
+
+        assert len(real_thread_generator.thoughts) == 1
+        persisted = real_thread_generator.thoughts[0]
+        assert persisted["error"] is True
+        assert persisted["in_progress"] is False
+        assert persisted["message"] == "partial answer"
+        assert callback.thoughts_storage.get(str(run_id)) is None
+
+    def test_does_nothing_when_no_thought_is_open(self, real_thread_generator: ThreadedGenerator) -> None:
+        callback = AgentStreamingCallback(gen=real_thread_generator)
+
+        callback.on_thought_failed(run_id=uuid.uuid4())
+
+        assert real_thread_generator.thoughts == []
+
+    def test_does_not_touch_other_thoughts(self, real_thread_generator: ThreadedGenerator) -> None:
+        callback = AgentStreamingCallback(gen=real_thread_generator)
+        failing, other = uuid.uuid4(), uuid.uuid4()
+        callback.on_llm_new_token("a", run_id=other)
+        callback.on_llm_new_token("b", run_id=failing)
+
+        callback.on_thought_failed(run_id=failing)
+
+        flags = sorted((t["message"], t["error"]) for t in real_thread_generator.thoughts)
+        assert flags == [("a", False), ("b", True)]
 
 
 # ---------------------------------------------------------------------------

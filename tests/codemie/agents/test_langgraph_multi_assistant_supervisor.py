@@ -298,8 +298,11 @@ class TestLangGraphMultiAssistantSupervisor:
             ("supervisor", "updates", {"supervisor": {"messages": [AIMessage(content="chunk2")]}}),
         ]
 
+        mock_stream_obj = MagicMock()
+        mock_stream_obj.__iter__ = MagicMock(return_value=iter(mock_stream))
+
         supervisor_agent.agent_executor = MagicMock()
-        supervisor_agent.agent_executor.stream.return_value = iter(mock_stream)
+        supervisor_agent.agent_executor.stream.return_value = mock_stream_obj
         supervisor_agent.process_chunk = MagicMock()
         supervisor_agent._on_chain_end = MagicMock()
         supervisor_agent._get_last_ai_message_content = MagicMock(return_value="final_result")
@@ -372,8 +375,11 @@ class TestLangGraphMultiAssistantSupervisor:
             ("updates", {"agent": {"messages": [AIMessage(content="chunk2")]}}),
         ]
 
+        mock_stream_obj = MagicMock()
+        mock_stream_obj.__iter__ = MagicMock(return_value=iter(mock_stream))
+
         agent.agent_executor = MagicMock()
-        agent.agent_executor.stream.return_value = iter(mock_stream)
+        agent.agent_executor.stream.return_value = mock_stream_obj
         agent.process_chunk = MagicMock()
         agent._on_chain_end = MagicMock()
         agent._get_last_ai_message_content = MagicMock(return_value="final_result")
@@ -724,6 +730,55 @@ class TestLangGraphMultiAssistantSupervisor:
         supervisor_agent._LangGraphAgent__parse_supervisor_update_type(value)
 
         supervisor_agent._parse_tool_message.assert_called_once_with(tool_message, author=None)
+
+    def test_parse_supervisor_update_type_dedups_subagent_echo_by_name(self, supervisor_agent):
+        """CR-007: the top-level echo of a completed subagent branch must be recognized by
+        matching value's keys against subagent NAMES (subagent_descriptions), not against the
+        compiled graph objects in `subagents` -- `key in self.agent.subagents` never matches a
+        string key against CompiledStateGraph instances, so the dedup guard was dead code and
+        this echo fell through to reprocessing (double-counted the tool result)."""
+        supervisor_agent.subagent_descriptions = {"analyst": "Analyst subagent"}
+        tool_message = ToolMessage(name="search_tool", content="Search results", tool_call_id="call-123")
+        value = {"analyst": {"messages": [tool_message]}}
+
+        supervisor_agent._parse_tool_message = MagicMock()
+
+        supervisor_agent._LangGraphAgent__parse_supervisor_update_type(value)
+
+        supervisor_agent._parse_tool_message.assert_not_called()
+
+    def test_parse_supervisor_update_type_processes_non_subagent_keys_alongside_echo(self, supervisor_agent):
+        """R3-CR-006: dropping the whole update when ONE key matches a subagent name swallows
+        unrelated top-level keys carried in the same update tick -- filter just the echoed
+        subagent keys and keep processing the rest."""
+        supervisor_agent.subagent_descriptions = {"analyst": "Analyst subagent"}
+        tool_message = ToolMessage(name="search_tool", content="Search results", tool_call_id="call-123")
+        value = {
+            "analyst": {"messages": [tool_message]},
+            "supervisor": {"messages": [tool_message]},
+        }
+
+        supervisor_agent._parse_tool_message = MagicMock()
+
+        supervisor_agent._LangGraphAgent__parse_supervisor_update_type(value)
+
+        supervisor_agent._parse_tool_message.assert_called_once_with(tool_message, author=None)
+
+    def test_parse_supervisor_update_type_echo_only_still_returns_early(self, supervisor_agent):
+        """Companion to R3-CR-006: when the update carries nothing but subagent echoes
+        filtering empties it, so the early return still applies."""
+        supervisor_agent.subagent_descriptions = {"analyst": "Analyst subagent", "coder": "Coder subagent"}
+        tool_message = ToolMessage(name="search_tool", content="Search results", tool_call_id="call-123")
+        value = {
+            "analyst": {"messages": [tool_message]},
+            "coder": {"messages": [tool_message]},
+        }
+
+        supervisor_agent._parse_tool_message = MagicMock()
+
+        supervisor_agent._LangGraphAgent__parse_supervisor_update_type(value)
+
+        supervisor_agent._parse_tool_message.assert_not_called()
 
     def test_on_supervisor_handoff_callback(self, supervisor_agent):
         mock_callback = MagicMock(spec=BaseCallbackHandler)

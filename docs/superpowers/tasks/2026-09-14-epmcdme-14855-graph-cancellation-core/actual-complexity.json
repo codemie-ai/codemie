@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "generated": "2026-09-15T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 21,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 11,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Diff touches LangGraphAgent (agent execution/streaming), SupervisorCoordinator (_SupervisorHandoffTracker.reset()), the core ThreadedGenerator (close(reason=...), cancellation_reason, HedgingCancellationReason), StandardAssistantHandler, and HedgedAssistantHandler — five components spanning the standard, supervisor, and hedged-request execution paths plus a shared core primitive." },
+    { "dimension": "technical_risk", "reason": "Fix targets a concurrency/streaming cancellation race (a thought staying 'in progress' when a stream is closed mid-flight from hedging fast-path win, client disconnect, or a fatal error) inside the core generation/streaming path shared by every agent request; no single existing pattern covered demoting-before-close across all three cancellation sources, so the streaming/real-time red flag applies." },
+    { "dimension": "file_change_estimate", "reason": "diffstat reports 11 files changed (405 insertions, 67 deletions), which maps directly to the XL file-count band (11-15 files) per the actual-mode file-count table." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk: real-time/streaming cancellation race condition in the core agent execution path (thread.py close()/cancellation_reason, langgraph_agent.py _should_stop_streaming/_stream_graph)",
+    "Component Scope: touches core shared utility ThreadedGenerator (src/codemie/core/thread.py), used by every request handler and agent",
+    "Component Scope: affects multiple execution paths/agents (StandardAssistantHandler, HedgedAssistantHandler race coordinator, SupervisorCoordinator multi-agent handoff tracker) rather than a single call site"
+  ],
+  "split_recommendation": null
+}

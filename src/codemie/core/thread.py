@@ -87,6 +87,7 @@ class ThreadedGenerator:
         self.conversation_id = conversation_id
         self.thoughts = []
         self.context = ThoughtContext(user_id=user_id, request_uuid=request_uuid)
+        self._close_lock = threading.Lock()
         self._history_chunks: list[str] = []
         self._subscribers: list[queue.Queue] = []
         self._sub_lock = threading.Lock()
@@ -103,19 +104,21 @@ class ThreadedGenerator:
         return item
 
     def send(self, data):
-        with self._sub_lock:
-            self._history_chunks.append(data)
-            for sub in self._subscribers:
-                sub.put(data)
+        with self._close_lock:
+            if self.is_closed():
+                return
+            with self._sub_lock:
+                self._history_chunks.append(data)
+                for sub in self._subscribers:
+                    sub.put(data)
+            try:
+                parsed = json.loads(data)
+            except Exception:
+                self.queue.put(data)
+                return
 
-        try:
-            parsed = json.loads(data)
-        except Exception:
+            thought = parsed.get('thought', {})
             self.queue.put(data)
-            return
-
-        thought = parsed.get('thought', {})
-        self.queue.put(data)
 
         if thought:
             self._process_thought(thought)
@@ -180,18 +183,19 @@ class ThreadedGenerator:
         return item
 
     def close(self, error: BaseException | None = None, *, reason: str | None = None):
-        if self.closed:
-            return
-        self.closed = True
-        self.cancellation_reason = reason
-        with self._sub_lock:
-            for sub in self._subscribers:
-                if error is not None:
-                    sub.put(error)
-                sub.put(StopIteration)
-        if error is not None:
-            self.queue.put(error)
-        self.queue.put(StopIteration)
+        with self._close_lock:
+            if self.closed:
+                return
+            self.closed = True
+            self.cancellation_reason = reason
+            with self._sub_lock:
+                for sub in self._subscribers:
+                    if error is not None:
+                        sub.put(error)
+                    sub.put(StopIteration)
+            if error is not None:
+                self.queue.put(error)
+            self.queue.put(StopIteration)
 
     def subscribe(self) -> tuple[list[str], queue.Queue, bool]:
         """Register a subscriber queue for real-time chunk multi-casting.

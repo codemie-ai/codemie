@@ -656,7 +656,10 @@ class AIToolsAgent(WorkspaceAwareAgent):
             )
 
     @with_captured_origin
-    def stream(self):
+    def stream(self, **_kwargs):
+        """Stream the agent run. Accepts and ignores the include_tool_errors / error_detail_level keywords that
+        the streaming handlers pass to every agent type (LangGraphAgent.stream uses them); errors here go
+        through send_error_response."""
         set_logging_info(
             uuid=self.request_uuid,
             user_id=self.user.id,

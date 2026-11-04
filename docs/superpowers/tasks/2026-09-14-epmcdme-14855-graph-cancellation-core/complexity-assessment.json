@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "task": "Stop the orphaned LangGraph execution graph on a fatal (token-limit) error and surface a proper client-facing error: detect truncation inside the graph path, close the stream on the exception path in _stream_graph, cancel orphaned graph tasks and clear dangling SupervisorCoordinator handoffs, guard ThreadedGenerator.send() after close, populate the error-reporting fields in _send_error_to_thread, and resolve the dead last_generation_result/_build_final_chunk code path.",
+  "generated": "2026-09-15T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 5, "label": "XL" },
+    "technical_risk":       { "score": 6, "label": "XXL" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 23,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "4 components across distinct subsystems (LangGraphAgent._stream_graph/stream()/_send_error_to_thread, SupervisorCoordinator's handoff tracker, ThreadedGenerator in core/thread.py, assistant_handlers.py's _build_final_chunk); bumped to XL because ThreadedGenerator is a project-wide shared core utility with callers beyond this fix's scope (e.g. agent_streaming_callback.py)." },
+    { "dimension": "requirements_clarity", "reason": "Core AC are concrete and file/line-anchored, but B.8 explicitly leaves a 'fix or remove' decision open on last_generation_result, and A.3's graph-task cancellation approach has no design decision made yet (stream.close() vs. an explicit LangGraph cancellation API) — bumped from L to XL for the open TBD-style decision." },
+    { "dimension": "technical_risk", "reason": "A.2/A.3 have no existing precedent in this codebase — the only current termination mechanism is the passive recursion_limit=150 backstop; whether closing the Python stream generator actually cancels in-flight LangGraph react-loop/Send-branch tasks is unverified against langgraph==1.1.6 internals per the technical analysis's own risk indicators, and any fix must preserve a fragile OTEL span-demotion-before-close ordering. Bumped from XL to XXL for the streaming/real-time cancellation red flag on top of this unprecedented novelty." },
+    { "dimension": "file_change_estimate", "reason": "Roughly 4-5 modified files (langgraph_agent.py, coordinator.py, thread.py, assistant_handlers.py) across 4 directories, 0-1 new files (no schema/config file needed for this slice since A.5/A.6/B.9/B.10 are out of scope) — file count itself stays below L's 8-10 threshold." },
+    { "dimension": "affected_layers", "reason": "Service/agent-runtime, infrastructure/thread-bridge, and API/REST-handler layers touched (3 distinct layers); no DB schema change, no UI, no new external integration." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L to XL: touches core shared utility ThreadedGenerator (core/thread.py), whose send()/is_closed() contract is used by callers beyond this fix (e.g. agent_streaming_callback.py's _send_thought)",
+    "Technical Risk bumped from XL to XXL: streaming/real-time graph-execution cancellation has no existing precedent and unverified semantics against langgraph 1.1.6 internals",
+    "Requirements Clarity bumped from L to XL: B.8 explicitly poses an open 'fix or remove' decision with no criterion specifying which branch to take"
+  ],
+  "split_recommendation": null
+}

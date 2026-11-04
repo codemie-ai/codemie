@@ -366,3 +366,11 @@ class NoDefaultModelException(ModelAvailabilityException):
         if not details:
             details = "Admin must configure a default model for the project."
         super().__init__(code=500, message=message, details=details)
+
+
+class MaxConsecutiveToolErrorsExceededException(Exception):
+    """Raised when AI_AGENT_MAX_CONSECUTIVE_TOOL_ERRORS consecutive tool errors occur in a row.
+
+    Classified by type (AgentErrorClassifier._try_tool_error_limit) as
+    ErrorCode.AGENT_TOOL_ERROR_LIMIT, so the message text is free-form and never matched.
+    """

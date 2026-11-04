@@ -79,6 +79,7 @@ class ErrorCode(str, Enum):
     # Agent errors - internal execution issues
     AGENT_TIMEOUT = "agent_timeout"
     AGENT_TOKEN_LIMIT = "agent_token_limit"
+    AGENT_TOOL_ERROR_LIMIT = "agent_tool_error_limit"
     AGENT_BUDGET_EXCEEDED = "agent_budget_exceeded"
     AGENT_CALLBACK_FAILURE = "agent_callback_failure"
     AGENT_NETWORK_ERROR = "agent_network_error"
@@ -284,6 +285,7 @@ LITELLM_ERROR_KEYWORDS: dict[ErrorCode, list[str]] = {
 AGENT_ERROR_FRIENDLY_MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.AGENT_TIMEOUT: config.AGENT_MSG_TIMEOUT,
     ErrorCode.AGENT_TOKEN_LIMIT: config.AGENT_MSG_TOKEN_LIMIT,
+    ErrorCode.AGENT_TOOL_ERROR_LIMIT: config.AGENT_MSG_TOOL_ERROR_LIMIT,
     ErrorCode.AGENT_BUDGET_EXCEEDED: config.AGENT_MSG_BUDGET_EXCEEDED,
     ErrorCode.AGENT_CALLBACK_FAILURE: config.AGENT_MSG_CALLBACK_FAILURE,
     ErrorCode.AGENT_NETWORK_ERROR: config.AGENT_MSG_NETWORK_ERROR,

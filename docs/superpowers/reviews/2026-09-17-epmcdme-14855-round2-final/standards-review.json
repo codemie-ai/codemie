@@ -1,0 +1,16 @@
+{
+  "standards_review": [
+    {"kind": "commit-format", "status": "partial", "notes": "git-workflow.md requires `EPMCDME-####: Description`; most of the 34 subjects in d06c62bbb..HEAD comply (`EPMCDME-14855: ...` or `EPMCDME-14855 [F#]: ...`), but two commits use a lowercase branch-slug prefix instead of the ticket format: `epmcdme-14855-token-limit-slice2: add planning artifacts` and `epmcdme-14855-graph-cancellation-core: add planning artifacts`; one merge commit ('Merge remote-tracking branch origin/main into EPMCDME-14855_CodeMie-thought-remains-in-progress') also does not follow the subject format"},
+    {"kind": "code-quality", "status": "pass", "notes": "New/modified functions in src/codemie/agents/langgraph_agent.py, callbacks/agent_streaming_callback.py, supervisor/coordinator.py, rest_api/handlers/assistant_handlers.py and hedged_handler.py use parameterized modern hints (dict[str | None, ...], list[str], tuple[...] | tuple[...], X | None) with no bare Optional/list/dict found in the diff; new test files tests/codemie/agents/supervisor/test_coordinator.py, test_langgraph_tool_error_cap.py and test_langgraph_tool_error_cap_real_graph.py all carry the Apache 2.0 header per Makefile:41-52's license-check target"},
+    {"kind": "security", "status": "pass", "notes": "Secret handling: no new logger call in the diff logs credentials/tokens/headers (only 'Skipping malformed streamed chunk' and a queue-timeout message, both operational context); the F1/F2 stacktrace-redaction fix in langgraph_agent.py:867-872 redacts agent_error.stacktrace on error_response itself before error_details is derived from it at line 878, so no leak path remains. Untrusted-input rule (fail-closed parsing) targets security-decision inputs like the cited gitlab_webhook_security.py; the F10 tolerant-unpack/skip-malformed-JSON change in assistant_handlers.py and langgraph_agent.py handles internal SSE-queue chunks produced by the same process (not an external security decision), so it is out of that rule's scope. No endpoint/auth code was touched by this change."}
+  ],
+  "blocking_findings": [
+    {
+      "location": "commit \"epmcdme-14855-token-limit-slice2: add planning artifacts\" and commit \"epmcdme-14855-graph-cancellation-core: add planning artifacts\"",
+      "violation": "git-workflow.md requires commit subjects in the form `EPMCDME-####: Description`; both subjects use a lowercase branch-slug prefix ('epmcdme-14855-<slice-name>:') instead of the ticket-prefixed format",
+      "why_blocking": "commit-format is a blocking standard per the review gate; these two subjects in the review range do not conform",
+      "remedy": "reword the subjects to `EPMCDME-14855: Add planning artifacts for <slice name>`"
+    }
+  ],
+  "coverage_gap": false
+}

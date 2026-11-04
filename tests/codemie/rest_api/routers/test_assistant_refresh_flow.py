@@ -294,6 +294,35 @@ def test_drain_and_save_chat_history_exception_saves_error_status():
     assert data_saved.in_progress is False
 
 
+def test_drain_and_save_chat_history_abandoned_producer_saves_error_status():
+    """EPMCDME-14855: a producer that never sends StopIteration must not pin the drainer
+    forever and leave the turn persisted as in_progress."""
+    from codemie.rest_api.handlers.assistant_handlers import StandardAssistantHandler
+
+    assistant = MagicMock()
+    user = User(id="user_1")
+    handler = StandardAssistantHandler(assistant=assistant, user=user, request_uuid="uuid-123")
+    handler.save_chat_history = MagicMock()
+    handler._get_queue_poll_timeout_seconds = MagicMock(return_value=0.01)
+
+    gen = ThreadedGenerator(conversation_id="conv_stuck")
+
+    req = AssistantChatRequest(text="Hello", conversation_id="conv_stuck")
+
+    handler._drain_and_save_chat_history(
+        generator_queue=gen,
+        request=req,
+        execution_start=0.0,
+        last_response=None,
+        a2ui_envelopes=None,
+    )
+
+    assert gen.is_closed() is True
+    data_saved = handler.save_chat_history.call_args[0][0]
+    assert data_saved.status == ConversationStatus.ERROR
+    assert data_saved.in_progress is False
+
+
 @patch("codemie.service.conversation_service.ConversationMonitoringService.send_conversation_metric")
 @patch("codemie.service.conversation_service.ConversationService._upsert_conversation_metrics")
 @patch("codemie.service.conversation_service.ConversationService._find_or_create_conversation")

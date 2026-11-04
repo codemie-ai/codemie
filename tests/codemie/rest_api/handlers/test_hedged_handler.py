@@ -18,12 +18,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import queue
 from datetime import datetime
 from time import time
 from unittest.mock import Mock, patch
 
 import pytest
 
+from codemie.core.errors import ErrorDetailLevel
 from codemie.core.models import AssistantChatRequest, BaseModelResponse
 from codemie.rest_api.handlers.assistant_handlers import (
     A2AAssistantHandler,
@@ -33,6 +35,7 @@ from codemie.rest_api.handlers.assistant_handlers import (
 )
 from codemie.rest_api.handlers.hedged_handler import HedgedAssistantHandler
 from codemie.rest_api.models.assistant import AssistantType
+from codemie.rest_api.models.base import ConversationStatus
 from codemie.rest_api.models.hedging import HedgingConfig, HedgingProviderToolDetails, HedgingToolDetails
 from codemie.rest_api.security.user import User
 from codemie_tools.base.codemie_hedge_tool import HedgeToolResult
@@ -185,7 +188,6 @@ class TestHandleStreamFastPathWins:
         real_tg = ThreadedGenerator(request_uuid="req-uuid", user_id="user-1", conversation_id="")
 
         mock_agent = Mock()
-        mock_agent.last_generation_result = None
         mock_agent.stream = Mock()
 
         with (
@@ -243,12 +245,11 @@ class TestHandleStreamFastPathEmpty:
 
         real_tg = ThreadedGenerator(request_uuid="req-uuid", user_id="user-1", conversation_id="")
 
-        def agent_stream():
+        def agent_stream(**_kwargs):
             real_tg.queue.put(AGENT_CHUNK)
             real_tg.queue.put(StopIteration)
 
         mock_agent = Mock()
-        mock_agent.last_generation_result = None
         mock_agent.stream = agent_stream
 
         with (
@@ -299,7 +300,7 @@ class TestHandleStreamFastPathEmpty:
         real_tg = ThreadedGenerator(request_uuid="req-uuid", user_id="user-1", conversation_id="")
         real_tg.thoughts.append({'id': 't1', 'in_progress': True, 'children': []})
 
-        def agent_stream():
+        def agent_stream(**_kwargs):
             real_tg.queue.put(AGENT_CHUNK)
             real_tg.queue.put(StopIteration)
 
@@ -339,12 +340,11 @@ class TestHandleStreamInstantiateFails:
 
         real_tg = ThreadedGenerator(request_uuid="req-uuid", user_id="user-1", conversation_id="")
 
-        def agent_stream():
+        def agent_stream(**_kwargs):
             real_tg.queue.put(AGENT_CHUNK)
             real_tg.queue.put(StopIteration)
 
         mock_agent = Mock()
-        mock_agent.last_generation_result = None
         mock_agent.stream = agent_stream
 
         with (
@@ -441,12 +441,11 @@ class TestHedgingMetricEmission:
 
         real_tg = ThreadedGenerator(request_uuid="req-uuid", user_id="user-1", conversation_id="")
 
-        def agent_stream():
+        def agent_stream(**_kwargs):
             real_tg.queue.put(AGENT_CHUNK)
             real_tg.queue.put(StopIteration)
 
         mock_agent = Mock()
-        mock_agent.last_generation_result = None
         # When the fast path is expected to win, use a no-op agent (mirrors the fast-path-win
         # suite) so it cannot win the race; otherwise stream real chunks so the agent can serve.
         mock_agent.stream = agent_stream if agent_serves else Mock()
@@ -977,12 +976,11 @@ class TestHandleStreamAgentWinsRace:
             # Simulated by making instantiate raise so fast path exits without writing.
             pass
 
-        def agent_stream():
+        def agent_stream(**_kwargs):
             real_tg.queue.put(AGENT_CHUNK)
             real_tg.queue.put(StopIteration)
 
         mock_agent = Mock()
-        mock_agent.last_generation_result = None
         mock_agent.stream = agent_stream
 
         # Patch the fast-path result queue's get_nowait to raise queue.Empty,
@@ -1041,12 +1039,11 @@ class TestHandleStreamAgentWinsRace:
 
         real_tg = ThreadedGenerator(request_uuid="req-uuid", user_id="user-1", conversation_id="")
 
-        def agent_stream():
+        def agent_stream(**_kwargs):
             real_tg.queue.put(AGENT_CHUNK)
             real_tg.queue.put(StopIteration)
 
         mock_agent = Mock()
-        mock_agent.last_generation_result = None
         mock_agent.stream = agent_stream
 
         with (
@@ -1203,7 +1200,6 @@ class TestFastPathOtelContextPropagation:
         real_tg = ThreadedGenerator(request_uuid="req-uuid", user_id="user-1", conversation_id="")
 
         mock_agent = Mock()
-        mock_agent.last_generation_result = None
         mock_agent.stream = Mock()
 
         with (
@@ -1246,7 +1242,6 @@ class TestLoggingContextConversationId:
             conversation_id=getattr(request_, "conversation_id", "") or "",
         )
         mock_agent = Mock()
-        mock_agent.last_generation_result = None
         mock_agent.stream = Mock()
 
         with ExitStack() as stack:
@@ -1398,7 +1393,6 @@ class TestLoggingContextConversationId:
                 conversation_id=request_.conversation_id,
             )
             mock_agent = Mock()
-            mock_agent.last_generation_result = None
             mock_agent.stream = Mock()
 
             with ExitStack() as stack:
@@ -1464,7 +1458,6 @@ class TestUserMessageReceivedAtPropagation:
 
         real_tg = ThreadedGenerator(request_uuid="req-uuid", user_id="user-1", conversation_id="")
         mock_agent = Mock()
-        mock_agent.last_generation_result = None
         mock_agent.stream = Mock()
 
         with (
@@ -1488,12 +1481,11 @@ class TestUserMessageReceivedAtPropagation:
 
         real_tg = ThreadedGenerator(request_uuid="req-uuid", user_id="user-1", conversation_id="")
 
-        def agent_stream():
+        def agent_stream(**_kwargs):
             real_tg.queue.put(AGENT_CHUNK)
             real_tg.queue.put(StopIteration)
 
         mock_agent = Mock()
-        mock_agent.last_generation_result = None
         mock_agent.stream = agent_stream
 
         with (
@@ -1582,3 +1574,132 @@ class TestUserMessageReceivedAtPropagation:
 
         history_data: ChatHistoryData = mock_save.call_args[0][0]
         assert history_data.user_message_received_at is None
+
+
+# ---------------------------------------------------------------------------
+# TestStreamAgentPathQueueEmpty
+# ---------------------------------------------------------------------------
+
+
+class TestStreamAgentPathQueueEmpty:
+    """_stream_agent_path must yield a final error chunk and save history on queue.Empty."""
+
+    def test_stream_agent_path_queue_empty_yields_final_chunk_and_saves_history(self, handler, request_):
+        agent_queue = Mock()
+        agent_queue.get = Mock(side_effect=queue.Empty)
+        agent_queue.thoughts = []
+
+        with patch.object(handler, "save_chat_history") as mock_save:
+            chunks = list(
+                handler._stream_agent_path(
+                    agent=Mock(),
+                    agent_queue=agent_queue,
+                    execution_start=time(),
+                    request=request_,
+                    include_tool_errors=False,
+                    error_detail_level=ErrorDetailLevel.STANDARD,
+                )
+            )
+
+        assert len(chunks) == 1
+        data = json.loads(chunks[0])
+        assert data["last"] is True
+        assert data["success"] is False
+        mock_save.assert_called_once()
+
+    @pytest.mark.parametrize(
+        "last_chunk, expected_status",
+        [
+            ({"success": False, "execution_error": "agent_token_limit"}, ConversationStatus.ERROR),
+            ({"success": True}, ConversationStatus.SUCCESS),
+            ({}, ConversationStatus.SUCCESS),
+        ],
+    )
+    def test_stream_agent_path_normal_completion_saves_status_from_last_chunk(
+        self, handler, request_, last_chunk, expected_status
+    ):
+        agent_queue = Mock()
+        payload = json.dumps({"generated": "partial", "last": True, **last_chunk})
+        items = iter([payload, StopIteration])  # side_effect list would raise the class
+        agent_queue.get = Mock(side_effect=lambda timeout=None: next(items))
+        agent_queue.thoughts = []
+
+        with patch.object(handler, "save_chat_history") as mock_save:
+            list(
+                handler._stream_agent_path(
+                    agent=Mock(),
+                    agent_queue=agent_queue,
+                    execution_start=time(),
+                    request=request_,
+                    include_tool_errors=False,
+                    error_detail_level=ErrorDetailLevel.STANDARD,
+                )
+            )
+
+        mock_save.assert_called_once()
+        assert mock_save.call_args.args[0].status == expected_status
+
+    def test_respects_include_tool_errors_false(self, handler, request_):
+        agent_queue = Mock()
+        agent_queue.get = Mock(side_effect=queue.Empty)
+        agent_queue.thoughts = []
+
+        with patch.object(handler, "save_chat_history"):
+            chunks = list(
+                handler._stream_agent_path(
+                    agent=Mock(),
+                    agent_queue=agent_queue,
+                    execution_start=time(),
+                    request=request_,
+                    include_tool_errors=False,
+                    error_detail_level=ErrorDetailLevel.STANDARD,
+                )
+            )
+
+        data = json.loads(chunks[0])
+        # The short agent_error and execution_error are always sent; only the full error_details stays gated.
+        assert data["agent_error"]["error_code"] == "agent_timeout"
+        assert data["execution_error"] == "agent_timeout"
+        assert data["error_details"] is None
+
+    def test_respects_include_tool_errors_true(self, handler, request_):
+        agent_queue = Mock()
+        agent_queue.get = Mock(side_effect=queue.Empty)
+        agent_queue.thoughts = []
+
+        with patch.object(handler, "save_chat_history"):
+            chunks = list(
+                handler._stream_agent_path(
+                    agent=Mock(),
+                    agent_queue=agent_queue,
+                    execution_start=time(),
+                    request=request_,
+                    include_tool_errors=True,
+                    error_detail_level=ErrorDetailLevel.STANDARD,
+                )
+            )
+
+        data = json.loads(chunks[0])
+        assert data["agent_error"] is not None
+        assert data["error_details"] is not None
+
+    def test_stream_agent_path_queue_empty_closes_abandoned_producer_queue(self, handler, request_):
+        """Timeout must close the agent queue so the abandoned producer thread's future
+        sends become no-ops instead of leaking into a queue nobody drains anymore."""
+        agent_queue = Mock()
+        agent_queue.get = Mock(side_effect=queue.Empty)
+        agent_queue.thoughts = []
+
+        with patch.object(handler, "save_chat_history"):
+            list(
+                handler._stream_agent_path(
+                    agent=Mock(),
+                    agent_queue=agent_queue,
+                    execution_start=time(),
+                    request=request_,
+                    include_tool_errors=False,
+                    error_detail_level=ErrorDetailLevel.STANDARD,
+                )
+            )
+
+        agent_queue.close.assert_called_once()

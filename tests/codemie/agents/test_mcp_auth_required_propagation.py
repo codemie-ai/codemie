@@ -81,6 +81,7 @@ def _langgraph_agent() -> LangGraphAgent:
     agent.tool_error_callback.has_errors.return_value = False
     agent._get_inputs = MagicMock(return_value={})
     agent._persist_generated_workspace_files = MagicMock()
+    agent._supervisor_coordinator = MagicMock()
     return agent
 
 
@@ -120,6 +121,7 @@ def test_langgraph_agent_propagates_mcp_auth_required_before_generic_error_handl
     if method_name == "stream":
         agent.thread_generator.close.assert_called_once_with(auth_error)
         agent.thread_generator.send.assert_not_called()
+        agent._supervisor_coordinator.reset.assert_called_once()
 
 
 def test_langgraph_invoke_agent_reraises_mcp_auth_required_from_stream_graph() -> None:

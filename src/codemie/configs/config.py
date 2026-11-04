@@ -859,6 +859,11 @@ class Config(BaseSettings):
     LITELLM_FAIL_OPEN_ON_503: bool = True  # Fail open - allow requests on 503 errors
 
     AI_AGENT_RECURSION_LIMIT: int = 150
+    AI_AGENT_MAX_CONSECUTIVE_TOOL_ERRORS: int = 5
+    # Inactivity timeout of the stream consumer: no chunk for this long ends the run. None derives it from the
+    # longest tool timeout plus AI_AGENT_QUEUE_POLL_TIMEOUT_MARGIN_SECONDS (see ai_agent_queue_poll_timeout_default)
+    AI_AGENT_QUEUE_POLL_TIMEOUT_SECONDS: int | None = None
+    AI_AGENT_QUEUE_POLL_TIMEOUT_MARGIN_SECONDS: int = 120
     AI_AGENT_CONVERSATION_REPLAY_V2_ENABLED: bool = True
     AI_AGENT_HISTORY_REPLAY_FULL_TOOL_TURNS: int = 4
     AI_AGENT_HISTORY_REPLAY_SUMMARIZED_TOOL_TURNS: int = 6
@@ -1072,7 +1077,12 @@ class Config(BaseSettings):
     # ===========================================
     AGENT_MSG_TIMEOUT: str = "The agent request timed out. Please try again."
     AGENT_MSG_TOKEN_LIMIT: str = (
-        "The configured output token limit was reached. Please try a shorter conversation or reduce context."
+        "The configured output token limit was reached. Try asking for a shorter response, "
+        "or breaking the request into smaller steps."
+    )
+    AGENT_MSG_TOOL_ERROR_LIMIT: str = (
+        "The assistant stopped after several consecutive tool failures. "
+        "Check that the integrations or tools used by this assistant are available, then try again."
     )
     AGENT_MSG_BUDGET_EXCEEDED: str = "Budget limit has been reached. Please contact your administrator."
     AGENT_MSG_CALLBACK_FAILURE: str = "An agent callback failed. Please try again or contact support."
@@ -1194,6 +1204,23 @@ class Config(BaseSettings):
         from codemie.core.utils import get_api_root_path
 
         return f"{self.CALLBACK_API_BASE_URL}{get_api_root_path()}/v1/atlassian-oauth/callback"
+
+    @property
+    def ai_agent_queue_poll_timeout_default(self) -> int:
+        """Stream inactivity timeout that sits above the longest legitimate tool silence.
+
+        A running tool emits nothing, so the timeout must exceed every tool timeout, otherwise a healthy but
+        slow call ends the run with the generic timeout message. Raising any tool timeout raises this value.
+        """
+        from codemie_tools.data_management.code_executor.tool_calling_limits import MAX_RUN_TIMEOUT_SECONDS
+
+        longest_tool_timeout = max(
+            self.MCP_CLIENT_TIMEOUT,
+            self.NATS_PLUGIN_TOOL_TIMEOUT,
+            self.NATS_PLUGIN_EXECUTE_TIMEOUT,
+            MAX_RUN_TIMEOUT_SECONDS,
+        )
+        return int(longest_tool_timeout) + self.AI_AGENT_QUEUE_POLL_TIMEOUT_MARGIN_SECONDS
 
     @property
     def verbose(self) -> bool:

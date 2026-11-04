@@ -15,6 +15,7 @@
 import asyncio
 import contextvars
 import json
+import queue
 import threading
 import uuid
 from abc import ABC, abstractmethod
@@ -39,7 +40,7 @@ from codemie.configs import config, logger
 from codemie.configs.customer_config import customer_config
 from codemie.core.ability import Ability, Action
 from codemie.core.dependecies import set_disable_prompt_cache
-from codemie.core.errors import ErrorDetailLevel
+from codemie.core.errors import AgentErrorDetails, ErrorDetailLevel
 from codemie.core.exceptions import ExtendedHTTPException, MCPAuthenticationRequiredException
 from codemie.core.models import (
     BaseModelResponse,
@@ -51,6 +52,7 @@ from codemie.core.models import (
 )
 from codemie.core.routing_info import RoutingInfo
 from codemie.core.thread import CancellationReason, ThreadedGenerator, finalize_thoughts
+from codemie.enterprise.litellm.proxy_router import handle_agent_exception
 from codemie.rest_api.a2a.client.remote_agent_connection import (
     RemoteAgentConnections,
     TaskCallbackArg,
@@ -89,7 +91,10 @@ from codemie.service.conversation.history_projection_service import (
     ConversationHistoryProjectionService,
 )
 from codemie.service.background_tasks_service import BackgroundTasksService
-from codemie.service.constants import AI_AGENT_CONVERSATION_REPLAY_V2_ENABLED_KEY
+from codemie.service.constants import (
+    AI_AGENT_CONVERSATION_REPLAY_V2_ENABLED_KEY,
+    AI_AGENT_QUEUE_POLL_TIMEOUT_SECONDS_KEY,
+)
 from codemie.service.agent_workspace_service import AgentWorkspaceService
 from codemie.service.conversation_checkpoint_service import ConversationCheckpointService
 from codemie.service.conversation_service import ConversationService, UpsertChatHistoryParams, _guard_finished
@@ -562,6 +567,71 @@ class AssistantRequestHandler(ABC):
             default=config.AI_AGENT_CONVERSATION_REPLAY_V2_ENABLED,
         )
 
+    def _get_queue_poll_timeout_seconds(self) -> int:
+        return max(
+            1,
+            DynamicConfigService.get_typed_value_safe(
+                AI_AGENT_QUEUE_POLL_TIMEOUT_SECONDS_KEY,
+                int,
+                default=config.AI_AGENT_QUEUE_POLL_TIMEOUT_SECONDS or config.ai_agent_queue_poll_timeout_default,
+            ),
+        )
+
+    def _build_timeout_result(
+        self,
+        generator_queue: ThreadedGenerator,
+        execution_start: float,
+        include_tool_errors: bool,
+        error_detail_level: ErrorDetailLevel,
+        log_context: str,
+    ) -> StreamedGenerationResult:
+        """Build the final chunk for a queue.Empty timeout, shared by the standard,
+        hedged and A2A streaming paths.
+
+        Closes the queue so the still-running producer thread's future sends become
+        no-ops instead of piling up in a queue nobody drains anymore.
+        """
+        logger.error(f"{log_context} queue timed out assistant_id={self.assistant.id}")
+        generator_queue.close()
+        error_response = handle_agent_exception(TimeoutError("Agent stream timed out waiting for the next chunk"))
+        # Tracebacks never go to the client, whatever include_tool_errors or HIDE_AGENT_STREAMING_EXCEPTIONS say.
+        error_response.redact_for_streaming()
+        error = error_response.get_error()
+        # Same short {error_code, message} agent_error and execution_error as LangGraphAgent._send_error_to_thread,
+        # independent of include_tool_errors, so the client classifies a timeout like any other failed turn.
+        return StreamedGenerationResult(
+            generated=error.message,
+            generated_chunk="",
+            last=True,
+            time_elapsed=time() - execution_start,
+            success=False,
+            execution_error=error.error_code.value,
+            agent_error=AgentErrorDetails(error_code=error.error_code, message=error.message),
+            error_details=error.model_dump(mode="json") if include_tool_errors and error else None,
+        )
+
+    @staticmethod
+    def _format_errors(generation_result, include_tool_errors: bool, error_detail_level: ErrorDetailLevel):
+        """
+        Extract and format errors from generation result.
+
+        Args:
+            generation_result: Result from agent.generate() with error details
+            include_tool_errors: Whether to include tool errors in response
+            error_detail_level: Level of detail for error formatting
+
+        Returns:
+            Tuple of (tool_errors, agent_error) formatted for response
+        """
+        tool_errors = None
+        if include_tool_errors and generation_result.tool_errors:
+            tool_errors = [err.format_for_level(error_detail_level) for err in generation_result.tool_errors]
+
+        # Only include agent_error when include_tool_errors is True (backward compatibility)
+        agent_error = generation_result.agent_error if include_tool_errors else None
+
+        return tool_errors, agent_error
+
 
 class StandardAssistantHandler(AssistantRequestHandler):
     @pyroscope_profile(
@@ -682,7 +752,9 @@ class StandardAssistantHandler(AssistantRequestHandler):
                 thread_generator=generator_queue,
                 request_headers=request_headers,
             )
-            stream = getattr(agent, "stream")
+            stream = partial(
+                agent.stream, include_tool_errors=include_tool_errors, error_detail_level=error_detail_level
+            )
             wrapped_stream = self._serve_data(
                 stream,
                 generator_queue,
@@ -740,27 +812,6 @@ class StandardAssistantHandler(AssistantRequestHandler):
         """
         logger.debug(f"Client transport disconnected (passive) for conversation_id={request.conversation_id}")
 
-    def _build_final_chunk(
-        self,
-        agent,
-        execution_start: float,
-        include_tool_errors: bool,
-        error_detail_level: ErrorDetailLevel,
-    ) -> StreamedGenerationResult | None:
-        if agent is None or not include_tool_errors:
-            return None
-        agent_result = getattr(agent, "last_generation_result", None)
-        if not agent_result:
-            return None
-        tool_errors, agent_error = self._format_errors(agent_result, include_tool_errors, error_detail_level)
-        return StreamedGenerationResult(
-            last=True,
-            success=agent_result.success,
-            agent_error=agent_error,
-            tool_errors=tool_errors,
-            time_elapsed=time() - execution_start,
-        )
-
     @staticmethod
     def _read_streamed_chunk(value: str, response, a2ui_envelopes: List[dict]):
         """Interpret one streamed chunk, returning the result the history should record.
@@ -769,7 +820,11 @@ class StandardAssistantHandler(AssistantRequestHandler):
         envelope, which is appended rather than replacing anything — one interactive surface
         arrives as several ordered envelopes and the turn keeps all of them.
         """
-        generation_result = json.loads(value, object_hook=lambda d: SimpleNamespace(**d))
+        try:
+            generation_result = json.loads(value, object_hook=lambda d: SimpleNamespace(**d))
+        except json.JSONDecodeError:
+            logger.warning(f"Skipping malformed streamed chunk (invalid JSON): {value!r}")
+            return response
         if getattr(generation_result, "a2ui", None) is not None:
             # Re-parse as a plain dict — envelopes are persisted raw (versioned)
             a2ui_envelopes.append(json.loads(value)["a2ui"])
@@ -821,11 +876,13 @@ class StandardAssistantHandler(AssistantRequestHandler):
         generator_queue: ThreadedGenerator,
         agent,
     ) -> None:
-        status = (
-            ConversationStatus.INTERRUPTED
-            if generator_queue.cancellation_reason == CancellationReason.ABORTED_BY_USER
-            else ConversationStatus.SUCCESS
-        )
+        if generator_queue.cancellation_reason == CancellationReason.ABORTED_BY_USER:
+            status = ConversationStatus.INTERRUPTED
+        elif getattr(response, "success", None) is False:
+            # The stream ended normally, but its last chunk reported a failed run (see _send_error_to_thread).
+            status = ConversationStatus.ERROR
+        else:
+            status = ConversationStatus.SUCCESS
         self.save_chat_history(
             ChatHistoryData(
                 execution_start=execution_start,
@@ -866,9 +923,33 @@ class StandardAssistantHandler(AssistantRequestHandler):
         # updateComponents → [updateDataModel]); accumulate the whole ordered turn.
         a2ui_envelopes: List[dict] = []
         is_draining = False
+        # Read once per request: the dynamic-config lookup opens a DB session, too costly per chunk.
+        queue_poll_timeout = self._get_queue_poll_timeout_seconds()
         try:
             while True:
-                value = generator_queue.queue.get()
+                try:
+                    value = generator_queue.queue.get(timeout=queue_poll_timeout)
+                except queue.Empty:
+                    timeout_result = self._build_timeout_result(
+                        generator_queue,
+                        execution_start,
+                        include_tool_errors,
+                        error_detail_level,
+                        log_context="[STANDARD] generator",
+                    )
+                    yield timeout_result.model_dump_json()
+                    self.save_chat_history(
+                        ChatHistoryData(
+                            execution_start=execution_start,
+                            request=request,
+                            response=timeout_result.generated,
+                            thoughts=finalize_thoughts(generator_queue.thoughts),
+                            status=ConversationStatus.ERROR,
+                            user_message_received_at=user_message_received_at,
+                            a2ui_envelopes=a2ui_envelopes or None,
+                        )
+                    )
+                    break
                 if isinstance(value, BaseException):
                     self._handle_serve_error(
                         execution_start,
@@ -894,9 +975,6 @@ class StandardAssistantHandler(AssistantRequestHandler):
                     generator_queue,
                     agent,
                 )
-                final_chunk = self._build_final_chunk(agent, execution_start, include_tool_errors, error_detail_level)
-                if final_chunk:
-                    yield final_chunk.model_dump_json() + "\n"
                 generator_queue.queue.task_done()
                 break
         except GeneratorExit:
@@ -930,8 +1008,14 @@ class StandardAssistantHandler(AssistantRequestHandler):
         a2ui_envelopes: List[dict],
     ) -> StreamedGenerationResult:
         response = last_response
+        queue_poll_timeout = self._get_queue_poll_timeout_seconds()
         while True:
-            value = generator_queue.queue.get()
+            try:
+                value = generator_queue.queue.get(timeout=queue_poll_timeout)
+            except queue.Empty:
+                # Abandoned producer: stop its future sends and let the caller persist the turn as failed.
+                generator_queue.close()
+                raise TimeoutError("Agent stream timed out waiting for the next chunk")
             if isinstance(value, BaseException):
                 generator_queue.queue.task_done()
                 raise value
@@ -1261,28 +1345,6 @@ class StandardAssistantHandler(AssistantRequestHandler):
             tool_errors=tool_errors,
         )
 
-    @staticmethod
-    def _format_errors(generation_result, include_tool_errors: bool, error_detail_level: ErrorDetailLevel):
-        """
-        Extract and format errors from generation result.
-
-        Args:
-            generation_result: Result from agent.generate() with error details
-            include_tool_errors: Whether to include tool errors in response
-            error_detail_level: Level of detail for error formatting
-
-        Returns:
-            Tuple of (tool_errors, agent_error) formatted for response
-        """
-        tool_errors = None
-        if include_tool_errors and generation_result.tool_errors:
-            tool_errors = [err.format_for_level(error_detail_level) for err in generation_result.tool_errors]
-
-        # Only include agent_error when include_tool_errors is True (backward compatibility)
-        agent_error = generation_result.agent_error if include_tool_errors else None
-
-        return tool_errors, agent_error
-
     def handle_tool_call_resume(
         self,
         request: "ToolCallResumeRequest",
@@ -1413,12 +1475,16 @@ class A2AAssistantHandler(AssistantRequestHandler):
             raise self._unusable_card_error(e) from e
         logger.debug(f"Call agent. Agent: {self.agent_card.name}. Url: {agent_url}. Request: {task_request}")
         if self.agent_card.capabilities.streaming:
-            return self._handle_a2a_stream(request, task_request)
+            return self._handle_a2a_stream(request, task_request, include_tool_errors, error_detail_level)
         else:
             return self._handle_a2a_sync(request, task_request)
 
     def _handle_a2a_stream(
-        self, request: AssistantChatRequest, task_request: SendStreamingMessageRPCRequest
+        self,
+        request: AssistantChatRequest,
+        task_request: SendStreamingMessageRPCRequest,
+        include_tool_errors: bool = False,
+        error_detail_level: ErrorDetailLevel = ErrorDetailLevel.STANDARD,
     ) -> StreamingResponse:
         execution_start = time()
 
@@ -1498,46 +1564,105 @@ class A2AAssistantHandler(AssistantRequestHandler):
             ) from version_error[0]
 
         return StreamingResponse(
-            content=self._drain_stream(generator_queue, request, execution_start), media_type=NDJSON_MEDIA_TYPE
+            content=self._drain_stream(
+                generator_queue, request, execution_start, include_tool_errors, error_detail_level
+            ),
+            media_type=NDJSON_MEDIA_TYPE,
         )
 
     async def _drain_stream(
-        self, generator_queue: ThreadedGenerator, request: AssistantChatRequest, execution_start: float
+        self,
+        generator_queue: ThreadedGenerator,
+        request: AssistantChatRequest,
+        execution_start: float,
+        include_tool_errors: bool = False,
+        error_detail_level: ErrorDetailLevel = ErrorDetailLevel.STANDARD,
     ):
         """Yield queued chat chunks as they arrive, then persist the chat history."""
         response = StreamedGenerationResult()
         answer_chunks: list[str] = []
         final_sent = False
+        queue_poll_timeout = self._get_queue_poll_timeout_seconds()
         while True:
-            value = await asyncio.to_thread(generator_queue.queue.get)
-            if value is not StopIteration:
-                generation_result = json.loads(value, object_hook=lambda d: SimpleNamespace(**d))
-                if generation_result.generated_chunk:
-                    answer_chunks.append(generation_result.generated_chunk)
-                if generation_result.generated is not None:
-                    response = generation_result
-                final_sent = final_sent or bool(generation_result.last)
-            else:
-                if answer_chunks and not final_sent:
-                    # The UI ends the message at the first `last` chunk, so send exactly one, at the end
-                    response = StreamedGenerationResult(
-                        generated="".join(answer_chunks),
-                        generated_chunk="",
-                        time_elapsed=time() - execution_start,
-                        last=True,
-                    )
-                    yield response.model_dump_json()
-                self.save_chat_history(
-                    ChatHistoryData(
-                        execution_start=execution_start,
-                        request=request,
-                        response=response.generated,
-                        thoughts=finalize_thoughts(generator_queue.thoughts),
-                    )
+            try:
+                value = await asyncio.to_thread(generator_queue.queue.get, timeout=queue_poll_timeout)
+            except queue.Empty:
+                yield self._finish_timed_out_stream(
+                    generator_queue, request, execution_start, include_tool_errors, error_detail_level
                 )
                 break
+            if value is StopIteration:
+                final_chunk = self._finish_stream(
+                    generator_queue, request, execution_start, response, answer_chunks, final_sent
+                )
+                if final_chunk:
+                    yield final_chunk
+                break
+            generation_result = json.loads(value, object_hook=lambda d: SimpleNamespace(**d))
+            if generation_result.generated_chunk:
+                answer_chunks.append(generation_result.generated_chunk)
+            if generation_result.generated is not None:
+                response = generation_result
+            final_sent = final_sent or bool(generation_result.last)
             yield value
             generator_queue.queue.task_done()
+
+    def _finish_timed_out_stream(
+        self,
+        generator_queue: ThreadedGenerator,
+        request: AssistantChatRequest,
+        execution_start: float,
+        include_tool_errors: bool,
+        error_detail_level: ErrorDetailLevel,
+    ) -> str:
+        """Save the timed-out turn as ERROR and return the terminal timeout chunk."""
+        timeout_result = self._build_timeout_result(
+            generator_queue,
+            execution_start,
+            include_tool_errors,
+            error_detail_level,
+            log_context="[A2A] generator",
+        )
+        self.save_chat_history(
+            ChatHistoryData(
+                execution_start=execution_start,
+                request=request,
+                response=timeout_result.generated,
+                thoughts=finalize_thoughts(generator_queue.thoughts),
+                status=ConversationStatus.ERROR,
+            )
+        )
+        return timeout_result.model_dump_json()
+
+    def _finish_stream(
+        self,
+        generator_queue: ThreadedGenerator,
+        request: AssistantChatRequest,
+        execution_start: float,
+        response: StreamedGenerationResult,
+        answer_chunks: list[str],
+        final_sent: bool,
+    ) -> str | None:
+        """Persist the chat history; return the closing chunk when none was streamed yet."""
+        final_chunk = None
+        if answer_chunks and not final_sent:
+            # The UI ends the message at the first `last` chunk, so send exactly one, at the end
+            response = StreamedGenerationResult(
+                generated="".join(answer_chunks),
+                generated_chunk="",
+                time_elapsed=time() - execution_start,
+                last=True,
+            )
+            final_chunk = response.model_dump_json()
+        self.save_chat_history(
+            ChatHistoryData(
+                execution_start=execution_start,
+                request=request,
+                response=response.generated,
+                thoughts=finalize_thoughts(generator_queue.thoughts),
+            )
+        )
+        return final_chunk
 
     @staticmethod
     def _send_stream_error(generator_queue: ThreadedGenerator, error: Exception, execution_start: float) -> None:

@@ -48,11 +48,13 @@ class RecordingFakeChatModel(FakeMessagesListChatModel):
 
 def _fake_agent(agent_name: str, *, stream_closed: bool = False) -> LangGraphAgent:
     """A minimal LangGraphAgent the hook can close over: just enough attributes for
-    `_safe_check_for_truncation` (llm_model) and the abort check (thread_generator).
+    `_safe_check_for_truncation` (llm_model, and the _callback_bridge that flags the failed
+    thought before the exception is raised) and the abort check (thread_generator).
     """
     agent = object.__new__(LangGraphAgent)
     agent.agent_name = agent_name
     agent.llm_model = "gpt-4.1"
+    agent._callback_bridge = Mock()
     agent.thread_generator = Mock(
         is_closed=Mock(return_value=stream_closed),
         is_consumer_aborted=Mock(return_value=False),

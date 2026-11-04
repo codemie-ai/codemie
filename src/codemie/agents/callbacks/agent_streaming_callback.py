@@ -129,6 +129,14 @@ class AgentStreamingCallback(StreamingStdOutCallbackHandler):
         self._storages: dict[str | None, ThoughtInMemoryStorage] = {
             None: ThoughtInMemoryStorage(parent_id=self._parent_tracker.get())
         }
+        # Maps author -> Thought.id of that author's in-flight consecutive tool-error streak,
+        # so repeated errors update one visible thought instead of spawning a new one each time.
+        self._active_error_streak: dict[str | None, str] = {}
+        # Maps author -> set of run_ids currently in flight (started but not yet ended/errored).
+        # Used to tell a genuine sequential retry (one call fully resolved before the next
+        # starts) apart from concurrent same-author tool calls (e.g. parallel_tool_calls),
+        # which must never be aliased onto the same streak thought id.
+        self._inflight_run_ids: dict[str | None, set[str]] = {}
         # Routing info (routed model / classifier cost) from the most recent Switchyard- or
         # LiteLLM-router-routed call. Updated in on_llm_end, stamped onto thoughts in on_tool_start.
         self._routing_tracker = LastRoutingTracker()
@@ -323,6 +331,23 @@ class AgentStreamingCallback(StreamingStdOutCallbackHandler):
         self._send_thought(thought, execution_error)
         storage.delete_thought(run_id)
 
+    def on_thought_failed(self, *, run_id: UUID | str, author: str | None = None) -> None:
+        """Flag the still-open thought for *run_id* as failed (error=True, closed) and send it.
+
+        Used when the agent knows exactly which LLM call failed (e.g. its response was truncated
+        at the output-token limit). Does nothing when no such thought is open, so a call that
+        streamed no thought is never invented. EPMCDME-14855.
+        """
+        storage = self._get_storage(author)
+        if not storage.get(str(run_id)):
+            return
+        thought = storage.update_thought(run_id, error=True, in_progress=False)
+        if thought is None:
+            return
+        # The text was already streamed token by token; resending it would duplicate it client-side.
+        self._send_thought(thought.model_copy(update={"message": ""}))
+        storage.delete_thought(run_id)
+
     # ── Chain callbacks ────────────────────────────────────────────────────
 
     def on_chain_start(self, serialized: Dict[str, Any], inputs: Dict[str, Any], **kwargs: Any) -> None:
@@ -348,6 +373,7 @@ class AgentStreamingCallback(StreamingStdOutCallbackHandler):
         author: str | None = None,
         **kwargs: Any,
     ) -> None:
+        self._inflight_run_ids.setdefault(author, set()).add(str(run_id))
         storage = self._get_storage(author)
         meta = kwargs.get('metadata') or {}
         output_format = meta.get(OUTPUT_FORMAT)
@@ -395,6 +421,12 @@ class AgentStreamingCallback(StreamingStdOutCallbackHandler):
         author: str | None = None,
         **kwargs: Any,
     ) -> None:
+        self._active_error_streak.pop(author, None)
+        # Remove from every bucket, not just this callback's author: the resume
+        # replay path starts the tool under author=None while the real end event
+        # carries the adapter-resolved author (R3-CR-002).
+        for inflight in self._inflight_run_ids.values():
+            inflight.discard(str(run_id))
         storage = self._get_storage(author)
         output = self._tool_result_preprocessing(output)
         thought = storage.get(str(run_id))
@@ -437,7 +469,15 @@ class AgentStreamingCallback(StreamingStdOutCallbackHandler):
         self._debug(f"Error in tool calling: {error}")
         storage = self._get_storage(author)
         thought = storage.get(str(run_id))
+        # Discard this run_id from in-flight bookkeeping regardless of whether a
+        # matching thought still exists in storage -- otherwise a run_id whose thought
+        # is already gone (e.g. an author reassignment) leaks in _inflight_run_ids[author]
+        # forever (CR-001). Cleanup spans ALL author buckets: replay starts the tool
+        # under author=None, the error event may arrive under a resolved author (R3-CR-002).
+        for inflight in self._inflight_run_ids.values():
+            inflight.discard(str(run_id))
         if thought is None:
+            self._active_error_streak.pop(author, None)
             return
         message = self._escape_message(str(error))
         execution_error = _classify_execution_error(error, from_tool=True)
@@ -448,7 +488,25 @@ class AgentStreamingCallback(StreamingStdOutCallbackHandler):
             error=True,
             event_type=StreamingEventType.TOOL_ERROR.value,
         )
+        # Other run_ids from this author still in flight (started, not yet ended/errored)
+        # mean this error is concurrent with them, not a sequential retry of the same
+        # call chain. Concurrent errors must never be aliased onto a shared thought id.
+        concurrent_siblings = self._inflight_run_ids.get(author, set())
         if thought:
+            if concurrent_siblings:
+                self._active_error_streak.pop(author, None)
+            else:
+                existing_streak_id = self._active_error_streak.get(author)
+                if existing_streak_id:
+                    # thought was opened under its own id (run_id) via on_tool_start and
+                    # sent to the client as in_progress=True. Close it under that original
+                    # id before aliasing below, otherwise the client-side entry for this
+                    # run_id never receives a matching update and stays in_progress
+                    # forever (the aliased send below only updates existing_streak_id).
+                    self._send_thought(thought.model_copy(update={"message": ""}))
+                    thought.id = existing_streak_id
+                else:
+                    self._active_error_streak[author] = thought.id
             _update_tool_replay_metadata(thought.metadata, error, is_error=True)
         logger.debug(
             f"Streaming callback tool error. Tool={getattr(thought, 'author_name', None)}, "

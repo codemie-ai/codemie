@@ -41,6 +41,7 @@ from codemie.rest_api.handlers.assistant_handlers import (
     ChatHistoryData,
     StandardAssistantHandler,
 )
+from codemie.rest_api.models.base import ConversationStatus
 from codemie.rest_api.utils.request_utils import extract_custom_headers
 from codemie.service.monitoring.hedging_monitoring_service import HedgingMetricPayload, HedgingMonitoringService
 from codemie.service.tools.dynamic_value_utils import process_string
@@ -387,12 +388,30 @@ class HedgedAssistantHandler(StandardAssistantHandler):
     ):
         response = StreamedGenerationResult(generated="")
         chunk_count = 0
+        queue_poll_timeout = self._get_queue_poll_timeout_seconds()
         try:
             while True:
                 try:
-                    value = agent_queue.get(timeout=300)
+                    value = agent_queue.get(timeout=queue_poll_timeout)
                 except queue.Empty:
-                    logger.error(f"[HEDGED][coordinator] agent queue timed out assistant_id={self.assistant.id}")
+                    timeout_result = self._build_timeout_result(
+                        agent_queue,
+                        execution_start,
+                        include_tool_errors,
+                        error_detail_level,
+                        log_context="[HEDGED][coordinator] agent",
+                    )
+                    yield timeout_result.model_dump_json()
+                    self.save_chat_history(
+                        ChatHistoryData(
+                            execution_start,
+                            request,
+                            timeout_result.generated,
+                            finalize_thoughts(agent_queue.thoughts),
+                            status=ConversationStatus.ERROR,
+                            user_message_received_at=user_message_received_at,
+                        )
+                    )
                     break
                 if value is not StopIteration:
                     chunk_count += 1
@@ -407,8 +426,11 @@ class HedgedAssistantHandler(StandardAssistantHandler):
                         f"[HEDGED][coordinator] agent stream done chunks={chunk_count} "
                         f"elapsed={time() - execution_start:.3f}s assistant_id={self.assistant.id}"
                     )
-                    final_chunk = self._build_final_chunk(
-                        agent, execution_start, include_tool_errors, error_detail_level
+                    # Same rule as _handle_serve_success: a last chunk reporting a failed run is stored as ERROR.
+                    status = (
+                        ConversationStatus.ERROR
+                        if getattr(response, "success", None) is False
+                        else ConversationStatus.SUCCESS
                     )
                     self.save_chat_history(
                         ChatHistoryData(
@@ -416,11 +438,10 @@ class HedgedAssistantHandler(StandardAssistantHandler):
                             request,
                             response.generated,
                             finalize_thoughts(agent_queue.thoughts),
+                            status=status,
                             user_message_received_at=user_message_received_at,
                         )
                     )
-                    if final_chunk:
-                        yield final_chunk.model_dump_json() + "\n"
                     break
         except Exception as e:
             logger.error(
@@ -493,7 +514,7 @@ class HedgedAssistantHandler(StandardAssistantHandler):
         def _agent_stream_with_winner():
             try:
                 restore_logging_context(logging_ctx)
-                agent.stream()
+                agent.stream(include_tool_errors=include_tool_errors, error_detail_level=error_detail_level)
             finally:
                 with winner_lock:
                     if winner[0] is None:

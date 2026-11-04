@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "task": "Slice 2/2 of EPMCDME-14855: add a consecutive-tool-validation-error fatal-exit cap (A.5), consolidate repeated tool-call validation errors under ErrorCode.AGENT_TOKEN_LIMIT via the substring-matching AgentErrorClassifier (A.6), and add timeout-with-final-chunk/save_chat_history handling to both streaming consumer loops in hedged_handler.py (B.9) and assistant_handlers.py (B.10), backend codemie/ only.",
+  "generated": "2026-09-15T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 22,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Slice 2 spans LangGraphAgent's tool-error cap (A.5), AgentStreamingCallback.on_tool_error consolidation (A.6), AgentErrorClassifier/core/errors.py classification tie-in, configs/config.py (new threshold config key), and two independent REST consumer loops (hedged_handler.py, assistant_handlers.py) with no shared consumer-loop helper between them — 6+ components across agent-runtime, callback, error-classification, configuration, and API layers, matching 'multiple subsystems' without crossing into cross-service territory."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "A.6's consolidation depends on AgentErrorClassifier._try_token_limit's substring matching (no isinstance check) — the new consolidated exception/message must be worded to match existing substrings or the classifier needs a code change, risking silent misclassification. A.5 introduces a new fatal-exit behavior with no existing cap pattern to copy beyond the unrelated AI_AGENT_RECURSION_LIMIT backstop. Bumped from base L to XL via the Real-time/Streaming red flag since B.9/B.10 rework streaming-response consumer-loop error handling (queue.Empty timeout -> final chunk + save_chat_history)."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "~6 modified files (langgraph_agent.py, agent_streaming_callback.py, core/errors.py, configs/config.py, hedged_handler.py, assistant_handlers.py) plus new/updated tests (none of the four sub-items has existing test coverage per technical-analysis.md), spanning 5 distinct directories (agents/, agents/callbacks/, core/, configs/, rest_api/handlers/)."
+    }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from L to XL: B.9/B.10 rework streaming-response consumer-loop error handling (queue timeout -> final chunk / save_chat_history), matching the Real-time/Streaming red flag."
+  ],
+  "split_recommendation": null
+}

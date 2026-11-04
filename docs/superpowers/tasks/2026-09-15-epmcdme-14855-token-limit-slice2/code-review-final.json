@@ -1,0 +1,69 @@
+{
+  "decision": "request-changes",
+  "rationale": "3 blocking: the consecutive-tool-error cap is one scalar on the top-level LangGraphAgent instance shared across every subagent's tool errors (each subagent's own instance is a throw-away used only to compile its graph, so it never enforces its own streak), failing AC6's per-agent isolation; the cap's abort path skips the callback that finalizes the triggering tool's Thought, leaving it stuck in-progress; and the per-author error-streak dict merges concurrent same-author tool errors onto one thought id. 8 findings deferred as pre-existing, out-of-scope slice-1 code untouched by this diff (stacktrace leak via error_details bypassing HIDE_AGENT_STREAMING_EXCEPTIONS, an always-empty tool_errors field, dropped final-chunk fallback, unguarded chunk-shape unpack, silent post-close send() no-op, untested stream.close() on non-exception exits) plus the spec-declared non-goal of not cancelling the background agent thread on timeout. 4 findings dismissed after source verification: a fabricated model/truncation_reason downstream-read claim (no code reads those attributes off any token-limit-classified exception), a speculative parallel-dispatch counting objection unsupported by any stated intent, an unvalidated-config-field claim whose cited Field(ge=1) constraint does not exist in source, and the acceptance lens's SupervisorCoordinator non-goal-violation claim, which git history shows is pre-existing slice-1 code (already through its own review) never touched by this diff. Standards review not expected this round (profile omission); no gap.",
+  "confidence": "high",
+  "risk_flags": ["breaking-change", "security"],
+  "business_review": [
+    {"kind": "spec", "item": "A.5: add AI_AGENT_MAX_CONSECUTIVE_TOOL_ERRORS: int = 5 to configs/config.py next to AI_AGENT_RECURSION_LIMIT", "status": "pass", "notes": "Present, same convention as the sibling field."},
+    {"kind": "spec", "item": "A.5: LangGraphAgent gains a per-instance consecutive-tool-error streak attribute; increments on error, resets on success", "status": "pass", "notes": "self._consecutive_tool_error_count set in __init__, incremented in _on_tool_error, reset in _on_tool_end."},
+    {"kind": "spec", "item": "A.5/AC6: each LangGraphAgent, incl. one per parallel sub-agent Send branch, tracks its own independent error streak", "status": "fail", "notes": "Runtime tool-error dispatch always routes through the one top-level instance running _stream_graph; per-subagent instances are compile-time throw-aways, never re-invoked. See CR-002."},
+    {"kind": "spec", "item": "A.5: at the cap, raise MaxConsecutiveToolErrorsExceededException instead of the handle_tool_error string path", "status": "pass", "notes": "_on_tool_error raises at the configured threshold."},
+    {"kind": "spec", "item": "A.5: exception message contains a substring AgentErrorClassifier._try_token_limit matches", "status": "pass", "notes": "Message includes 'token limit'; classifies as ErrorCode.AGENT_TOKEN_LIMIT."},
+    {"kind": "spec", "item": "A.5: core/errors.py itself is not modified", "status": "pass", "notes": "No changes to core/errors.py in this diff."},
+    {"kind": "spec", "item": "A.5: new exception propagates through the existing slice-1 _stream_graph exception path", "status": "pass", "notes": "Caught by the same generic except Exception path that TokenLimitExceededException already uses."},
+    {"kind": "spec", "item": "A.6: consecutive tool errors within one streak update the same visible thought rather than creating a new one per call", "status": "pass", "notes": "_active_error_streak aliases thought.id per author for the sequential-retry case; see CR-001 for a concurrent-call caveat."},
+    {"kind": "spec", "item": "A.6: a tool success ends the streak; a subsequent error starts a new thought", "status": "pass", "notes": "on_tool_end pops the author's entry from _active_error_streak."},
+    {"kind": "spec", "item": "A.6: HIDE_AGENT_STREAMING_EXCEPTIONS is not bypassed; structured agent_error/error_code fields remain populated", "status": "pass", "notes": "Only agent_error.stacktrace is redacted when the flag is set; error_code still populated."},
+    {"kind": "spec", "item": "B.9: hedged_handler.py queue.Empty builds a final timeout StreamedGenerationResult, yields it, and calls save_chat_history", "status": "pass", "notes": "Verified against the actual diff; matches spec shape."},
+    {"kind": "spec", "item": "B.10: assistant_handlers.py wraps queue.get() with timeout=300 and mirrors B.9's queue.Empty handling, breaking not raising", "status": "pass", "notes": "Verified against the actual diff; matches spec shape."},
+    {"kind": "spec", "item": "Non-goal: no shared helper unifying the two handlers' consumer loops", "status": "pass", "notes": "Implementations are independent, as specified."},
+    {"kind": "spec", "item": "Non-goal: B.9/B.10 do not signal or cancel the producer/agent thread", "status": "pass", "notes": "Confirmed; underlying gap is real but explicitly out of this slice's scope. See deferred."},
+    {"kind": "spec", "item": "Non-goal: A.5's cap does not distinguish validation vs. runtime tool errors", "status": "pass", "notes": "_on_tool_error increments unconditionally on every call."},
+    {"kind": "spec", "item": "Non-goal: no SupervisorCoordinator changes in this slice", "status": "pass", "notes": "Corrected from the lens's fail: git diff of the reviewed commit range never touches coordinator.py; that code is pre-existing slice-1."},
+    {"kind": "spec", "item": "Non-goal: no codemie-ui/ changes", "status": "pass", "notes": "Diff touches only codemie/ backend and test files."},
+    {"kind": "spec", "item": "Non-goal: no new toggle or behavior change to HIDE_AGENT_STREAMING_EXCEPTIONS itself", "status": "pass", "notes": "Flag definition and semantics untouched by this diff."}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "na", "notes": "Standards review not expected this round (profile/no-guide omission)."},
+    {"kind": "code-quality", "status": "na", "notes": "Standards review not expected this round (profile/no-guide omission)."},
+    {"kind": "security", "status": "na", "notes": "Standards review not expected this round (profile/no-guide omission)."}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/agents/callbacks/agent_streaming_callback.py",
+      "line": 412,
+      "title": "Concurrent same-author tool errors merge thought id",
+      "problem": "_active_error_streak in AgentStreamingCallback.on_tool_error is keyed only by author, not by run_id or tool-call. When parallel tool calling is enabled (a live, configurable option, e.g. smart_react_agent.py's parallel_tool_calls) and two tool calls from the same author fail concurrently rather than as sequential retries, the second error's thought.id is aliased onto the first error's already-existing streak id.",
+      "impact": "The UI shows one tool's error message under the wrong tool's visible thought, hiding which of the two concurrently-failing tools actually produced which error.",
+      "recommendation": "Scope the streak key by (author, originating run_id/tool_call chain) or only alias thought.id when the new error's call genuinely chains from the same prior tool call (sequential retry), not merely 'same author'."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/agents/langgraph_agent.py",
+      "line": 190,
+      "title": "Consecutive-error cap not scoped per subagent",
+      "problem": "self._consecutive_tool_error_count is a single scalar on the LangGraphAgent instance whose own _stream_graph loop is actually executing. In supervisor/multi-agent mode, AssistantFactory.build() constructs a separate LangGraphAgent per subagent only to extract its compiled .agent_executor; that per-subagent instance's own _on_tool_error is never invoked again at runtime. All tool-error events, including those from nested subagent subgraphs (tagged only by an author string), are parsed and dispatched through the one top-level instance's _stream_graph/_event_adapter loop and its single shared counter.",
+      "impact": "AC6 requires each subagent (incl. parallel Send branches) to track its own independent error streak. Instead, a tool success from any one subagent resets the shared counter (letting a genuinely broken subagent dodge the cap), and unrelated single errors interleaved across different subagents accumulate on the shared counter and can abort the entire multi-agent run even though no individual subagent hit N consecutive errors.",
+      "recommendation": "Key the counter by author (a dict, mirroring _active_error_streak in AgentStreamingCallback), incrementing/resetting per author rather than on the single instance-wide scalar."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/agents/langgraph_agent.py",
+      "line": 1479,
+      "title": "Tool-error cap skips thought finalization",
+      "problem": "_on_tool_error raises MaxConsecutiveToolErrorsExceededException as soon as the cap is reached, before ever reaching the existing call to self._callback_bridge.on_tool_error(output, run_id=run_id, author=author) a few lines below. That callback is the only code path that sets the triggering tool's thought in_progress=False/error=True and sends it to the client (AgentStreamingCallback.on_tool_error).",
+      "impact": "The tool call that triggers the fatal abort has its Thought left permanently 'in progress' in the UI, reproducing the exact 'thought remains in progress' defect this ticket was opened to fix, specifically for the one call that ends the run.",
+      "recommendation": "Call self._callback_bridge.on_tool_error(output, run_id=run_id, author=author) (or an equivalent finalize-thought step) before or regardless of raising MaxConsecutiveToolErrorsExceededException, so the triggering tool's thought is always finalized."
+    }
+  ]
+}

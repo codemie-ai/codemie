@@ -1,0 +1,757 @@
+diff --git a/src/codemie/agents/callbacks/agent_streaming_callback.py b/src/codemie/agents/callbacks/agent_streaming_callback.py
+index ef439d255..f596be3d9 100644
+--- a/src/codemie/agents/callbacks/agent_streaming_callback.py
++++ b/src/codemie/agents/callbacks/agent_streaming_callback.py
+@@ -363,7 +363,11 @@ class AgentStreamingCallback(StreamingStdOutCallbackHandler):
+         **kwargs: Any,
+     ) -> None:
+         self._active_error_streak.pop(author, None)
+-        self._inflight_run_ids.get(author, set()).discard(str(run_id))
++        # Remove from every bucket, not just this callback's author: the resume
++        # replay path starts the tool under author=None while the real end event
++        # carries the adapter-resolved author (R3-CR-002).
++        for inflight in self._inflight_run_ids.values():
++            inflight.discard(str(run_id))
+         storage = self._get_storage(author)
+         output = self._tool_result_preprocessing(output)
+         thought = storage.get(str(run_id))
+@@ -408,8 +412,10 @@ class AgentStreamingCallback(StreamingStdOutCallbackHandler):
+         # Discard this run_id from in-flight bookkeeping regardless of whether a
+         # matching thought still exists in storage -- otherwise a run_id whose thought
+         # is already gone (e.g. an author reassignment) leaks in _inflight_run_ids[author]
+-        # forever (CR-001).
+-        self._inflight_run_ids.get(author, set()).discard(str(run_id))
++        # forever (CR-001). Cleanup spans ALL author buckets: replay starts the tool
++        # under author=None, the error event may arrive under a resolved author (R3-CR-002).
++        for inflight in self._inflight_run_ids.values():
++            inflight.discard(str(run_id))
+         if thought is None:
+             self._active_error_streak.pop(author, None)
+             return
+diff --git a/src/codemie/agents/langgraph_agent.py b/src/codemie/agents/langgraph_agent.py
+index 21f8e9d00..9ccbd73da 100644
+--- a/src/codemie/agents/langgraph_agent.py
++++ b/src/codemie/agents/langgraph_agent.py
+@@ -203,6 +203,10 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
+         # including one per parallel Send branch, tracks its own independent consecutive
+         # tool-error streak instead of sharing one instance-wide scalar. See AC6/CR-002.
+         self._consecutive_tool_error_count: dict[str | None, int] = {}
++        # Maps author -> run_ids started but not yet ended/errored, so a parallel tool-call
++        # batch (parallel_tool_calls) counts as ONE failed round instead of N. Mirrors
++        # AgentStreamingCallback._inflight_run_ids. See R3-CR-005.
++        self._inflight_tool_run_ids: dict[str | None, set[str]] = {}
+         self._max_consecutive_tool_errors_cache: int | None = None
+         self.callbacks = callbacks
+         self.thread_context = None
+@@ -864,12 +868,12 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
+         chunks_collector.append(user_message)
+         generated, execution_error = self._process_chunks(chunks_collector, config, llm_error_code)
+         agent_error = error_response.agent_error if error_response.category == ErrorCategory.AGENT else None
+-        if agent_error is not None and config.HIDE_AGENT_STREAMING_EXCEPTIONS:
+-            # Redact in place on error_response itself, not a detached copy: get_error()
+-            # below reads error_response.agent_error directly, so a copy assigned only to
+-            # the local `agent_error` var would leave error_details leaking the stacktrace.
+-            agent_error = agent_error.model_copy(update={"stacktrace": None})
+-            error_response.agent_error = agent_error
++        if config.HIDE_AGENT_STREAMING_EXCEPTIONS:
++            # Reuse the shared redaction (F2 + R3-CR-003): strips agent_error.stacktrace
++            # and internal details['traceback'] in place on error_response itself, so
++            # error_details built below from get_error() can't leak the stacktrace.
++            error_response.redact_for_streaming()
++            agent_error = error_response.agent_error if error_response.category == ErrorCategory.AGENT else None
+         tool_errors = None
+         error_details = None
+         if include_tool_errors:
+@@ -1171,7 +1175,10 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
+         the "agent"/"supervisor" node, a per-sub-agent node in supervisor mode, or the
+         generate_structured_response node (mirroring _get_last_ai_message_content's coverage).
+         """
+-        if self.subagents:
++        if len(chunk) > 2:
++            # R3-CR-004: key the namespace strip on the actual chunk shape, not the subagents
++            # flag — subgraphs=bool(self.subagents) keeps them in sync today, but a shape
++            # mismatch must degrade to a no-op strip instead of crashing the unpack.
+             _, *chunk = chunk
+         chunk_type, value = chunk
+         if chunk_type != "updates" or not isinstance(value, dict):
+@@ -1485,6 +1492,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
+         self._callback_bridge.on_llm_error(error, run_id, author=author)
+ 
+     def _on_tool_start(self, tool_name: str, input_str: str, run_id: str | None = None, author: str | None = None):
++        self._inflight_tool_run_ids.setdefault(author, set()).add(str(run_id))
+         self._callback_bridge.on_tool_start(tool_name, input_str, run_id=run_id, author=author)
+ 
+     def _on_tool_end(
+@@ -1494,6 +1502,11 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
+         author: str | None = None,
+         artifact=None,
+     ):
++        # Remove from every bucket, not just this callback's author: the resume
++        # replay path starts the tool under author=None while the real end event
++        # carries the adapter-resolved author (R3-CR-002).
++        for inflight in self._inflight_tool_run_ids.values():
++            inflight.discard(str(run_id))
+         self._consecutive_tool_error_count[author] = 0
+         self._callback_bridge.on_tool_end(output, run_id, author=author, artifact=artifact)
+ 
+@@ -1517,8 +1530,18 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
+         self._callback_bridge.on_subassistant_back(output, run_id=run_id, author=author)
+ 
+     def _on_tool_error(self, output, run_id: UUID | None = None, author: str | None = None):
+-        count = self._consecutive_tool_error_count.get(author, 0) + 1
+-        self._consecutive_tool_error_count[author] = count
++        # Same all-buckets cleanup as _on_tool_end (R3-CR-002): replay starts the
++        # tool under author=None, the error event may arrive under a resolved author.
++        for inflight in self._inflight_tool_run_ids.values():
++            inflight.discard(str(run_id))
++        inflight = self._inflight_tool_run_ids.setdefault(author, set())
++        count = self._consecutive_tool_error_count.get(author, 0)
++        # Still-in-flight siblings of the same author mean this error was concurrent with
++        # them (one parallel batch = one failed round), so the streak advances only for the
++        # call that empties the set. See R3-CR-005.
++        if not inflight:
++            count += 1
++            self._consecutive_tool_error_count[author] = count
+         # Finalize the triggering tool's thought (in_progress False / error True, sent to
+         # the client) unconditionally, before deciding whether to abort. Otherwise the one
+         # call that ends the run would be left permanently "in progress" in the UI. See CR-003.
+diff --git a/src/codemie/agents/langgraph_event_adapter.py b/src/codemie/agents/langgraph_event_adapter.py
+index 4bef11ecd..52aded88e 100644
+--- a/src/codemie/agents/langgraph_event_adapter.py
++++ b/src/codemie/agents/langgraph_event_adapter.py
+@@ -232,7 +232,11 @@ class LangGraphEventAdapter:
+             # level once the Send-dispatched branch finishes. Its messages were
+             # already dispatched under the branch-specific author; reprocessing
+             # them here would double-count tool results under the shared author=None key.
+-            return
++            # Drop only the echoed subagent keys: unrelated top-level keys can ride in the
++            # same update tick and must still be processed. See R3-CR-006.
++            value = {key: item for key, item in value.items() if key not in self.agent.subagent_descriptions}
++            if not value:
++                return
+ 
+         state_update = next((item for item in value.values() if isinstance(item, dict)), None)
+         if state_update is None:
+diff --git a/src/codemie/core/errors.py b/src/codemie/core/errors.py
+index 28ca92ab3..bb9097a9a 100644
+--- a/src/codemie/core/errors.py
++++ b/src/codemie/core/errors.py
+@@ -373,6 +373,22 @@ class ErrorResponse(BaseModel):
+         attr_name = self.__CATEGORY_TO_ERROR_ATTR[self.category]
+         return getattr(self, attr_name, None)
+ 
++    def redact_for_streaming(self) -> None:
++        """Strip debug-only traces in place so the payload is safe to send to the client.
++
++        Mirrors the HIDE_AGENT_STREAMING_EXCEPTIONS gate: AGENT path loses
++        agent_error.stacktrace, INTERNAL path loses details['traceback'].
++        No-op for other categories. Mutates in place (same F2 rationale —
++        get_error() reads the live attribute, a detached copy would leak).
++        """
++        if self.category == ErrorCategory.AGENT and self.agent_error is not None:
++            self.agent_error = self.agent_error.model_copy(update={"stacktrace": None})
++        elif self.category == ErrorCategory.INTERNAL and self.internal is not None:
++            internal_details = dict(self.internal.details or {})
++            if internal_details.get("traceback") is not None:
++                internal_details["traceback"] = None
++                self.internal = self.internal.model_copy(update={"details": internal_details})
++
+     class Config:
+         json_schema_extra = {
+             "examples": [
+diff --git a/src/codemie/rest_api/handlers/assistant_handlers.py b/src/codemie/rest_api/handlers/assistant_handlers.py
+index 5a896c8b9..7bebe4991 100644
+--- a/src/codemie/rest_api/handlers/assistant_handlers.py
++++ b/src/codemie/rest_api/handlers/assistant_handlers.py
+@@ -526,14 +526,69 @@ class AssistantRequestHandler(ABC):
+             default=config.AI_AGENT_CONVERSATION_REPLAY_V2_ENABLED,
+         )
+ 
+-    @staticmethod
+-    def _get_queue_poll_timeout_seconds() -> int:
+-        return DynamicConfigService.get_typed_value_safe(
+-            AI_AGENT_QUEUE_POLL_TIMEOUT_SECONDS_KEY,
+-            int,
+-            default=config.AI_AGENT_QUEUE_POLL_TIMEOUT_SECONDS,
++    def _get_queue_poll_timeout_seconds(self) -> int:
++        return max(
++            1,
++            DynamicConfigService.get_typed_value_safe(
++                AI_AGENT_QUEUE_POLL_TIMEOUT_SECONDS_KEY,
++                int,
++                default=config.AI_AGENT_QUEUE_POLL_TIMEOUT_SECONDS,
++            ),
+         )
+ 
++    def _build_timeout_result(
++        self,
++        generator_queue: ThreadedGenerator,
++        execution_start: float,
++        include_tool_errors: bool,
++        error_detail_level: ErrorDetailLevel,
++        log_context: str,
++    ) -> StreamedGenerationResult:
++        """Build the final chunk for a queue.Empty timeout, shared by the standard,
++        hedged and A2A streaming paths.
++
++        Closes the queue so the still-running producer thread's future sends become
++        no-ops instead of piling up in a queue nobody drains anymore.
++        """
++        logger.error(f"{log_context} queue timed out assistant_id={self.assistant.id}")
++        generator_queue.close()
++        error_response = handle_agent_exception(TimeoutError("Agent stream timed out waiting for the next chunk"))
++        if config.HIDE_AGENT_STREAMING_EXCEPTIONS:
++            error_response.redact_for_streaming()
++        error = error_response.get_error()
++        _, agent_error = self._format_errors(error_response, include_tool_errors, error_detail_level)
++        return StreamedGenerationResult(
++            generated=error.message,
++            generated_chunk="",
++            last=True,
++            time_elapsed=time() - execution_start,
++            success=False,
++            agent_error=agent_error,
++            error_details=error.model_dump(mode="json") if include_tool_errors and error else None,
++        )
++
++    @staticmethod
++    def _format_errors(generation_result, include_tool_errors: bool, error_detail_level: ErrorDetailLevel):
++        """
++        Extract and format errors from generation result.
++
++        Args:
++            generation_result: Result from agent.generate() with error details
++            include_tool_errors: Whether to include tool errors in response
++            error_detail_level: Level of detail for error formatting
++
++        Returns:
++            Tuple of (tool_errors, agent_error) formatted for response
++        """
++        tool_errors = None
++        if include_tool_errors and generation_result.tool_errors:
++            tool_errors = [err.format_for_level(error_detail_level) for err in generation_result.tool_errors]
++
++        # Only include agent_error when include_tool_errors is True (backward compatibility)
++        agent_error = generation_result.agent_error if include_tool_errors else None
++
++        return tool_errors, agent_error
++
+ 
+ class StandardAssistantHandler(AssistantRequestHandler):
+     @pyroscope_profile(
+@@ -1035,57 +1090,6 @@ class StandardAssistantHandler(AssistantRequestHandler):
+             tool_errors=tool_errors,
+         )
+ 
+-    def _build_timeout_result(
+-        self,
+-        generator_queue: ThreadedGenerator,
+-        execution_start: float,
+-        include_tool_errors: bool,
+-        error_detail_level: ErrorDetailLevel,
+-        log_context: str,
+-    ) -> StreamedGenerationResult:
+-        """Build the final chunk for a queue.Empty timeout, shared by the standard and
+-        hedged streaming paths.
+-
+-        Closes the queue so the still-running producer thread's future sends become
+-        no-ops instead of piling up in a queue nobody drains anymore.
+-        """
+-        logger.error(f"{log_context} queue timed out assistant_id={self.assistant.id}")
+-        generator_queue.close()
+-        error_response = handle_agent_exception(TimeoutError("Agent stream timed out waiting for the next chunk"))
+-        error = error_response.get_error()
+-        _, agent_error = self._format_errors(error_response, include_tool_errors, error_detail_level)
+-        return StreamedGenerationResult(
+-            generated=error.message,
+-            generated_chunk="",
+-            last=True,
+-            time_elapsed=time() - execution_start,
+-            success=False,
+-            agent_error=agent_error,
+-            error_details=agent_error.model_dump(mode="json") if agent_error else None,
+-        )
+-
+-    @staticmethod
+-    def _format_errors(generation_result, include_tool_errors: bool, error_detail_level: ErrorDetailLevel):
+-        """
+-        Extract and format errors from generation result.
+-
+-        Args:
+-            generation_result: Result from agent.generate() with error details
+-            include_tool_errors: Whether to include tool errors in response
+-            error_detail_level: Level of detail for error formatting
+-
+-        Returns:
+-            Tuple of (tool_errors, agent_error) formatted for response
+-        """
+-        tool_errors = None
+-        if include_tool_errors and generation_result.tool_errors:
+-            tool_errors = [err.format_for_level(error_detail_level) for err in generation_result.tool_errors]
+-
+-        # Only include agent_error when include_tool_errors is True (backward compatibility)
+-        agent_error = generation_result.agent_error if include_tool_errors else None
+-
+-        return tool_errors, agent_error
+-
+     def handle_tool_call_resume(
+         self,
+         request: "ToolCallResumeRequest",
+@@ -1200,12 +1204,16 @@ class A2AAssistantHandler(AssistantRequestHandler):
+         task_request = convert_to_task_request(request, raw_request)
+         logger.debug(f"Call agent. Agent: {self.agent_card.name}. Url: {self.agent_card.url}. Request: {task_request}")
+         if self.agent_card.capabilities.streaming:
+-            return self._handle_a2a_stream(request, task_request)
++            return self._handle_a2a_stream(request, task_request, include_tool_errors, error_detail_level)
+         else:
+             return self._handle_a2a_sync(request, task_request)
+ 
+     def _handle_a2a_stream(
+-        self, request: AssistantChatRequest, task_request: SendTaskStreamingRequest
++        self,
++        request: AssistantChatRequest,
++        task_request: SendTaskStreamingRequest,
++        include_tool_errors: bool = False,
++        error_detail_level: ErrorDetailLevel = ErrorDetailLevel.STANDARD,
+     ) -> StreamingResponse:
+         execution_start = time()
+ 
+@@ -1272,9 +1280,29 @@ class A2AAssistantHandler(AssistantRequestHandler):
+         async def stream_generator():
+             await self.remote_connection.send_task(task_request.params, task_callback)
+ 
++            queue_poll_timeout = self._get_queue_poll_timeout_seconds()
+             response = StreamedGenerationResult()
+             while True:
+-                value = generator_queue.queue.get()
++                try:
++                    value = await asyncio.to_thread(generator_queue.queue.get, timeout=queue_poll_timeout)
++                except queue.Empty:
++                    timeout_result = self._build_timeout_result(
++                        generator_queue,
++                        execution_start,
++                        include_tool_errors,
++                        error_detail_level,
++                        log_context="[A2A] generator",
++                    )
++                    yield timeout_result.model_dump_json()
++                    self.save_chat_history(
++                        ChatHistoryData(
++                            execution_start=execution_start,
++                            request=request,
++                            response=timeout_result.generated,
++                            thoughts=generator_queue.thoughts,
++                        )
++                    )
++                    break
+                 if value is not StopIteration:
+                     generation_result = json.loads(value, object_hook=lambda d: SimpleNamespace(**d))
+                     if generation_result.generated is not None:
+diff --git a/tests/codemie/agents/callbacks/test_agent_streaming_callback.py b/tests/codemie/agents/callbacks/test_agent_streaming_callback.py
+index 179cb08da..88a75611b 100644
+--- a/tests/codemie/agents/callbacks/test_agent_streaming_callback.py
++++ b/tests/codemie/agents/callbacks/test_agent_streaming_callback.py
+@@ -467,6 +467,37 @@ def test_on_tool_error_unknown_run_id_still_clears_inflight_bookkeeping(mock_log
+     assert str(run_id) not in callback._inflight_run_ids.get(author, set())
+ 
+ 
++@patch('codemie.agents.callbacks.agent_streaming_callback.set_logging_info')
++def test_on_tool_end_clears_run_id_from_all_author_buckets(mock_logging) -> None:
++    """R3-CR-002: the resume replay path fires on_tool_start without an author
++    (bucket None), while the real on_tool_end arrives with the adapter-resolved
++    author. Discarding only from the end's own bucket leaves the run_id leaking
++    in the None bucket forever -- it must be removed from every bucket."""
++    mock_queue = MagicMock()
++    callback = AgentStreamingCallback(gen=mock_queue)
++    run_id = uuid.uuid4()
++    callback.on_tool_start({"name": "tool_one"}, "input", run_id=run_id)  # replay: author=None
++
++    callback.on_tool_end("ok", run_id=run_id, author="author_x")
++
++    assert callback._inflight_run_ids.get(None, set()) == set()
++    assert callback._inflight_run_ids.get("author_x", set()) == set()
++
++
++@patch('codemie.agents.callbacks.agent_streaming_callback.set_logging_info')
++def test_on_tool_error_clears_run_id_from_all_author_buckets(mock_logging) -> None:
++    """R3-CR-002, error path: same mismatch must not leak either."""
++    mock_queue = MagicMock()
++    callback = AgentStreamingCallback(gen=mock_queue)
++    run_id = uuid.uuid4()
++    callback.on_tool_start({"name": "tool_one"}, "input", run_id=run_id)  # replay: author=None
++
++    callback.on_tool_error(Exception("boom"), run_id=run_id, author="author_x")
++
++    assert callback._inflight_run_ids.get(None, set()) == set()
++    assert callback._inflight_run_ids.get("author_x", set()) == set()
++
++
+ # ---------------------------------------------------------------------------
+ # set_context tests
+ # ---------------------------------------------------------------------------
+diff --git a/tests/codemie/agents/test_langgraph_multi_assistant_supervisor.py b/tests/codemie/agents/test_langgraph_multi_assistant_supervisor.py
+index 8af908001..da5aedd4b 100644
+--- a/tests/codemie/agents/test_langgraph_multi_assistant_supervisor.py
++++ b/tests/codemie/agents/test_langgraph_multi_assistant_supervisor.py
+@@ -703,6 +703,39 @@ class TestLangGraphMultiAssistantSupervisor:
+ 
+         supervisor_agent._parse_tool_message.assert_not_called()
+ 
++    def test_parse_supervisor_update_type_processes_non_subagent_keys_alongside_echo(self, supervisor_agent):
++        """R3-CR-006: dropping the whole update when ONE key matches a subagent name swallows
++        unrelated top-level keys carried in the same update tick -- filter just the echoed
++        subagent keys and keep processing the rest."""
++        supervisor_agent.subagent_descriptions = {"analyst": "Analyst subagent"}
++        tool_message = ToolMessage(name="search_tool", content="Search results", tool_call_id="call-123")
++        value = {
++            "analyst": {"messages": [tool_message]},
++            "supervisor": {"messages": [tool_message]},
++        }
++
++        supervisor_agent._parse_tool_message = MagicMock()
++
++        supervisor_agent._LangGraphAgent__parse_supervisor_update_type(value)
++
++        supervisor_agent._parse_tool_message.assert_called_once_with(tool_message, author=None)
++
++    def test_parse_supervisor_update_type_echo_only_still_returns_early(self, supervisor_agent):
++        """Companion to R3-CR-006: when the update carries nothing but subagent echoes
++        filtering empties it, so the early return still applies."""
++        supervisor_agent.subagent_descriptions = {"analyst": "Analyst subagent", "coder": "Coder subagent"}
++        tool_message = ToolMessage(name="search_tool", content="Search results", tool_call_id="call-123")
++        value = {
++            "analyst": {"messages": [tool_message]},
++            "coder": {"messages": [tool_message]},
++        }
++
++        supervisor_agent._parse_tool_message = MagicMock()
++
++        supervisor_agent._LangGraphAgent__parse_supervisor_update_type(value)
++
++        supervisor_agent._parse_tool_message.assert_not_called()
++
+     def test_on_supervisor_handoff_callback(self, supervisor_agent):
+         mock_callback = MagicMock(spec=BaseCallbackHandler)
+         supervisor_agent.supervisor_callbacks = [mock_callback]
+diff --git a/tests/codemie/agents/test_langgraph_tool_error_cap.py b/tests/codemie/agents/test_langgraph_tool_error_cap.py
+index 5eaebf380..0ad5db5ea 100644
+--- a/tests/codemie/agents/test_langgraph_tool_error_cap.py
++++ b/tests/codemie/agents/test_langgraph_tool_error_cap.py
+@@ -26,6 +26,7 @@ from codemie.configs import config
+ def _make_agent():
+     agent = object.__new__(LangGraphAgent)
+     agent._consecutive_tool_error_count = {}
++    agent._inflight_tool_run_ids = {}
+     agent._max_consecutive_tool_errors_cache = None
+     agent._callback_bridge = Mock()
+     return agent
+@@ -168,3 +169,98 @@ def test_get_max_consecutive_tool_errors_clamps_to_floor_of_one():
+         return_value=0,
+     ):
+         assert agent._get_max_consecutive_tool_errors() == 1
++
++
++def test_parallel_tool_errors_in_one_batch_count_once():
++    """R3-CR-005: a parallel tool-call batch (parallel_tool_calls) whose calls all
++    fail is ONE failed round, not N consecutive failures -- only the batch tail may
++    advance the streak, otherwise a single bad batch trips the abort cap immediately."""
++    agent = _make_agent()
++    run_ids = [uuid.uuid4() for _ in range(3)]
++    for run_id in run_ids:
++        agent._on_tool_start("t", "{}", run_id=run_id, author="agent_a")
++
++    for run_id in run_ids:
++        agent._on_tool_error("boom", run_id=run_id, author="agent_a")
++
++    assert agent._consecutive_tool_error_count["agent_a"] == 1
++
++
++def test_sequential_tool_errors_still_count_each():
++    """Genuine sequential retries (each call fully resolved before the next one
++    starts) must keep advancing the streak one per failure (R3-CR-005 companion)."""
++    agent = _make_agent()
++
++    for _ in range(3):
++        run_id = uuid.uuid4()
++        agent._on_tool_start("t", "{}", run_id=run_id, author="agent_a")
++        agent._on_tool_error("boom", run_id=run_id, author="agent_a")
++
++    assert agent._consecutive_tool_error_count["agent_a"] == 3
++
++
++def test_repeated_failing_parallel_batches_still_trip_the_cap():
++    """The batch-tail gate must not defang the runaway-loop guard: N consecutive
++    rounds of failing parallel batches still abort the run (R3-CR-005 companion)."""
++    agent = _make_agent()
++
++    def one_failing_batch():
++        run_ids = [uuid.uuid4() for _ in range(2)]
++        for run_id in run_ids:
++            agent._on_tool_start("t", "{}", run_id=run_id, author="agent_a")
++        for run_id in run_ids:
++            agent._on_tool_error("boom", run_id=run_id, author="agent_a")
++
++    for _ in range(config.AI_AGENT_MAX_CONSECUTIVE_TOOL_ERRORS - 1):
++        one_failing_batch()
++
++    with pytest.raises(MaxConsecutiveToolErrorsExceededException):
++        one_failing_batch()
++
++
++def test_failed_batch_leaves_no_inflight_run_ids_behind():
++    """Bookkeeping must be balanced on the error path too, otherwise a leaked
++    run_id would make later sequential failures look concurrent forever."""
++    agent = _make_agent()
++    run_ids = [uuid.uuid4() for _ in range(2)]
++    for run_id in run_ids:
++        agent._on_tool_start("t", "{}", run_id=run_id, author="agent_a")
++    for run_id in run_ids:
++        agent._on_tool_error("boom", run_id=run_id, author="agent_a")
++
++    assert agent._inflight_tool_run_ids["agent_a"] == set()
++
++
++def test_tool_end_clears_inflight_run_id():
++    """A successful call stops being in flight, so a later single failure of the
++    same author is correctly treated as sequential rather than concurrent."""
++    agent = _make_agent()
++    run_id = uuid.uuid4()
++    agent._on_tool_start("t", "{}", run_id=run_id, author="agent_a")
++    agent._on_tool_end("ok", run_id=run_id, author="agent_a")
++
++    assert agent._inflight_tool_run_ids["agent_a"] == set()
++
++
++def test_replayed_start_under_none_is_cleared_by_end_under_author():
++    """R3-CR-002: the resume replay path fires _on_tool_start without an author
++    (bucket None), while the real on_tool_end arrives with the adapter-resolved
++    author. The run_id must not leak in the None bucket."""
++    agent = _make_agent()
++    run_id = uuid.uuid4()
++    agent._on_tool_start("t", "{}", run_id=run_id)  # replay: author=None
++    agent._on_tool_end("ok", run_id=run_id, author="agent_a")
++
++    assert agent._inflight_tool_run_ids.get(None, set()) == set()
++    assert agent._inflight_tool_run_ids.get("agent_a", set()) == set()
++
++
++def test_replayed_start_under_none_is_cleared_by_error_under_author():
++    """R3-CR-002, error path: same mismatch must not leak either."""
++    agent = _make_agent()
++    run_id = uuid.uuid4()
++    agent._on_tool_start("t", "{}", run_id=run_id)  # replay: author=None
++    agent._on_tool_error("boom", run_id=run_id, author="agent_a")
++
++    assert agent._inflight_tool_run_ids.get(None, set()) == set()
++    assert agent._inflight_tool_run_ids.get("agent_a", set()) == set()
+diff --git a/tests/codemie/agents/test_langgraph_tool_error_cap_real_graph.py b/tests/codemie/agents/test_langgraph_tool_error_cap_real_graph.py
+index 3f6cf6860..0a721eed5 100644
+--- a/tests/codemie/agents/test_langgraph_tool_error_cap_real_graph.py
++++ b/tests/codemie/agents/test_langgraph_tool_error_cap_real_graph.py
+@@ -24,7 +24,6 @@ import operator
+ from typing import Annotated, TypedDict
+ from unittest.mock import Mock
+ 
+-import pytest
+ from langchain_core.messages import ToolMessage
+ from langgraph.graph import END, START, StateGraph
+ from langgraph.types import Send
+@@ -98,6 +97,7 @@ def _make_supervisor_agent():
+     agent.subagents = ["worker"]
+     agent.subagent_descriptions = {"worker": "Worker subagent"}
+     agent._consecutive_tool_error_count = {}
++    agent._inflight_tool_run_ids = {}
+     agent._max_consecutive_tool_errors_cache = None
+     agent._supervisor_coordinator = Mock()
+     agent._supervisor_coordinator.binding_for.return_value = None
+diff --git a/tests/codemie/agents/test_langgraph_truncation.py b/tests/codemie/agents/test_langgraph_truncation.py
+index b645d7ba5..e674d1bed 100644
+--- a/tests/codemie/agents/test_langgraph_truncation.py
++++ b/tests/codemie/agents/test_langgraph_truncation.py
+@@ -571,6 +571,28 @@ class TestCheckTruncationInChunk:
+         with pytest.raises(TokenLimitExceededException):
+             agent._check_truncation_in_chunk(chunk)
+ 
++    def test_check_truncation_in_chunk_handles_2tuple_with_subagents(self):
++        """R3-CR-004: a 2-tuple while subagents is truthy must not crash the unpack —
++        the namespace strip must key on the chunk shape, not the subagents flag."""
++        agent = create_mock_agent(llm_model="gpt-4.1")
++        agent.subagents = [Mock()]
++        message = AIMessage(content="partial answer, cut off", response_metadata={"finish_reason": "length"})
++        chunk = ("updates", {"agent": {"messages": [message]}})
++
++        with pytest.raises(TokenLimitExceededException):
++            agent._check_truncation_in_chunk(chunk)
++
++    def test_check_truncation_in_chunk_handles_3tuple_without_subagents(self):
++        """R3-CR-004: a 3-tuple (subgraph chunk) while subagents is falsy must also be
++        tolerated — strip the namespace by shape instead of assuming it absent."""
++        agent = create_mock_agent(llm_model="gpt-4.1")
++        agent.subagents = None
++        message = AIMessage(content="partial answer, cut off", response_metadata={"finish_reason": "length"})
++        chunk = (("supervisor",), "updates", {"supervisor": {"messages": [message]}})
++
++        with pytest.raises(TokenLimitExceededException):
++            agent._check_truncation_in_chunk(chunk)
++
+ 
+ class TestStreamGraphCancellation:
+     """Tests for A.2 (close stream on every exit) and A.3 (reset supervisor coordinator)."""
+@@ -775,6 +797,28 @@ class TestSendErrorToThreadPopulatesErrorFields:
+         sent = json.loads(agent.thread_generator.send.call_args[0][0])
+         assert sent["error_details"]["stacktrace"] is None
+ 
++    def test_send_error_to_thread_redacts_internal_traceback_when_hiding_exceptions(self, monkeypatch):
++        """R3-CR-003: InternalError.details['traceback'] must honor HIDE_AGENT_STREAMING_EXCEPTIONS,
++        the same gate already applied to agent_error.stacktrace on the AGENT path. An unclassified
++        exception routes to ErrorCategory.INTERNAL, whose traceback previously leaked to the client."""
++        from codemie.configs import config as global_config
++
++        agent = create_mock_agent(llm_model="gpt-4.1")
++        agent.thread_generator = Mock()
++        agent.thread_context = None
++        agent.extended_error = Mock(return_value="sanitized message")
++        monkeypatch.setattr(global_config, "HIDE_AGENT_STREAMING_EXCEPTIONS", True)
++
++        try:
++            raise RuntimeError("unclassified boom")
++        except RuntimeError as error:
++            agent._send_error_to_thread(error, execution_start=0.0, chunks_collector=[], include_tool_errors=True)
++
++        sent = json.loads(agent.thread_generator.send.call_args[0][0])
++        assert sent["agent_error"] is None
++        assert sent["error_details"] is not None
++        assert sent["error_details"]["details"]["traceback"] is None
++
+     def test_send_error_to_thread_populates_tool_errors(self):
+         """CR-008: the ToolErrorDetails formatting wired into tool_errors must be verified,
+         not just the agent_error/error_details fields."""
+diff --git a/tests/codemie/rest_api/handlers/test_assistant_handlers.py b/tests/codemie/rest_api/handlers/test_assistant_handlers.py
+index 934af3796..14241779c 100644
+--- a/tests/codemie/rest_api/handlers/test_assistant_handlers.py
++++ b/tests/codemie/rest_api/handlers/test_assistant_handlers.py
+@@ -493,6 +493,124 @@ class TestReadStreamedChunk:
+         assert result.generated == "new"
+ 
+ 
++class TestBuildTimeoutResult:
++    @pytest.fixture
++    def handler(self):
++        assistant = Mock()
++        assistant.id = "assistant-123"
++        assistant.project = "test-project"
++        user = Mock(spec=User)
++        user.id = "user-123"
++        return StandardAssistantHandler(assistant=assistant, user=user, request_uuid="req-uuid")
++
++    def test_timeout_result_hides_stacktrace_in_payload(self, handler, monkeypatch):
++        """R3-CR-010: TimeoutError classifies to ErrorCategory.AGENT whose stacktrace
++        must honor HIDE_AGENT_STREAMING_EXCEPTIONS and stay inside error_details too."""
++        from codemie.configs import config as global_config
++
++        monkeypatch.setattr(global_config, "HIDE_AGENT_STREAMING_EXCEPTIONS", True)
++        generator_queue = Mock()
++
++        result = handler._build_timeout_result(
++            generator_queue,
++            time(),
++            include_tool_errors=True,
++            error_detail_level=ErrorDetailLevel.STANDARD,
++            log_context="[TEST]",
++        )
++
++        assert result.success is False
++        assert result.agent_error.stacktrace is None
++        assert result.error_details["stacktrace"] is None
++
++    def test_timeout_result_keeps_stacktrace_when_not_hiding(self, handler, monkeypatch):
++        """Without the HIDE gate the timeout payload keeps full debug info."""
++        from codemie.configs import config as global_config
++
++        monkeypatch.setattr(global_config, "HIDE_AGENT_STREAMING_EXCEPTIONS", False)
++        generator_queue = Mock()
++
++        result = handler._build_timeout_result(
++            generator_queue,
++            time(),
++            include_tool_errors=True,
++            error_detail_level=ErrorDetailLevel.STANDARD,
++            log_context="[TEST]",
++        )
++
++        assert result.error_details["stacktrace"] is not None
++
++    def test_queue_poll_timeout_clamps_zero_and_negative_to_one(self, handler, monkeypatch):
++        """R3-CR-007: 0 must not busy-loop, negative must not raise ValueError."""
++        from codemie.service.dynamic_config_service import DynamicConfigService
++
++        monkeypatch.setattr(DynamicConfigService, "get_typed_value_safe", staticmethod(lambda *a, **kw: 0))
++        assert handler._get_queue_poll_timeout_seconds() == 1
++
++        monkeypatch.setattr(DynamicConfigService, "get_typed_value_safe", staticmethod(lambda *a, **kw: -5))
++        assert handler._get_queue_poll_timeout_seconds() == 1
++
++    def test_queue_poll_timeout_passes_through_positive(self, handler, monkeypatch):
++        from codemie.service.dynamic_config_service import DynamicConfigService
++
++        monkeypatch.setattr(DynamicConfigService, "get_typed_value_safe", staticmethod(lambda *a, **kw: 30))
++        assert handler._get_queue_poll_timeout_seconds() == 30
++
++    def test_a2a_stream_abandoned_producer_yields_timeout_result(self, monkeypatch):
++        """R3-CR-011: A2A stream_generator must not block forever on queue.get()."""
++        import asyncio
++
++        from codemie.core.models import AssistantChatRequest
++        from codemie.core.thread import ThreadedGenerator
++        from codemie.rest_api.handlers.assistant_handlers import A2AAssistantHandler
++
++        assistant = Mock()
++        assistant.id = "assistant-123"
++        assistant.project = "test-project"
++        assistant.agent_card = Mock()
++        assistant.agent_card.name = "remote-agent"
++        user = Mock(spec=User)
++        user.id = "user-123"
++        handler = A2AAssistantHandler.__new__(A2AAssistantHandler)
++        StandardAssistantHandler.__init__(handler, assistant, user, "req-uuid")
++        handler.agent_card = assistant.agent_card
++
++        generator_queue = ThreadedGenerator()  # never fed, never closed
++        task_request = Mock()
++        task_request.params = Mock()
++        request = AssistantChatRequest(text="hi", stream=True)
++
++        async def fake_send_task(params, callback):
++            return None
++
++        handler.remote_connection = Mock()
++        handler.remote_connection.send_task = fake_send_task
++        from codemie.service.dynamic_config_service import DynamicConfigService
++
++        monkeypatch.setattr(DynamicConfigService, "get_typed_value_safe", staticmethod(lambda *a, **kw: 1))
++
++        async def drain():
++            with (
++                patch.object(handler, "save_chat_history"),
++                patch(
++                    "codemie.rest_api.handlers.assistant_handlers.ThreadedGenerator",
++                    return_value=generator_queue,
++                ),
++            ):
++                response = handler._handle_a2a_stream(request, task_request)
++                chunks = []
++                async for chunk in response.body_iterator:
++                    chunks.append(chunk if isinstance(chunk, str) else chunk.decode())
++                    if chunks:
++                        break
++                return chunks
++
++        chunks = asyncio.run(drain())
++        assert len(chunks) == 1
++        assert '"success":false' in chunks[0]
++        assert "timed out" in chunks[0]
++
++
+ class TestInitHasNoBillingUser:
+     def test_init_has_no_billing_user_attribute_and_user_drives_build_agent(self):
+         assistant = Mock(id="assistant-123", project="test-project")

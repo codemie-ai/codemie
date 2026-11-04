@@ -90,6 +90,16 @@ class LangGraphCallbackBridge:
             except Exception as error:
                 self._log_error(f"On llm end callback {callback} error: {error}")
 
+    def on_thought_failed(self, run_id: str, author: str | None = None) -> None:
+        for callback in self.agent.callbacks:
+            handler = getattr(callback, "on_thought_failed", None)
+            if handler is None:
+                continue
+            try:
+                handler(run_id=run_id, author=author)
+            except Exception as error:
+                self._log_error(f"On thought failed callback {callback} error: {error}")
+
     def on_llm_error(self, error: BaseException, run_id: str, author: str | None = None) -> None:
         for callback in self.agent.callbacks:
             try:
@@ -224,11 +234,15 @@ class LangGraphEventAdapter:
         indicator = get_truncation_indicator(message.response_metadata)
         if not indicator:
             return False
+        if message.invalid_tool_calls and message.id:
+            # The check below fails this run, and _on_llm_end drops the open thought from storage, so
+            # flag it first.
+            self.agent._callback_bridge.on_thought_failed(message.id, author=author)
         self._restore_response_headers(message)
         self.agent._on_llm_end(response=message, run_id=message.id, author=author)
         if message.invalid_tool_calls:
             # Arguments cut mid-JSON land in invalid_tool_calls; fail like a truncated tool call
-            self.agent._safe_check_for_truncation(message)
+            self.agent._safe_check_for_truncation(message, author=author)
         usage = message.usage_metadata or {}
         logger.warning(
             f"truncated_response model={self.agent.llm_model} indicator={indicator} "
@@ -288,7 +302,29 @@ class LangGraphEventAdapter:
             self._restore_response_headers(message)
             self.agent._on_llm_end(response=message, run_id=message.id, author=author)
 
+    def _drop_echoed_subagent_updates(self, value: dict[str, Any], author: str | None) -> dict[str, Any] | None:
+        """Drop the top-level (no-namespace) echo of a subagent subgraph's own completed step.
+
+        LangGraph re-emits the branch's full state diff at the parent level once the
+        Send-dispatched branch finishes. Its messages were already dispatched under the
+        branch-specific author; reprocessing them here would double-count tool results
+        under the shared author=None key.
+
+        Drop only the echoed subagent keys: unrelated top-level keys can ride in the
+        same update tick and must still be processed. See R3-CR-006.
+
+        Returns ``None`` when nothing remains to process.
+        """
+        if author is not None or not any(key in self.agent.subagent_descriptions for key in value):
+            return value
+        filtered = {key: item for key, item in value.items() if key not in self.agent.subagent_descriptions}
+        return filtered or None
+
     def parse_supervisor_update_type(self, value: dict[str, Any], author: str | None = None) -> None:
+        value = self._drop_echoed_subagent_updates(value, author)
+        if value is None:
+            return
+
         state_update = next((item for item in value.values() if isinstance(item, dict)), None)
         if state_update is None:
             return
@@ -324,7 +360,7 @@ class LangGraphEventAdapter:
             self.agent._parse_tool_message(last_message, author=author)
 
     def handle_supervisor_tool_calls(self, last_message: AIMessage, author: str | None = None) -> None:
-        self.agent._safe_check_for_truncation(last_message)
+        self.agent._safe_check_for_truncation(last_message, author=author)
         if extract_text_from_llm_output(last_message.content):
             # Same as the agent path: restore the headers so routing signals survive.
             self._restore_response_headers(last_message)

@@ -31,6 +31,7 @@ from typing import Any, Optional, Protocol, runtime_checkable
 from pydantic import BaseModel, Field, field_validator, ValidationError
 
 from codemie.configs import config, logger
+from codemie.core.exceptions import MaxConsecutiveToolErrorsExceededException
 from codemie.core.error_constants import (
     AGENT_ERROR_FRIENDLY_MESSAGES,
     BUDGET_MESSAGE_KEY,
@@ -373,6 +374,22 @@ class ErrorResponse(BaseModel):
         attr_name = self.__CATEGORY_TO_ERROR_ATTR[self.category]
         return getattr(self, attr_name, None)
 
+    def redact_for_streaming(self) -> None:
+        """Strip debug-only traces in place so the payload is safe to send to the client.
+
+        Mirrors the HIDE_AGENT_STREAMING_EXCEPTIONS gate: AGENT path loses
+        agent_error.stacktrace, INTERNAL path loses details['traceback'].
+        No-op for other categories. Mutates in place (same F2 rationale —
+        get_error() reads the live attribute, a detached copy would leak).
+        """
+        if self.category == ErrorCategory.AGENT and self.agent_error is not None:
+            self.agent_error = self.agent_error.model_copy(update={"stacktrace": None})
+        elif self.category == ErrorCategory.INTERNAL and self.internal is not None:
+            internal_details = dict(self.internal.details or {})
+            if internal_details.get("traceback") is not None:
+                internal_details["traceback"] = None
+                self.internal = self.internal.model_copy(update={"details": internal_details})
+
     class Config:
         json_schema_extra = {
             "examples": [
@@ -653,6 +670,12 @@ class AgentErrorClassifier:
             return self.build_agent_error_dict(ErrorCode.AGENT_TIMEOUT)
         return None
 
+    def _try_tool_error_limit(self, exc_obj: Exception | None) -> Optional[dict[str, Any]]:
+        """Check if the run was aborted by the consecutive tool-error cap (matched by type, not by message)."""
+        if isinstance(exc_obj, MaxConsecutiveToolErrorsExceededException):
+            return self.build_agent_error_dict(ErrorCode.AGENT_TOOL_ERROR_LIMIT)
+        return None
+
     def _try_token_limit(self, msg: str) -> Optional[dict[str, Any]]:
         """
         Check if the exception indicates token/output limit (max_output_tokens, truncation, etc.).
@@ -700,12 +723,15 @@ class AgentErrorClassifier:
         """
         Parse an exception and return agent error dict if it is a known agent-level error.
 
-        Tries, in order: budget exceeded, timeout, token limit, callback failure,
+        Tries, in order: tool-error cap, budget exceeded, timeout, token limit, callback failure,
         network error, configuration error. First match wins.
         """
         exc_obj = exception if isinstance(exception, Exception) else None
         msg = str(exception).lower() if exception else ""
 
+        result = self._try_tool_error_limit(exc_obj)
+        if result is not None:
+            return result
         result = self._try_budget_exceeded(exception, msg)
         if result is not None:
             return result

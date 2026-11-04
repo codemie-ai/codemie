@@ -21,7 +21,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from codemie.chains.base import GenerationResult
+from codemie.chains.base import GenerationResult, StreamedGenerationResult
 from codemie.core.errors import AgentErrorDetails, ErrorCode, ErrorDetailLevel, ToolErrorDetails
 from codemie.core.models import AssistantChatRequest
 from codemie.rest_api.handlers.assistant_handlers import ChatHistoryData, StandardAssistantHandler
@@ -473,6 +473,134 @@ class TestFormatErrors:
         # Verify
         assert formatted_tool_errors is None
         assert formatted_agent_error is None
+
+
+class TestReadStreamedChunk:
+    """Tests for StandardAssistantHandler._read_streamed_chunk() method (F10-e)."""
+
+    def test_read_streamed_chunk_ignores_malformed_json_line_instead_of_raising(self):
+        """A single malformed line on the queue must not kill the whole stream
+        generator — it should be skipped, keeping the previously accumulated
+        response, not raise json.JSONDecodeError uncaught."""
+        previous_response = StreamedGenerationResult(generated="previous")
+
+        result = StandardAssistantHandler._read_streamed_chunk("{not valid json", previous_response, a2ui_envelopes=[])
+
+        assert result is previous_response
+
+    def test_read_streamed_chunk_still_parses_valid_json(self):
+        previous_response = StreamedGenerationResult(generated="previous")
+        value = StreamedGenerationResult(generated="new").model_dump_json()
+
+        result = StandardAssistantHandler._read_streamed_chunk(value, previous_response, a2ui_envelopes=[])
+
+        assert result.generated == "new"
+
+
+class TestBuildTimeoutResult:
+    @pytest.fixture
+    def handler(self):
+        assistant = Mock()
+        assistant.id = "assistant-123"
+        assistant.project = "test-project"
+        user = Mock(spec=User)
+        user.id = "user-123"
+        return StandardAssistantHandler(assistant=assistant, user=user, request_uuid="req-uuid")
+
+    def test_timeout_result_hides_stacktrace_in_payload(self, handler, monkeypatch):
+        """R3-CR-010: TimeoutError classifies to ErrorCategory.AGENT whose stacktrace
+        must honor HIDE_AGENT_STREAMING_EXCEPTIONS and stay inside error_details too."""
+        from codemie.configs import config as global_config
+
+        monkeypatch.setattr(global_config, "HIDE_AGENT_STREAMING_EXCEPTIONS", True)
+        generator_queue = Mock()
+
+        result = handler._build_timeout_result(
+            generator_queue,
+            time(),
+            include_tool_errors=True,
+            error_detail_level=ErrorDetailLevel.STANDARD,
+            log_context="[TEST]",
+        )
+
+        assert result.success is False
+        assert result.agent_error.stacktrace is None
+        assert result.error_details["stacktrace"] is None
+
+    def test_timeout_result_redacts_stacktrace_even_when_not_hiding(self, handler, monkeypatch):
+        """Tracebacks never reach the client, independent of HIDE_AGENT_STREAMING_EXCEPTIONS."""
+        from codemie.configs import config as global_config
+
+        monkeypatch.setattr(global_config, "HIDE_AGENT_STREAMING_EXCEPTIONS", False)
+        generator_queue = Mock()
+
+        result = handler._build_timeout_result(
+            generator_queue,
+            time(),
+            include_tool_errors=True,
+            error_detail_level=ErrorDetailLevel.STANDARD,
+            log_context="[TEST]",
+        )
+
+        assert result.agent_error.stacktrace is None
+        assert result.error_details["stacktrace"] is None
+        assert result.execution_error == "agent_timeout"
+
+    def test_queue_poll_timeout_clamps_zero_and_negative_to_one(self, handler, monkeypatch):
+        """R3-CR-007: 0 must not busy-loop, negative must not raise ValueError."""
+        from codemie.service.dynamic_config_service import DynamicConfigService
+
+        monkeypatch.setattr(DynamicConfigService, "get_typed_value_safe", staticmethod(lambda *a, **kw: 0))
+        assert handler._get_queue_poll_timeout_seconds() == 1
+
+        monkeypatch.setattr(DynamicConfigService, "get_typed_value_safe", staticmethod(lambda *a, **kw: -5))
+        assert handler._get_queue_poll_timeout_seconds() == 1
+
+    def test_queue_poll_timeout_passes_through_positive(self, handler, monkeypatch):
+        from codemie.service.dynamic_config_service import DynamicConfigService
+
+        monkeypatch.setattr(DynamicConfigService, "get_typed_value_safe", staticmethod(lambda *a, **kw: 30))
+        assert handler._get_queue_poll_timeout_seconds() == 30
+
+    def test_a2a_stream_abandoned_producer_yields_timeout_result(self, monkeypatch):
+        """R3-CR-011: A2A _drain_stream must not block forever on queue.get()."""
+        import asyncio
+
+        from codemie.core.models import AssistantChatRequest
+        from codemie.core.thread import ThreadedGenerator
+        from codemie.rest_api.handlers.assistant_handlers import A2AAssistantHandler
+
+        assistant = Mock()
+        assistant.id = "assistant-123"
+        assistant.project = "test-project"
+        assistant.agent_card = Mock()
+        assistant.agent_card.name = "remote-agent"
+        user = Mock(spec=User)
+        user.id = "user-123"
+        handler = A2AAssistantHandler.__new__(A2AAssistantHandler)
+        StandardAssistantHandler.__init__(handler, assistant, user, "req-uuid")
+        handler.agent_card = assistant.agent_card
+
+        generator_queue = ThreadedGenerator()  # never fed, never closed
+        request = AssistantChatRequest(text="hi", stream=True)
+
+        from codemie.service.dynamic_config_service import DynamicConfigService
+
+        monkeypatch.setattr(DynamicConfigService, "get_typed_value_safe", staticmethod(lambda *a, **kw: 1))
+
+        async def drain():
+            with patch.object(handler, "save_chat_history"):
+                chunks = []
+                async for chunk in handler._drain_stream(generator_queue, request, time()):
+                    chunks.append(chunk if isinstance(chunk, str) else chunk.decode())
+                    if chunks:
+                        break
+                return chunks
+
+        chunks = asyncio.run(drain())
+        assert len(chunks) == 1
+        assert '"success":false' in chunks[0]
+        assert "timed out" in chunks[0]
 
 
 class TestInitHasNoBillingUser:

@@ -1,0 +1,145 @@
+{
+  "decision": "request-changes",
+  "rationale": "Verified 11 blocking defects directly against source: two critical stacktrace-leak gaps survive this round's HIDE_AGENT_STREAMING_EXCEPTIONS redaction fix (the INTERNAL-category error path in langgraph_agent.py/core/errors.py, and the queue-timeout path in _build_timeout_result), plus a missing timeout guard on the A2A streaming path, an unclamped/uncached queue-poll config lookup, a parallel-vs-sequential tool-error counting gap, an echo-dedup dict-drop bug, a timeout that doesn't cancel the underlying agent run, and a commit-format standards violation on 2 commits. 2 findings (subagent-mode chunk unpacking, cross-author _inflight_run_ids leak) have unconfirmed live-path reachability and are capped at major. No spec/story exists for this range, so acceptance did not run (confidence floored at low) and decision_needed is unavailable; 2 lens reports were dismissed as noise after verification (a self-documented, deliberate error-classifier string coupling, and a _build_final_chunk/last_generation_result removal confirmed dead-code-only via git history and the change's own planning artifacts).",
+  "confidence": "low",
+  "risk_flags": ["security"],
+  "business_review": [],
+  "standards_review": [
+    {"kind": "commit-format", "status": "partial", "notes": "2 commits use a lowercase branch-slug prefix instead of `EPMCDME-####:`; 1 merge commit also off-format."},
+    {"kind": "code-quality", "status": "pass", "notes": "Modern parameterized type hints throughout; new test files carry the required Apache 2.0 header."},
+    {"kind": "security", "status": "pass", "notes": "No credential/token logging found; scope limited to secret-handling and untrusted-input rules, not the stacktrace-leak findings raised by other lenses."}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "commit \"epmcdme-14855-token-limit-slice2: add planning artifacts\" / \"epmcdme-14855-graph-cancellation-core: add planning artifacts\"",
+      "title": "Commit subjects break ticket-format rule",
+      "problem": "Two commits use a lowercase branch-slug prefix ('epmcdme-14855-<slice>:') instead of the git-workflow.md-required `EPMCDME-####: Description` subject format.",
+      "impact": "Violates the repo's blocking commit-format standard, breaking tooling/traceability that expects a ticket-prefixed subject on every commit in the range.",
+      "recommendation": "Reword both subjects to `EPMCDME-14855: <description>` (e.g. via rebase) before merge."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/agents/callbacks/agent_streaming_callback.py",
+      "line": 405,
+      "title": "_inflight_run_ids leak on author mismatch",
+      "problem": "on_tool_error/on_tool_end discard a run_id only from `_inflight_run_ids[author]` keyed by that callback's own author; if on_tool_start recorded the run_id under a different author, it is never removed from the original bucket.",
+      "impact": "Reachability unconfirmed (uncertain, capped at major): if it occurs, the stale run_id keeps the original author's bucket permanently non-empty, so on_tool_error treats that author's future genuine sequential retries as concurrent and stops aliasing them onto one visible thought.",
+      "recommendation": "Discard the run_id from every author bucket in `_inflight_run_ids`, not only the bucket keyed by the current callback's author."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/agents/langgraph_agent.py",
+      "line": 866,
+      "title": "InternalError path still leaks full stack trace",
+      "problem": "The new stacktrace redaction in `_send_error_to_thread` is gated on `error_response.category == ErrorCategory.AGENT`. An unclassified exception is routed by `InternalErrorClassifier` to `category=INTERNAL`, whose `InternalError.details['traceback']` (core/errors.py `InternalError.from_exception`) is never touched by that redaction.",
+      "impact": "When `config.HIDE_AGENT_STREAMING_EXCEPTIONS=True`, an unclassified exception still ships `error_details` containing the full raw Python traceback to the client in the SSE chunk, defeating the exact protection this round added for the AGENT category. Verified directly in core/errors.py:293-374 and langgraph_agent.py:865-879.",
+      "recommendation": "Extend the redaction to the INTERNAL category: strip/redact `details.traceback` on the InternalError payload the same way `agent_error.stacktrace` is redacted, before building error_details."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/agents/langgraph_agent.py",
+      "line": 1166,
+      "title": "_check_truncation_in_chunk assumes chunk shape",
+      "problem": "`if self.subagents: _, *chunk = chunk` followed by `chunk_type, value = chunk` assumes every incoming chunk is a 3-tuple whenever `self.subagents` is truthy; a 2-tuple chunk in that mode leaves only one element after the strip.",
+      "impact": "Reachability unconfirmed (uncertain, capped at major): if a subagent-mode stream ever yields a plain 2-tuple, the unpack raises `ValueError: not enough values to unpack` from inside the streaming loop, aborting the stream.",
+      "recommendation": "Guard the unpack (e.g. check `len(chunk) == 2` before assuming a namespace prefix was stripped) instead of unconditionally unpacking."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/agents/langgraph_agent.py",
+      "line": 1519,
+      "title": "Tool-error counter doesn't distinguish parallel batches",
+      "problem": "`_on_tool_error` increments a single per-author scalar (`_consecutive_tool_error_count[author]`) on every tool-error callback with no concurrent-vs-sequential distinction, unlike the new `_inflight_run_ids`/`_active_error_streak` mechanism this same diff adds to `AgentStreamingCallback` for exactly that purpose.",
+      "impact": "When one author's LLM turn issues several parallel tool calls (parallel_tool_calls is only disabled per-model, not globally — langgraph_agent.py:301-306) that all fail in the same round, each failure still increments the same counter, so MaxConsecutiveToolErrorsExceededException can fire after a single bad parallel batch instead of after N genuinely consecutive attempts.",
+      "recommendation": "Have `_on_tool_error` consult the same in-flight/concurrent-siblings signal the callback now tracks before incrementing the abort counter, so concurrent failures in one round count once, not once per tool call."
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/agents/langgraph_event_adapter.py",
+      "line": 228,
+      "title": "Echo-dedup guard drops whole update, not just the echo",
+      "problem": "`if author is None and any(key in self.agent.subagent_descriptions for key in value): return` discards the entire `value` dict as soon as any one key matches a subagent name, even when `value` also carries other, unrelated top-level keys in the same update tick.",
+      "impact": "A mixed update — a legitimate top-level node key plus a subagent-named echo key arriving together — has the legitimate key's state update silently dropped along with the echo, not just the echo itself.",
+      "recommendation": "Drop only the matched subagent-name keys from `value` before processing, rather than returning on any single match."
+    },
+    {
+      "id": "CR-007",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/handlers/assistant_handlers.py",
+      "line": 533,
+      "title": "Queue-poll timeout has no floor/clamp",
+      "problem": "`_get_queue_poll_timeout_seconds()` returns the dynamic-config value unclamped, unlike the sibling `_get_max_consecutive_tool_errors()` (langgraph_agent.py:141-149) which explicitly applies `max(1, value)`.",
+      "impact": "If `AI_AGENT_QUEUE_POLL_TIMEOUT_SECONDS` is ever set to 0 or negative, `queue.Queue.get(timeout=...)` either busy-loops (timeout=0, since the surrounding while-loop retries immediately) or raises an uncaught ValueError for a negative timeout — neither is caught by the `except queue.Empty:` handler in `_serve_data`/`HedgedAssistantHandler`.",
+      "recommendation": "Clamp the resolved value with `max(1, value)` the same way `_get_max_consecutive_tool_errors` does."
+    },
+    {
+      "id": "CR-008",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/handlers/assistant_handlers.py",
+      "line": 763,
+      "title": "Queue-poll timeout re-resolved every chunk",
+      "problem": "`_get_queue_poll_timeout_seconds()` is called fresh on every loop iteration in both `StandardAssistantHandler._serve_data` (line 763) and `HedgedAssistantHandler._stream_agent_path` (hedged_handler.py:394), with no caching, unlike the analogous `_max_consecutive_tool_errors_cache` this same diff adds for the tool-error-cap lookup.",
+      "impact": "The queue-timeout lookup sits on a hotter path (once per streamed chunk) than the tool-error cap (once per tool failure) yet has no equivalent protection, hitting DynamicConfigService on every SSE chunk under load.",
+      "recommendation": "Cache the resolved timeout on the handler instance on first use, mirroring `_max_consecutive_tool_errors_cache`."
+    },
+    {
+      "id": "CR-009",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/handlers/assistant_handlers.py",
+      "line": 1053,
+      "title": "Timeout doesn't stop the still-running agent",
+      "problem": "`_build_timeout_result` closes `generator_queue` so the producer thread's future sends become no-ops, but nothing cancels or interrupts the underlying LangGraph run/LLM calls still executing on that producer thread.",
+      "impact": "The client receives a terminal timeout chunk while the abandoned agent run keeps executing to completion in the background, continuing to consume LLM/compute spend for a request nobody is listening to.",
+      "recommendation": "Signal the producer thread/task to cancel (e.g. propagate a cancellation token or close the underlying LangGraph run) when the queue-poll timeout fires, not just the reporting queue."
+    },
+    {
+      "id": "CR-010",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/handlers/assistant_handlers.py",
+      "line": 1064,
+      "title": "Timeout path skips stacktrace redaction",
+      "problem": "`_build_timeout_result` builds `agent_error`/`error_details` via `_format_errors(error_response, ...)` and `agent_error.model_dump(mode=\"json\")` directly, without applying the `HIDE_AGENT_STREAMING_EXCEPTIONS` redaction that `_send_error_to_thread` (langgraph_agent.py:867-872) applies to the identical fields; it also derives `error_details` from `agent_error` alone instead of the full `error_response.get_error()` payload the other path uses.",
+      "impact": "When an operator sets `HIDE_AGENT_STREAMING_EXCEPTIONS=True`, a queue-poll timeout on the Standard or Hedged streaming path still ships a populated raw stacktrace inside agent_error/error_details in the client-visible SSE chunk, undermining the redaction this same diff added for the generic-exception path.",
+      "recommendation": "Route `_build_timeout_result` through the same redaction logic as `_send_error_to_thread` (strip stacktrace under HIDE_AGENT_STREAMING_EXCEPTIONS) and build error_details from the same payload source for both paths."
+    },
+    {
+      "id": "CR-011",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/handlers/assistant_handlers.py",
+      "line": 1277,
+      "title": "A2A stream_generator has no queue timeout",
+      "problem": "`A2AAssistantHandler.stream_generator` still calls `generator_queue.queue.get()` with no timeout, unlike `StandardAssistantHandler._serve_data` (line 763) and `HedgedAssistantHandler._stream_agent_path` (hedged_handler.py:394), which this same diff converted to a bounded `get(timeout=...)` plus a `queue.Empty` branch.",
+      "impact": "If the remote A2A task producer never invokes `task_callback` with `final=True` — the exact abandoned-producer failure mode this diff's fix targets on the other two paths — the A2A streaming request's consumer thread blocks indefinitely instead of surfacing a timeout error to the client.",
+      "recommendation": "Adopt the same `timeout=self._get_queue_poll_timeout_seconds()` plus queue.Empty/_build_timeout_result-style handling in stream_generator's queue-read loop."
+    }
+  ]
+}
