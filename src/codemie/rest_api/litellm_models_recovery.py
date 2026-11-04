@@ -33,7 +33,7 @@ def _fetch_litellm_models() -> LiteLLMModels | None:
     """
     Clear the models cache and fetch models from the LiteLLM proxy.
 
-    Returns None when the proxy answered without chat models. Raises when the fetch fails.
+    Returns None when the proxy answered without chat or audio transcription models. Raises when the fetch fails.
     """
     from codemie.enterprise.litellm import get_available_models
     from codemie.service.llm_proxy.provider_registry import get_active_llm_proxy_provider
@@ -42,7 +42,7 @@ def _fetch_litellm_models() -> LiteLLMModels | None:
     get_active_llm_proxy_provider().reload_models_cache()
 
     models = get_available_models(raise_on_error=True)
-    return models if models.chat_models else None
+    return models if (models.chat_models or models.audio_transcription_models) else None
 
 
 def _apply_litellm_models(models: LiteLLMModels) -> None:
@@ -50,7 +50,8 @@ def _apply_litellm_models(models: LiteLLMModels) -> None:
 
     llm_service.initialize_default_litellm_models(models)
     logger.info(
-        f"Initialized {len(models.chat_models)} chat models, and  {len(models.embedding_models)} embedding models."
+        f"Initialized {len(models.chat_models)} chat models, {len(models.embedding_models)} embedding models, "
+        f"and {len(models.audio_transcription_models)} audio transcription models."
     )
 
 
@@ -66,7 +67,7 @@ def initialize_litellm_models() -> bool:
         if models is not None:
             _apply_litellm_models(models)
             return True
-        reason = "LiteLLM returned no chat models"
+        reason = "LiteLLM returned no chat or audio transcription models"
     except Exception as e:
         reason = f"{type(e).__name__}: {e}"
 
@@ -99,7 +100,7 @@ def schedule_litellm_models_recovery(app: FastAPI, tasks: list[asyncio.Task]) ->
                         "still uses the YAML fallback model."
                     )
                     return
-                reason = "LiteLLM returned no chat models"
+                reason = "LiteLLM returned no chat or audio transcription models"
             except Exception as error:
                 reason = f"{type(error).__name__}: {error}"
             delay = min(delay * 2, cap)

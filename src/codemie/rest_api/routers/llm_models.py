@@ -195,5 +195,20 @@ def get_embeddings_models(user: User = Depends(authenticate), include_all: bool 
     return llm_service.get_allowed_embedding_models(user, include_all=include_all)
 
 
+@router.get(
+    "/audio_transcription_models",
+    response_model=List[LLMModel],
+    response_model_exclude_none=True,
+)
+def get_audio_transcription_models(user: User = Depends(authenticate)) -> List[LLMModel]:
+    """
+    Return the speech-to-text models available to the authenticated user.
+
+    The model configured through the STT_API_* variables comes first, followed by the LiteLLM
+    models with mode=audio_transcription.
+    """
+    return llm_service.get_allowed_audio_transcription_models(user)
+
+
 # Explicitly register proxy endpoints if LiteLLM is enabled
 register_proxy_endpoints()

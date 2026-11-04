@@ -37,6 +37,13 @@ if TYPE_CHECKING:
     from codemie_enterprise.phoenix.service import PhoenixService
 
 
+_USAGE_ATTRIBUTES = {
+    "input": "llm.token_count.prompt",
+    "output": "llm.token_count.completion",
+    "total": "llm.token_count.total",
+}
+
+
 def _current_recording_span() -> Any | None:
     """Return the active OTEL span if it is recording, else ``None``."""
     from opentelemetry import trace as otel_trace
@@ -235,6 +242,39 @@ class PhoenixObservabilityProvider(ObservabilityProvider):
                 span.set_attribute("observation.status_message", status_message)
         except Exception as e:
             logger.warning("Failed to update current Phoenix observation: %s", e, exc_info=True)
+
+    def update_current_generation(
+        self,
+        *,
+        model: str | None = None,
+        model_parameters: dict[str, Any] | None = None,
+        input: Any | None = None,
+        output: Any | None = None,
+        usage_details: dict[str, int | float] | None = None,
+        metadata: dict[str, Any] | None = None,
+        level: ObservationLevel | None = None,
+        status_message: str | None = None,
+    ) -> None:
+        """Annotate the active OTEL span as an LLM call using OpenInference attribute names."""
+        if not self.is_enabled():
+            return
+        try:
+            span = _current_recording_span()
+            if span is None:
+                return
+            span.set_attribute("openinference.span.kind", "LLM")
+            if model is not None:
+                span.set_attribute("llm.model_name", model)
+            if model_parameters:
+                _set_json_attr(span, "llm.invocation_parameters", model_parameters)
+            if usage_details:
+                for key, value in usage_details.items():
+                    span.set_attribute(_USAGE_ATTRIBUTES.get(key, f"llm.usage.{key}"), value)
+        except Exception as e:
+            logger.warning("Failed to update current Phoenix generation: %s", e, exc_info=True)
+        self.update_current_observation(
+            input=input, output=output, metadata=metadata, level=level, status_message=status_message
+        )
 
     def update_current_trace(
         self,

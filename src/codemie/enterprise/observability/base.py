@@ -164,3 +164,25 @@ class ObservabilityProvider(ABC):
 
         Default implementation is a no-op. Must never raise.
         """
+
+    def update_current_generation(
+        self,
+        *,
+        model: str | None = None,
+        model_parameters: dict[str, Any] | None = None,
+        input: Any | None = None,
+        output: Any | None = None,
+        usage_details: dict[str, int | float] | None = None,
+        metadata: dict[str, Any] | None = None,
+        level: ObservationLevel | None = None,
+        status_message: str | None = None,
+    ) -> None:
+        """Record model-call details on the active observation, for calls made outside LangChain.
+
+        Use inside a frame opened with ``observe(name=..., as_type="generation")`` to trace
+        direct SDK calls (speech-to-text, for example) that no callback handler sees.
+        ``usage_details`` keys follow Langfuse naming (``input``, ``output``, ``total``, or a
+        custom unit such as ``audio_seconds``).
+
+        Default implementation is a no-op. Must never raise.
+        """

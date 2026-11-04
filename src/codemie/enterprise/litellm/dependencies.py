@@ -843,10 +843,11 @@ def _map_raw_models(raw_models):
     from codemie.configs import logger
     from codemie.configs.llm_config import LiteLLMModels, ModelType
 
-    from .models import map_litellm_to_llm_model
+    from .models import get_model_type, map_litellm_to_llm_model
 
     chat_models = {}
     embedding_models = {}
+    audio_transcription_models = {}
 
     for raw_model in raw_models:
         try:
@@ -854,16 +855,14 @@ def _map_raw_models(raw_models):
             if not llm_model.enabled:
                 continue
 
-            mode_str = raw_model.get("model_info", {}).get("mode", ModelType.CHAT.value)
-
-            try:
-                model_type = ModelType(mode_str)
-            except ValueError:
-                logger.warning(f"Unknown model mode '{mode_str}', defaulting to CHAT")
-                model_type = ModelType.CHAT
+            model_type = get_model_type(raw_model)
+            if model_type is None:
+                continue
 
             if model_type == ModelType.EMBEDDING:
                 embedding_models[llm_model.base_name] = llm_model
+            elif model_type == ModelType.AUDIO_TRANSCRIPTION:
+                audio_transcription_models[llm_model.base_name] = llm_model
             else:
                 chat_models[llm_model.base_name] = llm_model
 
@@ -874,6 +873,7 @@ def _map_raw_models(raw_models):
     return LiteLLMModels(
         chat_models=list(chat_models.values()),
         embedding_models=list(embedding_models.values()),
+        audio_transcription_models=list(audio_transcription_models.values()),
     )
 
 

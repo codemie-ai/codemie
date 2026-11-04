@@ -255,6 +255,39 @@ class LangfuseObservabilityProvider(ObservabilityProvider):
             "update current Langfuse observation",
         )
 
+    def update_current_generation(
+        self,
+        *,
+        model: str | None = None,
+        model_parameters: dict[str, Any] | None = None,
+        input: Any | None = None,
+        output: Any | None = None,
+        usage_details: dict[str, int | float] | None = None,
+        metadata: dict[str, Any] | None = None,
+        level: ObservationLevel | None = None,
+        status_message: str | None = None,
+    ) -> None:
+        """Update the active generation observation on the v4 Langfuse SDK."""
+        client = _client_or_none()
+        if client is None:
+            return
+        _safe_call(
+            client.update_current_generation,
+            _drop_none(
+                {
+                    "model": model,
+                    "model_parameters": model_parameters,
+                    "input": input,
+                    "output": output,
+                    "usage_details": usage_details,
+                    "metadata": metadata,
+                    "level": level,
+                    "status_message": status_message,
+                }
+            ),
+            "update current Langfuse generation",
+        )
+
     def update_current_trace(
         self,
         *,

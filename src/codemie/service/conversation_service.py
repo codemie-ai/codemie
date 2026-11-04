@@ -20,7 +20,7 @@ import html
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, List, TYPE_CHECKING, Optional, NoReturn
+from typing import Any, BinaryIO, List, Mapping, TYPE_CHECKING, Optional, NoReturn
 
 from codemie_tools.base.utils import get_encoding
 from fastapi import BackgroundTasks, status
@@ -32,7 +32,6 @@ from sqlmodel import select, and_, delete, func, or_, text, Session
 from codemie.chains.base import Thought
 from codemie.clients.postgres import get_session
 from codemie.configs import config, logger
-from codemie.core.dependecies import get_stt_openai_client
 from codemie.core.event_loop import run_coroutine_blocking
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import AssistantChatRequest, UpdateConversationRequest, UpdateAiMessageRequest, TokensUsage
@@ -75,6 +74,7 @@ from codemie.service.spend.rendering import RenderedSpend, render_composed_spend
 from codemie.service.spend.spend_service import spend_service
 
 if TYPE_CHECKING:
+    from codemie.service.stt_service import SttResult
     from codemie.rest_api.models.assistant import Assistant
     from codemie.service.request_summary_manager import LLMRun
 else:
@@ -1505,12 +1505,25 @@ class ConversationService:
         return conversation
 
     @classmethod
-    def recognize_speech(cls, file):
-        client = get_stt_openai_client()
-        return client.audio.transcriptions.create(
-            model=config.STT_MODEL_NAME,
-            file=file,
-        ).text
+    def recognize_speech(
+        cls,
+        file: BinaryIO,
+        user: User | None = None,
+        model: str | None = None,
+        language: str | None = None,
+        forward_headers: Mapping[str, str] | None = None,
+        conversation_id: str | None = None,
+    ) -> 'SttResult':
+        from codemie.service.stt_service import stt_service
+
+        return stt_service.transcribe(
+            file,
+            user=user,
+            model_name=model,
+            language=language,
+            forward_headers=forward_headers,
+            conversation_id=conversation_id,
+        )
 
     @classmethod
     def get_conversation_metrics_with_filters(

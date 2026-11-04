@@ -62,6 +62,15 @@ class TestInitializeLiteLLMModels:
         svc.initialize_default_litellm_models.assert_not_called()
         assert log_error.called
 
+    def test_audio_only_catalog_is_applied(self):
+        audio_only = LiteLLMModels(
+            audio_transcription_models=[LLMModel(base_name="stt", deployment_name="stt", enabled=True)]
+        )
+        with patch(GET_MODELS, return_value=audio_only), patch(PROVIDER), patch(LLM_SERVICE) as svc:
+            assert recovery.initialize_litellm_models() is True
+
+        svc.initialize_default_litellm_models.assert_called_once_with(audio_only)
+
     def test_returns_true_and_initializes_when_models_available(self):
         models = _models(2)
         with patch(GET_MODELS, return_value=models), patch(PROVIDER), patch(LLM_SERVICE) as svc:

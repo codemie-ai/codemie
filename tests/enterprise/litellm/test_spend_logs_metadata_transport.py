@@ -542,6 +542,32 @@ class TestTheEmbeddingsHeaderCarriesTheOriginToo:
         assert metadata_in(headers)["codemie_origin"] == "datasource_indexing"
 
 
+class TestTheSttClientCarriesIdentityAndOriginToo:
+    """One client per transcribe call (SttService._build_client), so a run id minted here is enough."""
+
+    def test_the_identity_triple_and_published_origin_reach_the_default_headers(self):
+        from codemie.configs.config import config
+        from codemie.configs.llm_config import LLMModel
+        from codemie.enterprise.litellm.stt_client import get_litellm_stt_client
+        from codemie.core.constants import LLMProxyMode
+
+        model = LLMModel(base_name="custom-stt", deployment_name="custom-stt", enabled=True)
+        with (
+            patch.object(config, "LLM_PROXY_MODE", LLMProxyMode.lite_llm),
+            patch.object(config, "LITE_LLM_URL", "http://test:4000"),
+            patch.object(config, "LITE_LLM_APP_KEY", "test-key"),
+            patch("codemie.enterprise.litellm.dependencies.is_litellm_enabled", return_value=True),
+            patch("codemie.enterprise.litellm.dependencies.check_user_budget"),
+        ):
+            with spend_origin(TrafficOrigin.CLI):
+                client = get_litellm_stt_client(model, None, "alice@example.com", USER_ID)
+
+        payload = metadata_in(client.default_headers)
+        assert payload["codemie_user_id"] == USER_ID
+        assert payload["codemie_category"] == "platform"
+        assert payload["codemie_origin"] == "cli"
+
+
 class TestTheProxyNamesTheClientTypeRegardlessOfWhoPaid:
     """The category says which budget paid; the origin says what the request was for.
 

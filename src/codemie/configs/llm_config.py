@@ -74,6 +74,7 @@ class ModelType(str, Enum):
 
     CHAT = "chat"
     EMBEDDING = "embedding"
+    AUDIO_TRANSCRIPTION = "audio_transcription"
 
 
 class ModelConfigurationSection(BaseModel):
@@ -209,6 +210,21 @@ class LlmRouterOption(BaseModel):
     max_input_tokens: int | None = None
 
 
+class SttConfig(BaseModel):
+    """Per-model speech-to-text configuration, read from the model's LiteLLM model_info.
+
+    Set per STT model, since different providers behind the same deployment (for example a
+    custom provider model next to a plain Whisper model) need different languages and headers.
+    Header matching is case-insensitive; a trailing "*" matches a prefix (for example "x-provider-*").
+    """
+
+    default_language: str | None = None
+    forward_request_headers: list[str] = Field(default_factory=list)
+    response_headers: list[str] = Field(default_factory=list)
+    response_body_fields: list[str] = Field(default_factory=list)
+    request_timeout_seconds: float | None = Field(default=None, gt=0)
+
+
 class LLMModel(BaseModel):
     base_name: str
     deployment_name: str
@@ -236,6 +252,7 @@ class LLMModel(BaseModel):
     api_version: Optional[str] = None  # Azure OpenAI specific: overrides global OPENAI_API_VERSION when set
     # Set only when a premium_models budget is configured; True if base_name matches LITELLM_PREMIUM_MODELS_ALIASES
     is_premium: Optional[bool] = None
+    stt_config: SttConfig | None = None
 
     @model_validator(mode='after')
     def populate_default_field(self):
@@ -266,6 +283,7 @@ class LiteLLMModels(BaseModel):
 
     chat_models: list[LLMModel] = Field(default_factory=list)
     embedding_models: list[LLMModel] = Field(default_factory=list)
+    audio_transcription_models: list[LLMModel] = Field(default_factory=list)
 
 
 class LLMYamlSettings(BaseSettings):

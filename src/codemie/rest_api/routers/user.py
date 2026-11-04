@@ -43,6 +43,7 @@ from codemie.service.monitoring.conversation_monitoring_service import Conversat
 from codemie.service.assistant.assistant_user_interaction_service import assistant_user_interaction_service
 from codemie.service.skill_user_interaction_service import skill_user_interaction_service
 from codemie.service.security.logout_token_cleanup import remove_user_tokens_on_logout_async
+from codemie.service.llm_service.llm_service import llm_service
 from codemie.service.skill_service import SkillService
 
 conversation_monitoring_service = ConversationMonitoringService()
@@ -212,6 +213,14 @@ async def logout(request: Request) -> RedirectResponse:
     return response
 
 
+def _stt_supported(user: User) -> bool:
+    try:
+        return bool(llm_service.get_allowed_audio_transcription_models(user))
+    except Exception as exc:
+        logger.warning(f"STT model catalog lookup failed, falling back to STT_API_* settings: {type(exc).__name__}")
+        return bool(config.STT_API_KEY)
+
+
 @router.get(
     "/user/data",
     status_code=status.HTTP_200_OK,
@@ -228,7 +237,7 @@ def get_user_data(user: User = Depends(authenticate)):
 
     return {
         **user_data.dict(),
-        "stt_support": bool(config.STT_API_KEY),
+        "stt_support": _stt_supported(user),
     }
 
 

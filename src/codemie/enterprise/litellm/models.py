@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
-    from codemie.configs.llm_config import LLMModel
+    from codemie.configs.llm_config import LLMModel, ModelType, SttConfig
 
 
 class UserKeysSpending(BaseModel):
@@ -52,6 +52,20 @@ def _is_claude_family(provider_str: str, litellm_params: dict[str, Any], model_i
         for model_id in model_ids
         if isinstance(model_id, str)
     )
+
+
+def _parse_stt_config(raw: dict[str, Any] | None, model_name: str) -> "SttConfig | None":
+    from codemie.configs.llm_config import SttConfig
+
+    if not raw:
+        return None
+    try:
+        return SttConfig(**raw)
+    except Exception as exc:  # malformed data from the live proxy must not break the whole catalog fetch
+        from codemie.configs import logger
+
+        logger.warning(f"Invalid stt_config entry for model {model_name}: {exc}")
+        return None
 
 
 def map_litellm_to_llm_model(litellm_model: dict[str, Any]) -> "LLMModel":
@@ -170,6 +184,8 @@ def map_litellm_to_llm_model(litellm_model: dict[str, Any]) -> "LLMModel":
 
             logger.warning(f"Invalid litellm_router entry for model {model_name}: {exc}")
 
+    stt_config = _parse_stt_config(model_info.get("stt_config"), model_name)
+
     # Extract model properties
     multimodal = model_info.get("supports_vision", False)
     enabled = model_info.get("enabled", True) is True
@@ -202,7 +218,27 @@ def map_litellm_to_llm_model(litellm_model: dict[str, Any]) -> "LLMModel":
         claude_family=claude_family,
         switchyard=switchyard,
         litellm_router=litellm_router,
+        stt_config=stt_config,
     )
+
+
+_UNSUPPORTED_MODES = frozenset({"realtime"})
+
+
+def get_model_type(litellm_model: dict[str, Any]) -> ModelType | None:
+    """Return the ModelType of a raw LiteLLM model, or None for modes CodeMie cannot use (for example realtime)."""
+    from codemie.configs import logger
+    from codemie.configs.llm_config import ModelType
+
+    mode_str = litellm_model.get("model_info", {}).get("mode", ModelType.CHAT.value)
+    if mode_str in _UNSUPPORTED_MODES:
+        logger.info(f"Skipping model {litellm_model.get('model_name')}: mode '{mode_str}' is not supported")
+        return None
+    try:
+        return ModelType(mode_str)
+    except ValueError:
+        logger.warning(f"Unknown model mode '{mode_str}', defaulting to CHAT")
+        return ModelType.CHAT
 
 
 def get_user_allowed_models(user_id: str, user_applications: list[str]):
@@ -265,6 +301,12 @@ def get_user_allowed_models(user_id: str, user_applications: list[str]):
     # Map to LLMModel objects and deduplicate (core-dependent)
     chat_models = {}
     embedding_models = {}
+    audio_transcription_models = {}
+    buckets = {
+        ModelType.CHAT: chat_models,
+        ModelType.EMBEDDING: embedding_models,
+        ModelType.AUDIO_TRANSCRIPTION: audio_transcription_models,
+    }
 
     for litellm_model in raw_models:
         try:
@@ -272,18 +314,9 @@ def get_user_allowed_models(user_id: str, user_applications: list[str]):
             if not llm_model.enabled:
                 continue
 
-            mode_str = litellm_model.get("model_info", {}).get("mode", ModelType.CHAT.value)
-
-            try:
-                model_type = ModelType(mode_str)
-            except ValueError:
-                logger.warning(f"Unknown model mode '{mode_str}', defaulting to CHAT")
-                model_type = ModelType.CHAT
-
-            if model_type == ModelType.EMBEDDING:
-                embedding_models[llm_model.base_name] = llm_model
-            else:
-                chat_models[llm_model.base_name] = llm_model
+            model_type = get_model_type(litellm_model)
+            if model_type is not None:
+                buckets[model_type][llm_model.base_name] = llm_model
 
         except Exception as e:
             logger.error(f"Error mapping model {litellm_model.get('model_name')}: {e}")
@@ -292,15 +325,17 @@ def get_user_allowed_models(user_id: str, user_applications: list[str]):
     litellm_models = LiteLLMModels(
         chat_models=list(chat_models.values()),
         embedding_models=list(embedding_models.values()),
+        audio_transcription_models=list(audio_transcription_models.values()),
     )
 
-    if not litellm_models.chat_models:
-        logger.info(f"No chat models available for user {user_id}")
+    if not litellm_models.chat_models and not litellm_models.audio_transcription_models:
+        logger.info(f"No chat or audio transcription models available for user {user_id}")
         return None
 
     logger.info(
-        f"Fetched {len(litellm_models.chat_models)} chat models and "
-        f"{len(litellm_models.embedding_models)} embedding models for user {user_id}"
+        f"Fetched {len(litellm_models.chat_models)} chat models, "
+        f"{len(litellm_models.embedding_models)} embedding models and "
+        f"{len(litellm_models.audio_transcription_models)} audio transcription models for user {user_id}"
     )
 
     return litellm_models

@@ -277,6 +277,30 @@ async def test_get_profile(mock_authenticate, mock_user):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("api_key, expected", [("key", True), ("", False)])
+@patch("codemie.rest_api.routers.user.llm_service.get_allowed_audio_transcription_models")
+@patch("codemie.rest_api.routers.user.UserData.get_by_fields")
+@patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
+async def test_get_user_data_survives_a_failing_stt_catalog_lookup(
+    mock_authenticate, mock_get_by_fields, mock_stt_models, api_key, expected, mock_user, monkeypatch
+):
+    """The STT flag falls back to the STT_API_* settings when the catalog lookup fails."""
+    from codemie.configs import config
+
+    monkeypatch.setattr(config, "STT_API_KEY", api_key)
+    mock_authenticate.return_value = mock_user
+    mock_get_by_fields.return_value = UserData(user_id="user-123", sidebar_view="folders")
+    mock_stt_models.side_effect = RuntimeError("LiteLLM unreachable")
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.get("/v1/user/data", headers={"user-id": "user-123"})
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json()["stt_support"] is expected
+
+
+@pytest.mark.anyio
 @patch("codemie.rest_api.routers.user.UserData.get_by_fields")
 @patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
 async def test_get_user_data_existing(mock_authenticate, mock_get_by_fields, mock_user):

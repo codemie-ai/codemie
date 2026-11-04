@@ -15,6 +15,7 @@
 from fastapi import APIRouter, Depends
 
 from codemie.rest_api.routers.conversation import crud, deletion, folders, history, messages, retrieval, streaming
+from codemie.rest_api.routers.conversation.messages import _resolve_audio_filename
 from codemie.rest_api.security.authentication import authenticate
 
 
@@ -33,4 +34,4 @@ router.include_router(crud.router)
 router.include_router(folders.router)
 router.include_router(messages.router)
 
-__all__ = ["router"]
+__all__ = ["router", "_resolve_audio_filename"]

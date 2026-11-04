@@ -4630,10 +4630,43 @@
       },
       "Body_recognize_speech_v1_speech_recognition_post": {
         "properties": {
+          "conversation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          },
           "file": {
             "contentMediaType": "application/octet-stream",
             "title": "File",
             "type": "string"
+          },
+          "language": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Language"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
           }
         },
         "required": [
@@ -14912,6 +14945,16 @@
               }
             ],
             "title": "React Agent"
+          },
+          "stt_config": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SttConfig"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "supports_image_generation": {
             "default": false,
@@ -27819,6 +27862,57 @@
           }
         },
         "title": "StringList",
+        "type": "object"
+      },
+      "SttConfig": {
+        "description": "Per-model speech-to-text configuration, read from the model's LiteLLM model_info.\n\nSet per STT model, since different providers behind the same deployment (for example a\ncustom provider model next to a plain Whisper model) need different languages and headers.\nHeader matching is case-insensitive; a trailing \"*\" matches a prefix (for example \"x-provider-*\").",
+        "properties": {
+          "default_language": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Language"
+          },
+          "forward_request_headers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Forward Request Headers",
+            "type": "array"
+          },
+          "request_timeout_seconds": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Timeout Seconds"
+          },
+          "response_body_fields": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Response Body Fields",
+            "type": "array"
+          },
+          "response_headers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Response Headers",
+            "type": "array"
+          }
+        },
+        "title": "SttConfig",
         "type": "object"
       },
       "SubAssistantPublishSettings": {
@@ -61297,6 +61391,40 @@
         ]
       }
     },
+    "/v1/audio_transcription_models": {
+      "get": {
+        "description": "Return the speech-to-text models available to the authenticated user.\n\nThe model configured through the STT_API_* variables comes first, followed by the LiteLLM\nmodels with mode=audio_transcription.",
+        "operationId": "get_audio_transcription_models_v1_audio_transcription_models_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/LLMModel"
+                  },
+                  "title": "Response Get Audio Transcription Models V1 Audio Transcription Models Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Get Audio Transcription Models",
+        "tags": [
+          "Available LLM Models"
+        ]
+      }
+    },
     "/v1/auth/login/{port}": {
       "get": {
         "operationId": "login_v1_auth_login__port__get",
@@ -76262,7 +76390,7 @@
     },
     "/v1/speech-recognition": {
       "post": {
-        "description": "Speech to text from audio file",
+        "description": "Speech to text from audio file.\n\n`model` is the base_name of an STT model from GET /v1/audio_transcription_models (default: the first allowed model).\n`language` is an optional ISO-639-1 hint (default: the `default_language` of the model's `stt_config`, if any).\n`conversation_id` is optional; it groups the STT trace with the other traces of that conversation.\n\nThe resolved model's `stt_config` (in the LLM config) controls which request\nheaders reach the provider, and which provider response headers/fields come back as\nresponse headers and in `data`.",
         "operationId": "recognize_speech_v1_speech_recognition_post",
         "requestBody": {
           "content": {
@@ -76279,7 +76407,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/BaseResponse"
+                  "$ref": "#/components/schemas/BaseResponseWithData"
                 }
               }
             },

@@ -15,16 +15,18 @@
 from datetime import datetime
 import io
 import json
+import os
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, status, UploadFile, Query
+from fastapi import APIRouter, Depends, status, UploadFile, Query, Form, Request, Response
 from fastapi.encoders import jsonable_encoder
 from starlette.responses import StreamingResponse
 
 from codemie.core.ability import Ability, Action
-from codemie.core.exceptions import ExtendedHTTPException
+from codemie.core.exceptions import ExtendedHTTPException, UnknownSttModelError
 from codemie.core.models import (
     BaseResponse,
+    BaseResponseWithData,
 )
 from codemie.rest_api.models.assistant import Assistant
 from codemie.core.workflow_models.workflow_execution import UpdateWorkflowExecutionOutputRequest
@@ -282,24 +284,69 @@ def update_conversation_message_output(
     return BaseResponse(message="Conversation message output updated successfully")
 
 
-@router.post("/speech-recognition", response_model=BaseResponse, dependencies=[Depends(authenticate)])
+_SUPPORTED_AUDIO_EXTENSIONS = {".flac", ".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".ogg", ".wav", ".webm"}
+_AUDIO_EXTENSION_BY_CONTENT_TYPE = {
+    "audio/webm": ".webm",
+    "audio/ogg": ".ogg",
+    "audio/mpeg": ".mp3",
+    "audio/mp3": ".mp3",
+    "audio/mp4": ".m4a",
+    "audio/x-m4a": ".m4a",
+    "audio/flac": ".flac",
+    "audio/wav": ".wav",
+    "audio/x-wav": ".wav",
+}
+
+
+def _resolve_audio_filename(filename: str | None, content_type: str | None) -> str:
+    """Name the upload so the STT backend detects the real audio format; default to wav."""
+    if filename and os.path.splitext(filename)[1].lower() in _SUPPORTED_AUDIO_EXTENSIONS:
+        return filename
+    mime = (content_type or "").split(";")[0].strip().lower()
+    return f"audio{_AUDIO_EXTENSION_BY_CONTENT_TYPE.get(mime, '.wav')}"
+
+
+@router.post("/speech-recognition", response_model=BaseResponseWithData)
 def recognize_speech(
+    request: Request,
+    response: Response,
     file: UploadFile,
+    model: str | None = Form(default=None),
+    language: str | None = Form(default=None),
+    conversation_id: str | None = Form(default=None),
+    user: User = Depends(authenticate),
 ) -> BaseResponse:
     """
-    Speech to text from audio file
+    Speech to text from audio file.
+
+    `model` is the base_name of an STT model from GET /v1/audio_transcription_models (default: the first allowed model).
+    `language` is an optional ISO-639-1 hint (default: the `default_language` of the model's `stt_config`, if any).
+    `conversation_id` is optional; it groups the STT trace with the other traces of that conversation.
+
+    The resolved model's `stt_config` (in the LLM config) controls which request
+    headers reach the provider, and which provider response headers/fields come back as
+    response headers and in `data`.
     """
     content = file.file.read()
     audio_file = io.BytesIO(content)
-    audio_file.name = 'audio.wav'
+    audio_file.name = _resolve_audio_filename(file.filename, file.content_type)
     try:
-        result = ConversationService.recognize_speech(audio_file)
-    except ValueError:
+        result = ConversationService.recognize_speech(
+            audio_file,
+            user=user,
+            model=model,
+            language=language,
+            forward_headers=request.headers,
+            conversation_id=conversation_id,
+        )
+    except UnknownSttModelError as e:
         raise ExtendedHTTPException(
             code=status.HTTP_400_BAD_REQUEST,
             message="Couldn't recognize speech",
-            details="",
-            help="",
+            details=str(e),
+            help="Pick a model from GET /v1/audio_transcription_models.",
         )
 
-    return BaseResponse(message=result)
+    for name, value in result.headers.items():
+        response.headers[name] = value
+    return BaseResponseWithData(message=result.text, data=result.metadata or None)

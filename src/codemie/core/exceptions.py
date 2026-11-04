@@ -56,6 +56,10 @@ class NotFoundException(Exception):
     """Raised when a requested resource does not exist."""
 
 
+class UnknownSttModelError(ValueError):
+    """Raised when a requested speech-to-text model is unknown or not allowed for the user."""
+
+
 class ExtendedHTTPException(Exception):
     """
     A custom exception class that extends the built-in Exception class to provide more detailed HTTP error information.

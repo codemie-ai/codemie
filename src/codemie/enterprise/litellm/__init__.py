@@ -68,6 +68,9 @@ from .llm_factory import (
     get_litellm_embedding_model,
 )
 
+# STT client (from stt_client.py)
+from .stt_client import get_litellm_stt_client
+
 # Proxy Router (from proxy_router.py)
 from .proxy_router import proxy_router, register_proxy_endpoints
 
@@ -123,6 +126,7 @@ __all__ = [
     "generate_litellm_headers_from_context",
     "get_litellm_chat_model",
     "get_litellm_embedding_model",
+    "get_litellm_stt_client",
     # Proxy Router
     "proxy_router",
     "register_proxy_endpoints",

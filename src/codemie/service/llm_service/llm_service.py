@@ -16,6 +16,12 @@ from typing import TYPE_CHECKING, List, Literal, Optional
 
 from codemie.configs import config, logger
 from codemie.configs.customer_config import customer_config
+from codemie.service.llm_service.stt_models import (
+    LegacySttModel,
+    build_legacy_stt_model,
+    merge_stt_models,
+    pick_stt_model,
+)
 from codemie.configs.llm_config import (
     CostConfig,
     LiteLLMModels,
@@ -45,6 +51,7 @@ class LLMService:
         self.llm_config = llm_config
         self._default_litellm_models: List[LLMModel] = []
         self._default_litellm_embeddings: List[LLMModel] = []
+        self._default_litellm_audio_transcription_models: list[LLMModel] = []
 
     def get_model_info(self, models: List[LLMModel]) -> List[LLMModel]:
         """Retrieve all labels and base names from models."""
@@ -79,6 +86,19 @@ class LLMService:
 
         # Otherwise, use traditional YAML-based embedding models
         return self.get_model_info(self.llm_config.embeddings_models)
+
+    def get_all_audio_transcription_model_info(self) -> list[LLMModel]:
+        """Speech-to-text models from the LiteLLM catalog (model_info.mode=audio_transcription)."""
+        if config.LLM_PROXY_ENABLED:
+            return self._default_litellm_audio_transcription_models
+        return []
+
+    def get_legacy_stt_model(self) -> LLMModel | None:
+        """The single STT model configured through the STT_API_* environment variables, if any."""
+        return build_legacy_stt_model()
+
+    def is_legacy_stt_model(self, model: LLMModel) -> bool:
+        return isinstance(model, LegacySttModel)
 
     def get_llm_routers(self) -> list[LLMRouter]:
         """Return the effective Switchyard router catalog.
@@ -716,10 +736,12 @@ class LLMService:
         # Store the models
         self._default_litellm_models = user_models.chat_models
         self._default_litellm_embeddings = user_models.embedding_models
+        self._default_litellm_audio_transcription_models = user_models.audio_transcription_models
 
         logger.info(
-            f"Initialized {len(self._default_litellm_models)} unique LiteLLM chat models "
-            f"and {len(self._default_litellm_embeddings)} unique LiteLLM embedding models"
+            f"Initialized {len(self._default_litellm_models)} unique LiteLLM chat models, "
+            f"{len(self._default_litellm_embeddings)} unique LiteLLM embedding models "
+            f"and {len(self._default_litellm_audio_transcription_models)} unique LiteLLM STT models"
         )
 
     @property
@@ -731,6 +753,11 @@ class LLMService:
     def default_litellm_embeddings(self) -> List[LLMModel]:
         """Get default LiteLLM embedding models initialized on startup"""
         return self._default_litellm_embeddings
+
+    @property
+    def default_litellm_audio_transcription_models(self) -> list[LLMModel]:
+        """Get default LiteLLM speech-to-text models initialized on startup"""
+        return self._default_litellm_audio_transcription_models
 
     def get_allowed_models(self, user: 'User') -> LiteLLMModels:
         """
@@ -748,13 +775,17 @@ class LLMService:
         # If LiteLLM proxy is not enabled, return all enabled models from config
         if not config.LLM_PROXY_ENABLED:
             return LiteLLMModels(
-                chat_models=self.get_all_llm_model_info(), embedding_models=self.get_all_embedding_model_info()
+                chat_models=self.get_all_llm_model_info(),
+                embedding_models=self.get_all_embedding_model_info(),
+                audio_transcription_models=self.get_all_audio_transcription_model_info(),
             )
 
         # If user is not external, return all enabled models (no restrictions)
         if not user.is_external_user:
             return LiteLLMModels(
-                chat_models=self.get_all_llm_model_info(), embedding_models=self.get_all_embedding_model_info()
+                chat_models=self.get_all_llm_model_info(),
+                embedding_models=self.get_all_embedding_model_info(),
+                audio_transcription_models=self.get_all_audio_transcription_model_info(),
             )
 
         # External user - check for LiteLLM integration
@@ -762,17 +793,29 @@ class LLMService:
 
         user_models = get_user_allowed_models(user_id=user.id, user_applications=user.project_names)
 
-        if not user_models or not user_models.chat_models:
+        if not user_models or not (user_models.chat_models or user_models.audio_transcription_models):
             # No user-specific integration - return default LiteLLM models
             logger.info(f"No LiteLLM integration for user {user.id}, using default models")
             return LiteLLMModels(
-                chat_models=self.get_all_llm_model_info(), embedding_models=self.get_all_embedding_model_info()
+                chat_models=self.get_all_llm_model_info(),
+                embedding_models=self.get_all_embedding_model_info(),
+                audio_transcription_models=self.get_all_audio_transcription_model_info(),
+            )
+
+        if not user_models.chat_models:
+            # Transcription-only integration: keep the default chat catalog, use the user's own transcription models
+            logger.info(f"LiteLLM integration of user {user.id} has only audio transcription models")
+            return LiteLLMModels(
+                chat_models=self.get_all_llm_model_info(),
+                embedding_models=user_models.embedding_models or self.get_all_embedding_model_info(),
+                audio_transcription_models=user_models.audio_transcription_models,
             )
 
         # Return user-specific models
         logger.info(
             f"Returning user-specific LiteLLM models for {user.id}: "
-            f"{len(user_models.chat_models)} chat, {len(user_models.embedding_models)} embedding"
+            f"{len(user_models.chat_models)} chat, {len(user_models.embedding_models)} embedding, "
+            f"{len(user_models.audio_transcription_models)} audio transcription"
         )
         return user_models
 
@@ -961,6 +1004,25 @@ class LLMService:
         """
         user_models = self.get_allowed_models(user)
         return self._filter_models_by_visibility(user_models.embedding_models, include_all)
+
+    def get_allowed_audio_transcription_models(self, user: 'User') -> list[LLMModel]:
+        """STT models allowed for the user: the env-configured model and the LiteLLM ones (see merge_stt_models)."""
+        from codemie.core.constants import LLMProxyMode
+
+        litellm_models = (
+            self.get_allowed_models(user).audio_transcription_models
+            if LLMProxyMode.lite_llm == config.LLM_PROXY_MODE
+            else []
+        )
+        return merge_stt_models(build_legacy_stt_model(), litellm_models)
+
+    def resolve_stt_model(self, user: 'User', model_name: str | None = None) -> LLMModel | None:
+        """Pick the STT model for a request: the named one, or the first allowed model.
+
+        Raises:
+            UnknownSttModelError: if a name is given but is not among the models allowed for the user.
+        """
+        return pick_stt_model(self.get_allowed_audio_transcription_models(user), model_name)
 
 
 llm_service = LLMService(llm_config)
