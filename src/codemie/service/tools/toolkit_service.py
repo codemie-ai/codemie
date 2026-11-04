@@ -45,11 +45,10 @@ from codemie.configs.customer_config import customer_config
 from codemie.configs.logger import logger
 from codemie.core.constants import CodeIndexType, ToolType
 from codemie.core.dependecies import get_llm_by_credentials
-from codemie.core.exceptions import ModelNotWhitelistedException
-from codemie.core.models import Application, AssistantChatRequest, CodeFields, IdeChatRequest, ToolConfig
+from codemie.core.models import AssistantChatRequest, CodeFields, IdeChatRequest, ToolConfig
 from codemie.core.thread import MessageQueue
 from codemie.service.file_service.markdown_cache_service import MarkdownCacheService
-from codemie.service.llm.model_availability_service import ModelAvailabilityService
+from codemie.service.llm.model_availability_service import ProjectModelPolicy
 from codemie.service.provider.provider_header_context import ProviderHeaderContext
 from codemie.core.utils import build_unique_file_objects_list
 from codemie.rest_api.models.assistant import (
@@ -592,7 +591,7 @@ class ToolkitService:
         # File tools
         file_analysis_configured = any(tk.toolkit == ToolSet.FILE_ANALYSIS for tk in selected_toolkits)
         if file_objects or file_analysis_configured:
-            tools.extend(cls.add_file_tools(assistant, file_objects, request_uuid))
+            tools.extend(cls.add_file_tools(assistant, file_objects, request_uuid, llm_model=llm_model))
             logger.debug(f"Initialized file tools for assistant `{assistant.name}`. Total tools: {len(tools)}")
 
         tools.extend(
@@ -862,14 +861,12 @@ class ToolkitService:
         """Raise ModelNotWhitelistedException when the project's whitelist excludes the model.
 
         No-op without a project, with the override off, or when the project sets no whitelist. An empty
-        whitelist denies every model. The raw field is read because get_project_models() turns "no whitelist"
-        into an empty list, which is indistinguishable from deny-all.
+        whitelist denies every model. A missing project fails closed. Only membership is checked, so a
+        whitelist without a default_model does not fail here.
         """
-        if not project_name or not customer_config.is_feature_enabled("projectModelOverride"):
+        if not project_name:
             return
-        allowed_models = Application.get_by_id(project_name).allowed_models
-        if allowed_models is not None and not ModelAvailabilityService.is_model_allowed([name], allowed_models):
-            raise ModelNotWhitelistedException(name, project_name)
+        ProjectModelPolicy.for_project(project_name, strict=True, require_default=False).check(name)
 
     @staticmethod
     def _inject_runtime_dependencies(stored_config: Any, file_objects: Optional[List[FileObject]]) -> None:
@@ -1300,19 +1297,22 @@ class ToolkitService:
         return IdeToolkit(tool_definitions=filtered_tools, request_id=request.ide_request_id).get_tools()
 
     @classmethod
-    def add_file_tools(cls, assistant: Assistant, file_objects: list[FileObject], request_uuid: str):
+    def add_file_tools(
+        cls, assistant: Assistant, file_objects: list[FileObject], request_uuid: str, llm_model: str | None = None
+    ):
         """Add file processing tools for images and documents.
 
         Args:
             assistant: The assistant configuration
             file_objects: List of file objects to process
             request_uuid: Unique request identifier
+            llm_model: The model the agent runs on; defaults to the assistant's own model
 
         Returns:
             List of file analysis tools
         """
         logger.debug(f"Adding file tools for file_objects: {file_objects}")
-        llm, multimodal_llm = cls._initialize_llm_for_files(assistant, request_uuid)
+        llm, multimodal_llm = cls._initialize_llm_for_files(assistant, request_uuid, llm_model=llm_model)
 
         # Separate files by type
         non_image_files = cls._get_non_image_files(file_objects)
@@ -1345,17 +1345,18 @@ class ToolkitService:
         return tools
 
     @classmethod
-    def _initialize_llm_for_files(cls, assistant: Assistant, request_uuid: str):
+    def _initialize_llm_for_files(cls, assistant: Assistant, request_uuid: str, llm_model: str | None = None):
         """Initialize LLM for file processing.
 
         Args:
             assistant: The assistant configuration
             request_uuid: Unique request identifier
+            llm_model: The model the agent runs on; defaults to the assistant's own model
 
         Returns:
             Tuple of (llm, is_multimodal_llm)
         """
-        llm_deployment_name = llm_service.get_llm_deployment_name(assistant.llm_model_type)
+        llm_deployment_name = llm_service.get_llm_deployment_name(llm_model or assistant.llm_model_type)
         llm = None
         multimodal_llm = True
 

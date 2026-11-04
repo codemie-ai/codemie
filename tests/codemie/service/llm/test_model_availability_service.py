@@ -20,10 +20,7 @@ from codemie.core.exceptions import (
     NoDefaultModelException,
     NotFoundException,
 )
-from codemie.service.llm.model_availability_service import (
-    ModelAvailabilityService,
-    ProjectModelConfig,
-)
+from codemie.service.llm.model_availability_service import ModelAvailabilityService
 
 
 class TestModelAvailabilityService:
@@ -195,49 +192,6 @@ class TestModelAvailabilityService:
         with pytest.raises(NotFoundException):
             ModelAvailabilityService.resolve_model_for_execution("gpt-4", "nonexistent")
 
-    # ===== get_project_models tests =====
-
-    @patch("codemie.service.llm.model_availability_service.Application.get_by_id")
-    def test_get_project_models_success(self, mock_get, mock_app):
-        """Should return ProjectModelConfig with allowed_models and default_model."""
-        mock_get.return_value = mock_app
-
-        config = ModelAvailabilityService.get_project_models("my-project")
-
-        assert isinstance(config, ProjectModelConfig)
-        assert config.allowed_models == ["gpt-4", "claude-opus", "claude-sonnet"]
-        assert config.default_model == "gpt-4"
-
-    @patch("codemie.service.llm.model_availability_service.Application.get_by_id")
-    def test_get_project_models_no_default(self, mock_get, mock_no_default_app):
-        """Missing default model should raise NoDefaultModelException."""
-        mock_get.return_value = mock_no_default_app
-
-        with pytest.raises(NoDefaultModelException):
-            ModelAvailabilityService.get_project_models("my-project")
-
-    @patch("codemie.service.llm.model_availability_service.Application.get_by_id")
-    def test_get_project_models_project_not_found(self, mock_get):
-        """Project not found should raise NotFoundException."""
-        mock_get.side_effect = KeyError("not found")
-
-        with pytest.raises(NotFoundException):
-            ModelAvailabilityService.get_project_models("nonexistent")
-
-    @patch("codemie.service.llm.model_availability_service.Application.get_by_id")
-    def test_get_project_models_unconfigured_project_does_not_raise(self, mock_get):
-        """Project with no whitelist configured (allowed_models is None) should not
-        require a default_model, for backward compatibility with legacy projects."""
-        app = MagicMock()
-        app.allowed_models = None
-        app.default_model = None
-        mock_get.return_value = app
-
-        config = ModelAvailabilityService.get_project_models("my-project")
-
-        assert config.allowed_models == []
-        assert config.default_model == ""
-
     # ===== Edge cases =====
 
     @patch(
@@ -277,7 +231,9 @@ class TestModelAvailabilityService:
 
 
 @pytest.mark.parametrize("requested_model", [None, ""])
-@pytest.mark.parametrize("allowed_models", [None, ["project-default", "allowed"]])
+@pytest.mark.parametrize(
+    "allowed_models", [None, ["project-default", "allowed"], ["project-default", "global-default"]]
+)
 def test_unset_model_selects_project_default(requested_model, allowed_models):
     app = MagicMock(allowed_models=allowed_models, default_model="project-default")
     with (
@@ -290,6 +246,20 @@ def test_unset_model_selects_project_default(requested_model, allowed_models):
         assert ModelAvailabilityService.resolve_model_for_execution(
             requested_model, "project", fallback_model="global-default"
         ) == ("project-default", False)
+
+
+def test_blocked_model_selects_project_default_over_whitelisted_fallback():
+    app = MagicMock(allowed_models=["project-default", "global-default"], default_model="project-default")
+    with (
+        patch(
+            "codemie.service.llm.model_availability_service.customer_config",
+            is_feature_enabled=MagicMock(return_value=True),
+        ),
+        patch("codemie.service.llm.model_availability_service.Application.get_by_id", return_value=app),
+    ):
+        assert ModelAvailabilityService.resolve_model_for_execution(
+            "blocked", "project", fallback_model="global-default"
+        ) == ("project-default", True)
 
 
 @pytest.mark.parametrize(
@@ -343,6 +313,27 @@ def test_unset_model_does_not_bypass_invalid_project_configuration(allowed_model
         pytest.raises(error),
     ):
         ModelAvailabilityService.resolve_model_for_execution(None, "project", fallback_model="global-default")
+
+
+@pytest.mark.parametrize(
+    "requested_model, expected",
+    [("picked-model", ("picked-model", False)), (None, ("global-default", False))],
+)
+def test_workflow_without_project_is_unrestricted(requested_model, expected):
+    """A workflow with no project name is unrestricted: it keeps its pick or the fallback and never looks a project up."""
+    with (
+        patch(
+            "codemie.service.llm.model_availability_service.customer_config",
+            is_feature_enabled=MagicMock(return_value=True),
+        ),
+        patch("codemie.service.llm.model_availability_service.Application.get_by_id") as get_by_id,
+    ):
+        resolved = ModelAvailabilityService.resolve_model_for_execution(
+            requested_model, None, fallback_model="global-default"
+        )
+
+    assert resolved == expected
+    get_by_id.assert_not_called()
 
 
 class TestModelAvailabilityMetrics:
@@ -420,3 +411,19 @@ class TestModelAvailabilityMetrics:
             ModelAvailabilityService.resolve_model_for_execution("gpt-4", "my-project")
 
         mock_send_metric.assert_not_called()
+
+
+def _flag_on():
+    return patch(
+        "codemie.service.llm.model_availability_service.customer_config",
+        is_feature_enabled=MagicMock(return_value=True),
+    )
+
+
+def test_validate_asset_creation_passes_when_whitelist_unset_but_default_set():
+    app = MagicMock(allowed_models=None, default_model="project-default")
+    with (
+        _flag_on(),
+        patch("codemie.service.llm.model_availability_service.Application.get_by_id", return_value=app),
+    ):
+        ModelAvailabilityService.validate_model_for_asset_creation("any-model", "project")

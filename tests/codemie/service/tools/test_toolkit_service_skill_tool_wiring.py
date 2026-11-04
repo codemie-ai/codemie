@@ -73,3 +73,19 @@ def test_get_tools_passes_the_conversation_id_to_the_skill_tool(request_obj, exp
         ToolkitService.get_tools(_assistant(), request_obj, _user(), "test-model", "uuid")
 
     assert create_skill_tool.call_args.kwargs["conversation_id"] == expected
+
+
+def test_get_tools_hands_its_model_to_the_file_tools():
+    """File tools run on the model get_tools was given (build_agent's resolved model), not the assistant's own."""
+    with (
+        patch.object(ToolkitService, "add_tools_with_creds", return_value=[]),
+        patch.object(ToolkitService, "add_context_tools", return_value=[]),
+        patch.object(ToolkitService, "add_file_tools", return_value=[]) as add_file_tools,
+        patch.object(module, "create_skill_tool_if_needed", return_value=None),
+        patch.object(module, "create_skill_companion_file_tool_if_needed", return_value=None),
+    ):
+        ToolkitService.get_tools(
+            _assistant(), _request("c1"), _user(), "resolved-model", "uuid", file_objects=[object()]
+        )
+
+    assert add_file_tools.call_args.kwargs["llm_model"] == "resolved-model"

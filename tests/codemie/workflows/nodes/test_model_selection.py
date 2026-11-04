@@ -35,6 +35,23 @@ from codemie.workflows.nodes.summarize_conversation_node import SummarizeConvers
         (None, False, None, "project-default", "project-default", False),
         (None, False, None, None, None, False),
         (None, True, ["project-default"], "project-default", None, False),
+        # The node's legacy fallback is whitelisted: the project default still wins.
+        (
+            None,
+            False,
+            ["project-default", "global-default", "gpt-3.5-turbo"],
+            "project-default",
+            "project-default",
+            False,
+        ),
+        (
+            "blocked",
+            False,
+            ["project-default", "global-default", "gpt-3.5-turbo"],
+            "project-default",
+            "project-default",
+            True,
+        ),
     ],
 )
 def test_workflow_node_passes_resolved_model_to_llm(

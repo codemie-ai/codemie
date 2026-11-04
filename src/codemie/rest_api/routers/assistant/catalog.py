@@ -31,7 +31,7 @@ from codemie.rest_api.models.assistant import (
     ToolKitDetails,
     AssistantSortBy,
 )
-from codemie.service.llm.model_availability_service import ModelAvailabilityService
+from codemie.service.llm.model_availability_service import PolicyMode, ProjectModelPolicy
 from codemie.rest_api.models.index import SortOrder
 from codemie.rest_api.models.prebuilt_assistants import PrebuiltAssistant
 from codemie.rest_api.routers.assistant._shared import (
@@ -189,9 +189,14 @@ def _get_skills_data(assistant: Assistant, user: User) -> list[dict]:
 def _resolve_effective_llm_model(assistant: Assistant, response_data: dict) -> tuple[str, str]:
     """Resolve the effective LLM model for an assistant, honoring project restrictions."""
     effective_llm_model = assistant.llm_model_type
-    picked, overridden = ModelAvailabilityService.resolve_requested_model(
-        assistant.project, effective_llm_model, is_global=assistant.is_global
-    )
+    policy = ProjectModelPolicy.for_project(assistant.project, is_global=assistant.is_global)
+    if policy.mode != PolicyMode.WHITELIST:
+        # Unrestricted, or deny-all: display-only, so show the assistant's own model with no marker.
+        return effective_llm_model, "assistant"
+
+    # Display-only: no execution falls back here, so the substitution is not logged or counted.
+    picked = policy.choose([effective_llm_model], context="assistant_detail", report=False)
+    overridden = picked != effective_llm_model
     if not overridden:
         return effective_llm_model, "assistant"
 

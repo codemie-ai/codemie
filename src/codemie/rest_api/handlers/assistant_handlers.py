@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from functools import partial
 from time import time
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING, Any, List
 
 if TYPE_CHECKING:
     from codemie.rest_api.models.assistant import ToolCallResumeRequest
@@ -70,6 +70,7 @@ from codemie.rest_api.a2a.types import (
     get_jsonrpc_url,
 )
 from codemie.rest_api.a2a.utils import convert_to_task_request, convert_to_base_model_response
+from codemie.rest_api.handlers.execution_model import RequestExecutionModel
 from codemie.rest_api.models.assistant import Assistant, AssistantType
 from codemie.rest_api.models.base import ConversationStatus
 from codemie.rest_api.models.conversation import Conversation
@@ -123,6 +124,7 @@ class AssistantRequestHandler(ABC):
         self.request_uuid = request_uuid
         self.background_tasks: BackgroundTasks | None = None
         self.client_source = get_client_source()
+        self._execution_model = RequestExecutionModel(assistant)
 
     @abstractmethod
     def process_request(
@@ -405,6 +407,16 @@ class AssistantRequestHandler(ABC):
 
         return tool_names
 
+    def _build_agent(self, **kwargs: Any) -> Any:
+        """Build the agent and record the model it runs on for the saved turn and LLM context."""
+        agent = AssistantService.build_agent(**kwargs)
+        self._execution_model.record_agent(agent)
+        return agent
+
+    def _execution_llm_model(self, request: AssistantChatRequest) -> str | None:
+        """The model this request runs on (see RequestExecutionModel)."""
+        return self._execution_model.for_request(request)
+
     def _resolve_history_projection_mode(self, request: AssistantChatRequest) -> str:
         """Select the safest replay mode for the active assistant/model."""
         if BedrockOrchestratorService.is_bedrock_assistant(self.assistant):
@@ -414,7 +426,7 @@ class AssistantRequestHandler(ABC):
             )
             return PLAIN_CHAT_MODE
 
-        llm_model = request.llm_model or self.assistant.llm_model_type
+        llm_model = self._execution_llm_model(request)
         if llm_model in llm_service.get_react_llms():
             logger.debug(
                 f"Selected conversation replay mode. AssistantId={self.assistant.id}, "
@@ -451,7 +463,8 @@ class AssistantRequestHandler(ABC):
         tokens_usage = (summary.tokens_usage if summary else None) or TokensUsage(
             input_tokens=0, output_tokens=0, money_spent=0
         )
-        served_model = (tokens_usage.routing.routed_model if tokens_usage.routing else None) or data.request.llm_model
+        execution_model = self._execution_llm_model(data.request)
+        served_model = (tokens_usage.routing.routed_model if tokens_usage.routing else None) or execution_model
         set_llm_context(self.assistant, None, self.user, served_model)
         ConversationService.upsert_chat_history(
             UpsertChatHistoryParams(
@@ -470,6 +483,7 @@ class AssistantRequestHandler(ABC):
                 background_tasks=self.background_tasks,
                 in_progress=data.in_progress,
                 client_source=self.client_source,
+                llm_model=execution_model,
             )
         )
         if not data.in_progress:
@@ -660,7 +674,7 @@ class StandardAssistantHandler(AssistantRequestHandler):
             # Set cache control flag for this request
             set_disable_prompt_cache(request.disable_cache or False)
 
-            agent = AssistantService.build_agent(
+            agent = self._build_agent(
                 assistant=self.assistant,
                 request=request,
                 user=self.user,
@@ -1149,7 +1163,7 @@ class StandardAssistantHandler(AssistantRequestHandler):
         # Set cache control flag for this request
         set_disable_prompt_cache(request.disable_cache or False)
 
-        agent = AssistantService.build_agent(
+        agent = self._build_agent(
             assistant=self.assistant,
             request=request,
             user=self.user,
@@ -1210,7 +1224,7 @@ class StandardAssistantHandler(AssistantRequestHandler):
         # Set cache control flag for this request
         set_disable_prompt_cache(request.disable_cache or False)
 
-        agent = AssistantService.build_agent(
+        agent = self._build_agent(
             assistant=self.assistant,
             request=request,
             user=self.user,
@@ -1311,7 +1325,7 @@ class StandardAssistantHandler(AssistantRequestHandler):
 
         chat_request.mark_history_variant_persisted()
 
-        agent = AssistantService.build_agent(
+        agent = self._build_agent(
             assistant=self.assistant,
             request=chat_request,
             user=self.user,

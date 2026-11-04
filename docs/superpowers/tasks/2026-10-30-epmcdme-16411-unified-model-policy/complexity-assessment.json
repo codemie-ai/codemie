@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "task": "Consolidate five divergent project-model whitelist checks into one ProjectModelPolicy, resolve each assistant's model once in build_agent (user pick -> own model -> project default -> first allowed) without mutating request/assistant inputs, build supervisor subagent descriptions from built executors, and add parent->child chain and policy table tests.",
+  "generated": "2026-10-30T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 22,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "New ProjectModelPolicy abstraction replaces ModelAvailabilityService.resolve_requested_model / resolve_model_for_execution / validate_model_for_asset_creation, dependecies.enforce_allowed_model and ToolkitService._ensure_project_allows_model; reshapes AssistantService.build_agent, assistant_engine_builder (create_subagent_executors, builtin clone, descriptions), AssistantFactory, _ask.py pre-resolution, catalog/management routers, plus AIToolsAgent and workflow base_node consumers. Base L (3-4 components with shared utilities) bumped to XL for touching the core shared policy used by every agent builder." },
+    { "dimension": "requirements_clarity", "reason": "Reviewer gave a concrete 5-point fix and the selection order already exists in pick_allowed_model, but several semantics are open: None-with-default_model handling differs per site, [] is unrestricted in resolve_requested_model but deny-all elsewhere (changing it alters catalog response), whether AIToolsAgent._resolve_llm_model and get_llm_by_credentials re-resolution stay, conversation-override ordering, and whether build_agent_for_workflow gets enforcement. 'Keep current handling' must be pinned per call site." },
+    { "dimension": "technical_risk", "reason": "Closest pattern is pick_allowed_model plus enforce_allowed_model unit tests, which cover selection order but not None/[]/missing-default unification or the non-mutating contract. Seven build_agent callers (handlers, hedged, A2A, health check) rely on current mutation; model_fields_set side effect on request.llm_model; existing tests assert in-place mutation and patch core.dependecies paths. Model whitelist is access enforcement (authz red flag). Mitigated by projectModelOverride flag being off by default. Existing parameterized tests for enforce_allowed_model cover the table-test pattern, so no edge-case bump." },
+    { "dimension": "file_change_estimate", "reason": "About 10-12 source files modified (model_availability_service, dependecies, toolkit_service, assistant_service, assistant_engine_builder, assistant_factory, _ask.py, catalog.py, management.py, assistant_agent, base_node, llm_service) plus a large share of ~24 test files referencing the policy surface, and 1-3 new files (policy module or tests for chain/table). Spans service, core, router, agents and tests directories." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L to XL: touches core shared utilities (project model policy consumed by root, sub-assistants, builtin subagents, agents and workflows); the 'affects multiple workflows or agents' flag describes the same fact and was not applied a second time to avoid inflating to XXL (cross-system), which a single-repo change is not",
+    "Technical Risk bumped from M to L: affects authorization-like enforcement (project model whitelist access policy)"
+  ],
+  "split_recommendation": null
+}

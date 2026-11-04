@@ -92,7 +92,7 @@ def _require_tool_confirmation(policy: ToolCallPolicy) -> bool:
             llm_model="gpt-4",
             smart_tool_selection_enabled=False,
             allow_tool_confirmation=True,
-            create_subagent_executors=lambda **_: [],
+            create_subagent_executors=lambda **_: ([], set()),
             get_subagent_descriptions=lambda a, u: {},
         )
     return bool(agent_kwargs["require_tool_confirmation"])

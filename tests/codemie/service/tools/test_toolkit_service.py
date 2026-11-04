@@ -22,7 +22,7 @@ from codemie_tools.base.models import Tool, ToolKit, ToolSet
 from langchain_core.tools import BaseTool, ToolException
 
 from codemie.core.constants import CodeIndexType, ToolType
-from codemie.core.exceptions import ModelNotWhitelistedException
+from codemie.core.exceptions import ModelNotWhitelistedException, NotFoundException
 from codemie.core.models import AssistantChatRequest, CodeFields, IdeChatRequest, ToolConfig
 from codemie.rest_api.models.assistant import Assistant, Context, ContextType, ToolDetails, ToolKitDetails
 from codemie.rest_api.models.conversation import Conversation
@@ -1252,6 +1252,19 @@ class TestToolkitService:
         assert llm == mock_llm
         assert is_multimodal is False
 
+    @patch("codemie.service.tools.toolkit_service.llm_service")
+    @patch("codemie.service.tools.toolkit_service.get_llm_by_credentials")
+    def test_initialize_llm_for_files_uses_resolved_model(self, mock_get_llm, mock_llm_service, mock_assistant):
+        """The file LLM follows the model build_agent resolved, not the assistant's own model."""
+        mock_assistant.llm_model_type = "own-model"
+        mock_llm_service.get_llm_deployment_name.side_effect = lambda name: name
+        mock_llm_service.get_multimodal_llms.return_value = ["resolved-model", "own-model"]
+
+        ToolkitService._initialize_llm_for_files(mock_assistant, "test-uuid", llm_model="resolved-model")
+
+        mock_llm_service.get_llm_deployment_name.assert_called_once_with("resolved-model")
+        assert mock_get_llm.call_args.kwargs["llm_model"] == "resolved-model"
+
     def test_get_non_image_files(self):
         """Test _get_non_image_files extracts non-image files."""
         # Setup
@@ -2218,17 +2231,17 @@ class TestBuildOcrModelProjectWhitelist:
     """With projectModelOverride on, the project's whitelist narrows the multimodal allowlist."""
 
     @staticmethod
-    def _patches(*, override_on=True, allowed_models=None, project_exists=True):
-        project = Mock(allowed_models=allowed_models)
+    def _patches(*, override_on=True, allowed_models=None, default_model='gpt-4', project_exists=True):
+        project = Mock(allowed_models=allowed_models, default_model=default_model)
         get_by_id = Mock(return_value=project) if project_exists else Mock(side_effect=KeyError("p"))
         return (
             patch('codemie.service.tools.toolkit_service.llm_service'),
             patch('codemie.service.tools.toolkit_service.get_llm_by_credentials'),
             patch(
-                'codemie.service.tools.toolkit_service.customer_config',
+                'codemie.service.llm.model_availability_service.customer_config',
                 Mock(is_feature_enabled=Mock(return_value=override_on)),
             ),
-            patch('codemie.service.tools.toolkit_service.Application.get_by_id', get_by_id),
+            patch('codemie.core.models.Application.get_by_id', get_by_id),
         )
 
     def _build(self, name='vision-ok', project_name='proj', **kwargs):
@@ -2255,6 +2268,17 @@ class TestBuildOcrModelProjectWhitelist:
         assert info.value.code == 400
         self.build.assert_not_called()
 
+    def test_whitelist_without_default_still_checks_membership_only(self):
+        self._build(allowed_models=['vision-ok'], default_model=None)
+
+        self.build.assert_called_once_with(llm_model='vision-ok', streaming=False, request_id='req')
+
+    def test_whitelist_without_default_rejects_excluded_model(self):
+        with pytest.raises(ModelNotWhitelistedException):
+            self._build(name='vision-other', allowed_models=['vision-ok'], default_model=None)
+
+        self.build.assert_not_called()
+
     def test_empty_whitelist_denies_every_model(self):
         with pytest.raises(ModelNotWhitelistedException):
             self._build(allowed_models=[])
@@ -2279,7 +2303,7 @@ class TestBuildOcrModelProjectWhitelist:
         self.get_by_id.assert_not_called()
 
     def test_missing_project_fails_closed(self):
-        with pytest.raises(KeyError):
+        with pytest.raises(NotFoundException):
             self._build(project_exists=False)
 
         self.build.assert_not_called()

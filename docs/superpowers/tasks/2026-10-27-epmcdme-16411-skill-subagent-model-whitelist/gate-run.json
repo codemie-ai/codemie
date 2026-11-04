@@ -1,0 +1,143 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-16411_skill-subagent-model-whitelist",
+  "head": "124d02f34777d0c405a788002771da5e9edc82d2",
+  "runner": "custom",
+  "started_at": "2026-10-27T15:36:59Z",
+  "completed_at": "2026-10-27T16:02:27Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 6738,
+      "command": "make ruff",
+      "exit_code": 0,
+      "notes": "Pre-checked non-mutating (ruff format --check / ruff check) first: 3105 files unchanged, no files modified."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 21306,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 3717,
+      "command": "make license-check",
+      "exit_code": 0,
+      "notes": "Checked 2795 files, 0 missing license headers."
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 229,
+      "command": "make gitleaks",
+      "exit_code": 2,
+      "notes": "Skip-if met (Docker unavailable): '/usr/bin/sh: line 1: docker: command not found'. Podman is installed and running but the Makefile hardcodes docker. Enable by putting a docker CLI on PATH (e.g. Docker Desktop). Not a secret finding; full-tree secret scan is unverified."
+    },
+    {
+      "id": "hook-gitleaks",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 1976,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": 125,
+      "notes": "Scan did not run: podman rejected the Windows git-dir mount 'Error: invalid option type \"\\Users\\Yauheni_Hil\\repos\\codemie-dev\\codemie\\.git\"'; script says 'scan failed to run (exit 125) - this is NOT a secret finding'. Also 0 staged files, so it would scan nothing. Neither guide Pass nor Fail criterion matched; caller to rule. Enable via Docker Desktop or a POSIX-path git-dir mount."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 572256,
+      "command": "make test",
+      "exit_code": 2,
+      "notes": "248 failed, 23180 passed, 579 skipped, 39 errors. None of the failing test files reference changed modules (assistant_factory, assistant_engine_builder, exception_formatting); the 3 branch test files pass 23/23 when run alone. Dominant causes are Windows-environment: WinError 206 path too long (62), /bin/bash path mangling in tests/scripts hook tests, WinError 10106, PydanticDescriptorProxy TypeError, tests/enterprise mcp_auth bridges. One failure is in the unrelated untracked file tests/codemie/rest_api/a2a/test_tmp_repro_12417.py::test_case2_heavy_run_over_streaming_hits_idle_timeout. Not verified against merge base whether the remaining failures pre-exist."
+    },
+    {
+      "id": "cli-analytics-live",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make test-cli-analytics-live",
+      "notes": "Skip-if met: diff does not touch src/codemie/repository/cli_analytics/postgres/."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make coverage",
+      "notes": "Skip-if met: coverage not requested."
+    },
+    {
+      "id": "sonar-local",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make sonar-local",
+      "notes": "Skip-if met: SONAR_TOKEN unset and no .env.local. Owed to CI/reviewer; enable by exporting SONAR_TOKEN (or adding it to .env.local)."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make verify",
+      "notes": "Components ran individually (ruff, license-check, test); its gitleaks step needs Docker, which is unavailable."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "notes": "Skip-if met for this subagent (no MR opened here). Required before MR: run with docker stack up + ~/.codemie/test-harness.json and paste summary into '## Test harness' section."
+    },
+    {
+      "id": "hook-ruff-staged",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 288,
+      "command": "bash scripts/git-hooks/_ruff_staged.sh",
+      "exit_code": 0,
+      "notes": "Self-skip: '[pre-commit] No staged Python files - skipping Ruff format/fix check.' Equivalent check covered by lint gate (make ruff)."
+    },
+    {
+      "id": "hook-commit-msg",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 1047,
+      "command": "bash scripts/git-hooks/commit_msg.sh <msg-file> (per branch commit)",
+      "exit_code": 0,
+      "notes": "All 3 commits merge_base..HEAD carry the EPMCDME-16411: prefix."
+    },
+    {
+      "id": "hook-pre-push",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 236,
+      "command": "bash scripts/git-hooks/pre_push.sh",
+      "exit_code": 0,
+      "notes": "Self-skip: '[pre-push] CODEMIE_PREPUSH_ENABLED=false -> skipping heavy checks.' Its pytest (tests/ --ignore=tests/enterprise/ --cov) and sonar-local chain did not run; set CODEMIE_PREPUSH_ENABLED=true to run. Pytest superset already covered by unit gate."
+    },
+    {
+      "id": "ci-pre-ci-guard",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "GitLab wait-ci-init (EXPECTED_CONTEXTS: ci-pipeline, compliance-report)",
+      "notes": "Needs remote GitLab infrastructure (external ci-pipeline and compliance-report statuses). Guide mismatch: quality-gates.md says no pipeline exists, but .gitlab-ci.yml is present (pre-ci-guard only, no local commands)."
+    }
+  ],
+  "failures": {
+    "unit": "FAILED tests/scripts/test_pre_push_hook.py::test_numeric_one_enabled_runs - A...\nFAILED tests/scripts/test_pre_push_hook.py::test_on_enabled_runs - AssertionE...\nFAILED tests/scripts/test_pre_push_hook.py::test_legacy_precommit_enabled_runs_and_warns\nFAILED tests/scripts/test_ruff_staged_hook.py::test_no_staged_py_files_exits_zero\nFAILED tests/scripts/test_ruff_staged_hook.py::test_clean_staged_plus_unstaged_garbage_exits_zero\nFAILED tests/scripts/test_ruff_staged_hook.py::test_ruff_reformats_staged_file_exits_one\nFAILED tests/scripts/test_ruff_staged_hook.py::test_missing_trailing_newline_exits_one\nFAILED tests/scripts/test_ruff_staged_hook.py::test_syntax_error_in_staged_file_reports_clearly\nFAILED tests/scripts/test_ruff_staged_hook.py::test_partial_staging_clean_hunk_dirty_unstaged_exits_zero\nERROR tests/codemie/migrations/test_credentialtypes_enum_migrations.py - Unic...\nERROR tests/codemie/migrations/test_credentialtypes_enum_migrations.py - Unic...\nERROR tests/codemie/migrations/test_credentialtypes_enum_migrations.py - Unic...\nERROR tests/codemie/service/usage_attribution/test_worker.py\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_route_is_in_the_guarded_openapi[index]\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_route_is_in_the_guarded_openapi[budget]\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_route_is_in_the_guarded_openapi[users]\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_route_is_in_the_guarded_openapi[local-auth]\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_route_is_in_the_guarded_openapi[workflow-generation]\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_routes_are_registered_on_the_app\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_building_the_app_attempts_no_network_connection\nERROR tests/codemie/service/security/test_logout_token_cleanup_mock_tms.py::test_logout_removes_only_the_users_rows_and_pod_fallback\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_branch_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_branch_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_set_active_branch_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_set_active_branch_failur\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_list_branches_in_repo_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_list_branches_in_repo_exception\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_replace_file_content_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_replace_file_content_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_file_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_delete_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_delete_file_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_issue_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_update_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_update_issue_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_find_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_comment_on_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_comment_on_issue_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_file_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_delete_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_delete_file_failure\nERROR tests/codemie/rest_api/test_marketplace_entity_detail_verdict_fields.py::test_entity_detail_includes_verdict_fields_when_verdict_exists\nERROR tests/codemie/rest_api/test_marketplace_entity_detail_verdict_fields.py::test_entity_detail_verdict_fields_are_null_when_no_verdict\nERROR tests/codemie/rest_api/test_marketplace_entity_detail_verdict_fields.py::test_entity_detail_includes_bucket_reason_and_usage_tier\nERROR tests/codemie/rest_api/test_marketplace_entity_detail_verdict_fields.py::test_entity_detail_includes_polish_check_results\n= 248 failed, 23180 passed, 579 skipped, 432 warnings, 39 errors in 565.00s (0:09:24) =\nmake: *** [Makefile:31: test] Error 1\n"
+  }
+}

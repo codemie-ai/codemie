@@ -17,14 +17,11 @@ from typing import List, Optional, Any
 from langgraph.graph.state import CompiledStateGraph
 
 from codemie.agents.callbacks.agent_streaming_callback import AgentStreamingCallback
-from codemie.configs.customer_config import customer_config
 from codemie.configs.logger import logger
 from codemie.core.thread import MessageQueue
 from codemie.core.models import AssistantChatRequest
 from codemie.core.constants import UniqueThoughtParentIds
-from codemie.core.exceptions import ModelNotWhitelistedException
-from codemie.core.models import Application
-from codemie.service.llm.model_availability_service import ModelAvailabilityService
+from codemie.core.exception_formatting import describe_exception
 from codemie.rest_api.models.assistant import Assistant
 from codemie.rest_api.security.user import User
 from codemie.service.mcp.models import MCPToolLoadException
@@ -52,48 +49,30 @@ class AssistantFactory:
         request: Optional[AssistantChatRequest] = None,
         request_uuid: Optional[str] = None,
         thread_generator: Optional[MessageQueue] = None,
-        llm_model: Optional[str] = None,
     ):
         self.assistant = assistant
         self.user = user
         self.request = request
         self.request_uuid = request_uuid
         self.thread_generator = thread_generator
-        self.llm_model = llm_model
 
     def build(self):
         """
         Build an agent executor (compiled graph) for the assistant.
 
-        Enforces project-level model restrictions: if subagent requests a model
-        not in project.allowed_models, raises ModelNotWhitelistedException (400). No fallback.
+        Model policy is not checked here. AssistantService.build_agent resolves the sub-assistant's
+        model via resolve_assistant_model under the sub-assistant's own project: an unconfigured
+        whitelist is unrestricted, an empty whitelist raises ModelNotWhitelistedException, a
+        populated whitelist falls back from the user's pick to the sub-assistant's own model and
+        then the project default, and global assistants are exempt.
 
         Returns:
             Compiled agent executor graph
 
         Raises:
-            ModelNotWhitelistedException: If subagent model not allowed in project (400)
+            ModelNotWhitelistedException: If the sub-assistant's project allows no models (400)
         """
         try:
-            # Hard block: reject subagent if requested model not in allowed_models
-            project = Application.get_by_id(self.assistant.project) if self.assistant.project else None
-            if (
-                project
-                and self.request
-                and self.request.llm_model
-                and customer_config.is_feature_enabled("projectModelOverride")
-            ):
-                config = ModelAvailabilityService.get_project_models(project.id)
-                if self.request.llm_model not in config.allowed_models:
-                    raise ModelNotWhitelistedException(
-                        model_id=self.request.llm_model,
-                        project_name=project.id,
-                        details=(
-                            f"Subagent cannot use model '{self.request.llm_model}'. "
-                            f"Allowed: {', '.join(config.allowed_models)}"
-                        ),
-                    )
-
             # Import here to avoid circular imports
             from codemie.service.assistant_service import AssistantService
 
@@ -113,7 +92,7 @@ class AssistantFactory:
             return agent.agent_executor
 
         except Exception as e:
-            logger.error(f"Failed to create agent executor for assistant {self.assistant.id}: {str(e)}")
+            logger.error(f"Failed to create agent executor for assistant {self.assistant.id}: {describe_exception(e)}")
             raise
 
 
@@ -123,7 +102,6 @@ def create_assistant_executors(
     request: Optional[AssistantChatRequest] = None,
     request_uuid: Optional[str] = None,
     thread_generator: Optional[MessageQueue] = None,
-    llm_model: Optional[str] = None,
     parent_assistant: Optional[Assistant] = None,
 ) -> list[CompiledStateGraph[Any, Any, Any, Any]]:
     """
@@ -135,7 +113,6 @@ def create_assistant_executors(
         request: Chat request containing optional sub_assistants_versions
         request_uuid: Unique request identifier
         thread_generator: Thread generator for streaming
-        llm_model: LLM model being used
         parent_assistant: Parent assistant (orchestrator) that contains these sub-assistants
 
     Returns:
@@ -178,7 +155,6 @@ def create_assistant_executors(
                 request=request,
                 request_uuid=request_uuid,
                 thread_generator=thread_generator,
-                llm_model=llm_model,
             )
             executor = factory.build()
             executors.append(executor)
@@ -190,6 +166,6 @@ def create_assistant_executors(
             )
             raise
         except Exception as e:
-            logger.error(f"Failed to create executor for assistant {assistant.id}: {str(e)}")
+            logger.error(f"Failed to create executor for assistant {assistant.id}: {describe_exception(e)}")
 
     return executors

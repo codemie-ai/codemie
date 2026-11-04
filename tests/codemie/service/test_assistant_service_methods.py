@@ -40,6 +40,38 @@ from codemie.service.assistant_service import AssistantService
 class TestBuildBedrockAgent:
     """Test cases for _build_bedrock_agent helper method."""
 
+    def test_build_agent_sets_llm_context_before_building_a_bedrock_agent(self):
+        """build_agent's Bedrock early return still sets the LLM context, before the agent is built."""
+        assistant = Assistant(
+            id='bedrock-123',
+            name='Bedrock',
+            description='d',
+            system_prompt='s',
+            project='proj',
+            llm_model_type='own-model',
+        )
+        request = AssistantChatRequest(text='Hello Bedrock', file_names=[])
+        user = Mock(spec=User, id='user-123')
+        user.name = 'User'
+        calls = Mock()
+
+        with (
+            patch('codemie.service.assistant_service.set_llm_context', calls.set_llm_context),
+            patch('codemie.service.assistant_service.AssistantService._build_bedrock_agent', calls.build_bedrock),
+            patch(
+                'codemie.service.assistant_service.BedrockOrchestratorService.is_bedrock_assistant', return_value=True
+            ),
+            patch('codemie.service.assistant_service.build_unique_file_objects', return_value={}),
+            patch('codemie.service.assistant_service.AssistantService._apply_conversation_runtime_overrides'),
+        ):
+            result = AssistantService.build_agent(
+                assistant=assistant, request=request, user=user, request_uuid='req-123'
+            )
+
+        assert result is calls.build_bedrock.return_value
+        calls.set_llm_context.assert_called_once_with(assistant, None, user)
+        assert [c[0] for c in calls.mock_calls[:2]] == ['set_llm_context', 'build_bedrock']
+
     @patch('codemie.service.assistant_service.AIToolsAgent')
     @patch('codemie.service.assistant_service.AssistantService.get_system_prompt')
     def test_build_bedrock_agent_creates_aitools_agent(
@@ -378,9 +410,12 @@ class TestApplyConversationRuntimeOverrides:
 
         request = AssistantChatRequest(text='Test', file_names=[], conversation_id='conv-1')
 
-        AssistantService._apply_conversation_runtime_overrides(assistant, request)
+        user_pick = AssistantService._apply_conversation_runtime_overrides(assistant, request)
 
-        assert request.llm_model == "conversation-model"
+        # The conversation model is the user pick, returned instead of written onto the request.
+        assert user_pick == "conversation-model"
+        assert request.llm_model is None
+        assert 'llm_model' not in request.model_fields_set
         assert request.enable_image_generation is False
         assert request.image_generation_model == "conversation-image-model"
         # Assistant capability flags should not be mutated by conversation/request overrides.
@@ -411,14 +446,44 @@ class TestApplyConversationRuntimeOverrides:
             image_generation_model='request-image-model',
         )
 
-        AssistantService._apply_conversation_runtime_overrides(assistant, request)
+        user_pick = AssistantService._apply_conversation_runtime_overrides(assistant, request)
 
+        assert user_pick == "request-model"
         assert request.llm_model == "request-model"
         assert request.enable_image_generation is True
         assert request.image_generation_model == "request-image-model"
         # Assistant capability flags should not be mutated by request overrides.
         assert assistant.enable_image_generation is False
         assert assistant.image_generation_model is None
+
+    @patch('codemie.service.assistant_service.resolve_assistant_model', return_value="resolved-model")
+    @patch('codemie.service.assistant_service.Conversation.find_by_id')
+    def test_resolve_execution_model_resolves_the_conversation_pick(self, mock_find_by_id, mock_resolve):
+        conversation = Mock()
+        conversation.llm_model = "conversation-model"
+        mock_find_by_id.return_value = conversation
+        assistant = Mock(spec=Assistant)
+        request = AssistantChatRequest(text='Test', conversation_id='conv-1')
+
+        assert AssistantService.resolve_execution_model(assistant, request) == "resolved-model"
+        # Silent: build_agent reports the substitution, so this pre-build resolution must not.
+        mock_resolve.assert_called_once_with(assistant, "conversation-model", report_fallback=False)
+        assert request.llm_model is None
+
+    @patch('codemie.service.assistant_service.Conversation.find_by_id')
+    def test_explicit_none_model_does_not_pick_up_conversation_model(self, mock_find_by_id):
+        conversation = Mock()
+        conversation.llm_model = "conversation-model"
+        conversation.enable_image_generation = None
+        conversation.image_generation_model = None
+        conversation.tool_call_policy = None
+        mock_find_by_id.return_value = conversation
+
+        request = AssistantChatRequest(text='Test', file_names=[], conversation_id='conv-1', llm_model=None)
+
+        user_pick = AssistantService._apply_conversation_runtime_overrides(Mock(spec=Assistant), request)
+
+        assert user_pick is None
 
     @patch('codemie.service.assistant_service.Conversation.find_by_id')
     def test_does_not_override_assistant_with_unset_conversation_image_generation(self, mock_find_by_id):
@@ -564,7 +629,7 @@ class TestConfigureLanggraphAgent:
         # Arrange
         mock_subagent1 = Mock()
         mock_subagent2 = Mock()
-        mock_create_subagents.return_value = [mock_subagent1, mock_subagent2]
+        mock_create_subagents.return_value = ([mock_subagent1, mock_subagent2], {'subagent1', 'subagent2'})
         mock_get_descriptions.return_value = {'subagent1': 'Description 1', 'subagent2': 'Description 2'}
 
         assistant = Mock(spec=Assistant)
@@ -598,7 +663,7 @@ class TestConfigureLanggraphAgent:
     ):
         """Test LangGraph configuration without subagents."""
         # Arrange
-        mock_create_subagents.return_value = None
+        mock_create_subagents.return_value = ([], set())
 
         assistant = Mock(spec=Assistant)
         assistant.tool_permissions = None
