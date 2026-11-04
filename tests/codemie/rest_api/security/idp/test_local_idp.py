@@ -237,3 +237,85 @@ async def test_authenticate_db_failure_fallback(mocker):
     assert user.id == test_user_id
     assert user.username == test_user_id
     assert user.name == test_user_id
+
+
+class _EmptyAsyncSession:
+    async def __aenter__(self):
+        return MagicMock()
+
+    async def __aexit__(self, *_):
+        pass
+
+
+def _patch_owner_lookup(mocker, *, active, existing):
+    mocker.patch("codemie.rest_api.security.idp.local.config.ENV", "dev")
+    mocker.patch("codemie.clients.postgres.get_async_session", return_value=_EmptyAsyncSession())
+    mocker.patch(
+        "codemie.repository.user_repository.user_repository.aget_active_by_id",
+        new=AsyncMock(return_value=active),
+    )
+    mocker.patch(
+        "codemie.repository.user_repository.user_repository.aget_by_id",
+        new=AsyncMock(return_value=existing),
+    )
+
+
+@pytest.mark.asyncio
+async def test_authenticate_refuses_deactivated_user(mocker):
+    """A deactivated user gets 401, also on the signed trigger callback path (EPMCDME-13928)."""
+    from codemie.core.exceptions import ExtendedHTTPException
+
+    _patch_owner_lookup(mocker, active=None, existing=MagicMock())
+
+    with pytest.raises(ExtendedHTTPException) as exc_info:
+        await LocalIdp().authenticate(_make_request("deactivated_user"))
+
+    assert exc_info.value.code == 401
+    assert exc_info.value.details == "User is not active"
+
+
+@pytest.mark.asyncio
+async def test_authenticate_keeps_stub_for_user_missing_from_db(mocker):
+    """A user that is not in the database still gets the stub user, as before."""
+    _patch_owner_lookup(mocker, active=None, existing=None)
+
+    user = await LocalIdp().authenticate(_make_request("legacy_user"))
+
+    assert user.id == "legacy_user"
+    assert user.username == "legacy_user"
+
+
+@pytest.mark.asyncio
+async def test_internal_call_refuses_user_missing_from_db(mocker):
+    """Signed internal callbacks get no stand-in outside ENV local (EPMCDME-13928)."""
+    from codemie.core.exceptions import ExtendedHTTPException
+
+    _patch_owner_lookup(mocker, active=None, existing=None)
+
+    with pytest.raises(ExtendedHTTPException) as exc_info:
+        await LocalIdp().authenticate(_make_request("legacy_user"), allow_stand_in=False)
+
+    assert exc_info.value.code == 401
+    assert exc_info.value.details == "User is not active"
+
+
+@pytest.mark.asyncio
+async def test_internal_call_refuses_when_lookup_fails(mocker):
+    from codemie.core.exceptions import ExtendedHTTPException
+
+    mocker.patch("codemie.rest_api.security.idp.local.config.ENV", "dev")
+    mocker.patch("codemie.clients.postgres.get_async_session", side_effect=RuntimeError("db down"))
+
+    with pytest.raises(ExtendedHTTPException) as exc_info:
+        await LocalIdp().authenticate(_make_request("some_user"), allow_stand_in=False)
+
+    assert exc_info.value.code == 401
+
+
+@pytest.mark.asyncio
+async def test_internal_call_keeps_stand_in_on_local(mocker):
+    mocker.patch("codemie.rest_api.security.idp.local.config.ENV", "local")
+
+    user = await LocalIdp().authenticate(_make_request("local_user"), allow_stand_in=False)
+
+    assert user.id == "local_user"

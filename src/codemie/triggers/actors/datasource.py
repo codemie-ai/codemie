@@ -1148,6 +1148,17 @@ def resume_stale_datasource(index_info: IndexInfo) -> None:
         logger.error(f"resume_stale_datasource: created_by missing for index_id={index_info.id}, skipping")
         return
 
+    from codemie.triggers.bindings.utils import is_trigger_owner_active
+
+    if not is_trigger_owner_active(index_info.created_by.id):
+        logger.warning(
+            f"Skipping stale resume: owner user_id={index_info.created_by.id} is not active "
+            f"(index_id={index_info.id})"
+        )
+        # Terminal state, as for unsupported types, so the watchdog does not re-claim the row every tick
+        index_info.set_error("Indexing was interrupted and was not resumed because its owner is not active.")
+        return
+
     handler = _RESUME_DISPATCH.get(index_type)
     if handler:
         handler(index_info, User(id=index_info.created_by.id), str(uuid4()))

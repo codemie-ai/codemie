@@ -307,6 +307,7 @@ class TestBackwardCompatibility:
             "/v1/admin/users": ["POST"],  # create_user
             "/v1/admin/users/{user_id}": ["PUT", "DELETE"],  # update, deactivate (GET changed in Story 18)
             "/v1/admin/users/{user_id}/password": ["PUT"],  # admin_change_password
+            "/v1/admin/users/{user_id}/reactivate": ["POST"],  # reactivate_user
             "/v1/admin/users/{user_id}/projects": ["POST"],  # add project access (GET changed for auditor)
             "/v1/admin/users/{user_id}/projects/{project_name}": ["PUT", "DELETE"],  # update, remove
             "/v1/admin/users/{user_id}/knowledge-bases": ["POST"],  # add KB access (GET changed for auditor)

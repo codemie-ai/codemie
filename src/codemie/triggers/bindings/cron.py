@@ -57,7 +57,12 @@ from codemie.triggers.actors.datasource import (
 )
 from codemie.triggers.actors.workflow import invoke_workflow
 from codemie.triggers.bindings.cache_manager import CacheManager
-from codemie.triggers.bindings.utils import resolve_trigger_user, validate_assistant, validate_datasource
+from codemie.triggers.bindings.utils import (
+    is_trigger_owner_active,
+    resolve_trigger_user,
+    validate_assistant,
+    validate_datasource,
+)
 from codemie.triggers.trigger_exceptions import DatasourceNotValidated, NotImplementedDatasource
 from codemie.triggers.trigger_models import (
     AzureDevOpsWikiReindexTask,
@@ -101,6 +106,9 @@ async def _tracked_run(actor_fn, scheduler_id: str, **kwargs):
     repo = SchedulerRunRepository()
     run = repo.create(run)
 
+    if _skipped_for_inactive_owner(repo, run, started_at, scheduler_id, kwargs.get("user_id")):
+        return None
+
     try:
         # CR-003: capture retval so conversation_id and resource_execution_id can be persisted
         retval = await actor_fn(**kwargs)
@@ -128,6 +136,33 @@ async def _tracked_run(actor_fn, scheduler_id: str, **kwargs):
             },
         )
         raise
+
+
+def _skipped_for_inactive_owner(repo, run, started_at: datetime, scheduler_id: str, user_id: str | None) -> bool:
+    """Record the run as skipped when the scheduler's owner is not active, checked at every run."""
+    if not user_id or is_trigger_owner_active(user_id):
+        return False
+    finished_at = datetime.now(timezone.utc)
+    repo.update(
+        run.id,
+        {
+            "status": "skipped",
+            "finished_at": finished_at,
+            "duration_ms": int((finished_at - started_at).total_seconds() * 1000),
+            "result_data": {"content": "The owner of this scheduler is not active"},
+        },
+    )
+    logger.warning("Skipped scheduler %s: owner user_id=%s is not active", scheduler_id, user_id)
+    return True
+
+
+def _run_unless_owner_inactive(actor_fn, scheduler_id: str, payload):
+    """Run an untracked datasource actor unless its owner is not active, checked at every run."""
+    owner_id = getattr(getattr(payload, "user", None), "id", None)
+    if owner_id and not is_trigger_owner_active(owner_id):
+        logger.warning("Skipped scheduler %s: owner user_id=%s is not active", scheduler_id, owner_id)
+        return None
+    return actor_fn(payload=payload)
 
 
 def _extract_datasource_metrics(payload) -> dict | None:
@@ -178,6 +213,10 @@ def _tracked_run_sync(actor_fn, scheduler_id: str, resource_id: str | None = Non
     )
     repo = SchedulerRunRepository()
     run = repo.create(run)
+
+    owner = getattr(kwargs.get("payload"), "user", None)
+    if _skipped_for_inactive_owner(repo, run, started_at, scheduler_id, getattr(owner, "id", None)):
+        return None
 
     try:
         outcome = actor_fn(**kwargs)
@@ -888,11 +927,11 @@ class Cron:
                 index_info=index_info,
             )
             return self.scheduler.add_job(
-                reindex_git_faq,
+                _run_unless_owner_inactive,
                 trigger=cron_trigger,
                 id=job_id,
                 replace_existing=True,
-                kwargs={"payload": payload},
+                kwargs={"actor_fn": reindex_git_faq, "scheduler_id": job_id, "payload": payload},
             )
         elif index_type_str == FullDatasourceTypes.GOOGLE.value:
             payload = GoogleReindexTask(

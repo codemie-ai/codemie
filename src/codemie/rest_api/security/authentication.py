@@ -21,6 +21,7 @@ import uuid as _uuid
 from fastapi import Depends, Request, status
 from fastapi.security import APIKeyHeader
 
+from codemie.configs import config
 from codemie.configs.logger import logger
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.security.idp.local import USER_ID_HEADER, LocalIdp
@@ -128,7 +129,8 @@ async def authenticate(
             if not internal_user_id or not nonce or not timestamp:
                 raise _create_auth_error("Missing required headers for internal auth.")
             _verify_internal_request(bind_key, nonce, timestamp, internal_user_id)
-            user = await LocalIdp().authenticate(request)
+            # With user management off there are no user rows, so the stand-in has to stay
+            user = await LocalIdp().authenticate(request, allow_stand_in=not config.ENABLE_USER_MANAGEMENT)
         else:
             # Standard external authentication flow
             # 1. Get provider based on feature flag (EPMCDME-10160)

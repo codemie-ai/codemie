@@ -40302,7 +40302,7 @@
     },
     "/v1/admin/users": {
       "get": {
-        "description": "List all users with pagination and filters\n\nSuperAdmin, ProjectAdmin, or Auditor access (EPMCDME-10930).\nShows ALL users including deactivated.\nPage is 0-indexed (page=0 is first page).\nIncludes projects array for each user (optimized with JOIN query).",
+        "description": "List all users with pagination and filters\n\nSuperAdmin, ProjectAdmin, or Auditor access (EPMCDME-10930).\nDeactivated users are included by default for super admins, maintainers and auditors, and for\nproject admins filtering by projects they administer; is_active narrows the result.\nAll other callers (regular and external users, project admins without such a project filter)\nget active users only and their is_active filter is ignored.\nPage is 0-indexed (page=0 is first page).\nIncludes projects array for each user (optimized with JOIN query).",
         "operationId": "list_users_v1_admin_users_get",
         "parameters": [
           {
@@ -40531,7 +40531,7 @@
     },
     "/v1/admin/users/{user_id}": {
       "delete": {
-        "description": "Deactivate (soft delete) a user\n\nSuperAdmin only.\nCannot deactivate the last SuperAdmin.",
+        "description": "Deactivate (soft delete) a user\n\nSuper admins and maintainers only; only a maintainer can deactivate a maintainer.\nCannot deactivate your own account, the last SuperAdmin or the last maintainer.",
         "operationId": "deactivate_user_v1_admin_users__user_id__delete",
         "parameters": [
           {
@@ -41539,6 +41539,57 @@
           }
         ],
         "summary": "Set Default Project",
+        "tags": [
+          "user-management"
+        ]
+      }
+    },
+    "/v1/admin/users/{user_id}/reactivate": {
+      "post": {
+        "description": "Reactivate a deactivated user\n\nSuper admins and maintainers only; only a maintainer can reactivate a maintainer.\nCannot reactivate your own account. Restores the active flag and adds the user's share\non project budgets created while they were deactivated; memberships and roles are untouched.",
+        "operationId": "reactivate_user_v1_admin_users__user_id__reactivate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodeMieUserDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Reactivate User",
         "tags": [
           "user-management"
         ]

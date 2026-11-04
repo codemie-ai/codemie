@@ -20,7 +20,7 @@ from datetime import datetime, UTC
 from typing import Iterator, Literal, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import ColumnElement, Result, Row
+from sqlalchemy import ColumnElement, Result, Row, and_, not_
 from sqlmodel import Session, select, func, or_
 
 from codemie.core.constants import MAX_POSTGRES_QUERY_ARGUMENTS
@@ -32,6 +32,10 @@ from codemie.rest_api.models.user_management import (
     UserProject,
     UserKnowledgeBase,
 )
+
+
+# Single definition of "active": a record marked by only one of the two flags counts as deactivated.
+_ACTIVE = and_(UserDB.is_active, UserDB.deleted_at.is_(None))
 
 
 @dataclass(frozen=True)
@@ -99,7 +103,7 @@ class UserRepository:
         Returns:
             UserDB or None if not found or deactivated
         """
-        statement = select(UserDB).where(UserDB.id == user_id, UserDB.is_active, UserDB.deleted_at.is_(None))
+        statement = select(UserDB).where(UserDB.id == user_id, _ACTIVE)
         return session.exec(statement).first()
 
     def create(self, session: Session, user: UserDB) -> UserDB:
@@ -167,6 +171,29 @@ class UserRepository:
 
         user.is_active = False
         user.deleted_at = datetime.now(UTC)
+        user.update_date = datetime.now(UTC)
+        session.add(user)
+        session.flush()
+        return True
+
+    def reactivate(self, session: Session, user_id: str) -> bool:
+        """Reactivate a deactivated user
+
+        Sets is_active=True AND deleted_at=None
+
+        Args:
+            session: Database session
+            user_id: User UUID
+
+        Returns:
+            True if user was reactivated, False if not found
+        """
+        user = self.get_by_id(session, user_id)
+        if not user:
+            return False
+
+        user.is_active = True
+        user.deleted_at = None
         user.update_date = datetime.now(UTC)
         session.add(user)
         session.flush()
@@ -264,7 +291,19 @@ class UserRepository:
         Returns:
             Number of active admins
         """
-        statement = select(func.count(UserDB.id)).where(UserDB.is_admin, UserDB.is_active, UserDB.deleted_at.is_(None))
+        statement = select(func.count(UserDB.id)).where(UserDB.is_admin, _ACTIVE)
+        return session.exec(statement).one()
+
+    def count_active_maintainers(self, session: Session) -> int:
+        """Count active maintainer users
+
+        Args:
+            session: Database session
+
+        Returns:
+            Number of active maintainers
+        """
+        statement = select(func.count(UserDB.id)).where(UserDB.is_maintainer, _ACTIVE)
         return session.exec(statement).one()
 
     def update_last_login(self, session: Session, user_id: str) -> bool:
@@ -331,11 +370,11 @@ class UserRepository:
             func.lower(UserDB.email).in_(lower_emails)  # type: ignore[attr-defined]
         )
         if active_only:
-            statement = statement.where(UserDB.is_active, UserDB.deleted_at.is_(None))
+            statement = statement.where(_ACTIVE)
         users = session.exec(statement).all()
         return {u.email.lower(): u for u in users}
 
-    def get_existing_user_ids(self, session: Session, user_ids: list[str]) -> set[str]:
+    def get_existing_user_ids(self, session: Session, user_ids: list[str], *, active_only: bool = False) -> set[str]:
         """Check which user IDs exist in the database.
 
         Efficient bulk existence check using a single IN query.
@@ -343,6 +382,7 @@ class UserRepository:
         Args:
             session: Database session
             user_ids: List of user UUIDs to check
+            active_only: Skip deactivated users
 
         Returns:
             Set of user IDs that exist in the database
@@ -353,7 +393,19 @@ class UserRepository:
         statement = select(UserDB.id).where(
             UserDB.id.in_(user_ids)  # type: ignore[attr-defined]
         )
+        if active_only:
+            statement = statement.where(_ACTIVE)
         return set(session.exec(statement).all())
+
+    def get_deactivated_labels(self, session: Session, user_ids: list[str]) -> list[str]:
+        """Return email (or id when no email) of the given users that exist but are not active."""
+        if not user_ids:
+            return []
+        statement = select(UserDB.id, UserDB.email).where(
+            UserDB.id.in_(user_ids),  # type: ignore[attr-defined]
+            not_(_ACTIVE),
+        )
+        return sorted(email or uid for uid, email in session.exec(statement).all())
 
     def get_user_projects(self, session: Session, user_id: str) -> list[UserProject]:
         """Get user's project access list
@@ -548,7 +600,7 @@ class UserRepository:
 
     async def aget_active_by_id(self, session: AsyncSession, user_id: str) -> Optional[UserDB]:
         """Get active user by ID (async)"""
-        statement = select(UserDB).where(UserDB.id == user_id, UserDB.is_active, UserDB.deleted_at.is_(None))
+        statement = select(UserDB).where(UserDB.id == user_id, _ACTIVE)
         result = await session.execute(statement)
         return result.scalars().first()
 
@@ -612,7 +664,7 @@ class UserRepository:
         """
         from codemie.rest_api.models.user_management import UserProject
 
-        stmt = select(UserDB).where(UserDB.is_active == True, UserDB.deleted_at.is_(None))  # noqa: E712
+        stmt = select(UserDB).where(_ACTIVE)
         if search:
             escaped = escape_like_wildcards(search)
             pattern = f"%{escaped}%"
@@ -631,9 +683,10 @@ class UserRepository:
 
     @staticmethod
     def _apply_filters(query, search: Optional[str], filters: UserListFilters):
-        """Apply search text and structured filters to a UserDB SELECT query."""
-        query = query.where(UserDB.deleted_at.is_(None))
+        """Apply search text and structured filters to a UserDB SELECT query.
 
+        Deactivated users are included unless filters.is_active narrows the result.
+        """
         if search:
             escaped = escape_like_wildcards(search)
             pattern = f"%{escaped}%"
@@ -649,7 +702,7 @@ class UserRepository:
             query = query.where(UserDB.user_type == filters.user_type)
 
         if filters.is_active is not None:
-            query = query.where(UserDB.is_active == filters.is_active)
+            query = query.where(_ACTIVE if filters.is_active else not_(_ACTIVE))
 
         if filters.is_auditor is not None:
             query = query.where(UserDB.is_auditor == filters.is_auditor)

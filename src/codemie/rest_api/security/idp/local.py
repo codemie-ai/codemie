@@ -59,14 +59,28 @@ class LocalIdp(BaseIdp):
         }
         return jwt.encode(payload, key=_LOCAL_MOCK_JWT_SECRET, algorithm="HS256")
 
-    async def authenticate(self, request: Request) -> User:
+    @staticmethod
+    def _user_not_active() -> ExtendedHTTPException:
+        return ExtendedHTTPException(
+            code=status.HTTP_401_UNAUTHORIZED,
+            message="Authentication failed",
+            details="User is not active",
+        )
+
+    async def authenticate(self, request: Request, *, allow_stand_in: bool = True) -> User:
         """Authenticate using user-id header
 
         Args:
             request: FastAPI request object with user-id header
+            allow_stand_in: False for signed internal callbacks with user management on, which
+                get a stand-in user only on ENV local and otherwise need an active user row
 
         Returns:
             User object populated from DB when available, stub otherwise
+
+        Raises:
+            ExtendedHTTPException: 401 when the header is missing, the user is deactivated, or
+                allow_stand_in is False and no active user could be loaded
         """
         user_id = request.headers.get(USER_ID_HEADER)
         if not user_id:
@@ -93,6 +107,9 @@ class LocalIdp(BaseIdp):
             async with get_async_session() as session:
                 db_user = await user_repository.aget_active_by_id(session, user_id)
                 if db_user is None:
+                    # A deactivated user has no access, also not through signed trigger callbacks
+                    if not allow_stand_in or await user_repository.aget_by_id(session, user_id) is not None:
+                        raise self._user_not_active()
                     return User(id=user_id, username=user_id, name=user_id, auth_token=auth_token)
 
                 projects = await user_project_repository.aget_by_user_id(session, db_user.id)
@@ -117,6 +134,11 @@ class LocalIdp(BaseIdp):
                 project_limit=db_user.project_limit,
                 auth_token=auth_token,
             )
+        except ExtendedHTTPException:
+            raise
         except Exception as e:
+            if not allow_stand_in:
+                logger.warning(f"LocalIdp: DB lookup failed for internal call, user_id='{user_id}': {e}")
+                raise self._user_not_active() from e
             logger.warning(f"LocalIdp: DB lookup failed for user_id='{user_id}', falling back to stub user: {e}")
             return User(id=user_id, username=user_id, name=user_id, auth_token=auth_token)

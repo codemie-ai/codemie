@@ -401,6 +401,38 @@ class TestUserRepositorySoftDelete:
         db_session.add.assert_not_called()
 
 
+class TestUserRepositoryReactivate:
+    """Test reactivate method."""
+
+    def test_reactivate_success(self, user_repository, db_session, sample_inactive_user, mocker):
+        """reactivate sets is_active=True, clears deleted_at and bumps update_date."""
+        mock_result = mocker.MagicMock()
+        mock_result.first.return_value = sample_inactive_user
+        db_session.exec.return_value = mock_result
+        old_update_date = sample_inactive_user.update_date
+
+        result = user_repository.reactivate(db_session, sample_inactive_user.id)
+
+        assert result is True
+        assert sample_inactive_user.is_active is True
+        assert sample_inactive_user.deleted_at is None
+        assert sample_inactive_user.update_date > old_update_date
+        db_session.add.assert_called_once_with(sample_inactive_user)
+        db_session.flush.assert_called_once()
+
+    def test_reactivate_user_not_found(self, user_repository, db_session, mocker):
+        """reactivate returns False when user not found."""
+        mock_result = mocker.MagicMock()
+        mock_result.first.return_value = None
+        db_session.exec.return_value = mock_result
+
+        result = user_repository.reactivate(db_session, str(uuid4()))
+
+        assert result is False
+        db_session.add.assert_not_called()
+        db_session.flush.assert_not_called()
+
+
 class TestUserRepositoryFetchBudgetAssignmentsMap:
     """Test fetch_budget_assignments_map helper."""
 

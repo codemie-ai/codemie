@@ -51,7 +51,7 @@ from codemie.rest_api.security.user import User
 from codemie.service.budget.budget_service import budget_service
 from codemie.service.user.password_management_service import password_management_service
 from codemie.service.user.user_access_service import user_access_service
-from codemie.service.user.user_management_service import user_management_service
+from codemie.service.user.user_management_service import UserManagementService, user_management_service
 
 
 _USER_MGMT_NOT_ENABLED = "User management not enabled"
@@ -145,7 +145,10 @@ def list_users(
     """List all users with pagination and filters
 
     SuperAdmin, ProjectAdmin, or Auditor access (EPMCDME-10930).
-    Shows ALL users including deactivated.
+    Deactivated users are included by default for super admins, maintainers and auditors, and for
+    project admins filtering by projects they administer; is_active narrows the result.
+    All other callers (regular and external users, project admins without such a project filter)
+    get active users only and their is_active filter is ignored.
     Page is 0-indexed (page=0 is first page).
     Includes projects array for each user (optimized with JOIN query).
     """
@@ -162,13 +165,17 @@ def list_users(
             help="Example: filters={\"projects\":[\"proj1\"],\"is_active\":true}",
         )
 
+    list_filters = UserManagementService.restrict_deactivated_visibility(
+        user, UserListFilters.model_validate(parsed_filters)
+    )
+
     return user_management_service.list_users_with_flow(
         requesting_user_id=user.id,
         is_project_admin=user.is_applications_admin or getattr(user, "is_auditor", False),
         page=page,
         per_page=per_page,
         search=search,
-        filters=UserListFilters.model_validate(parsed_filters),
+        filters=list_filters,
         sort_by=sort_by,
         sort_order=sort_order,
     )
@@ -262,13 +269,27 @@ def update_user(
 def deactivate_user(user_id: str, user: User = Depends(authenticate), _: None = Depends(admin_access_only)):
     """Deactivate (soft delete) a user
 
-    SuperAdmin only.
-    Cannot deactivate the last SuperAdmin.
+    Super admins and maintainers only; only a maintainer can deactivate a maintainer.
+    Cannot deactivate your own account, the last SuperAdmin or the last maintainer.
     """
     if not config.ENABLE_USER_MANAGEMENT:
         raise ExtendedHTTPException(code=400, message=_USER_MGMT_NOT_ENABLED)
 
     return user_management_service.deactivate_user_flow(user_id, user.id)
+
+
+@router.post("/{user_id}/reactivate", response_model=CodeMieUserDetail)
+def reactivate_user(user_id: str, user: User = Depends(authenticate), _: None = Depends(admin_access_only)):
+    """Reactivate a deactivated user
+
+    Super admins and maintainers only; only a maintainer can reactivate a maintainer.
+    Cannot reactivate your own account. Restores the active flag and adds the user's share
+    on project budgets created while they were deactivated; memberships and roles are untouched.
+    """
+    if not config.ENABLE_USER_MANAGEMENT:
+        raise ExtendedHTTPException(code=400, message=_USER_MGMT_NOT_ENABLED)
+
+    return user_management_service.reactivate_user_flow(user_id, user.id)
 
 
 @router.put("/{user_id}/password")

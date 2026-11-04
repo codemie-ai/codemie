@@ -114,8 +114,9 @@ class TestCronScheduling:
 
         assert result is scheduler.add_job.return_value
         scheduler.add_job.assert_called_once()
-        assert scheduler.add_job.call_args.args[0] is mock_reindex
-        assert isinstance(scheduler.add_job.call_args.kwargs["kwargs"]["payload"], GitFaqReindexTask)
+        job_kwargs = scheduler.add_job.call_args.kwargs["kwargs"]
+        assert job_kwargs["actor_fn"] is mock_reindex
+        assert isinstance(job_kwargs["payload"], GitFaqReindexTask)
 
 
 class TestResumeClassification:

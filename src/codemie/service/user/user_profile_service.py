@@ -30,6 +30,7 @@ from codemie.configs import config
 from codemie.configs.logger import logger
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.repository.user_repository import user_repository
+from codemie.service.user.active_user import require_active_user
 from codemie.repository.email_token_repository import email_token_repository
 from codemie.rest_api.models.user_management import UserDB
 
@@ -159,9 +160,7 @@ class UserProfileService:
 
         with get_session() as session:
             # Get current user
-            db_user = user_repository.get_by_id(session, user_id)
-            if not db_user:
-                raise ExtendedHTTPException(code=404, message="User not found")
+            db_user = require_active_user(session, user_id, user_repository)
 
             # Build updates and detect email change
             updates, email_changed, new_email = UserProfileService._build_profile_updates(

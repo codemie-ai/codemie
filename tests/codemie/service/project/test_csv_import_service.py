@@ -274,6 +274,30 @@ class TestParseAndValidate:
         assert results[0]["error"] is None
 
     @patch("codemie.service.project.csv_import_service.user_repository")
+    def test_deactivated_user_is_reported_as_deactivated(self, mock_user_repo):
+        """A deactivated account exists, so the row says deactivated rather than not found."""
+        # Arrange
+        gone = MagicMock(id="gone-id", is_active=False, deleted_at=None)
+        mock_user_repo.get_by_emails.return_value = {"gone@example.com": gone}
+        session = MagicMock()
+        content = _csv(["gone@example.com,user"])
+
+        # Act
+        results = self.service._parse_and_validate(session, content)
+
+        # Assert
+        mock_user_repo.get_by_emails.assert_called_once_with(session, ["gone@example.com"])
+        assert results[0]["user_id"] is None
+        assert results[0]["error"] == "User is deactivated for email: 'gone@example.com'"
+
+    @patch("codemie.service.project.csv_import_service.user_repository")
+    def test_unknown_email_is_reported_as_not_found(self, mock_user_repo):
+        mock_user_repo.get_by_emails.return_value = {}
+        results = self.service._parse_and_validate(MagicMock(), _csv(["nobody@example.com,user"]))
+
+        assert results[0]["error"] == "User not found for email: 'nobody@example.com'"
+
+    @patch("codemie.service.project.csv_import_service.user_repository")
     def test_all_format_invalid_rows_skip_db_lookup(self, mock_user_repo):
         """When every row is format-invalid, the DB lookup is skipped entirely."""
         # Arrange

@@ -38,7 +38,12 @@ from codemie.triggers.actors.datasource import (
 from codemie.triggers.actors.workflow import invoke_workflow
 from codemie.triggers.bindings.github_webhook_security import GitHubWebhookSecurity
 from codemie.triggers.bindings.gitlab_webhook_security import GitLabWebhookSecurity
-from codemie.triggers.bindings.utils import resolve_trigger_user, validate_assistant, validate_datasource
+from codemie.triggers.bindings.utils import (
+    is_trigger_owner_active,
+    resolve_trigger_user,
+    validate_assistant,
+    validate_datasource,
+)
 from codemie.triggers.trigger_exceptions import NotImplementedDatasource
 from codemie.triggers.trigger_models import (
     CodeReindexTask,
@@ -86,6 +91,7 @@ class WebhookService:
     WORKFLOW_NOT_FOUND = "Workflow with id '{}' not found"
     DATASOURCE_NOT_FOUND = "Datasource with id '{}' not found"
     UNSUPPORTED_RESOURCE_TYPE = "Unsupported resource type '{}'"
+    WEBHOOK_OWNER_NOT_ACTIVE = "Webhook received, not run: the owner of webhook '{}' is not active."
 
     @classmethod
     def invoke_webhook_logic(
@@ -145,6 +151,27 @@ class WebhookService:
         should_dispatch = cls.verify_security_header(request, setting, raw_payload)
         if should_dispatch is False:
             return BaseResponse(message=cls.WEBHOOK_EVENT_FILTERED, data=setting)
+
+        if not is_trigger_owner_active(setting.user_id):
+            logger.warning(
+                "Webhook invocation refused: the owner of webhook '%s' is not active. WebhookID: '%s', UserID: '%s'",
+                setting.alias,
+                webhook_id,
+                setting.user_id,
+            )
+            WebhookMonitoringService.send_webhook_invocation_metric(
+                webhook_id=webhook_id,
+                project_name=setting.project_name,
+                user_id=setting.user_id,
+                success=False,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                webhook_alias=setting.alias,
+                additional_attributes={"error_cause": "owner_not_active"},
+            )
+            # 200 like a filtered event: providers such as GitLab disable a hook after repeated
+            # non-2xx answers, and the hook must still work once the owner is reactivated
+            return BaseResponse(message=cls.WEBHOOK_OWNER_NOT_ACTIVE.format(setting.alias), data="")
 
         logger.info(
             "Processing webhook request - Webhook: '%s', Project: '%s', "
@@ -554,6 +581,10 @@ class WebhookService:
             )
 
         user = resolve_trigger_user(setting.user_id)
+        if user is None:
+            # Owner no longer active after the entry check: skip without a non-2xx answer, as there
+            logger.warning("Webhook '%s' not run: owner user_id=%s is not active", setting.alias, setting.user_id)
+            return
         resource_name = datasource.repo_name
         project_name = datasource.project_name
         index_type = datasource.index_type

@@ -434,8 +434,46 @@ def _make_index_info(index_type: str, index_id: str = "idx-1") -> MagicMock:
     return mock_info
 
 
+@pytest.fixture(autouse=True)
+def _resume_owner_active():
+    """The watchdog checks the datasource owner before resuming; these tests run with an active owner."""
+    with patch("codemie.triggers.bindings.utils.is_trigger_owner_active", return_value=True):
+        yield
+
+
 class TestResumeStaleDataSource:
     """Tests for resume_stale_datasource dispatch function."""
+
+    def test_skips_and_ends_the_row_when_owner_is_deactivated(self, mock_logger):
+        """A deactivated owner's interrupted index is not resumed and is moved to an error state."""
+        from codemie.triggers.actors.datasource import _RESUME_DISPATCH, resume_stale_datasource
+
+        index_info = _make_index_info("knowledge_base_jira")
+        handler = MagicMock()
+
+        with (
+            patch("codemie.triggers.bindings.utils.is_trigger_owner_active", return_value=False) as check,
+            patch.dict(_RESUME_DISPATCH, {"knowledge_base_jira": handler}),
+        ):
+            resume_stale_datasource(index_info)
+
+        check.assert_called_once_with("user-1")
+        handler.assert_not_called()
+        index_info.set_error.assert_called_once_with(
+            "Indexing was interrupted and was not resumed because its owner is not active."
+        )
+
+    def test_resumes_when_owner_is_active(self, mock_logger):
+        from codemie.triggers.actors.datasource import _RESUME_DISPATCH, resume_stale_datasource
+
+        index_info = _make_index_info("knowledge_base_jira")
+        handler = MagicMock()
+
+        with patch.dict(_RESUME_DISPATCH, {"knowledge_base_jira": handler}):
+            resume_stale_datasource(index_info)
+
+        handler.assert_called_once()
+        index_info.set_error.assert_not_called()
 
     def test_skips_unsupported_type(self, mock_logger):
         """Unsupported index types are skipped with a warning."""

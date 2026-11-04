@@ -177,6 +177,7 @@ class TestProjectAssignmentServiceSingleAssignment:
         project = Application(id=str(uuid4()), name="team-project", project_type="team")
         user_id = str(uuid4())
 
+        mock_user_repo.get_active_by_id.return_value = None
         mock_user_repo.get_by_id.return_value = None
 
         # Act & Assert
@@ -241,7 +242,7 @@ class TestProjectAssignmentServiceRoleUpdate:
         project_name = "team-project"
         requesting_user_id = str(uuid4())
 
-        mock_user_repo.get_by_id.return_value = UserDB(id=user_id, email="user@example.com", username="user")
+        mock_user_repo.get_active_by_id.return_value = UserDB(id=user_id, email="user@example.com", username="user")
         existing_membership = UserProject(user_id=user_id, project_name=project_name, is_project_admin=False)
         mock_user_project_repo.get_by_user_and_project.return_value = existing_membership
 
@@ -273,7 +274,7 @@ class TestProjectAssignmentServiceRoleUpdate:
         project = Application(id=str(uuid4()), name="team-project", project_type="team")
         user_id = str(uuid4())
 
-        mock_user_repo.get_by_id.return_value = UserDB(id=user_id, email="user@example.com", username="user")
+        mock_user_repo.get_active_by_id.return_value = UserDB(id=user_id, email="user@example.com", username="user")
         mock_user_project_repo.get_by_user_and_project.return_value = None
 
         # Act & Assert
@@ -291,6 +292,34 @@ class TestProjectAssignmentServiceRoleUpdate:
         assert exc_info.value.code == 404
         assert "not assigned" in exc_info.value.message
         assert "POST endpoint" in exc_info.value.help
+
+    @patch("codemie.service.project.project_assignment_service.user_repository")
+    @patch("codemie.service.project.project_assignment_service.user_project_repository")
+    def test_update_role_deactivated_user(self, mock_user_project_repo, mock_user_repo):
+        """Role update fails with 409 when the target user is deactivated"""
+        # Arrange
+        mock_session = MagicMock()
+        project = Application(id=str(uuid4()), name="team-project", project_type="team")
+        user_id = str(uuid4())
+
+        mock_user_repo.get_active_by_id.return_value = None
+        mock_user_repo.get_by_id.return_value = MagicMock(is_active=False)
+
+        # Act & Assert
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectAssignmentService.update_user_project_role(
+                session=mock_session,
+                project=project,
+                user_id=user_id,
+                project_name="team-project",
+                is_project_admin=True,
+                actor=MagicMock(id=str(uuid4()), is_admin=False),
+                action="PUT /v1/projects/team-project/users/user-123",
+            )
+
+        assert exc_info.value.code == 409
+        assert exc_info.value.message == "User is deactivated"
+        mock_user_project_repo.update_admin_status.assert_not_called()
 
 
 class TestProjectAssignmentServiceBulkAssign:
@@ -334,6 +363,10 @@ class TestProjectAssignmentServiceBulkAssign:
         assert mock_session.add.call_count == 2
         mock_session.flush.assert_called_once()
         mock_logger.info.assert_called_once()
+        # Deactivated users must not be assignable
+        mock_user_repo.get_existing_user_ids.assert_called_once_with(
+            mock_session, [user_id1, user_id2], active_only=True
+        )
 
     @patch("codemie.service.project.project_assignment_service.activity_event_repository")
     @patch("codemie.service.project.project_assignment_service.user_repository")
@@ -414,6 +447,7 @@ class TestProjectAssignmentServiceBulkAssign:
         ]
 
         mock_user_repo.get_existing_user_ids.return_value = {user_id1}  # Only user_id1 exists
+        mock_user_repo.get_deactivated_labels.return_value = []
 
         # Act & Assert
         with pytest.raises(ExtendedHTTPException) as exc_info:
@@ -429,6 +463,26 @@ class TestProjectAssignmentServiceBulkAssign:
         assert exc_info.value.code == 404
         assert "not found" in exc_info.value.message
         assert missing_id in exc_info.value.details
+
+    @patch("codemie.service.project.project_assignment_service.user_repository")
+    def test_bulk_assign_names_deactivated_users(self, mock_user_repo):
+        mock_session = MagicMock()
+        user_id = str(uuid4())
+        mock_user_repo.get_existing_user_ids.return_value = set()
+        mock_user_repo.get_deactivated_labels.return_value = ["alice@example.com"]
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectAssignmentService.bulk_assign_users_to_project(
+                session=mock_session,
+                project=MagicMock(),
+                users=[{"user_id": user_id, "is_project_admin": False}],
+                project_name="team-project",
+                actor=MagicMock(id=str(uuid4()), is_admin=False),
+                action="POST /v1/projects/team-project/users/bulk",
+            )
+
+        assert exc_info.value.code == 409
+        assert "alice@example.com" in exc_info.value.message
 
 
 class TestProjectAssignmentServiceBulkRemove:

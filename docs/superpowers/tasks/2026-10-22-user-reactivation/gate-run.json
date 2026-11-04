@@ -1,0 +1,72 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-13928_user-reactivation",
+  "head": "1d55bd73dc0df991d1c7716b5fdd6751084f948a",
+  "runner": "poetry",
+  "started_at": "2026-10-22T13:47:00Z",
+  "completed_at": "2026-10-22T13:49:00Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "command": "ruff format/check --fix/check on 10 changed py files",
+      "exit_code": 0,
+      "notes": "scoped to changed files; no changes made"
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "PASS",
+      "command": "make gitleaks",
+      "exit_code": 0,
+      "notes": "no leaks found"
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "PASS",
+      "command": "poetry run pytest <changed tests> tests/codemie/rest_api/router_guards -n 0",
+      "exit_code": 0,
+      "notes": "190 passed, 1 failed: test_openapi_matches_baseline, known pre-existing (fails on clean main; 24 enterprise LLM proxy paths); not a blocker"
+    },
+    {
+      "id": "ui",
+      "source": "guide",
+      "status": "N/A",
+      "command": "",
+      "notes": "No UI changes"
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "command": "make test-harness",
+      "notes": "MR-only; needs docker stack and fixtures. Still owed before MR"
+    },
+    {
+      "id": "ci",
+      "source": "ci",
+      "status": "N/A",
+      "command": "",
+      "notes": ".gitlab-ci.yml only runs pre-ci-guard templates; nothing runnable locally. Hooks pre-push runs pytest+sonar-local, not run"
+    }
+  ],
+  "failures": {}
+}

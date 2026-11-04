@@ -71,6 +71,7 @@ class TestSetDefaultProject:
     def test_rejects_unknown_user(self, mock_user_repo, mock_get_session):
         mock_session = MagicMock()
         mock_get_session.return_value.__enter__.return_value = mock_session
+        mock_user_repo.get_active_by_id.return_value = None
         mock_user_repo.get_by_id.return_value = None
 
         with pytest.raises(ExtendedHTTPException) as exc_info:

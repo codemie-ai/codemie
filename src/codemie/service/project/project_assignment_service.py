@@ -32,6 +32,7 @@ from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import Application
 from codemie.repository.user_project_repository import user_project_repository
 from codemie.repository.user_repository import user_repository
+from codemie.service.user.active_user import require_active_user
 from codemie.rest_api.models.user_management import UserProject
 from codemie.rest_api.security.user import User
 from codemie.service.activity.activity_models import (
@@ -301,15 +302,8 @@ class ProjectAssignmentService:
         # Validate user_id format before DB lookup
         ProjectAssignmentService._validate_user_id_format(user_id)
 
-        # Validate target user exists
-        target_user = user_repository.get_by_id(session, user_id)
-        if not target_user:
-            raise ExtendedHTTPException(
-                code=404,
-                message=_USER_NOT_FOUND,
-                details=f"No user found with ID '{user_id}'",
-                help=_VERIFY_USER_ID_HELP,
-            )
+        # Validate target user exists and is active
+        require_active_user(session, user_id, user_repository)
 
         # Check if already assigned
         existing = user_project_repository.get_by_user_and_project(session, user_id, project_name)
@@ -385,15 +379,8 @@ class ProjectAssignmentService:
         # Validate user_id format before DB lookup
         ProjectAssignmentService._validate_user_id_format(user_id)
 
-        # Validate target user exists
-        target_user = user_repository.get_by_id(session, user_id)
-        if not target_user:
-            raise ExtendedHTTPException(
-                code=404,
-                message=_USER_NOT_FOUND,
-                details=f"No user found with ID '{user_id}'",
-                help=_VERIFY_USER_ID_HELP,
-            )
+        # Validate target user exists and is active
+        require_active_user(session, user_id, user_repository)
 
         # Check if user is assigned to project
         membership = user_project_repository.get_by_user_and_project(session, user_id, project_name)
@@ -484,10 +471,18 @@ class ProjectAssignmentService:
         for user_id in user_ids:
             ProjectAssignmentService._validate_user_id_format(user_id)
 
-        # Bulk-check all users exist
-        existing_user_ids = user_repository.get_existing_user_ids(session, user_ids)
+        # Bulk-check all users exist and are active
+        existing_user_ids = user_repository.get_existing_user_ids(session, user_ids, active_only=True)
         missing_ids = sorted(set(user_ids) - existing_user_ids)
         if missing_ids:
+            deactivated = user_repository.get_deactivated_labels(session, missing_ids)
+            if deactivated:
+                raise ExtendedHTTPException(
+                    code=409,
+                    message=f"Users are deactivated: {', '.join(deactivated)}",
+                    details=f"Deactivated users: {deactivated}",
+                    help="Remove deactivated users from the request or reactivate them first",
+                )
             raise ExtendedHTTPException(
                 code=404,
                 message="One or more users not found",

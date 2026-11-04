@@ -12,7 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from unittest.mock import patch
+
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _trigger_owner_active():
+    """Schedulers and webhooks check that their owner is active; these tests run with an active owner."""
+    with (
+        patch("codemie.triggers.bindings.cron.is_trigger_owner_active", return_value=True),
+        patch("codemie.triggers.bindings.webhook.is_trigger_owner_active", return_value=True),
+    ):
+        yield
 
 
 def _mr_payload(action: str, state: str = "opened", **attr_overrides) -> dict:

@@ -1146,6 +1146,7 @@ class BudgetService:
         db_user = result.scalars().first()
         if db_user is None:
             raise ExtendedHTTPException(code=404, message=f"User '{user_id}' not found")
+        self._reject_budget_grant_to_deactivated([db_user], assignments)
 
         provider = get_active_provider()
 
@@ -1231,6 +1232,7 @@ class BudgetService:
             await self.validate_assignment_budget_categories(session, non_null)
 
         db_users = await self._load_bulk_budget_users(session, user_ids, select, UserDB)
+        self._reject_budget_grant_to_deactivated(list(db_users.values()), assignments)
         await self._persist_bulk_budget_assignments(session, user_ids, assignments, actor_id)
         await self._propagate_bulk_budget_assignments(db_users, assignments)
         logger.info(
@@ -1246,6 +1248,19 @@ class BudgetService:
         if missing:
             raise ExtendedHTTPException(code=404, message=f"Users not found: {missing!r}")
         return db_users
+
+    @staticmethod
+    def _reject_budget_grant_to_deactivated(users: list, assignments: dict[BudgetCategory, str | None]) -> None:
+        """Deactivated users cannot be granted a budget; clearing one stays allowed for cleanup."""
+        # Imported here: the user service package pulls in the project services, which import this module
+        from codemie.service.user.active_user import USER_DEACTIVATED
+
+        if all(bid is None for bid in assignments.values()):
+            return
+        deactivated = sorted(u.email or u.id for u in users if not (u.is_active and u.deleted_at is None))
+        if deactivated:
+            message = USER_DEACTIVATED if len(users) == 1 else f"Users are deactivated: {', '.join(deactivated)}"
+            raise ExtendedHTTPException(code=409, message=message)
 
     async def _persist_bulk_budget_assignments(
         self,

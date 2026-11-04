@@ -504,6 +504,7 @@ class TestGrantKBAccess:
         # Arrange
         mock_session = MagicMock()
         mock_get_session.return_value.__enter__.return_value = mock_session
+        mock_user_repo.get_active_by_id.return_value = None
         mock_user_repo.get_by_id.return_value = None
 
         # Act & Assert

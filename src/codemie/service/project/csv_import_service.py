@@ -38,6 +38,7 @@ ERRORS = SimpleNamespace(
     INVALID_ROLE="Invalid role '{}'. Allowed values: {}",
     DUPLICATE_EMAIL="Duplicate email: '{}' appears more than once",
     USER_NOT_FOUND="User not found for email: '{}'",
+    USER_DEACTIVATED="User is deactivated for email: '{}'",
     MISSING_EMAIL_COLUMN="CSV must contain an '{}' column",
     EMPTY_CSV="CSV file must contain at least one data row",
     TOO_MANY_ROWS="CSV exceeds the maximum of {} rows (got {})",
@@ -174,10 +175,12 @@ class CsvImportService:
             if row["error"] is not None:
                 continue
             db_user = found.get(row["email"])
-            if db_user:
-                row["user_id"] = db_user.id
-            else:
+            if db_user is None:
                 row["error"] = ERRORS.USER_NOT_FOUND.format(row["email"])
+            elif not (db_user.is_active and db_user.deleted_at is None):
+                row["error"] = ERRORS.USER_DEACTIVATED.format(row["email"])
+            else:
+                row["user_id"] = db_user.id
 
     @staticmethod
     def _decode(content: bytes) -> str:

@@ -36,8 +36,9 @@ from codemie.core.exceptions import ExtendedHTTPException
 from codemie.enterprise.mcp_auth.dependencies import enqueue_mcp_auth_cleanup
 from codemie.repository.user_repository import user_repository
 from codemie.rest_api.security.permissions import is_admin_or_maintainer
-from codemie.rest_api.security.user import resolve_membership_default
+from codemie.rest_api.security.user import User, resolve_membership_default
 from codemie.rest_api.security.user_type_validator import VALID_USER_TYPES
+from codemie.service.user.active_user import require_active_user
 from codemie.service.user.authentication_service import invalidate_user_from_cache
 from codemie.rest_api.models.user_management import (
     AdminUserListItem,
@@ -339,7 +340,7 @@ class UserManagementService:
             name=user.name,
             picture=user.picture,
             user_type=user.user_type,
-            is_active=user.is_active,
+            is_active=user.is_active and user.deleted_at is None,
             is_admin=user.is_admin,
             is_maintainer=user.is_maintainer,
             is_auditor=user.is_auditor,
@@ -403,11 +404,23 @@ class UserManagementService:
             Deactivated UserDB
 
         Raises:
-            ExtendedHTTPException: 404 if not found, 403 if last admin
+            ExtendedHTTPException: 404 if not found, 403 if self, rank, last admin or last maintainer
         """
         user = user_repository.get_by_id(session, user_id)
         if not user:
             raise ExtendedHTTPException(code=404, message=_USER_NOT_FOUND)
+
+        UserManagementService._check_status_change_allowed(session, user, actor_user_id, "deactivate")
+
+        if user.is_maintainer and user_repository.count_active_maintainers(session) <= 1:
+            logger.warning(
+                f"blocked_last_maintainer_deactivation: actor_user_id={actor_user_id}, "
+                f"target_user_id={user_id}, action=deactivate, domain=user_management"
+            )
+            raise ExtendedHTTPException(
+                code=403,
+                message="Cannot deactivate last maintainer - assign another maintainer first",
+            )
 
         # Last admin protection
         if user.is_admin:
@@ -437,12 +450,45 @@ class UserManagementService:
             session,
         )
 
-        logger.info(
-            f"user_deactivated: actor_user_id={actor_user_id}, target_user_id={user_id}, domain=user_management"
-        )
-
         # Refresh user
         return user_repository.get_by_id(session, user_id)
+
+    @staticmethod
+    def reactivate_user(session: Session, user_id: str, actor_user_id: str) -> None:
+        """Reactivate a deactivated user.
+
+        Stages the reactivation and the user's missing project budget shares in the session
+        only: no event, no log, no commit.
+
+        Args:
+            session: Database session
+            user_id: Target user UUID
+            actor_user_id: User performing the action
+
+        Raises:
+            ExtendedHTTPException: 404 if not found, 403 if self or rank, 409 if the user is already fully active
+        """
+        from codemie.repository.user_project_repository import user_project_repository
+        from codemie.service.project.project_assignment_service import ProjectAssignmentService
+
+        user = user_repository.get_by_id(session, user_id)
+        if not user:
+            raise ExtendedHTTPException(code=404, message=_USER_NOT_FOUND)
+
+        UserManagementService._check_status_change_allowed(session, user, actor_user_id, "reactivate")
+
+        # Either flag indicating deactivation makes the user reactivatable
+        if user.is_active and user.deleted_at is None:
+            raise ExtendedHTTPException(code=409, message="User is already active")
+
+        user_repository.reactivate(session, user_id)
+
+        # Shares are split among active members only, so a budget created while the user was
+        # deactivated has none for them; this is what adding them to the project would do.
+        for membership in user_project_repository.get_by_user_id(session, user_id):
+            ProjectAssignmentService._sync_project_budget_member_added(
+                session, membership.project_name, user_id, actor_user_id
+            )
 
     @staticmethod
     def list_users(
@@ -526,7 +572,7 @@ class UserManagementService:
                 email=u.email,
                 name=u.name,
                 user_type=u.user_type,
-                is_active=u.is_active,
+                is_active=u.is_active and u.deleted_at is None,
                 is_admin=u.is_admin,
                 is_maintainer=u.is_maintainer,
                 is_auditor=u.is_auditor,
@@ -647,6 +693,19 @@ class UserManagementService:
     # ===========================================
     # Router-Facing Flows (Admin User Management)
     # ===========================================
+
+    @staticmethod
+    def restrict_deactivated_visibility(user: User, filters: UserListFilters) -> UserListFilters:
+        """Force active-only for callers who may not see deactivated accounts.
+
+        Super admins, maintainers and auditors keep the inclusive default, and so do project
+        admins filtering by projects they all administer (they clean up deactivated members).
+        """
+        if user.is_admin_or_maintainer or getattr(user, "is_auditor", False):
+            return filters
+        if filters.projects and all(p in user.admin_project_names for p in filters.projects):
+            return filters
+        return filters.model_copy(update={"is_active": True})
 
     @staticmethod
     def list_users_with_flow(
@@ -903,6 +962,27 @@ class UserManagementService:
             )
 
         return is_admin, is_maintainer
+
+    @staticmethod
+    def _check_status_change_allowed(session: Session, target: UserDB, actor_user_id: str, action: str) -> None:
+        """Rules shared by deactivation and reactivation, whichever route reaches them.
+
+        Nobody changes their own status, and only a maintainer acts on a maintainer account
+        (same rank rule as role changes). Admin accounts are open to admins and maintainers.
+        """
+        if target.id == actor_user_id:
+            # A deactivated admin can still hold a cached session on another instance for the cache TTL
+            raise ExtendedHTTPException(code=403, message=f"You cannot {action} your own account")
+        if not target.is_maintainer:
+            return
+        actor = user_repository.get_by_id(session, actor_user_id)
+        if not actor or not actor.is_maintainer:
+            raise ExtendedHTTPException(
+                code=403,
+                message=_ACCESS_DENIED,
+                details=f"Only maintainers can {action} a maintainer",
+                help=f"Contact a maintainer to {action} this account",
+            )
 
     @staticmethod
     def _auto_manage_project_limit(user: UserDB, user_id: str, is_admin: Optional[bool]) -> tuple[bool, Optional[int]]:
@@ -1215,8 +1295,7 @@ class UserManagementService:
         """
         UserManagementService.deactivate_user(session, user_id, actor_user_id)
         session.commit()
-
-        UserManagementService._schedule_mcp_auth_cleanup_after_commit(user_id)
+        UserManagementService._after_status_change(user_id, actor_user_id, "user_deactivated", cleanup_mcp=True)
 
         # Story 10: Get actor's admin status for visibility filtering
         actor = user_repository.get_by_id(session, actor_user_id)
@@ -1243,7 +1322,8 @@ class UserManagementService:
         """Update user fields (admin action)
 
         Handles complete user update flow with session management.
-        Special handling for is_active: deactivation only (one-way).
+        Special handling for is_active: deactivation only; reactivation is done via
+        POST /v1/admin/users/{user_id}/reactivate.
 
         Admin Protection:
         - Self-revocation blocked: admin cannot revoke own status
@@ -1265,7 +1345,7 @@ class UserManagementService:
             is_admin: New admin status
             is_maintainer: New maintainer status
             is_auditor: New auditor status
-            is_active: Deactivation only (False allowed, True raises error)
+            is_active: Deactivation only (False allowed, True raises 400 pointing to the reactivate endpoint)
             project_limit: Max shared projects (Story 6). Auto-managed on role changes.
                 NULL/unlimited for admins, non-negative integers for regular users
 
@@ -1282,9 +1362,14 @@ class UserManagementService:
             if is_active is not None:
                 if is_active:
                     raise ExtendedHTTPException(
-                        code=400, message="Cannot reactivate user. Reactivation is not supported."
+                        code=400,
+                        message="Cannot reactivate user via update. Use POST /v1/admin/users/{user_id}/reactivate.",
                     )
                 return UserManagementService._handle_deactivation_flow(session, user_id, actor_user_id)
+
+            # Granting a platform role to a deactivated user is refused; revoking stays allowed for cleanup
+            if is_admin or is_maintainer or is_auditor:
+                require_active_user(session, user_id, user_repository)
 
             # Story 8: Resolve actor's admin status for user_type validation
             actor_is_admin = UserManagementService._resolve_actor_admin_status(session, actor_user_id, user_type)
@@ -1372,9 +1457,61 @@ class UserManagementService:
         with get_session() as session:
             UserManagementService.deactivate_user(session, user_id, actor_user_id)
             session.commit()
-            UserManagementService._schedule_mcp_auth_cleanup_after_commit(user_id)
+            UserManagementService._after_status_change(user_id, actor_user_id, "user_deactivated", cleanup_mcp=True)
 
             return {"message": "User deactivated successfully"}
+
+    @staticmethod
+    def reactivate_user_flow(user_id: str, actor_user_id: str) -> CodeMieUserDetail:
+        """Reactivate user (admin action)
+
+        The USER_REACTIVATED event is staged in the same session as the reactivation and
+        committed atomically with it. Logging and cache invalidation happen only after a
+        successful commit.
+
+        Args:
+            user_id: Target user UUID
+            actor_user_id: User performing the action
+
+        Returns:
+            CodeMieUserDetail of the reactivated user
+
+        Raises:
+            ExtendedHTTPException: 404 if not found, 403 if self or rank, 409 if already active
+        """
+        from codemie.clients.postgres import get_session
+
+        with get_session() as session:
+            UserManagementService.reactivate_user(session, user_id, actor_user_id)
+
+            activity_event_repository.insert(
+                ActivityEventCreate(
+                    domain=ActivityDomain.USER_MANAGEMENT,
+                    event_type=UserManagementEvent.USER_REACTIVATED,
+                    entity_type=ActivityEntityType.USER,
+                    entity_id=user_id,
+                    actor_id=actor_user_id,
+                ),
+                session,
+            )
+            session.commit()
+            UserManagementService._after_status_change(user_id, actor_user_id, "user_reactivated")
+
+            actor = user_repository.get_by_id(session, actor_user_id)
+            actor_is_admin = is_admin_or_maintainer(actor) if actor else False
+
+            return UserManagementService.get_user_with_relationships(session, user_id, actor_user_id, actor_is_admin)
+
+    @staticmethod
+    def _after_status_change(user_id: str, actor_user_id: str, event: str, *, cleanup_mcp: bool = False) -> None:
+        """Post-commit steps shared by deactivation and reactivation; must never fail the request."""
+        if cleanup_mcp:
+            UserManagementService._schedule_mcp_auth_cleanup_after_commit(user_id)
+        try:
+            invalidate_user_from_cache(user_id)
+        except Exception:
+            logger.exception(f"Failed to invalidate auth cache: target_user_id={user_id}")
+        logger.info(f"{event}: actor_user_id={actor_user_id}, target_user_id={user_id}, domain=user_management")
 
     @staticmethod
     def _schedule_mcp_auth_cleanup_after_commit(user_id: str) -> None:

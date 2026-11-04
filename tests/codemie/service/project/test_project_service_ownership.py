@@ -341,6 +341,7 @@ class TestUpdateProjectOwnership:
         project.deleted_at = None
         mock_application_repository.get_by_name.return_value = project
         mock_user_repository.get_active_by_id.return_value = None
+        mock_user_repository.get_by_id.return_value = None
 
         with pytest.raises(ExtendedHTTPException) as exc_info:
             ProjectService.update_project_ownership(
@@ -356,7 +357,7 @@ class TestUpdateProjectOwnership:
     @patch("codemie.service.project.project_service.user_repository")
     @patch("codemie.service.project.project_service.application_repository")
     @patch("codemie.service.project.project_service.get_session")
-    def test_update_project_ownership_deactivated_user_raises_404(
+    def test_update_project_ownership_deactivated_user_raises_409(
         self,
         mock_get_session,
         mock_application_repository,
@@ -375,6 +376,7 @@ class TestUpdateProjectOwnership:
 
         # get_active_by_id returns None for a deactivated user, even though the account exists.
         mock_user_repository.get_active_by_id.return_value = None
+        mock_user_repository.get_by_id.return_value = MagicMock(is_active=False)
 
         with pytest.raises(ExtendedHTTPException) as exc_info:
             ProjectService.update_project_ownership(
@@ -383,7 +385,8 @@ class TestUpdateProjectOwnership:
                 new_owner_id="deactivated-user",
             )
 
-        assert exc_info.value.code == 404
+        assert exc_info.value.code == 409
+        assert exc_info.value.message == "User is deactivated"
         mock_user_repository.get_active_by_id.assert_called_once_with(mock_session, "deactivated-user")
         mock_application_repository.update_project.assert_not_called()
         mock_session.commit.assert_not_called()

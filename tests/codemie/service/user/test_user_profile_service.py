@@ -372,7 +372,7 @@ class TestUpdateProfile:
         mock_session = MagicMock()
         mock_get_session.return_value.__enter__.return_value = mock_session
 
-        mock_user_repo.get_by_id.return_value = db_user
+        mock_user_repo.get_active_by_id.return_value = db_user
         mock_user_repo.get_by_email.return_value = None
         mock_user_repo.update.return_value = updated_user
 
@@ -434,7 +434,7 @@ class TestUpdateProfile:
         mock_session = MagicMock()
         mock_get_session.return_value.__enter__.return_value = mock_session
 
-        mock_user_repo.get_by_id.return_value = db_user
+        mock_user_repo.get_active_by_id.return_value = db_user
         mock_user_repo.get_by_email.return_value = None
         mock_user_repo.update.return_value = updated_user
         mock_email_token_repo.create_token.return_value = (verification_token, MagicMock())
@@ -509,7 +509,7 @@ class TestUpdateProfile:
         mock_session = MagicMock()
         mock_get_session.return_value.__enter__.return_value = mock_session
 
-        mock_user_repo.get_by_id.return_value = db_user
+        mock_user_repo.get_active_by_id.return_value = db_user
         mock_user_repo.get_by_email.return_value = None
         mock_user_repo.update.return_value = updated_user
         mock_email_token_repo.create_token.return_value = (verification_token, MagicMock())
@@ -534,6 +534,7 @@ class TestUpdateProfile:
         user_id = str(uuid4())
         mock_session = MagicMock()
         mock_get_session.return_value.__enter__.return_value = mock_session
+        mock_user_repo.get_active_by_id.return_value = None
         mock_user_repo.get_by_id.return_value = None
 
         # Act & Assert

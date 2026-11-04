@@ -29,6 +29,7 @@ from codemie.rest_api.routers.user_management_router import (
     create_user,
     update_user,
     deactivate_user,
+    reactivate_user,
     admin_change_password,
     list_users,
     get_user,
@@ -438,6 +439,50 @@ class TestDeactivateUser:
 
         assert exc_info.value.code == 400
         assert "User management not enabled" in exc_info.value.message
+
+
+class TestReactivateUser:
+    """Tests for POST /v1/admin/users/{user_id}/reactivate endpoint."""
+
+    @patch("codemie.rest_api.routers.user_management_router.config")
+    @patch("codemie.rest_api.routers.user_management_router.user_management_service")
+    def test_reactivate_user_success(self, mock_service, mock_config, admin_user):
+        """Admin reactivates a user; the service result is returned unchanged."""
+        mock_config.ENABLE_USER_MANAGEMENT = True
+        mock_service.reactivate_user_flow.return_value = {"id": "user-456", "is_active": True}
+
+        result = reactivate_user("user-456", admin_user, None)
+
+        assert result == {"id": "user-456", "is_active": True}
+        mock_service.reactivate_user_flow.assert_called_once_with("user-456", "admin-123")
+
+    @patch("codemie.rest_api.routers.user_management_router.config")
+    @patch("codemie.rest_api.routers.user_management_router.user_management_service")
+    def test_reactivate_user_disabled_management(self, mock_service, mock_config, admin_user):
+        """Returns 400 and does not call the service when ENABLE_USER_MANAGEMENT=False."""
+        mock_config.ENABLE_USER_MANAGEMENT = False
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            reactivate_user("user-456", admin_user, None)
+
+        assert exc_info.value.code == 400
+        assert "User management not enabled" in exc_info.value.message
+        mock_service.reactivate_user_flow.assert_not_called()
+
+    @pytest.mark.parametrize("code", [404, 409])
+    @patch("codemie.rest_api.routers.user_management_router.config")
+    @patch("codemie.rest_api.routers.user_management_router.user_management_service")
+    def test_reactivate_user_service_errors_propagate(self, mock_service, mock_config, admin_user, code):
+        """Service 404/409 errors propagate unchanged."""
+        mock_config.ENABLE_USER_MANAGEMENT = True
+        mock_service.reactivate_user_flow.side_effect = ExtendedHTTPException(code=code, message="boom")
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            reactivate_user("user-456", admin_user, None)
+
+        assert exc_info.value.code == code
+        assert exc_info.value.message == "boom"
+        mock_service.reactivate_user_flow.assert_called_once_with("user-456", "admin-123")
 
 
 class TestAdminChangePassword:

@@ -27,7 +27,7 @@ from uuid import uuid4
 from datetime import datetime, UTC
 from unittest.mock import MagicMock, patch
 
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from codemie.repository.user_repository import UserRepository
 from codemie.rest_api.models.user_management import UserDB, UserProject, UserListFilters, PlatformRole
@@ -363,45 +363,41 @@ class TestApplyFilters:
         return query
 
     def test_no_filters_returns_query_unchanged(self):
-        """With empty filters and no search, only the base deleted_at filter is applied."""
+        """With empty filters and no search, no WHERE clause is added (deactivated users included)."""
         query = self._make_mock_query()
 
         result = UserRepository._apply_filters(query, search=None, filters=UserListFilters())
 
-        # Base filter: WHERE deleted_at IS NULL always added
-        query.where.assert_called_once()
+        query.where.assert_not_called()
         assert result is query
 
     def test_search_adds_ilike_where_clause(self):
-        """Non-empty search term adds OR ilike WHERE clause (plus base deleted_at filter)."""
+        """Non-empty search term adds OR ilike WHERE clause."""
         query = self._make_mock_query()
 
         result = UserRepository._apply_filters(query, search="alice", filters=UserListFilters())
 
-        # Base deleted_at filter + search ilike filter = 2 calls
-        assert query.where.call_count == 2
+        query.where.assert_called_once()
         assert result is query
 
     def test_user_type_filter_adds_where_clause(self):
-        """user_type filter adds WHERE user_type = value (plus base deleted_at filter)."""
+        """user_type filter adds WHERE user_type = value."""
         query = self._make_mock_query()
 
         result = UserRepository._apply_filters(query, search=None, filters=UserListFilters(user_type="external"))
 
-        # Base deleted_at filter + user_type filter = 2 calls
-        assert query.where.call_count == 2
+        query.where.assert_called_once()
         assert result is query
 
     def test_projects_filter_adds_exists_where_clause(self):
-        """projects filter adds WHERE EXISTS user_projects clause (plus base deleted_at filter)."""
+        """projects filter adds WHERE EXISTS user_projects clause."""
         query = self._make_mock_query()
 
         result = UserRepository._apply_filters(
             query, search=None, filters=UserListFilters(projects=["proj-a", "proj-b"])
         )
 
-        # Base deleted_at filter + projects exists filter = 2 calls
-        assert query.where.call_count == 2
+        query.where.assert_called_once()
         assert result is query
 
     @patch.object(UserRepository, "_apply_platform_role_filter")
@@ -415,7 +411,7 @@ class TestApplyFilters:
         mock_role_filter.assert_called_once_with(query, PlatformRole.ADMIN)
 
     def test_multiple_filters_chain_where_calls(self):
-        """Multiple filters each add a WHERE clause (chained), plus base deleted_at filter."""
+        """Multiple filters each add a WHERE clause (chained)."""
         query = self._make_mock_query()
 
         UserRepository._apply_filters(
@@ -424,17 +420,16 @@ class TestApplyFilters:
             filters=UserListFilters(user_type="regular", projects=["proj-x"]),
         )
 
-        # Base deleted_at + search + user_type + projects = 4 where calls
-        assert query.where.call_count == 4
+        # search + user_type + projects = 3 where calls
+        assert query.where.call_count == 3
 
     def test_empty_search_string_skips_ilike(self):
-        """Empty string search is falsy — no ilike clause added, only base deleted_at filter."""
+        """Empty string search is falsy — no ilike clause added."""
         query = self._make_mock_query()
 
         UserRepository._apply_filters(query, search="", filters=UserListFilters())
 
-        # Base filter only: WHERE deleted_at IS NULL
-        query.where.assert_called_once()
+        query.where.assert_not_called()
 
     @patch.object(UserRepository, "_apply_platform_admin_project_filter")
     def test_platform_admin_with_projects_delegates_to_combined_filter(self, mock_combined_filter):
@@ -515,3 +510,72 @@ class TestApplyPlatformAdminProjectFilter:
         assert len(args_plain) == 2  # ~is_admin + EXISTS without project scope
         # The EXISTS subqueries differ: combined is project-scoped, plain is not
         assert str(args_combined[0]) != str(args_plain[1])
+
+
+def _where_sql(statement) -> str:
+    """Return the compiled WHERE part of a statement ('' when there is none)."""
+    sql = str(statement.compile(compile_kwargs={"literal_binds": True}))
+    return sql.split("WHERE", 1)[1] if "WHERE" in sql else ""
+
+
+class TestApplyFiltersDeactivatedUsers:
+    """The admin list shows deactivated users unless is_active narrows it."""
+
+    def test_default_list_includes_deactivated_users(self):
+        statement = UserRepository._apply_filters(select(UserDB), search=None, filters=UserListFilters())
+
+        assert "deleted_at" not in _where_sql(statement)
+        assert "is_active" not in _where_sql(statement)
+
+    def test_is_active_false_selects_deactivated_users(self):
+        statement = UserRepository._apply_filters(select(UserDB), search=None, filters=UserListFilters(is_active=False))
+
+        where = _where_sql(statement)
+        # Half-marked records (only one flag set) count as deactivated, matching the grant lookups
+        assert "NOT (users.is_active AND users.deleted_at IS NULL)" in where
+
+    def test_is_active_true_requires_both_flags(self):
+        statement = UserRepository._apply_filters(select(UserDB), search=None, filters=UserListFilters(is_active=True))
+
+        where = _where_sql(statement)
+        assert "users.is_active AND users.deleted_at IS NULL" in where
+        assert "NOT" not in where
+
+
+class TestActiveOnlyBulkLookups:
+    """Bulk lookups used for assignment skip deactivated users only when asked."""
+
+    def _captured_where(self, mock_session) -> str:
+        return _where_sql(mock_session.exec.call_args.args[0])
+
+    def test_get_existing_user_ids_active_only_filters_deactivated(self):
+        session = MagicMock(spec=Session)
+
+        UserRepository().get_existing_user_ids(session, ["u1"], active_only=True)
+
+        where = self._captured_where(session)
+        assert "is_active" in where
+        assert "deleted_at IS NULL" in where
+
+    def test_get_existing_user_ids_default_keeps_deactivated(self):
+        session = MagicMock(spec=Session)
+
+        UserRepository().get_existing_user_ids(session, ["u1"])
+
+        assert "is_active" not in self._captured_where(session)
+
+    def test_get_by_emails_active_only_filters_deactivated(self):
+        session = MagicMock(spec=Session)
+
+        UserRepository().get_by_emails(session, ["a@example.com"], active_only=True)
+
+        where = self._captured_where(session)
+        assert "is_active" in where
+        assert "deleted_at IS NULL" in where
+
+    def test_get_by_emails_default_keeps_deactivated(self):
+        session = MagicMock(spec=Session)
+
+        UserRepository().get_by_emails(session, ["a@example.com"])
+
+        assert "is_active" not in self._captured_where(session)

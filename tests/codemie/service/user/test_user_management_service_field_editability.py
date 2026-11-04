@@ -760,10 +760,13 @@ def test_user_type_update_allowed_for_regular_admin(mock_get_session, mock_repo,
 # ===========================================
 
 
+@patch("codemie.service.user.user_management_service.invalidate_user_from_cache")
 @patch("codemie.service.user.user_management_service.enqueue_mcp_auth_cleanup")
 @patch("codemie.service.user.user_management_service.user_repository")
 @patch("codemie.clients.postgres.get_session")
-def test_deactivation_via_put_is_active_false(mock_get_session, mock_repo, mock_enqueue_cleanup, local_user):
+def test_deactivation_via_put_is_active_false(
+    mock_get_session, mock_repo, mock_enqueue_cleanup, mock_invalidate_cache, local_user
+):
     """AC-13: PUT with is_active=False triggers soft delete"""
     # Arrange
     mock_session = MagicMock()
@@ -808,6 +811,7 @@ def test_deactivation_via_put_is_active_false(mock_get_session, mock_repo, mock_
     assert result.is_active is False
     mock_session.commit.assert_called_once_with()
     mock_enqueue_cleanup.assert_called_once_with("user-local-1")
+    mock_invalidate_cache.assert_called_once_with("user-local-1")
     assert result.deleted_at is not None
     mock_repo.soft_delete.assert_called_once_with(mock_session, "user-local-1")
 
@@ -852,6 +856,7 @@ def test_reactivation_via_put_is_active_true_blocked(mock_get_session):
     # Verify exception
     assert exc_info.value.code == 400
     assert "Cannot reactivate user" in exc_info.value.message
+    assert "/v1/admin/users/{user_id}/reactivate" in exc_info.value.message
 
 
 # ===========================================

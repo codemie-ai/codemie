@@ -60,6 +60,7 @@ class PasswordManagementService:
         """
         from codemie.service.password_service import password_service
 
+        # Plain lookup: admins may reset a deactivated user's password; self-service callers are always active
         user = user_repository.get_by_id(session, user_id)
         if not user:
             raise ExtendedHTTPException(code=404, message="User not found")

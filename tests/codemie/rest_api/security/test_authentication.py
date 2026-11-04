@@ -764,3 +764,66 @@ class TestTeamsSenderSwapReachesNonChatRouter:
 
         assert response.status_code == 200
         assert response.json()["id"] == "regular-user-1"
+
+
+@pytest.mark.anyio
+@patch.object(config, 'ENV', 'dev')
+@patch.object(config, 'ENABLE_USER_MANAGEMENT', True)
+async def test_signed_internal_call_for_a_user_missing_from_db_gets_401(mocker):
+    """Signed internal callbacks get no stand-in user outside ENV local (EPMCDME-13928)."""
+    user_id = "missing-user"
+    headers = sign_internal_request(user_id)
+    header_map = {
+        "X-Bind-Key": headers["X-Bind-Key"],
+        "X-Bind-Nonce": headers["X-Bind-Nonce"],
+        "X-Bind-Timestamp": headers["X-Bind-Timestamp"],
+        "user-id": user_id,
+    }
+    mock_request = MagicMock()
+    mock_request.headers.get = lambda key, default="": header_map.get(key, default)
+    mock_request.state = MagicMock()
+
+    session_ctx = MagicMock()
+    session_ctx.__aenter__ = AsyncMock(return_value=MagicMock())
+    session_ctx.__aexit__ = AsyncMock(return_value=False)
+    mocker.patch("codemie.clients.postgres.get_async_session", return_value=session_ctx)
+    mocker.patch(
+        "codemie.repository.user_repository.user_repository.aget_active_by_id", new=AsyncMock(return_value=None)
+    )
+    mocker.patch("codemie.repository.user_repository.user_repository.aget_by_id", new=AsyncMock(return_value=None))
+
+    with pytest.raises(ExtendedHTTPException) as exc:
+        await authenticate(mock_request, internal_user_id=user_id, bind_key=headers["X-Bind-Key"])
+
+    assert exc.value.code == 401
+
+
+@pytest.mark.anyio
+@patch.object(config, 'ENV', 'dev')
+@patch.object(config, 'ENABLE_USER_MANAGEMENT', False)
+async def test_signed_internal_call_keeps_stand_in_with_user_management_off(mocker):
+    """That mode keeps no user rows, so scheduled callbacks must keep working (EPMCDME-13928)."""
+    user_id = "missing-user"
+    headers = sign_internal_request(user_id)
+    header_map = {
+        "X-Bind-Key": headers["X-Bind-Key"],
+        "X-Bind-Nonce": headers["X-Bind-Nonce"],
+        "X-Bind-Timestamp": headers["X-Bind-Timestamp"],
+        "user-id": user_id,
+    }
+    mock_request = MagicMock()
+    mock_request.headers.get = lambda key, default="": header_map.get(key, default)
+    mock_request.state = MagicMock()
+
+    session_ctx = MagicMock()
+    session_ctx.__aenter__ = AsyncMock(return_value=MagicMock())
+    session_ctx.__aexit__ = AsyncMock(return_value=False)
+    mocker.patch("codemie.clients.postgres.get_async_session", return_value=session_ctx)
+    mocker.patch(
+        "codemie.repository.user_repository.user_repository.aget_active_by_id", new=AsyncMock(return_value=None)
+    )
+    mocker.patch("codemie.repository.user_repository.user_repository.aget_by_id", new=AsyncMock(return_value=None))
+
+    user = await authenticate(mock_request, internal_user_id=user_id, bind_key=headers["X-Bind-Key"])
+
+    assert user.id == user_id

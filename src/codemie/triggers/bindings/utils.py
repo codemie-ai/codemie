@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from codemie.configs import logger
+from codemie.configs import config, logger
 from codemie.rest_api.models.assistant import Assistant
 from codemie.rest_api.models.index import IndexInfo
 from codemie.rest_api.security.user import User
@@ -20,24 +20,38 @@ from codemie.service.constants import FullDatasourceTypes
 from codemie.triggers.trigger_exceptions import DatasourceNotValidated, NotImplementedDatasource
 
 
-def resolve_trigger_user(user_id: str) -> User:
+def resolve_trigger_user(user_id: str) -> User | None:
+    """Return the trigger owner, or None when the owner is not active so the job is skipped.
+
+    A stand-in user is only used for an owner with no user row on ENV local, or when user
+    management is off: that mode keeps no user rows and has no deactivation.
+    """
     from codemie.clients.postgres import get_session
     from codemie.repository.user_repository import user_repository
 
+    has_row = False
     try:
         with get_session() as session:
             db_user = user_repository.get_active_by_id(session, user_id)
-        if db_user:
-            return User(
-                id=db_user.id,
-                username=db_user.username,
-                name=db_user.name or "",
-                email=db_user.email,
-            )
+            if db_user:
+                return User(
+                    id=db_user.id,
+                    username=db_user.username,
+                    name=db_user.name or "",
+                    email=db_user.email,
+                )
+            has_row = user_repository.get_by_id(session, user_id) is not None
     except Exception:
-        logger.warning("resolve_trigger_user: DB lookup failed for user_id=%r, using stub", user_id)
+        logger.warning("resolve_trigger_user: DB lookup failed for user_id=%r", user_id)
 
-    return User(id=user_id)
+    if (config.ENV == "local" or not config.ENABLE_USER_MANAGEMENT) and not has_row:
+        return User(id=user_id)
+    logger.warning("resolve_trigger_user: owner user_id=%r is not active, skipping the job", user_id)
+    return None
+
+
+def is_trigger_owner_active(user_id: str) -> bool:
+    return resolve_trigger_user(user_id) is not None
 
 
 def validate_assistant(assistant_id):

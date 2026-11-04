@@ -27,6 +27,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from codemie.core.exceptions import ExtendedHTTPException
 from codemie.service.activity.activity_models import (
     ActivityDomain,
     ActivityEntityType,
@@ -261,6 +262,8 @@ class TestAssignBudgetToUserActivityEvent:
         db_user = MagicMock(spec=UserDB)
         db_user.id = "user-123"
         db_user.username = "testuser"
+        db_user.is_active = True
+        db_user.deleted_at = None
 
         scalars_mock = MagicMock()
         scalars_mock.first.return_value = db_user
@@ -315,6 +318,8 @@ class TestAssignBudgetToUserActivityEvent:
         db_user = MagicMock(spec=UserDB)
         db_user.id = "user-123"
         db_user.username = "testuser"
+        db_user.is_active = True
+        db_user.deleted_at = None
 
         scalars_mock = MagicMock()
         scalars_mock.first.return_value = db_user
@@ -367,6 +372,8 @@ class TestAssignBudgetToUserActivityEvent:
         db_user = MagicMock(spec=UserDB)
         db_user.id = "user-123"
         db_user.username = "testuser"
+        db_user.is_active = True
+        db_user.deleted_at = None
 
         scalars_mock = MagicMock()
         scalars_mock.first.return_value = db_user
@@ -423,6 +430,29 @@ def _make_project_budget_create_request(**kwargs):
     }
     defaults.update(kwargs)
     return ProjectBudgetCreateRequest(**defaults)
+
+
+class TestBudgetGrantToDeactivatedUser:
+    @pytest.mark.asyncio
+    async def test_assign_budget_refused_for_deactivated_user(self):
+        db_user = MagicMock(id="user-1", email="alice@example.com", is_active=False, deleted_at=None)
+        session = AsyncMock()
+        session.execute = AsyncMock(
+            return_value=MagicMock(scalars=MagicMock(return_value=MagicMock(first=MagicMock(return_value=db_user))))
+        )
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            await _make_service().assign_budget_to_user(
+                session, user_id="user-1", assignments={BudgetCategory.PLATFORM: "b1"}, actor_id="admin-1"
+            )
+
+        assert exc_info.value.code == 409
+        assert exc_info.value.message == "User is deactivated"
+
+    def test_clearing_a_budget_is_allowed_for_deactivated_user(self):
+        db_user = MagicMock(id="user-1", email="alice@example.com", is_active=False, deleted_at=None)
+
+        _make_service()._reject_budget_grant_to_deactivated([db_user], {BudgetCategory.PLATFORM: None})
 
 
 class TestCreateProjectBudgetActivityEvent:
@@ -628,7 +658,12 @@ class TestBulkSetUserBudgetsLogger:
             patch.object(
                 service,
                 "_load_bulk_budget_users",
-                new=AsyncMock(return_value={"user-1": MagicMock(), "user-2": MagicMock()}),
+                new=AsyncMock(
+                    return_value={
+                        "user-1": MagicMock(is_active=True, deleted_at=None),
+                        "user-2": MagicMock(is_active=True, deleted_at=None),
+                    }
+                ),
             ),
             patch.object(service, "_persist_bulk_budget_assignments", new=AsyncMock()),
             patch.object(service, "_propagate_bulk_budget_assignments", new=AsyncMock()),

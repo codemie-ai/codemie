@@ -41,6 +41,7 @@ from codemie.service.activity.activity_models import (
 )
 from codemie.service.activity.activity_repository import activity_event_repository
 from codemie.repository.user_repository import user_repository
+from codemie.service.user.active_user import require_active_user
 from codemie.rest_api.models.settings import Settings
 from codemie.rest_api.security.user import User
 from codemie.service.cost_center_service import cost_center_service
@@ -348,9 +349,7 @@ class ProjectService:
                 )
                 raise ExtendedHTTPException(code=403, message=cls.ERRORS.PERSONAL_UPDATE)
 
-            new_owner = user_repository.get_active_by_id(session, new_owner_id)
-            if not new_owner:
-                raise ExtendedHTTPException(code=404, message=cls.ERRORS.PROJECT_NOT_FOUND)
+            new_owner = require_active_user(session, new_owner_id, user_repository)
 
             previous_owner_id = project.created_by
             previous_owner = user_repository.get_by_id(session, previous_owner_id) if previous_owner_id else None

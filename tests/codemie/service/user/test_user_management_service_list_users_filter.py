@@ -379,3 +379,44 @@ def test_list_users_passes_pagination_params_to_repository(mock_user_repo, mock_
     query_call_args = mock_user_repo.query_users.call_args
     assert query_call_args[0][3] == 3  # page arg
     assert query_call_args[0][4] == 15  # per_page arg
+
+
+# ===========================================
+# One definition of "active" in the response
+# ===========================================
+
+
+@pytest.mark.parametrize(
+    ("is_active", "deleted_at", "expected"),
+    [(True, None, True), (False, None, False), (True, "2026-01-01T00:00:00", False)],
+    ids=["active", "inactive_flag_only", "half_marked_deleted_at_only"],
+)
+@patch("codemie.repository.user_project_repository.user_project_repository")
+@patch("codemie.service.user.user_management_service.user_repository")
+def test_list_response_marks_half_marked_record_as_deactivated(
+    mock_user_repo, mock_user_project_repo, mock_session, is_active, deleted_at, expected
+):
+    user = MagicMock(
+        id="u1",
+        username="alice",
+        email="alice@example.com",
+        user_type="regular",
+        is_active=is_active,
+        deleted_at=deleted_at,
+        is_admin=False,
+        is_maintainer=False,
+        is_auditor=False,
+        auth_source="local",
+        last_login_at=None,
+        date=None,
+    )
+    user.name = "Alice"
+    mock_user_repo.count_users.return_value = 1
+    mock_user_repo.query_users.return_value = [user]
+    mock_user_repo.fetch_projects_map.return_value = {}
+    mock_user_repo.fetch_budget_assignments_map.return_value = {}
+    mock_user_project_repo.filter_visible_projects_from_map.return_value = {}
+
+    result = UserManagementService.list_users(mock_session, requesting_user_id="admin-1", is_project_admin=True)
+
+    assert result.data[0].is_active is expected

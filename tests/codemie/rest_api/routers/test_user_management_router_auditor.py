@@ -14,10 +14,13 @@
 
 """Tests for auditor access in user management router (EPMCDME-10930)."""
 
+import asyncio
+
 import pytest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from codemie.configs import config
+from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.routers.user_management_router import get_user, list_users, router
 from codemie.rest_api.security.authentication import admin_access_only, admin_or_maintainer_or_auditor_access
 from codemie.rest_api.security.user import User
@@ -244,3 +247,48 @@ class TestAuditorRepositoryFilter:
         )
         compiled = str(result.whereclause.compile())
         assert "is_auditor" in compiled
+
+
+class TestReactivateRouteGuard:
+    """POST /v1/admin/users/{user_id}/reactivate is guarded by admin_access_only only."""
+
+    def _route(self):
+        for route in router.routes:
+            if getattr(route, "path", None) == "/v1/admin/users/{user_id}/reactivate" and "POST" in getattr(
+                route, "methods", set()
+            ):
+                return route
+        raise AssertionError("POST reactivate route not found")
+
+    def test_reactivate_route_uses_admin_access_only(self):
+        dependency_functions = [dep.call for dep in self._route().dependant.dependencies]
+        assert admin_access_only in dependency_functions
+        assert admin_or_maintainer_or_auditor_access not in dependency_functions
+
+    def test_reactivate_regular_user_403(self):
+        with patch.object(config, 'ENV', 'dev'), patch.object(config, 'ENABLE_USER_MANAGEMENT', True):
+            regular = User(
+                id="reg-1",
+                email="reg@example.com",
+                username="reg",
+                is_admin=False,
+                is_maintainer=False,
+                is_auditor=False,
+                admin_project_names=[],
+            )
+        request = MagicMock()
+        request.state.user = regular
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            asyncio.run(admin_access_only(request))
+
+        assert exc_info.value.code == 403
+
+    def test_reactivate_auditor_403(self, auditor_user):
+        request = MagicMock()
+        request.state.user = auditor_user
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            asyncio.run(admin_access_only(request))
+
+        assert exc_info.value.code == 403

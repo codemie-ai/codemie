@@ -26,6 +26,7 @@ from codemie.rest_api.security.user import User, resolve_membership_default
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import Application
 from codemie.repository.user_repository import user_repository
+from codemie.service.user.active_user import require_active_user
 from codemie.repository.user_project_repository import user_project_repository
 from codemie.repository.user_kb_repository import user_kb_repository
 from codemie.repository.application_repository import application_repository
@@ -150,9 +151,7 @@ class UserAccessService:
         from codemie.clients.postgres import get_session
 
         with get_session() as session:
-            target_user = user_repository.get_by_id(session, user_id)
-            if not target_user:
-                raise ExtendedHTTPException(code=404, message=_ERRORS.USER_NOT_FOUND)
+            require_active_user(session, user_id, user_repository)
 
             try:
                 if not mutate(session, user_id, project_name):
@@ -273,10 +272,8 @@ class UserAccessService:
         from codemie.clients.postgres import get_session
 
         with get_session() as session:
-            # Verify user exists
-            target_user = user_repository.get_by_id(session, user_id)
-            if not target_user:
-                raise ExtendedHTTPException(code=404, message=_ERRORS.USER_NOT_FOUND)
+            # Verify user exists and is active
+            require_active_user(session, user_id, user_repository)
 
             # Check if already has access
             existing = user_kb_repository.get_by_user_and_kb(session, user_id, kb_name)

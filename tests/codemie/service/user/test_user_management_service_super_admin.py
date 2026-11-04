@@ -165,6 +165,7 @@ def test_last_admin_deactivation_blocked(mock_get_session, mock_repo, mock_logge
     mock_session = MagicMock()
     mock_get_session.return_value.__enter__.return_value = mock_session
     mock_repo.get_by_id.return_value = super_admin_user
+    mock_repo.count_active_maintainers.return_value = 2  # Not the last maintainer
     mock_repo.count_active_admins.return_value = 1  # Last admin
 
     # Act & Assert
@@ -182,11 +183,12 @@ def test_last_admin_deactivation_blocked(mock_get_session, mock_repo, mock_logge
     assert "domain=user_management" in log_call
 
 
+@patch("codemie.service.user.user_management_service.invalidate_user_from_cache")
 @patch("codemie.service.user.user_management_service.enqueue_mcp_auth_cleanup")
 @patch("codemie.service.user.user_management_service.user_repository")
 @patch("codemie.clients.postgres.get_session")
 def test_deactivate_user_flow_schedules_cleanup_after_commit(
-    mock_get_session, mock_repo, mock_enqueue_cleanup, regular_user
+    mock_get_session, mock_repo, mock_enqueue_cleanup, mock_invalidate_cache, regular_user
 ):
     mock_session = MagicMock()
     mock_get_session.return_value.__enter__.return_value = mock_session
@@ -198,6 +200,7 @@ def test_deactivate_user_flow_schedules_cleanup_after_commit(
     assert result == {"message": "User deactivated successfully"}
     mock_session.commit.assert_called_once_with()
     mock_enqueue_cleanup.assert_called_once_with("regular-1")
+    mock_invalidate_cache.assert_called_once_with("regular-1")
 
 
 @patch("codemie.service.user.user_management_service.enqueue_mcp_auth_cleanup")
@@ -478,6 +481,7 @@ def test_protection_applies_to_deactivation_endpoint(mock_get_session, mock_repo
     mock_session = MagicMock()
     mock_get_session.return_value.__enter__.return_value = mock_session
     mock_repo.get_by_id.return_value = super_admin_user
+    mock_repo.count_active_maintainers.return_value = 2
     mock_repo.count_active_admins.return_value = 1
 
     # Act & Assert
@@ -485,6 +489,7 @@ def test_protection_applies_to_deactivation_endpoint(mock_get_session, mock_repo
         UserManagementService.deactivate_user_flow(user_id="super-admin-1", actor_user_id="system")
 
     assert exc_info.value.code == 403
+    assert "Cannot deactivate last admin" in exc_info.value.message
 
 
 @patch("codemie.service.user.user_management_service.user_repository")
