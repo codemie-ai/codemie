@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Inline slash-skill request attribution and per-dispatch usage SQL.
+"""Transcript-to-OTel request pairing, inline slash-skill attribution and per-dispatch usage SQL.
 
-The CTEs extend the reader's ``dispatch_fork`` and ``t`` (Skill spans) CTEs,
-bind ``$sid``, and expose ``inline_usage`` for the final timeline projection.
+The CTEs extend the reader's ``dispatch_fork`` and ``t`` (Skill spans) CTEs, bind ``$sid``, and expose
+``paired_requests`` (every paired API request with the scope and agentId the plugin sent for it) and
+``inline_usage`` for the final timeline projection.
 """
 
 from codemie.repository.cli_analytics.postgres.rollups import (
@@ -35,13 +36,13 @@ _API_REQUEST = int(EventKind.API_REQUEST)
 _C = 'COLLATE "C"'
 
 
-# The OTel requests of a session paired with a main-thread transcript request (usage_requests) attributed to a
-# skill, as `okey` (the row's identity) and `skill_name`. The pairing is the rollups' own, run over the whole
-# session: tier 1 (equal non-empty request ids, the n-th with the n-th), tier 2 (not both ids present, same raw
-# model and totals, <= 5 s) and tier 3 (a partial positive-output snapshot, <= 30 s), the last two resolved one to
+# The OTel requests of a session paired with a transcript request (usage_requests), as `okey` (the row's identity)
+# with the transcript request's `scope_kind`, `scope_name` and `agent_id`. The pairing is the rollups' own, run over
+# the whole session: tier 1 (equal non-empty request ids, the n-th with the n-th), tier 2 (not both ids present, same
+# raw model and totals, <= 5 s) and tier 3 (a partial positive-output snapshot, <= 30 s), the last two resolved one to
 # one with the rollups' own walk (each transcript request takes its nearest free record). One `day` stands for the
 # whole session, as no pair may be cut at midnight here.
-_INLINE_ATTRIBUTED = f"""WITH RECURSIVE
+_PAIRED_REQUESTS = f"""WITH RECURSIVE
             t AS MATERIALIZED (
                 SELECT x.*, (x.ts AT TIME ZONE 'UTC')::date AS t_day,
                        row_number() OVER (PARTITION BY x.session_id ORDER BY x.ts, x.tkey) AS tid
@@ -93,15 +94,20 @@ _INLINE_ATTRIBUTED = f"""WITH RECURSIVE
                 {_resolved("3")}
             )
             SELECT o.okey, o.ts, o.prompt_id, o.model, o.cost_usd, o.input_tokens, o.output_tokens, o.cache_read_tokens,
-                   o.cache_creation_tokens, o.attrs, t.scope_name AS skill_name
+                   o.cache_creation_tokens, o.attrs, t.scope_kind, t.scope_name, coalesce(t.agent_id, '') AS agent_id
             FROM p
             JOIN t ON t.tid = p.tid
-            JOIN o ON o.oid = p.oid
-            WHERE t.scope_kind = 'skill' AND coalesce(t.agent_id, '') = ''"""
+            JOIN o ON o.oid = p.oid"""
 
 
-INLINE_SKILL_CTES = f"""inline_attributed AS (
-            {_INLINE_ATTRIBUTED}
+INLINE_SKILL_CTES = f"""paired_requests AS MATERIALIZED (
+            {_PAIRED_REQUESTS}
+        ), inline_attributed AS (
+            -- the paired main-thread requests the plugin attributed to a skill
+            SELECT okey, ts, prompt_id, model, cost_usd, input_tokens, output_tokens, cache_read_tokens,
+                   cache_creation_tokens, attrs, scope_name AS skill_name
+            FROM paired_requests
+            WHERE scope_kind = 'skill' AND agent_id = ''
         ), inline_window AS (
             -- an inline slash dispatch's slice of its turn: to the next later start of the same skill in the same
             -- prompt, a dispatch or a Skill call, so repeated runs and a Skill call never share a request

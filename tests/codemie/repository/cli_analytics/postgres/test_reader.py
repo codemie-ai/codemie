@@ -1284,7 +1284,9 @@ async def test_dispatch_union_branch_treats_subagent_hook_skill_name_as_skill_di
     assert "x.skill_name = w.skill_name" in sql
     # identical re-sent dispatch rows (hook_events has no unique key) share one window, so they cannot double the sums
     assert "SELECT DISTINCT d.ts, d.skill_name, d.prompt_id, df.agent_id, df.ts AS fork_ts" in sql
-    assert "WHERE t.scope_kind = 'skill' AND coalesce(t.agent_id, '') = ''" in sql
+    assert "FROM paired_requests WHERE scope_kind = 'skill' AND agent_id = ''" in sql
+    # a subagent no LLM request names takes its own paired requests, never on top of its span-grouped ones
+    assert "WHERE g.agent_id <> '' AND NOT EXISTS (SELECT 1 FROM agent_groups ag WHERE ag.agent_id = g.agent_id)" in sql
 
 
 @pytest.mark.asyncio
@@ -1381,8 +1383,8 @@ async def test_an_agent_dispatch_falls_back_to_its_parent_span_only_when_it_has_
     # The agent_usage join is preferred. Only a dispatch with no agentId at all falls back to its own
     # windowed slice of the parent span's api_requests (see the sibling_window test below: an
     # un-windowed slice would duplicate cost whenever two such dispatches share a parent). A known
-    # agentId with no api_request group, an agent's or a forked skill's, stays NULL: the parent span
-    # is the main thread, whose cost is not the subagent's.
+    # agentId with no api_request group, an agent's or a forked skill's, never takes the parent span
+    # (the main thread, whose cost is not the subagent's): only its own paired requests, else NULL.
     sql = await _dispatches_sql()
 
     assert "coalesce(au.cost_usd, pu.cost_usd)::float8 AS cost_usd" in sql
@@ -1393,8 +1395,8 @@ async def test_an_agent_dispatch_falls_back_to_its_parent_span_only_when_it_has_
     # the full even-split/time-window mechanism (row_number dispatch_id,
     # per-event active_n division, an unconditional sibling_count divisor) must still never come back —
     # only the narrower, next-sibling-start-bounded split below, scoped to the no-agentId fallback alone
-    # (the inline_attributed CTE runs the rollups' request pairing, which is no cost split)
-    dispatch_sql = sql.split("inline_attributed AS")[0] + sql.split("inline_window AS")[1]
+    # (the paired_requests CTE runs the rollups' request pairing, which is no cost split)
+    dispatch_sql = sql.split("paired_requests AS MATERIALIZED")[0] + sql.split("inline_window AS")[1]
     for removed in ("windows AS", "matches AS", "active_n", "sibling_count", "row_number() OVER"):
         assert removed not in dispatch_sql
 

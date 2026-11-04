@@ -1192,6 +1192,8 @@ class PostgresCliAnalyticsReader:
         are an exact ID chain, not an estimate: the Agent tool call's hook event names the agentId the
         subagent was launched with; the subagent's LLM requests (llm_request spans) carry that agentId
         and are children of the span that groups its api_request events, so those events are summed.
+        A subagent none of whose LLM requests carries its agentId (a foreground fork of a slash command) is
+        priced from the API requests paired with the transcript requests the plugin sent under its agentId.
         A dispatch with no agentId at all (an inline skill, or an agent from telemetry without it) falls back
         to its own slice of the parent span's API requests: from its own start to the next strictly later
         sibling start under the same parent (or unbounded for the last one), split equally among the
@@ -1327,7 +1329,7 @@ class PostgresCliAnalyticsReader:
             FROM spans
             WHERE session_id = $sid::text AND span_kind = {_LLM_REQUEST}
               AND attrs ? 'agent_id' AND parent_span_id IS NOT NULL
-        ), agent_usage AS (
+        ), span_agent_usage AS (
             SELECT g.agent_id,
                    sum(coalesce(l.cost_usd, 0)) AS cost_usd,
                    sum(coalesce(l.input_tokens, 0)) AS input_tokens,
@@ -1339,6 +1341,37 @@ class PostgresCliAnalyticsReader:
             JOIN log_events l
                  ON {agent_requests("l")} AND l.session_id = $sid::text AND l.event_kind = {_API_REQUEST}
             GROUP BY g.agent_id
+        ), paired_agent_usage AS (
+            -- a subagent none of whose LLM requests names it: Claude Code stamps agent_id only on the requests of a
+            -- subagent started by a tool call, so a fork a slash command runs in the foreground has its requests
+            -- under the interaction span, among the main thread's. Its own are the API requests paired with the
+            -- transcript requests the plugin sent under its agentId (see paired_requests); never both sources
+            SELECT g.agent_id,
+                   sum(coalesce(g.cost_usd, 0)) AS cost_usd,
+                   sum(coalesce(g.input_tokens, 0)) AS input_tokens,
+                   sum(coalesce(g.output_tokens, 0)) AS output_tokens,
+                   sum(coalesce(g.cache_read_tokens, 0)) AS cache_read_tokens,
+                   sum(coalesce(g.cache_creation_tokens, 0)) AS cache_creation_tokens,
+                   (SELECT jsonb_agg(m ORDER BY m.model_name {_C}) FROM (
+                        SELECT coalesce(r.model, '') AS model_name,
+                               sum(coalesce(r.input_tokens, 0)) AS input_tokens,
+                               sum(coalesce(r.output_tokens, 0)) AS output_tokens,
+                               sum(coalesce(r.cache_read_tokens, 0)) AS cache_read_tokens,
+                               sum(coalesce(r.cache_creation_tokens, 0)) AS cache_creation_tokens,
+                               sum({_attr_ms("r", "cache_creation_5m_tokens")}) AS cache_creation_5m_tokens,
+                               sum({_attr_ms("r", "cache_creation_1h_tokens")}) AS cache_creation_1h_tokens
+                        FROM paired_requests r
+                        WHERE r.agent_id = g.agent_id
+                        GROUP BY 1) m) AS models
+            FROM paired_requests g
+            WHERE g.agent_id <> '' AND NOT EXISTS (SELECT 1 FROM agent_groups ag WHERE ag.agent_id = g.agent_id)
+            GROUP BY g.agent_id
+        ), agent_usage AS (
+            SELECT agent_id, cost_usd, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, models
+            FROM span_agent_usage
+            UNION ALL
+            SELECT agent_id, cost_usd, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, models
+            FROM paired_agent_usage
         ), fallback_start AS (
             -- every dispatch's own start under its parent, agent or skill alike (same formula the
             -- final SELECT displays as dispatch_start), used only to bound sibling_window below

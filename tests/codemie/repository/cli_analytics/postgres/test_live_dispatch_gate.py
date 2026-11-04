@@ -3191,3 +3191,90 @@ async def test_live_an_inline_slash_skill_resolves_equal_proxy_requests_one_to_o
         ]
     finally:
         await _cleanup(engine, session_id)
+
+
+@pytest.mark.asyncio
+async def test_live_a_foreground_slash_fork_takes_its_cost_from_its_paired_requests(engine):
+    """A fork /forkme runs in the foreground has no LLM request naming it: Claude Code stamps agent_id only on the
+    requests of a subagent a tool call started, so the fork's API request sits under the interaction span, among the
+    main thread's (captured from Claude Code 2.1.281, `claude -p /forkme`). Its row takes the requests paired with the
+    plugin's agent.usage.request rows of its agentId: not the main thread's of the same prompt, not another fork's."""
+    session_id = _session("slash-foreground")
+    prompt, skill, fork, other_fork = "prompt-slash-fg", "forkme", "a64521fc54480cb8d", "a0ther0f0rk000000"
+    at = lambda minute, second=0: _DAY + timedelta(minutes=minute, seconds=second)  # noqa: E731
+    lag = timedelta(seconds=1)
+    try:
+        await _seed_turn(engine, session_id, [], costs=())
+        await _seed_inline_request(engine, session_id, at(5, 10), prompt, "", ("skill", skill), 0.1,
+                                   usage_ids=("", "msg-fork"), usage_lag=lag, tokens=(17145, 185, 12340, 12005),
+                                   agent_id=fork)  # fmt: skip
+        await _seed_inline_request(engine, session_id, at(5, 30), prompt, "", ("main", ""), 0.9,
+                                   usage_ids=("", "msg-main"), usage_lag=lag, tokens=(500, 50, 0, 0))  # fmt: skip
+        await _seed_inline_request(engine, session_id, at(7, 10), "prompt-other", "", ("agent", "general-purpose"),
+                                   0.5, usage_ids=("", "msg-other"), usage_lag=lag, tokens=(900, 90, 0, 0),
+                                   agent_id=other_fork)  # fmt: skip
+        await _ingest(
+            engine,
+            [
+                _dispatch(session_id, at(5), prompt, skill),
+                _fork(session_id, at(5, 2), fork, prompt, skill_name=None),
+                _stop(session_id, at(5, 20), fork),
+            ],
+        )
+        await _refresh_rollups(engine)
+
+        commands = [d for d in (await _api_detail(engine, session_id))["dispatches"] if d["kind"] == "command"]
+        assert [(d["duration_ms"], d["input_tokens"], d["output_tokens"]) for d in commands] == [(18_000, 17145, 185)]
+        assert [(d["cache_read_tokens"], d["cache_creation_tokens"]) for d in commands] == [(12340, 12005)]
+        assert commands[0]["cost_usd"] is not None and commands[0]["cost_usd"] > 0
+        rows = await PostgresCliAnalyticsReader(engine).get_session_detail_dispatches(session_id, scope=DETAIL_SCOPE)
+        (models,) = [r["models"] for r in rows if r["skill_name"] == skill]
+        assert [(m["model_name"], m["input_tokens"], m["output_tokens"]) for m in models] == [
+            ("claude-sonnet-5-5", 17145, 185)
+        ]
+    finally:
+        await _cleanup(engine, session_id)
+
+
+@pytest.mark.asyncio
+async def test_live_a_fork_named_by_its_llm_requests_is_never_also_priced_from_paired_requests(engine):
+    """A fork whose LLM request carries its agent_id keeps the span-grouped cost alone: its own paired
+    agent.usage.request rows are the same requests, so they never add to it."""
+    session_id = _session("slash-span-named")
+    prompt, skill, fork = "prompt-slash-span", "forkme", "a618e37ab1af2821f"
+    at = lambda minute, second=0: _DAY + timedelta(minutes=minute, seconds=second)  # noqa: E731
+    try:
+        await _seed_turn(engine, session_id, [], costs=())
+        await _seed_fork_request(engine, session_id, fork, at(5, 10), 0.0003)  # 300 input tokens under its group
+        await _ingest(
+            engine,
+            [
+                _dispatch(session_id, at(5), prompt, skill),
+                _fork(session_id, at(5, 2), fork, prompt, skill_name=None),
+                _stop(session_id, at(5, 20), fork),
+                {
+                    "type": "agent.usage.request",
+                    "timestamp": _iso(at(5, 9)),
+                    "session_id": session_id,
+                    "request_id": "",
+                    "message_id": "msg-span-fork",
+                    "agent_id": fork,
+                    "scope_kind": "skill",
+                    "scope_name": skill,
+                    "model_raw": "claude-sonnet-5-5",
+                    "model": "claude-sonnet-5-5",
+                    "input_tokens": 300,
+                    "output_tokens": 0,
+                    "cache_read_tokens": 0,
+                    "cache_creation_1h_tokens": 0,
+                    "stop_reason": "end_turn",
+                    **_CLAUDE_CODE,
+                },
+            ],
+        )
+        await _refresh_rollups(engine)
+
+        commands = [d for d in (await _api_detail(engine, session_id))["dispatches"] if d["kind"] == "command"]
+        assert [d["input_tokens"] for d in commands] == [300]  # once, not 600
+    finally:
+        await _cleanup(engine, session_id)
