@@ -1177,36 +1177,50 @@ class BudgetService:
                         f"Failed to propagate budget assignment for user {user_id!r} category {category.value!r}: {exc}"
                     )
             else:
-                await budget_repository.delete_user_category_assignment(session, user_id, category)
-                _budget_assignment_cache.pop((user_id, category.value), None)
-                await activity_event_repository.async_insert(
-                    ActivityEventCreate(
-                        domain=ActivityDomain.BUDGET_MANAGEMENT,
-                        event_type=BudgetManagementEvent.USER_BUDGET_REMOVED,
-                        entity_type=ActivityEntityType.USER_BUDGET_ASSIGNMENT,
-                        entity_id=user_id,
-                        actor_id=actor_id,
-                        attributes={"category": category.value},
-                    ),
-                    session,
-                )
-                default_budget_id = self._default_budget_id_for_category(category)
-                try:
-                    if default_budget_id:
-                        await provider.assign_user_budget(
-                            username=db_user.username, budget_category=category, budget_id=default_budget_id
-                        )
-                    else:
-                        await provider.clear_user_budget(username=db_user.username, budget_category=category)
-                except Exception as exc:
-                    logger.warning(
-                        f"Failed to reassign default budget for user {user_id!r} category {category.value!r}: {exc}"
-                    )
+                await self._unassign_user_category(session, provider, db_user, user_id, category, actor_id)
         logger.info(
             f"budget_event=user_budget_assignment_completed component=budget_service "
             f"user_id={user_id!r} categories={sorted(c.value for c in assignments)!r} "
             f"actor_id={actor_id!r} domain=budget_management"
         )
+
+    async def _unassign_user_category(
+        self,
+        session: AsyncSession,
+        provider,
+        db_user,
+        user_id: str,
+        category: BudgetCategory,
+        actor_id: str,
+    ) -> None:
+        """Drop the user's row for *category* and fall back to the category default (or none) in the provider."""
+        await budget_repository.delete_user_category_assignment(session, user_id, category)
+        _budget_assignment_cache.pop((user_id, category.value), None)
+        await activity_event_repository.async_insert(
+            ActivityEventCreate(
+                domain=ActivityDomain.BUDGET_MANAGEMENT,
+                event_type=BudgetManagementEvent.USER_BUDGET_REMOVED,
+                entity_type=ActivityEntityType.USER_BUDGET_ASSIGNMENT,
+                entity_id=user_id,
+                actor_id=actor_id,
+                attributes={"category": category.value},
+            ),
+            session,
+        )
+        default_budget_id = self._default_budget_id_for_category(category)
+        re_pointed_budget_id: str | None = None
+        try:
+            if default_budget_id:
+                await provider.assign_user_budget(
+                    username=db_user.username, budget_category=category, budget_id=default_budget_id
+                )
+                re_pointed_budget_id = default_budget_id
+            else:
+                await provider.clear_user_budget(username=db_user.username, budget_category=category)
+        except Exception as exc:
+            logger.warning(f"Failed to reassign default budget for user {user_id!r} category {category.value!r}: {exc}")
+        if re_pointed_budget_id:
+            await self._record_default_assignment(session, user_id, category, re_pointed_budget_id)
 
     async def bulk_set_user_budgets(
         self,
@@ -1234,7 +1248,9 @@ class BudgetService:
         db_users = await self._load_bulk_budget_users(session, user_ids, select, UserDB)
         self._reject_budget_grant_to_deactivated(list(db_users.values()), assignments)
         await self._persist_bulk_budget_assignments(session, user_ids, assignments, actor_id)
-        await self._propagate_bulk_budget_assignments(db_users, assignments)
+        re_pointed_to_default = await self._propagate_bulk_budget_assignments(db_users, assignments)
+        for user_id, category, default_budget_id in re_pointed_to_default:
+            await self._record_default_assignment(session, user_id, category, default_budget_id)
         logger.info(
             f"budget_event=bulk_user_budget_assignment_completed component=budget_service "
             f"user_count={len(user_ids)} categories={sorted(c.value for c in assignments)!r} "
@@ -1305,8 +1321,10 @@ class BudgetService:
         self,
         db_users: dict,
         assignments: dict[BudgetCategory, str | None],
-    ) -> None:
+    ) -> list[tuple[str, BudgetCategory, str]]:
+        """Push the assignments to the provider; return the (user, category, default) re-points that succeeded."""
         provider = get_active_provider()
+        re_pointed_to_default: list[tuple[str, BudgetCategory, str]] = []
         for user_id, db_user in db_users.items():
             for category, budget_id in assignments.items():
                 try:
@@ -1320,6 +1338,7 @@ class BudgetService:
                             await provider.assign_user_budget(
                                 username=db_user.username, budget_category=category, budget_id=default_budget_id
                             )
+                            re_pointed_to_default.append((user_id, category, default_budget_id))
                         else:
                             await provider.clear_user_budget(username=db_user.username, budget_category=category)
                 except Exception as exc:
@@ -1327,6 +1346,21 @@ class BudgetService:
                         f"Failed to propagate bulk budget update for user {user_id!r} "
                         f"category {category.value!r}: {exc}"
                     )
+        return re_pointed_to_default
+
+    @staticmethod
+    async def _record_default_assignment(
+        session: AsyncSession, user_id: str, category: BudgetCategory, default_budget_id: str
+    ) -> None:
+        """Write the default row at unassign time instead of waiting for a proxy request to mirror it.
+
+        Proxy replicas keep a private assignment cache and skip the write while it holds the default,
+        so after an unassign served by another replica no request would ever re-create the row.
+        """
+        await budget_repository.upsert_user_category_assignment(
+            session, user_id, category, default_budget_id, assigned_by="system"
+        )
+        _budget_assignment_cache.pop((user_id, category.value), None)
 
     async def reset_user_budget_spending(
         self,
