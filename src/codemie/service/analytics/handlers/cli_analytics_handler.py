@@ -1001,11 +1001,9 @@ class LocalAnalyticsHandler:
         display_model = self._display_models(model_cost_rows, model)
 
         tools = []
-        tool_ok_total = 0
         for row in tool_rows:
             calls = _i(row.get("call_count"))
             ok = _i(row.get("success_count"))
-            tool_ok_total += ok
             tools.append(
                 {
                     "tool_name": _s(row.get("tool_name")),
@@ -1015,23 +1013,7 @@ class LocalAnalyticsHandler:
                 }
             )
 
-        events = [
-            {
-                "timestamp": _iso(r.get("timestamp")),
-                "event_type": _s(r.get("event_type")),
-                "model_name": normalize_model(_s(r.get("model_name"))) or None,
-                "input_tokens": _i(r.get("input_tokens")) if _s(r.get("event_type")) == "api_request" else None,
-                "output_tokens": _i(r.get("output_tokens")) if _s(r.get("event_type")) == "api_request" else None,
-                "cache_read_tokens": _i(r.get("cache_read_tokens"))
-                if _s(r.get("event_type")) == "api_request"
-                else None,
-                "cost_usd": pricer.price(_s(r.get("model_name")), token_counts(r))
-                if _s(r.get("event_type")) == "api_request"
-                else None,
-                "tool_name": _s(r.get("tool_name")) or None,
-            }
-            for r in event_rows
-        ]
+        events = [self._session_event(r, pricer) for r in event_rows]
 
         dispatch_rows = [{**row, "cost_usd": dispatch_money(pricer, row)} for row in dispatch_rows]
         money = price_session_models(model_cost_rows, pricer)
@@ -1053,6 +1035,8 @@ class LocalAnalyticsHandler:
 
         lines_added = _i(scalars.get("lines_added"))
         lines_removed = _i(scalars.get("lines_removed"))
+        # Successes of every tool, not only the listed top 20, as the aggregates read them.
+        tool_ok_total = _i(scalars.get("tool_calls_success"))
 
         detail = {
             "trace_id": _s(meta.get("session_id")),
@@ -1093,6 +1077,24 @@ class LocalAnalyticsHandler:
         detail["delivery_framework"] = classify_delivery_framework(skill_names)
         detail["harness_name"] = humanize_harness_name(meta.get("harness_service_name"))
         return detail, pricer.unpriced, pricer.catalog_source
+
+    @staticmethod
+    def _session_event(row: dict[str, Any], pricer: CatalogPricer) -> dict[str, Any]:
+        """One timeline event. An `api_request` and a `subagent_totals` event (the totals of a subagent that has no
+        request of its own) carry tokens and catalog money; a `tool_call` carries none."""
+        event_type = _s(row.get("event_type"))
+        has_usage = event_type in ("api_request", "subagent_totals")
+        return {
+            "timestamp": _iso(row.get("timestamp")),
+            "event_type": event_type,
+            "model_name": normalize_model(_s(row.get("model_name"))) or None,
+            "input_tokens": _i(row.get("input_tokens")) if has_usage else None,
+            "output_tokens": _i(row.get("output_tokens")) if has_usage else None,
+            "cache_read_tokens": _i(row.get("cache_read_tokens")) if has_usage else None,
+            "cache_creation_tokens": _i(row.get("cache_creation_tokens")) if has_usage else None,
+            "cost_usd": pricer.price(_s(row.get("model_name")), token_counts(row)) if has_usage else None,
+            "tool_name": _s(row.get("tool_name")) or None,
+        }
 
     @staticmethod
     def _build_dispatches(

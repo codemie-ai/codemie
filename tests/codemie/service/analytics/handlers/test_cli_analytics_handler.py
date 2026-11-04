@@ -768,6 +768,28 @@ async def test_get_session_detail_prices_the_session_and_each_event_at_the_catal
 
 
 @pytest.mark.asyncio
+async def test_get_session_detail_serves_request_cache_writes_and_tool_successes_of_every_tool():
+    """EPMCDME-16609 / 16741: an api_request carries its cache-write tokens (a tool_call none), and the success
+    total is the scalars' one over all tools, not the sum of the listed rows."""
+    events = _opus_events() + [
+        {**_opus_events()[0], "event_type": "tool_call", "model_name": "", "tool_name": "Read"},
+    ]
+    handler = _priced_detail_handler([_OPUS_ROW], events=events)
+    handler._repo.get_session_detail_scalars = AsyncMock(
+        return_value=[{"tool_call_count": 28, "tool_calls_success": 24}]
+    )
+    handler._repo.get_session_detail_tools = AsyncMock(
+        return_value=[{"tool_name": "Read", "call_count": 20, "success_count": 16}]
+    )
+
+    detail, _, _ = await _priced(handler.get_session_detail("s1", scope=DETAIL_SCOPE))
+
+    assert [e["cache_creation_tokens"] for e in detail["events"]] == [629_636, 629_636, 629_636, None]
+    assert (detail["tool_call_count"], detail["tool_calls_success"], detail["tool_success_rate"]) == (28, 24, 85.7)
+    assert [(t["call_count"], t["success_count"], t["success_rate"]) for t in detail["tools"]] == [(20, 16, 80.0)]
+
+
+@pytest.mark.asyncio
 async def test_get_session_detail_tokens_include_totals_only_subagent_rows():
     """A session whose cost_daily rows are absent (cost query empty) but whose subagent totals rows exist: the
     detail token columns are the per-model sums, the same figures the list reports."""

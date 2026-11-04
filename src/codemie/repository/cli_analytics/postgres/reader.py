@@ -55,7 +55,7 @@ from codemie.repository.cli_analytics.postgres.fork_attribution import (
 )
 from codemie.repository.cli_analytics.postgres.inline_skill_attribution import INLINE_SKILL_CTES
 from codemie.repository.cli_analytics.postgres.otlp import MAX_KEY_BYTES
-from codemie.repository.cli_analytics.postgres.rollups import _BLANKS, _attr_ms
+from codemie.repository.cli_analytics.postgres.rollups import _BLANKS, _attr_ms, _has_totals
 from codemie.repository.cli_analytics.postgres.session_derived import CLASSIFIER_NAMES_SQL
 from codemie.repository.cli_analytics.scope import (
     sql_detail_condition,
@@ -1094,7 +1094,11 @@ class PostgresCliAnalyticsReader:
             (SELECT sum(active_ms_user) + sum(active_ms_cli)
                FROM active_time_daily WHERE session_id = $sid::text)::bigint                     AS active_ms,
             (SELECT sum(turns) FROM turns_daily WHERE session_id = $sid::text)::bigint           AS turns,
-            (SELECT sum(tool_calls) FROM tool_facts_daily WHERE session_id = $sid::text)::bigint AS tool_call_count,
+            -- all tools, not the 20 listed: the same rollup rows as get_tool_success_by_session
+            (SELECT sum(calls) FROM invocations_hourly WHERE kind = 1 AND session_id = $sid::text)::bigint
+                AS tool_call_count,
+            (SELECT sum(success) FROM invocations_hourly WHERE kind = 1 AND session_id = $sid::text)::bigint
+                AS tool_calls_success,
             (coalesce((SELECT sum(agent_count) FROM tool_facts_daily WHERE session_id = $sid::text), 0)
              -- a hook event not yet reflected by a matching span OR by an already-rolled-up
              -- invocations_hourly row (once the rollup catches up, it already counts this
@@ -1133,25 +1137,45 @@ class PostgresCliAnalyticsReader:
         )
 
     async def get_session_detail_tools(self, session_id: str, *, scope: Any) -> Rows:
+        """The 20 most called tools of a session with their successes, from the hourly rollup the aggregates read
+        (OTel spans, else the hooks fallback), so a hooks-only session has them too."""
         gate, gate_params = detail_gate(scope)
         return await self._q(
             f"""
-        SELECT t.tool_name, count(*) AS call_count, count(*) FILTER (WHERE e.success = 'true') AS success_count
-        FROM (SELECT tool_name, tool_use_id FROM spans
-              WHERE span_kind = {_TOOL} AND session_id = $sid::text AND tool_name <> '' AND {gate}) t
-        LEFT JOIN (SELECT tool_use_id, max(success) AS success FROM spans
-                   WHERE span_kind = {_EXEC} AND session_id = $sid::text AND tool_use_id <> ''
-                   GROUP BY tool_use_id) e
-               ON t.tool_use_id = e.tool_use_id AND t.tool_use_id <> ''
-        GROUP BY t.tool_name
-        ORDER BY call_count DESC, t.tool_name {_C}
+        SELECT name AS tool_name, sum(calls)::bigint AS call_count, sum(success)::bigint AS success_count
+        FROM invocations_hourly
+        WHERE kind = 1 AND session_id = $sid::text AND {gate}
+        GROUP BY name
+        ORDER BY call_count DESC, name {_C}
         LIMIT 20""",
             {"sid": session_id, **gate_params},
         )
 
     async def get_session_detail_events(self, session_id: str, *, scope: Any) -> Rows:
         """API requests and tool calls of a session, in time order. A request's 5m / 1h cache-write split is NULL
-        when its attributes carry none."""
+        when its attributes carry none.
+
+        The requests are the session's OTel api_request records. A session with none (hooks only: GitHub Copilot,
+        Claude Code without telemetry) takes its `usage_requests` instead, grouped as the cost rollup groups its
+        transcript requests (by request id, else message id, and raw model: the largest value of every field, the
+        latest time; a row with neither id alone), under the raw model cost_daily keys its tokens by, so each
+        request is priced as cost_daily prices it. A session with both keeps its OTel requests: a transcript request
+        and its OTel record are one request, and the pairing is the rollup's alone.
+
+        Known limitation of that per-session switch: a session with any OTel api_request lists only the OTel
+        requests, so a transcript request the rollup leaves unpaired (for example OTel enabled mid-session) is priced
+        in the session cost but not listed, and the listed costs can then sum to less than the session cost. A
+        request the rollup pairs can also use a different token precedence there than in its raw OTel record. A
+        future fix for mixed sessions must reuse the rollup's resolved pairing and token rules (its time-window and
+        model-fingerprint tiers), not exclude transcript rows by request id alone.
+
+        A subagent known only by its totals (a session_usage row with attrs.token_source = 'subagent_usage', which
+        the cost rollup writes only when no request of that agent is kept) has no request: each such row is one
+        `subagent_totals` event with the row's tokens, at the time of the agent's latest agent.subagent.usage
+        event with totals (the event the row was built from), else at the start of the row's UTC day once raw
+        retention has purged it. Priced like the session's money rows, so for a session without OTel api_request
+        records the costs of all usage events (requests and subagent_totals together, not the requests alone) add up
+        to the session cost."""
         gate, gate_params = detail_gate(scope)
         return await self._q(
             f"""
@@ -1164,6 +1188,31 @@ class PostgresCliAnalyticsReader:
                    {_attr_ms("log_events", "cache_creation_1h_tokens")} AS cache_creation_1h_tokens,
                    '' AS tool_name
             FROM log_events WHERE session_id = $sid::text AND event_kind = {_API_REQUEST} AND {gate}
+            UNION ALL
+            SELECT max(u.ts), 'api_request', coalesce(u.model_raw, ''),
+                   coalesce(max(u.input_tokens), 0), coalesce(max(u.output_tokens), 0),
+                   coalesce(max(u.cache_read_tokens), 0),
+                   coalesce(max(u.cache_creation_5m_tokens), 0) + coalesce(max(u.cache_creation_1h_tokens), 0),
+                   max(u.cache_creation_5m_tokens), max(u.cache_creation_1h_tokens), ''
+            FROM usage_requests u
+            WHERE u.session_id = $sid::text AND {gate}
+              AND NOT EXISTS (SELECT 1 FROM log_events l
+                              WHERE l.session_id = $sid::text AND l.event_kind = {_API_REQUEST})
+            GROUP BY coalesce(nullif(u.request_id, ''), nullif(u.message_id, '')), coalesce(u.model_raw, ''),
+                     CASE WHEN coalesce(nullif(u.request_id, ''), nullif(u.message_id, '')) IS NULL
+                          THEN u.tableoid::text || u.ctid::text END
+            UNION ALL
+            SELECT coalesce(h.ts, u.day::timestamp AT TIME ZONE 'UTC'), 'subagent_totals', u.model,
+                   coalesce(u.input_tokens, 0), coalesce(u.output_tokens, 0), coalesce(u.cache_read_tokens, 0),
+                   coalesce(u.cache_creation_tokens, 0), u.cache_creation_5m_tokens, u.cache_creation_1h_tokens, ''
+            FROM session_usage u
+            LEFT JOIN LATERAL (
+                SELECT x.ts FROM hook_events x
+                WHERE x.session_id = u.session_id AND x.event_type = 'agent.subagent.usage'
+                  AND coalesce(x.agent_id, '') = u.agent_id AND {_has_totals("x.attrs")}
+                ORDER BY x.ts DESC, x.ingest_seq DESC LIMIT 1
+            ) h ON true
+            WHERE u.session_id = $sid::text AND u.attrs->>'token_source' = 'subagent_usage' AND {gate}
             UNION ALL
             SELECT ts, 'tool_call', '', 0, 0, 0, 0, NULL, NULL, tool_name
             FROM spans WHERE session_id = $sid::text AND span_kind = {_TOOL} AND tool_name <> '' AND {gate}

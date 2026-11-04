@@ -16794,6 +16794,18 @@
       },
       "LocalAnalyticsSessionEvent": {
         "properties": {
+          "cache_creation_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Cache-write tokens (5m + 1h + unsplit) of an api_request or subagent_totals event; null for a tool_call.",
+            "title": "Cache Creation Tokens"
+          },
           "cache_read_tokens": {
             "anyOf": [
               {
@@ -16817,7 +16829,7 @@
             "title": "Cost Usd"
           },
           "event_type": {
-            "description": "'api_request' or 'tool_call'",
+            "description": "'api_request', 'tool_call' or 'subagent_totals' (the summed usage of a subagent that has no request of its own: one aggregate per model, not a request)",
             "title": "Event Type",
             "type": "string"
           },

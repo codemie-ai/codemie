@@ -278,11 +278,20 @@ class LocalAnalyticsSessionsResponse(BaseModel):
 
 class LocalAnalyticsSessionEvent(BaseModel):
     timestamp: str = Field(..., description=_ISO8601)
-    event_type: str = Field(..., description="'api_request' or 'tool_call'")
+    event_type: str = Field(
+        ...,
+        description="'api_request', 'tool_call' or 'subagent_totals' (the summed usage of a subagent that has no "
+        "request of its own: one aggregate per model, not a request)",
+    )
     model_name: str | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
     cache_read_tokens: int | None = None
+    cache_creation_tokens: int | None = Field(
+        None,
+        description="Cache-write tokens (5m + 1h + unsplit) of an api_request or subagent_totals event; "
+        "null for a tool_call.",
+    )
     cost_usd: float | None = None
     tool_name: str | None = None
 
