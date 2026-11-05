@@ -16,9 +16,12 @@
 
 Every method returns the row shapes and Python types the port defines, so
 the shared handler produces the same JSON. Semantics carried over on purpose:
-- a session is in the window iff its `started_at` is in [start, end], the bounds truncated
-  to whole milliseconds; the window is decided once, in `_sessions_cte`, and every fact
-  query is scoped to that session set;
+- a session is in the window iff its `started_at` is in [start, end] (bounds truncated to whole
+  milliseconds) AND it has ever produced at least one real activity signal, OR it has a prompt,
+  tool call, cost/usage or line-count row on a day wholly inside the window, or on a day the window
+  covers in part with a raw activity record stamped inside the window (`_active_in_window`); a
+  session that only ever got `session.start`/`session.env` hooks is excluded entirely. The window is
+  decided once, in `_sessions_cte`, and every fact query is scoped to that session set;
 - string comparisons in ORDER BY and max() use byte order (COLLATE "C");
 - a missing LEFT JOIN match reads as '' / 0 / 1970-01-01 in the API where
   PostgreSQL yields NULL; where that reaches the API it is mapped explicitly;
@@ -68,6 +71,7 @@ from codemie.repository.cli_analytics.scope import (
 from codemie.repository.cli_analytics.vocabulary import (
     BUILTIN_COMMAND_NAMES,
     DIMENSION_HOOK_TYPES,
+    LINES_METRICS,
     SKILL_DISPATCH_EVENT,
     EventKind,
     SpanKind,
@@ -78,7 +82,13 @@ _EPOCH = "'1970-01-01 00:00:00+00'::timestamptz"
 _TOOL, _EXEC, _INTERACTION = int(SpanKind.TOOL), int(SpanKind.TOOL_EXECUTION), int(SpanKind.INTERACTION)
 _API_REQUEST = int(EventKind.API_REQUEST)
 _LLM_REQUEST = int(SpanKind.LLM_REQUEST)
-_DIM_TYPES = "ARRAY[" + ", ".join(f"'{t}'" for t in DIMENSION_HOOK_TYPES) + "]::text[]"
+
+
+def _text_array(values: tuple[str, ...]) -> str:
+    return "ARRAY[" + ", ".join(f"'{v}'" for v in values) + "]::text[]"
+
+
+_DIM_TYPES = _text_array(DIMENSION_HOOK_TYPES)
 _C = 'COLLATE "C"'
 _AND = " AND "
 # Whether the latest summary of session_dims `d` reports metric {c} validly (summary_reported, stored with it).
@@ -130,6 +140,89 @@ _ORIGIN = sql_project_origin("s.project_origin")
 _CLASS_LISTS = f"array_agg(DISTINCT {_SUB}) AS subscription_types, array_agg(DISTINCT {_ORIGIN}) AS project_origins"
 
 _STARTED_IN_WINDOW = "started_at BETWEEN $start_dt::timestamptz AND $end_dt::timestamptz"
+# `day` columns are always written in UTC (see rollups.py's `AT TIME ZONE 'UTC'` casts); a bare
+# `$start_dt::date`/`$end_dt::date` cast of a timestamptz parameter instead follows the session's
+# `TimeZone` GUC, which `server_settings()` never pins, so it must go through UTC explicitly here.
+_START_DAY_UTC = "($start_dt::timestamptz AT TIME ZONE 'UTC')::date"
+_END_DAY_UTC = "($end_dt::timestamptz AT TIME ZONE 'UTC')::date"
+
+
+# The UTC days whose every instant is inside the window. The bounds are whole milliseconds, so a window
+# ending at 23:59:59.999 covers its last day. The arithmetic runs on UTC timestamps, never on timestamptz,
+# so a DST change of the session's TimeZone GUC cannot shift it.
+_FIRST_WHOLE_DAY_UTC = "(($start_dt::timestamptz AT TIME ZONE 'UTC') - interval '1 millisecond')::date + 1"
+_LAST_WHOLE_DAY_UTC = "(($end_dt::timestamptz AT TIME ZONE 'UTC') + interval '1 millisecond')::date - 1"
+
+
+_ACTIVITY_TABLES = ("turns_daily", "tool_facts_daily", "cost_daily", "session_usage", "lines_daily")
+
+
+def _activity_exists(alias: str, days: tuple[str, str] | None = None) -> str:
+    """A prompt, a tool call, a cost/usage row or a line-count row for the session named by
+    `alias`.session_id, on a day from `days[0]` to `days[1]` when given, at any time otherwise."""
+    bound = f" AND x.day >= {days[0]} AND x.day <= {days[1]}" if days else ""
+    clauses = (f"EXISTS (SELECT 1 FROM {t} x WHERE x.session_id = {alias}.session_id{bound})" for t in _ACTIVITY_TABLES)
+    return "(" + " OR ".join(clauses) + ")"
+
+
+# The raw records the activity tables are built from: prompts, tool and subagent calls, skill dispatches,
+# API requests and line counts. Lifecycle hooks (session start, env, end, git snapshot, summary) are not
+# among them, so a resume with nothing typed leaves no such record.
+_ACTIVITY_HOOK_TYPES = (
+    "agent.prompt.submit",
+    "agent.tool.start",
+    "agent.tool.end",
+    "agent.tool.error",
+    "agent.tool.denied",
+    "agent.subagent.start",
+    "agent.subagent.usage",
+    SKILL_DISPATCH_EVENT,
+)
+_ACTIVITY_HOOKS = _text_array(_ACTIVITY_HOOK_TYPES)
+_LINES_METRIC_NAMES = _text_array(LINES_METRICS)
+_RAW_ACTIVITY_SOURCES = (
+    ("hook_events", f" AND r.event_type = ANY({_ACTIVITY_HOOKS})"),
+    ("usage_requests", ""),
+    ("log_events", f" AND r.event_kind <> {int(EventKind.OTHER)}"),
+    ("spans", f" AND r.span_kind <> {int(SpanKind.OTHER)}"),
+    ("metric_points", f" AND r.metric_name = ANY({_LINES_METRIC_NAMES})"),
+)
+
+
+def _raw_activity_in_window(alias: str) -> str:
+    """A raw activity record of the session named by `alias`.session_id, stamped inside the window."""
+    clauses = (
+        f"EXISTS (SELECT 1 FROM {table} r WHERE r.session_id = {alias}.session_id "
+        f"AND r.ts >= $start_dt::timestamptz AND r.ts <= $end_dt::timestamptz{kind})"
+        for table, kind in _RAW_ACTIVITY_SOURCES
+    )
+    return "(" + " OR ".join(clauses) + ")"
+
+
+def _active_in_window(alias: str) -> str:
+    """Activity rescue arm: an old session resumed with no new activity in the window stays excluded from
+    `sel`, an old session with fresh activity in the window is included. A day row on a UTC day wholly
+    inside the window is enough. A day the window covers only in part also needs a raw activity record
+    stamped inside the window, so a sub-day window does not admit a session active on the same day at
+    another time. Raw records are kept for the raw retention only, which is why whole days keep the
+    day-row rule."""
+    whole_days = _activity_exists(alias, (_FIRST_WHOLE_DAY_UTC, _LAST_WHOLE_DAY_UTC))
+    window_days = _activity_exists(alias, (_START_DAY_UTC, _END_DAY_UTC))
+    return f"({whole_days} OR ({window_days} AND {_raw_activity_in_window(alias)}))"
+
+
+def _has_any_activity(alias: str) -> str:
+    """Whether the session named by `alias`.session_id has ever produced a prompt, tool call, cost/usage
+    or line-count row, with no day bound. Gates the unconditional `_STARTED_IN_WINDOW` admission (a
+    session that only ever got `session.start`/`session.env` hooks -- e.g. a VS Code restart reopening a
+    panel, or a Copilot session closed without a prompt -- must not be listed at all, not merely flagged
+    dead) while a session that started in the window and has produced at least one real signal keeps the
+    exact `_STARTED_IN_WINDOW` admission unconditionally, so sub-day window-boundary precision for
+    recently started, genuinely active sessions is unaffected."""
+    return _activity_exists(alias)
+
+
+_SESSION_ADMITTED_IN_WINDOW = f"(({_STARTED_IN_WINDOW} AND {_has_any_activity('d')}) OR {_active_in_window('d')})"
 # The person of a session_dims row `d`: the JWT email, else the largest developer name seen, else the developer name.
 # One expression for the session list and for the framework sessions, so the two cannot name a person differently.
 _SESSION_USER_EMAIL = (
@@ -169,7 +262,6 @@ def _developer(row_email: str) -> str:
     return f"coalesce(nullif(s.user_email, ''), {row_email}, 'unknown')"
 
 
-_DEVELOPER = _developer("c.session_email")
 # A lines_daily row (unqualified, or `x.`-qualified by its alias) that reports changed lines. Rows summing to zero
 # only say "lines are known", so classification (day class lists, code-change sessions) ignores them.
 _LINES_NONZERO = "lines_added <> 0 OR lines_removed <> 0"
@@ -190,6 +282,12 @@ def _session_developer(lines_email: str) -> str:
     return _developer(f"coalesce({_COST_EMAIL}, {lines_email})")
 
 
+# One developer expression for every query: self-contained correlated subqueries against `s.session_id`
+# rather than a borrowed `c`/`d` alias, so every caller agrees on a costless session's developer the same
+# way, instead of silently depending on which row alias happens to be in scope.
+_DEVELOPER = _session_developer(_LINES_EMAIL)
+
+
 # The model of the row with the most calls, over the rows of the original grain of cost_daily:
 # (day, session, user, model, query_source). cost_daily now has several rows per
 # such key (speed, geo, scope, agent type), so their calls are summed back to that grain first (window
@@ -198,7 +296,7 @@ def _session_developer(lines_email: str) -> str:
 _GRAIN_CALLS = "sum(c.api_call_count) OVER w AS grain_calls"
 _GRAIN = "c.day, c.session_id, c.user_email, c.model_name, c.query_source"
 _TOP_MODEL = (
-    f"(array_agg(c.model_name ORDER BY c.grain_calls DESC, c.day, c.session_id {_C}, c.user_email {_C}, "
+    f"(array_agg(c.model_name ORDER BY c.grain_calls DESC NULLS LAST, c.day, c.session_id {_C}, c.user_email {_C}, "
     f"c.model_name {_C}, c.query_source {_C}))[1]"
 )
 
@@ -437,8 +535,12 @@ class PostgresCliAnalyticsReader:
     def _sessions_cte(f: LocalAnalyticsFilter) -> str:
         """Every session's dimensions (dimensions plus the session's email).
 
-        Sessions whose started_at is in the window; the only place the window is decided.
-        Strings are never NULL in the result, so missing values become '' for the filters.
+        Sessions admitted by `_SESSION_ADMITTED_IN_WINDOW`: started in the window and with at least
+        one activity signal ever (`_has_any_activity`), or with activity in the window per
+        `_active_in_window`. A session that started in the window but has never produced a single
+        prompt, tool call, cost/usage or line-count row is excluded entirely, not merely flagged dead.
+        This is the only place the window is decided. Strings are never NULL in the result, so missing
+        values become '' for the filters.
         """
         # The viewer scope is always the first condition: nothing appended later can displace it.
         conditions = [sql_list_condition(f.scope)[0]]
@@ -464,7 +566,7 @@ class PostgresCliAnalyticsReader:
                        d.project_origin,
                        d.route_note
                 FROM session_dims d
-                WHERE d.started_at IS NOT NULL AND {_STARTED_IN_WINDOW}
+                WHERE d.started_at IS NOT NULL AND {_SESSION_ADMITTED_IN_WINDOW}
             ) x{where}
         )"""
 
@@ -516,8 +618,7 @@ class PostgresCliAnalyticsReader:
         classes = _CLASS_LISTS
         name = self._normalized_model_name("d.model_name")
         sources = {
-            "all": f"SELECT ''::text AS key, '' AS kind, {classes} FROM sel s "
-            "WHERE EXISTS (SELECT 1 FROM cost_daily d WHERE d.session_id = s.session_id)",
+            "all": f"SELECT ''::text AS key, '' AS kind, {classes} FROM sel s",
             "session": f"SELECT s.session_id AS key, '' AS kind, {classes} FROM sel s GROUP BY s.session_id",
             "model": f"SELECT {name} AS key, '' AS kind, {classes} FROM cost_daily d "
             f"JOIN sel s ON s.session_id = d.session_id GROUP BY {name} HAVING {name} <> ''",
@@ -546,19 +647,27 @@ class PostgresCliAnalyticsReader:
         return await self._q(f"WITH {self._sessions_cte(f)} {sources[by]}", params)
 
     async def get_cost_kpis(self, f: LocalAnalyticsFilter) -> Rows:
+        """Every session of `sel` counts toward `total_sessions`, priced or not: the same
+        costless-inclusive universe the Sessions list already uses via `get_session_cost_facts(...,
+        include_costless=True)`. A costless session has no `cost_daily` row, so it contributes 0 to every
+        token sum (NULL rows are ignored by `sum`), never NULL to the row as a whole. `total_cost_usd` is
+        the one exception: it stays NULL, not 0, for a window with no `_spend`-eligible row, so "no spend
+        data" (NULL) stays distinguishable from "confirmed $0 spend" -- `spend_sessions` and
+        `total_cost_usd` exclude Personal-paid sessions from the aggregate the same way (see `_spend`)."""
         return await self._q(
             f"""
         WITH {self._sessions_cte(f)}
-        SELECT count(DISTINCT session_id)          AS total_sessions,
-               count(DISTINCT session_id) FILTER (WHERE {_spend("cost_daily")})  AS spend_sessions,
-               sum(cost_usd) FILTER (WHERE {_spend("cost_daily")})                AS total_cost_usd,
-               sum(input_tokens)::bigint           AS total_input_tokens,
-               sum(output_tokens)::bigint          AS total_output_tokens,
-               sum(cache_read_tokens)::bigint      AS total_cache_read_tokens,
-               sum(cache_creation_tokens)::bigint  AS total_cache_creation_tokens,
-               sum(api_call_count)::bigint         AS total_api_calls
-        FROM cost_daily
-        WHERE true{self._scope(f)}""",
+        SELECT count(DISTINCT s.session_id)                              AS total_sessions,
+               count(DISTINCT s.session_id)
+                   FILTER (WHERE c.session_id IS NOT NULL AND {_spend("c")}) AS spend_sessions,
+               sum(c.cost_usd) FILTER (WHERE {_spend("c")})              AS total_cost_usd,
+               coalesce(sum(c.input_tokens), 0)::bigint          AS total_input_tokens,
+               coalesce(sum(c.output_tokens), 0)::bigint         AS total_output_tokens,
+               coalesce(sum(c.cache_read_tokens), 0)::bigint     AS total_cache_read_tokens,
+               coalesce(sum(c.cache_creation_tokens), 0)::bigint AS total_cache_creation_tokens,
+               coalesce(sum(c.api_call_count), 0)::bigint        AS total_api_calls
+        FROM sel s
+             LEFT JOIN {_cost_rows("c.session_id IN (SELECT session_id FROM sel)")} ON c.session_id = s.session_id""",
             window_params(f),
         )
 
@@ -618,35 +727,45 @@ class PostgresCliAnalyticsReader:
         )
 
     async def get_users(self, f: LocalAnalyticsFilter) -> Rows:
+        """Every session of `sel` counts toward a developer's `session_count`/`session_ids`, priced or not,
+        matching the Sessions list's costless-inclusive universe."""
         return await self._q(
             f"""
         WITH {self._sessions_cte(f)}
         SELECT {_DEVELOPER}                             AS developer_name,
-               count(DISTINCT c.session_id)             AS session_count,
-               sum(c.input_tokens)::bigint              AS input_tokens,
-               sum(c.output_tokens)::bigint             AS output_tokens,
-               sum(c.cache_read_tokens)::bigint         AS cache_read_tokens,
-               sum(c.cache_creation_tokens)::bigint     AS cache_creation_tokens,
+               count(DISTINCT s.session_id)             AS session_count,
+               coalesce(sum(c.input_tokens), 0)::bigint              AS input_tokens,
+               coalesce(sum(c.output_tokens), 0)::bigint             AS output_tokens,
+               coalesce(sum(c.cache_read_tokens), 0)::bigint         AS cache_read_tokens,
+               coalesce(sum(c.cache_creation_tokens), 0)::bigint     AS cache_creation_tokens,
                sum(c.cost_usd) FILTER (WHERE {_spend("c")}) AS cost_usd,
                {_TOP_MODEL}                             AS top_model,
-               array_agg(DISTINCT c.session_id)         AS session_ids,
+               array_agg(DISTINCT s.session_id)         AS session_ids,
                {_CLASS_LISTS}
         FROM {_cost_rows("c.session_id IN (SELECT session_id FROM sel)")}
-             JOIN sel s ON s.session_id = c.session_id
+             RIGHT JOIN sel s ON s.session_id = c.session_id
         GROUP BY 1
-        ORDER BY cost_usd DESC, ({_DEVELOPER}) {_C}""",
+        ORDER BY cost_usd DESC NULLS LAST, ({_DEVELOPER}) {_C}""",
             window_params(f),
         )
 
     async def get_users_daily_activity(self, f: LocalAnalyticsFilter) -> Rows:
+        """Every session of `sel` counts toward a developer's daily activity, priced or not:
+        the day bucket comes from any of the five activity tables, not just `cost_daily`, so a costless
+        session still appears on the day it was active."""
+        days = " UNION ".join(
+            f"SELECT session_id, day FROM {t} WHERE session_id IN (SELECT session_id FROM sel)"
+            for t in _ACTIVITY_TABLES
+        )
         return await self._q(
             f"""
         WITH {self._sessions_cte(f)}
-        SELECT {_DEVELOPER} AS developer_name, c.day AS day, count(DISTINCT c.session_id) AS session_count,
+        SELECT {_DEVELOPER} AS developer_name, act.day AS day, count(DISTINCT act.session_id) AS session_count,
                {_CLASS_LISTS}
-        FROM {_cost_rows("c.session_id IN (SELECT session_id FROM sel)")} JOIN sel s ON s.session_id = c.session_id
+        FROM ({days}) act
+             JOIN sel s ON s.session_id = act.session_id
         GROUP BY 1, 2
-        ORDER BY ({_DEVELOPER}) {_C}, c.day""",
+        ORDER BY ({_DEVELOPER}) {_C}, act.day""",
             window_params(f),
         )
 
@@ -661,7 +780,7 @@ class PostgresCliAnalyticsReader:
             f"""
         WITH {self._sessions_cte(f)},
         w AS (
-            SELECT {_session_developer(_LINES_EMAIL)}
+            SELECT {_DEVELOPER}
                        AS developer_name,
                    CASE WHEN d.last_event_at <= $end_dt::timestamptz THEN d.last_event_at
                         ELSE (SELECT max(h.ts) FROM hook_events h

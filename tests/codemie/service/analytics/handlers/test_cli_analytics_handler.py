@@ -1124,6 +1124,12 @@ def test_dead_sessions_counts_a_read_only_session_as_dead():
     assert wasted == 0.0426152
 
 
+def test_dead_sessions_counts_a_priced_session_with_no_files_changed():
+    dead, wasted = LocalAnalyticsHandler._dead_sessions({"s1": 2.0}, {"s1": {"files_changed": 0}})
+    assert dead == 1
+    assert wasted == 2.0
+
+
 def test_subtypes_count_only_the_agent_rows_the_reader_returns():
     """Denied Agent calls never reach the handler: the reader gates them.
     Subtype counts come from the rows the handler is given, so only executed Agent rows count."""
@@ -2165,3 +2171,36 @@ async def test_efficiency_code_ids_exclude_zero_sum_known_sessions():
     data, _ = await handler.get_efficiency(make_filter())
     assert data["code_changes"]["subscription_types"] == ["corporate"]
     assert data["code_changes"]["project_origins"] == ["profile"]
+
+
+@pytest.mark.asyncio
+async def test_overview_total_sessions_is_read_from_get_cost_kpis_not_recomputed_from_the_sessions_list():
+    """Overview's `total_sessions` must come from `repo.get_cost_kpis` verbatim, never be silently
+    recomputed from the Sessions list's own row count (or vice versa): the two repo calls are
+    independent queries, each already proven against a real database (see
+    test_get_cost_kpis_and_get_users_count_a_costless_session_like_the_sessions_list, a live-Postgres
+    test, for whether they actually agree on the same costless-inclusive universe). Deliberately mocking
+    them to different counts here proves the handler reports each one as given, rather than papering
+    over a disagreement by deriving one count from the other."""
+    repo = MagicMock()
+    repo.get_cost_kpis = AsyncMock(return_value=[{**BASE_COST_ROW, "total_sessions": 5, "total_cost_usd": 1.0}])
+    repo.get_model_breakdown = AsyncMock(return_value=[])
+    repo.get_lines_totals = AsyncMock(return_value=[{}])
+    repo.get_lines_daily = AsyncMock(return_value=[])
+    repo.get_turns_by_session = AsyncMock(return_value=[])
+    repo.get_file_facts_by_session = AsyncMock(return_value=[])
+    repo.get_tool_success_by_session = AsyncMock(return_value=[])
+    repo.get_session_durations = AsyncMock(return_value=[])
+    repo.get_session_model_costs = AsyncMock(return_value=[])
+    repo.get_skill_names_by_session = AsyncMock(return_value=[])
+    repo.get_lines_by_session = AsyncMock(return_value=[])
+    repo.get_class_lists = AsyncMock(return_value=[])
+    repo.get_session_cost_facts = AsyncMock(return_value=[BASE_COST_ROW])
+    repo.get_session_page = page_reader([BASE_COST_ROW])
+    handler = LocalAnalyticsHandler(repo)
+
+    overview, _, _ = await handler.get_overview(make_filter())
+    sessions, _, _ = await handler.get_sessions(make_filter(), page=0, per_page=20, sort_by="start_time", search=None)
+
+    assert overview["kpis"]["total_sessions"] == 5
+    assert len(sessions["sessions"]) == 1

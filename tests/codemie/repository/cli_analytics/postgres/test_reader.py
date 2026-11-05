@@ -363,7 +363,29 @@ async def _sql_of(method: str, filters: dict | None = None, **kwargs) -> tuple[s
     return " ".join(recorder.statements[0].split()), recorder.statements
 
 
-_WINDOW_PREDICATE = "started_at BETWEEN $start_dt::timestamptz AND $end_dt::timestamptz"
+_START_DAY_UTC = "($start_dt::timestamptz AT TIME ZONE 'UTC')::date"
+_END_DAY_UTC = "($end_dt::timestamptz AT TIME ZONE 'UTC')::date"
+_FIRST_WHOLE_DAY_UTC = "(($start_dt::timestamptz AT TIME ZONE 'UTC') - interval '1 millisecond')::date + 1"
+_LAST_WHOLE_DAY_UTC = "(($end_dt::timestamptz AT TIME ZONE 'UTC') + interval '1 millisecond')::date - 1"
+_RAW_TABLES = ("hook_events", "usage_requests", "log_events", "spans", "metric_points")
+
+
+def _any_activity(alias: str, days: tuple[str, str] | None = None) -> str:
+    bound = f" AND x.day >= {days[0]} AND x.day <= {days[1]}" if days else ""
+    tables = ("turns_daily", "tool_facts_daily", "cost_daily", "session_usage", "lines_daily")
+    clauses = " OR ".join(
+        f"EXISTS (SELECT 1 FROM {t} x WHERE x.session_id = {alias}.session_id{bound})" for t in tables
+    )
+    return f"({clauses})"
+
+
+_HAS_ANY_ACTIVITY = _any_activity("d")
+_WHOLE_DAYS = _any_activity("d", (_FIRST_WHOLE_DAY_UTC, _LAST_WHOLE_DAY_UTC))
+_WINDOW_DAYS = _any_activity("d", (_START_DAY_UTC, _END_DAY_UTC))
+_WINDOW_PREDICATE_HEAD = (
+    "((started_at BETWEEN $start_dt::timestamptz AND $end_dt::timestamptz AND "
+    f"{_HAS_ANY_ACTIVITY}) OR ({_WHOLE_DAYS} OR ({_WINDOW_DAYS} AND ("
+)
 
 
 @pytest.mark.parametrize(
@@ -372,7 +394,17 @@ _WINDOW_PREDICATE = "started_at BETWEEN $start_dt::timestamptz AND $end_dt::time
 def test_sessions_cte_decides_the_window_by_session_start(filters):
     cte = " ".join(PostgresCliAnalyticsReader._sessions_cte(_flt(**filters)).split())
 
-    assert f"d.started_at IS NOT NULL AND {_WINDOW_PREDICATE}" in cte
+    assert f"d.started_at IS NOT NULL AND {_WINDOW_PREDICATE_HEAD}" in cte
+
+
+@pytest.mark.parametrize("table", _RAW_TABLES)
+def test_sessions_cte_times_a_partial_window_day_by_its_raw_records(table):
+    cte = " ".join(PostgresCliAnalyticsReader._sessions_cte(_flt()).split())
+
+    assert (
+        f"EXISTS (SELECT 1 FROM {table} r WHERE r.session_id = d.session_id "
+        "AND r.ts >= $start_dt::timestamptz AND r.ts <= $end_dt::timestamptz"
+    ) in cte
 
 
 def test_scope_always_restricts_to_the_selected_sessions():
@@ -393,6 +425,7 @@ async def test_repository_sessions_read_the_windowed_sel():
 
     assert "FROM sel" in sql
     assert re.search(r"started_at BETWEEN \$\d+::timestamptz AND \$\d+::timestamptz", sql)
+    assert re.search(r"EXISTS \(SELECT 1 FROM turns_daily x WHERE x\.session_id = d\.session_id", sql)
 
 
 @pytest.mark.asyncio
@@ -422,7 +455,7 @@ async def test_framework_sessions_group_raw_keys_and_bind_the_window_and_label()
 async def test_session_start_times_rely_on_sel_alone():
     sql, _ = await _sql_of("get_session_start_times")
 
-    assert sql.count("BETWEEN") == 1  # only the one inside sel
+    assert sql.count("BETWEEN") == 1  # only the one inside sel (the started_at arm; the activity arms use >=/<=)
 
 
 @pytest.mark.parametrize("method", ["get_session_durations", "get_session_cost_facts", "get_session_start_times"])
@@ -869,7 +902,7 @@ def test_session_ids_never_replace_a_filter_that_denies_every_session():
 @pytest.mark.asyncio
 async def test_cost_kpis_selects_total_api_calls():
     sql, _ = await _sql_of("get_cost_kpis")
-    assert "sum(api_call_count)::bigint" in sql
+    assert "coalesce(sum(c.api_call_count), 0)::bigint" in sql
     assert "AS total_api_calls" in sql
 
 
@@ -897,10 +930,16 @@ async def test_the_top_model_is_the_largest_row_of_the_original_cost_grain(metho
 
     assert "sum(c.api_call_count) OVER w AS grain_calls" in sql
     assert "WINDOW w AS (PARTITION BY c.day, c.session_id, c.user_email, c.model_name, c.query_source)) c" in sql
-    assert "(array_agg(c.model_name ORDER BY c.grain_calls DESC, c.day, c.session_id" in sql
+    assert "(array_agg(c.model_name ORDER BY c.grain_calls DESC NULLS LAST, c.day, c.session_id" in sql
     assert "ORDER BY c.api_call_count" not in sql
-    # cost_daily is read only inside that subquery: a plain `FROM cost_daily c` has no grain_calls column
-    assert sql.count("cost_daily") == 1 and "(SELECT c.*, sum(c.api_call_count) OVER w AS grain_calls, " in sql
+    # cost_daily is read for the grain_calls subquery, again inside sel's own activity-window check
+    # (three times -- the any-time, the whole-day and the window-day arms), and once more per `_DEVELOPER`
+    # occurrence for its own cost-email fallback subquery (get_users repeats {_DEVELOPER} in ORDER BY,
+    # get_session_cost_facts uses it once); a plain `FROM cost_daily c` has no grain_calls column
+    developer_reads = {"get_users": 2, "get_session_cost_facts": 1}.get(method, 0)
+    expected_cost_daily_reads = 1 if method == "get_session_detail_cost" else 4 + developer_reads
+    assert sql.count("cost_daily") == expected_cost_daily_reads
+    assert "(SELECT c.*, sum(c.api_call_count) OVER w AS grain_calls, " in sql
 
 
 @pytest.mark.asyncio
@@ -919,7 +958,7 @@ async def test_session_detail_model_costs_groups_by_model_for_one_session():
 async def test_users_daily_activity_still_groups_by_the_fact_day():
     sql, _ = await _sql_of("get_users_daily_activity")
 
-    assert "c.day AS day" in sql
+    assert "act.day AS day" in sql
     assert "GROUP BY 1, 2" in sql
 
 
@@ -975,18 +1014,31 @@ async def test_file_facts_changed_only_counts_written_or_edited_files():
 # ── invocations and tools ──
 
 
+def _without_sel(sql: str) -> str:
+    """`sql` with the body of its `sel` CTE removed (parentheses matched, so nested subqueries stay inside)."""
+    start = sql.index("sel AS (") + len("sel AS (")
+    depth = 1
+    for i in range(start, len(sql)):
+        depth += {"(": 1, ")": -1}.get(sql[i], 0)
+        if depth == 0:
+            return sql[:start] + sql[i:]
+    raise AssertionError("unbalanced sel CTE")
+
+
 @pytest.mark.parametrize("method", ["get_tool_success_by_session", "get_tool_usage", "get_invocations"])
 @pytest.mark.asyncio
 async def test_invocation_methods_read_the_scoped_hourly_rollup_without_a_window(method: str) -> None:
     sql, _ = await _sql_of(method)
+    # sel decides the window, from raw records too; the invocation query itself must not.
+    body = _without_sel(sql)
 
-    assert "FROM invocations_hourly" in sql
-    assert "IN (SELECT session_id FROM sel)" in sql
+    assert "FROM invocations_hourly" in body
+    assert "IN (SELECT session_id FROM sel)" in body
     forbidden = ["hour >=", "ts BETWEEN", "ts >=", "FROM spans", "FROM log_events"]
     if method != "get_invocations":  # its slash commands also read session_dims.commands
         forbidden.append("UNION")
     for fragment in forbidden:
-        assert fragment not in sql
+        assert fragment not in body
 
 
 @pytest.mark.parametrize("method", ["get_tool_success_by_session", "get_tool_usage", "get_invocations"])
@@ -1036,7 +1088,8 @@ class _ArgRecorder(_SqlRecorder):
 
 
 async def _bound_window(f: LocalAnalyticsFilter) -> tuple[datetime, datetime]:
-    """The (lower, upper) the database receives for the `started_at BETWEEN` predicate in sel."""
+    """The (lower, upper) the database receives for the `started_at BETWEEN` predicate in sel (the exact-
+    admission arm for a session that started inside the window)."""
     recorder = _ArgRecorder()
     await PostgresCliAnalyticsReader(recorder).get_session_start_times(f)  # type: ignore[arg-type]
     match = re.search(r"started_at BETWEEN \$(\d+)::timestamptz AND \$(\d+)::timestamptz", recorder.statements[0])

@@ -53,6 +53,7 @@ _SPAN_HOOK_TYPES = frozenset(
         "agent.tool.start",
         _TOOL_END,
         "agent.tool.error",
+        "agent.tool.denied",
         "agent.subagent.start",
         "agent.skill.dispatch",
     }

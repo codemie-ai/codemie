@@ -351,9 +351,11 @@ async def test_a_personal_session_changes_no_shared_total(case):
 async def test_costless_subagent_binding_only_and_m_rows(case):
     """AC9/AC11: cost-less and subagent_usage Personal rows stay out; binding-only unlisted; M never listed."""
     admin = _scope("exclude", "admin@x.com", unrestricted=True)
-    p_costless = await case.seed("pc", sub="personal", owner=OWNER, cost=None)
-    p_sub = await case.seed("ps", sub="personal", owner=OWNER, cost=None, subagent_usage=True)
-    n_costless = await case.seed("nc", sub="corporate", cost=None)
+    # Real conversational activity with no cost, not a zero-activity session: a turns_daily row keeps
+    # each costless fixture admitted to `sel`.
+    p_costless = await case.seed("pc", sub="personal", owner=OWNER, cost=None, turns=1)
+    p_sub = await case.seed("ps", sub="personal", owner=OWNER, cost=None, subagent_usage=True, turns=1)
+    n_costless = await case.seed("nc", sub="corporate", cost=None, turns=1)
     binding = await case.seed("bind", sub="corporate", started=False)
     m = await case.seed("m", dims=False)
     seen = await case.listed(admin)

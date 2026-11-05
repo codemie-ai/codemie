@@ -165,7 +165,13 @@ async def test_reported_range_covers_events_outside_the_hook_times(ids: _Ids):
 
 @pytest.mark.asyncio
 async def test_window_membership_still_follows_started_at(ids: _Ids):
-    """The earlier reported start does not move the session into a window that ends before its first hook."""
+    """The earlier reported start does not move the session into a window on a day before its activity.
+
+    Membership (EPMCDME-16496) additionally admits a session whose `started_at` is outside the window
+    when it has day-grain activity (here, its `cost_daily` row) on a day inside the window; that rescue
+    arm has no sub-day precision, so it only decides membership correctly across calendar days, not
+    within the hour of a session's own start on its own activity day — this window therefore ends on the
+    day before the session's activity day, not merely before its first hook."""
     engine = await _get_engine()
     t = _hook_time()
     try:
@@ -181,8 +187,8 @@ async def test_window_membership_still_follows_started_at(ids: _Ids):
         )
         before = LocalAnalyticsFilter(
             scope=EXCLUDE_SCOPE,
-            start_dt=_naive(t - timedelta(hours=1)),
-            end_dt=_naive(t - timedelta(seconds=1)),
+            start_dt=_naive(t - timedelta(days=3)),
+            end_dt=_naive(t - timedelta(days=2)),
             users=[ids.email],
         )
         assert ids.session in {r["session_id"] for r in await reader.get_session_durations(inside)}

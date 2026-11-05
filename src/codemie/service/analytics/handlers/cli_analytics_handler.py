@@ -525,21 +525,14 @@ class LocalAnalyticsHandler:
         cache_creation_tokens = _i(kpi.get("total_cache_creation_tokens"))
         total_api_calls = _i(kpi.get("total_api_calls"))
 
-        # D1: the session universe is the priced (cost_daily) one, so every
-        # per-session roll-up below is restricted to those sessions.
-        cost_facts = await self._repo.get_session_cost_facts(f)
-        cost_sessions = {_s(r.get("session_id")) for r in cost_facts}
-
-        total_turns = sum(_i(r.get("turns")) for r in turns_rows if _s(r.get("session_id")) in cost_sessions)
+        # Every roll-up below is already scoped to `sel` in its own reader query: the same
+        # costless-inclusive universe `total_sessions` above now counts.
+        total_turns = sum(_i(r.get("turns")) for r in turns_rows)
         files_by_session = {_s(r.get("session_id")): r for r in file_rows}
-        total_files_changed = sum(
-            _i(r.get("files_changed")) for sid, r in files_by_session.items() if sid in cost_sessions
-        )
-        tool_calls = sum(_i(r.get("tool_calls")) for r in success_rows if _s(r.get("session_id")) in cost_sessions)
-        tool_success = sum(
-            _i(r.get("tool_calls_success")) for r in success_rows if _s(r.get("session_id")) in cost_sessions
-        )
-        duration_ms = sum(_i(r.get("duration_ms")) for r in duration_rows if _s(r.get("session_id")) in cost_sessions)
+        total_files_changed = sum(_i(r.get("files_changed")) for r in files_by_session.values())
+        tool_calls = sum(_i(r.get("tool_calls")) for r in success_rows)
+        tool_success = sum(_i(r.get("tool_calls_success")) for r in success_rows)
+        duration_ms = sum(_i(r.get("duration_ms")) for r in duration_rows)
 
         lines = _first(lines_totals)
         net_lines = _nnet(_ni(lines.get("lines_added")), _ni(lines.get("lines_removed")))
@@ -728,9 +721,10 @@ class LocalAnalyticsHandler:
                 }
             )
 
-        # D1 rule: average duration over priced sessions only (same universe as the overview)
-        priced_sessions = {_s(s) for row in user_rows for s in (row.get("session_ids") or [])}
-        durations = [_i(r.get("duration_ms")) for r in duration_rows if _s(r.get("session_id")) in priced_sessions]
+        # Average duration over every session get_users returned: the same costless-inclusive
+        # universe as the overview, not the priced-only one D1 used to restrict to.
+        listed_sessions = {_s(s) for row in user_rows for s in (row.get("session_ids") or [])}
+        durations = [_i(r.get("duration_ms")) for r in duration_rows if _s(r.get("session_id")) in listed_sessions]
         avg_duration = int(sum(durations) / len(durations)) if durations else None
 
         rows.sort(key=lambda r: r["developer_name"])

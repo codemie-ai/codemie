@@ -68,6 +68,7 @@ _TOTALS_SQL = """
          input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, attrs)
     VALUES ($1, $2, $3, '', '', '', '', 'ag1', 100, 20, $4, 0, $5::jsonb)
 """
+_TURNS_SQL = "INSERT INTO turns_daily (day, session_id, turns) VALUES ($1, $2, 1)"
 
 
 async def _engine() -> AnalyticsPgEngine:
@@ -82,7 +83,7 @@ async def _engine() -> AnalyticsPgEngine:
 
 async def _cleanup(engine: AnalyticsPgEngine, session_ids: list[str]) -> None:
     async with engine.acquire() as conn:
-        for table in ("session_dims", "cost_daily", "session_usage"):
+        for table in ("session_dims", "cost_daily", "session_usage", "turns_daily"):
             await conn.execute(f"DELETE FROM {table} WHERE session_id = ANY($1::text[])", session_ids)  # noqa: S608
 
 
@@ -144,6 +145,9 @@ class _Seed:
             (12, day, _KNOWN_MODEL, 10, 1, 2),  # 0.5
         ]
         totals = [(4, 500), (7, 300)]
+        # sessions 3, 5 and 10 have no cost_daily/session_usage row at all: a turns_daily row of their own
+        # represents real conversational activity with no cost, not a zero-activity session.
+        activity_only = [3, 5, 10]
         async with engine.acquire() as conn:
             for number, minutes, repository, branch, prompt in dims:
                 started = self.t0 + timedelta(minutes=minutes)
@@ -158,6 +162,8 @@ class _Seed:
                     _TOTALS_SQL, self.sid(number), day, _KNOWN_MODEL, cache_read,
                     json.dumps({"token_source": "subagent_usage"}),
                 )  # fmt: skip
+            for number in activity_only:
+                await conn.execute(_TURNS_SQL, day, self.sid(number))
 
 
 async def _page(

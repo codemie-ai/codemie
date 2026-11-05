@@ -54,6 +54,14 @@ async def _seed(engine, with_costless: bool, costless_id: str = _COSTLESS, price
     await _seed_requests(engine, priced_id)
     if with_costless:
         await _seed_start(engine, costless_id)
+        # A real prompt with no cost/usage.request event, not a zero-activity session: agent.prompt.submit
+        # rolls up into turns_daily, so the session is still admitted to `sel`.
+        async with engine.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO hook_events (ts, session_id, event_type) VALUES ($1, $2, 'agent.prompt.submit')",
+                _START,
+                costless_id,
+            )
     await _refresh(engine)
 
 
@@ -126,7 +134,10 @@ async def test_costless_session_detail_resolves_instead_of_404():
 
 
 @pytest.mark.asyncio
-async def test_kpis_and_priced_aggregates_are_unchanged_by_a_costless_session():
+async def test_kpis_count_a_costless_session_while_priced_aggregates_are_unchanged():
+    # EPMCDME-16496: get_cost_kpis counts every session of `sel`, priced or not (the same universe
+    # get_session_cost_facts(include_costless=True) already lists), so total_sessions grows by one
+    # when a costless session is added; every money/token sum stays the same since it contributes zero.
     engine = await _get_engine()
     priced, costless = _PRICED + "-kpi", _COSTLESS + "-kpi"
     try:
@@ -142,7 +153,10 @@ async def test_kpis_and_priced_aggregates_are_unchanged_by_a_costless_session():
         kpis_after = await reader.get_cost_kpis(own)
         facts = await reader.get_session_cost_facts(own, include_costless=True)
 
-        assert kpis_after == kpis_before
+        assert kpis_after[0]["total_sessions"] == kpis_before[0]["total_sessions"] + 1
+        assert {k: v for k, v in kpis_after[0].items() if k != "total_sessions"} == {
+            k: v for k, v in kpis_before[0].items() if k != "total_sessions"
+        }
         assert [r for r in facts if r["session_id"] == priced] == priced_before
         assert any(r["session_id"] == costless for r in facts)
 
@@ -164,6 +178,44 @@ async def test_kpis_and_priced_aggregates_are_unchanged_by_a_costless_session():
         assert by_id[priced]["cost_available"] is True
     finally:
         await _cleanup(engine, priced)
+        await _cleanup(engine, costless)
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_kpis_and_users_sums_are_zero_not_null_when_the_window_is_entirely_costless():
+    # CR-002: when every session of a window is costless, sum(c.*) over an all-NULL joined group
+    # returns SQL NULL, not the 0 get_cost_kpis's own docstring promises -- same for get_users.
+    engine = await _get_engine()
+    costless = _COSTLESS + "-allcostless"
+    try:
+        await _cleanup(engine, costless)
+        await _seed_start(engine, costless)
+        async with engine.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO hook_events (ts, session_id, event_type) VALUES ($1, $2, 'agent.prompt.submit')",
+                _START,
+                costless,
+            )
+        await _refresh(engine)
+        reader = PostgresCliAnalyticsReader(engine)
+        own = _window().restricted_to([costless])
+
+        kpis = (await reader.get_cost_kpis(own))[0]
+        for key in (
+            "total_input_tokens",
+            "total_output_tokens",
+            "total_cache_read_tokens",
+            "total_cache_creation_tokens",
+            "total_api_calls",
+        ):
+            assert kpis[key] == 0, f"{key} should be 0, not {kpis[key]!r}, for an all-costless window"
+
+        users = await reader.get_users(own)
+        assert len(users) == 1
+        for key in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens"):
+            assert users[0][key] == 0, f"{key} should be 0, not {users[0][key]!r}, for an all-costless developer"
+    finally:
         await _cleanup(engine, costless)
         await engine.close()
 

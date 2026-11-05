@@ -1656,6 +1656,7 @@ _NO_SPAN_OF_KIND = (
     f"AND s.ts >= {_DAY_LO} AND s.ts < {_DAY_HI})"
 )
 _TOOL_START = "agent.tool.start"
+_TOOL_DENIED = "agent.tool.denied"
 # A turn is an interaction the user started that talks to the model. An interaction span is not a turn when, in order:
 # 1. its user_prompt is an auto prompt: the agent.prompt.submit hook of the same prompt_id is a Claude Code hook
 #    whose body starts with one of CLAUDE_CODE_AUTO_PROMPT_PREFIXES (the user did not start it);
@@ -1864,7 +1865,12 @@ RECOMPUTE: list[str] = [
                0
         {_in_day("h", "hook_events")}
         WHERE k.kinds & {_SPANS} <> 0 AND k.session_id <> ''
-          AND h.event_type IN ({_literal(_TOOL_START)}, {_literal(_SUBAGENT_START)})
+          -- agent.tool.error/agent.tool.denied never get an agent.tool.end hook or span (a denied/errored
+          -- call still counts as session activity), so they admit a row here too; the tool_calls FILTER
+          -- above stays scoped to _IS_TOOL_START so a denied/errored-only call never inflates the count.
+          AND h.event_type IN (
+              {_literal(_TOOL_START)}, {_literal(_SUBAGENT_START)}, {_literal(_TOOL_ERROR)}, {_literal(_TOOL_DENIED)}
+          )
           AND {_NO_SPAN_OF_KIND}
         GROUP BY 1, 2
         UNION ALL
@@ -2092,6 +2098,7 @@ _FALLBACK_HOOKS = ", ".join(
         "agent.tool.start",
         "agent.tool.end",
         "agent.tool.error",
+        "agent.tool.denied",
         "agent.skill.dispatch",
         "agent.subagent.start",
     )
