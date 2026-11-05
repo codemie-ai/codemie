@@ -43,6 +43,12 @@ _USAGE_ATTRIBUTES = {
     "total": "llm.token_count.total",
 }
 
+_COST_ATTRIBUTES = {
+    "input": "llm.cost.prompt",
+    "output": "llm.cost.completion",
+    "total": "llm.cost.total",
+}
+
 
 def _current_recording_span() -> Any | None:
     """Return the active OTEL span if it is recording, else ``None``."""
@@ -251,6 +257,7 @@ class PhoenixObservabilityProvider(ObservabilityProvider):
         input: Any | None = None,
         output: Any | None = None,
         usage_details: dict[str, int | float] | None = None,
+        cost_details: dict[str, float] | None = None,
         metadata: dict[str, Any] | None = None,
         level: ObservationLevel | None = None,
         status_message: str | None = None,
@@ -270,6 +277,9 @@ class PhoenixObservabilityProvider(ObservabilityProvider):
             if usage_details:
                 for key, value in usage_details.items():
                     span.set_attribute(_USAGE_ATTRIBUTES.get(key, f"llm.usage.{key}"), value)
+            if cost_details:
+                for key, value in cost_details.items():
+                    span.set_attribute(_COST_ATTRIBUTES.get(key, f"llm.cost.{key}"), value)
         except Exception as e:
             logger.warning("Failed to update current Phoenix generation: %s", e, exc_info=True)
         self.update_current_observation(

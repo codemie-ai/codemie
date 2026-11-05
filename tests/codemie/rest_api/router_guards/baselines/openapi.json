@@ -7884,6 +7884,17 @@
             "title": "Input",
             "type": "number"
           },
+          "input_cost_per_second": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Cost Per Second"
+          },
           "input_cost_per_token_batches": {
             "anyOf": [
               {

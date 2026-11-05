@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
-    from codemie.configs.llm_config import LLMModel, ModelType, SttConfig
+    from codemie.configs.llm_config import CostConfig, LLMModel, ModelType, SttConfig
 
 
 class UserKeysSpending(BaseModel):
@@ -68,6 +68,26 @@ def _parse_stt_config(raw: dict[str, Any] | None, model_name: str) -> "SttConfig
         return None
 
 
+def _parse_cost(model_info: dict[str, Any]) -> CostConfig | None:
+    """Per-token prices need both input and output; duration-priced models (STT) need only a per-second price."""
+    from codemie.configs.llm_config import CostConfig
+
+    input_cost = model_info.get("input_cost_per_token")
+    output_cost = model_info.get("output_cost_per_token")
+    cost_per_second = model_info.get("input_cost_per_second")
+
+    if (input_cost is None or output_cost is None) and cost_per_second is None:
+        return None
+    return CostConfig(
+        input=input_cost or 0.0,
+        output=output_cost or 0.0,
+        cache_read_input_token_cost=model_info.get("cache_read_input_token_cost"),
+        cache_creation_input_token_cost=model_info.get("cache_creation_input_token_cost"),
+        cache_creation_input_token_cost_above_1hr=model_info.get("cache_creation_input_token_cost_above_1hr"),
+        input_cost_per_second=cost_per_second,
+    )
+
+
 def map_litellm_to_llm_model(litellm_model: dict[str, Any]) -> "LLMModel":
     """
     Map LiteLLM model info dict to core LLMModel dataclass.
@@ -89,7 +109,6 @@ def map_litellm_to_llm_model(litellm_model: dict[str, Any]) -> "LLMModel":
         llm_model = map_litellm_to_llm_model(raw_model_from_api)
     """
     from codemie.configs.llm_config import (
-        CostConfig,
         LiteLLMRouterConfig,
         LLMFeatures,
         LLMModel,
@@ -134,21 +153,7 @@ def map_litellm_to_llm_model(litellm_model: dict[str, Any]) -> "LLMModel":
         top_p=top_p_enabled,
     )
 
-    # Extract cost information
-    cost = None
-    input_cost = model_info.get("input_cost_per_token")
-    output_cost = model_info.get("output_cost_per_token")
-    cache_read_cost = model_info.get("cache_read_input_token_cost")
-    cache_creation_cost = model_info.get("cache_creation_input_token_cost")
-
-    if input_cost is not None and output_cost is not None:
-        cost = CostConfig(
-            input=input_cost,
-            output=output_cost,
-            cache_read_input_token_cost=cache_read_cost,
-            cache_creation_input_token_cost=cache_creation_cost,
-            cache_creation_input_token_cost_above_1hr=model_info.get("cache_creation_input_token_cost_above_1hr"),
-        )
+    cost = _parse_cost(model_info)
 
     # Extract default categories (core type)
     default_categories_raw = model_info.get("default_for_categories", [])

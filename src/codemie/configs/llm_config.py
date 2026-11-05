@@ -31,6 +31,7 @@ class CostConfig(BaseModel):
     cache_read_input_token_cost: Optional[float] = None
     cache_creation_input_token_cost: Optional[float] = None
     cache_creation_input_token_cost_above_1hr: float | None = None
+    input_cost_per_second: float | None = None  # Duration-priced speech-to-text models
 
 
 class LLMProvider(Enum):

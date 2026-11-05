@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any, BinaryIO, Mapping
 import openai
 
 from codemie.configs import config, logger
-from codemie.configs.llm_config import LLMModel, SttConfig
+from codemie.configs.llm_config import CostConfig, LLMModel, SttConfig
 from codemie.configs.logger import current_user_email, logging_user_id
 from codemie.core.exceptions import ExtendedHTTPException, UnknownSttModelError
 from codemie.enterprise.observability import get_observability_provider
@@ -187,12 +187,29 @@ def _usage_details(response: Any) -> dict[str, int | float] | None:
     return {key: value for key, value in mapped.items() if value is not None} or None
 
 
+def _cost_details(usage: Mapping[str, int | float] | None, cost: CostConfig | None) -> dict[str, float] | None:
+    """Price the call from the model's catalog prices: per second for duration usage, per token otherwise."""
+    if not usage or cost is None:
+        return None
+    seconds = usage.get("audio_seconds")
+    if seconds is not None:
+        if cost.input_cost_per_second is None:
+            return None
+        return {"total": seconds * cost.input_cost_per_second}
+    input_cost = usage.get("input", 0) * cost.input
+    output_cost = usage.get("output", 0) * cost.output
+    if not input_cost and not output_cost:
+        return None
+    return {"input": input_cost, "output": output_cost, "total": input_cost + output_cost}
+
+
 @dataclass
 class _SttCall:
     client: Any
     model_id: str
     language: str | None
     stt_config: SttConfig | None
+    cost: CostConfig | None
     request_headers: dict[str, str]
     trace_input: dict[str, Any]
     context: dict[str, Any]
@@ -302,6 +319,7 @@ class SttService:
             model_id=model_id,
             language=lang,
             stt_config=stt_config,
+            cost=model.cost if model else None,
             request_headers=request_headers,
             trace_input=_trace_context(audio_file=audio_name, language=lang),
             context=context,
@@ -345,6 +363,7 @@ class SttService:
             provider.update_current_generation(
                 output=result.text,
                 usage_details=result.usage,
+                cost_details=_cost_details(result.usage, call.cost),
                 metadata={**call.request_headers, **result.metadata, **_outcome(result)},
             )
         return result

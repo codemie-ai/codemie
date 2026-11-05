@@ -173,6 +173,7 @@ class ObservabilityProvider(ABC):
         input: Any | None = None,
         output: Any | None = None,
         usage_details: dict[str, int | float] | None = None,
+        cost_details: dict[str, float] | None = None,
         metadata: dict[str, Any] | None = None,
         level: ObservationLevel | None = None,
         status_message: str | None = None,
@@ -182,7 +183,8 @@ class ObservabilityProvider(ABC):
         Use inside a frame opened with ``observe(name=..., as_type="generation")`` to trace
         direct SDK calls (speech-to-text, for example) that no callback handler sees.
         ``usage_details`` keys follow Langfuse naming (``input``, ``output``, ``total``, or a
-        custom unit such as ``audio_seconds``).
+        custom unit such as ``audio_seconds``). ``cost_details`` holds an explicit cost in USD
+        (``input``, ``output``, ``total``) for calls the backend cannot price from usage alone.
 
         Default implementation is a no-op. Must never raise.
         """

@@ -309,6 +309,40 @@ class TestMapLiteLLMToLLMModel:
         assert result.cost.cache_creation_input_token_cost == 0.0000375
         assert result.cost.cache_creation_input_token_cost_above_1hr == 0.00006
 
+    def test_maps_per_second_cost_for_duration_priced_models(self):
+        litellm_model = {
+            "model_name": "whisper-1",
+            "model_info": {"mode": "audio_transcription", "input_cost_per_second": 0.0001},
+        }
+
+        from codemie.enterprise.litellm.models import map_litellm_to_llm_model
+
+        result = map_litellm_to_llm_model(litellm_model)
+
+        assert result.cost is not None
+        assert result.cost.input_cost_per_second == 0.0001
+        assert result.cost.input == 0.0
+        assert result.cost.output == 0.0
+
+    def test_token_priced_model_has_no_per_second_cost(self):
+        litellm_model = {
+            "model_name": "azure/gpt-4",
+            "model_info": {"input_cost_per_token": 0.00003, "output_cost_per_token": 0.00006},
+        }
+
+        from codemie.enterprise.litellm.models import map_litellm_to_llm_model
+
+        result = map_litellm_to_llm_model(litellm_model)
+
+        assert result.cost.input_cost_per_second is None
+
+    def test_input_price_alone_does_not_create_a_cost(self):
+        litellm_model = {"model_name": "azure/test-model", "model_info": {"input_cost_per_token": 0.00003}}
+
+        from codemie.enterprise.litellm.models import map_litellm_to_llm_model
+
+        assert map_litellm_to_llm_model(litellm_model).cost is None
+
     def test_handles_missing_cost_information(self):
         """Test handles missing cost information (returns None)."""
         litellm_model = {

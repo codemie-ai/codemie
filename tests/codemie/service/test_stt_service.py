@@ -21,7 +21,7 @@ import pytest
 from openai.types.audio import Transcription
 
 from codemie.configs import config
-from codemie.configs.llm_config import LiteLLMModels, LLMModel, SttConfig, llm_config
+from codemie.configs.llm_config import CostConfig, LiteLLMModels, LLMModel, SttConfig, llm_config
 from codemie.core.exceptions import ExtendedHTTPException, UnknownSttModelError
 from codemie.service import stt_service as stt_module
 from codemie.service.llm_service.llm_service import LLMService
@@ -30,6 +30,7 @@ from codemie.service.stt_service import (
     SttResult,
     _collect_response_fields,
     _collect_response_headers,
+    _cost_details,
     select_forward_headers,
     stt_service,
 )
@@ -40,6 +41,9 @@ CUSTOM_CONFIG = SttConfig(
     response_headers=["x-transaction-id", "x-file-uri"],
     response_body_fields=["file_path"],
 )
+
+
+PRICES = CostConfig(input=0.5, output=2.0, input_cost_per_second=0.25)
 
 
 @pytest.fixture
@@ -74,6 +78,12 @@ def clients(monkeypatch, user, observability):
             audio_transcription_models=[
                 LLMModel(base_name="custom-stt", deployment_name="custom-stt", enabled=True, stt_config=CUSTOM_CONFIG),
                 LLMModel(base_name="plain-stt", deployment_name="plain-stt", enabled=True),
+                LLMModel(
+                    base_name="priced-stt",
+                    deployment_name="priced-stt",
+                    enabled=True,
+                    cost=PRICES,
+                ),
             ]
         )
     )
@@ -654,6 +664,47 @@ class TestObservability:
         usage = observability.update_current_generation.call_args_list[-1].kwargs["usage_details"]
         assert usage == {"input": 3, "output": 2, "total": 5}
 
+    def test_duration_usage_is_priced_per_second_on_the_generation(self, clients, user, observability):
+        raw = _raw()
+        raw.parse.return_value = Transcription.model_validate(
+            {"text": "hi", "usage": {"type": "duration", "seconds": 6}}
+        )
+        _prepare(clients.litellm, raw)
+
+        stt_service.transcribe(_audio(), user=user, model_name="priced-stt")
+
+        assert observability.update_current_generation.call_args_list[-1].kwargs["cost_details"] == {"total": 1.5}
+
+    def test_token_usage_is_priced_per_token_on_the_generation(self, clients, user, observability):
+        raw = _raw()
+        raw.parse.return_value = Transcription.model_validate(
+            {"text": "hi", "usage": {"type": "tokens", "input_tokens": 4, "output_tokens": 3, "total_tokens": 7}}
+        )
+        _prepare(clients.litellm, raw)
+
+        stt_service.transcribe(_audio(), user=user, model_name="priced-stt")
+
+        cost = observability.update_current_generation.call_args_list[-1].kwargs["cost_details"]
+        assert cost == {"input": 2.0, "output": 6.0, "total": 8.0}
+
+    def test_no_cost_is_attached_for_a_model_without_prices(self, clients, user, observability):
+        raw = _raw()
+        raw.parse.return_value = Transcription.model_validate(
+            {"text": "hi", "usage": {"type": "duration", "seconds": 6}}
+        )
+        _prepare(clients.litellm, raw)
+
+        stt_service.transcribe(_audio(), user=user, model_name="plain-stt")
+
+        assert observability.update_current_generation.call_args_list[-1].kwargs["cost_details"] is None
+
+    def test_no_cost_is_attached_on_the_legacy_path(self, clients, user, observability):
+        _prepare(clients.legacy, _raw())
+
+        stt_service.transcribe(_audio(), user=user)
+
+        assert observability.update_current_generation.call_args_list[-1].kwargs["cost_details"] is None
+
     def test_audio_content_is_never_sent_to_observability(self, clients, user, observability):
         _prepare(clients.legacy, _raw())
 
@@ -730,3 +781,31 @@ class TestProviderErrors:
 
         with pytest.raises(RuntimeError):
             stt_service.transcribe(_audio(), user=user)
+
+
+class TestCostDetails:
+    def test_duration_usage_is_seconds_times_the_per_second_price(self):
+        assert _cost_details({"audio_seconds": 6}, PRICES) == {"total": 1.5}
+
+    def test_duration_usage_without_a_per_second_price_has_no_cost(self):
+        assert _cost_details({"audio_seconds": 6}, CostConfig(input=0.5, output=2.0)) is None
+
+    def test_token_usage_is_priced_for_input_and_output(self):
+        assert _cost_details({"input": 4, "output": 3, "total": 7}, PRICES) == {
+            "input": 2.0,
+            "output": 6.0,
+            "total": 8.0,
+        }
+
+    def test_token_usage_with_only_input_tokens_is_priced(self):
+        assert _cost_details({"input": 4}, PRICES) == {"input": 2.0, "output": 0.0, "total": 2.0}
+
+    def test_token_usage_with_zero_token_prices_has_no_cost(self):
+        assert _cost_details({"input": 4, "output": 3}, CostConfig(input=0.0, output=0.0)) is None
+
+    @pytest.mark.parametrize("usage", [None, {}])
+    def test_missing_usage_has_no_cost(self, usage):
+        assert _cost_details(usage, PRICES) is None
+
+    def test_missing_prices_have_no_cost(self):
+        assert _cost_details({"audio_seconds": 6}, None) is None

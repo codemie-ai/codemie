@@ -28,6 +28,7 @@ GENERATION = {
     "input": {"audio_file": "audio.webm"},
     "output": "hello",
     "usage_details": {"audio_seconds": 5},
+    "cost_details": {"total": 0.0005},
     "metadata": {"x-transaction-id": "tx-1"},
     "level": "DEFAULT",
     "status_message": "ok",
@@ -85,6 +86,7 @@ class TestPhoenixProvider:
         assert attributes["openinference.span.kind"] == "LLM"
         assert attributes["llm.model_name"] == "custom-stt"
         assert attributes["llm.usage.audio_seconds"] == 5
+        assert attributes["llm.cost.total"] == 0.0005
         assert '"language": "de"' in attributes["llm.invocation_parameters"]
 
     def test_token_usage_uses_openinference_token_count_keys(self):
@@ -100,6 +102,21 @@ class TestPhoenixProvider:
         assert attributes["llm.token_count.prompt"] == 3
         assert attributes["llm.token_count.completion"] == 4
         assert attributes["llm.token_count.total"] == 7
+
+    def test_cost_details_use_openinference_cost_keys(self):
+        span = MagicMock()
+        provider = self._provider()
+        with (
+            patch.object(PhoenixObservabilityProvider, "is_enabled", return_value=True),
+            patch("codemie.enterprise.observability.phoenix_provider._current_recording_span", return_value=span),
+        ):
+            provider.update_current_generation(cost_details={"input": 1.0, "output": 2.0, "total": 3.0, "extra": 4.0})
+
+        attributes = {call.args[0]: call.args[1] for call in span.set_attribute.call_args_list}
+        assert attributes["llm.cost.prompt"] == 1.0
+        assert attributes["llm.cost.completion"] == 2.0
+        assert attributes["llm.cost.total"] == 3.0
+        assert attributes["llm.cost.extra"] == 4.0
 
     def test_input_output_metadata_and_level_go_through_update_current_observation(self):
         provider = self._provider()
