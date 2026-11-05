@@ -30,6 +30,11 @@ from codemie.service.analytics.handlers.field_constants import (
     PROJECT_KEYWORD_FIELD,
     USER_EMAIL_KEYWORD_FIELD,
 )
+from codemie.service.analytics.handlers.ledger_group_spend import (
+    project_report_filters,
+    read_group_spend,
+    user_report_filters,
+)
 from codemie.service.analytics.handlers.money_coverage import money_coverage_aggs, read_money_coverage
 from codemie.service.analytics.handlers.user_identity_resolver import UserIdentityResolver
 from codemie.service.analytics.metric_names import MetricName
@@ -41,7 +46,9 @@ from codemie.service.spend.rendering import (
     apply_spend_cells,
     combine_rendered_spend,
     spend_fields,
+    time_range_or_none,
 )
+from codemie.service.spend.spend_group import SpendGroup
 
 from .base_handler import CLIBaseHandler
 from .classification_engine import CLIClassificationEngine, EnrichedUserScope
@@ -145,6 +152,30 @@ class CLIInsightsHandler(CLIBaseHandler):
     def __init__(self, user: User, repository: MetricsElasticRepository) -> None:
         """Initialize cli insights handler."""
         super().__init__(user, repository)
+
+    async def _cli_spend_by_user(
+        self, user_ids: list[str], start_dt: datetime, end_dt: datetime, projects: list[str] | None
+    ) -> list[RenderedSpend]:
+        """Each user's CLI spend from the spend port's CLI group, in the order of `user_ids`.
+
+        The ledger is the one place money lives: the Analytics summary reads it, and a CLI Insights
+        figure summed from `attributes.money_spent` stays blank for every request whose cost the
+        metric document never received. The caller's boundary and the dashboard's projects filter
+        narrow every figure, because the rows beside it were narrowed by them.
+        """
+        filters = await user_report_filters(user_ids, projects)
+        return await read_group_spend(
+            time_range_or_none(start_dt, end_dt), self._pipeline.access_scope, filters, SpendGroup.CLI
+        )
+
+    async def _cli_spend_by_project(
+        self, project_names: list[str], start_dt: datetime, end_dt: datetime, users: list[str] | None
+    ) -> list[RenderedSpend]:
+        """Each project's CLI spend from the spend port's CLI group, in the order of `project_names`."""
+        filters = await project_report_filters(project_names, users)
+        return await read_group_spend(
+            time_range_or_none(start_dt, end_dt), self._pipeline.access_scope, filters, SpendGroup.CLI
+        )
 
     async def get_cli_insights_weekday_pattern(
         self,
@@ -255,8 +286,9 @@ class CLIInsightsHandler(CLIBaseHandler):
         )
         grouped: dict[str, dict] = defaultdict(lambda: {"classification": "", "user_count": 0})
         member_spend: dict[str, list[RenderedSpend]] = defaultdict(list)
-        for b in result.get("aggregations", {}).get("users", {}).get("buckets", []):
-            spend = read_money_coverage(b.get("cost_bucket", {}), MONEY_COLUMN)
+        buckets = result.get("aggregations", {}).get("users", {}).get("buckets", [])
+        user_spend = await self._cli_spend_by_user([b["key"] for b in buckets], start_dt, end_dt, projects)
+        for b, spend in zip(buckets, user_spend, strict=True):
             repositories = [r["key"] for r in b.get("repositories", {}).get("buckets", {}).get("buckets", [])]
             branches = [r["key"] for r in b.get("branches", {}).get("buckets", {}).get("buckets", [])]
             projects_used = [r["key"] for r in b.get("projects", {}).get("buckets", {}).get("buckets", [])]
@@ -318,13 +350,14 @@ class CLIInsightsHandler(CLIBaseHandler):
         result = await self.repository.execute_aggregation_query(self._build_cli_insights_top_users_aggregation(query))
         rows = []
         rendered: list[RenderedSpend] = []
-        for b in result.get("aggregations", {}).get("users", {}).get("buckets", []):
+        buckets = result.get("aggregations", {}).get("users", {}).get("buckets", [])
+        user_spend = await self._cli_spend_by_user([b["key"] for b in buckets], start_dt, end_dt, projects)
+        for b, spend in zip(buckets, user_spend, strict=True):
             user_id = b["key"]
             raw_user_name = self._extract_top_metric(b, "user_name", USER_NAME_KEYWORD_FIELD)
             raw_user_email = self._extract_top_metric(b, "user_email", USER_EMAIL_KEYWORD_FIELD)
             user_name = raw_user_email or raw_user_name or user_id
             user_email = raw_user_email or user_name
-            spend = read_money_coverage(b.get("cost_bucket", {}), MONEY_COLUMN)
             repositories = [r["key"] for r in b.get("repositories", {}).get("buckets", {}).get("buckets", [])]
             branches = [r["key"] for r in b.get("branches", {}).get("buckets", {}).get("buckets", [])]
             projects_used = [r["key"] for r in b.get("projects", {}).get("buckets", {}).get("buckets", [])]
@@ -862,13 +895,14 @@ class CLIInsightsHandler(CLIBaseHandler):
         result = await self.repository.execute_aggregation_query(self._build_cli_insights_user_aggregation(query))
         rows = []
         rendered: list[RenderedSpend] = []
-        for bucket in result.get("aggregations", {}).get("users", {}).get("buckets", []):
+        buckets = result.get("aggregations", {}).get("users", {}).get("buckets", [])
+        user_spend = await self._cli_spend_by_user([bucket["key"] for bucket in buckets], start_dt, end_dt, projects)
+        for bucket, spend in zip(buckets, user_spend, strict=True):
             user_id = bucket["key"]
             raw_user_name = self._extract_top_metric(bucket, "user_name", USER_NAME_KEYWORD_FIELD)
             raw_user_email = self._extract_top_metric(bucket, "user_email", USER_EMAIL_KEYWORD_FIELD)
             user_name = raw_user_email or raw_user_name or user_id
             user_email = raw_user_email or user_name
-            spend = read_money_coverage(bucket.get("cost_bucket", {}), MONEY_COLUMN)
             repositories = [
                 repo["key"] for repo in bucket.get("repositories", {}).get("buckets", {}).get("buckets", [])
             ]
@@ -927,11 +961,13 @@ class CLIInsightsHandler(CLIBaseHandler):
         result = await self.repository.execute_aggregation_query(self._build_cli_insights_project_aggregation(query))
         rows = []
         rendered: list[RenderedSpend] = []
-        for bucket in result.get("aggregations", {}).get("projects", {}).get("buckets", []):
-            project_name = str(bucket["key"]).strip()
-            if not project_name:
-                continue
-            spend = read_money_coverage(bucket.get("cost_bucket", {}), MONEY_COLUMN)
+        buckets = [
+            (project_name, bucket)
+            for bucket in result.get("aggregations", {}).get("projects", {}).get("buckets", [])
+            if (project_name := str(bucket["key"]).strip())
+        ]
+        project_spend = await self._cli_spend_by_project([name for name, _ in buckets], start_dt, end_dt, users)
+        for (project_name, bucket), spend in zip(buckets, project_spend, strict=True):
             repositories = [
                 repo["key"] for repo in bucket.get("repositories", {}).get("buckets", {}).get("buckets", [])
             ]
@@ -991,17 +1027,6 @@ class CLIInsightsHandler(CLIBaseHandler):
                             "filter": usage_filter,
                             "aggs": {"buckets": {"terms": {"field": BRANCH_KEYWORD_FIELD, "size": 20}}},
                         },
-                        "cost_bucket": {
-                            "filter": {"term": {METRIC_NAME_KEYWORD_FIELD: MetricName.CLI_LLM_USAGE_TOTAL.value}},
-                            "aggs": {
-                                "total_cost": {"sum": {"field": MONEY_SPENT_FIELD}},
-                                # The sum skips every request whose cost never settled, so it is read
-                                # with its coverage and can say whether it is whole. No `cost_bearing`
-                                # narrowing: this bucket is already filtered to the LiteLLM proxy
-                                # metric, so a money attribute is expected on every document in it.
-                                **money_coverage_aggs(MONEY_SPENT_FIELD),
-                            },
-                        },
                         "total_lines_added": {
                             "filter": lines_filter,
                             "aggs": {"total": {"sum": {"field": TOTAL_LINES_ADDED_FIELD}}},
@@ -1022,7 +1047,7 @@ class CLIInsightsHandler(CLIBaseHandler):
     def _build_cli_insights_enrichment_aggregation(self, query: dict) -> dict:
         """Minimal aggregation for enriched-user dimension endpoints.
 
-        Fetches only user_email and total_cost per user, skipping sub-aggregations
+        Fetches only user_email per user (cost comes from the spend port), skipping sub-aggregations
         (projects, repositories, branches, lines, sessions) that are unused for
         job_title / primary_skill / country / city grouping.
         """
@@ -1040,17 +1065,6 @@ class CLIInsightsHandler(CLIBaseHandler):
                                 "sort": {TIMESTAMP_FIELD: "desc"},
                             }
                         },
-                        "cost_bucket": {
-                            "filter": {"term": {METRIC_NAME_KEYWORD_FIELD: MetricName.CLI_LLM_USAGE_TOTAL.value}},
-                            "aggs": {
-                                "total_cost": {"sum": {"field": MONEY_SPENT_FIELD}},
-                                # The sum skips every request whose cost never settled, so it is read
-                                # with its coverage and can say whether it is whole. No `cost_bearing`
-                                # narrowing: this bucket is already filtered to the LiteLLM proxy
-                                # metric, so a money attribute is expected on every document in it.
-                                **money_coverage_aggs(MONEY_SPENT_FIELD),
-                            },
-                        },
                     },
                 }
             },
@@ -1059,7 +1073,7 @@ class CLIInsightsHandler(CLIBaseHandler):
     def _build_cli_insights_classification_aggregation(self, query: dict) -> dict:
         """Aggregation for user_classification widget.
 
-        Fetches only the fields needed to compute classification and total_cost per user.
+        Fetches only the fields needed to compute classification per user (cost comes from the spend port).
         Omits user_name, user_email, total_sessions, total_lines_added, total_lines_removed.
         """
         usage_filter = {"term": {METRIC_NAME_KEYWORD_FIELD: MetricName.CLI_TOOL_USAGE_TOTAL.value}}
@@ -1082,17 +1096,6 @@ class CLIInsightsHandler(CLIBaseHandler):
                             "filter": usage_filter,
                             "aggs": {"buckets": {"terms": {"field": BRANCH_KEYWORD_FIELD, "size": 20}}},
                         },
-                        "cost_bucket": {
-                            "filter": {"term": {METRIC_NAME_KEYWORD_FIELD: MetricName.CLI_LLM_USAGE_TOTAL.value}},
-                            "aggs": {
-                                "total_cost": {"sum": {"field": MONEY_SPENT_FIELD}},
-                                # The sum skips every request whose cost never settled, so it is read
-                                # with its coverage and can say whether it is whole. No `cost_bearing`
-                                # narrowing: this bucket is already filtered to the LiteLLM proxy
-                                # metric, so a money attribute is expected on every document in it.
-                                **money_coverage_aggs(MONEY_SPENT_FIELD),
-                            },
-                        },
                     },
                 }
             },
@@ -1101,7 +1104,7 @@ class CLIInsightsHandler(CLIBaseHandler):
     def _build_cli_insights_top_users_aggregation(self, query: dict) -> dict:
         """Aggregation for top_users_by_cost widget.
 
-        Includes user_name, user_email, classification fields, and total_cost.
+        Includes user_name, user_email, and classification fields (cost comes from the spend port).
         Omits total_sessions, total_lines_added, total_lines_removed.
         """
         usage_filter = {"term": {METRIC_NAME_KEYWORD_FIELD: MetricName.CLI_TOOL_USAGE_TOTAL.value}}
@@ -1137,17 +1140,6 @@ class CLIInsightsHandler(CLIBaseHandler):
                         "branches": {
                             "filter": usage_filter,
                             "aggs": {"buckets": {"terms": {"field": BRANCH_KEYWORD_FIELD, "size": 20}}},
-                        },
-                        "cost_bucket": {
-                            "filter": {"term": {METRIC_NAME_KEYWORD_FIELD: MetricName.CLI_LLM_USAGE_TOTAL.value}},
-                            "aggs": {
-                                "total_cost": {"sum": {"field": MONEY_SPENT_FIELD}},
-                                # The sum skips every request whose cost never settled, so it is read
-                                # with its coverage and can say whether it is whole. No `cost_bearing`
-                                # narrowing: this bucket is already filtered to the LiteLLM proxy
-                                # metric, so a money attribute is expected on every document in it.
-                                **money_coverage_aggs(MONEY_SPENT_FIELD),
-                            },
                         },
                     },
                 }
@@ -1203,17 +1195,6 @@ class CLIInsightsHandler(CLIBaseHandler):
                         "branches": {
                             "filter": usage_filter,
                             "aggs": {"buckets": {"terms": {"field": BRANCH_KEYWORD_FIELD, "size": 20}}},
-                        },
-                        "cost_bucket": {
-                            "filter": {"term": {METRIC_NAME_KEYWORD_FIELD: MetricName.CLI_LLM_USAGE_TOTAL.value}},
-                            "aggs": {
-                                "total_cost": {"sum": {"field": MONEY_SPENT_FIELD}},
-                                # The sum skips every request whose cost never settled, so it is read
-                                # with its coverage and can say whether it is whole. No `cost_bearing`
-                                # narrowing: this bucket is already filtered to the LiteLLM proxy
-                                # metric, so a money attribute is expected on every document in it.
-                                **money_coverage_aggs(MONEY_SPENT_FIELD),
-                            },
                         },
                     },
                 }
@@ -1972,12 +1953,11 @@ class CLIInsightsHandler(CLIBaseHandler):
             ),
         )
         result = await self.repository.execute_aggregation_query(self._build_cli_insights_enrichment_aggregation(query))
+        buckets = result.get("aggregations", {}).get("users", {}).get("buckets", [])
+        user_spend = await self._cli_spend_by_user([b["key"] for b in buckets], start_dt, end_dt, projects)
         user_rows = [
-            {
-                "user_email": self._extract_top_metric(b, "user_email", USER_EMAIL_KEYWORD_FIELD),
-                "spend": read_money_coverage(b.get("cost_bucket", {}), MONEY_COLUMN),
-            }
-            for b in result.get("aggregations", {}).get("users", {}).get("buckets", [])
+            {"user_email": self._extract_top_metric(b, "user_email", USER_EMAIL_KEYWORD_FIELD), "spend": spend}
+            for b, spend in zip(buckets, user_spend, strict=True)
         ]
         emails = [r["user_email"] for r in user_rows if r.get("user_email")]
 

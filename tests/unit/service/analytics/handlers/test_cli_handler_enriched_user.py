@@ -16,7 +16,7 @@
 
 Covers:
 - _aggregate_user_rows_by_enrichment_field: grouping, "No Data" fallback,
-  cost accumulation + rounding, sort order, empty-email handling
+  ledger cost combination, sort order, empty-email handling
 - get_cli_insights_by_enriched_user: column definitions, scope label,
   pagination, response structure
 """
@@ -30,6 +30,7 @@ import pytest
 
 from codemie.service.analytics.handlers.cli.classification_engine import CLIClassificationEngine
 from codemie.service.analytics.handlers.cli.insights_handler import CLIInsightsHandler, EnrichedUserScope
+from codemie.service.spend.rendering import RenderedSpend
 
 _HANDLER_MODULE = "codemie.service.analytics.handlers.cli.insights_handler"
 
@@ -39,27 +40,37 @@ _HANDLER_MODULE = "codemie.service.analytics.handlers.cli.insights_handler"
 # ---------------------------------------------------------------------------
 
 
-def _es_bucket(email: str, cost: float = 0.0, *, settled: int = 10, unsettled: int = 0) -> dict:
+def _es_bucket(email: str | None, user_id: str | None = None) -> dict:
     """Return a fake Elasticsearch user bucket matching the enrichment aggregation format.
 
-    The two coverage counts are part of that format: the money `sum` skips every request whose cost
-    never settled, so the aggregation asks for them alongside it and the read decides from all three
-    whether the figure is whole. `settled=0` is the live shape for streaming-only traffic - the sum
-    returns 0.0 and it means *nothing settled*, not *nothing was spent*.
+    It only lists the user: the money for each one comes from the spend port, so the bucket carries
+    no cost. `email=None` is the live shape of a bucket whose `top_metrics` returned nothing.
     """
     return {
-        "user_email": {"top": [{"metrics": {"attributes.user_email.keyword": email}}]},
-        "cost_bucket": {
-            "total_cost": {"value": cost},
-            "money_settled": {"value": settled},
-            "money_unsettled": {"doc_count": unsettled},
-        },
+        "key": user_id or f"u-{email}",
+        "user_email": {"top": [{"metrics": {"attributes.user_email.keyword": email}}] if email else []},
     }
 
 
 def _es_result(buckets: list[dict]) -> dict:
     """Wrap buckets in the ES aggregation response envelope."""
     return {"aggregations": {"users": {"buckets": buckets}}}
+
+
+def _exact(figure: float) -> RenderedSpend:
+    """A whole ledger figure."""
+    return RenderedSpend(figure=figure, unavailable=False, partial=False, missing_amount=None)
+
+
+def _absent() -> RenderedSpend:
+    """No ledger figure for the user, which is not the same as zero."""
+    return RenderedSpend(figure=None, unavailable=True, partial=False, missing_amount=None)
+
+
+def _answer(handler, buckets: list[dict], spends: list[RenderedSpend]) -> None:
+    """Elasticsearch lists the users; the (stubbed) ledger read gives each one's CLI figure, in the same order."""
+    handler.repository.execute_aggregation_query.return_value = _es_result(buckets)
+    handler._cli_spend_by_user = AsyncMock(return_value=spends)
 
 
 def _enrichment(field: str, value: str) -> MagicMock:
@@ -107,11 +118,30 @@ def handler(mock_user, mock_repo):
 class TestAggregateUserRowsByEnrichmentField:
     """Unit tests for _aggregate_user_rows_by_enrichment_field."""
 
+    @staticmethod
+    def _enrichments(map_: dict):
+        return patch(f"{_HANDLER_MODULE}.user_enrichment_repository.get_by_emails", AsyncMock(return_value=map_))
+
+    @pytest.mark.asyncio
+    async def test_each_members_spend_is_read_from_the_ledger_by_user_id(self, handler):
+        _answer(
+            handler,
+            [_es_bucket("alice@example.com", "u-alice"), _es_bucket("bob@example.com", "u-bob")],
+            [_exact(1.0), _exact(2.0)],
+        )
+
+        with self._enrichments({}):
+            await handler._aggregate_user_rows_by_enrichment_field("country", None, None, None, None, ["proj-a"])
+
+        user_ids, _start, _end, projects = handler._cli_spend_by_user.await_args.args
+        assert user_ids == ["u-alice", "u-bob"]
+        assert projects == ["proj-a"]
+
     @pytest.mark.asyncio
     async def test_users_without_enrichment_land_in_no_data_bucket(self, handler):
-        handler.repository.execute_aggregation_query.return_value = _es_result([_es_bucket("alice@example.com", 5.0)])
+        _answer(handler, [_es_bucket("alice@example.com")], [_exact(5.0)])
 
-        with patch(f"{_HANDLER_MODULE}.user_enrichment_repository.get_by_emails", AsyncMock(return_value={})):
+        with self._enrichments({}):
             result = await handler._aggregate_user_rows_by_enrichment_field("country", None, None, None, None, None)
 
         assert len(result) == 1
@@ -121,25 +151,19 @@ class TestAggregateUserRowsByEnrichmentField:
     @pytest.mark.asyncio
     async def test_users_with_null_field_land_in_no_data_bucket(self, handler):
         """Enrichment record exists but the specific field is None."""
-        handler.repository.execute_aggregation_query.return_value = _es_result([_es_bucket("alice@example.com", 3.0)])
-        enrichment = _enrichment("country", None)
+        _answer(handler, [_es_bucket("alice@example.com")], [_exact(3.0)])
 
-        with patch(
-            f"{_HANDLER_MODULE}.user_enrichment_repository.get_by_emails",
-            AsyncMock(return_value={"alice@example.com": enrichment}),
-        ):
+        with self._enrichments({"alice@example.com": _enrichment("country", None)}):
             result = await handler._aggregate_user_rows_by_enrichment_field("country", None, None, None, None, None)
 
         assert result[0]["country"] == CLIClassificationEngine.NO_HR_DATA_LABEL
 
     @pytest.mark.asyncio
     async def test_groups_users_by_enrichment_field_value(self, handler):
-        handler.repository.execute_aggregation_query.return_value = _es_result(
-            [
-                _es_bucket("alice@example.com", 10.0),
-                _es_bucket("bob@example.com", 5.0),
-                _es_bucket("carol@example.com", 3.0),
-            ]
+        _answer(
+            handler,
+            [_es_bucket("alice@example.com"), _es_bucket("bob@example.com"), _es_bucket("carol@example.com")],
+            [_exact(10.0), _exact(5.0), _exact(3.0)],
         )
         enrichment_map = {
             "alice@example.com": _enrichment("country", "Poland"),
@@ -147,10 +171,7 @@ class TestAggregateUserRowsByEnrichmentField:
             "carol@example.com": _enrichment("country", "Germany"),
         }
 
-        with patch(
-            f"{_HANDLER_MODULE}.user_enrichment_repository.get_by_emails",
-            AsyncMock(return_value=enrichment_map),
-        ):
+        with self._enrichments(enrichment_map):
             result = await handler._aggregate_user_rows_by_enrichment_field("country", None, None, None, None, None)
 
         by_country = {r["country"]: r for r in result}
@@ -161,12 +182,10 @@ class TestAggregateUserRowsByEnrichmentField:
 
     @pytest.mark.asyncio
     async def test_results_sorted_by_total_cost_descending(self, handler):
-        handler.repository.execute_aggregation_query.return_value = _es_result(
-            [
-                _es_bucket("a@x.com", 1.0),
-                _es_bucket("b@x.com", 50.0),
-                _es_bucket("c@x.com", 10.0),
-            ]
+        _answer(
+            handler,
+            [_es_bucket("a@x.com"), _es_bucket("b@x.com"), _es_bucket("c@x.com")],
+            [_exact(1.0), _exact(50.0), _exact(10.0)],
         )
         enrichment_map = {
             "a@x.com": _enrichment("country", "Low"),
@@ -174,47 +193,32 @@ class TestAggregateUserRowsByEnrichmentField:
             "c@x.com": _enrichment("country", "Mid"),
         }
 
-        with patch(
-            f"{_HANDLER_MODULE}.user_enrichment_repository.get_by_emails",
-            AsyncMock(return_value=enrichment_map),
-        ):
+        with self._enrichments(enrichment_map):
             result = await handler._aggregate_user_rows_by_enrichment_field("country", None, None, None, None, None)
 
         costs = [r["total_cost"] for r in result]
         assert costs == sorted(costs, reverse=True)
 
     @pytest.mark.asyncio
-    async def test_cost_accumulation_is_rounded_to_two_decimals(self, handler):
-        # 1.123 + 2.456 = 3.579; each step rounds to 2 dp:
-        #   round(0.0 + 1.123, 2) = 1.12
-        #   round(1.12 + 2.456, 2) = 3.58
-        handler.repository.execute_aggregation_query.return_value = _es_result(
-            [
-                _es_bucket("a@x.com", 1.123),
-                _es_bucket("b@x.com", 2.456),
-            ]
-        )
+    async def test_a_dimension_total_is_the_sum_of_its_members_ledger_figures_unrounded(self, handler):
+        """Sent unrounded like every ledger cell: a rounded sum of sub-cent figures would read as $0.00."""
+        _answer(handler, [_es_bucket("a@x.com"), _es_bucket("b@x.com")], [_exact(1.123), _exact(2.456)])
         enrichment_map = {
             "a@x.com": _enrichment("country", "Poland"),
             "b@x.com": _enrichment("country", "Poland"),
         }
 
-        with patch(
-            f"{_HANDLER_MODULE}.user_enrichment_repository.get_by_emails",
-            AsyncMock(return_value=enrichment_map),
-        ):
+        with self._enrichments(enrichment_map):
             result = await handler._aggregate_user_rows_by_enrichment_field("country", None, None, None, None, None)
 
         assert len(result) == 1
         assert isinstance(result[0]["total_cost"], float)
-        assert result[0]["total_cost"] == 3.58
+        assert result[0]["total_cost"] == pytest.approx(3.579)
 
     @pytest.mark.asyncio
     async def test_rows_without_email_are_excluded_from_enrichment_lookup(self, handler):
         # Bucket with no top_metrics entry yields user_email=None
-        handler.repository.execute_aggregation_query.return_value = _es_result(
-            [{"user_email": {"top": []}, "cost_bucket": {"total_cost": {"value": 7.0}}}]
-        )
+        _answer(handler, [_es_bucket(None)], [_exact(7.0)])
         mock_get = AsyncMock(return_value={})
 
         with patch(f"{_HANDLER_MODULE}.user_enrichment_repository.get_by_emails", mock_get):
@@ -228,12 +232,9 @@ class TestAggregateUserRowsByEnrichmentField:
 
     @pytest.mark.asyncio
     async def test_empty_user_rows_returns_empty_list(self, handler):
-        handler.repository.execute_aggregation_query.return_value = _es_result([])
+        _answer(handler, [], [])
 
-        with patch(
-            f"{_HANDLER_MODULE}.user_enrichment_repository.get_by_emails",
-            AsyncMock(return_value={}),
-        ):
+        with self._enrichments({}):
             result = await handler._aggregate_user_rows_by_enrichment_field("country", None, None, None, None, None)
 
         assert result == []
@@ -241,29 +242,20 @@ class TestAggregateUserRowsByEnrichmentField:
     @pytest.mark.asyncio
     async def test_email_lookup_is_case_insensitive(self, handler):
         """Mixed-case email in user_rows still matches lowercase enrichment key."""
-        handler.repository.execute_aggregation_query.return_value = _es_result([_es_bucket("ALICE@EXAMPLE.COM", 8.0)])
-        enrichment_map = {"alice@example.com": _enrichment("country", "Poland")}
+        _answer(handler, [_es_bucket("ALICE@EXAMPLE.COM")], [_exact(8.0)])
 
-        with patch(
-            f"{_HANDLER_MODULE}.user_enrichment_repository.get_by_emails",
-            AsyncMock(return_value=enrichment_map),
-        ):
+        with self._enrichments({"alice@example.com": _enrichment("country", "Poland")}):
             result = await handler._aggregate_user_rows_by_enrichment_field("country", None, None, None, None, None)
 
         assert len(result) == 1
         assert result[0]["country"] == "Poland"
 
     @pytest.mark.asyncio
-    async def test_a_dimension_whose_members_never_settled_a_cost_has_no_figure(self, handler):
+    async def test_a_dimension_whose_members_have_no_ledger_figure_has_no_figure(self, handler):
         """`$0.00` against a job title would read as *this discipline costs nothing*."""
-        handler.repository.execute_aggregation_query.return_value = _es_result(
-            [_es_bucket("alice@example.com", 0.0, settled=0, unsettled=400)]
-        )
+        _answer(handler, [_es_bucket("alice@example.com")], [_absent()])
 
-        with patch(
-            f"{_HANDLER_MODULE}.user_enrichment_repository.get_by_emails",
-            AsyncMock(return_value={"alice@example.com": _enrichment("country", "Poland")}),
-        ):
+        with self._enrichments({"alice@example.com": _enrichment("country", "Poland")}):
             result = await handler._aggregate_user_rows_by_enrichment_field("country", None, None, None, None, None)
 
         assert result[0]["total_cost"] is None
@@ -272,23 +264,15 @@ class TestAggregateUserRowsByEnrichmentField:
         assert result[0]["user_count"] == 1
 
     @pytest.mark.asyncio
-    async def test_one_unsettled_member_makes_the_dimension_total_a_subtotal(self, handler):
+    async def test_one_member_without_a_figure_makes_the_dimension_total_a_subtotal(self, handler):
         """The group is short by one member's whole spend, and the row says so rather than looking whole."""
-        handler.repository.execute_aggregation_query.return_value = _es_result(
-            [
-                _es_bucket("alice@example.com", 0.0, settled=0, unsettled=400),
-                _es_bucket("bob@example.com", 25.0),
-            ]
-        )
+        _answer(handler, [_es_bucket("alice@example.com"), _es_bucket("bob@example.com")], [_absent(), _exact(25.0)])
         enrichment_map = {
             "alice@example.com": _enrichment("country", "Poland"),
             "bob@example.com": _enrichment("country", "Poland"),
         }
 
-        with patch(
-            f"{_HANDLER_MODULE}.user_enrichment_repository.get_by_emails",
-            AsyncMock(return_value=enrichment_map),
-        ):
+        with self._enrichments(enrichment_map):
             result = await handler._aggregate_user_rows_by_enrichment_field("country", None, None, None, None, None)
 
         assert result[0]["total_cost"] == 25.0
@@ -298,34 +282,23 @@ class TestAggregateUserRowsByEnrichmentField:
 
     @pytest.mark.asyncio
     async def test_a_dimension_with_no_figure_is_ordered_last_not_at_zero(self, handler):
-        handler.repository.execute_aggregation_query.return_value = _es_result(
-            [
-                _es_bucket("alice@example.com", 0.0, settled=0, unsettled=400),
-                _es_bucket("bob@example.com", 0.5),
-            ]
-        )
+        _answer(handler, [_es_bucket("alice@example.com"), _es_bucket("bob@example.com")], [_absent(), _exact(0.5)])
         enrichment_map = {
             "alice@example.com": _enrichment("country", "Unknown-Cost"),
             "bob@example.com": _enrichment("country", "Cheap"),
         }
 
-        with patch(
-            f"{_HANDLER_MODULE}.user_enrichment_repository.get_by_emails",
-            AsyncMock(return_value=enrichment_map),
-        ):
+        with self._enrichments(enrichment_map):
             result = await handler._aggregate_user_rows_by_enrichment_field("country", None, None, None, None, None)
 
         assert [row["country"] for row in result] == ["Cheap", "Unknown-Cost"]
 
     @pytest.mark.asyncio
     async def test_a_measured_zero_stays_an_unqualified_zero(self, handler):
-        """A request that settled at zero cost is a measurement, and the row publishes it bare."""
-        handler.repository.execute_aggregation_query.return_value = _es_result([_es_bucket("alice@example.com", 0.0)])
+        """A measured zero from the ledger is a figure, and the row publishes it bare."""
+        _answer(handler, [_es_bucket("alice@example.com")], [_exact(0.0)])
 
-        with patch(
-            f"{_HANDLER_MODULE}.user_enrichment_repository.get_by_emails",
-            AsyncMock(return_value={"alice@example.com": _enrichment("country", "Poland")}),
-        ):
+        with self._enrichments({"alice@example.com": _enrichment("country", "Poland")}):
             result = await handler._aggregate_user_rows_by_enrichment_field("country", None, None, None, None, None)
 
         assert result[0]["total_cost"] == 0.0
@@ -334,13 +307,9 @@ class TestAggregateUserRowsByEnrichmentField:
 
     @pytest.mark.asyncio
     async def test_works_with_job_title_field(self, handler):
-        handler.repository.execute_aggregation_query.return_value = _es_result([_es_bucket("alice@example.com", 5.0)])
-        enrichment_map = {"alice@example.com": _enrichment("job_title", "Engineer")}
+        _answer(handler, [_es_bucket("alice@example.com")], [_exact(5.0)])
 
-        with patch(
-            f"{_HANDLER_MODULE}.user_enrichment_repository.get_by_emails",
-            AsyncMock(return_value=enrichment_map),
-        ):
+        with self._enrichments({"alice@example.com": _enrichment("job_title", "Engineer")}):
             result = await handler._aggregate_user_rows_by_enrichment_field("job_title", None, None, None, None, None)
 
         assert result[0]["job_title"] == "Engineer"

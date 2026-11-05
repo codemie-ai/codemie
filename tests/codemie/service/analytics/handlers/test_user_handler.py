@@ -28,10 +28,7 @@ import pytest
 from codemie.repository.metrics_elastic_repository import MetricsElasticRepository
 from codemie.rest_api.security.user import User
 from codemie.service.analytics.access_filter import AccessFilter
-from codemie.service.analytics.handlers.money_coverage import SETTLED_AGG, UNSETTLED_AGG
 from codemie.service.analytics.handlers.user_handler import (
-    BY_USER_MONEY_SUM,
-    INPUT_TOKENS_FIELD,
     MONEY_SPENT_FIELD,
     UserHandler,
 )
@@ -1406,15 +1403,6 @@ class TestUsersSpendingFooterAgainstTheLedger:
         ledger_total.assert_not_awaited()
 
 
-def _money_bucket(total: float, *, settled: int, unsettled: int) -> dict:
-    """A by-users money bucket as Elasticsearch answers it: a sum of nothing is `0.0`, not null."""
-    return {
-        BY_USER_MONEY_SUM: {"value": total},
-        SETTLED_AGG: {"value": settled},
-        UNSETTLED_AGG: {"doc_count": unsettled},
-    }
-
-
 def _answer_buckets(mock_repository, buckets: list[dict]) -> None:
     mock_repository.execute_aggregation_query.return_value = {
         "aggregations": {"paginated_results": {"buckets": buckets}}
@@ -1432,19 +1420,116 @@ def unresolved_identities():
         yield
 
 
+ADA = _user_record("u-ada", "ada", "ada@example.com")
+BOB = _user_record("u-bob", "bob", "bob@example.com")
+RECORDS = {"ada": ADA, "bob": BOB}
+
+#: A figure that is short in a dimension nobody can size - the state the port labels `partial`.
+_SHORT = SpendResult(
+    figure=Decimal("1.25"),
+    partial={SpendDimension.IDENTITY_BRIDGE: Portion(spend=None, rows=None)},
+)
+
+
+def _exact(amount: str) -> SpendResult:
+    return SpendResult(figure=Decimal(amount))
+
+
+def _fake_report_filter_for(records: dict):
+    """`report_filter_for` without the identity lookup: a known identifier resolves to its record's user."""
+
+    async def _build(users, projects):
+        terms = tuple(
+            UserTerm(user_id=records[identifier].id, aliases=frozenset({records[identifier].username}))
+            if identifier in records
+            else UserTerm(user_id=identifier, aliases=None)
+            for identifier in dict.fromkeys(user for user in users or () if user)
+        )
+        return ReportFilter(users=terms, projects=tuple(projects or ()))
+
+    return _build
+
+
+def _group_port(
+    by_user_id: dict[str, dict[SpendGroup, SpendResult]],
+    dashboard: dict[SpendGroup, SpendResult] | None = None,
+    seen: list[ReportFilter] | None = None,
+) -> AsyncMock:
+    """An `aggregate_by_spend_group` stub: one user's groups for a one-person filter, the scope's otherwise.
+
+    The caller's own boundary is asserted on every read, because a per-person figure read without it is
+    the whole platform's spend on that person beside rows already narrowed to what the caller may see.
+    A group nobody answered is `no_figure`, never a zero.
+    """
+
+    async def _call(period, *, access, report_filter):
+        assert access == _EXPECTED_SCOPE, "every read must be narrowed by the caller's own boundary"
+        if seen is not None:
+            seen.append(report_filter)
+        answers = by_user_id.get(report_filter.users[0].user_id, {}) if len(report_filter.users) == 1 else dashboard
+        return {group: SpendResult.no_figure(period) for group in SpendGroup} | (answers or {})
+
+    return AsyncMock(side_effect=_call)
+
+
+@contextlib.contextmanager
+def _patched_group_port(port: AsyncMock):
+    with (
+        patch(
+            "codemie.service.analytics.handlers.user_handler.report_filter_for", new=_fake_report_filter_for(RECORDS)
+        ),
+        patch(
+            "codemie.service.analytics.handlers.ledger_group_spend.report_filter_for",
+            new=_fake_report_filter_for(RECORDS),
+        ),
+        patch("codemie.service.analytics.handlers.user_handler.spend_service.aggregate_by_spend_group", new=port),
+    ):
+        yield
+
+
 @pytest.mark.usefixtures("unresolved_identities")
-class TestPlatformSpendingByUsersCoverage:
-    """Platform Spent by User sums an attribute written only once a cost settles, so it says how whole it is."""
+class TestPlatformSpendingByUsersFromLedger:
+    """Platform Spent by User lists the active users from Elasticsearch and reads each one's money from the ledger."""
 
     @staticmethod
-    def _platform_bucket(user: str, money: dict) -> dict:
-        return {"key": user, "doc_count": 5, **money}
+    def _bucket(user: str) -> dict:
+        return {"key": user, "doc_count": 5}
 
     @pytest.mark.asyncio
-    async def test_a_user_with_no_settled_money_reads_unavailable_never_zero(self, handler, mock_repository):
-        _answer_buckets(mock_repository, [self._platform_bucket("ada", _money_bucket(0.0, settled=0, unsettled=3))])
+    async def test_a_users_figure_is_the_ledgers_platform_group(self, handler, mock_repository):
+        _answer_buckets(mock_repository, [self._bucket("ada")])
+        port = _group_port({"u-ada": {SpendGroup.PLATFORM: _exact("1.25"), SpendGroup.CLI: _exact("99")}})
 
-        result = await handler.get_users_platform_spending()
+        with _patched_group_port(port):
+            result = await handler.get_users_platform_spending()
+
+        assert result["data"]["rows"] == [
+            {
+                "user_email": "ada",
+                "total_cost_usd": 1.25,
+                "spend_unavailable": False,
+                "spend_partial": False,
+                "spend_missing_amount": None,
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_elasticsearch_only_lists_the_candidates_and_sums_no_money(self, handler, mock_repository):
+        _answer_buckets(mock_repository, [])
+
+        with _patched_group_port(_group_port({})):
+            await handler.get_users_platform_spending()
+
+        terms = _sent_terms_aggregation(mock_repository)
+        assert terms["terms"]["order"] == {"_count": "desc"}
+        assert terms["aggs"] == {}
+
+    @pytest.mark.asyncio
+    async def test_a_user_the_ledger_has_no_figure_for_reads_unavailable_never_zero(self, handler, mock_repository):
+        _answer_buckets(mock_repository, [self._bucket("ada")])
+
+        with _patched_group_port(_group_port({})):
+            result = await handler.get_users_platform_spending()
 
         assert result["data"]["rows"] == [
             {
@@ -1459,10 +1544,11 @@ class TestPlatformSpendingByUsersCoverage:
         assert result["data"]["totals"]["total_cost_usd_spend_unavailable"] is True
 
     @pytest.mark.asyncio
-    async def test_a_user_with_unsettled_documents_reads_partial(self, handler, mock_repository):
-        _answer_buckets(mock_repository, [self._platform_bucket("ada", _money_bucket(1.25, settled=2, unsettled=1))])
+    async def test_a_short_figure_reads_partial_and_so_does_the_footer(self, handler, mock_repository):
+        _answer_buckets(mock_repository, [self._bucket("ada")])
 
-        result = await handler.get_users_platform_spending()
+        with _patched_group_port(_group_port({"u-ada": {SpendGroup.PLATFORM: _SHORT}})):
+            result = await handler.get_users_platform_spending()
 
         row = result["data"]["rows"][0]
         assert row["total_cost_usd"] == 1.25
@@ -1471,20 +1557,39 @@ class TestPlatformSpendingByUsersCoverage:
         assert result["data"]["totals"]["total_cost_usd_spend_partial"] is True
 
     @pytest.mark.asyncio
-    async def test_a_fully_settled_user_reads_exact_and_so_does_the_footer(self, handler, mock_repository):
-        _answer_buckets(mock_repository, [self._platform_bucket("ada", _money_bucket(1.25, settled=2, unsettled=0))])
+    async def test_a_footer_beside_a_user_without_a_figure_is_partial_and_that_user_ranks_last(
+        self, handler, mock_repository
+    ):
+        _answer_buckets(mock_repository, [self._bucket("ada"), self._bucket("bob")])
 
-        result = await handler.get_users_platform_spending()
+        with _patched_group_port(_group_port({"u-bob": {SpendGroup.PLATFORM: _exact("2.0")}})):
+            result = await handler.get_users_platform_spending()
 
-        assert result["data"]["rows"] == [
-            {
-                "user_email": "ada",
-                "total_cost_usd": 1.25,
-                "spend_unavailable": False,
-                "spend_partial": False,
-                "spend_missing_amount": None,
-            }
-        ]
+        assert [row["user_email"] for row in result["data"]["rows"]] == ["bob", "ada"]
+        assert result["data"]["totals"]["total_cost_usd"] == 2.0
+        assert result["data"]["totals"]["total_cost_usd_spend_partial"] is True
+        assert result["pagination"]["total_count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_a_measured_zero_user_stays_listed_as_this_table_always_listed_them(self, handler, mock_repository):
+        _answer_buckets(mock_repository, [self._bucket("ada")])
+
+        with _patched_group_port(_group_port({"u-ada": {SpendGroup.PLATFORM: _exact("0")}})):
+            result = await handler.get_users_platform_spending()
+
+        assert result["data"]["rows"][0]["total_cost_usd"] == 0.0
+        assert result["data"]["rows"][0]["spend_unavailable"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_fully_resolved_table_has_an_exact_footer(self, handler, mock_repository):
+        _answer_buckets(mock_repository, [self._bucket("ada")])
+        port = _group_port(
+            {"u-ada": {SpendGroup.PLATFORM: _exact("1.25")}}, dashboard={SpendGroup.PLATFORM: _exact("1.25")}
+        )
+
+        with _patched_group_port(port):
+            result = await handler.get_users_platform_spending()
+
         assert result["data"]["totals"] == {
             "total_cost_usd": 1.25,
             "total_cost_usd_spend_unavailable": False,
@@ -1493,82 +1598,80 @@ class TestPlatformSpendingByUsersCoverage:
         }
 
     @pytest.mark.asyncio
-    async def test_a_footer_beside_an_unavailable_user_is_partial(self, handler, mock_repository):
-        _answer_buckets(
-            mock_repository,
-            [
-                self._platform_bucket("ada", _money_bucket(0.0, settled=0, unsettled=4)),
-                self._platform_bucket("bob", _money_bucket(2.0, settled=3, unsettled=0)),
-            ],
-        )
-
-        result = await handler.get_users_platform_spending()
-
-        # The figure ranks first; the user nobody has a figure for is listed last, not as a zero.
-        assert [row["user_email"] for row in result["data"]["rows"]] == ["bob", "ada"]
-        assert result["data"]["totals"]["total_cost_usd"] == 2.0
-        assert result["data"]["totals"]["total_cost_usd_spend_partial"] is True
-        assert result["pagination"]["total_count"] == 2
-
-    @pytest.mark.asyncio
-    async def test_a_measured_zero_user_stays_listed_as_this_table_always_listed_them(self, handler, mock_repository):
-        _answer_buckets(mock_repository, [self._platform_bucket("ada", _money_bucket(0.0, settled=2, unsettled=0))])
-
-        result = await handler.get_users_platform_spending()
-
-        assert result["data"]["rows"][0]["total_cost_usd"] == 0.0
-        assert result["data"]["rows"][0]["spend_unavailable"] is False
-
-    @pytest.mark.asyncio
-    async def test_a_user_with_no_cost_bearing_document_reads_a_measured_zero_and_keeps_the_footer_exact(
+    async def test_the_footer_is_partial_by_what_the_ledger_holds_beyond_the_listed_users(
         self, handler, mock_repository
     ):
-        _answer_buckets(
-            mock_repository,
-            [
-                self._platform_bucket("bob", _money_bucket(2.0, settled=3, unsettled=0)),
-                # Tool-usage documents only: nothing settled, and nothing was owed either.
-                self._platform_bucket("ada", _money_bucket(0.0, settled=0, unsettled=0)),
-            ],
+        _answer_buckets(mock_repository, [self._bucket("ada")])
+        port = _group_port(
+            {"u-ada": {SpendGroup.PLATFORM: _exact("1.25")}}, dashboard={SpendGroup.PLATFORM: _exact("5.0")}
         )
 
-        result = await handler.get_users_platform_spending()
+        with _patched_group_port(port):
+            result = await handler.get_users_platform_spending()
 
-        assert result["data"]["rows"][1] == {
-            "user_email": "ada",
-            "total_cost_usd": 0.0,
-            "spend_unavailable": False,
-            "spend_partial": False,
-            "spend_missing_amount": None,
-        }
-        assert result["data"]["totals"]["total_cost_usd"] == 2.0
-        assert result["data"]["totals"]["total_cost_usd_spend_partial"] is False
-        assert result["data"]["totals"]["total_cost_usd_spend_unavailable"] is False
+        totals = result["data"]["totals"]
+        assert totals["total_cost_usd"] == 1.25
+        assert totals["total_cost_usd_spend_partial"] is True
+        assert totals["total_cost_usd_spend_missing_amount"] == 3.75
 
     @pytest.mark.asyncio
-    async def test_the_unsettled_count_is_narrowed_to_documents_carrying_token_counts(self, handler, mock_repository):
-        _answer_buckets(mock_repository, [])
+    async def test_each_read_is_that_person_inside_the_dashboards_projects_filter(self, handler, mock_repository):
+        _answer_buckets(mock_repository, [self._bucket("ada")])
+        seen: list[ReportFilter] = []
 
-        await handler.get_users_platform_spending()
+        with _patched_group_port(_group_port({"u-ada": {SpendGroup.PLATFORM: _exact("1.25")}}, seen=seen)):
+            await handler.get_users_platform_spending(projects=["alpha"])
 
-        unsettled = _sent_terms_aggregation(mock_repository)["aggs"][UNSETTLED_AGG]["filter"]["bool"]
-        assert unsettled["filter"] == [{"exists": {"field": INPUT_TOKENS_FIELD}}]
-        assert unsettled["must_not"] == [{"exists": {"field": MONEY_SPENT_FIELD}}]
+        assert seen == [
+            ReportFilter(users=(UserTerm(user_id="u-ada", aliases=frozenset({"ada"})),), projects=("alpha",)),
+            ReportFilter(users=(), projects=("alpha",)),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_client_source_report_asks_the_port_nothing_and_publishes_no_figure(self, handler, mock_repository):
+        _answer_buckets(mock_repository, [self._bucket("ada")])
+        port = _group_port({"u-ada": {SpendGroup.PLATFORM: _exact("1.25")}})
+
+        with _patched_group_port(port):
+            result = await handler.get_users_platform_spending(client_source="vscode")
+
+        port.assert_not_awaited()
+        assert result["data"]["rows"][0]["total_cost_usd"] is None
+        assert result["data"]["rows"][0]["spend_unavailable"] is True
 
 
 @pytest.mark.usefixtures("unresolved_identities")
-class TestCliSpendingByUsersCoverage:
-    """CLI Spent by User: a streaming proxy call never carries a settled cost, so it must not read as zero."""
+class TestCliSpendingByUsersFromLedger:
+    """CLI Spent by User lists the users with a CLI request from Elasticsearch and reads their CLI money from the ledger."""
 
     @staticmethod
-    def _cli_bucket(user: str, money: dict) -> dict:
-        return {"key": user, "doc_count": 5, "cli_request_filter": {"doc_count": 5, **money}}
+    def _bucket(user: str) -> dict:
+        return {"key": user, "doc_count": 5, "cli_request_filter": {"doc_count": 5}}
 
     @pytest.mark.asyncio
-    async def test_a_user_with_only_unsettled_money_is_kept_and_reads_unavailable(self, handler, mock_repository):
-        _answer_buckets(mock_repository, [self._cli_bucket("ada", _money_bucket(0.0, settled=0, unsettled=5))])
+    async def test_a_users_figure_is_the_ledgers_cli_group(self, handler, mock_repository):
+        _answer_buckets(mock_repository, [self._bucket("ada")])
+        port = _group_port({"u-ada": {SpendGroup.CLI: _exact("1.5"), SpendGroup.PLATFORM: _exact("99")}})
 
-        result = await handler.get_users_cli_spending()
+        with _patched_group_port(port):
+            result = await handler.get_users_cli_spending()
+
+        assert result["data"]["rows"] == [
+            {
+                "user_name": "ada",
+                "total_cost_usd": 1.5,
+                "spend_unavailable": False,
+                "spend_partial": False,
+                "spend_missing_amount": None,
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_user_the_ledger_has_no_figure_for_is_kept_and_reads_unavailable(self, handler, mock_repository):
+        _answer_buckets(mock_repository, [self._bucket("ada")])
+
+        with _patched_group_port(_group_port({})):
+            result = await handler.get_users_cli_spending()
 
         assert result["data"]["rows"] == [
             {
@@ -1582,26 +1685,29 @@ class TestCliSpendingByUsersCoverage:
         assert result["data"]["totals"]["total_cost_usd_spend_unavailable"] is True
 
     @pytest.mark.asyncio
-    async def test_the_selector_keeps_users_by_cli_requests_not_by_settled_cost(self, handler, mock_repository):
+    async def test_the_selector_keeps_users_by_cli_requests_and_no_money_is_summed_in_elasticsearch(
+        self, handler, mock_repository
+    ):
         _answer_buckets(mock_repository, [])
 
-        await handler.get_users_cli_spending()
+        with _patched_group_port(_group_port({})):
+            await handler.get_users_cli_spending()
 
-        selector = _sent_terms_aggregation(mock_repository)["aggs"]["has_cli_request"]["bucket_selector"]
+        terms = _sent_terms_aggregation(mock_repository)
+        selector = terms["aggs"]["has_cli_request"]["bucket_selector"]
         assert selector["buckets_path"] == {"requests": "cli_request_filter>_count"}
         assert selector["script"] == "params.requests > 0"
+        assert terms["aggs"]["cli_request_filter"] == {"filter": {"term": {"attributes.cli_request": True}}}
+        assert terms["terms"]["order"] == {"_count": "desc"}
 
     @pytest.mark.asyncio
-    async def test_a_partly_settled_user_reads_partial_and_so_does_the_footer(self, handler, mock_repository):
-        _answer_buckets(
-            mock_repository,
-            [
-                self._cli_bucket("ada", _money_bucket(0.37, settled=3, unsettled=2)),
-                self._cli_bucket("bob", _money_bucket(1.0, settled=1, unsettled=0)),
-            ],
-        )
+    async def test_a_partly_resolved_user_reads_partial_and_so_does_the_footer(self, handler, mock_repository):
+        _answer_buckets(mock_repository, [self._bucket("ada"), self._bucket("bob")])
+        short = SpendResult(figure=Decimal("0.37"), partial=_SHORT.partial)
+        port = _group_port({"u-ada": {SpendGroup.CLI: short}, "u-bob": {SpendGroup.CLI: _exact("1.0")}})
 
-        result = await handler.get_users_cli_spending()
+        with _patched_group_port(port):
+            result = await handler.get_users_cli_spending()
 
         rows = {row["user_name"]: row for row in result["data"]["rows"]}
         assert rows["ada"]["total_cost_usd"] == 0.37
@@ -1612,17 +1718,47 @@ class TestCliSpendingByUsersCoverage:
 
     @pytest.mark.asyncio
     async def test_a_user_who_measurably_spent_nothing_leaves_the_table(self, handler, mock_repository):
-        _answer_buckets(mock_repository, [self._cli_bucket("ada", _money_bucket(0.0, settled=4, unsettled=0))])
+        _answer_buckets(mock_repository, [self._bucket("ada")])
 
-        result = await handler.get_users_cli_spending()
+        with _patched_group_port(_group_port({"u-ada": {SpendGroup.CLI: _exact("0")}})):
+            result = await handler.get_users_cli_spending()
 
         assert result["data"]["rows"] == []
         assert result["pagination"]["total_count"] == 0
 
     @pytest.mark.asyncio
     async def test_a_sub_cent_spend_is_kept_rather_than_rounded_into_a_zero(self, handler, mock_repository):
-        _answer_buckets(mock_repository, [self._cli_bucket("ada", _money_bucket(0.004, settled=1, unsettled=0))])
+        _answer_buckets(mock_repository, [self._bucket("ada")])
 
-        result = await handler.get_users_cli_spending()
+        with _patched_group_port(_group_port({"u-ada": {SpendGroup.CLI: _exact("0.004")}})):
+            result = await handler.get_users_cli_spending()
 
         assert result["data"]["rows"][0]["total_cost_usd"] == 0.004
+
+    @pytest.mark.asyncio
+    async def test_the_footer_is_partial_by_what_the_ledger_holds_beyond_the_listed_users(
+        self, handler, mock_repository
+    ):
+        _answer_buckets(mock_repository, [self._bucket("ada")])
+        port = _group_port({"u-ada": {SpendGroup.CLI: _exact("1.0")}}, dashboard={SpendGroup.CLI: _exact("4.0")})
+
+        with _patched_group_port(port):
+            result = await handler.get_users_cli_spending()
+
+        totals = result["data"]["totals"]
+        assert totals["total_cost_usd"] == 1.0
+        assert totals["total_cost_usd_spend_partial"] is True
+        assert totals["total_cost_usd_spend_missing_amount"] == 3.0
+
+    @pytest.mark.asyncio
+    async def test_each_read_is_that_person_inside_the_dashboards_projects_filter(self, handler, mock_repository):
+        _answer_buckets(mock_repository, [self._bucket("ada")])
+        seen: list[ReportFilter] = []
+
+        with _patched_group_port(_group_port({"u-ada": {SpendGroup.CLI: _exact("1.0")}}, seen=seen)):
+            await handler.get_users_cli_spending(projects=["alpha"])
+
+        assert seen == [
+            ReportFilter(users=(UserTerm(user_id="u-ada", aliases=frozenset({"ada"})),), projects=("alpha",)),
+            ReportFilter(users=(), projects=("alpha",)),
+        ]

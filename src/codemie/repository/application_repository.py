@@ -910,6 +910,30 @@ class ApplicationRepository:
         result = await session.execute(statement)
         return set(result.scalars().all())
 
+    async def aget_personal_project_owners_by_name(
+        self, session: AsyncSession, names: list[str]
+    ) -> dict[str, set[str | None]]:
+        """`aget_personal_project_owners`, kept apart per name: each personal project's own owners.
+
+        A name that is not a personal project is absent from the result, and a personal project with no
+        recorded owner carries `None` among its owners, exactly as in the unkeyed lookup.
+
+        Args:
+            session: Async database session
+            names: Project names to check
+
+        Returns:
+            Owner ids per personal project name; empty, without a query, when `names` is empty
+        """
+        if not names:
+            return {}
+        statement = select(Application.name, Application.created_by).where(*_personal_projects_named(names)).distinct()
+        result = await session.execute(statement)
+        owners: dict[str, set[str | None]] = {}
+        for name, created_by in result.all():
+            owners.setdefault(name, set()).add(created_by)
+        return owners
+
     async def aget_or_create(self, session: AsyncSession, name: str) -> Application:
         """Get existing application or create if doesn't exist (async)
 

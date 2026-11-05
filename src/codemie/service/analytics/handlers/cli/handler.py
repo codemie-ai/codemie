@@ -28,13 +28,14 @@ from codemie.service.analytics.handlers.field_constants import (
     PROJECT_KEYWORD_FIELD,
 )
 from codemie.service.analytics.handlers.llm_handler import _combine_model_names
-from codemie.service.analytics.handlers.money_coverage import money_coverage_aggs, read_money_coverage
+from codemie.service.analytics.handlers.ledger_group_spend import dashboard_group_spend
 from codemie.service.analytics.handlers.query_filters import build_error_filtering_query
 from codemie.service.analytics.handlers.user_identity_resolver import UserIdentityResolver
 from codemie.service.analytics.metric_names import MetricName
 from codemie.service.analytics.query_pipeline import AnalyticsQueryFilters
 from codemie.service.analytics.time_parser import TimeParser
-from codemie.service.spend.rendering import RenderedSpend, spend_fields
+from codemie.service.spend.rendering import spend_fields, time_range_or_none
+from codemie.service.spend.spend_group import SpendGroup
 
 from .base_handler import CLIBaseHandler
 from .constants import (
@@ -42,7 +43,6 @@ from .constants import (
     CACHE_READ_INPUT_TOKENS_FIELD,
     CLI_REQUEST_FIELD,
     INPUT_TOKENS_FIELD,
-    MONEY_SPENT_FIELD,
     OUTPUT_TOKENS_FIELD,
     REPOSITORY_KEYWORD_FIELD,
     RESPONSE_STATUS_FIELD,
@@ -96,11 +96,12 @@ class CLIHandler(CLIBaseHandler):
                     projects=projects,
                 ),
             ),
-            self._query_cli_cost_total(
-                start_date=start_dt,
-                end_date=end_dt,
-                users=users,
-                projects=projects,
+            dashboard_group_spend(
+                time_range_or_none(start_dt, end_dt),
+                self._pipeline.access_scope,
+                users,
+                projects,
+                SpendGroup.CLI,
             ),
             self._get_cli_active_users_metric("last_24_hours", "dau", "DAU", "Last 1 day", users, projects),
             self._get_cli_active_users_metric("last_30_days", "mau", "MAU", "Last 1 month", users, projects),
@@ -121,9 +122,9 @@ class CLIHandler(CLIBaseHandler):
                     "id": "cli_cost",
                     "label": TOTAL_COST_LABEL,
                     "type": "number",
-                    # The annotation travels in the card beside the number, because a subtotal of
-                    # the CLI documents whose cost settled otherwise renders indistinguishably from
-                    # the whole window's cost. No figure stays no figure: never 0.
+                    # Read from the spend port's CLI group, the same figure the Analytics summary card
+                    # shows. The annotation travels beside the number so a truncated figure never
+                    # renders as a whole one. No figure stays no figure: never 0.
                     "value": cli_cost.figure,
                     "format": "currency",
                     "description": "Total CLI proxy cost",
@@ -183,51 +184,6 @@ class CLIHandler(CLIBaseHandler):
         ]
 
         return response
-
-    async def _query_cli_cost_total(
-        self,
-        start_date: datetime,
-        end_date: datetime,
-        users: list[str] | None,
-        projects: list[str] | None,
-    ) -> RenderedSpend:
-        """CLI proxy cost over the requested date range, carrying whether the sum is whole.
-
-        A `RenderedSpend` rather than a float because the sum skips every CLI document whose cost was
-        never settled, and a bare float has nowhere to say so. Every document this query matches is a
-        LiteLLM proxy usage document, so a money attribute is expected on all of them and the
-        unsettled count needs no cost-bearing narrowing.
-        """
-        query = self._pipeline._build_query(
-            start_dt=start_date,
-            end_dt=end_date,
-            filters=AnalyticsQueryFilters(
-                users=users,
-                projects=projects,
-                metric_filters=[MetricName.CLI_LLM_USAGE_TOTAL.value],
-            ),
-        )
-
-        if "bool" not in query:
-            query = {"bool": {"filter": [query]}}
-        if "filter" not in query["bool"]:
-            query["bool"]["filter"] = []
-        elif not isinstance(query["bool"]["filter"], list):
-            query["bool"]["filter"] = [query["bool"]["filter"]]
-
-        query["bool"]["filter"].append({"term": {CLI_REQUEST_FIELD: True}})
-
-        agg_body = {
-            "query": query,
-            "size": 0,
-            "aggs": {
-                "total_cost": {"sum": {"field": MONEY_SPENT_FIELD}},
-                **money_coverage_aggs(MONEY_SPENT_FIELD),
-            },
-        }
-
-        result = await self.repository.execute_aggregation_query(agg_body)
-        return read_money_coverage(result.get("aggregations", {}), "total_cost")
 
     def _build_cli_summary_aggregation(self, query: dict) -> dict:
         """Build aggregation for the six-card CLI overview.

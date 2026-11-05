@@ -27,7 +27,9 @@ from codemie.service.analytics.handlers.cli.classification_engine import CLIClas
 from codemie.service.analytics.handlers.cli.insights_handler import CLIInsightsHandler
 from codemie.service.analytics.handlers.cli_handler import CLIHandler
 from codemie.service.analytics.time_parser import TimeParser
+from codemie.service.spend.coverage import TimeRange
 from codemie.service.spend.rendering import RenderedSpend, combine_rendered_spend
+from codemie.service.spend.spend_group import SpendGroup
 
 
 def _exact(figure: float) -> RenderedSpend:
@@ -43,6 +45,14 @@ def _partial(figure: float) -> RenderedSpend:
 def _absent() -> RenderedSpend:
     """No figure at all: nothing in the window settled a cost, which is not the same as zero."""
     return RenderedSpend(figure=None, unavailable=True, partial=False, missing_amount=None)
+
+
+def _patched_cli_cost(spend: RenderedSpend) -> AsyncMock:
+    """Stand in for the ledger read behind the summary's cost tile and return the stub to assert on."""
+    return patch(
+        "codemie.service.analytics.handlers.cli.handler.dashboard_group_spend",
+        new=AsyncMock(return_value=spend),
+    )
 
 
 @pytest.fixture
@@ -166,11 +176,9 @@ class TestCLISummary:
                 },
             ]
         )
-        handler._query_cli_cost_total = AsyncMock(
-            return_value=RenderedSpend(figure=123.45, unavailable=False, partial=False, missing_amount=None)
-        )
 
-        response = await handler.get_cli_summary(time_period="last_30_days")
+        with _patched_cli_cost(_exact(123.45)):
+            response = await handler.get_cli_summary(time_period="last_30_days")
 
         assert [metric["id"] for metric in response["data"]["metrics"]] == [
             "unique_users",
@@ -216,116 +224,71 @@ class TestCLISummary:
         )
 
     @pytest.mark.asyncio
-    async def test_get_cli_summary_cli_cost_uses_requested_range_unclamped(self, handler, mock_repository):
-        """cli_cost comes from a plain CLI money query over the requested range (no cutoff clamping)."""
+    async def test_get_cli_summary_cli_cost_reads_the_cli_group_for_the_requested_range(self, handler):
+        """cli_cost is the spend port's CLI group over the requested range (no cutoff clamping), as the caller may see it."""
         handler._pipeline.execute_summary_query = AsyncMock(
-            side_effect=[
-                {"data": {"metrics": []}},
-                {"data": {"metrics": []}},
-                {"data": {"metrics": []}},
-            ]
-        )
-        mock_repository.execute_aggregation_query = AsyncMock(
-            return_value={
-                "aggregations": {
-                    "total_cost": {"value": 42.129},
-                    "money_settled": {"value": 4},
-                    "money_unsettled": {"doc_count": 0},
-                }
-            }
+            side_effect=[{"data": {"metrics": []}}, {"data": {"metrics": []}}, {"data": {"metrics": []}}]
         )
         start = datetime(2020, 1, 1, tzinfo=timezone.utc)
         end = datetime(2026, 1, 31, tzinfo=timezone.utc)
 
-        response = await handler.get_cli_summary(start_date=start, end_date=end)
+        with _patched_cli_cost(_exact(42.13)) as ledger_read:
+            response = await handler.get_cli_summary(start_date=start, end_date=end, users=["ada"], projects=["alpha"])
 
         cli_cost_metric = next(m for m in response["data"]["metrics"] if m["id"] == "cli_cost")
         assert cli_cost_metric["value"] == 42.13
-
-        agg_body = mock_repository.execute_aggregation_query.await_args.args[0]
         expected_start, expected_end = TimeParser.parse(None, start, end)
-        time_range = next(f["range"]["@timestamp"] for f in agg_body["query"]["bool"]["filter"] if "range" in f)
-        assert time_range["gte"] == expected_start.isoformat()
-        assert time_range["lte"] == expected_end.isoformat()
-        assert agg_body["aggs"] == {
-            "total_cost": {"sum": {"field": "attributes.money_spent"}},
-            "money_settled": {"value_count": {"field": "attributes.money_spent"}},
-            "money_unsettled": {"filter": {"bool": {"must_not": [{"exists": {"field": "attributes.money_spent"}}]}}},
-        }
-        assert {"term": {"attributes.cli_request": True}} in agg_body["query"]["bool"]["filter"]
+        ledger_read.assert_awaited_once_with(
+            TimeRange(expected_start, expected_end),
+            handler._pipeline.access_scope,
+            ["ada"],
+            ["alpha"],
+            SpendGroup.CLI,
+        )
 
     @staticmethod
     def _cli_cost_card(response: dict) -> dict:
         return next(metric for metric in response["data"]["metrics"] if metric["id"] == "cli_cost")
 
     @pytest.mark.asyncio
-    async def test_cli_cost_is_unavailable_when_no_document_settled_a_cost(self, handler, mock_repository):
-        """Nothing settled is no figure. A zero here would claim the window cost nothing.
-
-        This is the live shape for streaming CLI traffic: those documents carry their token counts
-        and no money attribute at all, so the `sum` aggregation skips every one of them.
-        """
+    async def test_cli_cost_is_unavailable_when_the_ledger_has_no_figure(self, handler):
+        """No figure from the ledger is no figure on the card. A zero here would claim the window cost nothing."""
         handler._pipeline.execute_summary_query = AsyncMock(
             side_effect=[{"data": {"metrics": []}}, {"data": {"metrics": []}}, {"data": {"metrics": []}}]
         )
-        mock_repository.execute_aggregation_query = AsyncMock(
-            return_value={
-                "aggregations": {
-                    "total_cost": {"value": 0.0},
-                    "money_settled": {"value": 0},
-                    "money_unsettled": {"doc_count": 812},
-                }
-            }
-        )
 
-        card = self._cli_cost_card(await handler.get_cli_summary(time_period="last_30_days"))
+        with _patched_cli_cost(_absent()):
+            card = self._cli_cost_card(await handler.get_cli_summary(time_period="last_30_days"))
 
         assert card["value"] is None
         assert card["spend_unavailable"] is True
         assert card["spend_partial"] is False
 
     @pytest.mark.asyncio
-    async def test_cli_cost_is_partial_when_some_documents_carry_no_cost(self, handler, mock_repository):
-        """A subtotal is published as a subtotal, with the figure the settled documents did produce."""
+    async def test_cli_cost_is_partial_when_the_ledger_figure_is_short(self, handler):
+        """A short ledger figure is published as a subtotal, with the figure the ledger did produce."""
         handler._pipeline.execute_summary_query = AsyncMock(
             side_effect=[{"data": {"metrics": []}}, {"data": {"metrics": []}}, {"data": {"metrics": []}}]
         )
-        mock_repository.execute_aggregation_query = AsyncMock(
-            return_value={
-                "aggregations": {
-                    "total_cost": {"value": 42.129},
-                    "money_settled": {"value": 300},
-                    "money_unsettled": {"doc_count": 12},
-                }
-            }
-        )
 
-        card = self._cli_cost_card(await handler.get_cli_summary(time_period="last_30_days"))
+        with _patched_cli_cost(_partial(42.13)):
+            card = self._cli_cost_card(await handler.get_cli_summary(time_period="last_30_days"))
 
         assert card["value"] == 42.13
         assert card["spend_partial"] is True
         assert card["spend_unavailable"] is False
-        # The unsettled documents carry no money to add up, so the size of the hole is unknown -
-        # a state, not a gap, and never a row count standing in for money.
+        # The size of the hole is unknown - a state, not a gap, and never a row count standing in for money.
         assert card["spend_missing_amount"] is None
 
     @pytest.mark.asyncio
-    async def test_cli_cost_is_exact_when_every_document_settled(self, handler, mock_repository):
+    async def test_cli_cost_is_exact_when_the_ledger_figure_is_whole(self, handler):
         """The only state a currency card may render bare, including a measured zero."""
         handler._pipeline.execute_summary_query = AsyncMock(
             side_effect=[{"data": {"metrics": []}}, {"data": {"metrics": []}}, {"data": {"metrics": []}}]
         )
-        mock_repository.execute_aggregation_query = AsyncMock(
-            return_value={
-                "aggregations": {
-                    "total_cost": {"value": 42.129},
-                    "money_settled": {"value": 312},
-                    "money_unsettled": {"doc_count": 0},
-                }
-            }
-        )
 
-        card = self._cli_cost_card(await handler.get_cli_summary(time_period="last_30_days"))
+        with _patched_cli_cost(_exact(42.13)):
+            card = self._cli_cost_card(await handler.get_cli_summary(time_period="last_30_days"))
 
         assert card["value"] == 42.13
         assert (card["spend_unavailable"], card["spend_partial"], card["spend_missing_amount"]) == (False, False, None)
@@ -1579,21 +1542,11 @@ class TestCLIInsightsHelpers:
                         "buckets": [
                             {
                                 "key": "",
-                                "cost_bucket": {
-                                    "total_cost": {"value": 9334.5},
-                                    "money_settled": {"value": 900},
-                                    "money_unsettled": {"doc_count": 0},
-                                },
                                 "repositories": {"buckets": {"buckets": []}},
                                 "branches": {"buckets": {"buckets": []}},
                             },
                             {
                                 "key": "epm-cdme",
-                                "cost_bucket": {
-                                    "total_cost": {"value": 120.0},
-                                    "money_settled": {"value": 40},
-                                    "money_unsettled": {"doc_count": 0},
-                                },
                                 "repositories": {"buckets": {"buckets": [{"key": "JnJ/payment-service/backend"}]}},
                                 "branches": {"buckets": {"buckets": [{"key": "feature/ABC-123-auth"}]}},
                             },
@@ -1602,13 +1555,18 @@ class TestCLIInsightsHelpers:
                 }
             }
         )
+        handler._cli_spend_by_project = AsyncMock(return_value=[_exact(120.0)])
 
-        rows, rendered = await handler._get_cli_insights_project_rows("last_30_days", None, None, None, None)
+        rows, rendered = await handler._get_cli_insights_project_rows("last_30_days", None, None, ["ada"], None)
 
         assert len(rows) == 1
         assert rows[0]["project_name"] == "epm-cdme"
         assert rows[0]["total_cost"] == 120.0
         assert rendered[0].is_exact
+        # The blank key is never asked about: a filter naming no project would read as everything.
+        names, _start, _end, users = handler._cli_spend_by_project.await_args.args
+        assert names == ["epm-cdme"]
+        assert users == ["ada"]
 
     @pytest.mark.asyncio
     async def test_get_cli_insights_top_spenders(self, handler):
@@ -1864,22 +1822,20 @@ class TestCLIInsightsHelpers:
         session_filter = aggregation["aggs"]["users"]["aggs"]["total_sessions"]["filter"]
         lines_added_filter = aggregation["aggs"]["users"]["aggs"]["total_lines_added"]["filter"]
         lines_removed_filter = aggregation["aggs"]["users"]["aggs"]["total_lines_removed"]["filter"]
-        cost_filter = aggregation["aggs"]["users"]["aggs"]["cost_bucket"]["filter"]
 
         assert usage_filter == {"term": {"metric_name.keyword": "codemie_cli_tool_usage_total"}}
         assert session_filter == {"term": {"metric_name.keyword": "codemie_cli_session_total"}}
         assert lines_added_filter == {"term": {"metric_name.keyword": "codemie_cli_tool_usage_total"}}
         assert lines_removed_filter == {"term": {"metric_name.keyword": "codemie_cli_tool_usage_total"}}
-        assert cost_filter == {"term": {"metric_name.keyword": "codemie_litellm_proxy_usage"}}
+        assert "cost_bucket" not in aggregation["aggs"]["users"]["aggs"]
 
     def test_build_cli_insights_project_aggregation_uses_cli_tool_usage_metric(self, handler):
         aggregation = handler._build_cli_insights_project_aggregation({"bool": {"filter": []}})
         usage_filter = aggregation["aggs"]["projects"]["aggs"]["repositories"]["filter"]
-        cost_filter = aggregation["aggs"]["projects"]["aggs"]["cost_bucket"]["filter"]
 
         assert usage_filter == {"term": {"metric_name.keyword": "codemie_cli_tool_usage_total"}}
         assert aggregation["aggs"]["projects"]["aggs"]["branches"]["filter"] == usage_filter
-        assert cost_filter == {"term": {"metric_name.keyword": "codemie_litellm_proxy_usage"}}
+        assert "cost_bucket" not in aggregation["aggs"]["projects"]["aggs"]
 
     def test_build_cli_insights_user_detail_aggregation_uses_current_cli_metrics(self, handler):
         aggregation = handler._build_cli_insights_user_detail_aggregation({"bool": {"filter": []}})
@@ -2139,8 +2095,8 @@ class TestForecastCardIsNeverAProjectionOfNothing:
             assert by_id[card_id]["spend_partial"] is False
 
 
-def _user_bucket(user_id: str, email: str, cost_bucket: dict, *, repositories: list[str], branches: list[str]) -> dict:
-    """One `users` terms bucket for the user-rows and classification aggregations."""
+def _user_bucket(user_id: str, email: str, *, repositories: list[str], branches: list[str]) -> dict:
+    """One `users` terms bucket for the user-rows and classification aggregations (money comes from the ledger)."""
     return {
         "key": user_id,
         "user_name": {"top": [{"metrics": {"attributes.user_name.keyword": email}}]},
@@ -2148,7 +2104,6 @@ def _user_bucket(user_id: str, email: str, cost_bucket: dict, *, repositories: l
         "projects": {"buckets": {"buckets": [{"key": "epm-cdme"}]}},
         "repositories": {"buckets": {"buckets": [{"key": repo} for repo in repositories]}},
         "branches": {"buckets": {"buckets": [{"key": branch} for branch in branches]}},
-        "cost_bucket": cost_bucket,
         "total_lines_added": {"total": {"value": 100}},
         "total_lines_removed": {"total": {"value": 10}},
         "total_sessions": {"count": {"value": 4}},
@@ -2156,92 +2111,67 @@ def _user_bucket(user_id: str, email: str, cost_bucket: dict, *, repositories: l
 
 
 class TestAnAbsentFigureIsNotRankedAmongTheFigures:
-    """Top Spenders publishes a rank, so a floored figure decides a position as well as an amount."""
+    """Top Spenders publishes a rank, so a ledger figure decides a position as well as an amount."""
 
     @pytest.fixture
     def handler(self, mock_user, mock_repository):
         return CLIInsightsHandler(mock_user, mock_repository)
+
+    @staticmethod
+    def _answer_users(mock_repository, handler, users: list[tuple[str, str]], spends: list[RenderedSpend]) -> None:
+        mock_repository.execute_aggregation_query = AsyncMock(
+            return_value={
+                "aggregations": {
+                    "users": {
+                        "buckets": [
+                            _user_bucket(user_id, email, repositories=["Acme/payments"], branches=["release/1.0"])
+                            for user_id, email in users
+                        ]
+                    }
+                }
+            }
+        )
+        handler._cli_spend_by_user = AsyncMock(return_value=spends)
 
     @pytest.mark.asyncio
     @patch(
         "codemie.service.analytics.handlers.cli.insights_handler.UserIdentityResolver.resolve_rows",
         new_callable=AsyncMock,
     )
-    async def test_the_user_whose_costs_never_settled_ranks_last_with_no_figure(
+    async def test_the_user_without_a_ledger_figure_ranks_last_with_no_figure(
         self, _mock_resolve_rows, handler, mock_repository
     ):
-        mock_repository.execute_aggregation_query = AsyncMock(
-            return_value={
-                "aggregations": {
-                    "users": {
-                        "buckets": [
-                            _user_bucket(
-                                "u-absent",
-                                "absent@example.com",
-                                NOTHING_SETTLED,
-                                repositories=["Acme/payments"],
-                                branches=["release/1.0"],
-                            ),
-                            _user_bucket(
-                                "u-small",
-                                "small@example.com",
-                                _cost_bucket(1.0, 5, 0),
-                                repositories=["Acme/payments"],
-                                branches=["release/1.0"],
-                            ),
-                            _user_bucket(
-                                "u-big",
-                                "big@example.com",
-                                _cost_bucket(500.0, 50, 0),
-                                repositories=["Acme/payments"],
-                                branches=["release/1.0"],
-                            ),
-                        ]
-                    }
-                }
-            }
+        self._answer_users(
+            mock_repository,
+            handler,
+            [("u-absent", "absent@example.com"), ("u-small", "small@example.com"), ("u-big", "big@example.com")],
+            [_absent(), _exact(1.0), _exact(500.0)],
         )
 
         rows = (await handler.get_cli_insights_top_spenders(time_period="last_30_days"))["data"]["rows"]
 
         assert [row["user_id"] for row in rows] == ["u-big", "u-small", "u-absent"]
         assert [row["rank"] for row in rows] == [1, 2, 3]
-        # Last by rank, and explicitly no figure — never the $0.00 that put it there before.
+        # Last by rank, and explicitly no figure - never the $0.00 that put it there before.
         assert rows[-1]["total_cost"] is None
         assert rows[-1]["spend_unavailable"] is True
         assert rows[1]["total_cost"] == 1.0
+        # The ledger is asked about the buckets' own users, in the order Elasticsearch listed them.
+        assert handler._cli_spend_by_user.await_args.args[0] == ["u-absent", "u-small", "u-big"]
 
     @pytest.mark.asyncio
     @patch(
         "codemie.service.analytics.handlers.cli.insights_handler.UserIdentityResolver.resolve_rows",
         new_callable=AsyncMock,
     )
-    async def test_a_subtotal_is_ranked_by_what_settled_and_says_it_is_a_subtotal(
+    async def test_a_subtotal_is_ranked_by_what_the_ledger_has_and_says_it_is_a_subtotal(
         self, _mock_resolve_rows, handler, mock_repository
     ):
-        mock_repository.execute_aggregation_query = AsyncMock(
-            return_value={
-                "aggregations": {
-                    "users": {
-                        "buckets": [
-                            _user_bucket(
-                                "u-partial",
-                                "partial@example.com",
-                                SOME_UNSETTLED,
-                                repositories=["Acme/payments"],
-                                branches=["release/1.0"],
-                            ),
-                            _user_bucket(
-                                "u-exact",
-                                "exact@example.com",
-                                _cost_bucket(10.0, 8, 0),
-                                repositories=["Acme/payments"],
-                                branches=["release/1.0"],
-                            ),
-                        ]
-                    }
-                }
-            }
+        self._answer_users(
+            mock_repository,
+            handler,
+            [("u-partial", "partial@example.com"), ("u-exact", "exact@example.com")],
+            [_partial(42.5), _exact(10.0)],
         )
 
         rows = (await handler.get_cli_insights_all_users(time_period="last_30_days"))["data"]["rows"]
@@ -2255,43 +2185,66 @@ class TestAnAbsentFigureIsNotRankedAmongTheFigures:
         assert by_id["u-partial"]["net_lines"] == 90
         assert by_id["u-partial"]["total_sessions"] == 4
 
+    @pytest.mark.asyncio
+    @patch(
+        "codemie.service.analytics.handlers.cli.insights_handler.UserIdentityResolver.resolve_rows",
+        new_callable=AsyncMock,
+    )
+    async def test_top_users_by_cost_ranks_by_the_ledger_figure_and_puts_the_absent_one_last(
+        self, _mock_resolve_rows, handler, mock_repository
+    ):
+        self._answer_users(
+            mock_repository,
+            handler,
+            [("u-absent", "absent@example.com"), ("u-big", "big@example.com")],
+            [_absent(), _exact(500.0)],
+        )
+
+        rows = (await handler.get_cli_insights_top_users_by_cost(time_period="last_30_days"))["data"]["rows"]
+
+        assert [row["user_id"] for row in rows] == ["u-big", "u-absent"]
+        assert rows[0]["total_cost"] == 500.0
+        assert rows[1]["total_cost"] is None
+
 
 class TestProjectRowsPublishTheThreeStates:
-    """The plain money cell, one bucket per state."""
+    """The plain money cell, one ledger figure per state."""
 
     @pytest.fixture
     def handler(self, mock_user, mock_repository):
         return CLIInsightsHandler(mock_user, mock_repository)
 
     @staticmethod
-    def _project_result(named_buckets: list[tuple[str, dict]]) -> dict:
-        return {
-            "aggregations": {
-                "projects": {
-                    "buckets": [
-                        {
-                            "key": name,
-                            "cost_bucket": cost_bucket,
-                            "repositories": {"buckets": {"buckets": [{"key": "Acme/payments"}]}},
-                            "branches": {"buckets": {"buckets": [{"key": "release/1.0"}]}},
-                        }
-                        for name, cost_bucket in named_buckets
-                    ]
+    def _answer_projects(mock_repository, handler, spends: dict[str, RenderedSpend]) -> None:
+        mock_repository.execute_aggregation_query = AsyncMock(
+            return_value={
+                "aggregations": {
+                    "projects": {
+                        "buckets": [
+                            {
+                                "key": name,
+                                "repositories": {"buckets": {"buckets": [{"key": "Acme/payments"}]}},
+                                "branches": {"buckets": {"buckets": [{"key": "release/1.0"}]}},
+                            }
+                            for name in spends
+                        ]
+                    }
                 }
             }
-        }
+        )
+        handler._cli_spend_by_project = AsyncMock(return_value=list(spends.values()))
 
     @pytest.mark.asyncio
     async def test_each_state_reaches_the_cell_as_itself(self, handler, mock_repository):
-        mock_repository.execute_aggregation_query = AsyncMock(
-            return_value=self._project_result(
-                [
-                    ("none-settled", NOTHING_SETTLED),
-                    ("some-unsettled", SOME_UNSETTLED),
-                    ("all-settled", ALL_SETTLED),
-                    ("measured-zero", MEASURED_ZERO),
-                ]
-            )
+        self._answer_projects(
+            mock_repository,
+            handler,
+            {
+                "none-settled": _absent(),
+                "some-unsettled": _partial(42.5),
+                "all-settled": _exact(42.5),
+                "measured-zero": _exact(0.0),
+            },
         )
 
         rows, _rendered = await handler._get_cli_insights_project_rows("last_30_days", None, None, None, None)
@@ -2312,14 +2265,7 @@ class TestProjectRowsPublishTheThreeStates:
 
     @pytest.mark.asyncio
     async def test_a_project_whose_cost_is_unknown_is_ranked_last_not_at_zero(self, handler, mock_repository):
-        mock_repository.execute_aggregation_query = AsyncMock(
-            return_value=self._project_result(
-                [
-                    ("none-settled", NOTHING_SETTLED),
-                    ("cheap", _cost_bucket(0.5, 2, 0)),
-                ]
-            )
-        )
+        self._answer_projects(mock_repository, handler, {"none-settled": _absent(), "cheap": _exact(0.5)})
 
         rows = (await handler.get_cli_insights_top_projects_by_cost(time_period="last_30_days"))["data"]["rows"]
 
@@ -2327,38 +2273,38 @@ class TestProjectRowsPublishTheThreeStates:
 
 
 class TestGroupTotalsAndAveragesCarryTheirQualification:
-    """A group total over floored figures, and an average whose numerator is a subtotal."""
+    """A group total over ledger figures, and an average whose numerator is a subtotal."""
 
     @pytest.fixture
     def handler(self, mock_user, mock_repository):
         return CLIInsightsHandler(mock_user, mock_repository)
 
     @staticmethod
-    def _classification_result(cost_buckets: list[dict]) -> dict:
+    def _answer_classification(mock_repository, handler, spends: list[RenderedSpend]) -> None:
         # Identical repository/branch signals, so every user lands in one classification group and
         # the assertion is about the group's money rather than about how it was grouped.
-        return {
-            "aggregations": {
-                "users": {
-                    "buckets": [
-                        _user_bucket(
-                            f"u-{index}",
-                            f"u{index}@example.com",
-                            cost_bucket,
-                            repositories=["Acme/payments"],
-                            branches=["release/1.0"],
-                        )
-                        for index, cost_bucket in enumerate(cost_buckets)
-                    ]
+        mock_repository.execute_aggregation_query = AsyncMock(
+            return_value={
+                "aggregations": {
+                    "users": {
+                        "buckets": [
+                            _user_bucket(
+                                f"u-{index}",
+                                f"u{index}@example.com",
+                                repositories=["Acme/payments"],
+                                branches=["release/1.0"],
+                            )
+                            for index, _ in enumerate(spends)
+                        ]
+                    }
                 }
             }
-        }
+        )
+        handler._cli_spend_by_user = AsyncMock(return_value=spends)
 
     @pytest.mark.asyncio
     async def test_one_member_with_no_figure_makes_the_group_total_and_average_say_so(self, handler, mock_repository):
-        mock_repository.execute_aggregation_query = AsyncMock(
-            return_value=self._classification_result([NOTHING_SETTLED, _cost_bucket(100.0, 40, 0)])
-        )
+        self._answer_classification(mock_repository, handler, [_absent(), _exact(100.0)])
 
         rows = (await handler.get_cli_insights_user_classification(time_period="last_30_days"))["data"]["rows"]
 
@@ -2373,9 +2319,7 @@ class TestGroupTotalsAndAveragesCarryTheirQualification:
 
     @pytest.mark.asyncio
     async def test_a_group_in_which_nothing_settled_has_neither_a_total_nor_an_average(self, handler, mock_repository):
-        mock_repository.execute_aggregation_query = AsyncMock(
-            return_value=self._classification_result([NOTHING_SETTLED, NOTHING_SETTLED])
-        )
+        self._answer_classification(mock_repository, handler, [_absent(), _absent()])
 
         rows = (await handler.get_cli_insights_user_classification(time_period="last_30_days"))["data"]["rows"]
 
@@ -2385,9 +2329,7 @@ class TestGroupTotalsAndAveragesCarryTheirQualification:
 
     @pytest.mark.asyncio
     async def test_a_group_of_whole_figures_totals_and_averages_exactly(self, handler, mock_repository):
-        mock_repository.execute_aggregation_query = AsyncMock(
-            return_value=self._classification_result([_cost_bucket(30.0, 10, 0), _cost_bucket(10.0, 4, 0)])
-        )
+        self._answer_classification(mock_repository, handler, [_exact(30.0), _exact(10.0)])
 
         rows = (await handler.get_cli_insights_user_classification(time_period="last_30_days"))["data"]["rows"]
 
@@ -2404,19 +2346,16 @@ class TestGroupTotalsAndAveragesCarryTheirQualification:
                         "buckets": [
                             {
                                 "key": name,
-                                "cost_bucket": cost_bucket,
                                 "repositories": {"buckets": {"buckets": [{"key": "Acme/payments"}]}},
                                 "branches": {"buckets": {"buckets": [{"key": "release/1.0"}]}},
                             }
-                            for name, cost_bucket in [
-                                ("alpha", NOTHING_SETTLED),
-                                ("beta", _cost_bucket(60.0, 20, 0)),
-                            ]
+                            for name in ("alpha", "beta")
                         ]
                     }
                 }
             }
         )
+        handler._cli_spend_by_project = AsyncMock(return_value=[_absent(), _exact(60.0)])
 
         rows = (await handler.get_cli_insights_project_classification(time_period="last_30_days"))["data"]["rows"]
 
@@ -2425,6 +2364,58 @@ class TestGroupTotalsAndAveragesCarryTheirQualification:
         assert rows[0]["total_cost"] == 60.0
         assert rows[0]["spend_unavailable"] is True
         assert rows[0]["spend_partial"] is True
+
+
+class TestCliSpendIsReadFromTheLedgerPerRow:
+    """The two reads every CLI Insights money cell goes through hand the ledger the caller's boundary and the CLI group."""
+
+    START = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    END = datetime(2026, 8, 31, tzinfo=timezone.utc)
+
+    @pytest.fixture
+    def handler(self, mock_user, mock_repository):
+        return CLIInsightsHandler(mock_user, mock_repository)
+
+    @pytest.mark.asyncio
+    async def test_user_spend_is_one_cli_group_read_per_user_under_the_callers_boundary(self, handler):
+        module = "codemie.service.analytics.handlers.cli.insights_handler"
+        with (
+            patch(f"{module}.user_report_filters", new=AsyncMock(return_value=["f-ada", "f-bob"])) as filters,
+            patch(f"{module}.read_group_spend", new=AsyncMock(return_value=[_exact(1.0), _exact(2.0)])) as read,
+        ):
+            spends = await handler._cli_spend_by_user(["u-ada", "u-bob"], self.START, self.END, ["alpha"])
+
+        assert [spend.figure for spend in spends] == [1.0, 2.0]
+        filters.assert_awaited_once_with(["u-ada", "u-bob"], ["alpha"])
+        read.assert_awaited_once_with(
+            TimeRange(self.START, self.END), handler._pipeline.access_scope, ["f-ada", "f-bob"], SpendGroup.CLI
+        )
+
+    @pytest.mark.asyncio
+    async def test_project_spend_is_one_cli_group_read_per_project_under_the_callers_boundary(self, handler):
+        module = "codemie.service.analytics.handlers.cli.insights_handler"
+        with (
+            patch(f"{module}.project_report_filters", new=AsyncMock(return_value=["f-alpha"])) as filters,
+            patch(f"{module}.read_group_spend", new=AsyncMock(return_value=[_exact(3.0)])) as read,
+        ):
+            spends = await handler._cli_spend_by_project(["alpha"], self.START, self.END, ["ada"])
+
+        assert [spend.figure for spend in spends] == [3.0]
+        filters.assert_awaited_once_with(["alpha"], ["ada"])
+        read.assert_awaited_once_with(
+            TimeRange(self.START, self.END), handler._pipeline.access_scope, ["f-alpha"], SpendGroup.CLI
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_window_the_port_cannot_accept_is_passed_on_as_no_period(self, handler):
+        module = "codemie.service.analytics.handlers.cli.insights_handler"
+        with (
+            patch(f"{module}.user_report_filters", new=AsyncMock(return_value=["f-ada"])),
+            patch(f"{module}.read_group_spend", new=AsyncMock(return_value=[_absent()])) as read,
+        ):
+            await handler._cli_spend_by_user(["u-ada"], self.END, self.START, None)
+
+        assert read.await_args.args[0] is None
 
 
 class TestRepositoryAndCategoryMoneyInTheDetailModal:
