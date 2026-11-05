@@ -1,0 +1,75 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-16713_lines-null-vs-zero",
+  "head": "db631b80501538fce8b3322f5c42987053275d35",
+  "runner": "poetry",
+  "started_at": "2026-11-04T00:00:00Z",
+  "completed_at": "2026-11-04T00:15:00Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 7198,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 20209,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 3774,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "secrets",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make gitleaks",
+      "exit_code": null,
+      "notes": "Docker not installed (no docker in PATH); CI-only enforcement, run locally with Docker."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 570626,
+      "command": "make test",
+      "exit_code": 2,
+      "notes": "243 failed, 28854 passed, 772 skipped, 42 errors; many failures in files outside the diff (code_executor, mcp_auth, git tools, scripts hooks); cli_analytics/postgres test_dirty.py and test_settings.py also fail."
+    },
+    {
+      "id": "cli-analytics-live",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make test-cli-analytics-live",
+      "exit_code": null,
+      "notes": "Diff touches cli_analytics/postgres but Docker is unavailable to start throwaway PostgreSQL containers."
+    },
+    {
+      "id": "sonar",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make sonar-local",
+      "exit_code": null,
+      "notes": "pre-push hook runs pytest+sonar-local; Sonar credentials/network not available locally."
+    }
+  ],
+  "failures": {
+    "unit": "FAILED tests/scripts/test_ruff_staged_hook.py::test_no_staged_py_files_exits_zero\nFAILED tests/scripts/test_ruff_staged_hook.py::test_clean_staged_plus_unstaged_garbage_exits_zero\nFAILED tests/scripts/test_ruff_staged_hook.py::test_ruff_reformats_staged_file_exits_one\nFAILED tests/scripts/test_ruff_staged_hook.py::test_missing_trailing_newline_exits_one\nFAILED tests/scripts/test_ruff_staged_hook.py::test_syntax_error_in_staged_file_reports_clearly\nFAILED tests/scripts/test_ruff_staged_hook.py::test_partial_staging_clean_hunk_dirty_unstaged_exits_zero\nERROR tests/codemie/migrations/test_credentialtypes_enum_migrations.py - Unic...\nERROR tests/codemie/migrations/test_credentialtypes_enum_migrations.py - Unic...\nERROR tests/codemie/migrations/test_credentialtypes_enum_migrations.py - Unic...\nERROR tests/codemie/service/usage_attribution/test_framework_wiring.py\nERROR tests/codemie/service/usage_attribution/test_worker.py\nERROR tests/enterprise/mcp_auth/test_discovery_cimd_disabled.py\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_route_is_in_the_guarded_openapi[index]\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_route_is_in_the_guarded_openapi[budget]\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_route_is_in_the_guarded_openapi[users]\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_route_is_in_the_guarded_openapi[local-auth]\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_route_is_in_the_guarded_openapi[workflow-generation]\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_conditional_routes_are_registered_on_the_app\nERROR tests/codemie/rest_api/router_guards/test_guarded_app_profile.py::test_building_the_app_attempts_no_network_connection\nERROR tests/codemie/service/security/test_logout_token_cleanup_mock_tms.py::test_logout_removes_only_the_users_rows_and_pod_fallback\nERROR tests/codemie/service/spend/test_budget_period.py::TestTheStartIsClampedToWhenTheBudgetBegan::test_a_naive_value_is_read_as_utc\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_branch_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_branch_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_set_active_branch_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_set_active_branch_failur\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_list_branches_in_repo_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_list_branches_in_repo_exception\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_replace_file_content_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_replace_file_content_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_create_file_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_delete_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitLabApiWrapper::test_delete_file_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_issue_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_update_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_update_issue_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_find_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_comment_on_issue_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_comment_on_issue_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_create_file_failure\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_delete_file_success\nERROR tests/codemie_tools/git/test_custom_git_api_wrapper.py::TestGitHubApiWrapper::test_delete_file_failure\nERROR tests/codemie/rest_api/test_marketplace_entity_detail_verdict_fields.py::test_entity_detail_includes_verdict_fields_when_verdict_exists\nERROR tests/codemie/rest_api/test_marketplace_entity_detail_verdict_fields.py::test_entity_detail_verdict_fields_are_null_when_no_verdict\nERROR tests/codemie/rest_api/test_marketplace_entity_detail_verdict_fields.py::test_entity_detail_includes_bucket_reason_and_usage_tier\nERROR tests/codemie/rest_api/test_marketplace_entity_detail_verdict_fields.py::test_entity_detail_includes_polish_check_results\n= 243 failed, 28854 passed, 772 skipped, 437 warnings, 42 errors in 562.53s (0:09:22) =\nmake: *** [Makefile:31: test] Error 1\n"
+  }
+}

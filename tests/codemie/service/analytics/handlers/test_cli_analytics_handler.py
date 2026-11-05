@@ -1994,3 +1994,174 @@ async def test_efficiency_worst_session_prompt_is_truncated_after_cleaning():
 
     worst = data["kpis"]["worst_session_prompt"]
     assert len(worst) == _PROMPT_PREVIEW_LEN and worst.startswith(_CLEAN)
+
+
+# ── EPMCDME-16713: unknown lines are null, real zeros stay 0 ─────────────────
+
+
+def test_nsum_is_none_only_when_every_input_is_none():
+    from codemie.service.analytics.handlers.cli_analytics_handler import _nsum
+
+    assert _nsum(None, None) is None
+    assert _nsum() is None
+    assert _nsum(None, 3) == 3
+    assert _nsum(0, None) == 0
+    assert _nsum(2, 3) == 5
+
+
+def test_nnet_is_none_only_when_both_are_none():
+    from codemie.service.analytics.handlers.cli_analytics_handler import _nnet
+
+    assert _nnet(None, None) is None
+    assert _nnet(0, 0) == 0
+    assert _nnet(5, None) == 5
+    assert _nnet(None, 2) == -2
+    assert _nnet(5, 2) == 3
+
+
+@pytest.mark.asyncio
+async def test_sessions_net_lines_none_for_unknown_and_zero_for_known_zero():
+    facts = [{**BASE_COST_ROW, "session_id": "unknown"}, {**BASE_COST_ROW, "session_id": "zero"}]
+    handler = make_handler(cost_facts=facts)
+    handler._repo.get_lines_by_session = AsyncMock(
+        return_value=[{"session_id": "zero", "lines_added": 0, "lines_removed": 0}]
+    )
+    data, _, _ = await handler.get_sessions(make_filter(), page=0, per_page=20, sort_by="start_time", search=None)
+    by_id = {r["trace_id"]: r for r in data["sessions"]}
+    assert by_id["unknown"]["net_lines"] is None
+    assert by_id["zero"]["net_lines"] == 0
+
+
+@pytest.mark.asyncio
+async def test_session_detail_net_lines_none_when_scalars_null_and_zero_when_known():
+    handler = make_detail_handler({"session_id": "s1"})
+    handler._repo.get_session_detail_scalars = AsyncMock(
+        return_value=[{"turns": 1, "lines_added": None, "lines_removed": None}]
+    )
+    detail, _, _ = await handler.get_session_detail("s1", scope=DETAIL_SCOPE)
+    assert detail["net_lines"] is None
+
+    known = make_detail_handler({"session_id": "s1"})  # fixture scalars: lines 0/0
+    detail, _, _ = await known.get_session_detail("s1", scope=DETAIL_SCOPE)
+    assert detail["net_lines"] == 0
+
+
+@pytest.mark.asyncio
+async def test_repositories_lines_unknown_partial_and_known():
+    cost_facts = [
+        {**BASE_COST_FACT, "session_id": "u1", "repository": "all-unknown", "branch": "b", "project_name": "p"},
+        {**BASE_COST_FACT, "session_id": "m1", "repository": "mixed", "branch": "b1", "project_name": "p"},
+        {**BASE_COST_FACT, "session_id": "m2", "repository": "mixed", "branch": "b2", "project_name": "p"},
+        {**BASE_COST_FACT, "session_id": "k1", "repository": "known", "branch": "b", "project_name": "p"},
+    ]
+    handler = make_repo_handler(cost_facts)
+    handler._repo.get_lines_by_session = AsyncMock(
+        return_value=[
+            {"session_id": "m1", "lines_added": 10, "lines_removed": 4},
+            {"session_id": "k1", "lines_added": 0, "lines_removed": 0},
+        ]
+    )
+    for include_branches in (True, False):
+        rows = (await handler.get_repositories(make_filter(), 0, 50, include_branches=include_branches))[0]["rows"]
+        by_repo = {r["repository"]: r for r in rows}
+        assert (by_repo["all-unknown"]["lines_added"], by_repo["all-unknown"]["lines_removed"]) == (None, None)
+        assert by_repo["all-unknown"]["net_lines"] is None
+        assert (by_repo["mixed"]["lines_added"], by_repo["mixed"]["lines_removed"]) == (10, 4)
+        assert by_repo["mixed"]["net_lines"] == 6
+        assert (by_repo["known"]["lines_added"], by_repo["known"]["net_lines"]) == (0, 0)
+
+    nested = (await handler.get_repositories(make_filter(), 0, 50, include_branches=True))[0]["rows"]
+    mixed = next(r for r in nested if r["repository"] == "mixed")
+    branches = {b["branch"]: b for b in mixed["branches"]}
+    assert branches["b1"]["net_lines"] == 6
+    assert branches["b2"]["lines_added"] is None and branches["b2"]["net_lines"] is None
+
+
+# ── Users / overview / efficiency: unknown lines are null, not 0 ──
+
+
+@pytest.mark.asyncio
+async def test_users_net_lines_none_for_user_without_lines_row_and_zero_for_known_zero():
+    repo = _users_repo(
+        [
+            {"developer_name": "none", "session_ids": ["s1"]},
+            {"developer_name": "zero", "session_ids": ["s2"]},
+            {"developer_name": "some", "session_ids": ["s3"]},
+        ]
+    )
+    repo.get_lines_by_user = AsyncMock(
+        return_value=[
+            {"developer_name": "zero", "net_lines": 0},
+            {"developer_name": "some", "net_lines": 7},
+        ]
+    )
+    result, _ = await LocalAnalyticsHandler(repo).get_users(make_filter(), page=None, per_page=None)
+    by_name = {r["developer_name"]: r["net_lines"] for r in result["rows"]}
+    assert by_name == {"none": None, "zero": 0, "some": 7}
+
+
+@pytest.mark.parametrize(
+    ("totals", "expected"),
+    [
+        ([], None),
+        ([{"lines_added": None, "lines_removed": None}], None),
+        ([{"lines_added": 10, "lines_removed": 4}], 6),
+        ([{"lines_added": 5, "lines_removed": None}], 5),
+        ([{"lines_added": 0, "lines_removed": 0}], 0),
+    ],
+)
+@pytest.mark.asyncio
+async def test_overview_and_efficiency_kpi_net_lines_null_only_when_totals_unknown(totals, expected):
+    handler = _money_handler([], get_lines_totals=totals)
+    overview, _, _ = await handler.get_overview(make_filter())
+    efficiency, _ = await handler.get_efficiency(make_filter())
+    assert overview["kpis"]["net_lines"] == expected
+    assert efficiency["kpis"] is not None
+    assert efficiency["code_changes"]["net_lines"] == expected
+
+
+@pytest.mark.asyncio
+async def test_overview_daily_bucket_net_lines_none_unknown_and_zero_known():
+    days = [
+        {"day": date(2026, 9, 1), "net_lines": None, "nonzero": False},
+        {"day": date(2026, 9, 2), "net_lines": 0, "nonzero": False},
+        {"day": date(2026, 9, 3), "net_lines": 3, "nonzero": True},
+    ]
+    handler = _money_handler([], get_lines_daily=days)
+    data, _, _ = await handler.get_overview(make_filter())
+    assert [b["net_lines"] for b in data["daily_buckets"]] == [None, 0, 3]
+
+
+@pytest.mark.asyncio
+async def test_overview_data_as_of_uses_only_nonzero_days():
+    days = [
+        {"day": date(2026, 9, 1), "net_lines": 4, "nonzero": True},
+        {"day": date(2026, 9, 5), "net_lines": 0, "nonzero": False},
+    ]
+    _, _, as_of = await _money_handler([], get_lines_daily=days).get_overview(make_filter())
+    assert as_of == "2026-09-01"
+    zero_only = [{"day": date(2026, 9, 5), "net_lines": 0, "nonzero": False}]
+    _, _, as_of = await _money_handler([], get_lines_daily=zero_only).get_overview(make_filter())
+    assert as_of is None
+
+
+@pytest.mark.asyncio
+async def test_efficiency_code_ids_exclude_zero_sum_known_sessions():
+    facts = [{**BASE_COST_ROW, "session_id": sid} for sid in ("zero", "code", "none")]
+    classes = [
+        {"key": "zero", "subscription_types": ["codemie"], "project_origins": ["none"]},
+        {"key": "code", "subscription_types": ["corporate"], "project_origins": ["profile"]},
+        {"key": "none", "subscription_types": ["unknown"], "project_origins": ["linked_folder"]},
+    ]
+    handler = _money_handler(
+        [],
+        get_session_cost_facts=facts,
+        get_class_lists=classes,
+        get_lines_by_session=[
+            {"session_id": "zero", "lines_added": 0, "lines_removed": 0},
+            {"session_id": "code", "lines_added": 3, "lines_removed": 0},
+        ],
+    )
+    data, _ = await handler.get_efficiency(make_filter())
+    assert data["code_changes"]["subscription_types"] == ["corporate"]
+    assert data["code_changes"]["project_origins"] == ["profile"]

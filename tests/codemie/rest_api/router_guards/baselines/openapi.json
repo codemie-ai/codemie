@@ -15488,9 +15488,15 @@
             "type": "integer"
           },
           "net_lines": {
-            "default": 0,
-            "title": "Net Lines",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Net Lines"
           },
           "project_origins": {
             "description": "Distinct project origins (linked_folder, profile, registered_repository, default_project, legacy_project, none, other), sorted",
@@ -16057,8 +16063,15 @@
             "type": "string"
           },
           "net_lines": {
-            "title": "Net Lines",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Net Lines"
           },
           "project_origins": {
             "description": "Distinct project origins (linked_folder, profile, registered_repository, default_project, legacy_project, none, other), sorted",
@@ -16135,8 +16148,15 @@
             "type": "integer"
           },
           "net_lines": {
-            "title": "Net Lines",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Net Lines"
           },
           "project_origins": {
             "description": "Distinct project origins (linked_folder, profile, registered_repository, default_project, legacy_project, none, other), sorted",
@@ -16295,16 +16315,37 @@
             "type": "integer"
           },
           "lines_added": {
-            "title": "Lines Added",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lines Added"
           },
           "lines_removed": {
-            "title": "Lines Removed",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lines Removed"
           },
           "net_lines": {
-            "title": "Net Lines",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Net Lines"
           },
           "project_origins": {
             "description": "Distinct project origins (linked_folder, profile, registered_repository, default_project, legacy_project, none, other), sorted",
@@ -16385,16 +16426,37 @@
             "type": "integer"
           },
           "lines_added": {
-            "title": "Lines Added",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lines Added"
           },
           "lines_removed": {
-            "title": "Lines Removed",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lines Removed"
           },
           "net_lines": {
-            "title": "Net Lines",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Net Lines"
           },
           "project_name": {
             "anyOf": [
@@ -16663,9 +16725,15 @@
             "type": "string"
           },
           "net_lines": {
-            "default": 0,
-            "title": "Net Lines",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Net Lines"
           },
           "output_tokens": {
             "title": "Output Tokens",
@@ -16978,9 +17046,15 @@
             "type": "string"
           },
           "net_lines": {
-            "default": 0,
-            "title": "Net Lines",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Net Lines"
           },
           "output_tokens": {
             "title": "Output Tokens",
@@ -17303,9 +17377,15 @@
             "title": "Last Active"
           },
           "net_lines": {
-            "default": 0,
-            "title": "Net Lines",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Net Lines"
           },
           "output_tokens": {
             "title": "Output Tokens",

@@ -440,6 +440,7 @@ An activity hook event: a tool call that completed. Its line counts are the sour
 
 - A new file counts its content lines (a trailing newline is not a line); an overwrite and an edit count the patch.
 - The server builds `lines_daily` from them for every session where any `agent.tool.end` carries a numeric `lines_added`. Only the `agent.tool.end` events that carry a numeric `lines_added` count, one per non-empty `tool_use_id` (the earliest of them); a line count that is not a non-negative number counts 0. A session without them, a `null` or string `lines_added` included, takes its lines from the OTel lines metric.
+- A `lines_daily` row means the session's lines are known; the API returns null when there is no row and 0 only for a real zero. Zero-sum sessions are stored as a `lines_daily` row with 0 (`active_time_daily` still omits zero rows).
 
 ## `agent.git.snapshot`
 

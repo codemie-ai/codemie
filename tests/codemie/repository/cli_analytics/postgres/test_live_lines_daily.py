@@ -34,14 +34,17 @@ import asyncpg
 import pytest
 
 from codemie.configs.config import Config
+from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
 from codemie.repository.cli_analytics.postgres.engine import AnalyticsPgEngine
 from codemie.repository.cli_analytics.postgres.ingestor import PostgresTelemetryIngestor
 from codemie.repository.cli_analytics.postgres.maintenance import quote_ident
+from codemie.repository.cli_analytics.postgres.reader import PostgresCliAnalyticsReader
 from codemie.repository.cli_analytics.postgres.rollups import RollupRefresher
 from codemie.repository.cli_analytics.postgres.runtime import PostgresAnalyticsRuntime
 from codemie.repository.cli_analytics.postgres.settings import AnalyticsPgSettings
 from tests.codemie.repository.cli_analytics.support import otlp_builders as b
 from tests.codemie.repository.cli_analytics.support.live_rollup_lock import live_rollup_lock
+from tests.codemie.repository.cli_analytics.support.scopes import DETAIL_SCOPE, EXCLUDE_SCOPE
 
 _LOCAL_PG_URL = os.environ.get("TEST_LOCAL_PG_URL", "")
 pytestmark = pytest.mark.skipif(not _LOCAL_PG_URL, reason="TEST_LOCAL_PG_URL is not set: no database to run against")
@@ -317,3 +320,222 @@ async def test_a_lines_metric_ingest_waits_for_the_session_lock_and_another_sess
                 await holder.execute("SELECT pg_advisory_unlock($1)", key)
             await asyncio.wait_for(ingest, timeout=30)
         assert await live.lines(sid) == [(0, _MODEL, 7, 1)]
+
+
+@pytest.mark.asyncio
+async def test_a_numeric_zero_tool_end_session_stores_a_zero_row() -> None:
+    sid = _session()
+    async with _live(sid) as live:
+        await live.hooks([_tool_end(sid, _TODAY, "Write", "toolu_z", lines_added=0, lines_removed=0)])
+        assert await live.lines(sid) == [(0, "", 0, 0)]
+
+
+@pytest.mark.asyncio
+async def test_an_otel_lines_metric_summing_zero_stores_a_zero_row() -> None:
+    sid = _session()
+    async with _live(sid) as live:
+        await live.metrics(_lines_metric(sid, _TODAY, 0, 0))
+        assert await live.lines(sid) == [(0, _MODEL, 0, 0)]
+
+
+@pytest.mark.asyncio
+async def test_a_session_without_a_line_source_has_no_row() -> None:
+    sid = _session()
+    async with _live(sid) as live:
+        await live.hooks([_tool_end(sid, _TODAY, "Bash", "toolu_b")])
+        await live.metrics(_active_time_metric(sid, _TODAY))
+        assert await live.lines(sid) == []
+
+
+@pytest.mark.asyncio
+async def test_a_control_session_with_lines_keeps_its_sums() -> None:
+    sid = _session()
+    async with _live(sid) as live:
+        await live.metrics(_lines_metric(sid, _TODAY, 84, 5))
+        assert await live.lines(sid) == [(0, _MODEL, 84, 5)]
+
+
+@pytest.mark.asyncio
+async def test_an_otel_zero_row_is_replaced_when_numeric_hook_lines_arrive_later() -> None:
+    sid = _session()
+    async with _live(sid) as live:
+        await live.metrics(_lines_metric(sid, _TODAY, 0, 0))
+        assert await live.lines(sid) == [(0, _MODEL, 0, 0)]
+        await live.hooks([_tool_end(sid, _TODAY, "Write", "toolu_w", lines_added=3, lines_removed=1)])
+        assert await live.lines(sid) == [(0, "", 3, 1)]
+
+
+_DAY2_START = _TODAY.replace(hour=0, minute=0)
+_DAY2_WINDOW = (_DAY2_START, _DAY2_START + timedelta(hours=23, minutes=59, seconds=59))
+
+
+async def _start_today(live: _Live, *session_ids: str) -> None:
+    """Dimension rows that start the sessions inside today's window (the test's hooks carry no dimension event)."""
+    async with live.engine.acquire() as conn:
+        for sid in session_ids:
+            await conn.execute(
+                "INSERT INTO session_dims (session_id, started_at) VALUES ($1, $2) "
+                "ON CONFLICT (session_id) DO UPDATE SET started_at = EXCLUDED.started_at",
+                sid,
+                _TODAY,
+            )
+
+
+def _today_filter(*session_ids: str) -> LocalAnalyticsFilter:
+    return LocalAnalyticsFilter(*_DAY2_WINDOW, scope=EXCLUDE_SCOPE).restricted_to(list(session_ids))
+
+
+@pytest.mark.asyncio
+async def test_a_session_with_a_lines_row_on_any_day_is_known_and_one_without_a_row_stays_absent() -> None:
+    known, unknown = _session(), _session()
+    async with _live(known, unknown) as live:
+        await live.hooks(
+            [
+                _tool_end(known, _YESTERDAY, "Write", "toolu_d1", lines_added=5, lines_removed=2),
+                _tool_end(known, _TODAY, "Bash", "toolu_d2"),
+                _tool_end(unknown, _TODAY, "Bash", "toolu_u"),
+            ]
+        )
+        assert await live.lines(known) == [(-1, "", 5, 2)]
+        assert await live.lines(unknown) == []
+        await _start_today(live, known, unknown)
+        reader = PostgresCliAnalyticsReader(live.engine)
+        f = _today_filter(known, unknown)
+
+        rows = await reader.get_lines_by_session(f)
+        assert [(r["session_id"], r["lines_added"], r["lines_removed"]) for r in rows] == [(known, 5, 2)]
+        only_unknown = await reader.get_lines_totals(_today_filter(unknown))
+        assert [(r["lines_added"], r["lines_removed"]) for r in only_unknown] == [(None, None)]
+        assert await reader.get_lines_daily(_today_filter(unknown)) == []
+
+
+@pytest.mark.asyncio
+async def test_a_zero_sum_session_is_known_with_zero_lines() -> None:
+    sid = _session()
+    async with _live(sid) as live:
+        await live.hooks([_tool_end(sid, _TODAY, "Write", "toolu_z", lines_added=0, lines_removed=0)])
+        assert await live.lines(sid) == [(0, "", 0, 0)]
+        await _start_today(live, sid)
+        rows = await PostgresCliAnalyticsReader(live.engine).get_lines_by_session(_today_filter(sid))
+        assert [(r["session_id"], r["lines_added"], r["lines_removed"]) for r in rows] == [(sid, 0, 0)]
+
+
+@pytest.mark.asyncio
+async def test_the_day_class_list_ignores_zero_rows_and_keeps_non_zero_ones() -> None:
+    zero, nonzero = _session(), _session()
+    async with _live(zero, nonzero) as live:
+        await live.hooks(
+            [
+                _tool_end(zero, _TODAY, "Write", "toolu_z", lines_added=0, lines_removed=0),
+                _tool_end(nonzero, _TODAY, "Write", "toolu_n", lines_added=3, lines_removed=0),
+            ]
+        )
+        assert await live.lines(zero) == [(0, "", 0, 0)]
+        assert await live.lines(nonzero) == [(0, "", 3, 0)]
+        await _start_today(live, zero, nonzero)
+        reader = PostgresCliAnalyticsReader(live.engine)
+
+        assert await reader.get_class_lists(_today_filter(zero), by="day") == []
+        days = await reader.get_class_lists(_today_filter(nonzero), by="day")
+        assert [r["key"] for r in days] == [_TODAY.date().isoformat()]
+        daily = await reader.get_lines_daily(_today_filter(zero, nonzero))
+        assert [(r["net_lines"], r["nonzero"]) for r in daily] == [(3, True)]
+        assert [(r["net_lines"], r["nonzero"]) for r in await reader.get_lines_daily(_today_filter(zero))] == [
+            (0, False)
+        ]
+
+
+@pytest.mark.asyncio
+async def test_lines_by_user_has_no_row_for_unknown_lines_and_zero_for_a_zero_sum_session() -> None:
+    zero, unknown = _session(), _session()
+    async with _live(zero, unknown) as live:
+        await live.hooks(
+            [
+                _tool_end(zero, _TODAY, "Write", "toolu_z", lines_added=0, lines_removed=0),
+                _tool_end(unknown, _TODAY, "Bash", "toolu_u"),
+            ]
+        )
+        assert await live.lines(zero) == [(0, "", 0, 0)]
+        assert await live.lines(unknown) == []
+        await _start_today(live, zero, unknown)
+        reader = PostgresCliAnalyticsReader(live.engine)
+
+        assert await reader.get_lines_by_user(_today_filter(unknown)) == []
+        rows = await reader.get_lines_by_user(_today_filter(zero))
+        assert [r["net_lines"] for r in rows] == [0]
+
+
+@pytest.mark.asyncio
+async def test_session_detail_scalars_report_null_lines_for_an_unknown_session_and_zero_for_a_zero_row() -> None:
+    zero, unknown = _session(), _session()
+    async with _live(zero, unknown) as live:
+        await live.hooks(
+            [
+                _tool_end(zero, _TODAY, "Write", "toolu_z", lines_added=0, lines_removed=0),
+                _tool_end(unknown, _TODAY, "Bash", "toolu_u"),
+            ]
+        )
+        assert await live.lines(zero) == [(0, "", 0, 0)]
+        assert await live.lines(unknown) == []
+        reader = PostgresCliAnalyticsReader(live.engine)
+
+        unknown_rows = await reader.get_session_detail_scalars(unknown, scope=DETAIL_SCOPE)
+        assert [(r["lines_added"], r["lines_removed"]) for r in unknown_rows] == [(None, None)]
+        zero_rows = await reader.get_session_detail_scalars(zero, scope=DETAIL_SCOPE)
+        assert [(r["lines_added"], r["lines_removed"]) for r in zero_rows] == [(0, 0)]
+
+
+@pytest.mark.asyncio
+async def test_a_zero_sum_lines_row_is_not_a_developer_source_but_a_non_zero_one_is() -> None:
+    zero, nonzero = _session(), _session()
+    async with _live(zero, nonzero) as live:
+        await live.hooks(
+            [
+                _tool_end(zero, _TODAY, "Write", "toolu_z", lines_added=0, lines_removed=0),
+                _tool_end(nonzero, _TODAY, "Write", "toolu_n", lines_added=3, lines_removed=0),
+            ]
+        )
+        assert await live.lines(zero) == [(0, "", 0, 0)]
+        assert await live.lines(nonzero) == [(0, "", 3, 0)]
+        await _start_today(live, zero, nonzero)
+        async with live.engine.acquire() as conn:
+            await conn.execute(
+                "UPDATE session_dims SET last_event_at = $1, jwt_email = NULL WHERE session_id = ANY($2)",
+                _TODAY,
+                [zero, nonzero],
+            )
+        reader = PostgresCliAnalyticsReader(live.engine)
+
+        # No session email (jwt_email cleared) and no cost_daily row: only a lines_daily row that reports lines can
+        # name the developer.
+        assert [r["developer_name"] for r in await reader.get_users_last_active(_today_filter(zero))] == ["unknown"]
+        assert [r["developer_name"] for r in await reader.get_users_last_active(_today_filter(nonzero))] == [_EMAIL]
+
+
+@pytest.mark.asyncio
+async def test_lines_by_user_names_the_same_developer_as_last_active_for_a_zero_sum_session() -> None:
+    zero, nonzero = _session(), _session()
+    async with _live(zero, nonzero) as live:
+        await live.hooks(
+            [
+                _tool_end(zero, _TODAY, "Write", "toolu_z", lines_added=0, lines_removed=0),
+                _tool_end(nonzero, _TODAY, "Write", "toolu_n", lines_added=3, lines_removed=0),
+            ]
+        )
+        assert await live.lines(zero) == [(0, "", 0, 0)]
+        assert await live.lines(nonzero) == [(0, "", 3, 0)]
+        await _start_today(live, zero, nonzero)
+        async with live.engine.acquire() as conn:
+            await conn.execute(
+                "UPDATE session_dims SET last_event_at = $1, jwt_email = NULL WHERE session_id = ANY($2)",
+                _TODAY,
+                [zero, nonzero],
+            )
+        reader = PostgresCliAnalyticsReader(live.engine)
+
+        for session, developer, net in ((zero, "unknown", 0), (nonzero, _EMAIL, 3)):
+            f = _today_filter(session)
+            by_user = [(r["developer_name"], r["net_lines"]) for r in await reader.get_lines_by_user(f)]
+            last_active = [r["developer_name"] for r in await reader.get_users_last_active(f)]
+            assert by_user == [(developer, net)]
+            assert last_active == [developer]

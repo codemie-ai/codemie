@@ -1,0 +1,116 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.final",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "Full review, 4/4 lenses + standards, 0 findings; user approved"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "Full review, 4/4 lenses + standards, 0 findings; user approved"
+    }
+  ],
+  "reviewed_head": "db631b80501538fce8b3322f5c42987053275d35",
+  "rounds": [
+    "final"
+  ],
+  "rationale": "All four lenses and the standards audit ran; no blocking findings survived reachability checks. 13 candidates dismissed as noise or accepted design (e.g. all-unknown days emit no daily bucket as before, nullable API shape is intended, backfill is documented); 0 deferred.",
+  "confidence": "high",
+  "check_confidence": null,
+  "risk_flags": [
+    "data-contract",
+    "public-api"
+  ],
+  "open": 0,
+  "closed": {
+    "fixed": 0,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [
+    {
+      "kind": "story-ac",
+      "item": "AC1: session without a line source returns null lines in /sessions, /sessions/{id}, /repositories",
+      "status": "pass",
+      "notes": "handler null-safe helpers and tests cover it"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC2: sessions with line data return the same values as before",
+      "status": "pass",
+      "notes": "control session 84/5 = 79 unchanged"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC3: line source summing to 0 returns 0, not null",
+      "status": "pass",
+      "notes": "HAVING removed from both rollup arms"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC4: aggregates null only when all sessions unknown",
+      "status": "pass",
+      "notes": "daily buckets only exist for days with lines rows, as before; null branch unreachable but harmless"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC5: code_ids and day class lists unchanged by zero rows",
+      "status": "pass",
+      "notes": "_LINES_NONZERO on day class list; handler truthiness filter"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC6: OpenAPI schema shows lines fields nullable",
+      "status": "pass",
+      "notes": "7 models int | None"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC7: live PostgreSQL and handler tests",
+      "status": "pass",
+      "notes": "new live and handler tests present"
+    },
+    {
+      "kind": "spec",
+      "item": "Docs and backfill plan for history",
+      "status": "pass",
+      "notes": "generic backfill documented; broader than targeted but functionally covers it"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "7 subjects in the review range all match the documented EPMCDME-####: Description format"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "12 changed files, no new files; no Optional[] or bare generics added, edits sit in modules that already own the lines concern, and the shared predicate is imported from rollups rather than duplicated"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "guide covers auth, secrets and strict input parsing; the diff touches analytics readers, ingestor SQL predicate and response models, with no new auth path, logging of secrets or lossy input handling seen in the added lines"
+    }
+  ],
+  "final_round": {
+    "decision": "approve",
+    "rationale": "All four lenses and the standards audit ran; no blocking findings survived reachability checks. 13 candidates dismissed as noise or accepted design (e.g. all-unknown days emit no daily bucket as before, nullable API shape is intended, backfill is documented); 0 deferred.",
+    "confidence": "high",
+    "risk_flags": [
+      "data-contract",
+      "public-api"
+    ]
+  }
+}

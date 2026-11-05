@@ -158,6 +158,24 @@ def _iso(value: Any) -> str:
     return _s(value)
 
 
+def _ni(value: Any) -> int | None:
+    """`_i` that keeps unknown (None) as None: a lines figure is null when unreported, 0 only for a real 0."""
+    return None if value is None else _i(value)
+
+
+def _nsum(*values: int | None) -> int | None:
+    """Sum of the known values; None only when every input is unknown (never null-if-any-unknown)."""
+    known = [v for v in values if v is not None]
+    return sum(known) if known else None
+
+
+def _nnet(added: int | None, removed: int | None) -> int | None:
+    """added - removed, None when both are unknown; one known side treats the other as 0."""
+    if added is None and removed is None:
+        return None
+    return (added or 0) - (removed or 0)
+
+
 def _pct(numerator: float, denominator: float) -> float:
     """Percent to one decimal using half-up rounding for nonnegative counts.
 
@@ -239,8 +257,8 @@ def _new_repository_bucket(repository: str | None, branch: str | None, project: 
         "turns": 0,
         "cost_usd": 0.0,
         "files_changed": 0,
-        "lines_added": 0,
-        "lines_removed": 0,
+        "lines_added": None,
+        "lines_removed": None,
         "_tool_calls": 0,
         "_tool_ok": 0,
         "_projects": {},
@@ -260,7 +278,7 @@ def _finalize_repository_bucket(bucket: dict, include_branches: bool) -> dict:
         # A repository can be worked on from several projects: label it with the one
         # most of its sessions belong to, not whichever session came first.
         bucket["project_name"] = _most_frequent(projects)
-    bucket["net_lines"] = bucket["lines_added"] - bucket["lines_removed"]
+    bucket["net_lines"] = _nnet(bucket["lines_added"], bucket["lines_removed"])
     return bucket
 
 
@@ -291,6 +309,9 @@ _REPO_SUM_FIELDS = (
 )
 
 
+_NULLABLE_SUM_FIELDS = frozenset({"lines_added", "lines_removed"})
+
+
 def _group_branches_into_repositories(branch_rows: list[dict]) -> list[dict]:
     """Rolls finalized per-branch rows up into (project, repository) groups: sums raw counts
     first and calls _pct once per group, so a branch's percentage is never averaged into the
@@ -308,8 +329,8 @@ def _group_branches_into_repositories(branch_rows: list[dict]) -> list[dict]:
                 "turns": 0,
                 "cost_usd": 0.0,
                 "files_changed": 0,
-                "lines_added": 0,
-                "lines_removed": 0,
+                "lines_added": None,
+                "lines_removed": None,
                 "tool_calls": 0,
                 "tool_calls_success": 0,
                 "branches": [],
@@ -318,14 +339,17 @@ def _group_branches_into_repositories(branch_rows: list[dict]) -> list[dict]:
             },
         )
         for field in _REPO_SUM_FIELDS:
-            repo[field] += row[field]
+            if field in _NULLABLE_SUM_FIELDS:
+                repo[field] = _nsum(repo[field], row[field])
+            else:
+                repo[field] += row[field]
         for field in ("subscription_types", "project_origins"):
             repo[field] = sorted({*repo[field], *row[field]})
         repo["branches"].append({field: row[field] for field in _BRANCH_ROW_FIELDS})
 
     out = list(repos.values())
     for repo in out:
-        repo["net_lines"] = repo["lines_added"] - repo["lines_removed"]
+        repo["net_lines"] = _nnet(repo["lines_added"], repo["lines_removed"])
         repo["tool_success_rate"] = _pct(repo["tool_calls_success"], repo["tool_calls"])
         repo["branches"].sort(key=lambda b: b["branch"] or "")
     out.sort(key=lambda r: (r["repository"] or "", r["project_name"] or ""))
@@ -361,8 +385,10 @@ def _build_repository_rows(
         bucket["turns"] += turns_by_session.get(sid, 0)
         bucket["cost_usd"] += session_money.get(sid, 0.0)
         bucket["files_changed"] += _i(files_by_session.get(sid, {}).get("files_changed"))
-        bucket["lines_added"] += _i(lines_by_session.get(sid, {}).get("lines_added"))
-        bucket["lines_removed"] += _i(lines_by_session.get(sid, {}).get("lines_removed"))
+        bucket["lines_added"] = _nsum(bucket["lines_added"], _ni(lines_by_session.get(sid, {}).get("lines_added")))
+        bucket["lines_removed"] = _nsum(
+            bucket["lines_removed"], _ni(lines_by_session.get(sid, {}).get("lines_removed"))
+        )
         bucket["_tool_calls"] += _i(success_by_session.get(sid, {}).get("tool_calls"))
         bucket["_tool_ok"] += _i(success_by_session.get(sid, {}).get("tool_calls_success"))
         bucket["_subs"].add(_s(row.get("subscription_type")) or "unknown")
@@ -502,7 +528,7 @@ class LocalAnalyticsHandler:
         duration_ms = sum(_i(r.get("duration_ms")) for r in duration_rows if _s(r.get("session_id")) in cost_sessions)
 
         lines = _first(lines_totals)
-        net_lines = _i(lines.get("lines_added")) - _i(lines.get("lines_removed"))
+        net_lines = _nnet(_ni(lines.get("lines_added")), _ni(lines.get("lines_removed")))
 
         dead_sessions, _wasted = self._dead_sessions(money.by_session, files_by_session)
 
@@ -532,7 +558,7 @@ class LocalAnalyticsHandler:
 
         by_day, by_model = _by_key(day_classes), _by_key(model_classes)
         daily_buckets = [
-            {"day": _iso(r.get("day")), "net_lines": _i(r.get("net_lines")), **_lists(by_day.get(_iso(r.get("day"))))}
+            {"day": _iso(r.get("day")), "net_lines": _ni(r.get("net_lines")), **_lists(by_day.get(_iso(r.get("day"))))}
             for r in lines_daily
         ]
         model_breakdown = [
@@ -544,7 +570,7 @@ class LocalAnalyticsHandler:
             for r in model_rows
         ]
 
-        data_as_of = max((_iso(r.get("day")) for r in lines_daily), default=None)
+        data_as_of = max((_iso(r.get("day")) for r in lines_daily if r.get("nonzero")), default=None)
         return (
             {"kpis": kpis, "daily_buckets": daily_buckets, "model_breakdown": model_breakdown},
             money.pricer,
@@ -651,7 +677,7 @@ class LocalAnalyticsHandler:
         turns_by_session = {_s(r.get("session_id")): _i(r.get("turns")) for r in turns_rows}
         success_by_session = {_s(r.get("session_id")): r for r in success_rows}
         last_active = {_s(r.get("developer_name")): r.get("last_active") for r in last_active_rows}
-        net_lines_by_user = {_s(r.get("developer_name")): _i(r.get("net_lines")) for r in lines_rows}
+        net_lines_by_user = {_s(r.get("developer_name")): _ni(r.get("net_lines")) for r in lines_rows}
 
         daily_by_user: dict[str, list[dict]] = {}
         for row in daily_rows:
@@ -680,7 +706,7 @@ class LocalAnalyticsHandler:
                     "tool_calls": tool_calls,
                     "tool_success_rate": _pct(tool_ok, tool_calls),
                     "top_model": _s(row.get("top_model")) or None,
-                    "net_lines": net_lines_by_user.get(name, 0),
+                    "net_lines": net_lines_by_user.get(name),
                     "last_active": _iso(last_active[name]) if last_active.get(name) else None,
                     "user_id": None,  # filled in by the router via UserIdentityResolver
                     "daily_activity": daily_by_user.get(name, []),
@@ -827,7 +853,7 @@ class LocalAnalyticsHandler:
             "output_tokens": _i(row.get("output_tokens")),
             "cache_read_tokens": cache_read,
             "cache_creation_tokens": _i(row.get("cache_creation_tokens")),
-            "net_lines": _i(lines.get("lines_added")) - _i(lines.get("lines_removed")),
+            "net_lines": _nnet(_ni(lines.get("lines_added")), _ni(lines.get("lines_removed"))),
             "delivery_framework": classify_delivery_framework(skills_by_session.get(sid, [])),
             "ctx_per_call": _ctx_per_call(row.get("cache_read_tokens"), row.get("api_call_count")),
             "subscription_type": _s(row.get("subscription_type")) or "unknown",
@@ -1033,8 +1059,8 @@ class LocalAnalyticsHandler:
             cache_creation,
         )
 
-        lines_added = _i(scalars.get("lines_added"))
-        lines_removed = _i(scalars.get("lines_removed"))
+        lines_added = _ni(scalars.get("lines_added"))
+        lines_removed = _ni(scalars.get("lines_removed"))
         # Successes of every tool, not only the listed top 20, as the aggregates read them.
         tool_ok_total = _i(scalars.get("tool_calls_success"))
 
@@ -1058,7 +1084,7 @@ class LocalAnalyticsHandler:
             "cache_creation_tokens": cache_creation,
             "cost_usd": cost_usd,
             "cost_available": has_priced_model((_s(row.get("model_name")) for row in model_cost_rows), pricer),
-            "net_lines": lines_added - lines_removed,
+            "net_lines": _nnet(lines_added, lines_removed),
             "bloat_pct": _pct(crc, cost_usd),
             "events": events,
             "active_ms": _i(scalars.get("active_ms")),
@@ -1335,7 +1361,7 @@ class LocalAnalyticsHandler:
                 "files_changed": files_changed,
                 "files_written": files_written,
                 "files_edited": files_edited,
-                "net_lines": _i(lines.get("lines_added")) - _i(lines.get("lines_removed")),
+                "net_lines": _nnet(_ni(lines.get("lines_added")), _ni(lines.get("lines_removed"))),
                 **_union_lists(classes, code_ids),
             },
         }

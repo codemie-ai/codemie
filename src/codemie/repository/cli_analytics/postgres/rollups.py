@@ -1732,6 +1732,9 @@ def _carries_lines(alias: str) -> str:
     return f"{alias}.event_type = {_literal(_TOOL_END)} AND jsonb_typeof({alias}.attrs->'lines_added') = 'number'"
 
 
+# Public alias: the ingestor builds its lines-source predicates from the same text.
+carries_lines_sql = _carries_lines
+
 # A session takes its lines from one source: its agent.tool.end hook events when any of them carries a numeric
 # lines_added (exact per call), else the OTel lines metric (which counts a new file one line too many).
 _LINES_SESSION = f"EXISTS (SELECT 1 FROM hook_events x WHERE x.session_id = k.session_id AND {_carries_lines('x')})"
@@ -1760,7 +1763,7 @@ RECOMPUTE: list[str] = [
     *_COST_DAILY,
     *_SESSION_USAGE,
     *_SESSION_USAGE_HOURLY,
-    # Rows whose sums are all zero are not stored, in these two rollups.
+    # A lines_daily row means the lines are known, zero included; only active_time_daily omits all-zero rows.
     *_replace_daily(
         "lines_daily",
         _METRICS | _SPANS,
@@ -1771,14 +1774,12 @@ RECOMPUTE: list[str] = [
         WHERE k.kinds & {_METRICS | _SPANS} <> 0 AND m.metric_name = ANY({_text_array(LINES_METRICS)})
           AND NOT {_LINES_SESSION}
         GROUP BY 1, 2, 3, 4
-        HAVING sum({_LINES_ADDED}) <> 0 OR sum({_LINES_REMOVED}) <> 0
         UNION ALL
         SELECT k.day, k.session_id, coalesce(h.user_email, ''), '', sum({_HOOK_LINES_ADDED}), sum({_HOOK_LINES_REMOVED})
         {_in_day("h", "hook_events")}
         WHERE k.kinds & {_METRICS | _SPANS} <> 0 AND {_carries_lines("h")} AND {_FIRST_TOOL_END}
           AND {_LINES_SESSION}
-        GROUP BY 1, 2, 3
-        HAVING sum({_HOOK_LINES_ADDED}) <> 0 OR sum({_HOOK_LINES_REMOVED}) <> 0""",
+        GROUP BY 1, 2, 3""",
     ),
     *_replace_daily(
         "active_time_daily",

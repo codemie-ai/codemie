@@ -82,7 +82,7 @@ def _fake_reader(with_lists: bool) -> MagicMock:
         [{"model_name": "claude", "session_count": 5, "total_tokens": 750, "cost_usd": 5.0}]
     )
     repo.get_lines_totals = rows([{"lines_added": 10, "lines_removed": 2}])
-    repo.get_lines_daily = rows([{"day": DAY, "net_lines": 8}])
+    repo.get_lines_daily = rows([{"day": DAY, "net_lines": 8, "nonzero": True}])
     repo.get_turns_by_session = rows([{"session_id": i, "turns": 2} for i in ids])
     repo.get_file_facts_by_session = rows([])
     repo.get_tool_success_by_session = rows([])

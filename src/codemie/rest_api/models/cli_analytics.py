@@ -85,7 +85,7 @@ class LocalAnalyticsOverviewKPIs(_ClassLists):
     total_tool_calls: int
     tool_call_success_rate: float
     total_files_changed: int
-    net_lines: int
+    net_lines: int | None
     dead_sessions: int
     total_input_tokens: int
     total_output_tokens: int
@@ -99,7 +99,7 @@ class LocalAnalyticsOverviewKPIs(_ClassLists):
 
 class LocalAnalyticsOverviewDailyBucket(_ClassLists):
     day: str = Field(..., description="ISO date, YYYY-MM-DD")
-    net_lines: int
+    net_lines: int | None
 
 
 class LocalAnalyticsModelBreakdownRow(_ClassLists):
@@ -127,9 +127,9 @@ class LocalAnalyticsRepositoryBranchRow(_ClassLists):
     turns: int
     cost_usd: float
     files_changed: int
-    lines_added: int
-    lines_removed: int
-    net_lines: int
+    lines_added: int | None
+    lines_removed: int | None
+    net_lines: int | None
     tool_calls: int
     tool_calls_success: int
     tool_success_rate: float = Field(
@@ -145,9 +145,9 @@ class LocalAnalyticsRepositoryRow(_ClassLists):
     turns: int
     cost_usd: float
     files_changed: int
-    lines_added: int
-    lines_removed: int
-    net_lines: int
+    lines_added: int | None
+    lines_removed: int | None
+    net_lines: int | None
     tool_calls: int
     tool_calls_success: int
     tool_success_rate: float = Field(
@@ -194,7 +194,7 @@ class LocalAnalyticsUserRow(_ClassLists):
     user_id: str | None = Field(None, description="CodeMie user UUID when resolvable")
     tool_success_rate: float = Field(0.0, description="Percent, one decimal (0.0-100.0)")
     top_model: str | None = None
-    net_lines: int = 0
+    net_lines: int | None = None
     daily_activity: list[LocalAnalyticsDailyActivityBucket] = Field(default_factory=list)
 
 
@@ -237,7 +237,7 @@ class LocalAnalyticsSessionRow(BaseModel):
     ctx_per_call: float = 0.0
     cost_usd: float
     cost_available: bool = True
-    net_lines: int = 0
+    net_lines: int | None = None
     bloat_pct: float = 0.0
     delivery_framework: str | None = Field(None, description="Detected delivery framework")
     subscription_type: str = Field("unknown", description="codemie, corporate, personal, unknown or other")
@@ -412,7 +412,7 @@ class LocalAnalyticsCodeChangesKPIs(_ClassLists):
     files_changed: int = 0
     files_written: int = 0
     files_edited: int = 0
-    net_lines: int = 0
+    net_lines: int | None = None
 
 
 class LocalAnalyticsEfficiencyData(BaseModel):

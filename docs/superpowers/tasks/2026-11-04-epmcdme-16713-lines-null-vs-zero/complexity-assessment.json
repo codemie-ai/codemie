@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "task": "CLI Analytics backend must return null instead of 0 for lines_added/lines_removed/net_lines when a session has no line source (all-missing case only).",
+  "generated": "2026-11-04T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 20,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Postgres reader (5 lines queries, possibly ports Protocol), handler (about 8 sites coercing missing to 0 via _i(), repository bucket grouping), and up to 7 response models; rollups lines_daily only if zero vs unknown must be stored." },
+    { "dimension": "requirements_clarity", "reason": "Aggregate behaviour (all-unknown vs some-unknown for repository, branch, users, overview, efficiency) is an open decision, and 'real zeros stay 0' has no stored signal because zero-sum rows are not written to lines_daily. Criteria name only 3 endpoints while others read the same facts." },
+    { "dimension": "technical_risk", "reason": "No existing nullable-int convention for these fields; null into non-null int contracts changes OpenAPI and the UI consumer; _group_branches_into_repositories sums would break on null; a rollup change needs dirty-marking/backfill. Handler tests are mocked and will not catch SQL changes." },
+    { "dimension": "file_change_estimate", "reason": "Reader, handler, models, possibly ports and rollups plus existing handler/live tests to update and new tests for no-row and zero-sum cases: roughly 8-10 files." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

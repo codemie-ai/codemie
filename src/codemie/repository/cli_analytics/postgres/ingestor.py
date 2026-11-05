@@ -79,6 +79,7 @@ from codemie.repository.cli_analytics.postgres.otlp import (
     decode_otlp,
     json_text,
 )
+from codemie.repository.cli_analytics.postgres.rollups import carries_lines_sql
 from codemie.repository.cli_analytics.postgres.session_binding import (
     RECORD_KINDS,
     SESSION_DISCARDS,
@@ -204,10 +205,9 @@ ON CONFLICT DO NOTHING
 RETURNING day, h"""
 
 # Of these sessions, those that already take their lines from stored agent.tool.end hook events.
-_LINES_SOURCE_SQL = """
+_LINES_SOURCE_SQL = f"""
 SELECT s FROM unnest($1::text[]) AS s
-WHERE EXISTS (SELECT 1 FROM hook_events h WHERE h.session_id = s AND h.event_type = 'agent.tool.end'
-    AND jsonb_typeof(h.attrs->'lines_added') = 'number')"""
+WHERE EXISTS (SELECT 1 FROM hook_events h WHERE h.session_id = s AND {carries_lines_sql("h")})"""
 
 # A session that has just switched to agent.tool.end lines takes its lines from them on every day, so each of its
 # days already holding lines, back to raw retention ($3: the oldest day kept), is rebuilt.
@@ -221,11 +221,11 @@ WHERE session_id = ANY($1::text[]) AND metric_name = ANY($2::text[])
 
 # A tool_use_id counts its lines once, by its earliest copy: the other days holding a copy of a call this batch
 # brings are recomputed, so a copy dated earlier than one already counted takes the count from it.
-_LINES_COPY_DAYS_SQL = """
+_LINES_COPY_DAYS_SQL = f"""
 SELECT DISTINCT (f.ts AT TIME ZONE 'UTC')::date AS day, f.session_id
 FROM unnest($1::text[], $2::text[], $3::date[]) AS u(s, t, d)
-JOIN hook_events f ON f.session_id = u.s AND f.event_type = 'agent.tool.end' AND f.tool_use_id = u.t
-    AND jsonb_typeof(f.attrs->'lines_added') = 'number' AND (f.ts AT TIME ZONE 'UTC')::date <> u.d"""
+JOIN hook_events f ON f.session_id = u.s AND {carries_lines_sql("f")} AND f.tool_use_id = u.t
+    AND (f.ts AT TIME ZONE 'UTC')::date <> u.d"""
 
 # `version` changes with every mark, which tells the refresher that a key it recomputed
 # was marked again meanwhile (see rollups.py).

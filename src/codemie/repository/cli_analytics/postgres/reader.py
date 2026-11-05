@@ -121,8 +121,11 @@ def _row_email(alias: str) -> str:
     return f"min(nullif({alias}.user_email, '') {_C})"
 
 
-def _session_email(alias: str) -> str:
-    return f"{_row_email(alias)} OVER (PARTITION BY {alias}.session_id) AS session_email"
+def _session_email(alias: str, reporting_lines_only: bool = False) -> str:
+    """The session's row email as a window column. With `reporting_lines_only`, over the `alias` rows of
+    lines_daily that report changed lines: zero-sum rows only say "lines are known" and must not name a developer."""
+    only = f" FILTER (WHERE {alias}.lines_added <> 0 OR {alias}.lines_removed <> 0)" if reporting_lines_only else ""
+    return f"{_row_email(alias)}{only} OVER (PARTITION BY {alias}.session_id) AS session_email"
 
 
 def _developer(row_email: str) -> str:
@@ -132,10 +135,18 @@ def _developer(row_email: str) -> str:
 
 
 _DEVELOPER = _developer("c.session_email")
+# A lines_daily row (unqualified, or `x.`-qualified by its alias) that reports changed lines. Rows summing to zero
+# only say "lines are known", so classification (day class lists, code-change sessions) ignores them.
+_LINES_NONZERO = "lines_added <> 0 OR lines_removed <> 0"
 # The smallest non-empty cost_daily email of the session `s`, the first fallback of its developer.
 _COST_EMAIL = f"(SELECT {_row_email('c')} FROM cost_daily c WHERE c.session_id = s.session_id)"
-# The smallest non-empty lines_daily email of the session `s`.
-_LINES_EMAIL = f"(SELECT {_row_email('x')} FROM lines_daily x WHERE x.session_id = s.session_id)"
+# The smallest non-empty email of the session `s` among its lines_daily rows that report changed lines. Zero-sum
+# rows only say "lines are known" and are kept since the null-vs-zero change, so they must not become a developer
+# source the session did not have before.
+_LINES_EMAIL = (
+    f"(SELECT {_row_email('x')} FROM lines_daily x "
+    f"WHERE x.session_id = s.session_id AND (x.lines_added <> 0 OR x.lines_removed <> 0))"
+)
 
 
 def _session_developer(lines_email: str) -> str:
@@ -476,7 +487,7 @@ class PostgresCliAnalyticsReader:
             "model": f"SELECT {name} AS key, '' AS kind, {classes} FROM cost_daily d "
             f"JOIN sel s ON s.session_id = d.session_id GROUP BY {name} HAVING {name} <> ''",
             "day": f"SELECT l.day::text AS key, '' AS kind, {classes} FROM lines_daily l "
-            "JOIN sel s ON s.session_id = l.session_id GROUP BY 1",
+            f"JOIN sel s ON s.session_id = l.session_id WHERE {_LINES_NONZERO} GROUP BY 1",
             "tool": f"SELECT i.name AS key, '' AS kind, {classes} FROM invocations_hourly i "
             "JOIN sel s ON s.session_id = i.session_id WHERE i.kind = 1 GROUP BY 1",
             "invocation": f"""SELECT u.name AS key,
@@ -634,6 +645,7 @@ class PostgresCliAnalyticsReader:
     # ── line facts (lines_daily) ─────────────────────────────────────────────
 
     async def get_lines_totals(self, f: LocalAnalyticsFilter) -> Rows:
+        """Summed lines of the selected sessions; NULL sums when none of them has a lines_daily row (unknown)."""
         return await self._q(
             f"""
         WITH {self._sessions_cte(f)}
@@ -644,10 +656,12 @@ class PostgresCliAnalyticsReader:
         )
 
     async def get_lines_daily(self, f: LocalAnalyticsFilter) -> Rows:
+        """Net lines per day with a lines_daily row; `nonzero` tells whether any row of the day reports lines."""
         return await self._q(
             f"""
         WITH {self._sessions_cte(f)}
-        SELECT day, (sum(lines_added) - sum(lines_removed))::bigint AS net_lines
+        SELECT day, (sum(lines_added) - sum(lines_removed))::bigint AS net_lines,
+               bool_or({_LINES_NONZERO}) AS nonzero
         FROM lines_daily
         WHERE true{self._scope(f)}
         GROUP BY day
@@ -656,12 +670,13 @@ class PostgresCliAnalyticsReader:
         )
 
     async def get_lines_by_user(self, f: LocalAnalyticsFilter) -> Rows:
+        """Net lines per developer; a developer without any lines_daily row has no row."""
         return await self._q(
             f"""
         WITH {self._sessions_cte(f)}
         SELECT {_session_developer("l.session_email")} AS developer_name,
                (sum(l.lines_added) - sum(l.lines_removed))::bigint AS net_lines
-        FROM (SELECT l.*, {_session_email("l")} FROM lines_daily l
+        FROM (SELECT l.*, {_session_email("l", reporting_lines_only=True)} FROM lines_daily l
               WHERE l.session_id IN (SELECT session_id FROM sel)) l
              JOIN sel s ON s.session_id = l.session_id
         GROUP BY 1""",
@@ -669,6 +684,9 @@ class PostgresCliAnalyticsReader:
         )
 
     async def get_lines_by_session(self, f: LocalAnalyticsFilter) -> Rows:
+        """One row per selected session that has a lines_daily row on ANY day (lines are known; a zero-sum row
+        reports 0). The window is decided by `sel` only, so the sums cover all days of the selected sessions. A
+        session with no row at all is absent (unknown)."""
         return await self._q(
             f"""
         WITH {self._sessions_cte(f)}
