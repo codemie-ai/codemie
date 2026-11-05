@@ -846,10 +846,9 @@ class ConversationService:
             return metrics
 
         outcomes = [(message, await cls._hydrate_turn(message)) for message in cls._pending_turns(conversation)]
-        if cls._settle_turns(outcomes):
-            # A read settling a cost is not usage: bumping update_date would reorder the recency-sorted
-            # conversation list every time someone looks at an old chat's cost.
-            conversation.update(columns=["history"], touch_timestamp=False)
+        settled = cls._settle_turns(outcomes)
+        if settled:
+            cls._write_settled_turns(conversation.id, settled)
             metrics.calculate_metrics(conversation)
             metrics.save()
         cls._present_unavailable_turns(outcomes)
@@ -880,14 +879,44 @@ class ConversationService:
         )
 
     @staticmethod
-    def _settle_turns(outcomes: list[tuple[GeneratedMessage, Hydrated]]) -> bool:
-        """Write the figures the ledger settled onto their turns; True when any did."""
+    def _settle_turns(outcomes: list[tuple[GeneratedMessage, Hydrated]]) -> dict[str, float]:
+        """Write the figures the ledger settled onto their turns; returns them by request id."""
         settled = [(message, hydrated) for message, hydrated in outcomes if hydrated.settled_now]
         for message, hydrated in settled:
             message.money_spent = hydrated.money_spent
             message.money_spent_pending = False
             message.money_spent_unavailable = False
-        return bool(settled)
+        return {message.request_id: message.money_spent for message, _ in settled}
+
+    @staticmethod
+    def _write_settled_turns(conversation_id: str, settled: Mapping[str, float]) -> None:
+        """Persist settled figures onto the stored history, re-read under a row lock.
+
+        Saving the history loaded before the ledger read would overwrite a turn a chat request saved
+        meanwhile. `update_date` is left alone: a read settling a cost is not usage, and bumping it would
+        reorder the recency-sorted conversation list.
+        """
+        with get_session() as session:
+            history = session.exec(
+                select(Conversation.history).where(Conversation.id == conversation_id).with_for_update()
+            ).one_or_none()
+            changed = False
+            for message in history or []:
+                if (
+                    isinstance(message, GeneratedMessage)
+                    and message.money_spent_pending
+                    and not message.in_progress
+                    and message.request_id in settled
+                ):
+                    message.money_spent = settled[message.request_id]
+                    message.money_spent_pending = False
+                    message.money_spent_unavailable = False
+                    changed = True
+            if changed:
+                session.execute(
+                    sa_update(Conversation).where(Conversation.id == conversation_id).values(history=history)
+                )
+            session.commit()
 
     @staticmethod
     def _present_unavailable_turns(outcomes: list[tuple[GeneratedMessage, Hydrated]]) -> None:

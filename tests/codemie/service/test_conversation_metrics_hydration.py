@@ -15,10 +15,16 @@
 """A conversation's pending turns settle from the ledger when its metrics are read (AD-28 rule 7)."""
 
 import asyncio
+from contextlib import contextmanager
+from datetime import datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlalchemy import ARRAY, create_engine
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.compiler import compiles
+from sqlmodel import Session, SQLModel
 
 from codemie.rest_api.models.conversation import Conversation, ConversationMetrics, GeneratedMessage
 from codemie.service.conversation_service import ConversationService
@@ -38,10 +44,12 @@ def ledger():
 @pytest.fixture
 def persistence():
     with (
-        patch.object(Conversation, "update") as conversation_update,
+        patch.object(ConversationService, "_write_settled_turns", autospec=True) as write_settled,
+        patch.object(Conversation, "update", autospec=True) as conversation_update,
         patch.object(ConversationMetrics, "save") as metrics_save,
     ):
-        yield conversation_update, metrics_save
+        yield write_settled, metrics_save
+        conversation_update.assert_not_called()
 
 
 def a_turn(request_id, money_spent=0.0, pending=True, unavailable=False) -> GeneratedMessage:
@@ -75,7 +83,7 @@ class TestSettledTurnsAreWrittenBack:
         answers["req-1"] = RequestCost.settled(Decimal("0.0010465"))
         answers["req-2"] = RequestCost.pending()
         conversation = a_conversation(a_turn("req-1"), a_turn("req-2"))
-        conversation_update, metrics_save = persistence
+        write_settled, metrics_save = persistence
 
         metrics = hydrate(conversation, stored_metrics(conversation))
 
@@ -89,8 +97,7 @@ class TestSettledTurnsAreWrittenBack:
             False,
         )
         assert still_pending.money_spent_pending is True
-        # A read must not reorder the recency-sorted chat list.
-        conversation_update.assert_called_once_with(columns=["history"], touch_timestamp=False)
+        write_settled.assert_called_once_with("conv-1", {"req-1": pytest.approx(0.0010465)})
         metrics_save.assert_called_once()
 
     def test_both_turns_settled_publishes_the_exact_total_unqualified(self, ledger, persistence):
@@ -129,39 +136,39 @@ class TestNothingIsWrittenForATurnThatDidNotSettle:
         answers, _ = ledger
         answers["req-1"] = RequestCost.pending()
         conversation = a_conversation(a_turn("req-1"))
-        conversation_update, metrics_save = persistence
+        write_settled, metrics_save = persistence
 
         metrics = hydrate(conversation, stored_metrics(conversation))
 
         assert metrics.total_money_spent is None
         assert metrics.money_spent_pending is True
-        conversation_update.assert_not_called()
+        write_settled.assert_not_called()
         metrics_save.assert_not_called()
 
     def test_an_unavailable_answer_is_presented_on_the_response_only(self, ledger, persistence):
         answers, _ = ledger
         answers["req-1"] = RequestCost.unavailable()
         conversation = a_conversation(a_turn("req-1"))
-        conversation_update, metrics_save = persistence
+        write_settled, metrics_save = persistence
 
         metrics = hydrate(conversation, stored_metrics(conversation))
 
         assert metrics.money_spent_unavailable is True
         assert metrics.money_spent_pending is False
-        conversation_update.assert_not_called()
+        write_settled.assert_not_called()
         metrics_save.assert_not_called()
 
     def test_a_turn_without_a_key_is_presented_unavailable_and_never_asked(self, ledger, persistence):
         _, cost_for_request = ledger
         conversation = a_conversation(a_turn(None))
-        conversation_update, metrics_save = persistence
+        write_settled, metrics_save = persistence
 
         metrics = hydrate(conversation, stored_metrics(conversation))
 
         assert metrics.money_spent_unavailable is True
         assert metrics.money_spent_pending is False
         cost_for_request.assert_not_awaited()
-        conversation_update.assert_not_called()
+        write_settled.assert_not_called()
         metrics_save.assert_not_called()
 
 
@@ -209,3 +216,94 @@ class TestOnlyPendingRecordsAreAsked:
         hydrate(conversation, stored_metrics(conversation))
 
         assert cost_for_request.await_count == 2
+
+
+@compiles(JSONB, "sqlite")
+@compiles(ARRAY, "sqlite")
+def _as_json(_type, _compiler, **_kw):
+    return "JSON"
+
+
+@pytest.fixture
+def stored():
+    """A real `conversations` table on SQLite, reached through the service's own `get_session`."""
+    engine = create_engine("sqlite:///:memory:")
+    table = Conversation.__table__
+    schema, table.schema = table.schema, None
+    try:
+        SQLModel.metadata.create_all(engine, tables=[table])
+    finally:
+        table.schema = schema
+
+    @contextmanager
+    def session():
+        with Session(engine) as owned:
+            yield owned
+
+    def read() -> Conversation:
+        with Session(engine) as owned:
+            return owned.get(Conversation, "conv-1")
+
+    with patch("codemie.service.conversation_service.get_session", session):
+        yield engine, read
+
+
+class TestTheSettledFigureIsWrittenOntoTheStoredHistory:
+    LAST_USED = datetime(2026, 1, 2, 3, 4, 5)
+
+    def store(self, engine, *turns):
+        with Session(engine) as owned:
+            owned.add(
+                Conversation(id="conv-1", conversation_id="conv-1", history=list(turns), update_date=self.LAST_USED)
+            )
+            owned.commit()
+
+    def test_a_metrics_read_that_settles_a_turn_persists_it_and_keeps_a_turn_saved_meanwhile(self, ledger, stored):
+        answers, _ = ledger
+        answers["req-1"] = RequestCost.settled(Decimal("0.5"))
+        engine, read = stored
+        self.store(engine, a_turn("req-1"), a_turn("req-2"))
+        loaded_before_the_chat_saved_req_2 = a_conversation(a_turn("req-1"))
+
+        with patch.object(ConversationMetrics, "save"):
+            metrics = hydrate(loaded_before_the_chat_saved_req_2, stored_metrics(loaded_before_the_chat_saved_req_2))
+
+        assert metrics.total_money_spent == pytest.approx(0.5)
+        first, saved_meanwhile = read().history
+        assert (first.money_spent, first.money_spent_pending) == (0.5, False)
+        assert (saved_meanwhile.request_id, saved_meanwhile.money_spent_pending) == ("req-2", True)
+
+    def test_a_turn_saved_after_the_conversation_was_loaded_is_kept(self, stored):
+        engine, read = stored
+        self.store(engine, a_turn("req-1"), a_turn("req-2"))
+
+        ConversationService._write_settled_turns("conv-1", {"req-1": 0.5})
+
+        first, saved_meanwhile = read().history
+        assert (first.money_spent, first.money_spent_pending, first.money_spent_unavailable) == (0.5, False, False)
+        assert (saved_meanwhile.request_id, saved_meanwhile.money_spent_pending) == ("req-2", True)
+
+    def test_a_read_does_not_touch_update_date(self, stored):
+        engine, read = stored
+        self.store(engine, a_turn("req-1"))
+
+        ConversationService._write_settled_turns("conv-1", {"req-1": 0.5})
+
+        assert read().update_date == self.LAST_USED
+
+    def test_a_turn_regenerating_since_the_read_is_left_to_its_upsert(self, stored):
+        engine, read = stored
+        regenerating = a_turn("req-1")
+        regenerating.in_progress = True
+        self.store(engine, regenerating)
+
+        ConversationService._write_settled_turns("conv-1", {"req-1": 0.5})
+
+        assert read().history[0].money_spent_pending is True
+
+    def test_a_deleted_conversation_is_not_recreated(self, stored):
+        _, read = stored
+
+        ConversationService._write_settled_turns("conv-1", {"req-1": 0.5})
+
+        assert read() is None
