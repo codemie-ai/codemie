@@ -18,9 +18,9 @@ from __future__ import annotations
 
 import contextlib
 import json
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -41,7 +41,6 @@ from codemie.service.analytics.handlers.project_handler import (
     ProjectHandler,
 )
 from codemie.service.analytics.query_pipeline import enriched_spend_rows
-from codemie.service.budget.budget_enums import BudgetCategory
 from codemie.service.spend.coverage import (
     DEFAULT_EMISSION_LAG,
     LedgerCoverage,
@@ -50,7 +49,8 @@ from codemie.service.spend.coverage import (
     SpendResult,
     TimeRange,
 )
-from codemie.service.spend.ledger import AccessScope, ProjectHolder, ReportFilter, UserTerm
+from codemie.service.spend.ledger import AccessScope, ReportFilter, UserTerm
+from codemie.service.spend.spend_group import SpendGroup
 from codemie.service.spend.rendering import (
     apply_spend_cells,
     combine_rendered_spend,
@@ -459,21 +459,17 @@ def _spending_buckets(*project_names_and_counts: tuple[str, int]) -> dict:
     }
 
 
-def _assigned(project: str, *categories: str) -> list:
-    return [SimpleNamespace(project_name=project, budget_category=category) for category in categories]
-
-
 @contextlib.asynccontextmanager
 async def _fake_session():
     yield MagicMock()
 
 
-def _patched_projects_port(assignments: dict[str, list] | AsyncMock, consumed: AsyncMock):
-    """Patch the assigned-budget read that names the categories, and the spend port itself.
+def _patched_projects_port(port: AsyncMock, personal_owners: dict[str, set] | AsyncMock | None = None):
+    """Patch the personal-project owner lookup, and the spend port itself.
 
-    `assignments` may be the mapping itself or the `AsyncMock` standing in for the repository call, so
-    a test can assert the assigned-budget query was **not** made at all - which is what a window
-    wholly below the floor must do: it never asks about a budget category.
+    `personal_owners` may be the mapping the lookup answers with or the `AsyncMock` standing in for it, so
+    a test can assert the lookup was **not** made at all - which is what a window wholly below the floor
+    must do: it asks the ledger nothing, so it names no project to look up.
 
     **The port's dimension read is patched to fail if it is called at all**, in every test that uses
     this helper. There is no window on this path that reads it any more: below the floor the money is
@@ -482,22 +478,24 @@ def _patched_projects_port(assignments: dict[str, list] | AsyncMock, consumed: A
     project, lost the `users` request filter, and had to re-derive the money metric set. This
     assertion is what stops it coming back.
     """
-    assigned = assignments if isinstance(assignments, AsyncMock) else AsyncMock(return_value=assignments)
+    owners = (
+        personal_owners if isinstance(personal_owners, AsyncMock) else AsyncMock(return_value=personal_owners or {})
+    )
     stack = contextlib.ExitStack()
-    stack.enter_context(patch("codemie.service.analytics.handlers.project_handler.get_async_session", _fake_session))
+    stack.enter_context(patch("codemie.service.analytics.handlers.ledger_group_spend.get_async_session", _fake_session))
     stack.enter_context(
         patch(
-            "codemie.service.analytics.handlers.project_handler.project_budget_assignment_repository."
-            "get_assigned_budget_summaries_for_projects",
-            new=assigned,
+            "codemie.service.analytics.handlers.ledger_group_spend.application_repository."
+            "aget_personal_project_owners_by_name",
+            new=owners,
         )
     )
     stack.enter_context(
-        patch("codemie.service.analytics.handlers.project_handler.spend_service.consumed_for_holders", new=consumed)
+        patch("codemie.service.analytics.handlers.ledger_group_spend.spend_service.aggregate_by_spend_group", new=port)
     )
     stack.enter_context(
         patch(
-            "codemie.service.analytics.handlers.project_handler.spend_service.aggregate_by_dimension",
+            "codemie.service.analytics.handlers.ledger_group_spend.spend_service.aggregate_by_dimension",
             new=AsyncMock(side_effect=AssertionError("no money on this table comes from a parallel dimension read")),
         )
     )
@@ -533,7 +531,7 @@ def _candidate_rows(handler: ProjectHandler, *buckets: dict) -> list[dict]:
 
 
 def _answers(**by_project: SpendResult | None):
-    """A consumed_for_holders stub answering per project name, summed over whatever holders it gets."""
+    """An aggregate_by_spend_group stub answering per project name, over the whole requested window."""
     return _answers_over(PERIOD, **by_project)
 
 
@@ -544,22 +542,29 @@ NO_FILTER = ReportFilter()
 def _answers_over(
     expected_period: TimeRange, expected_filter: ReportFilter = NO_FILTER, /, **by_project: SpendResult | None
 ):
-    """`_answers`, pinned to the window the holder read is supposed to cover.
+    """`_answers`, pinned to the window the ledger read is supposed to cover.
 
-    `access` is taken as a **required keyword**, so a handler that stopped threading its boundary
-    fails here rather than being answered with every member's spend: `ProjectHolder` answers a
-    project's *whole* total, and the rows it foots are already narrowed to what the caller may see.
+    Each row is one read, for a filter naming only that project inside the dashboard's own filter, so the
+    filter is asserted whole: the row's project, no owners (these projects are shared), and the
+    dashboard's users term. `access` is taken as a **required keyword**, so a handler that stopped
+    threading its boundary fails here rather than being answered with every member's spend: the total
+    is a project's *whole* spend, and the rows it foots are already narrowed to what the caller may see.
 
     The period is asserted rather than ignored because a crossing window must reach this read as its
-    **at-or-above-`F` leg only**. Handed the whole window, this read and the pre-floor dimension read
+    **at-or-above-`F` leg only**. Handed the whole window, this read and the pre-floor aggregation
     would both cover the money above the floor and the row would foot at nearly double.
     """
 
-    async def _call(holders, period, *, access, report_filter):
-        assert period == expected_period, "the holder read must cover only the at-or-above-floor leg"
+    async def _call(period, *, access, report_filter):
+        assert period == expected_period, "the ledger read must cover only the at-or-above-floor leg"
         assert access == _EXPECTED_SCOPE, "the figure must be narrowed by the caller's own boundary"
-        assert report_filter == expected_filter, "the figure must be narrowed by the dashboard's own filter"
-        return {holder: by_project[holder.project] for holder in holders if by_project.get(holder.project) is not None}
+        (project,) = report_filter.projects
+        assert report_filter == replace(
+            expected_filter, projects=(project,), personal_project_owners=()
+        ), "the figure must be that project, inside the dashboard's own filter"
+        figure = by_project.get(project)
+        totals = {SpendGroup.TOTAL: figure} if figure is not None else {}
+        return {group: SpendResult.no_figure(period) for group in SpendGroup} | totals
 
     return AsyncMock(side_effect=_call)
 
@@ -698,7 +703,7 @@ class TestSpendTableHelpers:
 
 
 class TestProjectsSpendingFromLedger:
-    """The projects table reads money from the spend port, one call for every candidate."""
+    """The projects table reads each project's whole total from the spend port."""
 
     def test_without_a_floor_the_aggregation_reads_no_money(self, handler):
         """No floor means no window can reach below one, so this query is what it was before the cutover."""
@@ -710,20 +715,11 @@ class TestProjectsSpendingFromLedger:
         assert MONEY_SPENT_FIELD not in json.dumps(agg_body)
 
     @pytest.mark.asyncio
-    async def test_project_total_sums_its_assigned_budget_categories(self, handler):
+    async def test_project_total_is_the_ledgers_total_for_that_project(self, handler):
         rows = [{"project_name": "atlas", "total_cost_usd": None}]
+        port = _answers(atlas=SpendResult(figure=Decimal("3.0")))
 
-        async def consumed(holders, period, *, access, report_filter):
-            assert period == PERIOD
-            assert access == _EXPECTED_SCOPE
-            assert report_filter == NO_FILTER
-            assert set(holders) == {
-                ProjectHolder(project="atlas", category=BudgetCategory.PLATFORM),
-                ProjectHolder(project="atlas", category=BudgetCategory.CLI),
-            }
-            return {holder: SpendResult(figure=Decimal("1.5")) for holder in holders}
-
-        with _patched_projects_port({"atlas": _assigned("atlas", "platform", "cli")}, AsyncMock(side_effect=consumed)):
+        with _patched_projects_port(port):
             enriched = await handler._enrich_projects_spending(rows, PERIOD_START, PERIOD_END, None)
 
         assert enriched.rows[0]["total_cost_usd"] == 3.0
@@ -732,33 +728,71 @@ class TestProjectsSpendingFromLedger:
         assert enriched.rows[0]["spend_missing_amount"] is None
 
     @pytest.mark.asyncio
-    async def test_duplicate_category_assignments_are_summed_once(self, handler):
+    async def test_the_total_group_is_read_so_no_category_is_left_out(self, handler):
+        """A project budgeted for one pot still shows what it spent in the others."""
         rows = [{"project_name": "atlas", "total_cost_usd": None}]
-        consumed = _answers(atlas=SpendResult(figure=Decimal("2")))
+        everything = {
+            SpendGroup.TOTAL: SpendResult(figure=Decimal("9")),
+            SpendGroup.CLI: SpendResult(figure=Decimal("2")),
+            SpendGroup.PLATFORM: SpendResult(figure=Decimal("7")),
+        }
+        port = AsyncMock(return_value={group: SpendResult.no_figure(PERIOD) for group in SpendGroup} | everything)
 
-        with _patched_projects_port({"atlas": _assigned("atlas", "cli", "cli")}, consumed):
+        with _patched_projects_port(port):
             enriched = await handler._enrich_projects_spending(rows, PERIOD_START, PERIOD_END, None)
 
-        assert enriched.rows[0]["total_cost_usd"] == 2.0
+        assert enriched.rows[0]["total_cost_usd"] == 9.0
 
     @pytest.mark.asyncio
-    async def test_project_without_an_assigned_budget_has_no_figure(self, handler):
+    async def test_a_project_with_no_assigned_budget_still_shows_what_it_spent(self, handler):
+        """Nothing here asks which budgets a project has: a budget is a limit, and this is what was spent."""
         rows = [{"project_name": "unbudgeted", "total_cost_usd": None}]
-        consumed = AsyncMock()
+        port = _answers(unbudgeted=SpendResult(figure=Decimal("4.5")))
 
-        with _patched_projects_port({}, consumed):
+        with _patched_projects_port(port):
             enriched = await handler._enrich_projects_spending(rows, PERIOD_START, PERIOD_END, None)
 
-        consumed.assert_not_awaited()
+        port.assert_awaited_once()
+        assert enriched.rows[0]["total_cost_usd"] == 4.5
+        assert enriched.rows[0]["spend_unavailable"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_personal_project_is_read_through_its_owner(self, handler):
+        """Its calls reach the ledger with no project at all, so the filter carries the owner that names them."""
+        rows = [{"project_name": "ada@example.com", "total_cost_usd": None}]
+        seen: list[ReportFilter] = []
+
+        async def port(period, *, access, report_filter):
+            seen.append(report_filter)
+            return {group: SpendResult.no_figure(period) for group in SpendGroup} | {
+                SpendGroup.TOTAL: SpendResult(figure=Decimal("8"))
+            }
+
+        with _patched_projects_port(AsyncMock(side_effect=port), {"ada@example.com": {"u-ada"}}):
+            enriched = await handler._enrich_projects_spending(rows, PERIOD_START, PERIOD_END, None)
+
+        assert seen == [ReportFilter(projects=("ada@example.com",), personal_project_owners=("u-ada",))]
+        assert enriched.rows[0]["total_cost_usd"] == 8.0
+
+    @pytest.mark.asyncio
+    async def test_the_bucket_naming_no_project_gets_no_figure_and_is_not_asked_about(self, handler):
+        """`unknown` is not a project: a filter naming it matches no ledger row and would publish a measured $0.00."""
+        rows = [{"project_name": UNATTRIBUTED_PROJECT_KEY, "total_cost_usd": None}]
+        port = AsyncMock()
+
+        with _patched_projects_port(port):
+            enriched = await handler._enrich_projects_spending(rows, PERIOD_START, PERIOD_END, None)
+
+        port.assert_not_awaited()
         assert enriched.rows[0]["total_cost_usd"] is None
         assert enriched.rows[0]["spend_unavailable"] is True
 
     @pytest.mark.asyncio
     async def test_no_figure_renders_absent_and_unavailable(self, handler):
         rows = [{"project_name": "atlas", "total_cost_usd": None}]
-        consumed = _answers(atlas=SpendResult.no_figure(PERIOD))
+        port = _answers(atlas=SpendResult.no_figure(PERIOD))
 
-        with _patched_projects_port({"atlas": _assigned("atlas", "cli")}, consumed):
+        with _patched_projects_port(port):
             enriched = await handler._enrich_projects_spending(rows, PERIOD_START, PERIOD_END, None)
 
         assert enriched.rows[0]["total_cost_usd"] is None
@@ -767,12 +801,12 @@ class TestProjectsSpendingFromLedger:
     @pytest.mark.asyncio
     async def test_measured_zero_is_a_zero_and_leaves_the_table(self, handler):
         rows = [{"project_name": "atlas", "total_cost_usd": None}]
-        consumed = _answers(atlas=SpendResult(figure=Decimal("0")))
+        port = _answers(atlas=SpendResult(figure=Decimal("0")))
 
-        with _patched_projects_port({"atlas": _assigned("atlas", "cli")}, consumed):
+        with _patched_projects_port(port):
             enriched = await handler._enrich_projects_spending(rows, PERIOD_START, PERIOD_END, None)
 
-        # The cell is a measured zero, never an absence — and a zero-spend project is not listed,
+        # The cell is a measured zero, never an absence - and a zero-spend project is not listed,
         # exactly as the Elasticsearch zero-cost selector used to leave it out.
         assert rows[0]["total_cost_usd"] == 0.0
         assert enriched.rows == []
@@ -780,9 +814,9 @@ class TestProjectsSpendingFromLedger:
     @pytest.mark.asyncio
     async def test_truncated_figure_keeps_its_number_and_its_label(self, handler):
         rows = [{"project_name": "atlas", "total_cost_usd": None}]
-        consumed = _answers(atlas=SpendResult(figure=Decimal("6.25"), unavailable=PERIOD))
+        port = _answers(atlas=SpendResult(figure=Decimal("6.25"), unavailable=PERIOD))
 
-        with _patched_projects_port({"atlas": _assigned("atlas", "cli")}, consumed):
+        with _patched_projects_port(port):
             enriched = await handler._enrich_projects_spending(rows, PERIOD_START, PERIOD_END, None)
 
         assert enriched.rows[0]["total_cost_usd"] == 6.25
@@ -791,19 +825,20 @@ class TestProjectsSpendingFromLedger:
     @pytest.mark.asyncio
     async def test_rows_are_ordered_by_the_ledger_figure_not_by_doc_count(self, handler):
         rows = [{"project_name": "busy", "total_cost_usd": None}, {"project_name": "costly", "total_cost_usd": None}]
-        consumed = _answers(busy=SpendResult(figure=Decimal("1")), costly=SpendResult(figure=Decimal("50")))
+        port = _answers(busy=SpendResult(figure=Decimal("1")), costly=SpendResult(figure=Decimal("50")))
 
-        with _patched_projects_port({"busy": _assigned("busy", "cli"), "costly": _assigned("costly", "cli")}, consumed):
+        with _patched_projects_port(port):
             enriched = await handler._enrich_projects_spending(rows, PERIOD_START, PERIOD_END, None)
 
         assert [row["project_name"] for row in enriched.rows] == ["costly", "busy"]
+        assert port.await_count == 2, "one scan per candidate project"
 
     @pytest.mark.asyncio
     async def test_absent_figure_sorts_last_and_is_never_sorted_as_zero(self, handler):
         rows = [{"project_name": "absent", "total_cost_usd": None}, {"project_name": "tiny", "total_cost_usd": None}]
-        consumed = _answers(absent=SpendResult.no_figure(PERIOD), tiny=SpendResult(figure=Decimal("0.01")))
+        port = _answers(absent=SpendResult.no_figure(PERIOD), tiny=SpendResult(figure=Decimal("0.01")))
 
-        with _patched_projects_port({"absent": _assigned("absent", "cli"), "tiny": _assigned("tiny", "cli")}, consumed):
+        with _patched_projects_port(port):
             enriched = await handler._enrich_projects_spending(rows, PERIOD_START, PERIOD_END, None)
 
         assert [row["project_name"] for row in enriched.rows] == ["tiny", "absent"]
@@ -811,15 +846,13 @@ class TestProjectsSpendingFromLedger:
         assert enriched.rows[1]["total_cost_usd"] is None
 
     @pytest.mark.asyncio
-    async def test_unreadable_category_shortens_the_total_and_says_so(self, handler):
+    async def test_a_short_ledger_figure_labels_the_row_partial(self, handler):
         rows = [{"project_name": "atlas", "total_cost_usd": None}]
+        short = SpendResult(
+            figure=Decimal("3"), partial={SpendDimension.IDENTITY_BRIDGE: Portion(spend=None, rows=None)}
+        )
 
-        async def consumed(holders, period, *, access, report_filter):
-            return {holder: SpendResult(figure=Decimal("3")) for holder in holders}
-
-        with _patched_projects_port(
-            {"atlas": _assigned("atlas", "cli", "not-a-category")}, AsyncMock(side_effect=consumed)
-        ):
+        with _patched_projects_port(_answers(atlas=short)):
             enriched = await handler._enrich_projects_spending(rows, PERIOD_START, PERIOD_END, None)
 
         assert enriched.rows[0]["total_cost_usd"] == 3.0
@@ -828,12 +861,12 @@ class TestProjectsSpendingFromLedger:
     @pytest.mark.asyncio
     async def test_unreadable_window_asks_the_port_nothing(self, handler):
         rows = [{"project_name": "atlas", "total_cost_usd": None}]
-        consumed = AsyncMock()
+        port = AsyncMock()
 
-        with _patched_projects_port({"atlas": _assigned("atlas", "cli")}, consumed):
+        with _patched_projects_port(port):
             enriched = await handler._enrich_projects_spending(rows, PERIOD_END, PERIOD_END, None)
 
-        consumed.assert_not_awaited()
+        port.assert_not_awaited()
         assert enriched.rows[0]["total_cost_usd"] is None
         assert enriched.rows[0]["spend_unavailable"] is True
 
@@ -986,11 +1019,11 @@ class TestTheAggregationCarriesItsOwnPreFloorMoney:
 class TestProjectsSpendingAcrossTheCoverageFloor:
     """Where each leg's money comes from, and that neither leg is ever asked twice.
 
-    At or above the floor a project's total is the sum over the budget categories its assigned budgets
-    name; `litellm_spend_logs` carries that category. Below the floor no emission ever carried one, so
-    the same read would empty the table for every window the platform had before the rollout. Below
-    the floor the money is instead the candidate aggregation's own per-project sum - the number this
-    table printed before the cutover, computed by the very query that produced the rows.
+    At or above the floor a project's total is the ledger's total for that project, read from
+    `litellm_spend_logs`. Below the floor the ledger holds nothing, so the same read would empty the
+    table for every window the platform had before the rollout. Below the floor the money is instead
+    the candidate aggregation's own per-project sum - the number this table printed before the cutover,
+    computed by the very query that produced the rows.
     """
 
     @pytest.mark.asyncio
@@ -998,15 +1031,15 @@ class TestProjectsSpendingAcrossTheCoverageFloor:
         """The pre-floor figure is the bucket's, and **nothing is fetched for it**."""
         rows = _candidate_rows(handler, _money_bucket("atlas", money=40.0))
         consumed = AsyncMock()
-        assigned = AsyncMock(return_value={"atlas": _assigned("atlas", "cli")})
+        owners = AsyncMock(return_value={})
 
-        with _patched_projects_port(assigned, consumed):
+        with _patched_projects_port(consumed, owners):
             enriched = await handler._enrich_projects_spending(rows, PERIOD_START, PERIOD_END, BELOW_FLOOR_ONLY)
 
-        # No holder read, no budget-assignment query, and - asserted by the helper itself - no
+        # No ledger read, no personal-project lookup, and - asserted by the helper itself - no
         # parallel dimension read: below the floor this table asks the spend port nothing at all.
         consumed.assert_not_awaited()
-        assigned.assert_not_awaited()
+        owners.assert_not_awaited()
         assert enriched.rows[0]["total_cost_usd"] == 40.0
         assert enriched.rows[0]["spend_unavailable"] is False
         assert enriched.rows[0]["spend_partial"] is False
@@ -1022,7 +1055,7 @@ class TestProjectsSpendingAcrossTheCoverageFloor:
         """
         rows = _candidate_rows(handler, _money_bucket("atlas", money=40.0, settled=4, unsettled=0))
 
-        with _patched_projects_port({}, AsyncMock()):
+        with _patched_projects_port(AsyncMock()):
             enriched = await handler._enrich_projects_spending(rows, PERIOD_START, PERIOD_END, BELOW_FLOOR_ONLY)
 
         assert enriched.rows[0]["total_cost_usd"] == 40.0
@@ -1034,7 +1067,7 @@ class TestProjectsSpendingAcrossTheCoverageFloor:
         """Nothing settled below the floor is an absent figure - `$0.00` would claim it spent nothing."""
         rows = _candidate_rows(handler, _money_bucket("quiet", money=None, settled=0))
 
-        with _patched_projects_port({}, AsyncMock()):
+        with _patched_projects_port(AsyncMock()):
             enriched = await handler._enrich_projects_spending(rows, PERIOD_START, PERIOD_END, BELOW_FLOOR_ONLY)
 
         assert enriched.rows[0]["total_cost_usd"] is None
@@ -1046,7 +1079,7 @@ class TestProjectsSpendingAcrossTheCoverageFloor:
         """A cost-bearing document that carried no money is a hole the sum silently skipped."""
         rows = _candidate_rows(handler, _money_bucket("atlas", money=12.5, settled=4, unsettled=2))
 
-        with _patched_projects_port({}, AsyncMock()):
+        with _patched_projects_port(AsyncMock()):
             enriched = await handler._enrich_projects_spending(rows, PERIOD_START, PERIOD_END, BELOW_FLOOR_ONLY)
 
         assert enriched.rows[0]["total_cost_usd"] == 12.5
@@ -1058,7 +1091,7 @@ class TestProjectsSpendingAcrossTheCoverageFloor:
         """The product rule survives: documents settled, and they settled at nothing spent."""
         rows = _candidate_rows(handler, _money_bucket("atlas", money=0.0, settled=3))
 
-        with _patched_projects_port({}, AsyncMock()):
+        with _patched_projects_port(AsyncMock()):
             enriched = await handler._enrich_projects_spending(rows, PERIOD_START, PERIOD_END, BELOW_FLOOR_ONLY)
 
         assert rows[0]["total_cost_usd"] == 0.0
@@ -1092,7 +1125,7 @@ class TestProjectsSpendingAcrossTheCoverageFloor:
         """
         rows = _candidate_rows(handler, _money_bucket("thrifty", money=0.004, settled=2))
 
-        with _patched_projects_port({}, AsyncMock()):
+        with _patched_projects_port(AsyncMock()):
             enriched = await handler._enrich_projects_spending(rows, PERIOD_START, PERIOD_END, BELOW_FLOOR_ONLY)
 
         assert [row["project_name"] for row in enriched.rows] == ["thrifty"]
@@ -1101,12 +1134,12 @@ class TestProjectsSpendingAcrossTheCoverageFloor:
         assert enriched.rows[0]["spend_partial"] is False
 
     @pytest.mark.asyncio
-    async def test_window_wholly_above_the_floor_reads_only_the_budget_categories(self, handler):
-        """Byte-identical to the table before the cutover: one holder read over the whole window."""
+    async def test_window_wholly_above_the_floor_reads_only_the_ledger_total(self, handler):
+        """One ledger read per project over the whole window, and nothing from the bucket."""
         rows = _candidate_rows(handler, _money_bucket("atlas", money=999.0))
         consumed = _answers(atlas=SpendResult(figure=Decimal("12")))
 
-        with _patched_projects_port({"atlas": _assigned("atlas", "cli")}, consumed):
+        with _patched_projects_port(consumed):
             enriched = await handler._enrich_projects_spending(rows, PERIOD_START, PERIOD_END, ABOVE_FLOOR_ONLY)
 
         consumed.assert_awaited_once()
@@ -1120,7 +1153,7 @@ class TestProjectsSpendingAcrossTheCoverageFloor:
         rows = _candidate_rows(handler, _money_bucket("atlas", money=999.0))
         consumed = _answers(atlas=SpendResult(figure=Decimal("3")))
 
-        with _patched_projects_port({"atlas": _assigned("atlas", "cli")}, consumed):
+        with _patched_projects_port(consumed):
             enriched = await handler._enrich_projects_spending(rows, PERIOD_START, PERIOD_END, None)
 
         assert enriched.rows[0]["total_cost_usd"] == 3.0
@@ -1130,7 +1163,7 @@ class TestProjectsSpendingAcrossTheCoverageFloor:
         rows = _candidate_rows(handler, _money_bucket("atlas", money=40.0))
         consumed = _answers_over(AT_OR_ABOVE_FLOOR_LEG, atlas=SpendResult(figure=Decimal("10")))
 
-        with _patched_projects_port({"atlas": _assigned("atlas", "cli")}, consumed):
+        with _patched_projects_port(consumed):
             enriched = await handler._enrich_projects_spending(rows, PERIOD_START, PERIOD_END, FLOOR)
 
         # One figure, both legs in it, and no third state on the wire for a screen to fail to render.
@@ -1151,18 +1184,18 @@ class TestProjectsSpendingAcrossTheCoverageFloor:
         """The two legs tile `[start, F)` and `[F, end)` and overlap nowhere.
 
         The aggregation covers the *whole* window, so its money is clipped at `F` in Elasticsearch -
-        `TestTheAggregationCarriesItsOwnPreFloorMoney` pins that clause - and the holder stub asserts
-        its own window here. A handler that handed the holder read the whole crossing period, or that
+        `TestTheAggregationCarriesItsOwnPreFloorMoney` pins that clause - and the ledger stub asserts
+        its own window here. A handler that handed the ledger read the whole crossing period, or that
         footed an unclipped bucket sum beside it, reports the above-floor money twice; both halves
         look entirely plausible on their own and the row reads exact either way.
         """
         rows = _candidate_rows(handler, _money_bucket("atlas", money=40.0))
         consumed = _answers_over(AT_OR_ABOVE_FLOOR_LEG, atlas=SpendResult(figure=Decimal("10")))
 
-        with _patched_projects_port({"atlas": _assigned("atlas", "cli")}, consumed):
+        with _patched_projects_port(consumed):
             enriched = await handler._enrich_projects_spending(rows, PERIOD_START, PERIOD_END, FLOOR)
 
-        assert consumed.await_args.args[1] == AT_OR_ABOVE_FLOOR_LEG
+        assert consumed.await_args.args[0] == AT_OR_ABOVE_FLOOR_LEG
         assert enriched.rows[0]["total_cost_usd"] == 50.0, "40 below plus 10 above, and neither doubled"
 
     @pytest.mark.asyncio
@@ -1171,18 +1204,18 @@ class TestProjectsSpendingAcrossTheCoverageFloor:
         rows = _candidate_rows(handler, _money_bucket("atlas", money=None, settled=0))
         consumed = _answers_over(AT_OR_ABOVE_FLOOR_LEG, atlas=SpendResult(figure=Decimal("7")))
 
-        with _patched_projects_port({"atlas": _assigned("atlas", "cli")}, consumed):
+        with _patched_projects_port(consumed):
             enriched = await handler._enrich_projects_spending(rows, PERIOD_START, PERIOD_END, FLOOR)
 
         assert enriched.rows[0]["total_cost_usd"] == 7.0
         assert enriched.rows[0]["spend_unavailable"] is True
 
     @pytest.mark.asyncio
-    async def test_a_project_with_no_assigned_budget_stays_absent_above_the_floor(self, handler):
-        rows = _candidate_rows(handler, _money_bucket("unbudgeted", money=5.0))
+    async def test_the_bucket_naming_no_project_stays_absent_above_the_floor(self, handler):
+        rows = _candidate_rows(handler, _money_bucket(UNATTRIBUTED_PROJECT_KEY, money=5.0))
         consumed = AsyncMock()
 
-        with _patched_projects_port({}, consumed):
+        with _patched_projects_port(consumed):
             enriched = await handler._enrich_projects_spending(rows, PERIOD_START, PERIOD_END, ABOVE_FLOOR_ONLY)
 
         consumed.assert_not_awaited()
@@ -1194,7 +1227,7 @@ class TestProjectsSpendingAcrossTheCoverageFloor:
         rows = _candidate_rows(handler, _money_bucket("atlas", money=5.0))
         consumed = AsyncMock()
 
-        with _patched_projects_port({"atlas": _assigned("atlas", "cli")}, consumed):
+        with _patched_projects_port(consumed):
             enriched = await handler._enrich_projects_spending(rows, PERIOD_END, PERIOD_END, FLOOR)
 
         consumed.assert_not_awaited()
@@ -1228,7 +1261,7 @@ class TestBucketKeysOnlyTheAggregationCanExpress:
         """Including the one the `'@'` heuristic missed: a service account is a username, not an email."""
         rows = _candidate_rows(handler, _money_bucket(bucket_key, money=12.5))
 
-        with _patched_projects_port({}, AsyncMock()):
+        with _patched_projects_port(AsyncMock()):
             enriched = await handler._enrich_projects_spending(rows, PERIOD_START, PERIOD_END, BELOW_FLOOR_ONLY)
 
         assert enriched.rows[0]["project_name"] == bucket_key
@@ -1290,12 +1323,12 @@ class TestTheUserFilterReachesThePreFloorMoney:
 
 
 class TestTheUserFilterReachesTheAtOrAboveFloorMoney:
-    """The ledger half of the same proof: above the floor each row is a `ProjectHolder` read, which
+    """The ledger half of the same proof: above the floor each row is a ledger read for that project, which
     answers the project's whole spend within the caller's boundary - so a table filtered to one user
     footed every row with every member's spend until the dashboard's filter reached that read too."""
 
     @pytest.mark.asyncio
-    async def test_the_holder_read_is_given_the_dashboards_filter(self, handler, mock_repository):
+    async def test_the_ledger_read_is_given_the_dashboards_filter(self, handler, mock_repository):
         mock_repository.execute_aggregation_query.return_value = _spending_buckets(("atlas", 7))
         asked = ReportFilter(users=(UserTerm("bob-id", frozenset({"bob@example.com"})),))
         build = AsyncMock(return_value=asked)
@@ -1303,7 +1336,7 @@ class TestTheUserFilterReachesTheAtOrAboveFloorMoney:
 
         with (
             _cutover_at(ABOVE_FLOOR_ONLY),
-            _patched_projects_port({"atlas": _assigned("atlas", "cli")}, consumed),
+            _patched_projects_port(consumed),
             patch("codemie.service.analytics.handlers.project_handler.report_filter_for", new=build),
         ):
             result = await handler.get_projects_spending(
@@ -1316,13 +1349,13 @@ class TestTheUserFilterReachesTheAtOrAboveFloorMoney:
 
     @pytest.mark.asyncio
     async def test_an_empty_table_pays_no_identity_lookup(self, handler):
-        """With no row there is no holder to read for, so building the filter would spend a lookup on
+        """With no row there is no project to read for, so building the filter would spend a lookup on
         nothing - and on a database outage count a read failure for a read that never ran."""
         build = AsyncMock()
         consumed = AsyncMock()
 
         with (
-            _patched_projects_port({}, consumed),
+            _patched_projects_port(consumed),
             patch("codemie.service.analytics.handlers.project_handler.report_filter_for", new=build),
         ):
             await handler._enrich_projects_spending(
@@ -1342,7 +1375,7 @@ class TestAClientSourceFilterReadsNoMoney:
         mock_repository.execute_aggregation_query.return_value = _spending_buckets(("atlas", 7))
         consumed = _answers(atlas=SpendResult(figure=Decimal("5")))
 
-        with _cutover_at(ABOVE_FLOOR_ONLY), _patched_projects_port({"atlas": _assigned("atlas", "cli")}, consumed):
+        with _cutover_at(ABOVE_FLOOR_ONLY), _patched_projects_port(consumed):
             result = await handler.get_projects_spending(
                 start_date=PERIOD_START, end_date=PERIOD_END, client_source="teams"
             )
@@ -1380,7 +1413,7 @@ class TestTheTwoLegsMeasureTimeOnTwoDifferentClocks:
         rows = _candidate_rows(handler, _money_bucket("atlas", money=below_floor_sum))
         consumed = _answers_over(AT_OR_ABOVE_FLOOR_LEG, atlas=SpendResult(figure=Decimal(above_floor)))
 
-        with _patched_projects_port({"atlas": _assigned("atlas", "cli")}, consumed):
+        with _patched_projects_port(consumed):
             enriched = await handler._enrich_projects_spending(rows, PERIOD_START, PERIOD_END, FLOOR)
 
         return rows[0], enriched.rows

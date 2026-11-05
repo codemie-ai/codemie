@@ -91,10 +91,20 @@ async def project_report_filters(names: Sequence[str], users: Sequence[str] | No
     A personal project's calls reach the ledger with no project at all, so each filter also carries that
     project's own owners - the port matches such a project through them. `None` for an empty name.
     """
+    if not any(names):
+        return [None for _ in names]
+    return await project_filters_within(await report_filter_for(users, None), names)
+
+
+async def project_filters_within(base: ReportFilter, names: Sequence[str]) -> list[ReportFilter | None]:
+    """`project_report_filters` over a filter the caller already built, so one request filters on one set of people.
+
+    `base` keeps its users term and loses its projects term: each row is one of the dashboard's projects
+    already. `None` for an empty name - a filter naming no project means every project to the port.
+    """
     named = list(dict.fromkeys(name for name in names if name))
     if not named:
         return [None for _ in names]
-    base = await report_filter_for(users, None)
     owners = await _personal_owners_by_name(named)
     return [
         replace(base, projects=(name,), personal_project_owners=owners[name]) if name in owners else None

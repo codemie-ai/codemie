@@ -26,6 +26,7 @@ import pytest
 from codemie.service.analytics.handlers import ledger_group_spend
 from codemie.service.analytics.handlers.ledger_group_spend import (
     dashboard_group_spend,
+    project_filters_within,
     project_report_filters,
     read_group_spend,
     user_report_filters,
@@ -137,6 +138,40 @@ class TestProjectReportFilters:
 
         assert filters[0] is not None
         assert filters[0].personal_project_owners is None
+
+
+class TestProjectFiltersWithin:
+    @pytest.mark.asyncio
+    async def test_a_filter_built_by_the_caller_is_reused_with_its_users_kept_and_its_projects_replaced(self):
+        base = ReportFilter(users=(_term("bob"),), projects=("dashboard-project",), personal_project_owners=("u-x",))
+
+        with (
+            patch(f"{_MODULE}.report_filter_for", new=AsyncMock(side_effect=AssertionError("built a second filter"))),
+            patch(f"{_MODULE}.get_async_session", _fake_session),
+            patch.object(
+                ledger_group_spend.application_repository,
+                "aget_personal_project_owners_by_name",
+                new=AsyncMock(return_value={"ada@example.com": {"u-ada"}}),
+            ),
+        ):
+            filters = await project_filters_within(base, ["team", "ada@example.com"])
+
+        assert filters == [
+            ReportFilter(users=(_term("bob"),), projects=("team",), personal_project_owners=()),
+            ReportFilter(users=(_term("bob"),), projects=("ada@example.com",), personal_project_owners=("u-ada",)),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_an_empty_name_gets_no_filter_and_nothing_is_looked_up(self):
+        lookup = AsyncMock()
+
+        with patch.object(
+            ledger_group_spend.application_repository, "aget_personal_project_owners_by_name", new=lookup
+        ):
+            filters = await project_filters_within(ReportFilter(), ["", ""])
+
+        assert filters == [None, None]
+        lookup.assert_not_awaited()
 
 
 class TestReadGroupSpend:

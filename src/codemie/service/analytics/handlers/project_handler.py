@@ -19,9 +19,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from codemie.clients.postgres import get_async_session
 from codemie.repository.metrics_elastic_repository import MetricsElasticRepository
-from codemie.repository.project_budget_repository import project_budget_assignment_repository
 from codemie.rest_api.security.user import User
 from codemie.service.analytics.handlers.field_constants import METRIC_NAME_KEYWORD_FIELD, PROJECT_KEYWORD_FIELD
 from codemie.service.analytics.handlers.money_coverage import (
@@ -30,6 +28,7 @@ from codemie.service.analytics.handlers.money_coverage import (
     read_money_coverage,
     split_at_floor,
 )
+from codemie.service.analytics.handlers.ledger_group_spend import project_filters_within, read_group_spend
 from codemie.service.analytics.handlers.report_filter import report_filter_for
 from codemie.service.analytics.metric_names import MetricName
 from codemie.service.analytics.query_pipeline import (
@@ -39,9 +38,8 @@ from codemie.service.analytics.query_pipeline import (
     EnrichedRows,
     enriched_spend_rows,
 )
-from codemie.service.budget.budget_enums import BudgetCategory
-from codemie.service.spend.coverage import SpendResult, TimeRange
-from codemie.service.spend.ledger import ProjectHolder, ReportFilter
+from codemie.service.spend.coverage import TimeRange
+from codemie.service.spend.ledger import ReportFilter
 from codemie.service.spend.ledger_registry import ledger_coverage
 from codemie.service.spend.rendering import (
     RenderedSpend,
@@ -49,7 +47,7 @@ from codemie.service.spend.rendering import (
     render_spend,
     report_period_or_none,
 )
-from codemie.service.spend.spend_service import spend_service
+from codemie.service.spend.spend_group import SpendGroup
 
 logger = logging.getLogger(__name__)
 
@@ -79,19 +77,6 @@ UNATTRIBUTED_PROJECT_KEY = "unknown"
 PRE_FLOOR_MONEY_BUCKET = "pre_floor_money"
 PRE_FLOOR_MONEY_SUM = "sum"
 PRE_FLOOR_MONEY_KEY = "_pre_floor_money"
-
-
-def _budget_category(category: str) -> BudgetCategory | None:
-    """An assignment's category as the enum the port requires, or None if it names no category.
-
-    The column is a free-form varchar with no database-level vocabulary, so a value outside the enum
-    is reachable and must not fail the whole table.
-    """
-    try:
-        return BudgetCategory(category)
-    except ValueError:
-        logger.warning(f"Assigned budget category {category!r} names no budget category, so no figure is read for it")
-        return None
 
 
 def _pre_floor_spend(money_bucket: dict) -> RenderedSpend:
@@ -263,15 +248,13 @@ class ProjectHandler:
     ) -> list[RenderedSpend]:
         """Each candidate row's total, in whichever shape its side of the coverage floor can answer.
 
-        **The read SHAPE changes at `F` because the dimension the above-floor read groups on does not
-        exist below it.** At or above `F` a project's money is the sum over the budget *categories*
-        its assigned budgets name, and `litellm_spend_logs` carries that category on every row. Below
-        `F` there is no such row, and no emission has ever written a budget category, so a
-        category-keyed holder is answered with no figure at all - correctly, because the dimension the
-        caller asked about was never recorded. Asking the same question in the same shape on both
-        sides therefore does not merely degrade the pre-October table, it empties it: every money cell
-        absent for every window the platform had before the rollout, which is the exact regression the
-        cutover exists to prevent.
+        **The read SHAPE changes at `F` because the ledger the above-floor read asks does not exist
+        below it.** At or above `F` a project's money is the ledger's total for the project, read from
+        `litellm_spend_logs`. Below `F` there is no such row, so the same question asked of the ledger
+        is answered with no figure at all - correctly, because nothing was recorded there. Asking the
+        same question in the same shape on both sides therefore does not merely degrade the pre-October
+        table, it empties it: every money cell absent for every window the platform had before the
+        rollout, which is the exact regression the cutover exists to prevent.
 
         **So below `F` the money is the candidate aggregation's own, and no second read is made at
         all.** The aggregation that produced these rows already sums `attributes.money_spent` per
@@ -288,7 +271,7 @@ class ProjectHandler:
         **A crossing window still splits, and the two legs may not overlap.** The aggregation covers
         the *whole* requested window, so its money is scoped to `[start, F)` at the source - a range
         filter on `@timestamp` bounded at `F`, built by `_pre_floor_money_aggs` - and `[F, end)` goes
-        to the holder read. Handing either side the whole crossing period is the trap: the above-floor
+        to the ledger read. Handing either side the whole crossing period is the trap: the above-floor
         money would be counted twice, once through each shape, and the row would foot at nearly double
         while every annotation beside it still read clean.
 
@@ -306,15 +289,15 @@ class ProjectHandler:
         than fixed.
 
         **One seamless total, and no second wire field.** The legs combine through
-        `combine_rendered_spend`, exactly as a project's categories do, so a window spanning the floor
+        `combine_rendered_spend`, so a window spanning the floor
         renders as one figure that still carries every qualification either leg produced: a leg that
         found no figure leaves the row labelled rather than quietly shortening it.
 
-        **Absent stays absent on both sides.** A project with no assigned budget names no holder and
-        is absent above `F`; a project whose pre-floor bucket settled no money at all is absent below
-        it, which is what `read_money_coverage` returns rather than the `.get(..., 0.0)` the bucket
-        read used to default to. A zero is a positive claim that nothing was spent, and it is the one
-        figure this package never fabricates.
+        **Absent stays absent on both sides.** A bucket naming no project is absent above `F`; a project
+        whose pre-floor bucket settled no money at all is absent below it, which is what
+        `read_money_coverage` returns rather than the `.get(..., 0.0)` the bucket read used to default to.
+        A zero is a positive claim that nothing was spent, and it is the one figure this package never
+        fabricates.
 
         The comparisons in `split_at_floor` mirror `CutoverSpendLedger._split` term for term, and
         must: a period this method calls crossing but that ledger calls whole would be read in two
@@ -332,91 +315,45 @@ class ProjectHandler:
                 parts.append(pre_floor_money)
 
         if above is not None:
-            above_money = await self._budget_category_money(projects, above, report_filter)
-            for parts, project in zip(legs, projects, strict=True):
-                parts.append(above_money[project])
+            above_money = await self._ledger_money(projects, above, report_filter)
+            for parts, money in zip(legs, above_money, strict=True):
+                parts.append(money)
 
-        # `or [render_spend(None)]` is unreachable while a split always yields a leg, and is kept for
-        # the same reason `_project_rendered_spend` keeps it: combining nothing produces a figure of
-        # None with no flag on it, which is an absence that says it is not one.
+        # `or [render_spend(None)]` is unreachable while a split always yields a leg, and is kept so
+        # that combining nothing cannot produce a figure of None with no flag on it, which is an
+        # absence that says it is not one.
         return [combine_rendered_spend(parts or [render_spend(None)]) for parts in legs]
 
-    async def _budget_category_money(
+    async def _ledger_money(
         self, projects: list[str], period: TimeRange, report_filter: ReportFilter | None
-    ) -> dict[str, RenderedSpend]:
-        """Each project's total over the categories its assigned budgets name - the at-or-above-`F` shape.
+    ) -> list[RenderedSpend]:
+        """Each project's whole ledger total over the period, in the order of `projects` - the at-or-above-`F` shape.
 
-        This is the read this table has made since its money moved off the Elasticsearch aggregation,
-        moved here unchanged so that a window wholly at or above the floor is answered exactly as it
-        was before the cutover existed: one `ProjectHolder` per distinct assigned category, one round
-        trip for the whole candidate set, and the caller's own boundary applied to all of it.
+        **Everything spent in the project, and not the pots its budgets happen to name.** This read used
+        to sum one holder per *assigned budget category*, so a project with no budget assigned named no
+        holder and showed no figure however much it had spent, a project budgeted only for one category
+        silently left its other spend out of a figure that read exact, and a personal project - whose
+        calls reach the ledger with no project at all - matched nothing. A budget is a limit someone
+        configured against a pot; this table answers what was spent, so each row is read the way the
+        summary cards read the whole scope: the ledger's total group, for a filter naming only that
+        project.
 
-        One round trip because all holders share the one window, one boundary and one report filter -
-        both belong to the request rather than to a holder, so there is nothing per-holder about them to
-        get wrong.
+        **The caller's boundary and the dashboard's users filter reach every read**, for the reason
+        `_enrich_projects_spending` gives. The filter's projects term is replaced by the row's own
+        project, and a personal project also carries its owners - the port matches it through them.
+
+        **The bucket the aggregation's script invents for a document naming neither project nor user gets
+        no figure.** `unknown` is not a project: a filter naming it matches no ledger row and would
+        publish a measured `$0.00` for money nobody can attribute.
+
+        **One scan per candidate project**, a few in flight at a time, where the holder read was one round
+        trip for the whole set: a personal project cannot be named by a holder, and the port has no
+        batched per-project total.
         """
-        categories = await self._assigned_budget_categories(projects)
-        holders = [
-            ProjectHolder(project=project, category=category)
-            for project, project_categories in categories.items()
-            for category in project_categories
-            if category is not None
-        ]
-        spend = (
-            await spend_service.consumed_for_holders(
-                holders, period, access=self._pipeline.access_scope, report_filter=report_filter
-            )
-            if holders
-            else {}
-        )
-        logger.info(
-            f"Projects-spending read the ledger for {len(holders)} holder(s) over {len(projects)} candidate row(s)"
-        )
-        return {
-            project: self._project_rendered_spend(project, categories.get(project, []), spend) for project in projects
-        }
-
-    @staticmethod
-    def _project_rendered_spend(
-        project: str,
-        categories: list[BudgetCategory | None],
-        spend: dict[ProjectHolder, SpendResult],
-    ) -> RenderedSpend:
-        """One project's total over the categories its assigned budgets name.
-
-        There is no category-free project holder, so a project with no assigned budget names no
-        holder at all: the port is never asked about it and its figure is absent, which is a
-        different fact from having spent nothing and is labelled as such.
-        """
-        results = [
-            None if category is None else spend.get(ProjectHolder(project=project, category=category))
-            for category in categories
-        ]
-        return combine_rendered_spend([render_spend(result) for result in results] or [render_spend(None)])
-
-    @staticmethod
-    async def _assigned_budget_categories(project_names: list[str]) -> dict[str, list[BudgetCategory | None]]:
-        """Each project's distinct assigned budget categories - the holders its total is summed over.
-
-        Distinct, because two budgets sharing a category name one holder, and summing that holder
-        twice would double the project's spend.
-
-        A category outside the enum is kept as ``None`` rather than dropped: it identifies no holder,
-        so it contributes an absent figure and makes the project's total say it is short. A budget
-        silently left out would shorten the total instead, and a short total looks like a whole one.
-        """
-        if not project_names:
-            return {}
-
-        async with get_async_session() as session:
-            rows_by_project = await project_budget_assignment_repository.get_assigned_budget_summaries_for_projects(
-                session, project_names
-            )
-
-        return {
-            project: list(dict.fromkeys(_budget_category(row.budget_category) for row in budget_rows))
-            for project, budget_rows in rows_by_project.items()
-        }
+        names = ["" if project == UNATTRIBUTED_PROJECT_KEY else project for project in projects]
+        filters = await project_filters_within(report_filter or ReportFilter(), names)
+        logger.info(f"Projects-spending read the ledger total for {len(projects)} candidate row(s)")
+        return await read_group_spend(period, self._pipeline.access_scope, filters, SpendGroup.TOTAL)
 
     def _build_projects_spending_aggregation(self, query: dict, fetch_size: int, pre_floor: datetime | None) -> dict:
         """Build terms aggregation for projects spending with fetch-and-slice.
@@ -476,7 +413,7 @@ class ProjectHandler:
 
         **Bounded at `F` here rather than trimmed afterwards.** The surrounding query covers the whole
         requested window, so a bucket money sum taken over all of it would include the at-or-above
-        part - which the holder read also reports - and a crossing row would foot at nearly double
+        part - which the ledger read also reports - and a crossing row would foot at nearly double
         with nothing on it saying so. The range clause makes the two legs disjoint before either is
         read, and it is `lt` rather than `lte` because every interval on these paths is half-open:
         `F` belongs to the at-or-above leg, and adjacent half-open ranges tile exactly.
