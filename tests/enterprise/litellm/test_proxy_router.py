@@ -49,6 +49,7 @@ from codemie.enterprise.litellm.runtime_budget_selection import RuntimeBudgetMod
 from codemie.enterprise.litellm.proxy_router import (
     LITELLM_CALL_ID_HEADER,
     LITELLM_CUSTOMER_ID_HEADER,
+    _apply_proxy_counterfactual_costs,
     _augment_models_list_response,
     _build_premium_budget_error_body,
     _check_cli_version,
@@ -2045,6 +2046,107 @@ class TestStreamingResponseWithUsageTracking:
         assert routing.original_cost_usd == 0.0
         assert routing.estimated_max_cost_usd == 0.0
         assert routing.potential_savings_usd == 0.0
+
+
+class TestApplyProxyCounterfactualCosts:
+    """The routing cost fields the Routing Summary and Routing Paths tables read from Elasticsearch."""
+
+    LUNA = "gpt-5.6-luna-2026-07-09"
+    TERRA = "gpt-5.6-terra-2026-07-09"
+
+    @staticmethod
+    def _routing(**overrides):
+        from codemie.core.routing_info import RoutingInfo
+
+        fields = {
+            "routed_model": TestApplyProxyCounterfactualCosts.LUNA,
+            "counterfactual_model": TestApplyProxyCounterfactualCosts.TERRA,
+            "tier": "simple",
+            "classifier_cost_usd": 0.0005,
+        } | overrides
+        return RoutingInfo(**fields)
+
+    @staticmethod
+    def _usage(**overrides) -> dict:
+        return {
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "cached_tokens": 0,
+            "cache_creation_tokens": 0,
+            "money_spent": None,
+            "cache_hit": False,
+        } | overrides
+
+    @classmethod
+    def _apply(cls, routing, usage, prices):
+        def price(*, llm_model, **_):
+            return prices[llm_model], 0.0, 0.0
+
+        with (
+            patch("codemie.enterprise.litellm.proxy_router.calculate_token_cost", side_effect=price) as mock_price,
+            patch("codemie.enterprise.litellm.proxy_router.llm_service.get_model_cost"),
+        ):
+            return _apply_proxy_counterfactual_costs(routing, usage), mock_price
+
+    def test_an_unsettled_call_cost_is_priced_locally_for_the_routing_figures(self):
+        result, _ = self._apply(self._routing(), self._usage(), {self.LUNA: 0.001, self.TERRA: 0.004})
+
+        assert result.original_cost_usd == pytest.approx(0.0015)
+        assert result.estimated_max_cost_usd == 0.004
+        assert result.potential_savings_usd == pytest.approx(0.0025)
+
+    def test_a_settled_call_cost_is_used_as_is_and_not_priced_again(self):
+        result, mock_price = self._apply(
+            self._routing(), self._usage(money_spent=0.002), {self.LUNA: 99.0, self.TERRA: 0.004}
+        )
+
+        assert [call.kwargs["llm_model"] for call in mock_price.call_args_list] == [self.TERRA]
+        assert result.original_cost_usd == pytest.approx(0.0025)
+
+    def test_the_top_tier_uses_the_locally_priced_actual_as_its_estimate(self):
+        result, _ = self._apply(self._routing(tier="complex"), self._usage(), {self.LUNA: 0.004})
+
+        assert result.estimated_max_cost_usd == 0.004
+        assert result.potential_savings_usd == pytest.approx(-0.0005)
+
+    def test_a_cache_hit_is_free_and_nothing_is_priced_for_the_actual(self):
+        result, mock_price = self._apply(
+            self._routing(), self._usage(cache_hit=True), {self.LUNA: 99.0, self.TERRA: 99.0}
+        )
+
+        assert result.original_cost_usd == 0.0
+        assert result.estimated_max_cost_usd == 0.0
+        assert result.potential_savings_usd == 0.0
+        assert [call.kwargs["llm_model"] for call in mock_price.call_args_list] == [self.LUNA]
+
+    def test_a_response_with_no_usage_stamps_nothing_rather_than_a_zero_cost(self):
+        routing = self._routing()
+
+        result, mock_price = self._apply(
+            routing, self._usage(input_tokens=0, output_tokens=0), {self.LUNA: 0.0, self.TERRA: 0.0}
+        )
+
+        assert result is routing
+        mock_price.assert_not_called()
+
+    def test_a_model_that_cannot_be_priced_leaves_the_routing_unchanged(self):
+        routing = self._routing()
+
+        with (
+            patch("codemie.enterprise.litellm.proxy_router.calculate_token_cost", side_effect=KeyError("model")),
+            patch("codemie.enterprise.litellm.proxy_router.llm_service.get_model_cost"),
+        ):
+            result = _apply_proxy_counterfactual_costs(routing, self._usage())
+
+        assert result is routing
+
+    def test_routing_without_a_counterfactual_model_is_left_alone(self):
+        routing = self._routing(counterfactual_model=None)
+
+        result, mock_price = self._apply(routing, self._usage(), {})
+
+        assert result is routing
+        mock_price.assert_not_called()
 
 
 class TestProxyToLLMProxy:

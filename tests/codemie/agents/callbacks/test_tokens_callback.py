@@ -1065,20 +1065,124 @@ async def test_on_llm_end_prices_the_counterfactual_on_the_litellm_path():
     assert llm_run.routing.potential_savings_usd == pytest.approx(0.0025)
 
 
-def test_counterfactual_is_not_stamped_on_an_unsettled_cost(callback):
-    """With the actual cost still pending there is nothing to compare the counterfactual to, so
-    the routing comes back as it went in - no pricing, no fabricated zero."""
-    routing = RoutingInfo(
-        routed_model="gpt-5.6-luna-2026-07-09",
-        counterfactual_model="gpt-5.6-terra-2026-07-09",
-        tier="SIMPLE",
-    )
+_LUNA = "gpt-5.6-luna-2026-07-09"
+_TERRA = "gpt-5.6-terra-2026-07-09"
 
-    with patch("codemie.agents.callbacks.tokens_callback.calculate_token_cost") as mock_calculate_token_cost:
+
+def _price_by_model(prices: dict[str, float]):
+    """A `calculate_token_cost` stand-in answering per model, so each side of the savings is told apart."""
+
+    def _price(*, llm_model, **_):
+        return prices[llm_model], 0.0, 0.0
+
+    return _price
+
+
+def test_counterfactual_prices_the_actual_locally_on_an_unsettled_cost(callback):
+    """The call's own money is still pending for the ledger, but the routing event is emitted now and
+    Elasticsearch has no later pass - so the routing figures price the actual from the same table
+    as the counterfactual, and the savings compare like with like."""
+    routing = RoutingInfo(routed_model=_LUNA, counterfactual_model=_TERRA, tier="SIMPLE", classifier_cost_usd=0.0005)
+
+    with (
+        patch(
+            "codemie.agents.callbacks.tokens_callback.calculate_token_cost",
+            side_effect=_price_by_model({_LUNA: 0.001, _TERRA: 0.004}),
+        ),
+        patch("codemie.agents.callbacks.tokens_callback.llm_service.get_model_cost"),
+    ):
+        result = callback._apply_counterfactual_costs(routing, None, 10, 5, 0, 0)
+
+    assert result.original_cost_usd == pytest.approx(0.0015)
+    assert result.estimated_max_cost_usd == 0.004
+    assert result.potential_savings_usd == pytest.approx(0.0025)
+
+
+def test_counterfactual_on_the_top_tier_uses_the_locally_priced_actual(callback):
+    """Already at the top tier there is nothing to save, so the estimate is the actual itself."""
+    routing = RoutingInfo(routed_model=_TERRA, counterfactual_model=_TERRA, tier="complex", classifier_cost_usd=0.0005)
+
+    with (
+        patch(
+            "codemie.agents.callbacks.tokens_callback.calculate_token_cost",
+            side_effect=_price_by_model({_TERRA: 0.004}),
+        ),
+        patch("codemie.agents.callbacks.tokens_callback.llm_service.get_model_cost"),
+    ):
+        result = callback._apply_counterfactual_costs(routing, None, 10, 5, 0, 0)
+
+    assert result.estimated_max_cost_usd == 0.004
+    assert result.original_cost_usd == pytest.approx(0.0045)
+    assert result.potential_savings_usd == pytest.approx(-0.0005)
+
+
+def test_counterfactual_uses_the_settled_cost_without_pricing_the_actual(callback):
+    routing = RoutingInfo(routed_model=_LUNA, counterfactual_model=_TERRA, tier="SIMPLE", classifier_cost_usd=0.0005)
+
+    with (
+        patch(
+            "codemie.agents.callbacks.tokens_callback.calculate_token_cost",
+            side_effect=_price_by_model({_LUNA: 99.0, _TERRA: 0.004}),
+        ) as mock_price,
+        patch("codemie.agents.callbacks.tokens_callback.llm_service.get_model_cost"),
+    ):
+        result = callback._apply_counterfactual_costs(routing, 0.001, 10, 5, 0, 0)
+
+    assert [call.kwargs["llm_model"] for call in mock_price.call_args_list] == [_TERRA]
+    assert result.original_cost_usd == pytest.approx(0.0015)
+
+
+def test_counterfactual_is_left_off_when_the_actual_cannot_be_priced(callback):
+    """A model missing from the price table must not fail the call or invent a figure."""
+    routing = RoutingInfo(routed_model=_LUNA, counterfactual_model=_TERRA, tier="SIMPLE")
+
+    with (
+        patch("codemie.agents.callbacks.tokens_callback.calculate_token_cost", side_effect=KeyError(_LUNA)),
+        patch("codemie.agents.callbacks.tokens_callback.llm_service.get_model_cost"),
+    ):
         result = callback._apply_counterfactual_costs(routing, None, 10, 5, 0, 0)
 
     assert result is routing
-    mock_calculate_token_cost.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_on_llm_end_stamps_the_routing_costs_while_the_calls_own_money_stays_unsettled():
+    """On a LiteLLM deployment with no cost in hand: the ledger still owns `money_spent`, and the routing
+    event still carries the original cost, the estimated max and the savings."""
+    callback = TokensCalculationCallback(request_id="req-1", llm_model="gpt-smart-router")
+    router = _make_router(
+        routing_info=RoutingInfo(
+            routed_model=_LUNA,
+            requested_model="gpt-smart-router",
+            counterfactual_model=_TERRA,
+            tier="SIMPLE",
+            classifier_cost_usd=0.0005,
+        )
+    )
+    run_id = uuid4()
+    callback.on_chat_model_start({}, [[]], run_id=run_id, metadata={"_routing_ctx": (router, None)})
+    message = AIMessage(content="hi", usage_metadata={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15})
+    unsettled = ChatGeneration(message=message)
+
+    with (
+        patch("codemie.agents.callbacks.tokens_callback.uses_litellm", return_value=True),
+        patch("codemie.agents.callbacks.tokens_callback.config") as mock_config,
+        patch(
+            "codemie.agents.callbacks.tokens_callback.calculate_token_cost",
+            side_effect=_price_by_model({_LUNA: 0.001, _TERRA: 0.004}),
+        ),
+        patch("codemie.agents.callbacks.tokens_callback.llm_service.get_model_cost"),
+        patch("codemie.service.request_summary_manager.request_summary_manager.update_llm_run") as mock_update,
+    ):
+        mock_config.LLM_PROXY_ENABLED = True
+        mock_config.LLM_PROXY_TRACK_USAGE = True
+        await callback.on_llm_end(LLMResult(generations=[[unsettled]]), run_id=run_id)
+
+    llm_run = mock_update.call_args.kwargs["llm_run"]
+    assert llm_run.money_spent is None
+    assert llm_run.routing.original_cost_usd == pytest.approx(0.0015)
+    assert llm_run.routing.estimated_max_cost_usd == 0.004
+    assert llm_run.routing.potential_savings_usd == pytest.approx(0.0025)
 
 
 @pytest.mark.asyncio

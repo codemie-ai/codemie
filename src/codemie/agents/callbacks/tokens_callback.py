@@ -294,15 +294,27 @@ class TokensCalculationCallback(AsyncCallbackHandler):
         On the agent path, actual_cost_usd includes the classifier fee (it books the
         classifier as its own LLMRun), unlike the proxy path.
 
-        An unsettled actual cost (`None`) leaves nothing to compare, so nothing is stamped. The
-        counterfactual is priced locally even on the LiteLLM path, bypassing `_calculate_cost`'s
+        An unsettled actual cost (`None`) is priced locally for these figures only. The call's own
+        `money_spent` stays unsettled for the ledger to fill in, but the routing event is emitted now
+        and Elasticsearch has no later pass, so leaving the actual blank would drop the original cost,
+        the estimated max and the savings from every routed call on a LiteLLM deployment. Both sides
+        are priced from the same table, so the savings compare like with like.
+
+        The counterfactual is priced locally even on the LiteLLM path, bypassing `_calculate_cost`'s
         gate: it is a "what it would have cost" analytics figure, never spend.
         """
         if not (display_routing.counterfactual_model and display_routing.routed_model):
             return display_routing
-        if money_spent is None:
-            return display_routing
         try:
+            if money_spent is None:
+                money_spent, _, _ = calculate_token_cost(
+                    llm_model=display_routing.routed_model,
+                    cost_config=llm_service.get_model_cost(display_routing.routed_model),
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cached_tokens=cached_tokens,
+                    cache_creation_tokens=cache_creation_tokens,
+                )
             if display_routing.tier == "complex":
                 # Already at top tier; use actual spend, not re-pricing, to avoid
                 # catalog-vs-agent-path rounding showing up as fake savings.

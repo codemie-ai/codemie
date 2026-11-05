@@ -1443,12 +1443,27 @@ def _apply_proxy_counterfactual_costs(proxy_routing: RoutingInfo, usage_data: di
     """Re-price tokens at counterfactual_model and stamp actual-vs-counterfactual savings.
 
     Original cost includes both the routed model call and the classifier call.
+
+    An unsettled call cost is priced locally for these figures only: the ledger settles the call's
+    own spend later, but this routing event is emitted now and Elasticsearch has no later pass, so
+    leaving the actual blank would drop the original cost, the estimated max and the savings from every
+    routed call. A response that carried no usage at all prices nothing and stamps nothing.
     """
     if not (proxy_routing.counterfactual_model and proxy_routing.routed_model):
         return proxy_routing
-    if usage_data.get("money_spent") is None:
+    money_spent = usage_data.get("money_spent")
+    if money_spent is None and not (usage_data["input_tokens"] or usage_data["output_tokens"]):
         return proxy_routing
     try:
+        if money_spent is None:
+            money_spent, _, _ = calculate_token_cost(
+                llm_model=proxy_routing.routed_model,
+                cost_config=llm_service.get_model_cost(proxy_routing.routed_model),
+                input_tokens=usage_data["input_tokens"],
+                output_tokens=usage_data["output_tokens"],
+                cached_tokens=usage_data["cached_tokens"],
+                cache_creation_tokens=usage_data.get("cache_creation_tokens", 0),
+            )
         cache_hit = usage_data.get("cache_hit")
         if cache_hit:
             proxy_routing = proxy_routing.model_copy(update={"classifier_cost_usd": 0.0})
@@ -1456,7 +1471,7 @@ def _apply_proxy_counterfactual_costs(proxy_routing: RoutingInfo, usage_data: di
         elif proxy_routing.tier == "complex":
             # Already at top tier; use actual spend, not re-pricing, to avoid
             # catalog-vs-proxy rounding showing up as fake savings.
-            estimated_max_usd = usage_data["money_spent"]
+            estimated_max_usd = money_spent
         else:
             # Re-price tokens at counterfactual_model.
             estimated_max_usd, _, _ = calculate_token_cost(
@@ -1467,7 +1482,7 @@ def _apply_proxy_counterfactual_costs(proxy_routing: RoutingInfo, usage_data: di
                 cached_tokens=usage_data["cached_tokens"],
                 cache_creation_tokens=usage_data.get("cache_creation_tokens", 0),
             )
-        actual_cost_usd = (0.0 if cache_hit else usage_data["money_spent"]) + (proxy_routing.classifier_cost_usd or 0.0)
+        actual_cost_usd = (0.0 if cache_hit else money_spent) + (proxy_routing.classifier_cost_usd or 0.0)
         return with_counterfactual_costs(
             proxy_routing,
             actual_cost_usd=actual_cost_usd,
