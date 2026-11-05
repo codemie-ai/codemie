@@ -16622,9 +16622,16 @@
             "type": "integer"
           },
           "agent_count": {
-            "default": 0,
-            "title": "Agent Count",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Subagent dispatches; None unknown, 0 reported zero (see turns).",
+            "title": "Agent Count"
           },
           "api_call_count": {
             "default": 0,
@@ -16787,9 +16794,16 @@
             "title": "Routing Label"
           },
           "skill_count": {
-            "default": 0,
-            "title": "Skill Count",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Skill invocations; None unknown, 0 reported zero (see turns).",
+            "title": "Skill Count"
           },
           "start_time": {
             "description": "ISO 8601 datetime string",
@@ -16802,8 +16816,28 @@
             "title": "Subscription Type",
             "type": "string"
           },
+          "summary_metrics": {
+            "description": "Metrics the latest summary reports validly: any of 'turns', 'tool_calls', 'agents', 'skills'.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Summary Metrics",
+            "type": "array"
+          },
+          "summary_state": {
+            "default": "none",
+            "description": "'none' (no session summary), 'provisional' (a snapshot that later events can exceed) or 'final'.",
+            "enum": [
+              "none",
+              "provisional",
+              "final"
+            ],
+            "title": "Summary State",
+            "type": "string"
+          },
           "tool_call_count": {
             "default": 0,
+            "description": "Tool calls observed in events: the denominator of the success rate. Can be below the total.",
             "title": "Tool Call Count",
             "type": "integer"
           },
@@ -16812,9 +16846,21 @@
             "title": "Tool Calls Success",
             "type": "integer"
           },
+          "tool_calls_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Whole-session tool calls of the latest session summary, never below tool_call_count. None when no summary reports it (unknown); 0 is a real zero.",
+            "title": "Tool Calls Total"
+          },
           "tool_success_rate": {
             "default": 0.0,
-            "description": "Percent, one decimal (0.0-100.0). _pct(tool_calls_success, tool_call_count).",
+            "description": "Percent, one decimal (0.0-100.0). _pct(tool_calls_success, tool_call_count): observed calls only.",
             "title": "Tool Success Rate",
             "type": "number"
           },
@@ -16830,9 +16876,16 @@
             "type": "string"
           },
           "turns": {
-            "default": 0,
-            "title": "Turns",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "User turns, whole-session. None is unknown (no summary reports it, no observed turn); 0 is a reported zero. At least the observed turns; complete only when summary_state is final and summary_metrics lists 'turns'.",
+            "title": "Turns"
           },
           "user_email": {
             "default": "",
@@ -17118,19 +17171,58 @@
             "title": "Subscription Type",
             "type": "string"
           },
+          "summary_metrics": {
+            "description": "Metrics the latest summary reports validly: any of 'turns', 'tool_calls', 'agents', 'skills'.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Summary Metrics",
+            "type": "array"
+          },
+          "summary_state": {
+            "default": "none",
+            "description": "'none' (no session summary), 'provisional' (a snapshot that later events can exceed) or 'final'.",
+            "enum": [
+              "none",
+              "provisional",
+              "final"
+            ],
+            "title": "Summary State",
+            "type": "string"
+          },
           "tool_call_count": {
             "default": 0,
+            "description": "Tool calls observed in events: the denominator of the success rate. Can be below the total.",
             "title": "Tool Call Count",
             "type": "integer"
+          },
+          "tool_calls_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Whole-session tool calls of the latest session summary, never below tool_call_count. None when no summary reports it (unknown); 0 is a real zero.",
+            "title": "Tool Calls Total"
           },
           "trace_id": {
             "title": "Trace Id",
             "type": "string"
           },
           "turns": {
-            "default": 0,
-            "title": "Turns",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "User turns, whole-session. None is unknown (no summary reports it, no observed turn); 0 is a reported zero. At least the observed turns; complete only when summary_state is final and summary_metrics lists 'turns'.",
+            "title": "Turns"
           },
           "user_email": {
             "default": "",

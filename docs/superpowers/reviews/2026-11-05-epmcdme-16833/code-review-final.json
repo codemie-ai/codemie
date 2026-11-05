@@ -1,0 +1,38 @@
+{
+  "decision": "request-changes",
+  "rationale": "Edge-case lens found nothing and acceptance passes every criterion except the additive-contract spec row, which is partial because the hand-edited OpenAPI baseline was never confirmed against generated output (snapshot test blocked on Windows, make test-harness not run). The user-decided CR-001 (turns whole-session across get_turns_by_session consumers, tool counts observed) is implemented at 47a963027 with assertions in 0a8f2b181 and is not re-raised; this round's CR-001 is the unverified baseline. Standards clean, 0 deferred, 0 dismissed; balanced profile so blind and verification-gap did not run.",
+  "confidence": "high",
+  "risk_flags": ["public-api"],
+  "business_review": [
+    {"kind": "story-ac", "item": "Summary turns/tool_calls/agents/skills: detail and list serve whole-session totals, never below observed", "status": "pass", "notes": "greatest(nullif(observed,0), summary); live tests: 1345 passed at 47a963027, 20 passed at 0a8f2b181"},
+    {"kind": "story-ac", "item": "Metric the summary reports explicitly (count 0 or empty map) is served as 0", "status": "pass", "notes": "coalesce(...,0) for reported; complete_zero and empty-map tests"},
+    {"kind": "story-ac", "item": "Metric no summary field reports is served as null even when observed events exist for another metric", "status": "pass", "notes": "nullif(observed,0) with NULL summary; no-summary, hooks-only, omitted/malformed tests"},
+    {"kind": "story-ac", "item": "summary_state provisional/final/none from is_final, never inferred from total == observed", "status": "pass", "notes": "persisted to attrs.summary_state by rollup; provisional, final-replaces-provisional, none tests; legacy rows serve provisional"},
+    {"kind": "story-ac", "item": "tool_call_count, tool_calls_success, tool_success_rate stay observed; tool_calls_total optional whole-session", "status": "pass", "notes": "observed from invocations_hourly; tool_calls_total nullable"},
+    {"kind": "story-ac", "item": "KPI/users/repositories tool counts observed; turns whole-session in list/detail, overview, users, repositories", "status": "pass", "notes": "single get_turns_by_session change; users/repos turns asserted in 0a8f2b181. Context-depth buckets not directly asserted."},
+    {"kind": "story-ac", "item": "Hooks-only/OTel/mixed dedup and 16609/16741 request-event and tool-success behavior unchanged", "status": "pass", "notes": "dedup SQL kept as observed side; 7 dispatch_gate failures reproduced on baseline 0c4e0ea44"},
+    {"kind": "spec", "item": "Contract fields additive: turns, agent_count, skill_count, tool_calls_total int|null; summary_state none|provisional|final", "status": "partial", "notes": "Model and hand-edited openapi.json baseline carry fields; live /openapi.json matched. Guarded snapshot test not run (WinError 10106) and make test-harness not run."},
+    {"kind": "spec", "item": "State and reported metrics persisted in session_dims.attrs by summary rollup; client attrs stripped; legacy rows provisional", "status": "pass", "notes": "EXCLUDED keys stripped and re-added only when summary wins; map validation boundary tests"},
+    {"kind": "spec", "item": "No manufactured per-turn timestamps, outcomes or active duration from totals", "status": "pass", "notes": "only counters/state/metrics added; active_ms and tool_calls_success unchanged"},
+    {"kind": "spec", "item": "No migration; UI, CLI and duration out of scope", "status": "pass", "notes": "diff touches reader, rollups, model, handler, tests, openapi baseline only"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "4 subjects in range all match EPMCDME-####: Description"},
+    {"kind": "code-quality", "status": "pass", "notes": "new test file has Apache license header; additions within analytics core responsibility; no Optional[] or untyped additions found by targeted grep"},
+    {"kind": "security", "status": "pass", "notes": "f-string SQL in rollups.py _valid_count_map interpolates only internal column expressions and a constant, no user input; no credential logging or auth changes"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "evidence",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "tests/codemie/rest_api/router_guards/baselines/openapi.json",
+      "title": "OpenAPI baseline unverified against generated schema",
+      "problem": "The additive contract fields (turns, agent_count, skill_count, tool_calls_total, summary_state, summary_metrics) were hand-edited into the guarded OpenAPI baseline. The snapshot test could not run on Windows (WinError 10106, no pwd module) and make test-harness was not run (no docker stack), so the baseline is unconfirmed against generated output.",
+      "impact": "A spec requirement (additive contract) is only partially verified; a baseline mismatch would fail the guarded snapshot test in CI or on a compatible host.",
+      "recommendation": "Run the guarded OpenAPI snapshot test (and make test-harness if available) on a Linux/compatible host and record the passing result mapped to this finding id; regenerate the baseline if it differs."
+    }
+  ],
+  "deferred": []
+}

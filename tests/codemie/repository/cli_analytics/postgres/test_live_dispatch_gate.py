@@ -398,7 +398,7 @@ async def test_live_a_session_whose_only_agent_call_is_denied_has_no_dispatch_an
 
         assert await _sql_agents(engine, session_id) == []
         assert [d for d in detail["dispatches"] if d["kind"] == "agent"] == []
-        assert detail["agent_count"] == 0
+        assert detail["agent_count"] is None  # nothing observed, no summary: unknown, not 0
         assert await _rollup_agent_counts(engine, session_id, "Explore") == (0, 0)
     finally:
         await _cleanup(engine, session_id)
@@ -996,8 +996,9 @@ def _expected(skills: int, agents: int = 0, skill_calls: int | None = None, agen
         "skill_calls": skills if skill_calls is None else skill_calls,
         "agent_count": agents,
         "agent_rows": agent_rows,
-        "api_skill_count": skills,
-        "api_agent_count": agents,
+        # no summary here: observed nothing is unknown (None), only a positive observed count is served
+        "api_skill_count": skills or None,
+        "api_agent_count": agents or None,
     }
 
 
@@ -1573,7 +1574,7 @@ async def test_live_an_agent_call_before_midnight_that_ends_the_next_day_counts_
             await refresher.mark_dirty(day, day, conn, mask=1)  # LOG_FACTS only: the seeded requests' cost
             await refresher.refresh(conn)
         detail = await _api_detail(engine, session_id)
-        assert detail["agent_count"] == 0  # no evidence yet: denied
+        assert detail["agent_count"] is None  # no evidence yet: denied
         assert _dispatch_rows(detail) == []
 
         await _ingest(engine, [_hook("agent.tool.end", "PostToolUse", session_id, end_ts, _CLAUDE_CODE, **common)])
@@ -2123,7 +2124,7 @@ async def test_live_the_session_detail_counts_hook_events_the_rollup_has_not_cau
         await _seed_request(engine, session_id)
         await _refresh_rollups(engine)
         before = await _api_detail(engine, session_id)
-        assert (before["skill_count"], before["agent_count"]) == (0, 0)
+        assert (before["skill_count"], before["agent_count"]) == (None, None)
 
         await _ingest(
             engine,
@@ -2177,7 +2178,7 @@ async def test_live_an_agent_call_before_midnight_whose_execution_span_comes_the
         async with engine.acquire() as conn:
             await refresher.mark_dirty(day, day, conn)
             await refresher.refresh(conn)
-        assert (await _api_detail(engine, session_id))["agent_count"] == 0  # no evidence yet: denied
+        assert (await _api_detail(engine, session_id))["agent_count"] is None  # no evidence yet: denied
 
         ingestor = PostgresTelemetryIngestor(engine, clock=lambda: day)
         await ingestor.ingest_otlp("traces", _execution_span(session_id, span_ts, tool_use_id), "application/json")

@@ -839,7 +839,8 @@ _SESSION_DIMS_COLUMNS = (
     "git_commits", "tool_results", "schema_version", "activity_started_at", "summary_ts", "session_title",
 )  # fmt: skip
 _NOT_ATTRS = (*_SESSION_DIMS_COLUMNS, "type", "timestamp", "session_id", "prompt_id", "event_id",
-              "counters_source", "tool_counters", "identity_ts", "story_ts")  # fmt: skip
+              "counters_source", "tool_counters", "summary_state", "summary_reported",
+              "identity_ts", "story_ts")  # fmt: skip
 
 # Priority pairs, highest rank first; an unlisted value ranks lowest.
 _IDENTITY_RANKS = ("jwt", "git", "codemie_cli", "claude_account", "os")
@@ -1266,6 +1267,30 @@ _COUNTERS_FROM_RAW: tuple[tuple[str, str], ...] = (
     # OTel pre_tokens is not the transcript's: the fallback keeps it inside compactions only.
     ("compaction_pre_tokens", _summary_or(_summary_count("compaction_pre_tokens", _BIGINT_DIGITS), "NULL::bigint")),
 )  # fmt: skip
+
+
+# The metrics the latest summary reports validly (a count, or an object for the two maps), persisted beside its
+# state in attrs: a stored counter is the summary's only for a metric listed here (an omitted field keeps the older
+# stored value, which can be a fallback one). An empty map or a count of 0 is reported; a missing or malformed
+# field is not.
+def _valid_count_map(element: str) -> str:
+    """`element` is a JSON object whose every value is a whole number of at most _INT_DIGITS digits (a name -> count
+    map of agents or skills). An empty object is valid (a real zero); one bad entry makes the whole map unreported,
+    never a smaller total."""
+    return (
+        f"(jsonb_typeof({element}) = 'object' AND NOT EXISTS (SELECT 1 FROM jsonb_each({element}) m "
+        f"WHERE jsonb_typeof(m.value) <> 'number' OR m.value::text !~ '^[0-9]{{1,{_INT_DIGITS}}}$'))"
+    )
+
+
+_SUMMARY_REPORTED = (
+    "to_jsonb(array_remove(ARRAY["
+    f"CASE WHEN {_summary_count('turns')} IS NOT NULL THEN 'turns' END, "
+    f"CASE WHEN {_summary_count('tool_calls')} IS NOT NULL THEN 'tool_calls' END, "
+    f"CASE WHEN {_valid_count_map(f'{_SUMMARY_ATTRS}->' + _literal('agents'))} THEN 'agents' END, "
+    f"CASE WHEN {_valid_count_map(f'{_SUMMARY_ATTRS}->' + _literal('skills'))} THEN 'skills' END"
+    "]::text[], NULL))"
+)
 _COUNTER_VALUES: tuple[tuple[str, str], ...] = (
     *_COUNTERS_FROM_ROLLUPS,
     *_COUNTERS_FROM_RAW,
@@ -1369,7 +1394,10 @@ _SESSION_DIMS_VALUES: tuple[tuple[str, str], ...] = (
         f"'identity_ts', {_ts_text('id.ts')}, 'story_ts', {_ts_text('st.ts')}, "
         "'counters_source', CASE WHEN sm.ts IS NOT NULL THEN 'summary' "
         "WHEN cur.summary_ts IS NULL THEN 'fallback' END, "
-        "'tool_counters', CASE WHEN sm.ts IS NOT NULL THEN 'summary_only' END"
+        "'tool_counters', CASE WHEN sm.ts IS NOT NULL THEN 'summary_only' END, "
+        f"'summary_state', CASE WHEN sm.ts IS NOT NULL THEN CASE WHEN {_IS_FINAL_SUMMARY} THEN 'final' "
+        "ELSE 'provisional' END END, "
+        f"'summary_reported', CASE WHEN sm.ts IS NOT NULL THEN {_SUMMARY_REPORTED} END"
         ")), '{}'::jsonb)",
     ),
 )
@@ -1399,9 +1427,10 @@ def _session_dims_set(column: str) -> str:
         return (
             "attrs = nullif(coalesce(sd.attrs, '{}'::jsonb) "
             "|| coalesce(EXCLUDED.attrs - 'identity_ts' - 'story_ts' - 'counters_source' "
-            "- 'tool_counters', '{}'::jsonb) "
+            "- 'tool_counters' - 'summary_state' - 'summary_reported', '{}'::jsonb) "
             f"|| CASE WHEN {_SUMMARY_WINS} THEN jsonb_build_object('counters_source', 'summary', "
-            "'tool_counters', 'summary_only') "
+            "'tool_counters', 'summary_only', 'summary_state', EXCLUDED.attrs->'summary_state', "
+            "'summary_reported', EXCLUDED.attrs->'summary_reported') "
             f"WHEN {_FALLBACK_RUNS} THEN jsonb_build_object('counters_source', 'fallback') ELSE '{{}}'::jsonb END "
             f"|| CASE WHEN {_identity_wins()} THEN jsonb_build_object('identity_ts', EXCLUDED.attrs->'identity_ts') "
             "ELSE '{}'::jsonb END "

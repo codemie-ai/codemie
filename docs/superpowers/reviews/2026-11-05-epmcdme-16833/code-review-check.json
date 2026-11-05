@@ -1,0 +1,28 @@
+{
+  "decision": "approve",
+  "rationale": "CR-001 (OpenAPI baseline unverified) is resolved: the real-app probe at HEAD a79fa1a1a matched all 9 closure schemas exactly (9/9 negative controls fail it) and the 6 stray default:null lines were removed. The full enterprise-guarded snapshot test remains UNVERIFIED (needs codemie-enterprise), not passed; retrieval scenarios were skipped in the harness runs.",
+  "confidence": "medium",
+  "risk_flags": ["public-api"],
+  "business_review": [
+    {"kind": "story-ac", "item": "Summary turns/tool_calls/agents/skills: detail and list serve whole-session totals, never below observed", "status": "pass", "notes": "greatest(nullif(observed,0), summary); live tests: 1345 passed at 47a963027, 20 passed at 0a8f2b181"},
+    {"kind": "story-ac", "item": "Metric the summary reports explicitly (count 0 or empty map) is served as 0", "status": "pass", "notes": "coalesce(...,0) for reported; complete_zero and empty-map tests"},
+    {"kind": "story-ac", "item": "Metric no summary field reports is served as null even when observed events exist for another metric", "status": "pass", "notes": "nullif(observed,0) with NULL summary; no-summary, hooks-only, omitted/malformed tests"},
+    {"kind": "story-ac", "item": "summary_state provisional/final/none from is_final, never inferred from total == observed", "status": "pass", "notes": "persisted to attrs.summary_state by rollup; provisional, final-replaces-provisional, none tests; legacy rows serve provisional"},
+    {"kind": "story-ac", "item": "tool_call_count, tool_calls_success, tool_success_rate stay observed; tool_calls_total optional whole-session", "status": "pass", "notes": "observed from invocations_hourly; tool_calls_total nullable"},
+    {"kind": "story-ac", "item": "KPI/users/repositories tool counts observed; turns whole-session in list/detail, overview, users, repositories", "status": "pass", "notes": "single get_turns_by_session change; users/repos turns asserted in 0a8f2b181. Context-depth buckets not directly asserted."},
+    {"kind": "story-ac", "item": "Hooks-only/OTel/mixed dedup and 16609/16741 request-event and tool-success behavior unchanged", "status": "pass", "notes": "dedup SQL kept as observed side; 7 dispatch_gate failures reproduced on baseline 0c4e0ea44"},
+    {"kind": "spec", "item": "Contract fields additive: turns, agent_count, skill_count, tool_calls_total int|null; summary_state none|provisional|final", "status": "partial", "notes": "Scoped probe matches served schema exactly; enterprise-guarded test_openapi_matches_baseline not run (needs codemie-enterprise), unverified."},
+    {"kind": "spec", "item": "State and reported metrics persisted in session_dims.attrs by summary rollup; client attrs stripped; legacy rows provisional", "status": "pass", "notes": "EXCLUDED keys stripped and re-added only when summary wins; map validation boundary tests"},
+    {"kind": "spec", "item": "No manufactured per-turn timestamps, outcomes or active duration from totals", "status": "pass", "notes": "only counters/state/metrics added; active_ms and tool_calls_success unchanged"},
+    {"kind": "spec", "item": "No migration; UI, CLI and duration out of scope", "status": "pass", "notes": "diff touches reader, rollups, model, handler, tests, openapi baseline only"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "4 subjects in range all match EPMCDME-####: Description"},
+    {"kind": "code-quality", "status": "pass", "notes": "new test file has Apache license header; additions within analytics core responsibility; no Optional[] or untyped additions found by targeted grep"},
+    {"kind": "security", "status": "pass", "notes": "f-string SQL in rollups.py _valid_count_map interpolates only internal column expressions and a constant, no user input; no credential logging or auth changes"}
+  ],
+  "findings": [],
+  "finding_status": [
+    {"id": "CR-001", "status": "resolved", "notes": "Evidence artifacts exist and HEAD is a79fa1a1a; probe PASS on 9-schema closure, 9/9 negative controls, sanity-api 190 and sanity-ui 82 passed. Enterprise snapshot test unverified."}
+  ]
+}

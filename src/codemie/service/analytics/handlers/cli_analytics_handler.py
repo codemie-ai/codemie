@@ -78,6 +78,20 @@ def depth_bucket(turns: int) -> str:
 # ── Coercion helpers (the reader may return Decimal, None or int) ───────────────
 
 
+def _opt_int(value: Any) -> int | None:
+    """A count that may be unknown: None stays None, a real zero stays 0."""
+    return None if value is None else _i(value)
+
+
+def _summary_fields(row: dict[str, Any]) -> dict[str, Any]:
+    """The latest summary's state and the metrics it reports (turns, tool_calls, agents, skills): a metric is complete
+    only when it is listed here and the state is final; observed counts alone say nothing about completeness."""
+    return {
+        "summary_state": _s(row.get("summary_state")) or "none",
+        "summary_metrics": sorted(row.get("summary_metrics") or []),
+    }
+
+
 def _i(value: Any) -> int:
     if value is None:
         return 0
@@ -819,7 +833,7 @@ class LocalAnalyticsHandler:
     @staticmethod
     def _session_row(
         row: dict,
-        turns_by_session: dict[str, int],
+        turns_by_session: dict[str, dict],
         success_by_session: dict[str, dict],
         lines_by_session: dict[str, dict],
         skills_by_session: dict[str, Any],
@@ -828,7 +842,8 @@ class LocalAnalyticsHandler:
         sid = _s(row.get("session_id"))
         model = normalize_model(_s(row.get("model_name")))
         cache_read = _i(row.get("cache_read_tokens"))
-        turns = turns_by_session.get(sid, 0)
+        summary = turns_by_session.get(sid, {})
+        observed = success_by_session.get(sid, {})
         lines = lines_by_session.get(sid, {})
         started_at = row.get("started_at")
         # The reader's activity-range duration: the one Session Detail and Users Avg report too.
@@ -846,8 +861,12 @@ class LocalAnalyticsHandler:
             "start_time": _iso(started_at),
             "duration_ms": duration_ms,
             "model_name": LocalAnalyticsHandler._display_models(model_cost_rows, model),
-            "turns": turns,
-            "tool_call_count": _i(success_by_session.get(sid, {}).get("tool_calls")),
+            # None is unknown (no summary reports it, no observed activity); 0 is a reported zero
+            "turns": _opt_int(summary.get("turns")),
+            **_summary_fields(summary),
+            # observed calls pair with the success rate; the summary's whole-session count is the optional total
+            "tool_call_count": _i(observed.get("tool_calls")),
+            "tool_calls_total": _opt_int(observed.get("tool_calls_total")),
             "api_call_count": _i(row.get("api_call_count")),
             "input_tokens": _i(row.get("input_tokens")),
             "output_tokens": _i(row.get("output_tokens")),
@@ -946,7 +965,7 @@ class LocalAnalyticsHandler:
         skill_rows = await self._repo.get_skill_names_by_session(session_ids, scope=f.scope)
         skills_by_session = {_s(r["session_id"]): r["skill_names"] for r in skill_rows}
 
-        turns_by_session = {_s(r.get("session_id")): _i(r.get("turns")) for r in turns_rows}
+        turns_by_session = {_s(r.get("session_id")): r for r in turns_rows}
         success_by_session = {_s(r.get("session_id")): r for r in success_rows}
         lines_by_session = {_s(r.get("session_id")): r for r in lines_rows}
 
@@ -1076,8 +1095,10 @@ class LocalAnalyticsHandler:
             "start_time": _iso(started_at),
             "duration_ms": duration_ms,
             "model_name": display_model,
-            "turns": _i(scalars.get("turns")),
+            "turns": _opt_int(scalars.get("turns")),
+            **_summary_fields(scalars),
             "tool_call_count": _i(scalars.get("tool_call_count")),
+            "tool_calls_total": _opt_int(scalars.get("tool_calls_total")),
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "cache_read_tokens": cache_read,
@@ -1088,8 +1109,8 @@ class LocalAnalyticsHandler:
             "bloat_pct": _pct(crc, cost_usd),
             "events": events,
             "active_ms": _i(scalars.get("active_ms")),
-            "agent_count": _i(scalars.get("agent_count")),
-            "skill_count": _i(scalars.get("skill_count")),
+            "agent_count": _opt_int(scalars.get("agent_count")),
+            "skill_count": _opt_int(scalars.get("skill_count")),
             "cache_read_cost_usd": crc,
             "tool_calls_success": tool_ok_total,
             "tool_success_rate": _pct(tool_ok_total, _i(scalars.get("tool_call_count"))),

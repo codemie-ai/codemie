@@ -1,0 +1,15 @@
+{
+  "CR-001": {
+    "kind": "evidence",
+    "claim": "The OpenAPI baseline is now verified against the generated schema for everything this change touches; the full enterprise-guarded snapshot test remains unverified.",
+    "history": "At reviewed_head 47a963027 the baseline was hand-patched from model_json_schema and unconfirmed. Probe against real app.openapi() found 6 properties where the snapshot carried \"default\": null that the served schema never emits; removed in a79fa1a1a (6 deletions, 1 file, still canonical_json). The turns-contract decision (whole-session turns everywhere) is a different, already resolved decision and is not part of this finding.",
+    "code_delta_since_reviewed_head": "47a963027..a79fa1a1a = 0a8f2b181 (test assertions only, tests/.../test_live_session_summary_totals.py) + a79fa1a1a (openapi.json, 6 lines). No src/ change since 47a963027.",
+    "evidence": [
+      {"what": "scoped OpenAPI probe, real codemie.rest_api.main app via the repo's app_probe.py and PROFILE_ENV, no codemie-enterprise", "result": "exit 0, PASS (exact closure equality) at a79fa1a1a: list GET /v1/analytics/cli-analytics/sessions -> LocalAnalyticsSessionsResponse -> LocalAnalyticsSessionRow; detail GET .../sessions/{trace_id} -> LocalAnalyticsSessionDetailResponse -> LocalAnalyticsSessionDetail; live == committed for all 9 closure schemas and both operations; whole-document schemas_changed [] and paths_changed []; only the 24 enterprise LLM Proxy paths exist in the snapshot alone; closure vs base differs only in Row and Detail", "file": "qa-api/probe-result.json, qa-api/affected_schemas.json, qa-api/openapi_probe.py"},
+      {"what": "negative controls", "result": "9 of 9 mutations (field removed, turns back to int default 0, agent_count non-null, skill_count removed, summary_* removed, observed tool_success_rate removed, list/detail response miswired) make the probe fail"},
+      {"what": "manual sanity-api, harness 0.1.770, -n 2 --reruns 2, task-only backend started from 0a8f2b181", "result": "190 passed, 10 skipped, 2 reruns, exit 0, failed 0 error 0; 7 skips missing capability retrieval, 3 excluded from the suite", "file": "qa-api/sanity-api-20261105-113143.md"},
+      {"what": "manual sanity-ui, headless, UI 6ea7b1a2d, same backend/DB", "result": "82 passed, 9 skipped, 1 rerun, exit 0, failed 0 error 0; all 9 skips retrieval-specific", "file": "qa-ui/sanity-ui-20261105-124607.md"}
+    ],
+    "limitations": "tests/codemie/rest_api/router_guards/test_openapi_snapshot.py::test_openapi_matches_baseline is marked enterprise and needs codemie-enterprise (LLM Proxy routes); it could not run here and is NOT claimed as passed. Retrieval-dependent scenarios were skipped in both harness runs and are unverified. Lack of the enterprise guard alone is not a code defect."
+  }
+}

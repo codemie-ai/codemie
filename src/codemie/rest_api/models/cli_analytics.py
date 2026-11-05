@@ -22,6 +22,8 @@ reference implementation and is documented per-field in the repository layer.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 _ISO8601 = "ISO 8601 datetime string"
@@ -227,8 +229,28 @@ class LocalAnalyticsSessionRow(BaseModel):
     start_time: str = Field(..., description=_ISO8601)
     duration_ms: int
     model_name: str
-    turns: int = 0
-    tool_call_count: int = 0
+    turns: int | None = Field(
+        None,
+        description="User turns, whole-session. None is unknown (no summary reports it, no observed turn); 0 is a "
+        "reported zero. At least the observed turns; complete only when summary_state is final and summary_metrics "
+        "lists 'turns'.",
+    )
+    summary_state: Literal["none", "provisional", "final"] = Field(
+        "none",
+        description="'none' (no session summary), 'provisional' (a snapshot that later events can exceed) or 'final'.",
+    )
+    summary_metrics: list[str] = Field(
+        default_factory=list,
+        description="Metrics the latest summary reports validly: any of 'turns', 'tool_calls', 'agents', 'skills'.",
+    )
+    tool_call_count: int = Field(
+        0, description="Tool calls observed in events: the denominator of the success rate. Can be below the total."
+    )
+    tool_calls_total: int | None = Field(
+        None,
+        description="Whole-session tool calls of the latest session summary, never below tool_call_count. None when "
+        "no summary reports it (unknown); 0 is a real zero.",
+    )
     api_call_count: int = 0
     input_tokens: int
     output_tokens: int
@@ -318,12 +340,13 @@ class LocalAnalyticsDispatchRow(BaseModel):
 class LocalAnalyticsSessionDetail(LocalAnalyticsSessionRow):
     events: list[LocalAnalyticsSessionEvent] = Field(default_factory=list)
     active_ms: int = 0
-    agent_count: int = 0
-    skill_count: int = 0
+    agent_count: int | None = Field(None, description="Subagent dispatches; None unknown, 0 reported zero (see turns).")
+    skill_count: int | None = Field(None, description="Skill invocations; None unknown, 0 reported zero (see turns).")
     cache_read_cost_usd: float = 0.0
     tool_calls_success: int = 0
     tool_success_rate: float = Field(
-        0.0, description="Percent, one decimal (0.0-100.0). _pct(tool_calls_success, tool_call_count)."
+        0.0,
+        description="Percent, one decimal (0.0-100.0). _pct(tool_calls_success, tool_call_count): observed calls only.",
     )
     tools: list[LocalAnalyticsToolWithSuccessRow] = Field(default_factory=list)
     dispatches: list[LocalAnalyticsDispatchRow] = Field(default_factory=list)

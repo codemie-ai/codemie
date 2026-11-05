@@ -80,6 +80,41 @@ _API_REQUEST = int(EventKind.API_REQUEST)
 _LLM_REQUEST = int(SpanKind.LLM_REQUEST)
 _DIM_TYPES = "ARRAY[" + ", ".join(f"'{t}'" for t in DIMENSION_HOOK_TYPES) + "]::text[]"
 _C = 'COLLATE "C"'
+_AND = " AND "
+# Whether the latest summary of session_dims `d` reports metric {c} validly (summary_reported, stored with it).
+# A row stored before that key existed has none: its non-NULL columns are taken as reported, as before.
+_REPORTED = (
+    "(d.summary_ts IS NOT NULL AND (d.attrs->'summary_reported' IS NULL "
+    "OR d.attrs->'summary_reported' @> to_jsonb('{c}'::text)))"
+)
+# A whole-session counter of `d`, only when the summary reports it (a fallback or stale stored value is not that).
+_SUMMARY_COUNT = "(CASE WHEN " + _REPORTED + " THEN d.{c} END)"
+# A summary map (`agents`, `skills`: name -> count) of `d` whose every entry is a whole number: an empty map is a
+# real 0, one bad entry makes the map unknown rather than a smaller total.
+_VALID_MAP = (
+    "(jsonb_typeof(d.{c}) = 'object' AND NOT EXISTS (SELECT 1 FROM jsonb_each(d.{c}) m "
+    "WHERE jsonb_typeof(m.value) <> 'number' OR m.value::text !~ '^[0-9]{{1,9}}$'))"
+)
+# Its sum: NULL unless the summary reports it and the whole map is valid.
+_SUMMARY_MAP_TOTAL = (
+    "(CASE WHEN " + _REPORTED + _AND + _VALID_MAP + " THEN coalesce((SELECT sum((m.value::text)::bigint) "
+    "FROM jsonb_each(d.{c}) m), 0) END)"
+)
+_SUMMARY_TURNS, _SUMMARY_TOOL_CALLS = (_SUMMARY_COUNT.format(c=c) for c in ("turns", "tool_calls"))
+# none without a summary; the persisted state of the latest one; a summary stored before the state existed is not
+# proven final, so it is provisional.
+_SUMMARY_STATE = (
+    "CASE WHEN d.summary_ts IS NULL THEN 'none' ELSE coalesce(d.attrs->>'summary_state', 'provisional') END"
+)
+_SUMMARY_METRICS = (
+    "CASE WHEN d.summary_ts IS NULL THEN ARRAY[]::text[] "
+    "WHEN d.attrs->'summary_reported' IS NOT NULL "
+    "THEN ARRAY(SELECT jsonb_array_elements_text(d.attrs->'summary_reported')) "
+    "ELSE array_remove(ARRAY[CASE WHEN d.turns IS NOT NULL THEN 'turns' END, "
+    "CASE WHEN d.tool_calls IS NOT NULL THEN 'tool_calls' END, "
+    "CASE WHEN " + _VALID_MAP.format(c="agents") + " THEN 'agents' END, "
+    "CASE WHEN " + _VALID_MAP.format(c="skills") + " THEN 'skills' END], NULL) END"
+)
 _MAX_PAGE_OFFSET = 2**62  # far below the int64 bound of `OFFSET $offset::bigint`, far beyond any real row count
 
 
@@ -408,7 +443,7 @@ class PostgresCliAnalyticsReader:
         # The viewer scope is always the first condition: nothing appended later can displace it.
         conditions = [sql_list_condition(f.scope)[0]]
         conditions.extend(["false"] if f.deny_all else PostgresCliAnalyticsReader._filter_conditions(f))
-        where = ("\n            WHERE " + " AND ".join(conditions)) if conditions else ""
+        where = ("\n            WHERE " + _AND.join(conditions)) if conditions else ""
         return f"""
         sel AS (
             SELECT * FROM (
@@ -702,11 +737,18 @@ class PostgresCliAnalyticsReader:
     async def get_turns_by_session(self, f: LocalAnalyticsFilter) -> Rows:
         return await self._q(
             f"""
-        WITH {self._sessions_cte(f)}
-        SELECT session_id, sum(turns)::bigint AS turns
-        FROM turns_daily
-        WHERE true{self._scope(f)}
-        GROUP BY session_id""",
+        WITH {self._sessions_cte(f)},
+        t AS (
+            SELECT session_id, sum(turns)::bigint AS turns
+            FROM turns_daily
+            WHERE true{self._scope(f)}
+            GROUP BY session_id
+        )
+        SELECT sel.session_id,
+               -- observed turns prove activity, not completeness: a 0 is served only when the summary reports it
+               greatest(nullif(t.turns, 0), {_SUMMARY_TURNS})::bigint AS turns,
+               {_SUMMARY_STATE} AS summary_state, {_SUMMARY_METRICS} AS summary_metrics
+        FROM sel JOIN session_dims d ON d.session_id = sel.session_id LEFT JOIN t ON t.session_id = sel.session_id""",
             window_params(f),
         )
 
@@ -747,11 +789,19 @@ class PostgresCliAnalyticsReader:
     async def get_tool_success_by_session(self, f: LocalAnalyticsFilter) -> Rows:
         return await self._q(
             f"""
-        WITH {self._sessions_cte(f)}
-        SELECT session_id, sum(calls)::bigint AS tool_calls, sum(success)::bigint AS tool_calls_success
-        FROM invocations_hourly
-        WHERE kind = 1 AND session_id <> ''{self._scope(f)}
-        GROUP BY session_id""",
+        WITH {self._sessions_cte(f)},
+        o AS (
+            SELECT session_id, sum(calls)::bigint AS tool_calls, sum(success)::bigint AS tool_calls_success
+            FROM invocations_hourly
+            WHERE kind = 1 AND session_id <> ''{self._scope(f)}
+            GROUP BY session_id
+        )
+        SELECT sel.session_id, coalesce(o.tool_calls, 0)::bigint AS tool_calls,
+               coalesce(o.tool_calls_success, 0)::bigint AS tool_calls_success,
+               CASE WHEN {_SUMMARY_TOOL_CALLS} IS NOT NULL
+                    THEN greatest(coalesce(o.tool_calls, 0), {_SUMMARY_TOOL_CALLS}) END::bigint AS tool_calls_total
+        FROM sel JOIN session_dims d ON d.session_id = sel.session_id LEFT JOIN o ON o.session_id = sel.session_id
+        WHERE o.session_id IS NOT NULL OR {_SUMMARY_TOOL_CALLS} IS NOT NULL""",
             window_params(f),
         )
 
@@ -852,7 +902,7 @@ class PostgresCliAnalyticsReader:
             having.append("nullif(max(s.repository), '') ILIKE $search::text")
         if is_unattributed:
             having.append("nullif(max(s.repository), '') IS NULL")
-        having_sql = ("\n        HAVING " + " AND ".join(having)) if having else ""
+        having_sql = ("\n        HAVING " + _AND.join(having)) if having else ""
         params = window_params(f)
         if search:
             params["search"] = f"%{search.strip().lower()}%"
@@ -936,7 +986,7 @@ class PostgresCliAnalyticsReader:
             SELECT s.session_id, {sort_key} AS sort_key
             FROM sel s
                  {joins}
-            WHERE {" AND ".join(conditions)}
+            WHERE {_AND.join(conditions)}
         ),
         page AS (
             SELECT session_id, sort_key FROM filtered
@@ -1111,12 +1161,22 @@ class PostgresCliAnalyticsReader:
             (SELECT sum(lines_removed) FROM lines_daily WHERE session_id = $sid::text)::bigint   AS lines_removed,
             (SELECT sum(active_ms_user) + sum(active_ms_cli)
                FROM active_time_daily WHERE session_id = $sid::text)::bigint                     AS active_ms,
-            (SELECT sum(turns) FROM turns_daily WHERE session_id = $sid::text)::bigint           AS turns,
+            -- observed turns prove activity, not completeness: a 0 is served only when the summary reports it
+            greatest(nullif((SELECT sum(turns) FROM turns_daily WHERE session_id = $sid::text), 0),
+                     (SELECT {_SUMMARY_TURNS} FROM session_dims d WHERE d.session_id = $sid::text)
+            )::bigint AS turns,
+            (SELECT {_SUMMARY_STATE} FROM session_dims d WHERE d.session_id = $sid::text) AS summary_state,
+            (SELECT {_SUMMARY_METRICS} FROM session_dims d WHERE d.session_id = $sid::text) AS summary_metrics,
             -- all tools, not the 20 listed: the same rollup rows as get_tool_success_by_session
             (SELECT sum(calls) FROM invocations_hourly WHERE kind = 1 AND session_id = $sid::text)::bigint
                 AS tool_call_count,
             (SELECT sum(success) FROM invocations_hourly WHERE kind = 1 AND session_id = $sid::text)::bigint
                 AS tool_calls_success,
+            -- the latest summary's whole-session count, never below what the rollup observed; NULL without one
+            (SELECT CASE WHEN {_SUMMARY_TOOL_CALLS} IS NOT NULL THEN greatest({_SUMMARY_TOOL_CALLS}, coalesce(
+                    (SELECT sum(calls) FROM invocations_hourly WHERE kind = 1 AND session_id = $sid::text), 0)) END
+               FROM session_dims d WHERE d.session_id = $sid::text)::bigint AS tool_calls_total,
+            greatest(nullif(
             (coalesce((SELECT sum(agent_count) FROM tool_facts_daily WHERE session_id = $sid::text), 0)
              -- a hook event not yet reflected by a matching span OR by an already-rolled-up
              -- invocations_hourly row (once the rollup catches up, it already counts this
@@ -1141,15 +1201,19 @@ class PostgresCliAnalyticsReader:
                                     AND sp.span_kind IN ({_TOOL}, {_EXEC}, {_INTERACTION})
                                     AND sp.ts >= date_trunc('day', he.ts, 'UTC')
                                     AND sp.ts < date_trunc('day', he.ts, 'UTC') + interval '1 day'))
+            ), 0),
+             (SELECT {_SUMMARY_MAP_TOTAL.format(c="agents")} FROM session_dims d WHERE d.session_id = $sid::text)
             )::bigint AS agent_count,
             -- tool_facts_daily already counts each skill invocation once; a dispatch adds only while its
             -- name has no kind-2 row, that is before the rollup has caught up with it.
-            (coalesce((SELECT sum(skill_count) FROM tool_facts_daily WHERE session_id = $sid::text), 0)
+            greatest(nullif((coalesce((SELECT sum(skill_count) FROM tool_facts_daily WHERE session_id = $sid::text), 0)
              + (SELECT count(*) FROM hook_events
                 WHERE session_id = $sid::text AND event_type = '{SKILL_DISPATCH_EVENT}' AND skill_name <> ''
                   AND octet_length(skill_name) <= {MAX_KEY_BYTES}
                   AND skill_name NOT IN (SELECT name FROM invocations_hourly
-                                         WHERE kind = 2 AND session_id = $sid::text)))::bigint  AS skill_count
+                                         WHERE kind = 2 AND session_id = $sid::text))), 0),
+             (SELECT {_SUMMARY_MAP_TOTAL.format(c="skills")} FROM session_dims d WHERE d.session_id = $sid::text)
+            )::bigint AS skill_count
         WHERE {gate}""",
             {"sid": session_id, **gate_params},
         )
