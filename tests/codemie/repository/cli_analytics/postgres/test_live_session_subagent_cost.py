@@ -79,7 +79,15 @@ async def _get_engine() -> AnalyticsPgEngine:
 
 async def _cleanup(engine: AnalyticsPgEngine, session_id: str) -> None:
     async with engine.acquire() as conn:
-        for table in ("hook_events", "log_events", "cost_daily", "session_dims", "rollup_dirty", "session_usage"):
+        for table in (
+            "hook_events",
+            "log_events",
+            "cost_daily",
+            "session_dims",
+            "rollup_dirty",
+            "session_usage",
+            "turns_daily",  # rolled up from a prompt event
+        ):
             await conn.execute(f"DELETE FROM {table} WHERE session_id = $1", session_id)  # noqa: S608
 
 
@@ -88,6 +96,17 @@ async def _seed_start(engine: AnalyticsPgEngine, session_id: str) -> None:
         await conn.execute(
             "INSERT INTO hook_events (ts, session_id, event_type) VALUES ($1, $2, 'agent.session.start')",
             _START,
+            session_id,
+        )
+
+
+async def _seed_prompt(engine: AnalyticsPgEngine, session_id: str) -> None:
+    """A genuine activity signal without any cost: the window admits a session that did something, and leaves out
+    a lifecycle-only start (EPMCDME-16496)."""
+    async with engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO hook_events (ts, session_id, event_type) VALUES ($1, $2, 'agent.prompt.submit')",
+            _START + timedelta(seconds=5),
             session_id,
         )
 
@@ -294,15 +313,18 @@ async def test_subagent_tokens_do_not_leak_when_a_filter_excludes_the_session():
 async def test_totals_only_session_lists_tokens_and_cost_available_end_to_end():
     engine = await _get_engine()
     with_totals, without_totals = "test-epmcdme-16441-e2e-totals", "test-epmcdme-16441-e2e-none"
+    lifecycle_only = "test-epmcdme-16441-e2e-lifecycle"
     try:
-        for sid in (with_totals, without_totals):
+        for sid in (with_totals, without_totals, lifecycle_only):
             await _cleanup(engine, sid)
             await _seed_start(engine, sid)
+        await _seed_prompt(engine, without_totals)  # active, but no cost and no totals
         await _seed_totals(engine, with_totals, [_USAGE])
         await _refresh(engine)
 
         reader = PostgresCliAnalyticsReader(engine)
         facts = {r["session_id"]: r for r in await reader.get_session_cost_facts(_window(), include_costless=True)}
+        assert lifecycle_only not in facts  # a start with no activity is not a session, whatever its cost
         assert facts[with_totals]["input_tokens"] == 1000
         assert facts[with_totals]["output_tokens"] == 200
         assert facts[with_totals]["cache_read_tokens"] == 300
@@ -315,9 +337,10 @@ async def test_totals_only_session_lists_tokens_and_cost_available_end_to_end():
         assert by_id[with_totals]["cost_usd"] > 0
         assert by_id[with_totals]["input_tokens"] == 1000
         assert by_id[without_totals]["cost_available"] is False
+        assert lifecycle_only not in by_id
     finally:
-        await _cleanup(engine, with_totals)
-        await _cleanup(engine, without_totals)
+        for sid in (with_totals, without_totals, lifecycle_only):
+            await _cleanup(engine, sid)
         await engine.close()
 
 
@@ -363,6 +386,7 @@ async def test_totals_are_counted_once_for_a_session_with_cost_rows_for_two_mode
         for session in (sid, no_totals, costless):
             await _cleanup(engine, session)
             await _seed_start(engine, session)
+        await _seed_prompt(engine, costless)  # active (a prompt), with no cost rows and no totals
         await _seed_totals(engine, sid, [_USAGE])
         await _refresh(engine)
         async with engine.acquire() as conn:

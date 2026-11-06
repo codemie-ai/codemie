@@ -551,7 +551,7 @@ async def test_repositories_search_delegates_to_repository():
     handler = LocalAnalyticsHandler(repo)
 
     await handler.get_repositories(make_filter(), page=0, per_page=50, include_branches=False, search="codem")
-    repo.get_session_cost_facts.assert_called_once_with(ANY, search="codem")
+    repo.get_session_cost_facts.assert_called_once_with(ANY, search="codem", include_costless=True)
 
 
 @pytest.mark.asyncio
@@ -571,7 +571,7 @@ async def test_repositories_search_none_delegates_to_repository():
     handler = LocalAnalyticsHandler(repo)
 
     await handler.get_repositories(make_filter(), page=0, per_page=50, include_branches=False, search=None)
-    repo.get_session_cost_facts.assert_called_once_with(ANY, search=None)
+    repo.get_session_cost_facts.assert_called_once_with(ANY, search=None, include_costless=True)
 
 
 @pytest.mark.asyncio
@@ -1175,6 +1175,25 @@ async def test_get_users_avg_duration_none_when_no_priced_sessions():
     repo = _users_repo([])
     result, _ = await LocalAnalyticsHandler(repo).get_users(make_filter(), page=None, per_page=None)
     assert result["avg_session_duration_ms"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("durations", "expected"),
+    [
+        ([1000, 3000, None], 2000),  # an unknown end is skipped, not averaged in as 0
+        ([0, 3000, None], 1500),  # a genuine zero stays in the denominator
+        ([None, None, None], None),  # nothing known -> no average
+    ],
+)
+async def test_get_users_avg_duration_skips_unknown_durations(durations, expected):
+    repo = _users_repo([{"developer_name": "dev", "session_ids": ["s1", "s2", "s3"]}])
+    repo.get_session_durations = AsyncMock(
+        return_value=[{"session_id": f"s{n}", "duration_ms": d} for n, d in enumerate(durations, 1)]
+        + [{"session_id": "other", "duration_ms": 90000}]  # not listed: never part of the average
+    )
+    result, _ = await LocalAnalyticsHandler(repo).get_users(make_filter(), page=None, per_page=None)
+    assert result["avg_session_duration_ms"] == expected
 
 
 def test_iso_attaches_utc_to_naive_datetime():

@@ -194,7 +194,13 @@ async def test_branch_mode_buckets_by_project_repository_and_branch():
 
 @pytest.mark.asyncio
 async def test_worst_context_session_tie_goes_to_the_lowest_session_id():
-    rows = [_cost_row("b"), _cost_row("a"), _cost_row("c", cache_read_tokens=1)]
+    rows = [
+        _cost_row("b", api_call_count=1),
+        _cost_row("a", api_call_count=1),
+        _cost_row("c", api_call_count=1, cache_read_tokens=1),
+        # A smaller ID without API calls is never a candidate, regardless of row order or cached tokens.
+        _cost_row("0", api_call_count=0, cache_read_tokens=1000),
+    ]
     turns = [{"session_id": sid, "turns": 1} for sid in "abc"]
     worst = set()
     for perm in permutations(rows):

@@ -293,10 +293,17 @@ async def test_lists_added_to_user_queries_use_the_existing_sel_join_and_groupin
     await getattr(r, method)(_flt())
 
     sql = _flat(r.sql[0])
-    assert sql.count("JOIN sel s") == 1
+    if method == "get_users":
+        # Every selected session is listed even without cost rows (cost rows RIGHT JOINed to `sel`), and counted
+        # once, from `s`; the cost-row aggregation (`c.session_id`) must not come back.
+        assert sql.count("JOIN sel s") == 1 and "RIGHT JOIN sel s ON s.session_id = c.session_id" in sql
+        assert "count(DISTINCT s.session_id) AS session_count" in sql
+        assert "array_agg(DISTINCT c.session_id)" not in sql
+    else:
+        assert sql.count("JOIN sel s") == 1
+        assert sql.count("array_agg(DISTINCT c.session_id)") <= 1
     assert group_by in sql
     assert "array_agg(DISTINCT (CASE WHEN" in sql  # normalised via the shared SQL helpers
-    assert sql.count("array_agg(DISTINCT c.session_id)") <= 1
 
 
 @pytest.mark.asyncio

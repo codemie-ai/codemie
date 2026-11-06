@@ -724,7 +724,12 @@ class LocalAnalyticsHandler:
         # Average duration over every session get_users returned: the same costless-inclusive
         # universe as the overview, not the priced-only one D1 used to restrict to.
         listed_sessions = {_s(s) for row in user_rows for s in (row.get("session_ids") or [])}
-        durations = [_i(r.get("duration_ms")) for r in duration_rows if _s(r.get("session_id")) in listed_sessions]
+        # A session whose activity end is unknown (NULL, legacy data) is not a 0 ms session: skip it, keep real zeros.
+        durations = [
+            _i(r["duration_ms"])
+            for r in duration_rows
+            if _s(r.get("session_id")) in listed_sessions and r.get("duration_ms") is not None
+        ]
         avg_duration = int(sum(durations) / len(durations)) if durations else None
 
         rows.sort(key=lambda r: r["developer_name"])
@@ -758,7 +763,7 @@ class LocalAnalyticsHandler:
             lines_rows,
             session_model_rows,
         ) = await asyncio.gather(
-            self._repo.get_session_cost_facts(f, search=search),
+            self._repo.get_session_cost_facts(f, search=search, include_costless=True),
             self._repo.get_turns_by_session(f),
             self._repo.get_file_facts_by_session(f),
             self._repo.get_tool_success_by_session(f),
@@ -1287,7 +1292,7 @@ class LocalAnalyticsHandler:
         ) = await asyncio.gather(
             self._repo.get_cost_kpis(f),
             self._repo.get_session_model_costs(f, spend_only=True),
-            self._repo.get_session_cost_facts(f),
+            self._repo.get_session_cost_facts(f, include_costless=True),
             self._repo.get_turns_by_session(f),
             self._repo.get_file_facts_by_session(f),
             self._repo.get_lines_totals(f),
@@ -1316,8 +1321,10 @@ class LocalAnalyticsHandler:
             sid = _s(row.get("session_id"))
             turns = turns_by_session.get(sid, 0)
             ratio = _ctx_per_call(row.get("cache_read_tokens"), row.get("api_call_count"))
-            # Highest ratio wins; a tie goes to the lowest session id, not to row order.
-            if worst_ratio is None or ratio > worst_ratio or (ratio == worst_ratio and sid < worst_trace):
+            # Among sessions with API calls, highest ratio wins; a tie goes to the lowest session id.
+            if _i(row.get("api_call_count")) > 0 and (
+                worst_ratio is None or ratio > worst_ratio or (ratio == worst_ratio and sid < worst_trace)
+            ):
                 worst_ratio = ratio
                 worst_prompt = (
                     _served_prompt(
@@ -1336,18 +1343,18 @@ class LocalAnalyticsHandler:
         dead_ids = self._dead_ids(money.by_session, files_by_session)
         dead_count, wasted = len(dead_ids), sum(money.by_session[sid] for sid in dead_ids)
 
-        cost_session_ids = {_s(r.get("session_id")) for r in cost_facts}
-        priced_files = [r for sid, r in files_by_session.items() if sid in cost_session_ids]
+        selected_session_ids = {_s(r.get("session_id")) for r in cost_facts}
+        selected_files = [r for sid, r in files_by_session.items() if sid in selected_session_ids]
         # Sessions that contributed to code_changes: a changed file, or a non-zero line delta.
         code_ids = {
-            sid for sid, r in files_by_session.items() if sid in cost_session_ids and _i(r.get("files_changed"))
+            sid for sid, r in files_by_session.items() if sid in selected_session_ids and _i(r.get("files_changed"))
         }
         code_ids |= {
             _s(r.get("session_id")) for r in lines_rows if _i(r.get("lines_added")) or _i(r.get("lines_removed"))
         }
-        files_changed = sum(_i(r.get("files_changed")) for r in priced_files)
-        files_written = sum(_i(r.get("files_written")) for r in priced_files)
-        files_edited = sum(_i(r.get("files_edited")) for r in priced_files)
+        files_changed = sum(_i(r.get("files_changed")) for r in selected_files)
+        files_written = sum(_i(r.get("files_written")) for r in selected_files)
+        files_edited = sum(_i(r.get("files_edited")) for r in selected_files)
         lines = _first(lines_totals)
 
         data = {
@@ -1359,7 +1366,7 @@ class LocalAnalyticsHandler:
                 "cache_read_cost_usd": cache_read_cost_usd,
                 "bloat_pct": _pct(cache_read_cost_usd, total_cost),
                 "total_cost_usd": total_cost,
-                **_union_lists(classes, cost_session_ids),
+                **_union_lists(classes, selected_session_ids),
             },
             "dead_sessions": {
                 "count": dead_count,

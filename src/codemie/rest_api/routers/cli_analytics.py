@@ -23,11 +23,13 @@ errors to HTTP statuses; it never touches an engine directly.
 Three modelling decisions are invisible in the payload but change every number
 (see ANALYTICS_DISCOVERY/local_analytics_implementation_plan.md §3):
 
-  D1  Session universe = sessions that made a priced API call, i.e. those present
-      in coding_agent_cost_daily. The hook-event universe is broader (29 vs 16
-      sessions in the trailing 7 days at time of writing) and is what
-      /v1/analytics/coding-agents uses; the Local Analytics contract implies the
-      priced universe, so KPIs here are restricted to it.
+  D1  Session universe = every session the window selects (in-period activity; a
+      lifecycle-only session is not selected) that passes the viewer scope and filters,
+      with or without cost rows (EPMCDME-15517): a selected session without a priced call
+      is counted by Overview, Cost, Users, Repositories, Sessions, Activity and Efficiency alike.
+      Money stays cost-based: spend sessions,
+      cost and token sums, and the average cost per session come from cost_daily
+      rows only, so a cost-less session adds no cost and is not in the average.
 
   D2  Repository key = the directory the session STARTED in, basename-normalised
       (v_session_dimensions.repository). `cwd` is not stable within a session, so
