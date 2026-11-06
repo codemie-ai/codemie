@@ -1,0 +1,67 @@
+{
+  "decision": "approve",
+  "rationale": "All 8 prior blocking code findings (CR-001..CR-008) are resolved, checked against current source at HEAD 841b62180 (dispatch named reviewed_head 54d254d7, which is an ancestor of HEAD; the fix-up diff signature matched). No check_scope or fix_evidence was supplied, which is fine because every finding is kind code and every finding's source path is in changed_files. business_review and standards_review are carried forward unchanged from the final round; no new findings are raised on a check round.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "all 8 subjects in 773af940..HEAD match the documented EPMCDME-####: Description format (git-workflow.md Commit Message Format)"
+    },
+    {
+      "kind": "code-quality",
+      "status": "partial",
+      "notes": "met: new change-diff helper in its own module activity_attributes.py. unmet: Module Cohesion - audit field sets and attribute helpers appended to project_budget_service.py (2641 lines), budget_service.py and project_service.py"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "no auth/role code touched; new log lines and activity attributes record field names only for free text, emails and categories; no untrusted-input parsing added"
+    }
+  ],
+  "findings": [],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "resolved",
+      "notes": "Audit field sets, project_audit_snapshot and the project-budget/group attribute builders now live in service/activity/change_audit.py; no _*_AUDIT_* sets remain in the three services."
+    },
+    {
+      "id": "CR-002",
+      "status": "resolved",
+      "notes": "_previous_models_snapshot reads raw provider metadata models before update (L1343-1345); _add_models_change emits previous_models and skips order-insensitive equal lists."
+    },
+    {
+      "id": "CR-003",
+      "status": "resolved",
+      "notes": "update_project_budget loads the active assignment via get_active_by_budget_id when sync did not (L1370-1372); project_name goes into the event and the log."
+    },
+    {
+      "id": "CR-004",
+      "status": "resolved",
+      "notes": "previous_values['categories'] is built by _group_categories_audit_snapshot as cents-rounded {pct, soft_budget} and compared to the requested specs in the same shape (L2277-2280)."
+    },
+    {
+      "id": "CR-005",
+      "status": "resolved",
+      "notes": "_emit_group_updated_event returns early when updated_fields is empty (L2137), which covers all three update_project_budget_group exits."
+    },
+    {
+      "id": "CR-006",
+      "status": "resolved",
+      "notes": "previous total_amount uses round_amount (L2247), and group_update_attributes rounds the new total the same way before diffing."
+    },
+    {
+      "id": "CR-007",
+      "status": "resolved",
+      "notes": "new_total_amount is passed only when categories were applied, using the reloaded persisted total (L2308); a total-only PATCH no longer audits an amount change."
+    },
+    {
+      "id": "CR-008",
+      "status": "resolved",
+      "notes": "_persist_allowed_models inserts PROJECT_UPDATED only when updated_fields is non-empty (project_service.py L954)."
+    }
+  ]
+}

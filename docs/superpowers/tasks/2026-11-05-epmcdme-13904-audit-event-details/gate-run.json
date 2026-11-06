@@ -1,0 +1,130 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-13904_audit-event-details",
+  "head": "dd90e29b32a6315a9afd80934638883d5b0740f5",
+  "runner": "poetry",
+  "started_at": "2026-11-06T07:45:57Z",
+  "completed_at": "2026-11-06T07:49:09Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "ruff",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1910,
+      "command": "make ruff",
+      "exit_code": 0,
+      "notes": "Run as ../../repos/codemie/.venv/Scripts/python -m ruff format && ruff check --fix && ruff check (poetry has no env in worktree); no files changed. Also covers codemie-pre-commit hook steps (staged ruff, ruff check); .pre-commit-config.yaml hooks are not installed in .git/hooks, so they never ran on these commits."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 23772,
+      "command": "make build",
+      "exit_code": 0,
+      "notes": "Built codemie-0.8.0 sdist+wheel. poetry build created a bare worktree .venv and dist/ as side effects; both removed after the run."
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1296,
+      "command": "make license-check",
+      "exit_code": 0,
+      "notes": "Run as python scripts/license_headers/check_license_headers.py --check --quiet with main-checkout interpreter: 'Checked 2994 files, 0 missing license headers'. Also covers codemie-pre-commit license step."
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 18824,
+      "command": "make gitleaks",
+      "exit_code": 0,
+      "notes": "Docker binary absent; ran identical image/args via podman (MSYS_NO_PATHCONV=1 podman run --rm -v <worktree>:/workspace ghcr.io/gitleaks/gitleaks:v8.30.1 dir --no-banner --verbose --redact --config=/workspace/.gitleaks.toml /workspace): 'no leaks found'."
+    },
+    {
+      "id": "gitleaks-commits",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 1846,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": 0,
+      "notes": "Hook scans staged changes only and nothing is staged; since the hook was never installed, ran gitleaks git --log-opts=e95e1d2..dd90e29 via podman over the branch commits instead: '8 commits scanned', 'no leaks found' (9th commit cfee4ae is deletion-only)."
+    },
+    {
+      "id": "test",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 67127,
+      "command": "make test",
+      "exit_code": 0,
+      "notes": "Scoped per caller/workspace policy: PYTHONPATH=src python -m pytest tests/codemie/service/{activity,budget,project} + activity/budget/project/project_budget router tests: 925 passed, 5 skipped. Skips are test_live_registration_lifecycle.py 'TEST_LOCAL_PG_URL is not set: no database to run against'. Full tests/ suite not run."
+    },
+    {
+      "id": "test-cli-analytics-live",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make test-cli-analytics-live",
+      "exit_code": null,
+      "notes": "Skip if: diff does not touch src/codemie/repository/cli_analytics/postgres/."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make coverage",
+      "exit_code": null,
+      "notes": "Skip if: coverage not requested by caller."
+    },
+    {
+      "id": "sonar-local",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 295,
+      "command": "make sonar-local",
+      "exit_code": 0,
+      "notes": "Self-skip, exit 0: '[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.' Enable by setting SONAR_TOKEN (env or .env.local) with sonar-scanner on PATH. Also stands in for the codemie-pre-push hook's sonar step (pre-push is opt-in: '[pre-push] CODEMIE_PREPUSH_ENABLED=false -> skipping heavy checks.'). Sonar remains owed to the MR common pipeline."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make verify",
+      "exit_code": null,
+      "notes": "Composite of ruff, license, gitleaks, test; each component run individually above."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "exit_code": null,
+      "notes": "Needs a live CodeMie stack serving this branch, superadmin fixtures and ~/.codemie/test-harness.json (absent). Required before opening the MR: its terminal summary must go in the MR '## Test harness' section for the compliance bot."
+    },
+    {
+      "id": "commit-msg",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 200,
+      "command": "bash scripts/git-hooks/commit_msg.sh",
+      "exit_code": 0,
+      "notes": "Ran against each of the 9 commit messages in e95e1d2..dd90e29; all start with 'EPMCDME-13904:'."
+    },
+    {
+      "id": "wait-ci-init",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": ".gitlab-ci.yml job wait-ci-init (extends .wait-ci-init-template)",
+      "exit_code": null,
+      "notes": "Waits on external contexts ci-pipeline and compliance-report (plus autoreview), which run outside this repo on merge_request_event; cannot run locally."
+    }
+  ],
+  "failures": {}
+}

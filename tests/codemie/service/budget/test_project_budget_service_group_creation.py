@@ -191,7 +191,9 @@ class TestGroupWritesRejectPlatformZero:
     async def test_update_legacy_platform_zero_group_with_platform_zero_is_rejected(self):
         service = ProjectBudgetService()
         session = AsyncMock()
-        group = SimpleNamespace(id="group-1", project_name="proj-a", deleted_at=None, budget_duration="30d")
+        group = SimpleNamespace(
+            id="group-1", project_name="proj-a", name="group", description=None, deleted_at=None, budget_duration="30d"
+        )
         data = SimpleNamespace(
             name=None,
             description=None,

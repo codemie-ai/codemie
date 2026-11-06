@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "generated": "2026-11-06T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 16,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 8,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Touches four components: a new shared diff helper (build_change_attributes) plus the change_audit field-set/builder module in the activity package, and the call sites in BudgetService, ProjectBudgetService (group create/update/delete, project budget update) and ProjectService (project update and a second update path). A new reusable audit abstraction is shared across the project_management and budget_management domains. All of it lives in the service layer, so it stays at L, not XL." },
+    { "dimension": "file_change_estimate", "reason": "8 files changed per diffstat (6 source, 2 test), 412 insertions across src/codemie/service/{activity,budget,project} and tests/codemie/service/budget. Actual-mode mapping 7-10 files = L." },
+    { "dimension": "technical_risk", "reason": "The activity-event emission pattern already exists (BudgetManagementEvent and the updated_fields logging used in cost_center_service). The closest pattern only lists field names and does not cover splitting fields into value fields and name-only fields to keep emails and free text out of audit payloads, so that gap bumped the score from S to M. The no-op skip and the category/total_amount diffing are new logic, but they are not security-critical and are easy to reverse." },
+    { "dimension": "requirements_clarity", "reason": "The AC are explicit: previous_/new_ values for non-sensitive fields, name-only reporting for emails and free text, the missing group-deleted and group-updated events, and skipping events on no-op updates. No open design decisions remain." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

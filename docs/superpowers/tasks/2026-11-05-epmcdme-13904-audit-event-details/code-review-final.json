@@ -1,0 +1,204 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "request-changes",
+  "gate_decision": {
+    "gate": "code-review.final",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "Autonomous run per user instruction: fix-up da0a22843 closes CR-001..CR-008; orchestrator checked change_audit.py (sensitive fields name-only, cent rounding); 941 existing related tests pass, ruff clean."
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "Autonomous run per user instruction: all 8 findings are valid audit-accuracy defects (phantom/no-op/empty-diff events, missing previous values, float noise) or a cheap cohesion fix; fix all."
+    },
+    {
+      "gate": "code-review.final",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "Autonomous run per user instruction: fix-up da0a22843 closes CR-001..CR-008; orchestrator checked change_audit.py (sensitive fields name-only, cent rounding); 941 existing related tests pass, ruff clean."
+    }
+  ],
+  "reviewed_head": "dd90e29b32a6315a9afd80934638883d5b0740f5",
+  "rounds": [
+    "final"
+  ],
+  "rationale": "No spec/story, so the acceptance lens was skipped (blind and verification-gap are not in the balanced profile) and confidence is low; 7 edge-case audit-accuracy defects survived reachability checks (CR-006 reachability unconfirmed), plus 1 code-quality Module Cohesion blocker from standards. 0 deferred; 2 dismissed as unreachable (empty-category group is impossible because the platform category is mandatory; group notification settings are always written uniformly across category budgets).",
+  "confidence": "low",
+  "check_confidence": null,
+  "risk_flags": [],
+  "open": 0,
+  "closed": {
+    "fixed": 8,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/budget/project_budget_service.py",
+      "line": 75,
+      "title": "Audit field config bloats oversized service modules",
+      "problem": "code-quality.md Module Cohesion forbids appending a new concern's own constants and pure functions to a ~500+ line module that does not own it. The change adds four audit field frozensets (lines 75-80) and the pure helpers _project_budget_update_attributes, _group_update_attributes and _emit_group_updated_event (711-730, 2139-2173) to the 2641-line project_budget_service.py, audit field sets to budget_service.py (1744 lines, 61-72), and _PROJECT_AUDIT_* sets plus _project_audit_snapshot to project_service.py (995 lines, 57-73).",
+      "impact": "code-quality.md is a documented blocking standard and this is the exact pattern its cohesion rule names; audit-attribute configuration grows already oversized CRUD services instead of living beside the change-diff helper it wraps.",
+      "recommendation": "Move the audit field sets (_PROJECT_BUDGET_AUDIT_*, _GROUP_AUDIT_* in project_budget_service.py; _BUDGET_AUDIT_* in budget_service.py:61-72; _PROJECT_AUDIT_* and _project_audit_snapshot in project_service.py:57-73) and the pure attribute-builder helpers (_project_budget_update_attributes, _group_update_attributes) into a dedicated audit module next to src/codemie/service/activity/activity_attributes.py (or a budget audit module) and import them from the services.",
+      "status": "fixed",
+      "fix": {
+        "change": "Audit field sets, project_audit_snapshot and pure attribute builders moved to service/activity/change_audit.py; services import them",
+        "test": "n/a (existing budget/project/activity suites unchanged and green)"
+      }
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/budget/project_budget_service.py",
+      "line": 724,
+      "title": "Models change lacks previous value and diff",
+      "problem": "_project_budget_update_attributes appends \"models\" to updated_fields and writes new_models whenever data.models is supplied, without comparing to the current allow-list and without ever emitting previous_models.",
+      "impact": "Every project budget PATCH that carries models (even an identical list) is audited as a models change, and the event cannot show what the models were before, contradicting the agreed flat previous_<f>/new_<f> attribute shape that this ticket was reopened to deliver.",
+      "recommendation": "Capture the current model allow-list before _sync_updated_project_budget runs, pass it into _project_budget_update_attributes, add previous_models alongside new_models, and only append \"models\" to updated_fields when the normalized current list differs from the requested one.",
+      "status": "fixed",
+      "fix": {
+        "change": "Previous model allow-list snapshotted from provider raw metadata before sync; models listed with previous_models/new_models only when the order-insensitive lists differ (only new_models when previous is unknown)",
+        "test": "n/a (no new tests per user rule)"
+      }
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/budget/project_budget_service.py",
+      "line": 1362,
+      "title": "project_name missing on name/description-only budget edits",
+      "problem": "In update_project_budget, _assignment stays None unless amounts or models change, so a name/description-only edit produces PROJECT_BUDGET_UPDATED attributes with no project_name (and logs project_name=None).",
+      "impact": "Audit events for the same event type carry project_name inconsistently, so rename/description edits of a project budget cannot be attributed to their project from the event details.",
+      "recommendation": "When _assignment is still None after the sync branch, load it with project_budget_assignment_repository.get_active_by_budget_id(session, budget_id) (or equivalent) so project_name is always present in PROJECT_BUDGET_UPDATED attributes and in the completion log line.",
+      "status": "fixed",
+      "fix": {
+        "change": "update_project_budget loads the active assignment when sync did not, so project_name is always in PROJECT_BUDGET_UPDATED and the completion log",
+        "test": "n/a (no new tests per user rule)"
+      }
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/budget/project_budget_service.py",
+      "line": 2144,
+      "title": "Group categories always reported as changed",
+      "problem": "_group_update_attributes diffs requested categories against previous_values, but update_project_budget_group never stores a categories key in previous_values; build_change_attributes normalizes the missing key to None, so any PATCH that includes categories lists \"categories\" in updated_fields.",
+      "impact": "Group update events claim a category distribution change whenever categories are submitted, including resubmission of the identical split, so the audit misreports what changed.",
+      "recommendation": "Populate previous_values[\"categories\"] from current_result.categories (per-category pct / amount spec in the same shape as the request) before diffing, so \"categories\" lands in updated_fields only when the submitted distribution actually differs; keep it name-only.",
+      "status": "fixed",
+      "fix": {
+        "change": "previous_values['categories'] built from current categories as {pct, soft_budget} cents-rounded specs keyed by submitted categories and compared to the requested specs",
+        "test": "n/a (no new tests per user rule)"
+      }
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/budget/project_budget_service.py",
+      "line": 2254,
+      "title": "No-op group PATCH emits empty update event",
+      "problem": "The scalar-only early return now always calls _emit_group_updated_event; an empty PATCH (all fields None) or one whose values equal the current ones emits PROJECT_BUDGET_GROUP_UPDATED with empty updated_fields. The same unconditional emission exists on the notification-only and full exit paths.",
+      "impact": "Produces audit entries rendered as 'Attributes: -' for requests that changed nothing, the exact symptom QA reopened the ticket for.",
+      "recommendation": "Build the attributes first and only call _emit_group_updated_event when attributes[\"updated_fields\"] is non-empty (apply the same guard on all three exit paths of update_project_budget_group).",
+      "status": "fixed",
+      "fix": {
+        "change": "_emit_group_updated_event returns without inserting when updated_fields is empty, covering all three group PATCH exits",
+        "test": "n/a (no new tests per user rule)"
+      }
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/budget/project_budget_service.py",
+      "line": 2271,
+      "title": "Previous total_amount uses unrounded float sum",
+      "problem": "previous_values[\"total_amount\"] is ProjectBudgetGroupFullResult.total_amount, a plain float sum of per-category max_budget values computed from Decimal-split amounts, compared by equality against the requested total.",
+      "impact": "Float accumulation noise can make an unchanged total appear changed (e.g. 99.99999999999999 -> 100.0) and records an ugly previous value. Reachability unconfirmed: depends on the category split producing a non-exact float sum.",
+      "recommendation": "Round the previous total to cents before diffing, e.g. previous_values[\"total_amount\"] = float(Decimal(str(current_result.total_amount)).quantize(_CENT)), and compare the requested total the same way.",
+      "status": "fixed",
+      "fix": {
+        "change": "Previous and new group total_amount rounded to cents via round_amount before diffing",
+        "test": "n/a (no new tests per user rule)"
+      }
+    },
+    {
+      "id": "CR-007",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/budget/project_budget_service.py",
+      "line": 2286,
+      "title": "Unpersisted total_amount change recorded in audit",
+      "problem": "A group PATCH with total_amount but no categories passes the notification-only return, skips _update_group_categories (the only writer of category amounts; _update_group_scalar_fields writes only name/description/duration), yet _group_update_attributes still diffs data.total_amount and emits previous_total_amount/new_total_amount.",
+      "impact": "The audit log states a budget total changed when no amount was written, giving a false billing record of a limit change.",
+      "recommendation": "Only include total_amount in the audited request when it was actually applied (data.categories is not None); otherwise drop it from the requested map in _group_update_attributes so the event never claims an amount change that was not written.",
+      "status": "fixed",
+      "fix": {
+        "change": "total_amount audited only when categories were applied, using the persisted total from the reloaded group",
+        "test": "n/a (no new tests per user rule)"
+      }
+    },
+    {
+      "id": "CR-008",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/project/project_service.py",
+      "line": 958,
+      "title": "No-op allowed-models write emits empty PROJECT_UPDATED",
+      "problem": "_persist_allowed_models now inserts a PROJECT_UPDATED event unconditionally; reset_allowed_models on a project with no allow-list, or an update with the current values, produces an event with empty updated_fields.",
+      "impact": "Adds new detail-less 'Attributes: -' project.updated entries for writes that changed nothing, reproducing the reopened symptom on a newly added emission path.",
+      "recommendation": "Insert the PROJECT_UPDATED activity event only when change_attributes[\"updated_fields\"] is non-empty (e.g. reset_allowed_models on a project with no allow-list, or an identical update).",
+      "status": "fixed",
+      "fix": {
+        "change": "_persist_allowed_models inserts PROJECT_UPDATED only when updated_fields is non-empty",
+        "test": "n/a (no new tests per user rule)"
+      }
+    }
+  ],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "all 8 subjects in 773af940..HEAD match the documented EPMCDME-####: Description format (git-workflow.md Commit Message Format)"
+    },
+    {
+      "kind": "code-quality",
+      "status": "partial",
+      "notes": "met: new change-diff helper in its own module activity_attributes.py. unmet: Module Cohesion - audit field sets and attribute helpers appended to project_budget_service.py (2641 lines), budget_service.py and project_service.py"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "no auth/role code touched; new log lines and activity attributes record field names only for free text, emails and categories; no untrusted-input parsing added"
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "No spec/story, so the acceptance lens was skipped (blind and verification-gap are not in the balanced profile) and confidence is low; 7 edge-case audit-accuracy defects survived reachability checks (CR-006 reachability unconfirmed), plus 1 code-quality Module Cohesion blocker from standards. 0 deferred; 2 dismissed as unreachable (empty-category group is impossible because the platform category is mandatory; group notification settings are always written uniformly across category budgets).",
+    "confidence": "low",
+    "risk_flags": []
+  }
+}

@@ -287,6 +287,9 @@ async def test_delete_project_budget_marks_deleted_and_clears_resolution_cache()
         budget_id="proj-budget-1",
         budget_type="project",
         budget_category="cli",
+        soft_budget=80.0,
+        max_budget=100.0,
+        budget_duration="30d",
         budget_reset_at="2026-04-22T10:00:00Z",
         provider_metadata={"provider": "litellm", "provider_budget_ref": "provider-budget-1", "sync_status": "ok"},
     )
@@ -361,6 +364,9 @@ async def test_delete_project_budget_shared_budget_failure_does_not_block_soft_d
         budget_id="proj-budget-1",
         budget_type="project",
         budget_category="cli",
+        soft_budget=80.0,
+        max_budget=100.0,
+        budget_duration="30d",
         budget_reset_at="2026-04-22T10:00:00Z",
         provider_metadata={"provider": "litellm", "provider_budget_ref": "provider-budget-1", "sync_status": "ok"},
     )
@@ -915,6 +921,8 @@ async def test_update_project_budget_group_logs_on_scalar_only_edit():
     group = SimpleNamespace(
         id="group-1",
         project_name="proj-a",
+        name="group",
+        description=None,
         deleted_at=None,
         budget_duration="30d",
     )

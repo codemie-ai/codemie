@@ -33,6 +33,7 @@ from codemie.repository.budget_repository import budget_repository
 from codemie.repository.cost_center_repository import cost_center_repository
 from codemie.repository.project_budget_repository import project_budget_group_repository
 from codemie.repository.user_project_repository import user_project_repository
+from codemie.service.activity.activity_attributes import build_change_attributes
 from codemie.service.activity.activity_models import (
     ActivityDomain,
     ActivityEntityType,
@@ -51,6 +52,24 @@ from codemie.service.project.project_assignment_service import ProjectAssignment
 from codemie.service.project.repository_registration_service import RepositoryRegistrationRepository
 from codemie.service.user.authentication_service import invalidate_user_from_cache
 from codemie.service.llm_service.llm_service import llm_service
+
+_PROJECT_AUDIT_FIELDS: Final[tuple[str, ...]] = (
+    "name",
+    "display_name",
+    "description",
+    "cost_center_id",
+    "chargeback_enabled",
+    "chargeback_attribution",
+    "cli_analytics_enabled",
+)
+_PROJECT_AUDIT_VALUE_FIELDS: Final[frozenset[str]] = frozenset(
+    {*_PROJECT_AUDIT_FIELDS, "enforce_member_spend_limits"} - {"description"}
+)
+_PROJECT_AUDIT_NAME_ONLY_FIELDS: Final[frozenset[str]] = frozenset({"description"})
+
+
+def _project_audit_snapshot(project: Application) -> dict[str, object]:
+    return {field: getattr(project, field, None) for field in _PROJECT_AUDIT_FIELDS}
 
 
 def _is_valid_model_identifier(model_id: str) -> bool:
@@ -327,6 +346,11 @@ class ProjectService:
                 )
                 cls._validate_chargeback_attribution(session, effective_chargeback_attribution, resolved_cost_center_id)
 
+            previous_fields = _project_audit_snapshot(project)
+            if enforce_member_spend_limits is not None:
+                previous_fields["enforce_member_spend_limits"] = SettingsService.get_enforce_member_spend_limits(
+                    project.name
+                )
             if validated_name is not None and validated_name != project.name:
                 # Registrations are keyed by project name: they move with it, in this transaction.
                 cls._lock_project_or_404(session, project.name)
@@ -348,19 +372,33 @@ class ProjectService:
                     project.name,
                     enforce_member_spend_limits,
                 )
-            activity_event_repository.insert(
-                ActivityEventCreate(
-                    domain=ActivityDomain.PROJECT_MANAGEMENT,
-                    event_type=ProjectManagementEvent.PROJECT_UPDATED,
-                    entity_type=ActivityEntityType.PROJECT,
-                    entity_id=project.name,
-                    actor_id=user.id,
-                ),
-                session,
+            new_fields = _project_audit_snapshot(project)
+            if enforce_member_spend_limits is not None:
+                new_fields["enforce_member_spend_limits"] = enforce_member_spend_limits
+            change_attributes = build_change_attributes(
+                previous_fields,
+                new_fields,
+                value_fields=_PROJECT_AUDIT_VALUE_FIELDS,
+                name_only_fields=_PROJECT_AUDIT_NAME_ONLY_FIELDS,
             )
+            if change_attributes["updated_fields"]:
+                activity_event_repository.insert(
+                    ActivityEventCreate(
+                        domain=ActivityDomain.PROJECT_MANAGEMENT,
+                        event_type=ProjectManagementEvent.PROJECT_UPDATED,
+                        entity_type=ActivityEntityType.PROJECT,
+                        entity_id=project.name,
+                        actor_id=user.id,
+                        attributes=change_attributes,
+                    ),
+                    session,
+                )
             session.commit()
             session.refresh(project)
-            logger.info(f"project_updated: project={project.name!r}, by={user.id}, domain=project_management")
+            logger.info(
+                f"project_updated: project={project.name!r}, by={user.id}, "
+                f"updated_fields={change_attributes['updated_fields']}, domain=project_management"
+            )
             cls._resync_member_allocations_if_needed(project.name, enforce_member_spend_limits)
             return project
 
@@ -869,7 +907,9 @@ class ProjectService:
                     message=cls.ERRORS.DEFAULT_MODEL_REQUIRED_WITH_ALLOWED_MODELS,
                 )
 
-            return cls._persist_allowed_models(session, project_name, validated_models, effective_default_model)
+            return cls._persist_allowed_models(
+                session, project_name, validated_models, effective_default_model, actor_id=user.id
+            )
 
     @classmethod
     def reset_allowed_models(cls, user: User, project_name: str) -> Application:
@@ -878,7 +918,7 @@ class ProjectService:
             project = cls._find_project(session, project_name)
             cls._check_allowed_models_authorization(project, user)
 
-            return cls._persist_allowed_models(session, project_name, None, None)
+            return cls._persist_allowed_models(session, project_name, None, None, actor_id=user.id)
 
     @staticmethod
     def _get_available_chat_model_ids(all_models: list) -> set[str]:
@@ -932,6 +972,7 @@ class ProjectService:
         project_name: str,
         allowed_models: list[str] | None,
         default_model: str | None,
+        actor_id: str,
     ) -> Application:
         """Lock the project row and persist allowed_models/default_model.
 
@@ -943,10 +984,27 @@ class ProjectService:
             ExtendedHTTPException 500: persistence failure
         """
         project = cls._find_project(session, project_name)
+        change_attributes = build_change_attributes(
+            {"allowed_models": project.allowed_models, "default_model": project.default_model},
+            {"allowed_models": allowed_models, "default_model": default_model},
+            value_fields=("allowed_models", "default_model"),
+        )
 
         project.allowed_models = allowed_models
         project.default_model = default_model
         session.add(project)
+        if change_attributes["updated_fields"]:
+            activity_event_repository.insert(
+                ActivityEventCreate(
+                    domain=ActivityDomain.PROJECT_MANAGEMENT,
+                    event_type=ProjectManagementEvent.PROJECT_UPDATED,
+                    entity_type=ActivityEntityType.PROJECT,
+                    entity_id=project.name,
+                    actor_id=actor_id,
+                    attributes=change_attributes,
+                ),
+                session,
+            )
 
         try:
             session.commit()
@@ -957,6 +1015,10 @@ class ProjectService:
             session.rollback()
             raise ExtendedHTTPException(code=500, message="Failed to update project allowed models")
 
+        logger.info(
+            f"project_updated: project={project.name!r}, by={actor_id}, "
+            f"updated_fields={change_attributes['updated_fields']}, domain=project_management"
+        )
         return project
 
 

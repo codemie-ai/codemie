@@ -38,6 +38,12 @@ from codemie.repository.project_budget_repository import (
     project_budget_group_repository,
     project_member_budget_assignment_repository,
 )
+from codemie.service.budget.budget_audit import (
+    group_category_audit_spec,
+    group_update_attributes,
+    project_budget_update_attributes,
+    round_amount,
+)
 from codemie.service.budget.budget_enums import (
     AllocationMode,
     BudgetCategory,
@@ -716,6 +722,13 @@ class ProjectBudgetService:
             changed_fields["budget_duration"] = data.budget_duration
         return changed_fields
 
+    @classmethod
+    def _previous_models_snapshot(cls, budget: Budget) -> dict[str, Any]:
+        raw = cls._metadata_value(budget.provider_metadata or {}, "raw")
+        if isinstance(raw, dict) and "models" in raw:
+            return {"models": raw["models"]}
+        return {}
+
     @staticmethod
     def _effective_project_budget_values(
         budget: Budget,
@@ -1361,6 +1374,9 @@ class ProjectBudgetService:
             except ValidationException as exc:
                 raise ExtendedHTTPException(code=400, message=str(exc)) from exc
 
+        previous_values = {field: getattr(budget, field, None) for field in changed_fields}
+        if data.models is not None:
+            previous_values.update(self._previous_models_snapshot(budget))
         if changed_fields:
             budget = await budget_repository.update(session, budget_id, changed_fields)
 
@@ -1385,23 +1401,30 @@ class ProjectBudgetService:
                     provider=provider,
                 )
 
+        if _assignment is None:
+            _assignment = await project_budget_assignment_repository.get_active_by_budget_id(session, budget_id)
+        project_name = _assignment.project_name if _assignment else None
+        change_attributes = project_budget_update_attributes(
+            previous_values, changed_fields, new_models=data.models, project_name=project_name
+        )
         logger.info(
             f"budget_event=project_budget_update_completed component=project_budget_service "
-            f"project_name={_assignment.project_name if _assignment else None!r} budget_id={budget_id!r} "
-            f"budget_category={budget.budget_category!r} updated_fields={sorted(changed_fields.keys())!r} "
+            f"project_name={project_name!r} budget_id={budget_id!r} "
+            f"budget_category={budget.budget_category!r} updated_fields={change_attributes['updated_fields']!r} "
             f"actor_id={actor_id!r}"
         )
-        await activity_event_repository.async_insert(
-            ActivityEventCreate(
-                domain=ActivityDomain.BUDGET_MANAGEMENT,
-                event_type=BudgetManagementEvent.PROJECT_BUDGET_UPDATED,
-                entity_type=ActivityEntityType.PROJECT_BUDGET_GROUP,
-                entity_id=budget_id,
-                actor_id=actor_id,
-                attributes={"updated_fields": sorted(changed_fields.keys())},
-            ),
-            session,
-        )
+        if change_attributes["updated_fields"]:
+            await activity_event_repository.async_insert(
+                ActivityEventCreate(
+                    domain=ActivityDomain.BUDGET_MANAGEMENT,
+                    event_type=BudgetManagementEvent.PROJECT_BUDGET_UPDATED,
+                    entity_type=ActivityEntityType.PROJECT_BUDGET_GROUP,
+                    entity_id=budget_id,
+                    actor_id=actor_id,
+                    attributes=change_attributes,
+                ),
+                session,
+            )
         return budget
 
     async def rebalance_project_budget(
@@ -1885,6 +1908,15 @@ class ProjectBudgetService:
                 entity_type=ActivityEntityType.PROJECT_BUDGET_GROUP,
                 entity_id=budget_id,
                 actor_id=actor_id,
+                attributes={
+                    "project_name": assignment.project_name if assignment else None,
+                    "budget_category": budget.budget_category,
+                    "soft_budget": budget.soft_budget,
+                    "max_budget": budget.max_budget,
+                    "budget_duration": budget.budget_duration,
+                    "allocation_count": len(allocations),
+                    "child_budget_count": len(child_budgets),
+                },
             ),
             session,
         )
@@ -2218,8 +2250,30 @@ class ProjectBudgetService:
                 "categories",
                 "notification_owner_email",
                 "soft_limit_notify_once",
+                "soft_limit_notification_enabled",
             )
             if getattr(data, f, None) is not None
+        )
+
+    @staticmethod
+    async def _emit_group_updated_event(
+        session: AsyncSession,
+        group: ProjectBudgetGroup,
+        actor_id: str,
+        attributes: dict[str, Any],
+    ) -> None:
+        if not attributes["updated_fields"]:
+            return
+        await activity_event_repository.async_insert(
+            ActivityEventCreate(
+                domain=ActivityDomain.BUDGET_MANAGEMENT,
+                event_type=BudgetManagementEvent.PROJECT_BUDGET_GROUP_UPDATED,
+                entity_type=ActivityEntityType.PROJECT_BUDGET_GROUP,
+                entity_id=group.id,
+                actor_id=actor_id,
+                attributes={"project_name": group.project_name, **attributes},
+            ),
+            session,
         )
 
     @staticmethod
@@ -2294,6 +2348,11 @@ class ProjectBudgetService:
 
         await self.check_group_request(session, group.project_name, data)
         updated_fields = self._collect_updated_group_fields(data)
+        previous_values: dict[str, Any] = {
+            "name": group.name,
+            "budget_duration": group.budget_duration,
+            "description": group.description,
+        }
         await self._update_group_scalar_fields(session, group_id, data)
 
         has_notification_update = self._has_group_notification_update(data)
@@ -2303,6 +2362,9 @@ class ProjectBudgetService:
                 f"project_name={group.project_name!r} group_id={group_id!r} "
                 f"updated_fields={updated_fields!r} actor_id={actor_id!r} domain=budget_management"
             )
+            await self._emit_group_updated_event(
+                session, group, actor_id, group_update_attributes(data, previous_values)
+            )
             return await self._load_group_full_result(session, group)
 
         current_result = await self._load_group_full_result(session, group)
@@ -2310,10 +2372,16 @@ class ProjectBudgetService:
             r.assignment.budget_category: r for r in current_result.categories
         }
 
+        first_budget = current_result.categories[0].budget if current_result.categories else None
+        previous_values["total_amount"] = round_amount(current_result.total_amount)
+        if first_budget is not None:
+            previous_values["notification_owner_email"] = first_budget.notification_owner_email
+            previous_values["soft_limit_notify_once"] = first_budget.soft_limit_notify_once
+            previous_values["soft_limit_notification_enabled"] = first_budget.soft_limit_notification_enabled
+
         if has_notification_update:
             await self._apply_group_notification_updates(session, data, current_result)
 
-        first_budget = current_result.categories[0].budget if current_result.categories else None
         eff_notif_email, eff_notify_once, eff_notification_enabled = self._effective_group_notification_settings(
             data, first_budget
         )
@@ -2327,9 +2395,17 @@ class ProjectBudgetService:
                 f"project_name={group.project_name!r} group_id={group_id!r} "
                 f"updated_fields={updated_fields!r} actor_id={actor_id!r} domain=budget_management"
             )
+            await self._emit_group_updated_event(
+                session, group, actor_id, group_update_attributes(data, previous_values)
+            )
             return await self._load_group_full_result(session, group)
 
+        new_categories = None
         if data.categories is not None:
+            previous_values["categories"] = self._group_categories_audit_snapshot(
+                data.categories, current_by_cat, current_result.total_amount
+            )
+            new_categories = self._requested_group_categories_audit(data.categories, eff_total)
             await self._update_group_categories(
                 session,
                 group,
@@ -2349,18 +2425,49 @@ class ProjectBudgetService:
             f"project_name={group.project_name!r} group_id={group_id!r} "
             f"updated_fields={updated_fields!r} actor_id={actor_id!r} domain=budget_management"
         )
-        await activity_event_repository.async_insert(
-            ActivityEventCreate(
-                domain=ActivityDomain.BUDGET_MANAGEMENT,
-                event_type=BudgetManagementEvent.PROJECT_BUDGET_GROUP_UPDATED,
-                entity_type=ActivityEntityType.PROJECT_BUDGET_GROUP,
-                entity_id=group_id,
-                actor_id=actor_id,
-                attributes={"project_name": group.project_name},
-            ),
+        result = await self._load_group_full_result(session, group)
+        await self._emit_group_updated_event(
             session,
+            group,
+            actor_id,
+            group_update_attributes(
+                data,
+                previous_values,
+                new_total_amount=result.total_amount if new_categories is not None else None,
+                new_categories=new_categories,
+            ),
         )
-        return await self._load_group_full_result(session, group)
+        return result
+
+    @staticmethod
+    def _group_categories_audit_snapshot(
+        categories: dict[str, Any],
+        current_by_cat: dict[str, ProjectBudgetGroupCategoryResult],
+        current_total: float,
+    ) -> dict[str, dict[str, float] | None]:
+        snapshot: dict[str, dict[str, float] | None] = {}
+        for cat_key in categories:
+            current = current_by_cat.get(cat_key)
+            if current is None or not current_total:
+                snapshot[cat_key] = None
+                continue
+            pct = current.budget.max_budget / current_total * 100
+            snapshot[cat_key] = group_category_audit_spec(pct, current.budget.soft_budget)
+        return snapshot
+
+    def _requested_group_categories_audit(
+        self,
+        categories: dict[str, Any],
+        eff_total: float,
+    ) -> dict[str, dict[str, float] | None]:
+        requested: dict[str, dict[str, float] | None] = {}
+        for cat_key, cat_spec in categories.items():
+            if cat_spec.pct <= 0:
+                requested[cat_key] = None
+                continue
+            amount = float(Decimal(str(eff_total)) * Decimal(str(cat_spec.pct)) / Decimal("100"))
+            requested[cat_key] = group_category_audit_spec(cat_spec.pct, self._resolve_soft_amount(cat_spec, amount))
+        return requested
 
     async def _update_group_scalar_fields(
         self,
@@ -2565,6 +2672,23 @@ class ProjectBudgetService:
             f"budget_event=project_budget_group_delete_completed component=project_budget_service "
             f"project_name={group.project_name!r} group_id={group_id!r} "
             f"category_count={len(assignments)} actor_id={actor_id!r}"
+        )
+        await activity_event_repository.async_insert(
+            ActivityEventCreate(
+                domain=ActivityDomain.BUDGET_MANAGEMENT,
+                event_type=BudgetManagementEvent.PROJECT_BUDGET_GROUP_DELETED,
+                entity_type=ActivityEntityType.PROJECT_BUDGET_GROUP,
+                entity_id=group_id,
+                actor_id=actor_id,
+                attributes={
+                    "project_name": group.project_name,
+                    "name": group.name,
+                    "budget_duration": group.budget_duration,
+                    "category_count": len(assignments),
+                    "deleted_budget_ids": sorted(assignment.budget_id for assignment in assignments),
+                },
+            ),
+            session,
         )
 
     async def reset_project_budget_group(

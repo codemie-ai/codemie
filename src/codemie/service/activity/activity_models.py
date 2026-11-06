@@ -110,6 +110,7 @@ class BudgetManagementEvent:
     PROJECT_BUDGET_DELETED = "budget.project_budget.deleted"
     PROJECT_BUDGET_GROUP_CREATED = "budget.project_budget_group.created"
     PROJECT_BUDGET_GROUP_UPDATED = "budget.project_budget_group.updated"
+    PROJECT_BUDGET_GROUP_DELETED = "budget.project_budget_group.deleted"
     MEMBER_ALLOCATION_OVERRIDDEN = "budget.member_allocation.overridden"
     MEMBER_ALLOCATION_OVERRIDE_CLEARED = "budget.member_allocation.override_cleared"
     PROJECT_BUDGET_REBALANCED = "budget.project_budget.rebalanced"

@@ -31,6 +31,7 @@ from codemie.configs.budget_config import budget_config
 from codemie.configs.config import PredefinedBudgetConfig
 from codemie.core.exceptions import ExtendedHTTPException, ValidationException
 from codemie.repository.budget_repository import budget_repository
+from codemie.service.activity.activity_attributes import build_change_attributes
 from codemie.service.activity.activity_models import (
     ActivityDomain,
     ActivityEntityType,
@@ -38,6 +39,7 @@ from codemie.service.activity.activity_models import (
     BudgetManagementEvent,
 )
 from codemie.service.activity.activity_repository import activity_event_repository
+from codemie.service.budget.budget_audit import BUDGET_AUDIT_NAME_ONLY_FIELDS, BUDGET_AUDIT_VALUE_FIELDS
 from codemie.service.budget.budget_enums import AllocationMode, BudgetCategory, BudgetType
 from codemie.service.budget.budget_models import Budget, member_effective_max_budget
 from codemie.service.budget.provider_registry import get_active_provider
@@ -287,6 +289,12 @@ class BudgetService:
                 entity_type=ActivityEntityType.BUDGET,
                 entity_id=budget.budget_id,
                 actor_id=actor_id,
+                attributes={
+                    "budget_category": data.budget_category.value,
+                    "soft_budget": data.soft_budget,
+                    "max_budget": data.max_budget,
+                    "budget_duration": data.budget_duration,
+                },
             ),
             session,
         )
@@ -353,6 +361,12 @@ class BudgetService:
         # Read before the row takes the new duration: the running period is the old schedule's.
         running_start = self._running_period_start(budget)
         update_fields = self._build_update_fields(data, new_category)
+        change_attributes = build_change_attributes(
+            {field: getattr(budget, field, None) for field in update_fields},
+            update_fields,
+            value_fields=BUDGET_AUDIT_VALUE_FIELDS,
+            name_only_fields=BUDGET_AUDIT_NAME_ONLY_FIELDS,
+        )
         budget = await budget_repository.update(session, budget_id, update_fields)
 
         provider_owned_fields = {"soft_budget", "max_budget", "budget_duration"}
@@ -372,16 +386,18 @@ class BudgetService:
             f"updated_fields={sorted(update_fields.keys())!r} actor_id={actor_id!r} "
             f"actor_name={actor_name or actor_id!r}"
         )
-        await activity_event_repository.async_insert(
-            ActivityEventCreate(
-                domain=ActivityDomain.BUDGET_MANAGEMENT,
-                event_type=BudgetManagementEvent.BUDGET_UPDATED,
-                entity_type=ActivityEntityType.BUDGET,
-                entity_id=budget_id,
-                actor_id=actor_id,
-            ),
-            session,
-        )
+        if change_attributes["updated_fields"]:
+            await activity_event_repository.async_insert(
+                ActivityEventCreate(
+                    domain=ActivityDomain.BUDGET_MANAGEMENT,
+                    event_type=BudgetManagementEvent.BUDGET_UPDATED,
+                    entity_type=ActivityEntityType.BUDGET,
+                    entity_id=budget_id,
+                    actor_id=actor_id,
+                    attributes=change_attributes,
+                ),
+                session,
+            )
         return budget
 
     async def _validate_budget_update_request(
