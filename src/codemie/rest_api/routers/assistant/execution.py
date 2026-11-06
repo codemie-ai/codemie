@@ -22,7 +22,6 @@ from starlette.responses import StreamingResponse
 from codemie.configs import logger
 from codemie.core.ability import Ability, Action
 from codemie.core.errors import ErrorDetailLevel
-from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import (
     BaseModelResponse,
     AssistantChatRequest,
@@ -56,9 +55,9 @@ from codemie.rest_api.routers.utils import (
 )
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
-from codemie.service.assistant.tool_output_visibility import apply_to_response
 from codemie.service.assistant_service import AssistantService
 from codemie.service.conversation_service import ConversationService
+from codemie.service.assistant.tool_output_visibility import strip_response
 from codemie.service.mcp.access_control import MCPAccessControlService
 from codemie.service.llm_service.llm_service import llm_service
 from codemie.service.spend.origin_context import spend_origin
@@ -208,27 +207,6 @@ async def ask_assistant_by_id(
     return result
 
 
-def _resume_tool_call(
-    conversation_id: str,
-):
-    """Validate that a pending checkpoint and pending tool call exist for this conversation."""
-    from codemie.service.conversation_checkpoint_service import ConversationCheckpointService
-
-    svc = ConversationCheckpointService()
-    if svc.get_checkpoint(conversation_id) is None:
-        raise ExtendedHTTPException(
-            code=status.HTTP_404_NOT_FOUND,
-            message="No pending tool call found for this conversation.",
-        )
-
-    pending_tool_call = svc.get_pending_tool_call(conversation_id)
-    if pending_tool_call is None:
-        raise ExtendedHTTPException(
-            code=status.HTTP_404_NOT_FOUND,
-            message="No pending tool call found for this conversation.",
-        )
-
-
 @router.post(
     "/assistants/{assistant_id}/model/tool-call/resume",
     status_code=status.HTTP_200_OK,
@@ -250,12 +228,7 @@ async def resume_tool_call(
     """
     asyncio.create_task(raw_request.state.wait_for_disconnect())
     assistant = get_assistant_by_id_or_raise(assistant_id)
-    check_user_can_access_assistant(user, assistant, "view", Action.READ)
-    _resume_tool_call(
-        conversation_id=request.conversation_id,
-    )
-
-    # Intentionally skip _prepare_assistant_for_execution — resume reuses existing session context.
+    # Authorisation, the consume and the pinned version are the handler's (rules 4, 5).
     return await asyncio.to_thread(
         _ask_assistant_resume,
         assistant,
@@ -267,31 +240,26 @@ async def resume_tool_call(
 
 
 def _ask_assistant_resume(
-    assistant,
+    assistant: Assistant,
     raw_request: Request,
     request: ToolCallResumeRequest,
     user: User,
     background_tasks: BackgroundTasks,
 ):
     """
-    KNOWN GAP: ToolCallResumeRequest carries no `version`, and resume intentionally skips
-    `_prepare_assistant_for_execution` (session context is reused as-is), so there is no pinned
-    execution_assistant here to combine via `_effective_hide_tool_outputs` like the other ask
-    paths. This hides using only the current master assistant's flag. If a turn was paused while
-    running under a pinned version with hide_tool_outputs=True and the master's own flag is later
-    turned off before resume, the resumed output would not be hidden. Fixing this requires
-    persisting the effective hide decision (or pinned version) in the checkpoint when the tool
-    call is first paused — out of scope here.
+    Resume a paused turn as an ordinary streamed turn (rule 5). The handler authorises with the master, consumes the
+    pause and runs it on the pinned version it restores from the pause; the route strips the stream when the master
+    or that version hides tool outputs (fail-closed, as the ordinary route does).
     """
     from codemie.rest_api.handlers.assistant_handlers import get_request_handler
 
-    request_uuid = raw_request.state.uuid
     # A resumed run builds its agent afresh on this thread, so the origin has to be published here
     # exactly as on the first turn; the agent captures it and republishes it on the pool thread.
     with spend_origin(TrafficOrigin.CONVERSATION):
-        handler = get_request_handler(assistant, user, request_uuid)
-        response = handler.handle_tool_call_resume(request, raw_request)
-    return apply_to_response(assistant, response)
+        handler = get_request_handler(assistant, user, raw_request.state.uuid)
+        handler.background_tasks = background_tasks
+        response, version = handler.resume_tool_call(request, raw_request)
+    return strip_response(response) if _effective_hide_tool_outputs(assistant, version) else response
 
 
 @router.post(

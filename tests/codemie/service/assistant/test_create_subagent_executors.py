@@ -19,12 +19,14 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import Mock, patch
 
-from langgraph.graph.state import CompiledStateGraph
-
 from codemie.core.models import AssistantChatRequest
 from codemie.rest_api.models.assistant import Assistant
 from codemie.rest_api.security.user import User
-from codemie.service.assistant.assistant_engine_builder import LangGraphAssistantBuilder
+from codemie.service.assistant.assistant_engine_builder import (
+    LangGraphAssistantBuilder,
+    SubagentBuildContext,
+    SubagentHandle,
+)
 from codemie.service.subagents.builtin_subagents import BuiltinSubagent
 
 BUILDER = "codemie.service.assistant.assistant_engine_builder"
@@ -56,7 +58,7 @@ def _user() -> Mock:
     return user
 
 
-def _create(parent: Assistant) -> tuple[list[CompiledStateGraph[Any, Any, Any, Any]], set[str]]:
+def _create(parent: Assistant) -> list[SubagentHandle]:
     return LangGraphAssistantBuilder.create_subagent_executors(
         assistant=parent,
         user=_user(),
@@ -64,11 +66,12 @@ def _create(parent: Assistant) -> tuple[list[CompiledStateGraph[Any, Any, Any, A
         request_uuid="uuid",
         thread_generator=Mock(),
         llm_model="gpt-4.1",
+        build_context=SubagentBuildContext(),
     )
 
 
 def test_builtin_subagent_built_with_unconfigured_whitelist():
-    agent = Mock()
+    handle = Mock()
     with (
         patch(
             f"{BUILDER}.LangGraphAssistantBuilder._merge_skill_builtin_subagents",
@@ -77,13 +80,13 @@ def test_builtin_subagent_built_with_unconfigured_whitelist():
         patch("codemie.service.tools.assistant_factory.create_assistant_executors", return_value=[]),
         patch(f"{BUILDER}.Assistant.get_by_ids", return_value=[]),
         patch(f"{BUILDER}.BuiltinSubagentsRegistry.get_system_prompt", return_value="builtin prompt"),
-        patch("codemie.service.assistant_service.AssistantService.build_agent", return_value=agent),
+        patch("codemie.service.assistant_service.AssistantService.build_agent_handle", return_value=handle),
         patch("codemie.core.models.Application.get_by_id", return_value=_project(allowed_models=None)),
         patch("codemie.configs.customer_config.CustomerConfig.is_feature_enabled", return_value=True),
     ):
         result = _create(_parent_assistant())
 
-    assert result == ([agent.agent_executor], {"__builtin__general_purpose_subagent"})
+    assert result == [handle]
 
 
 def test_builtin_failure_log_is_informative():
@@ -102,7 +105,7 @@ def test_builtin_failure_log_is_informative():
     ):
         result = _create(_parent_assistant())
 
-    assert result == ([], set())
+    assert result == []
     logged = " ".join(str(c.args[0]) for c in mock_logger.error.call_args_list)
     assert BuiltinSubagent.GENERAL_PURPOSE_SUBAGENT.value in logged
     assert "ModelNotWhitelistedException" in logged
@@ -116,6 +119,9 @@ def test_unbuilt_sub_assistant_is_absent_from_supervisor_descriptions():
     alpha = SimpleNamespace(name="Alpha", description="alpha desc")
     beta = SimpleNamespace(name="Beta", description="beta desc")
     alpha_executor = SimpleNamespace(name="alpha")  # Beta's build raised, so only Alpha has an executor
+    alpha_handle = SubagentHandle(
+        agent=Mock(), executor=alpha_executor, tree_requires_confirmation=False, name="Alpha", description="alpha desc"
+    )
     parent = _parent_assistant()
     parent.assistant_ids = ["a", "b"]
 
@@ -124,19 +130,25 @@ def test_unbuilt_sub_assistant_is_absent_from_supervisor_descriptions():
     customer_config_mock.get_feature_setting.return_value = None
     agent_kwargs: dict[str, Any] = {}
     with (
-        patch("codemie.service.tools.assistant_factory.create_assistant_executors", return_value=[alpha_executor]),
+        patch("codemie.service.tools.assistant_factory.create_assistant_executors", return_value=[alpha_handle]),
         patch(f"{BUILDER}.Assistant.get_by_ids", return_value=[alpha, beta]),
         patch("codemie.service.tool_permissions_service.customer_config", customer_config_mock),
     ):
+        request = AssistantChatRequest(text="hi", llm_model="gpt-4.1")
         LangGraphAssistantBuilder.configure_agent_kwargs(
             agent_kwargs=agent_kwargs,
             assistant=parent,
             user=_user(),
-            request=AssistantChatRequest(text="hi", llm_model="gpt-4.1"),
+            request=request,
             request_uuid="uuid",
             thread_generator=Mock(),
             llm_model="gpt-4.1",
             smart_tool_selection_enabled=False,
+            resolved_policy=LangGraphAssistantBuilder.resolve_tool_policy(
+                parent, request, allow_tool_confirmation=True
+            ),
+            build_context=SubagentBuildContext(),
+            is_root=True,
             create_subagent_executors=LangGraphAssistantBuilder.create_subagent_executors,
             get_subagent_descriptions=LangGraphAssistantBuilder.get_subagent_descriptions_with_contributions,
         )
@@ -184,6 +196,7 @@ def test_builtin_clone_runs_on_explicit_resolved_model():
                 thread_generator=Mock(),
                 resolved_model="resolved-model",
                 agent_name="__builtin__clone",
+                build_context=SubagentBuildContext(),
             )
             outcome = None
         except _CloneStopped as e:

@@ -29,12 +29,13 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from codemie.core.models import AssistantChatRequest, IdeChatRequest, ToolConfig
+from codemie.core.models import AssistantChatRequest, IdeChatRequest, ToolCallPolicy, ToolConfig
 from codemie.core.workflow_models import WorkflowAssistant
 from codemie.rest_api.models.assistant import Assistant
 from codemie.rest_api.security.user import User
 from codemie.rest_api.security.workflow_context import set_current_workflow_id
 from codemie.service.assistant_service import AssistantService
+from codemie.service.assistant.assistant_engine_builder import ResolvedToolPolicy
 
 
 class TestBuildBedrockAgent:
@@ -629,7 +630,11 @@ class TestConfigureLanggraphAgent:
         # Arrange
         mock_subagent1 = Mock()
         mock_subagent2 = Mock()
-        mock_create_subagents.return_value = ([mock_subagent1, mock_subagent2], {'subagent1', 'subagent2'})
+        handle1 = Mock(executor=mock_subagent1, tree_requires_confirmation=False)
+        handle1.name = 'subagent1'
+        handle2 = Mock(executor=mock_subagent2, tree_requires_confirmation=False)
+        handle2.name = 'subagent2'
+        mock_create_subagents.return_value = [handle1, handle2]
         mock_get_descriptions.return_value = {'subagent1': 'Description 1', 'subagent2': 'Description 2'}
 
         assistant = Mock(spec=Assistant)
@@ -649,6 +654,7 @@ class TestConfigureLanggraphAgent:
             thread_generator=None,
             llm_model='claude-sonnet-4',
             smart_tool_selection_enabled=True,
+            resolved_policy=ResolvedToolPolicy(policy=ToolCallPolicy.AUTO_APPROVE, requires_confirmation=False),
         )
 
         # Assert
@@ -663,7 +669,7 @@ class TestConfigureLanggraphAgent:
     ):
         """Test LangGraph configuration without subagents."""
         # Arrange
-        mock_create_subagents.return_value = ([], set())
+        mock_create_subagents.return_value = []
 
         assistant = Mock(spec=Assistant)
         assistant.tool_permissions = None
@@ -682,6 +688,7 @@ class TestConfigureLanggraphAgent:
             thread_generator=None,
             llm_model='claude-sonnet-4',
             smart_tool_selection_enabled=False,
+            resolved_policy=ResolvedToolPolicy(policy=ToolCallPolicy.AUTO_APPROVE, requires_confirmation=False),
         )
 
         # Assert

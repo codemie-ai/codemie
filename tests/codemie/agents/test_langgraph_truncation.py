@@ -60,6 +60,7 @@ def create_mock_agent(llm_model="gpt-4"):
     agent.request_uuid = "test-uuid-123"
     agent.callbacks = []
     agent.tools = []
+    agent._event_adapter = Mock()
     agent.thread_generator = Mock(
         is_closed=Mock(return_value=False),
         is_consumer_aborted=Mock(return_value=False),

@@ -18,7 +18,6 @@ This module provides state management and tool registry capabilities for agents
 that dynamically select relevant tools based on semantic search.
 """
 
-import uuid
 from typing import Annotated, Optional
 
 from langchain_core.tools import BaseTool
@@ -94,15 +93,24 @@ class ToolRegistry:
     def _build_registry(self):
         """Build internal mappings between tool IDs, names, and instances."""
         for tool in self.tools:
-            # Use tool name as base for ID with short hash for uniqueness
-            # This makes IDs more readable in logs while ensuring uniqueness
-            tool_id = f"{tool.name}_{uuid.uuid4().hex[:8]}"
+            # Deterministic id (tool name + toolkit): selected ids stored in a checkpoint must resolve
+            # against a registry rebuilt from scratch on resume, possibly in another process.
+            toolkit = getattr(tool, "toolkit", None) or (getattr(tool, "metadata", None) or {}).get("toolkit")
+            tool_id = self._unique_id(f"{tool.name}_{toolkit or ''}")
 
             self.registry[tool_id] = tool
             self.name_to_id[tool.name] = tool_id
             self.id_to_name[tool_id] = tool.name
 
             logger.debug(f"ToolRegistry: Registered tool. Name={tool.name}, ID={tool_id}")
+
+    def _unique_id(self, base_id: str) -> str:
+        """``base_id``, or for a repeated one (same name, no or same toolkit) a suffix by registration order."""
+        tool_id, occurrence = base_id, 1
+        while tool_id in self.registry:
+            occurrence += 1
+            tool_id = f"{base_id}_{occurrence}"
+        return tool_id
 
     def get_tool_by_id(self, tool_id: str) -> Optional[BaseTool]:
         """

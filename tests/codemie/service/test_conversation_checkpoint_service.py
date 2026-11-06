@@ -12,18 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from unittest.mock import patch
+
 import pytest
-from unittest.mock import MagicMock, patch
+
+from codemie.core.tool_step_states import cancel_waiting_steps
+from codemie.agents.tool_confirmation.models import DecisionItem, StoredPendingToolCall, ToolCallPendingEvent
+from codemie.chains.base import Thought
+from codemie.core.tool_step_states import CANCELLED_MESSAGE
+from codemie.rest_api.models.conversation import Conversation, GeneratedMessage
 from codemie.service.conversation_checkpoint_service import ConversationCheckpointService
-from codemie.agents.tool_confirmation.models import ToolCallPendingEvent
 
-
-@pytest.fixture
-def mock_conversation():
-    conv = MagicMock()
-    conv.pending_checkpoint = None
-    conv.pending_tool_call = None
-    return conv
+_REPOSITORY = "codemie.service.conversation_checkpoint_service.ConversationPauseRepository"
 
 
 @pytest.fixture
@@ -31,94 +31,77 @@ def svc():
     return ConversationCheckpointService()
 
 
-def test_save_checkpoint_writes_to_db(svc, mock_conversation):
-    checkpoint_data = {"channel_values": {"messages": []}, "ts": "2026-01-01"}
-    with patch(
-        "codemie.service.conversation_checkpoint_service.Conversation.find_by_conversation_id",
-        return_value=mock_conversation,
-    ):
-        svc.save_checkpoint("conv_1", checkpoint_data)
-    assert mock_conversation.pending_checkpoint == checkpoint_data
-    mock_conversation.update.assert_called_once()
-
-
-def test_save_pending_tool_call_writes_to_db(svc, mock_conversation):
-    tool_call = ToolCallPendingEvent(
-        pending_tool_call_id="call_abc",
-        tool_name="search",
-        tool_args={"q": "test"},
+def _stored() -> StoredPendingToolCall:
+    item = DecisionItem(
+        thought_id="t0",
+        tool_call_id="call_0",
+        location_key="",
+        checkpoint_ns="ns",
+        event=ToolCallPendingEvent(pending_tool_call_id="call_0", tool_name="w", tool_args={}),
     )
-    with patch(
-        "codemie.service.conversation_checkpoint_service.Conversation.find_by_conversation_id",
-        return_value=mock_conversation,
-    ):
-        svc.save_pending_tool_call("conv_1", tool_call)
-    assert mock_conversation.pending_tool_call == tool_call.model_dump()
-    mock_conversation.update.assert_called_once()
+    return StoredPendingToolCall(
+        items=[item],
+        root_assistant_id="a",
+        history_index=1,
+        original_user_message="go",
+        thoughts=[{"id": "t0", "interrupted": True}],
+        payload={"carried_ids": []},
+    )
 
 
-def test_get_checkpoint_returns_stored_value(svc, mock_conversation):
-    mock_conversation.pending_checkpoint = {"ts": "2026-01-01"}
-    with patch(
-        "codemie.service.conversation_checkpoint_service.Conversation.find_by_conversation_id",
-        return_value=mock_conversation,
-    ):
-        result = svc.get_checkpoint("conv_1")
-    assert result == {"ts": "2026-01-01"}
+def _conversation(index: int) -> Conversation:
+    return Conversation(
+        id="conv_1",
+        conversation_id="conv_1",
+        user_id="u",
+        history=[
+            GeneratedMessage(
+                role="Assistant", message="", history_index=index, thoughts=[Thought(id="w", interrupted=True)]
+            ),
+            GeneratedMessage(
+                role="Assistant", message="", history_index=index + 1, thoughts=[Thought(id="x", interrupted=True)]
+            ),
+        ],
+    )
 
 
-def test_get_checkpoint_returns_none_when_empty(svc, mock_conversation):
-    mock_conversation.pending_checkpoint = None
-    with patch(
-        "codemie.service.conversation_checkpoint_service.Conversation.find_by_conversation_id",
-        return_value=mock_conversation,
-    ):
-        result = svc.get_checkpoint("conv_1")
-    assert result is None
+def test_cancel_pause_with_nothing_pending_and_nothing_waiting_writes_nothing(svc):
+    conversation = Conversation(
+        id="conv_1",
+        conversation_id="conv_1",
+        user_id="u",
+        history=[GeneratedMessage(role="Assistant", message="", history_index=0, thoughts=[Thought(id="done")])],
+    )
+    with patch(_REPOSITORY) as repository, patch.object(Conversation, "update") as update:
+        repository.return_value.take_pause.return_value = None
+        cancelled = svc.cancel_pause(conversation)
+    assert cancelled is False
+    repository.return_value.take_pause.assert_called_once_with("conv_1")
+    update.assert_not_called()
 
 
-def test_get_pending_tool_call_returns_parsed_event(svc, mock_conversation):
-    mock_conversation.pending_tool_call = {
-        "pending_tool_call_id": "call_abc",
-        "tool_name": "search",
-        "tool_args": {"q": "test"},
-    }
-    with patch(
-        "codemie.service.conversation_checkpoint_service.Conversation.find_by_conversation_id",
-        return_value=mock_conversation,
-    ):
-        result = svc.get_pending_tool_call("conv_1")
-    assert isinstance(result, ToolCallPendingEvent)
-    assert result.pending_tool_call_id == "call_abc"
+# --- the pure step helper ----------------------------------------------------------------------------------
 
 
-def test_get_pending_tool_call_returns_none_when_empty(svc, mock_conversation):
-    mock_conversation.pending_tool_call = None
-    with patch(
-        "codemie.service.conversation_checkpoint_service.Conversation.find_by_conversation_id",
-        return_value=mock_conversation,
-    ):
-        result = svc.get_pending_tool_call("conv_1")
-    assert result is None
+def _step(step_id: str, children=None, **fields) -> dict:
+    return {"id": step_id, "interrupted": False, "children": children or [], **fields}
 
 
-def test_save_checkpoint_raises_when_conversation_not_found(svc):
-    with patch(
-        "codemie.service.conversation_checkpoint_service.Conversation.find_by_conversation_id",
-        return_value=None,
-    ):
-        with pytest.raises(ValueError, match="Conversation not found: missing_id"):
-            svc.save_checkpoint("missing_id", {"ts": "2026-01-01"})
+def test_cancel_waiting_steps_cancels_only_waiting_steps_at_any_depth():
+    thoughts = [
+        _step("a", [_step("b", interrupted=True, message=None)]),
+        _step("done", message="result"),
+        _step("top", interrupted=True),
+    ]
 
+    cancel_waiting_steps(thoughts)
 
-def test_clear_nulls_both_columns(svc, mock_conversation):
-    mock_conversation.pending_checkpoint = {"ts": "2026-01-01"}
-    mock_conversation.pending_tool_call = {"pending_tool_call_id": "call_abc"}
-    with patch(
-        "codemie.service.conversation_checkpoint_service.Conversation.find_by_conversation_id",
-        return_value=mock_conversation,
-    ):
-        svc.clear("conv_1")
-    assert mock_conversation.pending_checkpoint is None
-    assert mock_conversation.pending_tool_call is None
-    mock_conversation.update.assert_called_once()
+    nested = thoughts[0]["children"][0]
+    assert (nested["interrupted"], nested["aborted"], nested["in_progress"], nested["message"]) == (
+        False,
+        True,
+        False,
+        CANCELLED_MESSAGE,
+    )
+    assert thoughts[1] == _step("done", message="result")
+    assert thoughts[2]["message"] == CANCELLED_MESSAGE

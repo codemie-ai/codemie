@@ -22,6 +22,7 @@ from starlette.responses import StreamingResponse
 
 from codemie.chains.base import Thought
 from codemie.configs import logger
+from codemie.core import tool_step_states as step_states
 from codemie.rest_api.models.assistant import Assistant
 
 # A chunk carrying any of these must survive even when its thought is removed.
@@ -29,8 +30,8 @@ _GUARDRAILS_ERROR = "guardrails"
 _PAYLOAD_KEYS = ("generated", "generated_chunk", "a2ui", "tool_call_pending", "agent_error", "execution_error", "last")
 
 
-# The only thought fields a pending tool-call approval needs: tool name and arguments.
-_APPROVAL_THOUGHT_KEYS = ("id", "author_name", "author_type", "input_text", "message")
+# The only thought fields a pending tool-call approval needs: tool name and arguments, plus the container link.
+_APPROVAL_THOUGHT_KEYS = ("id", "parent_id", "author_name", "author_type", "input_text", "message")
 
 
 def _is_interrupted(thought: Any) -> bool:
@@ -42,17 +43,34 @@ def _is_interrupted(thought: Any) -> bool:
 def _approval_thought(thought: dict) -> dict:
     """Reduce an interrupted thought to what the UI needs for Allow/Deny; drops metadata and children."""
     reduced = {k: thought.get(k) for k in _APPROVAL_THOUGHT_KEYS if k in thought}
-    reduced.update(interrupted=True, in_progress=False)
+    return step_states.waiting(reduced)
+
+
+# An ancestor of a waiting step is kept only as a container: identity and position, never tool output.
+_ANCESTOR_THOUGHT_KEYS = ("id", "parent_id", "author_name", "author_type")
+
+
+def _as_dict(thought: Any) -> dict[str, Any]:
+    return thought if isinstance(thought, dict) else thought.model_dump()
+
+
+def _approval_tree(thought: Any) -> dict[str, Any] | None:
+    """Reduce a thought tree to its waiting steps and their ancestors at any depth; None if it has none."""
+    data = _as_dict(thought)
+    kept_children = [c for child in data.get("children") or [] if (c := _approval_tree(child)) is not None]
+    if _is_interrupted(data):
+        return {**_approval_thought(data), "children": kept_children}
+    if not kept_children:
+        return None
+    reduced = {k: data.get(k) for k in _ANCESTOR_THOUGHT_KEYS if k in data}
+    reduced.update(children=kept_children, in_progress=False)
     return reduced
 
 
 def _approval_thoughts(thoughts: Iterable[Any] | None) -> list:
-    """Interrupted thoughts of a stored/returned message, reduced for approval; everything else is dropped."""
-    return [
-        Thought.model_validate(_approval_thought(t if isinstance(t, dict) else t.model_dump()))
-        for t in thoughts or []
-        if _is_interrupted(t)
-    ]
+    """Waiting (interrupted) thoughts of a stored/returned message at any depth, with their ancestors,
+    reduced for approval; everything else is dropped."""
+    return [Thought.model_validate(tree) for t in thoughts or [] if (tree := _approval_tree(t)) is not None]
 
 
 def is_hidden(assistant: Any) -> bool:

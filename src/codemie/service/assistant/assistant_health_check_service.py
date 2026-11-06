@@ -30,6 +30,7 @@ from codemie.rest_api.models.assistant import (
 )
 from codemie.rest_api.security.user import User
 from codemie.service.assistant_service import AssistantService
+from codemie.service.assistant.assistant_engine_builder import BuildChannel
 
 
 class AssistantHealthCheckService:
@@ -308,6 +309,7 @@ class AssistantHealthCheckService:
                     user=user,
                     request_uuid=raw_request.state.uuid if raw_request and hasattr(raw_request.state, "uuid") else None,
                     request_headers=request_headers,
+                    channel=BuildChannel.HEALTH_CHECK,
                 )
 
                 # Extract actual tool names and count from the built agent

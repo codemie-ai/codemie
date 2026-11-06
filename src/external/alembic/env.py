@@ -95,6 +95,7 @@ from codemie.rest_api.models.usage.assistant_user_interaction import AssistantUs
 from codemie.rest_api.models.usage.assistant_user_mapping import AssistantUserMappingSQL
 from codemie.rest_api.models.usage.assistant_prompt_variable_mapping import AssistantPromptVariableMappingSQL
 from codemie.rest_api.models.conversation import ConversationMetrics, Conversation
+from codemie.rest_api.models.conversation_pause import ConversationCheckpointRow, ConversationPendingToolCallRow  # noqa: F401
 from codemie.rest_api.models.share.shared_conversation import SharedConversation
 from codemie.core.workflow_models.workflow_execution import (
     WorkflowExecutionState,
@@ -129,6 +130,10 @@ target_metadata = SQLModel.metadata
 def include_object(object, name, type_, reflected, compare_to):
     if type_ == "table" and name == "table_migration_status":
         return False
+    # Columns left in place and unmapped once the pause moved to its own tables (EPMCDME-16463).
+    if type_ == "column" and reflected and object.table.name == "conversations":
+        if name in {"pending_checkpoint", "pending_tool_call"}:
+            return False
     return True
 
 

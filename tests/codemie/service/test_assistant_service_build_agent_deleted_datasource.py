@@ -44,6 +44,7 @@ def _assistant(context):
     assistant.prompt_variables = []
     assistant.is_global = False
     assistant.mcp_servers = []
+    assistant.tool_permissions = None
     return assistant
 
 

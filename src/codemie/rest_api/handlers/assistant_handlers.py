@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from functools import partial
 from time import time
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, List
+from typing import TYPE_CHECKING, Any, ClassVar, List
 
 if TYPE_CHECKING:
     from codemie.rest_api.models.assistant import ToolCallResumeRequest
@@ -48,7 +48,6 @@ from codemie.core.models import (
     BackgroundTaskRequest,
     AssistantDetails,
     TokensUsage,
-    ToolCallAction,
 )
 from codemie.core.routing_info import RoutingInfo
 from codemie.core.thread import CancellationReason, ThreadedGenerator, finalize_thoughts
@@ -81,6 +80,9 @@ from codemie.rest_api.utils.client_context import get_client_source
 from codemie.rest_api.security.user import User
 from codemie.rest_api.utils.request_utils import extract_custom_headers
 from codemie.service.assistant_service import AssistantService
+from codemie.service.assistant.assistant_engine_builder import (
+    BuildChannel,
+)
 from codemie.service.aws_bedrock.bedrock_orchestration_service import BedrockOrchestratorService
 from codemie.service.conversation.history_projection_service import (
     NATIVE_TOOLS_MODE,
@@ -96,7 +98,14 @@ from codemie.service.constants import (
     AI_AGENT_QUEUE_POLL_TIMEOUT_SECONDS_KEY,
 )
 from codemie.service.agent_workspace_service import AgentWorkspaceService
-from codemie.service.conversation_checkpoint_service import ConversationCheckpointService
+from codemie.rest_api.handlers.tool_call_resume import (
+    NDJSON_MEDIA_TYPE,
+    ConsumedPendingToolCall,
+    ToolCallResumeMixin,
+    begin_resume,
+    build_resumed_agent,
+    resumed_turn_request,
+)
 from codemie.service.conversation_service import ConversationService, UpsertChatHistoryParams, _guard_finished
 from codemie.service.dynamic_config_service import DynamicConfigService
 from codemie.service.llm_service.llm_service import llm_service
@@ -104,7 +113,6 @@ from codemie.service.request_summary_manager import request_summary_manager
 from codemie.configs.pyroscope_config import pyroscope_profile
 
 # Constants
-NDJSON_MEDIA_TYPE = "application/x-ndjson"
 ACCESS_DENIED_MESSAGE = "Access denied"
 
 
@@ -122,7 +130,7 @@ class ChatHistoryData:
     in_progress: bool = False
 
 
-class AssistantRequestHandler(ABC):
+class AssistantRequestHandler(ToolCallResumeMixin, ABC):
     def __init__(self, assistant: Assistant, user: User, request_uuid: str):
         self.assistant = assistant
         self.user = user
@@ -215,7 +223,7 @@ class AssistantRequestHandler(ABC):
             self._deny_conversation_access(conversation, conversation_id)
 
     def _guard_conversation_not_finished(self, request: AssistantChatRequest) -> None:
-        """Reject requests that target a finished conversation before inference starts."""
+        """Reject requests that target a finished conversation before inference starts; end a pending pause."""
         if not request.conversation_id:
             return
         conversation = Conversation.find_by_id(request.conversation_id)
@@ -223,6 +231,8 @@ class AssistantRequestHandler(ABC):
             return
         self._require_conversation_read(conversation, request.conversation_id)
         _guard_finished(conversation)
+        # A new message ends any earlier pause, whatever the tree flag of the agent now built (AR-4, AC19).
+        self._end_pending_pause_at_turn_start(conversation, request.conversation_id)
 
     def _populate_conversation_history(self, request: AssistantChatRequest) -> None:
         """
@@ -634,6 +644,8 @@ class AssistantRequestHandler(ABC):
 
 
 class StandardAssistantHandler(AssistantRequestHandler):
+    supports_tool_call_resume: ClassVar[bool] = True
+
     @pyroscope_profile(
         lambda self, request, *a, **kw: {
             "operation": "assistant",
@@ -685,18 +697,24 @@ class StandardAssistantHandler(AssistantRequestHandler):
 
     def _handle_stream(
         self,
-        request: AssistantChatRequest,
+        request: "AssistantChatRequest | ToolCallResumeRequest",
         raw_request: Request,
         execution_start: float,
         user_message_received_at: datetime | None = None,
         include_tool_errors: bool = False,
         error_detail_level: ErrorDetailLevel = ErrorDetailLevel.STANDARD,
+        resume: ConsumedPendingToolCall | None = None,
     ) -> StreamingResponse:
         """
         Handle streaming assistant request.
 
         Supports error handling via include_tool_errors and error_detail_level parameters.
         Errors are included in the final streamed chunk when last=True.
+
+        With ``resume`` (a consumed pending row) the turn is the resumed turn of that pause: ``request`` only
+        names the conversation. Inside the ``try``, the resume branch takes the paused entry's request from the
+        row, seeds the generator, restores the stored request, resolves the pinned version, saves the placeholder
+        and builds on ``RESUME`` (rule 5.4); any raise is main's turn error (rule 5.5).
         """
         import uuid
 
@@ -712,20 +730,21 @@ class StandardAssistantHandler(AssistantRequestHandler):
         GenerationManager().register(request.conversation_id, generator_queue)
 
         try:
-            self.save_chat_history(
-                ChatHistoryData(
-                    execution_start=execution_start,
-                    request=request,
-                    response="",
-                    thoughts=[],
-                    status=ConversationStatus.SUCCESS,
-                    user_message_received_at=user_message_received_at,
-                    in_progress=True,
+            if resume is None:
+                self.save_chat_history(
+                    ChatHistoryData(
+                        execution_start=execution_start,
+                        request=request,
+                        response="",
+                        thoughts=[],
+                        status=ConversationStatus.SUCCESS,
+                        user_message_received_at=user_message_received_at,
+                        in_progress=True,
+                    )
                 )
-            )
-            logger.debug(
-                f"Initial prompt persisted with in_progress=True for conversation_id={request.conversation_id}"
-            )
+                logger.debug(
+                    f"Initial prompt persisted with in_progress=True for conversation_id={request.conversation_id}"
+                )
         except Exception as persist_exc:
             logger.error(f"Error persisting initial prompt in_progress: {str(persist_exc)}")
 
@@ -739,22 +758,36 @@ class StandardAssistantHandler(AssistantRequestHandler):
         )
 
         try:
+            if resume is not None:
+                # The paused entry's request, from the row's columns; it cannot raise (rule 5.4)
+                request = resumed_turn_request(request.conversation_id, resume.record)
             request_headers = extract_custom_headers(raw_request)
 
             # Set cache control flag for this request
             set_disable_prompt_cache(request.disable_cache or False)
 
-            agent = self._build_agent(
-                assistant=self.assistant,
-                request=request,
-                user=self.user,
-                request_uuid=raw_request.state.uuid,
-                thread_generator=generator_queue,
-                request_headers=request_headers,
-            )
-            stream = partial(
-                agent.stream, include_tool_errors=include_tool_errors, error_detail_level=error_detail_level
-            )
+            if resume is None:
+                agent = self._build_agent(
+                    assistant=self.assistant,
+                    request=request,
+                    user=self.user,
+                    request_uuid=raw_request.state.uuid,
+                    thread_generator=generator_queue,
+                    request_headers=request_headers,
+                    channel=BuildChannel.STREAM,
+                )
+                stream = partial(
+                    agent.stream, include_tool_errors=include_tool_errors, error_detail_level=error_detail_level
+                )
+            else:
+                start = begin_resume(self, request, generator_queue, resume, execution_start, user_message_received_at)
+                agent = build_resumed_agent(self, request, generator_queue, start)
+                stream = partial(
+                    agent.resume_from_interrupt,
+                    start.decisions,
+                    include_tool_errors=include_tool_errors,
+                    error_detail_level=error_detail_level,
+                )
             wrapped_stream = self._serve_data(
                 stream,
                 generator_queue,
@@ -895,12 +928,6 @@ class StandardAssistantHandler(AssistantRequestHandler):
                 in_progress=False,
             )
         )
-        if getattr(agent, "_pending_tool_confirmation", False):
-            ConversationCheckpointService().save_interrupt_context(
-                request.conversation_id,
-                request.history_index,
-                request.text or "",
-            )
 
     def _serve_data(
         self,
@@ -1091,12 +1118,6 @@ class StandardAssistantHandler(AssistantRequestHandler):
                     in_progress=False,
                 )
             )
-            if getattr(agent, "_pending_tool_confirmation", False):
-                ConversationCheckpointService().save_interrupt_context(
-                    request.conversation_id,
-                    request.history_index,
-                    request.text or "",
-                )
         except Exception as e:
             self._handle_drain_error(
                 e,
@@ -1253,6 +1274,7 @@ class StandardAssistantHandler(AssistantRequestHandler):
             user=self.user,
             request_uuid=request_uuid,
             request_headers=request_headers,
+            channel=BuildChannel.BACKGROUND,
         )
         generation_result = agent.generate(background_task_id)
 
@@ -1314,6 +1336,7 @@ class StandardAssistantHandler(AssistantRequestHandler):
             user=self.user,
             request_uuid=raw_request.state.uuid,
             request_headers=request_headers,
+            channel=BuildChannel.SYNC,
         )
         generation_result = agent.generate()
         response = generation_result.generated
@@ -1348,77 +1371,19 @@ class StandardAssistantHandler(AssistantRequestHandler):
     def handle_tool_call_resume(
         self,
         request: "ToolCallResumeRequest",
+        conversation: Conversation,
+        pending: ConsumedPendingToolCall,
         raw_request: Request,
     ) -> StreamingResponse:
-        """Handle allow/deny resume for a paused tool call confirmation."""
-        conv = Conversation.find_by_conversation_id(request.conversation_id)
-        if conv is None or not Ability(self.user).can(Action.WRITE, conv):
-            raise ExtendedHTTPException(
-                code=status.HTTP_403_FORBIDDEN,
-                message="Conversation not found or access denied.",
-            )
-        assistant_id = getattr(self.assistant, "id", None)
-        if assistant_id not in (conv.assistant_ids or []) and assistant_id != conv.initial_assistant_id:
-            raise ExtendedHTTPException(
-                code=status.HTTP_403_FORBIDDEN,
-                message="Conversation not found or access denied.",
-            )
-
-        generator_queue = ThreadedGenerator(
-            request_uuid=self.request_uuid,
-            user_id=self.user.id,
-            conversation_id=request.conversation_id,
-        )
-        raw_request.state.on_disconnect(lambda: generator_queue.close())
-
-        # Build a minimal chat request so AssistantService.build_agent has the right context.
-        # Restore history_index and original user message from the pending tool call so the
-        # resume save updates the same history entry instead of creating a new one.
-        pending = ConversationCheckpointService().get_pending_tool_call(request.conversation_id)
-        chat_request = AssistantChatRequest.model_construct(
-            conversation_id=request.conversation_id,
-            text=pending.original_user_message if pending else "",
-            history=[],
-            stream=True,
-            file_names=[],
-            save_history=True,
-            history_index=pending.history_index if pending else None,
-        )
-
-        chat_request.mark_history_variant_persisted()
-
-        agent = self._build_agent(
-            assistant=self.assistant,
-            request=chat_request,
-            user=self.user,
-            request_uuid=self.request_uuid,
-            thread_generator=generator_queue,
-        )
-
-        execution_start = time()
-
-        # Clear the checkpoint after streaming completes, but only when the
-        # graph finished without a second interrupt. If the resumed graph
-        # pauses again (_pending_tool_confirmation is True), the checkpoint must
-        # survive so the next resume call can find it.
-        def run_resume() -> None:
-            try:
-                if request.action == ToolCallAction.allow:
-                    agent.deny_unreviewed_sibling_tool_calls(pending)
-                    agent.resume_from_interrupt()
-                else:
-                    agent.reject_tool_call(pending)
-            finally:
-                if not agent._pending_tool_confirmation:
-                    ConversationCheckpointService().clear(request.conversation_id)
-
-        return StreamingResponse(
-            content=self._serve_data(run_resume, generator_queue, chat_request, execution_start, agent),
-            media_type=NDJSON_MEDIA_TYPE,
+        """Run the consumed pause as an ordinary turn of the standard stream; a resume never hedges (rule 5.3)."""
+        return StandardAssistantHandler._handle_stream(
+            self, request, raw_request, time(), datetime.now(timezone.utc), resume=pending
         )
 
 
 class A2AAssistantHandler(AssistantRequestHandler):
+    supports_tool_call_resume: ClassVar[bool] = False
+
     def __init__(self, assistant: Assistant, user: User, request_uuid: str):
         super().__init__(assistant, user, request_uuid)
         self.agent_card = assistant.agent_card
@@ -1769,17 +1734,6 @@ class A2AAssistantHandler(AssistantRequestHandler):
             )
         )
         return model_response
-
-    def handle_tool_call_resume(
-        self,
-        request: "ToolCallResumeRequest",
-        raw_request: Request,
-    ) -> StreamingResponse:
-        """Tool call confirmation is not supported for A2A assistants."""
-        raise ExtendedHTTPException(
-            code=422,
-            message="Tool call confirmation is not supported for A2A assistants.",
-        )
 
 
 def get_request_handler(assistant: Assistant, user: User, request_uuid: str) -> AssistantRequestHandler:

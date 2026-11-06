@@ -26,7 +26,6 @@ from codemie.clients.postgres import get_session
 from codemie.configs import config, logger
 from codemie.core.ability import Owned, Action
 from codemie.core.db_utils import escape_like_wildcards
-from codemie.agents.tool_confirmation.models import ToolCallPendingEvent
 from codemie.core.exceptions import ValidationException
 from codemie.core.models import CodeIndexType, ChatMessage, ChatRole, ConfiguredModel, ToolCallPolicy
 from codemie.core.routing_info import RoutingInfo
@@ -395,8 +394,6 @@ class Conversation(BaseModelWithSQLSupport, Owned, table=True):
     category: Optional[str] = None
     import_source: Optional[str] = None
 
-    pending_checkpoint: Optional[dict] = SQLField(default=None, sa_column=Column(JSONB))
-    pending_tool_call: Optional[dict] = SQLField(default=None, sa_column=Column(JSONB))
     tool_call_policy: Optional[ToolCallPolicy] = SQLField(default=None, sa_column=Column(String))
 
     def get_average_user_rating(self):
@@ -1106,7 +1103,6 @@ class ConversationResponse(BaseModel):
     category: Optional[str] = None
     import_source: Optional[str] = None
     tool_call_policy: Optional[ToolCallPolicy] = None
-    pending_tool_call: Optional[ToolCallPendingEvent] = None
     date: Optional[datetime] = None
     update_date: Optional[datetime] = None
     very_first_msg_at: Optional[datetime] = None

@@ -19,6 +19,8 @@ paths = [
   '''(^|/)\.codemie-storage/.*''',     # Local runtime storage (gitignored, holds sandbox kubeconfig)
   '''(^|/)\.env$''',                   # Local environment variables (gitignored, never committed)
   '''htmlcov/.*''',                    # Coverage HTML output (gitignored, renders test source as HTML)
+  '''(^|/)\.claude/worktrees/.*''',  # Local agent worktrees (gitignored, copies of other checkouts with their local certs and env files)
+  '''(^|/)\.codegraph/.*''',          # Local CodeGraph index (gitignored, SQLite pages hold indexed source strings)
   '''.venv/.*''',
   '''.vscode/.*''',
   '''tests/codemie/datasource/loader/fixtures/xlsb/.*\.xlsb$''',  # Binary Excel test fixtures; password-protected workbook stores encryption key material (encryptedHmacKey/encryptedKeyValue), not real secrets

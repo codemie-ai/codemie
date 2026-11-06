@@ -16,8 +16,6 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from langgraph.graph.state import CompiledStateGraph
-
 from codemie.configs.logger import logger
 from codemie.core.models import AssistantChatRequest, ToolCallPolicy
 from codemie.core.utils import dedupe_preserve_order
@@ -25,6 +23,13 @@ from codemie.core.thread import MessageQueue
 from codemie.rest_api.models.assistant import Assistant
 from codemie.rest_api.security.user import User
 
+from codemie.service.assistant.subagent_build import (  # noqa: F401 - re-exported for the build's callers
+    BuildChannel,
+    ResolvedToolPolicy,
+    SubagentBuildContext,
+    SubagentHandle,
+    built_subagent_descriptions,
+)
 from codemie.service.mcp.models import MCPToolLoadException
 from codemie.service.skills.skill_contributions import SkillContributionsResolver
 from codemie.service.subagents.builtin_subagents_registry import BuiltinSubagentsRegistry
@@ -70,6 +75,24 @@ class LangGraphAssistantBuilder:
             return private[name]
 
         return default
+
+    @staticmethod
+    def resolve_tool_policy(
+        assistant: Assistant, request: AssistantChatRequest, *, allow_tool_confirmation: bool
+    ) -> ResolvedToolPolicy:
+        """Resolve the effective tool-call policy of ``assistant`` for this request (once per build)."""
+        from codemie.service.tool_permissions_service import ToolPermissionsService
+
+        permissions = ToolPermissionsService().get_effective_permissions(
+            assistant,
+            tool_call_policy_override=request.tool_call_policy,
+        )
+        return ResolvedToolPolicy(
+            policy=permissions.tool_call_policy,
+            requires_confirmation=(
+                allow_tool_confirmation and permissions.tool_call_policy != ToolCallPolicy.AUTO_APPROVE
+            ),
+        )
 
     @staticmethod
     def _coerce_builtin_subagents(items: list[Any] | None) -> list[BuiltinSubagent]:
@@ -144,7 +167,8 @@ class LangGraphAssistantBuilder:
         thread_generator: MessageQueue,
         resolved_model: str | None,
         agent_name: str,
-    ):
+        build_context: SubagentBuildContext,
+    ) -> SubagentHandle:
         """Create a compiled executor for a builtin subagent.
 
         The subagent inherits everything from the parent assistant except:
@@ -178,6 +202,7 @@ class LangGraphAssistantBuilder:
             request=request,
             request_uuid=request_uuid,
             thread_generator=thread_generator,
+            build_context=build_context.child(),
         ).build()
 
     @classmethod
@@ -189,19 +214,14 @@ class LangGraphAssistantBuilder:
         request_uuid: str,
         thread_generator: MessageQueue,
         llm_model: str,
-    ) -> tuple[list[CompiledStateGraph[Any, Any, Any, Any]], set[str]]:
-        """Build the sub-assistant and builtin executors.
-
-        Returns the executors and the names of the subagents that were actually built, in the
-        normalized form the executors carry (``LangGraphAgent.format_assistant_name``). The supervisor
-        advertises only those, so a subagent whose build failed gets no handoff tool.
-        """
+        build_context: SubagentBuildContext,
+    ) -> list[SubagentHandle]:
+        """Build the sub-assistants of ``assistant``."""
         effective_builtins = cls._merge_skill_builtin_subagents(assistant)
 
         if not assistant.assistant_ids and not effective_builtins:
-            return [], set()
+            return []
 
-        from codemie.agents.langgraph_agent import LangGraphAgent
         from codemie.core.exception_formatting import describe_exception
         from codemie.service.tools.assistant_factory import create_assistant_executors
 
@@ -214,16 +234,15 @@ class LangGraphAssistantBuilder:
 
         # Children get the caller's request as is: request.llm_model is the user's pick, never the
         # parent's resolved model, so each sub-assistant resolves its own model under its own project.
-        subagents = create_assistant_executors(
+        handles = create_assistant_executors(
             assistant_ids=assistant_ids,
             user=user,
             request=request,
             request_uuid=request_uuid,
             thread_generator=thread_generator,
             parent_assistant=assistant,
+            build_context=build_context,
         )
-
-        built_names: set[str] = {name for name in (getattr(s, "name", None) for s in subagents) if name}
 
         existing_names: set[str] = set()
         # Best-effort seed: names of assistants referenced by assistant_ids
@@ -237,7 +256,7 @@ class LangGraphAssistantBuilder:
             base_name = f"__builtin__{builtin.value}"
             agent_name = cls._make_unique_builtin_agent_name(base_name, existing_names)
             try:
-                subagents.append(
+                handles.append(
                     cls._build_builtin_subagent_executor(
                         parent=assistant,
                         builtin=builtin,
@@ -247,9 +266,9 @@ class LangGraphAssistantBuilder:
                         thread_generator=thread_generator,
                         resolved_model=llm_model,
                         agent_name=agent_name,
+                        build_context=build_context,
                     )
                 )
-                built_names.add(LangGraphAgent.format_assistant_name(agent_name))
             except MCPToolLoadException as e:
                 # Builtin subagent failures stay non-fatal, but the log must still name the
                 # subagent and the MCP server that broke it.
@@ -261,8 +280,8 @@ class LangGraphAssistantBuilder:
             except Exception as e:
                 logger.error(f"Failed to create builtin subagent executor for {builtin.value}: {describe_exception(e)}")
 
-        logger.debug(f"Created {len(subagents)} subagent executors")
-        return subagents, built_names
+        logger.debug(f"Created {len(handles)} subagent executors")
+        return handles
 
     @staticmethod
     def get_subagent_descriptions_with_contributions(assistant: Assistant, user: User) -> dict[str, str]:
@@ -302,47 +321,43 @@ class LangGraphAssistantBuilder:
         llm_model: str,
         smart_tool_selection_enabled: bool,
         *,
-        allow_tool_confirmation: bool = False,
-        create_subagent_executors: Callable[..., tuple[list[CompiledStateGraph[Any, Any, Any, Any]], set[str]]],
+        resolved_policy: ResolvedToolPolicy,
+        build_context: SubagentBuildContext,
+        is_root: bool,
+        create_subagent_executors: Callable[..., list[SubagentHandle]],
         get_subagent_descriptions: Callable[[Assistant, User], dict[str, str]],
-    ) -> None:
+    ) -> bool:
+        """Fill the LangGraph-specific kwargs from the policy resolved by the caller.
+
+        Returns ``tree_requires_confirmation``: this agent pauses its own calls, or any child's tree does.
+        """
         agent_kwargs["smart_tool_selection_enabled"] = smart_tool_selection_enabled
+        agent_kwargs["require_tool_confirmation"] = resolved_policy.requires_confirmation
+        agent_kwargs["tool_call_policy"] = resolved_policy.policy
+        # Every gate of the tree pauses only in a run that can be resumed; elsewhere it answers as unavailable.
+        agent_kwargs["can_resume_pause"] = build_context.can_resume_pause
 
-        from codemie.service.tool_permissions_service import ToolPermissionsService
-
-        permissions = ToolPermissionsService().get_effective_permissions(
-            assistant,
-            tool_call_policy_override=request.tool_call_policy,
-        )
-        require_tool_confirmation = (
-            allow_tool_confirmation and permissions.tool_call_policy != ToolCallPolicy.AUTO_APPROVE
-        )
-
-        if require_tool_confirmation:
-            from codemie.service.conversation_service import ConversationService
-
-            ConversationService.find_or_create_conversation(request, assistant, user)
-
-        agent_kwargs["require_tool_confirmation"] = require_tool_confirmation
-        agent_kwargs["tool_call_policy"] = permissions.tool_call_policy
-
-        subagents, built_names = create_subagent_executors(
+        handles = create_subagent_executors(
             assistant=assistant,
             user=user,
             request=request,
             request_uuid=request_uuid,
             thread_generator=thread_generator,
             llm_model=llm_model,
+            build_context=build_context,
         )
-        if subagents:
-            agent_kwargs["subagents"] = subagents
+        handles = list(handles or [])
+
+        tree_requires_confirmation = resolved_policy.requires_confirmation or any(
+            handle.tree_requires_confirmation for handle in handles or []
+        )
+
+        if handles:
+            agent_kwargs["subagents"] = [handle.executor for handle in handles]
             # Use injected callback for descriptions (makes this helper testable and
             # keeps runtime behavior customizable by the caller).
-            from codemie.agents.langgraph_agent import LangGraphAgent
-
-            descriptions = get_subagent_descriptions(assistant, user)
-            agent_kwargs["subagent_descriptions"] = {
-                name: description
-                for name, description in descriptions.items()
-                if LangGraphAgent.format_assistant_name(name) in built_names
-            }
+            agent_kwargs["subagent_descriptions"] = built_subagent_descriptions(
+                handles, get_subagent_descriptions(assistant, user)
+            )
+        agent_kwargs["tree_requires_confirmation"] = tree_requires_confirmation
+        return tree_requires_confirmation

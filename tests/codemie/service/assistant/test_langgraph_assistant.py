@@ -202,6 +202,8 @@ class TestLangGraphAgent:
         value = {"agent": {"messages": [ai_message]}}
         # Call the private method
         agent_for_parse_update._LangGraphAgent__parse_update_type(value)
+        # The agent's post_model_hook output starts the deferred steps.
+        agent_for_parse_update._LangGraphAgent__parse_update_type({"post_model_hook": None})
 
         # _on_tool_start called with tool name, args, run_id, and tool_call_count
         agent_for_parse_update._on_tool_start.assert_called_once_with("test_tool", '{"arg": 1}', run_id=ANY)

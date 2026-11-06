@@ -1,0 +1,140 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-16463_sub-assistant-tool-confirmation",
+  "head": "85adb66aa9ac6a0312807d54ffe38134427aa601",
+  "runner": "custom",
+  "started_at": "2026-10-29T06:53:29Z",
+  "completed_at": "2026-10-29T06:56:32Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "ruff",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1341,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 3500,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 679,
+      "command": "make license-check",
+      "exit_code": 0,
+      "notes": "Checked 2831 files, 0 missing license headers."
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 29000,
+      "command": "make gitleaks",
+      "exit_code": 2,
+      "notes": "6 leaks found, all under .claude/worktrees/codeminions/ (a separate worktree inside the tree; none in this branch's diff). gitleaks dir scans the whole working tree. No Auto-fix field."
+    },
+    {
+      "id": "codemie-gitleaks",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 1000,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": 0,
+      "notes": "Exit 0 but scanned nothing: 'scanned ~0 bytes (0) in 35.1ms' (no staged changes). Runs for real at commit time on staged files."
+    },
+    {
+      "id": "test",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 141000,
+      "command": "make test",
+      "exit_code": 2,
+      "notes": "8 failed, 24336 passed, 322 skipped. All failures are in files this branch does not touch: alembic test_marketplace_migrations (5), test_workspace_script_bridge::TestToolCallingTimeoutSelection::test_component_absent_resolves_none (1), marketplace_management test_audit_persistence_roundtrip (1) and test_indexing_reliability (1)."
+    },
+    {
+      "id": "test-cli-analytics-live",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": null,
+      "command": "make test-cli-analytics-live",
+      "exit_code": null,
+      "notes": "Skip if: change does not touch src/codemie/repository/cli_analytics/postgres/; the diff does not touch it."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": null,
+      "command": "make coverage",
+      "exit_code": null,
+      "notes": "Skip if: user did not request coverage."
+    },
+    {
+      "id": "sonar-local",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make sonar-local",
+      "exit_code": 0,
+      "notes": "Exit 0 self-skip: '[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.' Set SONAR_TOKEN (env or .env.local) to run."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": null,
+      "command": "make verify",
+      "exit_code": null,
+      "notes": "Composite of ruff, license, gitleaks, test; each run individually above."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": null,
+      "command": "make test-harness",
+      "exit_code": null,
+      "notes": "Skip if: not opening an MR in this run. Required before MR (paste summary into '## Test harness'); needs docker compose stack, superadmin fixtures, ~/.codemie/test-harness.json."
+    },
+    {
+      "id": "codemie-commit-msg",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 500,
+      "command": "for each commit in origin/main..HEAD: bash scripts/git-hooks/commit_msg.sh <commit message file>",
+      "exit_code": 0,
+      "notes": "All 18 commits in origin/main..HEAD carry the EPMCDME-<n>: prefix."
+    },
+    {
+      "id": "codemie-pre-push",
+      "source": "hook",
+      "status": "N/A",
+      "duration_ms": null,
+      "command": "bash scripts/git-hooks/pre_push.sh",
+      "exit_code": null,
+      "notes": "Opt-in hook (CODEMIE_PREPUSH_ENABLED defaults to false). Its steps are pytest tests/ --ignore=tests/enterprise/ --cov (covered by 'make test' above) then make sonar-local (SKIPPED above, no SONAR_TOKEN)."
+    },
+    {
+      "id": "ci-pre-ci-guard",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": null,
+      "command": "GitLab include epm-cdme/codemie-gitlab-templates pre-ci-guard.yml (wait-ci-init)",
+      "exit_code": null,
+      "notes": "CI only waits for external contexts 'ci-pipeline' and 'compliance-report' (remote infrastructure); no local command. The compliance bot checks the MR description text only."
+    }
+  ],
+  "failures": {
+    "gitleaks": "Secret:      \u001b[1;3;mREDACTED\u001b[0m\nRuleID:      private-key\nEntropy:     6.029297\nFile:        /workspace/.claude/worktrees/codeminions/codeminions/certs/gateway/mitmproxy-ca.pem\nLine:        1\nFingerprint: /workspace/.claude/worktrees/codeminions/codeminions/certs/gateway/mitmproxy-ca.pem:private-key:1\n\nFinding:     \u001b[1;3;mREDACTED\u001b[0m\nSecret:      \u001b[1;3;mREDACTED\u001b[0m\nRuleID:      private-key\nEntropy:     6.014852\nFile:        /workspace/.claude/worktrees/codeminions/codeminions/certs/module/codemie.key\nLine:        1\nFingerprint: /workspace/.claude/worktrees/codeminions/codeminions/certs/module/codemie.key:private-key:1\n\nFinding:     \u001b[1;3;mREDACTED\u001b[0m\nSecret:      \u001b[1;3;mREDACTED\u001b[0m\nRuleID:      private-key\nEntropy:     6.011268\nFile:        /workspace/.claude/worktrees/codeminions/codeminions/certs/module/ca.key\nLine:        1\nFingerprint: /workspace/.claude/worktrees/codeminions/codeminions/certs/module/ca.key:private-key:1\n\nFinding:     \u001b[1;3;mREDACTED\u001b[0m\nSecret:      \u001b[1;3;mREDACTED\u001b[0m\nRuleID:      private-key\nEntropy:     6.022257\nFile:        /workspace/.claude/worktrees/codeminions/codeminions/certs/module/runner.key\nLine:        1\nFingerprint: /workspace/.claude/worktrees/codeminions/codeminions/certs/module/runner.key:private-key:1\n\nFinding:     CODEMINIONS_INTERNAL_KEY=\u001b[1;3;mREDACTED\u001b[0m\nSecret:      \u001b[1;3;mREDACTED\u001b[0m\nRuleID:      generic-api-key\nEntropy:     3.925614\nFile:        /workspace/.claude/worktrees/codeminions/codeminions/gateway.env\nLine:        1\nFingerprint: /workspace/.claude/worktrees/codeminions/codeminions/gateway.env:generic-api-key:1\n\nFinding:     self._key: \u001b[1;3;mREDACTED\u001b[0m | None = None\nSecret:      \u001b[1;3;mREDACTED\u001b[0m\nRuleID:      generic-api-key\nEntropy:     3.852169\nFile:        /workspace/.claude/worktrees/codeminions/src/codemie/service/codeminion/tokens.py\nLine:        35\nFingerprint: /workspace/.claude/worktrees/codeminions/src/codemie/service/codeminion/tokens.py:generic-api-key:35\n\n\u001b[90m6:54AM\u001b[0m \u001b[32mINF\u001b[0m \u001b[1mscanned ~311827493 bytes (311.83 MB) in 28.3s\u001b[0m\n\u001b[90m6:54AM\u001b[0m \u001b[33mWRN\u001b[0m \u001b[1mleaks found: 6\u001b[0m\nmake: *** [gitleaks] Error 1\n",
+    "test": "test rc=2 s=141\ntests/codemie/service/settings/test_settings_transfer_service.py::TestTransferBothFlagsFalse::test_both_flags_false_raises_422\n  /Users/yanaasadchaya/Projects/epam/codemie/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:308: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService.transfer(\"source\", \"target\", TransferMode.MOVE, set(), None)\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestValidateProjects::test_rejects_same_source_and_target\n  /Users/yanaasadchaya/Projects/epam/codemie/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:347: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._validate_projects(\"same\", \"same\")\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestValidateAliasesPresent::test_rejects_row_with_empty_alias\n  /Users/yanaasadchaya/Projects/epam/codemie/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:391: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._validate_aliases_present([row])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestTransfer::test_null_alias_trigger_row_is_rejected_before_response_construction\n  /Users/yanaasadchaya/Projects/epam/codemie/codemie/src/codemie/service/settings/settings_transfer_service.py:426: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    cls._validate_aliases_present(candidates)\n\ntests/codemie/service/marketplace_management/test_gate_errors.py::test_body_carries_the_failing_rules_and_every_finding\n  /Users/yanaasadchaya/Projects/epam/codemie/codemie/tests/codemie/service/marketplace_management/test_gate_errors.py:28: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    error = critical_gate_blocked_error(\"a-1\", _FINDINGS, _FINDINGS[:1])\n\ntests/codemie/service/marketplace_management/test_gate_errors.py::test_only_the_help_text_may_differ_between_callers\n  /Users/yanaasadchaya/Projects/epam/codemie/codemie/tests/codemie/service/marketplace_management/test_gate_errors.py:41: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    publish = critical_gate_blocked_error(\"a-1\", _FINDINGS, _FINDINGS[:1])\n\ntests/codemie/service/marketplace_management/test_gate_errors.py::test_only_the_help_text_may_differ_between_callers\n  /Users/yanaasadchaya/Projects/epam/codemie/codemie/tests/codemie/service/marketplace_management/test_gate_errors.py:42: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    approve = critical_gate_blocked_error(\"a-1\", _FINDINGS, _FINDINGS[:1], help=\"use force-publish\")\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED tests/codemie/external/alembic/test_marketplace_migrations.py::test_upgrade_then_downgrade_then_upgrade_is_clean\nFAILED tests/codemie/external/alembic/test_marketplace_migrations.py::test_downgrade_restores_the_pre_squash_shape\nFAILED tests/codemie/external/alembic/test_marketplace_migrations.py::test_verdict_fk_prevents_orphans\nFAILED tests/codemie/external/alembic/test_marketplace_migrations.py::test_squashed_revision_chains_directly_from_the_pre_squash_head\nFAILED tests/codemie/external/alembic/test_marketplace_migrations.py::test_retention_is_scoped_to_one_entity_kind\nFAILED tests/codemie/service/test_workspace_script_bridge.py::TestToolCallingTimeoutSelection::test_component_absent_resolves_none\nFAILED tests/codemie/service/marketplace_management/test_audit_persistence_roundtrip.py::test_cold_cache_cleanup_row_has_nonzero_critical_count\nFAILED tests/codemie/service/marketplace_management/test_indexing_reliability.py::test_published_assistants_are_all_indexed\n==== 8 failed, 24336 passed, 322 skipped, 445 warnings in 137.89s (0:02:17) ====\nmake: *** [test] Error 1\n\n[exited with code 0]\n"
+  }
+}

@@ -56,11 +56,11 @@ def test_replay_tool_start_on_resume_forwards_tool_type_by_real_tool_name():
     tool.name = "search_kb"
     tool.metadata = {ToolMetadataKeys.TOOL_TYPE.value: ToolType.DATASOURCE}
     mixin, callback = _make_mixin_with_bridge([tool])
-    mixin.tool_pending_event = _pending_event("search_kb", "Search KB", "1")
+    mixin.tool_pending_events = {"1": _pending_event("search_kb", "Search KB", "1")}
 
     mixin._replay_tool_start_on_resume(ToolMessage(content="result", tool_call_id="1", name="search_kb"))
 
-    assert mixin.tool_pending_event is None
+    assert mixin.tool_pending_events == {}
     callback.on_tool_start.assert_called_once()
     assert callback.on_tool_start.call_args.kwargs["metadata"] == {
         ToolMetadataKeys.TOOL_TYPE.value: ToolType.DATASOURCE
@@ -72,12 +72,12 @@ def test_replay_tool_start_on_resume_clears_pending_event_when_metadata_lookup_f
     mixin, callback = _make_mixin_with_bridge([])
     mixin._callback_bridge = MagicMock()
     mixin._callback_bridge.attribution_metadata.side_effect = RuntimeError("boom")
-    mixin.tool_pending_event = _pending_event("search_kb", "Search KB", "1")
+    mixin.tool_pending_events = {"1": _pending_event("search_kb", "Search KB", "1")}
 
     with patch("codemie.agents.tool_confirmation.tool_call_confirmation_mixin.logger") as mock_logger:
         mixin._replay_tool_start_on_resume(ToolMessage(content="result", tool_call_id="1", name="search_kb"))
 
-    assert mixin.tool_pending_event is None
+    assert mixin.tool_pending_events == {}
     assert callback.on_tool_start.call_args.kwargs["metadata"] == {}
     mock_logger.warning.assert_called_once()
     warning = mock_logger.warning.call_args.args[0]

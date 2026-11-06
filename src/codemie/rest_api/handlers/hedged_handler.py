@@ -43,6 +43,7 @@ from codemie.rest_api.handlers.assistant_handlers import (
 )
 from codemie.rest_api.models.base import ConversationStatus
 from codemie.rest_api.utils.request_utils import extract_custom_headers
+from codemie.service.assistant.assistant_engine_builder import BuildChannel
 from codemie.service.monitoring.hedging_monitoring_service import HedgingMetricPayload, HedgingMonitoringService
 from codemie.service.tools.dynamic_value_utils import process_string
 from codemie.service.tools.hedging_tool_service import HedgingToolService
@@ -509,7 +510,20 @@ class HedgedAssistantHandler(StandardAssistantHandler):
             request_uuid=raw_request.state.uuid,
             thread_generator=agent_queue,
             request_headers=request_headers,
+            channel=BuildChannel.HEDGED,
         )
+        if getattr(agent, "tree_requires_confirmation", False) is True:
+            # A tree that requires confirmation never hedges (rule 8): this build is discarded and the
+            # ordinary stream path runs the turn, so its pause and resume work as for a standard assistant.
+            logger.info(f"[HEDGED] tree requires confirmation, not hedging assistant_id={self.assistant.id}")
+            return super()._handle_stream(
+                request,
+                raw_request,
+                execution_start,
+                user_message_received_at,
+                include_tool_errors,
+                error_detail_level,
+            )
 
         def _agent_stream_with_winner():
             try:

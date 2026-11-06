@@ -14,55 +14,65 @@
 
 import json
 from base64 import b64encode, b64decode
-from typing import Optional, Iterable
+from typing import Any, Iterable, Optional
 
 from langgraph.checkpoint.base import (
+    WRITES_IDX_MAP,
     BaseCheckpointSaver,
-    CheckpointTuple,
     Checkpoint,
     CheckpointMetadata,
+    CheckpointTuple,
 )
 from langchain_core.runnables import RunnableConfig
-from pydantic import BaseModel
 
-from codemie.service.conversation_checkpoint_service import ConversationCheckpointService
-
-
-class StoredCheckpoint(BaseModel):
-    """JSONB shape written to conversations.pending_checkpoint."""
-
-    checkpoint: str
-    metadata: str
+from codemie.repository.conversation_pause_repository import ConversationPauseRepository
 
 
 class ConversationCheckpointSaver(BaseCheckpointSaver):
-    """
-    LangGraph checkpointer backed by conversations.pending_checkpoint - tool call confirmations
+    """LangGraph checkpointer of tool-call confirmation over the ``conversation_checkpoints`` table.
 
-    Uses conversation_id as thread_id. Stores only the latest checkpoint (same
-    policy as the workflow-scoped CheckpointSaver).
+    The conversation id is the thread id. One row per (conversation, checkpoint namespace) holds the latest
+    checkpoint of that namespace (root ``""`` and each nested agent) with its writes, so a pause inside a nested
+    agent survives a reload. Writes are keyed ``"<checkpoint_id>|<task_id>|<idx>"`` with ``idx`` from
+    ``WRITES_IDX_MAP`` for the special channels (``__interrupt__``, ``__resume__`` ...), which are replaced, not
+    appended.
+
+    Each call is one statement of ``ConversationPauseRepository``: a put drops only older writes, writes for an
+    older checkpoint are ignored, and ``get_tuple`` reads the one namespace row and returns only the writes of its
+    stored checkpoint.
     """
 
-    def __init__(self, checkpoint_service: ConversationCheckpointService):
-        """Inject the service used to read/write the pending_checkpoint column."""
+    def __init__(self, repository: ConversationPauseRepository | None = None):
         super().__init__()
-        self.service = checkpoint_service
+        self.repository = repository or ConversationPauseRepository()
+
+    @staticmethod
+    def _ids(config: RunnableConfig) -> tuple[str, str]:
+        configurable = config["configurable"]
+        return configurable["thread_id"], configurable.get("checkpoint_ns", "")
 
     def get_tuple(self, config: RunnableConfig) -> Optional[CheckpointTuple]:
-        """Return the latest checkpoint for the conversation, or None if absent."""
-        conversation_id = config["configurable"]["thread_id"]
-        stored = self.service.get_checkpoint(conversation_id)
-
-        if stored is None:
+        """Return the stored checkpoint of the config's namespace, or None if absent."""
+        thread_id, ns = self._ids(config)
+        entry = self.repository.get_checkpoint(thread_id, ns)
+        if not entry or "checkpoint" not in entry:
             return None
 
-        parsed = StoredCheckpoint.model_validate(stored)
+        checkpoint_id = entry["checkpoint_id"]
+        wanted = config["configurable"].get("checkpoint_id")
+        if wanted and wanted != checkpoint_id:
+            return None
+
+        writes = sorted(
+            (w for w in (entry.get("writes") or {}).values() if w["checkpoint_id"] == checkpoint_id),
+            key=lambda w: (w["task_id"], w["idx"]),
+        )
         return CheckpointTuple(
-            config=config,
-            checkpoint=self._deserialize(parsed.checkpoint),
-            metadata=self._deserialize(parsed.metadata),
+            config={"configurable": {"thread_id": thread_id, "checkpoint_ns": ns, "checkpoint_id": checkpoint_id}},
+            checkpoint=self._deserialize(entry["checkpoint"]),
+            metadata=self._deserialize(entry["metadata"]),
             parent_config=None,
-            pending_writes=[],
+            pending_writes=[(w["task_id"], w["channel"], self._deserialize(w["value"])) for w in writes],
         )
 
     def put(
@@ -72,24 +82,42 @@ class ConversationCheckpointSaver(BaseCheckpointSaver):
         metadata: CheckpointMetadata,
         *args,
     ) -> RunnableConfig:
-        """Persist the checkpoint, overwriting any previous one for this conversation."""
-        conversation_id = config["configurable"]["thread_id"]
-        stored = StoredCheckpoint(
-            checkpoint=self._serialize(checkpoint),
-            metadata=self._serialize(metadata),
+        """Store the checkpoint as the latest entry of its namespace."""
+        thread_id, ns = self._ids(config)
+        self.repository.put_checkpoint(
+            thread_id,
+            ns,
+            {
+                "checkpoint_id": checkpoint["id"],
+                "checkpoint": self._serialize(checkpoint),
+                "metadata": self._serialize(metadata),
+            },
         )
-        self.service.save_checkpoint(conversation_id, stored.model_dump())
+        return {"configurable": {"thread_id": thread_id, "checkpoint_ns": ns, "checkpoint_id": checkpoint["id"]}}
 
-        return {
-            "configurable": {
-                "thread_id": conversation_id,
-                "thread_ts": checkpoint.get("ts", ""),
+    def put_writes(
+        self,
+        config: RunnableConfig,
+        writes: Iterable[tuple[str, Any]],
+        task_id: str,
+        task_path: str = "",
+    ) -> None:
+        """Persist the task's pending writes against the checkpoint named in the config."""
+        thread_id, ns = self._ids(config)
+        checkpoint_id = config["configurable"]["checkpoint_id"]
+        regular: dict[str, Any] = {}
+        special: dict[str, Any] = {}
+        for position, (channel, value) in enumerate(writes):
+            idx = WRITES_IDX_MAP.get(channel, position)
+            item = {
+                "checkpoint_id": checkpoint_id,
+                "task_id": task_id,
+                "idx": idx,
+                "channel": channel,
+                "value": self._serialize(value),
             }
-        }
-
-    def put_writes(self, *args):
-        """No-op — single-checkpoint policy; incremental writes not needed."""
-        pass
+            (special if idx < 0 else regular)[f"{checkpoint_id}|{task_id}|{idx}"] = item
+        self.repository.put_writes(thread_id, ns, checkpoint_id, regular, special)
 
     def list(self, config: RunnableConfig) -> Iterable[CheckpointTuple]:
         """Not required for interrupt/resume. Yields nothing."""

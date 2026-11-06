@@ -29,7 +29,7 @@ from codemie.rest_api.security.user import User
 from codemie.service.assistant_service import AssistantService
 
 
-def _build_agent_for_workflow(workflow_assistant, mock_assistant, get_tools_spy=None):
+def _build_agent_for_workflow(workflow_assistant, mock_assistant, get_tools_spy=None, agent_class=None):
     """Invoke build_agent_for_workflow with all heavy collaborators mocked at the seams.
 
     Returns the _apply_marketplace_tool_mappings spy so tests can assert whether the
@@ -41,7 +41,7 @@ def _build_agent_for_workflow(workflow_assistant, mock_assistant, get_tools_spy=
     user.id = "user-123"
     user.name = "Test User"
 
-    agent_class = Mock(name="AgentClass")
+    agent_class = agent_class or Mock(name="AgentClass")
 
     with (
         patch.object(AssistantService, "_load_and_configure_workflow_assistant", return_value=mock_assistant),
@@ -124,3 +124,19 @@ class TestWorkflowScopeForScriptToolCalls:
         _build_agent_for_workflow(WorkflowAssistant(assistant_id=None), _mock_assistant(), get_tools_spy)
 
         assert "workflow_project" not in get_tools_spy.call_args.kwargs
+
+
+def test_a_workflow_node_and_its_sub_assistants_are_built_on_a_context_that_cannot_resume_a_pause():
+    """Rule 9: a workflow node never pauses; its tree's gates answer the calls needing confirmation as unavailable."""
+    with (
+        patch("codemie.service.assistant_service.LangGraphAgent") as langgraph_agent,
+        patch.object(AssistantService, "_configure_langgraph_agent") as configure,
+        patch("codemie.service.assistant_service.LangGraphAssistantBuilder.resolve_tool_policy"),
+    ):
+        _build_agent_for_workflow(
+            WorkflowAssistant(assistant_id="asst-123"), _mock_assistant(), agent_class=langgraph_agent
+        )
+
+    build_context = configure.call_args.kwargs["build_context"]
+    assert build_context.can_resume_pause is False
+    assert build_context.child().can_resume_pause is False

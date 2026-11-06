@@ -67,6 +67,116 @@ def test_process_thought_leaves_orphaned_thought_in_progress_true_when_closing_e
     assert orphaned['in_progress'] is True
 
 
+def _send(generator, **thought):
+    generator.send(json.dumps({'thought': thought}))
+
+
+def _tree_ids(thoughts):
+    return {t['id']: _tree_ids(t['children']) for t in thoughts}
+
+
+def test_thought_nests_under_parent_at_depth_one(generator):
+    _send(generator, id='a', message='A')
+    _send(generator, id='b', parent_id='a', message='B')
+    assert _tree_ids(generator.thoughts) == {'a': {'b': {}}}
+
+
+def test_thought_nests_under_grandchild_at_depth_three(generator):
+    _send(generator, id='a', message='A')
+    _send(generator, id='b', parent_id='a')
+    _send(generator, id='c', parent_id='b')
+    _send(generator, id='d', parent_id='c', message='waiting', interrupted=True)
+    assert _tree_ids(generator.thoughts) == {'a': {'b': {'c': {'d': {}}}}}
+    assert generator.thoughts[0]['children'][0]['children'][0]['children'][0]['interrupted'] is True
+
+
+@pytest.mark.parametrize(
+    ("seeded", "replace_ids", "chunks", "messages"),
+    [
+        (
+            [{'id': 'w', 'message': 'old', 'children': [], 'in_progress': True}],
+            {'w'},
+            [('w', 'tool '), ('w', 'result')],
+            ['tool result'],
+        ),
+        (
+            [{'id': 'c', 'message': 'keep ', 'children': []}, {'id': 'w', 'message': 'old', 'children': []}],
+            {'w'},
+            [('c', 'more'), ('w', 'new')],
+            ['keep more', 'new'],
+        ),
+        ([], {'other'}, [('x', 'a'), ('x', 'b')], ['ab']),
+    ],
+    ids=['replaced-by-the-first-chunk', 'outside-replace-ids-appends', 'unseeded-appends'],
+)
+def test_a_seeded_step_is_replaced_by_its_first_chunk_and_every_other_step_appends(
+    generator, seeded, replace_ids, chunks, messages
+):
+    generator.seed(seeded, replace_ids)
+    for step_id, message in chunks:
+        _send(generator, id=step_id, message=message)
+    assert [t['message'] for t in generator.thoughts] == messages
+
+
+def test_seed_sets_replace_and_allowed_ids_and_drops_run_state(generator):
+    generator.seed([], ['a', 'b'])
+    assert generator.seeded_ids == {'a', 'b'}
+    assert generator.allowed_ids == {'a', 'b'}
+    assert not hasattr(generator, 'run_id') and not hasattr(generator, 'paused')
+
+
+def test_thoughts_after_returns_merged_copy_and_leaves_thoughts_untouched(generator):
+    generator.seed([{'id': 'w', 'message': 'old', 'children': [{'id': 'k', 'message': 'k'}]}], {'w'})
+    chunk = {'id': 'w', 'message': 'new', 'in_progress': True}
+    result = generator.thoughts_after([chunk, {'id': 'n', 'message': 'x'}])
+    assert [t['message'] for t in result] == ['new', 'x']
+    assert generator.thoughts == [{'id': 'w', 'message': 'old', 'children': [{'id': 'k', 'message': 'k'}]}]
+    assert generator.seeded_ids == {'w'}
+
+
+def test_finalize_thoughts_takes_only_thoughts():
+    import inspect
+
+    assert list(inspect.signature(finalize_thoughts).parameters) == ['thoughts']
+
+
+def test_thought_model_has_no_decision_field():
+    from codemie.chains.base import Thought
+
+    assert 'decision' not in Thought.model_fields
+
+
+def test_non_interrupted_child_still_appends_message(generator):
+    _send(generator, id='a')
+    _send(generator, id='c', parent_id='a', message='x')
+    _send(generator, id='c', parent_id='a', message='y')
+    assert generator.thoughts[0]['children'][0]['message'] == 'xy'
+
+
+def test_a_thought_whose_parent_is_unknown_is_dropped_as_on_main(generator):
+    _send(generator, id='o', parent_id='missing', message='orphan')
+    _send(generator, id='o', parent_id='missing', message='update')
+    assert generator.thoughts == []
+
+
+def test_a_thought_whose_parent_is_nested_at_any_depth_is_attached_under_it(generator):
+    _send(generator, id='a')
+    _send(generator, id='b', parent_id='a')
+    _send(generator, id='c', parent_id='b')
+    _send(generator, id='d', parent_id='c', message='deep')
+    deepest = generator.thoughts[0]['children'][0]['children'][0]['children']
+    assert [(t['id'], t['message']) for t in deepest] == [('d', 'deep')]
+    assert [t['id'] for t in generator.thoughts] == ['a']
+
+
+def test_parent_lookup_uses_latest_match(generator):
+    generator.thoughts.append({'id': 'p', 'children': [], 'message': ''})
+    generator.thoughts.append({'id': 'p', 'children': [], 'message': ''})
+    _send(generator, id='k', parent_id='p')
+    assert generator.thoughts[0]['children'] == []
+    assert [c['id'] for c in generator.thoughts[1]['children']] == ['k']
+
+
 def test_init(generator):
     assert generator.request_uuid == 'request_uuid'
     assert generator.user_id == 'user_id'

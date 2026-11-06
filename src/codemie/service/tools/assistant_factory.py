@@ -12,9 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import List, Optional, Any
-
-from langgraph.graph.state import CompiledStateGraph
+from typing import List, Optional
 
 from codemie.agents.callbacks.agent_streaming_callback import AgentStreamingCallback
 from codemie.configs.logger import logger
@@ -22,6 +20,10 @@ from codemie.core.thread import MessageQueue
 from codemie.core.models import AssistantChatRequest
 from codemie.core.constants import UniqueThoughtParentIds
 from codemie.core.exception_formatting import describe_exception
+from codemie.service.assistant.assistant_engine_builder import (
+    SubagentBuildContext,
+    SubagentHandle,
+)
 from codemie.rest_api.models.assistant import Assistant
 from codemie.rest_api.security.user import User
 from codemie.service.mcp.models import MCPToolLoadException
@@ -49,14 +51,16 @@ class AssistantFactory:
         request: Optional[AssistantChatRequest] = None,
         request_uuid: Optional[str] = None,
         thread_generator: Optional[MessageQueue] = None,
+        build_context: SubagentBuildContext | None = None,
     ):
         self.assistant = assistant
         self.user = user
         self.request = request
         self.request_uuid = request_uuid
         self.thread_generator = thread_generator
+        self.build_context = build_context or SubagentBuildContext()
 
-    def build(self):
+    def build(self) -> SubagentHandle:
         """
         Build an agent executor (compiled graph) for the assistant.
 
@@ -67,7 +71,8 @@ class AssistantFactory:
         then the project default, and global assistants are exempt.
 
         Returns:
-            Compiled agent executor graph
+            SubagentHandle with the built agent instance, its compiled executor graph and its
+            tool-confirmation flags
 
         Raises:
             ModelNotWhitelistedException: If the sub-assistant's project allows no models (400)
@@ -77,7 +82,7 @@ class AssistantFactory:
             from codemie.service.assistant_service import AssistantService
 
             # Pre-build the agent
-            agent = AssistantService.build_agent(
+            handle = AssistantService.build_agent_handle(
                 assistant=self.assistant,
                 request=self.request.model_copy(),
                 user=self.user,
@@ -85,11 +90,11 @@ class AssistantFactory:
                 thread_generator=self.thread_generator,
                 tool_callbacks=[AgentStreamingCallback(self.thread_generator)],
                 is_subagent=True,
+                build_context=self.build_context,
             )
-            agent.set_thread_context({}, UniqueThoughtParentIds.LATEST.value)
+            handle.agent.set_thread_context({}, UniqueThoughtParentIds.LATEST.value)
 
-            # Return the agent_executor directly
-            return agent.agent_executor
+            return handle
 
         except Exception as e:
             logger.error(f"Failed to create agent executor for assistant {self.assistant.id}: {describe_exception(e)}")
@@ -103,7 +108,8 @@ def create_assistant_executors(
     request_uuid: Optional[str] = None,
     thread_generator: Optional[MessageQueue] = None,
     parent_assistant: Optional[Assistant] = None,
-) -> list[CompiledStateGraph[Any, Any, Any, Any]]:
+    build_context: SubagentBuildContext | None = None,
+) -> list[SubagentHandle]:
     """
     Create agent executors from assistant IDs with optional version pinning.
 
@@ -114,25 +120,26 @@ def create_assistant_executors(
         request_uuid: Unique request identifier
         thread_generator: Thread generator for streaming
         parent_assistant: Parent assistant (orchestrator) that contains these sub-assistants
+        build_context: Build context of the parent; each sub-assistant gets a child of it
 
     Returns:
-        List of agent executors (compiled graphs) for the sub-assistants
+        List[SubagentHandle]: the built sub-assistants
     """
-    executors = []
+    handles: list[SubagentHandle] = []
+    if build_context is None:
+        build_context = SubagentBuildContext()
 
     # Get version overrides from parent assistant or request
-    sub_assistants_versions = None
-    if request and request.sub_assistants_versions:
-        sub_assistants_versions = request.sub_assistants_versions
+    sub_assistants_versions = _sub_assistants_versions(request)
 
     # Get assistant objects from IDs
     try:
         assistants = Assistant.get_by_ids(user, assistant_ids, parent_assistant=parent_assistant)
     except Exception as e:
         logger.error(f"Error fetching assistants: {str(e)}")
-        return []
+        return handles
 
-    # Create executors from assistants
+    # Create handles from assistants
     for assistant in assistants:
         deleted_name = _validate_remote_entity_exists_and_cleanup(assistant)
 
@@ -140,24 +147,18 @@ def create_assistant_executors(
             logger.info(f"Assistant {assistant.id} has been deleted remotely: {deleted_name}")
             continue
 
+        child_context = build_context.child()
         try:
-            # Apply version if specified in sub_assistants_versions
-            if sub_assistants_versions and assistant.id in sub_assistants_versions:
-                version_number = sub_assistants_versions[assistant.id]
-                logger.debug(f"Applying version {version_number} to sub-assistant {assistant.id}")
-
-                from codemie.service.assistant.assistant_version_service import AssistantVersionService
-
-                assistant = AssistantVersionService.apply_version_to_assistant(assistant, version_number)
+            assistant = _with_pinned_version(assistant, sub_assistants_versions)
             factory = AssistantFactory(
                 assistant=assistant,
                 user=user,
                 request=request,
                 request_uuid=request_uuid,
                 thread_generator=thread_generator,
+                build_context=child_context,
             )
-            executor = factory.build()
-            executors.append(executor)
+            handles.append(factory.build())
         except MCPToolLoadException as e:
             e.attach_assistant_context(assistant_name=assistant.name, assistant_id=assistant.id)
             logger.error(
@@ -168,4 +169,23 @@ def create_assistant_executors(
         except Exception as e:
             logger.error(f"Failed to create executor for assistant {assistant.id}: {describe_exception(e)}")
 
-    return executors
+    return handles
+
+
+def _sub_assistants_versions(request: AssistantChatRequest | None) -> dict[str, int] | None:
+    """The sub-assistant version pins of the request, or ``None`` when it pins none."""
+    if request and request.sub_assistants_versions:
+        return request.sub_assistants_versions
+    return None
+
+
+def _with_pinned_version(assistant: Assistant, sub_assistants_versions: dict[str, int] | None) -> Assistant:
+    """Apply the version pinned for the sub-assistant in ``sub_assistants_versions``, if any."""
+    if not sub_assistants_versions or assistant.id not in sub_assistants_versions:
+        return assistant
+    version_number = sub_assistants_versions[assistant.id]
+    logger.debug(f"Applying version {version_number} to sub-assistant {assistant.id}")
+
+    from codemie.service.assistant.assistant_version_service import AssistantVersionService
+
+    return AssistantVersionService.apply_version_to_assistant(assistant, version_number)

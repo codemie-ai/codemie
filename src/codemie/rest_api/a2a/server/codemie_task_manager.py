@@ -60,6 +60,7 @@ from codemie.rest_api.a2a.types import (
 from codemie.rest_api.models.assistant import Assistant
 from codemie.rest_api.security.user import User
 from codemie.service.assistant_service import AssistantService
+from codemie.service.assistant.assistant_engine_builder import BuildChannel
 
 SUPPORTED_CONTENT_TYPES = ["text/plain"]
 TERMINAL_STATES = (TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELED, TaskState.REJECTED)
@@ -275,7 +276,11 @@ class CodemieTaskManager(TaskManager):
             text=query, conversation_id=self._context_id(task), history=chat_messages
         )
         agent = AssistantService.build_agent(
-            assistant=self.assistant, request=assistant_request, user=self.user, request_uuid=str(uuid4())
+            assistant=self.assistant,
+            request=assistant_request,
+            user=self.user,
+            request_uuid=str(uuid4()),
+            channel=BuildChannel.A2A,
         )
         return agent, assistant_request
 

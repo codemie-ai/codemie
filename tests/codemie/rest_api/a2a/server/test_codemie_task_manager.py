@@ -47,6 +47,7 @@ from codemie.rest_api.a2a.types import (
 from codemie.rest_api.models.assistant import Assistant
 from codemie.rest_api.security.user import User
 from codemie.service.assistant_service import AssistantService
+from codemie.service.assistant.assistant_engine_builder import BuildChannel
 
 _DUMP = {"by_alias": True, "exclude_none": True}
 
@@ -591,6 +592,7 @@ class TestHelpers:
             request=assistant_request,
             user=task_manager.user,
             request_uuid="test-uuid",
+            channel=BuildChannel.A2A,
         )
 
     def test_status_update_event_type(self, task_manager, store):

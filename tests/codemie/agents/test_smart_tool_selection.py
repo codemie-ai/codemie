@@ -428,3 +428,125 @@ class TestEndToEndSmartToolSelection:
 
         assert agent is not None
         # Further testing would require mocking the full LangGraph execution
+
+
+class TestDeterministicToolIdsAndHygiene:
+    """Task 3 of EPMCDME-16463: ids survive a rebuild; no silent fallbacks; unique graph name."""
+
+    def test_two_registries_from_same_tools_have_equal_ids(self):
+        tools = [search_code, read_file, list_files]
+
+        first = ToolRegistry(tools)
+        second = ToolRegistry(tools)
+
+        assert first.name_to_id == second.name_to_id
+        assert set(first.registry) == set(second.registry)
+        assert first.name_to_id["search_code"] == "search_code_"
+
+    def test_toolkit_is_part_of_the_id(self):
+        tool_obj = Mock()
+        tool_obj.name = "t"
+        tool_obj.metadata = {"toolkit": "git"}
+        tool_obj.toolkit = "git"
+
+        assert ToolRegistry([tool_obj]).name_to_id["t"] == "t_git"
+
+    def test_two_tools_with_one_name_and_no_toolkit_both_stay_with_distinct_stable_ids(self):
+        """AR-16: same-named tools without a toolkit (e.g. from two MCP servers) both stay selectable."""
+
+        def same_name(description: str):
+            tool_obj = Mock()
+            tool_obj.name = "fetch"
+            tool_obj.description = description
+            tool_obj.metadata = {}
+            tool_obj.toolkit = None
+            return tool_obj
+
+        tools = [same_name("first"), same_name("second")]
+
+        first, second = ToolRegistry(tools), ToolRegistry(tools)
+
+        assert len(first.registry) == 2
+        assert [tool_obj.description for tool_obj in first.registry.values()] == ["first", "second"]
+        assert list(first.registry) == list(second.registry)
+        assert first.get_tools_by_ids(list(first.registry)) == tools
+
+    def test_a_resumed_run_drops_a_selected_id_that_no_longer_resolves_as_a_fresh_run_does(self):
+        from codemie.agents import smart_react_agent as module
+        from codemie.agents.tool_confirmation.confirmation_gate import DECISIONS_CONFIG_KEY
+
+        registry = ToolRegistry([search_code, read_file])
+        workflow = module._build_smart_react_workflow(
+            model=Mock(),
+            tools=[search_code, read_file],
+            tool_registry_obj=registry,
+            tool_selector=Mock(),
+            tool_selection_limit=2,
+            prompt=None,
+            response_format=None,
+            name="a",
+            parallel_tool_calls=None,
+        )
+        sub_agent = Mock()
+        sub_agent.invoke.return_value = {"messages": []}
+        resumed = {"configurable": {DECISIONS_CONFIG_KEY: {}}}
+        with patch.object(module, "_create_sub_agent", return_value=sub_agent) as create:
+            workflow.nodes["agent"].runnable.invoke({"selected_tool_ids": ["search_code_", "gone_"]}, resumed)
+
+        assert create.call_args.kwargs["available_tools"] == [search_code]
+
+    def test_an_ordinary_turn_keeps_the_resolved_tools_or_falls_back_to_all(self):
+        from codemie.agents.smart_react_agent import _resolve_available_tools
+
+        registry = ToolRegistry([search_code, read_file])
+        selected = registry.name_to_id["search_code"]
+
+        assert _resolve_available_tools([selected, "gone_"], [search_code, read_file], registry) == [search_code]
+        assert _resolve_available_tools(["gone_"], [search_code, read_file], registry) == [search_code, read_file]
+
+    def test_selected_ids_resolve_against_rebuilt_registry(self):
+        from codemie.agents.smart_react_agent import _resolve_available_tools
+
+        selected = ToolRegistry([search_code, read_file]).name_to_id["read_file"]
+        rebuilt = ToolRegistry([search_code, read_file])
+
+        assert _resolve_available_tools([selected], [search_code, read_file], rebuilt) == [read_file]
+
+    @patch('codemie.agents.smart_react_agent.config')
+    def test_smart_graph_gets_agent_name(self, mock_config):
+        mock_config.TOOL_SELECTION_THRESHOLD = 2
+        from langchain_openai import ChatOpenAI
+
+        graph = create_smart_react_agent(
+            model=Mock(spec=ChatOpenAI),
+            tools=[search_code, read_file, list_files],
+            name="my-unique-agent",
+            tool_selection_enabled=True,
+        )
+
+        assert graph.name == "my-unique-agent"
+
+    def test_agent_node_reraises_graph_interrupt_without_error_log(self):
+        from langgraph.errors import GraphInterrupt
+        from codemie.agents import smart_react_agent as module
+
+        sub_agent = Mock()
+        sub_agent.invoke.side_effect = GraphInterrupt()
+        registry = ToolRegistry([search_code, read_file])
+        with (
+            patch.object(module, "_create_sub_agent", return_value=sub_agent),
+            patch.object(module.logger, "error") as log_error,
+            pytest.raises(GraphInterrupt),
+        ):
+            module._execute_agent_with_selected_tools(
+                state={"selected_tool_ids": ["search_code_"]},
+                model=Mock(),
+                all_tools=[search_code, read_file],
+                tool_registry_obj=registry,
+                prompt=None,
+                response_format=None,
+                name="a",
+                parallel_tool_calls=None,
+            )
+
+        log_error.assert_not_called()

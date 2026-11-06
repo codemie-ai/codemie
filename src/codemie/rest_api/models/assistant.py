@@ -1779,7 +1779,27 @@ class VirtualAssistantChatRequest(FileNamesCountValidatorMixin, BaseModel):
     )
 
 
-class ToolCallResumeRequest(BaseModel):
-    conversation_id: str
+class ToolCallDecision(BaseModel):
+    """One user decision on a shown call of a paused tool-call confirmation."""
+
+    thought_id: str
     action: ToolCallAction
+
+
+class ToolCallResumeRequest(BaseModel):
+    """Resume body: either `decisions` for every shown call, or the single-call `action` form."""
+
+    conversation_id: str
+    decisions: list[ToolCallDecision] | None = None
+    action: ToolCallAction | None = None
     stream: bool = True
+    thought_id: str | None = None
+
+    def shape_error(self) -> str | None:
+        """Why the body is not one of the two forms; the resume handler answers it with 422 after authorising."""
+        if self.decisions is not None:
+            if self.action is not None or self.thought_id is not None:
+                return "send either decisions or action, not both; thought_id is not allowed with decisions"
+        elif self.action is None:
+            return "send either decisions or action"
+        return None

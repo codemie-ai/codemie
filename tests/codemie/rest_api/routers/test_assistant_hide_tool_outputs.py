@@ -109,26 +109,23 @@ def test_ask_unchanged_when_flag_off(raw_request, user):
     assert chunks == [{"thought": {"id": "1"}}, {"generated_chunk": "a"}]
 
 
-def test_resume_strips_when_flag_on(raw_request, user):
+@pytest.mark.parametrize(
+    ("master_hides", "version_hides", "hidden"),
+    [(False, False, False), (True, False, True), (False, True, True)],
+    ids=["neither", "only-master", "only-pinned-version"],
+)
+def test_resume_route_strips_when_the_master_or_the_pinned_version_hides(
+    raw_request, user, master_hides, version_hides, hidden
+):
+    """AC21: the resume route strips over the master and the version returned with the hook's response."""
     handler = MagicMock()
-    handler.handle_tool_call_resume.return_value = _stream()
+    handler.resume_tool_call.return_value = (_stream(), _assistant(version_hides))
     request = ToolCallResumeRequest(conversation_id="c1", action="allow")
 
     with patch("codemie.rest_api.handlers.assistant_handlers.get_request_handler", return_value=handler):
-        resp = _ask_assistant_resume(_assistant(True), raw_request, request, user, MagicMock())
+        resp = _ask_assistant_resume(_assistant(master_hides), raw_request, request, user, MagicMock())
 
-    assert _chunks(resp) == [{"generated_chunk": "a"}]
-
-
-def test_resume_unchanged_when_flag_off(raw_request, user):
-    handler = MagicMock()
-    handler.handle_tool_call_resume.return_value = _stream()
-    request = ToolCallResumeRequest(conversation_id="c1", action="allow")
-
-    with patch("codemie.rest_api.handlers.assistant_handlers.get_request_handler", return_value=handler):
-        resp = _ask_assistant_resume(_assistant(False), raw_request, request, user, MagicMock())
-
-    assert len(_chunks(resp)) == 2
+    assert len(_chunks(resp)) == (1 if hidden else 2)
 
 
 @pytest.mark.parametrize("handler_cls", ["A2AAssistantHandler", "HedgedAssistantHandler"])

@@ -42,6 +42,18 @@ def _jobs_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CODE_EXECUTOR_SANDBOX_MODE", "sandbox-jobs")
 
 
+@pytest.fixture(autouse=True)
+def _no_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A local .env may set the override; every test that needs it sets it itself.
+    monkeypatch.delenv(ENV_OVERRIDE, raising=False)
+
+
+def _config_without_components() -> CustomerConfig:
+    # model_construct still runs model_post_init, which would load the real customer config file.
+    with patch.object(CustomerConfig, "_load_config"):
+        return CustomerConfig.model_construct(components=[])
+
+
 def resolve_tool_calling_timeout() -> float | None:
     """The run limit of the resolved settings, or None when tool calling is off (the shape these tests check)."""
     settings = resolve_tool_calling_settings()
@@ -74,7 +86,7 @@ class TestToolCallingTimeoutSelection:
             assert resolve_tool_calling_timeout() is None
 
     def test_component_absent_resolves_none(self) -> None:
-        absent = CustomerConfig.model_construct(components=[])
+        absent = _config_without_components()
         with patch.object(bridge_module, "customer_config", absent):
             assert resolve_tool_calling_timeout() is None
 
@@ -171,7 +183,7 @@ class TestToolCallingFollowsRuntimeOverrides:
         component_resolution.publish_snapshot({})
 
     def test_override_enables_component_missing_from_yaml_and_sets_timeout(self) -> None:
-        absent = CustomerConfig.model_construct(components=[])
+        absent = _config_without_components()
         component_resolution.publish_snapshot({f"features:{FEATURE}": {"enabled": True, "timeoutSeconds": "45"}})
         with patch.object(bridge_module, "customer_config", absent):
             assert resolve_tool_calling_timeout() == 45.0

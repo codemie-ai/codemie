@@ -32,6 +32,7 @@ HEADER = "**Workspace setup notices (skill files):**"
 
 def _assistant(skill_ids=()):
     assistant = Mock(spec=Assistant)
+    assistant.tool_permissions = None
     assistant.skill_ids = list(skill_ids)
     return assistant
 
@@ -88,6 +89,7 @@ class TestWorkflowPrompt:
 
 def _workflow_assistant_mock():
     assistant = Mock(spec=Assistant)
+    assistant.tool_permissions = None
     assistant.id = "asst-123"
     assistant.name = "Node Assistant"
     assistant.description = "desc"

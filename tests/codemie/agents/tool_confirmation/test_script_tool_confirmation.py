@@ -15,7 +15,7 @@
 """Tool-call confirmation policies apply unchanged to the real workspace script tool.
 
 The script tool keeps the default ``CodeMieTool.is_safe`` (False), so ``ASK_FOR_APPROVAL`` and
-``APPROVE_FOR_ME`` both interrupt before it runs, and ``AUTO_APPROVE`` leaves confirmation off.
+``APPROVE_FOR_ME`` both make the gate interrupt before it runs, and ``AUTO_APPROVE`` leaves confirmation off.
 """
 
 from __future__ import annotations
@@ -24,16 +24,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from codemie.agents.tool_confirmation.models import ToolCallPendingEvent
-from codemie.agents.tool_confirmation.tool_call_confirmation_mixin import ToolCallConfirmationMixin
+from codemie.agents.tool_confirmation.confirmation_gate import call_needs_confirmation
 from codemie.core.models import ToolCallPolicy
 from codemie.rest_api.models.assistant import ToolPermissionsConfig
 from codemie.rest_api.security.user import User
-from codemie.service.assistant.assistant_engine_builder import LangGraphAssistantBuilder
-from codemie_tools.base.codemie_tool import CodeMieTool
+from codemie.service.assistant.assistant_engine_builder import LangGraphAssistantBuilder, SubagentBuildContext
 from codemie_tools.data_management.workspace.execute_workspace_script_tool import ExecuteWorkspaceScriptTool
 
-_MIXIN_MODULE = "codemie.agents.tool_confirmation.tool_call_confirmation_mixin"
 _SCRIPT_ARGS: dict[str, str] = {"script_path": "scripts/run.py"}
 
 
@@ -44,28 +41,6 @@ def _make_script_tool() -> ExecuteWorkspaceScriptTool:
         workspace_service=MagicMock(),
         workspace_id="ws-1",
     )
-
-
-def _make_mixin(policy: ToolCallPolicy, tools: list[CodeMieTool]) -> ToolCallConfirmationMixin:
-    mixin = ToolCallConfirmationMixin.__new__(ToolCallConfirmationMixin)
-    mixin.tool_call_policy = policy
-    mixin.tools = tools
-    mixin.thread_generator = None
-    mixin._pending_tool_confirmation = False
-    mixin.conversation_id = "conv-123"
-    mixin.agent_name = "test-agent"
-    mixin.request_uuid = "req-uuid"
-    mixin.agent_executor = MagicMock()
-    return mixin
-
-
-def _wire_script_tool_call(mixin: ToolCallConfirmationMixin, tool_name: str) -> None:
-    ai_message = MagicMock()
-    ai_message.tool_calls = [{"id": "tc-1", "name": tool_name, "args": _SCRIPT_ARGS}]
-    state = MagicMock()
-    state.next = ["tools"]
-    state.values = {"messages": [ai_message]}
-    mixin.agent_executor.get_state.return_value = state
 
 
 def _require_tool_confirmation(policy: ToolCallPolicy) -> bool:
@@ -80,7 +55,6 @@ def _require_tool_confirmation(policy: ToolCallPolicy) -> bool:
     customer_config_mock.get_feature_setting.return_value = None
     with (
         patch("codemie.service.tool_permissions_service.customer_config", customer_config_mock),
-        patch("codemie.service.conversation_service.ConversationService.find_or_create_conversation"),
     ):
         LangGraphAssistantBuilder.configure_agent_kwargs(
             agent_kwargs=agent_kwargs,
@@ -91,8 +65,12 @@ def _require_tool_confirmation(policy: ToolCallPolicy) -> bool:
             thread_generator=MagicMock(),
             llm_model="gpt-4",
             smart_tool_selection_enabled=False,
-            allow_tool_confirmation=True,
-            create_subagent_executors=lambda **_: ([], set()),
+            resolved_policy=LangGraphAssistantBuilder.resolve_tool_policy(
+                assistant, request, allow_tool_confirmation=True
+            ),
+            build_context=SubagentBuildContext(),
+            is_root=True,
+            create_subagent_executors=lambda **_: [],
             get_subagent_descriptions=lambda a, u: {},
         )
     return bool(agent_kwargs["require_tool_confirmation"])
@@ -103,24 +81,11 @@ def test_script_tool_is_not_safe() -> None:
 
 
 @pytest.mark.parametrize("policy", [ToolCallPolicy.ASK_FOR_APPROVAL, ToolCallPolicy.APPROVE_FOR_ME])
-def test_script_tool_call_interrupts_and_saves_pending_without_auto_resume(policy: ToolCallPolicy) -> None:
+def test_script_tool_call_needs_confirmation(policy: ToolCallPolicy) -> None:
     script_tool = _make_script_tool()
-    mixin = _make_mixin(policy, [script_tool])
-    _wire_script_tool_call(mixin, script_tool.name)
+    tool_call = {"id": "tc-1", "name": script_tool.name, "args": _SCRIPT_ARGS}
 
-    with patch(f"{_MIXIN_MODULE}.ConversationCheckpointService") as checkpoint_service:
-        last_message, needs_auto_resume = mixin.ask_for_tool_confirmation({}, "response")
-
-    assert needs_auto_resume is False
-    assert last_message == "response"
-    assert mixin._pending_tool_confirmation is True
-    save = checkpoint_service.return_value.save_pending_tool_call
-    save.assert_called_once()
-    conversation_id, pending = save.call_args.args
-    assert conversation_id == "conv-123"
-    assert isinstance(pending, ToolCallPendingEvent)
-    assert pending.tool_name == script_tool.name
-    assert pending.tool_args == _SCRIPT_ARGS
+    assert call_needs_confirmation(policy, {script_tool.name: script_tool}, tool_call) is True
 
 
 def test_auto_approve_leaves_confirmation_off_for_script_tool_agent() -> None:

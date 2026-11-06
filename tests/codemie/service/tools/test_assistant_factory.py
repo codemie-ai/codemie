@@ -18,7 +18,7 @@ import pytest
 from unittest.mock import Mock, patch
 
 from codemie.core.models import AssistantChatRequest
-from codemie.rest_api.models.assistant import Assistant
+from codemie.rest_api.models.assistant import Assistant, ToolPermissionsConfig
 from codemie.rest_api.security.user import User
 from codemie.service.tools.assistant_factory import AssistantFactory, create_assistant_executors
 
@@ -75,7 +75,7 @@ class TestAssistantFactory:
         assert factory.request_uuid == "test-uuid"
         assert factory.thread_generator is None
 
-    @patch("codemie.service.assistant_service.AssistantService.build_agent")
+    @patch("codemie.service.assistant_service.AssistantService.build_agent_handle")
     def test_factory_build_creates_agent_executor(self, mock_build_agent, mock_assistant, mock_user, mock_request):
         """Test that factory.build() creates and returns an agent executor."""
         # Setup mocks
@@ -84,7 +84,7 @@ class TestAssistantFactory:
         mock_agent.agent_executor = mock_agent_executor
         mock_agent.set_thread_context = Mock()
 
-        mock_build_agent.return_value = mock_agent
+        mock_build_agent.return_value = Mock(agent=mock_agent, executor=mock_agent.agent_executor)
 
         # Create factory and build
         factory = AssistantFactory(
@@ -100,15 +100,16 @@ class TestAssistantFactory:
         # Assertions
         mock_build_agent.assert_called_once()
         mock_agent.set_thread_context.assert_called_once()
-        assert result == mock_agent_executor
+        assert result.agent is mock_agent
+        assert result.executor == mock_agent_executor
 
-    @patch("codemie.service.assistant_service.AssistantService.build_agent")
+    @patch("codemie.service.assistant_service.AssistantService.build_agent_handle")
     def test_factory_build_passes_is_subagent_true(self, mock_build_agent, mock_assistant, mock_user, mock_request):
         """factory.build() must always mark the built agent as a sub-assistant."""
         mock_agent = Mock()
         mock_agent.agent_executor = Mock()
         mock_agent.set_thread_context = Mock()
-        mock_build_agent.return_value = mock_agent
+        mock_build_agent.return_value = Mock(agent=mock_agent, executor=mock_agent.agent_executor)
 
         factory = AssistantFactory(
             assistant=mock_assistant,
@@ -123,7 +124,7 @@ class TestAssistantFactory:
         call_kwargs = mock_build_agent.call_args[1]
         assert call_kwargs["is_subagent"] is True
 
-    @patch("codemie.service.assistant_service.AssistantService.build_agent")
+    @patch("codemie.service.assistant_service.AssistantService.build_agent_handle")
     def test_factory_build_with_thread_generator(
         self, mock_build_agent, mock_assistant, mock_user, mock_request, mock_thread_generator
     ):
@@ -134,7 +135,7 @@ class TestAssistantFactory:
         mock_agent.agent_executor = mock_agent_executor
         mock_agent.set_thread_context = Mock()
 
-        mock_build_agent.return_value = mock_agent
+        mock_build_agent.return_value = Mock(agent=mock_agent, executor=mock_agent.agent_executor)
 
         factory = AssistantFactory(
             assistant=mock_assistant,
@@ -147,12 +148,13 @@ class TestAssistantFactory:
         result = factory.build()
 
         # Assertions
-        assert result == mock_agent_executor
+        assert result.agent is mock_agent
+        assert result.executor == mock_agent_executor
         # Verify thread_generator was passed to build_agent
         call_kwargs = mock_build_agent.call_args[1]
         assert call_kwargs["thread_generator"] == mock_thread_generator
 
-    @patch("codemie.service.assistant_service.AssistantService.build_agent")
+    @patch("codemie.service.assistant_service.AssistantService.build_agent_handle")
     def test_factory_build_handles_exception(self, mock_build_agent, mock_assistant, mock_user, mock_request):
         """Test that factory.build() handles exceptions properly."""
         # Setup mock to raise exception
@@ -439,6 +441,8 @@ class TestAssistantFactoryModelPolicy:
         assistant.project = "proj"
         assistant.is_global = is_global
         assistant.llm_model_type = "assistant-model"
+        # The build resolves the tool-call policy before the model; a Mock would not validate.
+        assistant.tool_permissions = ToolPermissionsConfig()
         return assistant
 
     @staticmethod
@@ -576,10 +580,10 @@ class TestAssistantFactoryModelPolicy:
         assert assistant.llm_model_type == "assistant-model"
 
     def test_create_assistant_executors_unconfigured_whitelist(self):
-        agent = Mock()
+        handle = Mock()
         sub_assistant = self._assistant()
         with (
-            patch("codemie.service.assistant_service.AssistantService.build_agent", return_value=agent),
+            patch("codemie.service.assistant_service.AssistantService.build_agent_handle", return_value=handle),
             patch("codemie.service.tools.assistant_factory.Assistant.get_by_ids", return_value=[sub_assistant]),
             patch(
                 "codemie.service.tools.assistant_factory._validate_remote_entity_exists_and_cleanup",
@@ -598,7 +602,7 @@ class TestAssistantFactoryModelPolicy:
                 request_uuid="uuid",
             )
 
-        assert result == [agent.agent_executor]
+        assert result == [handle]
 
 
 class TestBuildAgentResolvedModel:
@@ -619,6 +623,8 @@ class TestBuildAgentResolvedModel:
         assistant.temperature = None
         assistant.top_p = None
         assistant.llm_model_type = own_model
+        # The build resolves the tool-call policy before the model; a Mock would not validate.
+        assistant.tool_permissions = ToolPermissionsConfig()
         return assistant
 
     @staticmethod
@@ -741,3 +747,163 @@ class TestCreateAssistantExecutorsFailureLog:
         logged = " ".join(str(c.args[0]) for c in mock_logger.error.call_args_list)
         assert "ModelNotWhitelistedException" in logged
         assert error.message in logged
+
+
+# --- EPMCDME-16463: every channel builds the whole tree (AC14) ---------------------------------------
+
+from contextlib import contextmanager  # noqa: E402
+from unittest.mock import MagicMock  # noqa: E402
+
+from codemie.core.models import ToolCallPolicy  # noqa: E402
+from codemie.service.assistant.assistant_engine_builder import BuildChannel  # noqa: E402
+
+_ASK = ToolCallPolicy.ASK_FOR_APPROVAL
+_AUTO = ToolCallPolicy.AUTO_APPROVE
+_REACT_MODEL = "react-model"
+
+
+def _db_assistant(assistant_id, sub_ids=(), *, name=None):
+    assistant = MagicMock(spec=Assistant)
+    assistant.id = assistant_id
+    assistant.name = name or f"Assistant {assistant_id}"
+    assistant.description = f"does {assistant_id}"
+    assistant.system_prompt = "p"
+    assistant.context = []
+    assistant.toolkits = []
+    assistant.llm_model_type = "gpt-4"
+    assistant.temperature = 0.1
+    assistant.top_p = 0.9
+    assistant.project = None
+    assistant.is_global = False
+    assistant.bedrock = None
+    assistant.smart_tool_selection_enabled = False
+    assistant.assistant_ids = list(sub_ids)
+    assistant.enabled_builtin_subagents = []
+    assistant.skill_ids = []
+    assistant.mcp_servers = []
+    assistant.prompt_variables = []
+    assistant.model_copy.side_effect = lambda deep=False: _db_assistant(None, name="clone")
+    return assistant
+
+
+@contextmanager
+def _env(assistants, policies, built: dict[str, dict]):
+    """``build_agent`` over mocked boundaries; ``policies`` maps an assistant name to its effective policy."""
+
+    def _permissions(_self, assistant, tool_call_policy_override=None, conversation_policy=None):
+        return ToolPermissionsConfig(tool_call_policy=policies.get(assistant.name, _AUTO))
+
+    def _agent(**kwargs):
+        built[kwargs["agent_name"]] = kwargs
+        agent = MagicMock(name=kwargs["agent_name"])
+        agent.agent_name = kwargs["agent_name"]
+        return agent
+
+    svc = "codemie.service.assistant_service"
+    with (
+        patch(
+            "codemie.service.tool_permissions_service.ToolPermissionsService.get_effective_permissions",
+            _permissions,
+        ),
+        patch(f"{svc}.ToolkitService.get_tools", return_value=[]),
+        patch(
+            "codemie.rest_api.models.assistant.Assistant.get_by_ids",
+            side_effect=lambda user, ids, parent_assistant=None: [assistants[i] for i in ids],
+        ),
+        patch("codemie.service.tools.assistant_factory._validate_remote_entity_exists_and_cleanup", return_value=None),
+        patch(f"{svc}.Conversation.find_by_id", return_value=None),
+        patch(f"{svc}.set_llm_context"),
+        patch(f"{svc}.build_unique_file_objects", return_value={}),
+        patch(f"{svc}.BedrockOrchestratorService.is_bedrock_assistant", return_value=False),
+        patch(f"{svc}.AssistantService.drop_missing_context", return_value=[]),
+        patch(f"{svc}.AssistantService._apply_marketplace_tool_mappings"),
+        patch(f"{svc}.SkillContributionsResolver.resolve_for_assistant"),
+        patch(f"{svc}.prepare_skill_workspace", return_value=[]),
+        patch("codemie.service.tools.oauth_connect_gate.enforce_oauth_connected"),
+        patch(f"{svc}.AssistantService._prepare_system_prompt", return_value="p"),
+        patch(f"{svc}.llm_service") as llm_service_mock,
+        patch(f"{svc}.config") as config_mock,
+        patch(f"{svc}.LangGraphAgent", side_effect=_agent),
+    ):
+        llm_service_mock.get_react_llms.return_value = [_REACT_MODEL]
+        config_mock.ENABLE_LANGGRAPH_AITOOLS_AGENT = True
+        config_mock.TOOL_SELECTION_ENABLED = False
+        yield
+
+
+def _build_root(root, channel, request=None):
+    from codemie.service.assistant_service import AssistantService
+
+    return AssistantService.build_agent(
+        assistant=root,
+        request=request or AssistantChatRequest(text="hi", file_names=[]),
+        user=MagicMock(),
+        request_uuid="uuid-1",
+        channel=channel,
+    )
+
+
+@pytest.mark.parametrize(
+    ("channel", "save_history", "history_index", "resumable"),
+    [
+        (BuildChannel.SYNC, True, 0, False),
+        (BuildChannel.STREAM, False, 0, False),
+        (BuildChannel.STREAM, True, None, False),
+        (BuildChannel.STREAM, True, 0, True),
+    ],
+    ids=["sync", "stream-history-off", "stream-no-history-entry", "stream"],
+)
+def test_a_confirming_sub_assistant_is_built_with_its_handoff_and_resumes_only_where_the_run_can(
+    channel, save_history, history_index, resumable
+):
+    """AC14: no build-time exclusion; the build only tells each gate whether the run can be resumed.
+
+    A run whose turn has no saved history entry (the placeholder save failed) cannot store a pause against it,
+    so it cannot be resumed either and its gates answer as unavailable.
+    """
+    assistants = {"O": _db_assistant("O", ["S"]), "S": _db_assistant("S")}
+    built: dict[str, dict] = {}
+    request = AssistantChatRequest(text="hi", file_names=[], save_history=save_history, history_index=history_index)
+
+    with _env(assistants, {"Assistant S": _ASK}, built):
+        _build_root(assistants["O"], channel, request)
+
+    root_kwargs = built["Assistant O"]
+    assert list(root_kwargs["subagent_descriptions"]) == ["Assistant S"]
+    assert len(root_kwargs["subagents"]) == 1
+    assert built["Assistant S"]["require_tool_confirmation"] is True
+    assert built["Assistant S"]["can_resume_pause"] is resumable
+    assert root_kwargs["can_resume_pause"] is resumable
+
+
+@pytest.mark.parametrize(
+    ("channel", "resumable"),
+    [
+        (BuildChannel.STREAM, True),
+        (BuildChannel.RESUME, True),
+        (BuildChannel.HEDGED, True),
+        (BuildChannel.SYNC, False),
+        (BuildChannel.BACKGROUND, False),
+        (BuildChannel.WORKFLOW, False),
+        (BuildChannel.A2A, False),
+        (BuildChannel.HEALTH_CHECK, False),
+    ],
+)
+def test_only_the_streaming_channels_build_a_root_that_can_resume_a_pause(channel, resumable):
+    """Rule 9: the channel decides whether the tree's gates pause or answer as unavailable."""
+    from codemie.service.assistant.subagent_build import SubagentBuildContext
+
+    root = SubagentBuildContext.root(channel)
+
+    assert root.can_resume_pause is resumable
+    assert root.child().can_resume_pause is resumable
+    assert {*BuildChannel} == {
+        BuildChannel.STREAM,
+        BuildChannel.RESUME,
+        BuildChannel.HEDGED,
+        BuildChannel.SYNC,
+        BuildChannel.BACKGROUND,
+        BuildChannel.WORKFLOW,
+        BuildChannel.A2A,
+        BuildChannel.HEALTH_CHECK,
+    }

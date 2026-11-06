@@ -388,11 +388,6 @@ async def test_get_conversation_by_id(user, conversation):
             "very_first_msg_at": None,
             "very_last_msg_at": None,
         }
-        # pending_checkpoint is an ORM-only column excluded from ConversationResponse
-        expected.pop("pending_checkpoint", None)
-        # pending_tool_call is populated separately; not part of the raw conversation dict
-        expected.pop("pending_tool_call", None)
-        body.pop("pending_tool_call", None)
         assert body == expected
         mock_get_by_id.assert_called_once_with(conversation.id)
 
@@ -895,3 +890,19 @@ class TestCascadeDeleteWorkflowExecutionOnConversationDelete:
             f"execution_id 'exec-id-001' collected during the SELECT.\n"
             f"Compiled SQL: {compiled}"
         )
+
+
+@pytest.mark.asyncio
+async def test_get_conversation_by_id_has_no_pending_tool_call(user):
+    conversation = Conversation(id="456", conversation_id="456", user_id=user.id)
+    with (
+        patch("codemie.rest_api.routers.conversation.retrieval.Conversation.get_by_id", return_value=conversation),
+        patch("codemie.rest_api.routers.conversation.retrieval.Ability.can", return_value=True),
+        patch("codemie.rest_api.routers.conversation.retrieval.Assistant.get_by_ids", return_value=[]),
+    ):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.get(f"/v1/conversations/{conversation.id}", headers={"Authorization": "Bearer t"})
+
+    assert response.status_code == 200
+    assert "pending_tool_call" not in response.json()

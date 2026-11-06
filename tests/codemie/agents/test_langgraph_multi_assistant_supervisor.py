@@ -34,7 +34,7 @@ from codemie.agents.langgraph_agent import (
 from codemie.agents.supervisor.constants import METADATA_KEY_HANDOFF_BACK, METADATA_KEY_HANDOFF_DESTINATION
 from codemie.chains.base import ThoughtOutputFormat
 from codemie.core.constants import BackgroundTaskStatus
-from codemie.core.exceptions import StreamAbortedException, SubagentToolConfirmationUnsupportedException
+from codemie.core.exceptions import StreamAbortedException
 from codemie.core.models import AssistantChatRequest, ToolCallPolicy
 from codemie.core.thread import ThreadedGenerator
 
@@ -412,6 +412,8 @@ class TestLangGraphMultiAssistantSupervisor:
         supervisor_agent.set_thread_context = MagicMock()
 
         supervisor_agent._LangGraphAgent__parse_supervisor_update_type(value, author=agent_name)
+        # The supervisor's post_model_hook output starts the deferred steps.
+        supervisor_agent._LangGraphAgent__parse_supervisor_update_type({"post_model_hook": None}, author=agent_name)
 
         supervisor_agent._on_supervisor_handoff.assert_not_called()
         supervisor_agent.set_thread_context.assert_not_called()
@@ -691,6 +693,7 @@ class TestLangGraphMultiAssistantSupervisor:
         supervisor_agent._on_supervisor_handoff = MagicMock()
 
         supervisor_agent._LangGraphAgent__parse_supervisor_update_type(value)
+        supervisor_agent._LangGraphAgent__parse_supervisor_update_type({"post_model_hook": None})
 
         supervisor_agent._on_tool_start.assert_called_once()
         call_args = supervisor_agent._on_tool_start.call_args
@@ -711,6 +714,11 @@ class TestLangGraphMultiAssistantSupervisor:
 
         supervisor_agent._process_chunk_for_supervisor(
             (("planner:outer-1", "analyst:inner-1"), "updates", {"agent": {"messages": [ai_message]}}),
+            [],
+        )
+        # The nested agent's post_model_hook output, at its own namespace, starts its deferred steps.
+        supervisor_agent._process_chunk_for_supervisor(
+            (("planner:outer-1", "analyst:inner-1"), "updates", {"post_model_hook": None}),
             [],
         )
 
@@ -947,25 +955,10 @@ class TestLangGraphMultiAssistantSupervisor:
         result = supervisor_agent.is_finish_reason_tool_calls(message)
         assert result is False
 
-    def test_bakes_interrupt_into_supervisor_node_when_confirmation_required(self, agent_config_with_subagents):
+    def test_supervisor_gets_the_confirmation_gate_when_confirmation_required(self, agent_config_with_subagents):
         agent_config_with_subagents["require_tool_confirmation"] = True
+        agent_config_with_subagents["tool_call_policy"] = ToolCallPolicy.ASK_FOR_APPROVAL
 
-        with patch("codemie.agents.langgraph_agent.create_supervisor") as mock_create_supervisor:
-            mock_builder = MagicMock()
-            mock_node_spec = MagicMock()
-            mock_inner_builder = mock_node_spec.runnable.builder
-            mock_builder.nodes.get.return_value = mock_node_spec
-            mock_create_supervisor.return_value = mock_builder
-
-            with patch("codemie.core.dependecies.get_llm_by_credentials"):
-                LangGraphAgent(**agent_config_with_subagents)
-
-            mock_builder.nodes.get.assert_called_once_with(LangGraphAgent.SUPERVISOR_NODE_NAME)
-            mock_inner_builder.compile.assert_called_once_with(interrupt_before=LangGraphAgent.INTERRUPT_BEFORE_TOOLS)
-            assert mock_node_spec.runnable == mock_inner_builder.compile.return_value
-            mock_builder.compile.assert_called_once()
-
-    def test_does_not_bake_interrupt_when_confirmation_not_required(self, agent_config_with_subagents):
         with patch("codemie.agents.langgraph_agent.create_supervisor") as mock_create_supervisor:
             mock_builder = MagicMock()
             mock_create_supervisor.return_value = mock_builder
@@ -973,24 +966,21 @@ class TestLangGraphMultiAssistantSupervisor:
             with patch("codemie.core.dependecies.get_llm_by_credentials"):
                 LangGraphAgent(**agent_config_with_subagents)
 
+            assert callable(mock_create_supervisor.call_args.kwargs["post_model_hook"])
             mock_builder.nodes.get.assert_not_called()
-            mock_builder.compile.assert_called_once()
+            mock_builder.compile.assert_called_once_with()
 
-    def test_bake_interrupt_warns_when_supervisor_node_missing(self, agent_config_with_subagents):
-        agent_config_with_subagents["require_tool_confirmation"] = True
-
+    def test_supervisor_has_the_identity_hook_when_confirmation_not_required(self, agent_config_with_subagents):
         with patch("codemie.agents.langgraph_agent.create_supervisor") as mock_create_supervisor:
             mock_builder = MagicMock()
-            mock_builder.nodes.get.return_value = None
             mock_create_supervisor.return_value = mock_builder
 
-            with patch("codemie.agents.langgraph_agent.logger") as mock_logger:
-                with patch("codemie.core.dependecies.get_llm_by_credentials"):
-                    LangGraphAgent(**agent_config_with_subagents)
+            with patch("codemie.core.dependecies.get_llm_by_credentials"):
+                LangGraphAgent(**agent_config_with_subagents)
 
-                mock_logger.warning.assert_called_once()
-
-            mock_builder.compile.assert_called_once()
+            # One graph shape (rule 1): the hook assigns call identities even when nothing pauses.
+            assert callable(mock_create_supervisor.call_args.kwargs["post_model_hook"])
+            mock_builder.compile.assert_called_once_with()
 
 
 class TestSubagentToolConfirmationPolicy:
@@ -1037,20 +1027,25 @@ class TestSubagentToolConfirmationPolicy:
             "assistant": assistant,
         }
 
-    def test_subagent_raises_when_tool_confirmation_required(self, base_config):
+    def test_subagent_is_built_with_its_gate_when_the_channel_can_resume_its_pause(self, base_config):
         base_config["is_subagent"] = True
         base_config["require_tool_confirmation"] = True
         base_config["tool_call_policy"] = ToolCallPolicy.ASK_FOR_APPROVAL
+        base_config["can_resume_pause"] = True
+        base_config["thread_generator"] = MagicMock()
 
-        with patch("codemie.agents.langgraph_agent.create_smart_react_agent") as mock_create_smart_react:
-            with patch("codemie.core.dependecies.get_llm_by_credentials"):
-                with pytest.raises(SubagentToolConfirmationUnsupportedException) as exc_info:
-                    LangGraphAgent(**base_config)
+        with (
+            patch("codemie.agents.langgraph_agent.create_smart_react_agent") as mock_create_smart_react,
+            patch("codemie.agents.tool_confirmation.tool_call_confirmation_mixin.build_confirmation_hook") as mock_hook,
+            patch("codemie.core.dependecies.get_llm_by_credentials"),
+        ):
+            mock_create_smart_react.return_value = MagicMock()
+            LangGraphAgent(**base_config)
+            mock_create_smart_react.assert_called_once()
+            hook_factory = mock_create_smart_react.call_args.kwargs["post_model_hook_factory"]
+            assert hook_factory([]) is mock_hook.return_value
 
-            mock_create_smart_react.assert_not_called()
-
-        assert exc_info.value.agent_name == "SubAgent"
-        assert exc_info.value.tool_call_policy == ToolCallPolicy.ASK_FOR_APPROVAL
+        assert mock_hook.call_args.kwargs == {"is_subagent": True, "pauses_own_calls": True, "resumable": True}
 
     def test_subagent_does_not_raise_when_confirmation_not_required(self, base_config):
         base_config["is_subagent"] = True

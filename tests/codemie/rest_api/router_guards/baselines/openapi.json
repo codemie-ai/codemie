@@ -6546,30 +6546,6 @@
             "description": "Whether MCP servers should be single-use (True) or persistent (False)",
             "title": "Mcp Server Single Usage"
           },
-          "pending_checkpoint": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Pending Checkpoint"
-          },
-          "pending_tool_call": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Pending Tool Call"
-          },
           "pinned": {
             "anyOf": [
               {
@@ -7402,16 +7378,6 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/ConversationHistoryPaginationData"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "pending_tool_call": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/ToolCallPendingEvent"
               },
               {
                 "type": "null"
@@ -29000,63 +28966,22 @@
         "title": "ToolCallAction",
         "type": "string"
       },
-      "ToolCallPendingEvent": {
+      "ToolCallDecision": {
+        "description": "One user decision on a shown call of a paused tool-call confirmation.",
         "properties": {
-          "all_tool_call_ids": {
-            "default": [],
-            "items": {
-              "type": "string"
-            },
-            "title": "All Tool Call Ids",
-            "type": "array"
+          "action": {
+            "$ref": "#/components/schemas/ToolCallAction"
           },
-          "display_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Display Name"
-          },
-          "history_index": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "History Index"
-          },
-          "original_user_message": {
-            "default": "",
-            "title": "Original User Message",
-            "type": "string"
-          },
-          "pending_tool_call_id": {
-            "title": "Pending Tool Call Id",
-            "type": "string"
-          },
-          "tool_args": {
-            "additionalProperties": true,
-            "title": "Tool Args",
-            "type": "object"
-          },
-          "tool_name": {
-            "title": "Tool Name",
+          "thought_id": {
+            "title": "Thought Id",
             "type": "string"
           }
         },
         "required": [
-          "pending_tool_call_id",
-          "tool_name",
-          "tool_args"
+          "thought_id",
+          "action"
         ],
-        "title": "ToolCallPendingEvent",
+        "title": "ToolCallDecision",
         "type": "object"
       },
       "ToolCallPolicy": {
@@ -29070,23 +28995,55 @@
         "type": "string"
       },
       "ToolCallResumeRequest": {
+        "description": "Resume body: either `decisions` for every shown call, or the single-call `action` form.",
         "properties": {
           "action": {
-            "$ref": "#/components/schemas/ToolCallAction"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ToolCallAction"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "conversation_id": {
             "title": "Conversation Id",
             "type": "string"
           },
+          "decisions": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ToolCallDecision"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decisions"
+          },
           "stream": {
             "default": true,
             "title": "Stream",
             "type": "boolean"
+          },
+          "thought_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thought Id"
           }
         },
         "required": [
-          "conversation_id",
-          "action"
+          "conversation_id"
         ],
         "title": "ToolCallResumeRequest",
         "type": "object"

@@ -1703,3 +1703,55 @@ class TestStreamAgentPathQueueEmpty:
             )
 
         agent_queue.close.assert_called_once()
+
+
+def test_hedged_stream_builds_the_agent_for_the_hedged_channel(handler, request_, raw_request):
+    from codemie.core.thread import ThreadedGenerator
+    from codemie.service.assistant.assistant_engine_builder import BuildChannel
+
+    mock_agent = Mock()
+    mock_agent.last_generation_result = None
+    mock_agent.stream = Mock()
+    with (
+        patch(
+            "codemie.rest_api.handlers.hedged_handler.HedgingToolService.instantiate",
+            return_value=_make_fast_tool(_HIT_RESULT),
+        ),
+        patch(
+            "codemie.rest_api.handlers.assistant_handlers.AssistantService.build_agent", return_value=mock_agent
+        ) as build,
+        patch(
+            "codemie.rest_api.handlers.hedged_handler.ThreadedGenerator",
+            return_value=ThreadedGenerator(request_uuid="req-uuid", user_id="user-1", conversation_id=""),
+        ),
+        patch("codemie.rest_api.handlers.hedged_handler.extract_custom_headers", return_value={}),
+        patch("codemie.rest_api.handlers.hedged_handler.set_disable_prompt_cache"),
+        patch.object(handler, "save_chat_history"),
+    ):
+        response = handler._handle_stream(request_, raw_request, time())
+        asyncio.run(_consume(response.body_iterator))
+
+    assert build.call_args.kwargs["channel"] is BuildChannel.HEDGED
+
+
+def test_confirming_tree_takes_the_ordinary_stream_path(handler, request_, raw_request):
+    from codemie.rest_api.handlers.assistant_handlers import StandardAssistantHandler
+
+    mock_agent = Mock()
+    mock_agent.tree_requires_confirmation = True
+    instantiate = Mock()
+    ordinary = Mock(return_value="ordinary-response")
+    with (
+        patch("codemie.rest_api.handlers.hedged_handler.HedgingToolService.instantiate", instantiate),
+        patch("codemie.rest_api.handlers.assistant_handlers.AssistantService.build_agent", return_value=mock_agent),
+        patch("codemie.rest_api.handlers.hedged_handler.extract_custom_headers", return_value={}),
+        patch("codemie.rest_api.handlers.hedged_handler.set_disable_prompt_cache"),
+        patch.object(StandardAssistantHandler, "_handle_stream", ordinary),
+    ):
+        start = time()
+        response = handler._handle_stream(request_, raw_request, start)
+
+    assert response == "ordinary-response"
+    ordinary.assert_called_once_with(request_, raw_request, start, None, False, ErrorDetailLevel.STANDARD)
+    instantiate.assert_not_called()
+    mock_agent.stream.assert_not_called()

@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "generated": "2026-10-29T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 6, "label": "XXL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 26,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 70,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Touches the agent runtime (LangGraph agent, event adapter, smart ReAct agent and tool state), the supervisor coordinator and history, a new tool_confirmation package (confirmation gate, call identity, namespace checkpoint saver, resume payload, mixin), the A2A task manager, assistant/hedged handlers plus a new tool-call resume handler, REST models and routers, and several assistant/toolkit services. That is many components across several subsystems with new abstractions, scored XL, then bumped to XXL because it affects multiple agents and workflows (root, nested sub-assistants, supervisor)." },
+    { "dimension": "technical_risk", "reason": "No exact precedent. It adds a custom per-namespace LangGraph checkpoint saver stored on the conversation, ordering rules for checkpoint writes, a compare-and-set decision record with a claim and hold timeout for resumes running at the same time, and a structural-mismatch check when resuming a rebuilt agent tree. The resume API also adds authorisation checks (Ability). It is security- and concurrency-sensitive, which is XL. The auth red flag was not applied as a separate bump: the work adds checks on a new endpoint and does not change the auth system." },
+    { "dimension": "file_change_estimate", "reason": "70 files changed (about 37 source files including roughly 8 new ones, 33 test files and the OpenAPI baseline), 9260 insertions and 902 deletions across agents/, rest_api/, service/, core/ and chains/. This is far above the 16+ XXL threshold." },
+    { "dimension": "affected_layers", "reason": "API (routers, models, OpenAPI baseline, A2A server), Service (assistant engine builder, subagent build, conversation checkpoint service, toolkit services) and DB-Persistence (checkpoint and pending-call record kept on the conversation model), plus the agent runtime. There are no migration files and no new external integration, so it stays L." },
+    { "dimension": "total", "reason": "Total 26 sits on the L/XL boundary. The lean-higher rule applies because Component Scope is XXL and Technical Risk is XL, but the matrix maps 26 to L, so size is recorded as L. The nearest bundled XL example (epmcdme-10303, total 27) has more dependency and layer risk but far fewer files. Reaching XL here would have required inflating a score. Retrospectively this run was at the upper edge of L and close to split size." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from XL to XXL: affects multiple agents and workflows (root assistant, nested sub-assistants at any depth, supervisor coordinator, A2A)"
+  ],
+  "split_recommendation": null
+}

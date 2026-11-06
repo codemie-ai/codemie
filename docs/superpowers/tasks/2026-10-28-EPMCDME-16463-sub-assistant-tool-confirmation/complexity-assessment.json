@@ -1,0 +1,59 @@
+{
+  "schema": 1,
+  "task": "Backend (codemie) support for tool-call confirmation inside sub-assistants: interrupt-capable sub-assistant execution, namespace-aware checkpoint, nested interrupted thoughts and depth-aware Allow/Deny resume, with no silent sub-assistant drop.",
+  "generated": "2026-10-28T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 6, "label": "XXL" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 6, "label": "XXL" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 27,
+  "size": "XL",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "split-required",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Base XL: LangGraphAgent supervisor build/stream, supervisor coordinator/bootstrap patches, ToolCallConfirmationMixin, ToolCallPendingEvent model, ConversationCheckpointSaver/Service, assistant_factory, assistant_engine_builder, resume handler, and ThreadedGenerator thought tree - several subsystems plus a new abstraction (interrupt-capable sub-assistant execution replacing or augmenting the langgraph_supervisor wrapper). Bumped for touching core shared utilities used by every agent run." },
+    { "dimension": "requirements_clarity", "reason": "Acceptance criteria are concrete (allow/deny, approve_for_me, customer min policy, reload, top-level unchanged), but key design decisions are open: replace vs augment the supervisor wrapper, how the single-checkpoint saver becomes namespace-aware, and which user-visible error path covers any remaining unsupported case." },
+    { "dimension": "technical_risk", "reason": "No precedent: closest pattern is top-level interrupt_before=[tools] confirmation, which cannot reach sub-graphs inside the opaque langgraph_supervisor 0.0.31 wrapper; checkpoint saver ignores checkpoint_ns; ClassVar pending state is shared across agents; regression risk to handoff/parallel/truncation behaviours. The confirmation is a security gate on write tools (bypass = unconfirmed writes), so the security red flag bumps it from XL to XXL." },
+    { "dimension": "file_change_estimate", "reason": "About 11-13 backend modules modified (langgraph_agent, mixin, models, checkpoint saver/service, assistant_factory, engine_builder, thread.py, handlers, router, exceptions, supervisor coordinator/bootstrap) plus new sub-assistant execution module and several new test files across agents, service, core and rest_api." },
+    { "dimension": "affected_layers", "reason": "API (resume endpoint/handler), Service/agent runtime, and DB-Persistence (conversation pending_checkpoint/pending_tool_call content changes to carry namespace and depth); no UI in this sub-task. Calibration: the bundled L example (10401) is 22 with similar layer spread; this task sits higher due to novelty and checkpointer redesign, matching the XL example (10303) at 27." },
+    { "dimension": "total", "reason": "Raw total 26 sits on the 26/27 boundary; Technical Risk at XXL and Component Scope at XXL lean higher per the borderline rule, consistent with the Component Scope red-flag bump that lands the total at 27 (XL)." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from XL to XXL: security-sensitive requirement - tool-call confirmation gates write tools, and the customer min policy / approve_for_me must be enforced for sub-assistants",
+    "Component Scope bumped from XL to XXL: touches core shared utilities (ThreadedGenerator thought tree, conversation checkpoint saver) and affects every orchestrator/sub-assistant run"
+  ],
+  "split_recommendation": {
+    "strategy": "by-dependency",
+    "secondary_strategy": null,
+    "ordering_note": "Ship the foundation (depth-aware thought tree, namespace/depth-aware pending model and checkpoint, no silent drop) first; then build interrupt-capable sub-assistant execution and nested resume on top of it.",
+    "slices": [
+      {
+        "title": "Nested confirmation foundation and no silent sub-assistant drop",
+        "slice_slug": "foundation",
+        "component": "codemie",
+        "feature": "sub-assistant-tool-confirmation",
+        "scope": "Surface sub-assistant build failures as a clear error naming the sub-assistant and policy instead of silently dropping it; make the thought tree depth-aware (parent lookup and interrupted merge at any depth) and extend the pending-call event and conversation checkpoint to carry namespace/depth.",
+        "depends_on": null
+      },
+      {
+        "title": "Interrupt-capable sub-assistant execution and nested resume",
+        "slice_slug": "nested-interrupt",
+        "component": "codemie",
+        "feature": "sub-assistant-tool-confirmation",
+        "scope": "Run sub-assistants in an interrupt-capable, checkpointed execution in place of or alongside the langgraph_supervisor wrapper so their confirmable tool calls pause the run, emit the interrupted thought nested under the sub-assistant step, and resume (allow/deny, approve_for_me, customer min policy, reload) continues the sub-assistant then the orchestrator, with top-level confirmation unchanged.",
+        "depends_on": "Nested confirmation foundation and no silent sub-assistant drop"
+      }
+    ]
+  }
+}

@@ -47,6 +47,7 @@ src/.openapi-generator/
 .codemie-storage/*
 
 .claude/settings.local.json
+/.claude/worktrees/
 .claude/commands/bmad*
 local/*
 bmad/*

@@ -21,9 +21,11 @@ from codemie.agents.agent_runtime_utils import sanitize_rich_history_for_llm
 from codemie.agents.supervisor.constants import (
     METADATA_KEY_HANDOFF_BACK,
     METADATA_KEY_HANDOFF_DESTINATION,
+    METADATA_KEY_HANDOFF_LOCATION,
     METADATA_KEY_PARALLEL_SUBAGENT_PARENT_HANDOFF,
     METADATA_KEY_SUBAGENT_TASK,
 )
+from codemie.agents.tool_confirmation.call_identity import CallIdentity
 from codemie.core.constants import SUPERVISOR_HANDOFF_TOOL_PREFIX
 from codemie.core.utils import extract_text_from_llm_output
 
@@ -329,15 +331,34 @@ def _is_subagent_task_message(message: BaseMessage) -> bool:
     )
 
 
+def latest_subagent_task_index(messages: list[Any]) -> int | None:
+    """Index of the latest handoff message into this sub-agent (a replayed handoff keeps older ones)."""
+    return next(
+        (index for index in range(len(messages) - 1, -1, -1) if _is_subagent_task_message(messages[index])),
+        None,
+    )
+
+
+def latest_handoff_identity(messages: list[Any]) -> CallIdentity | None:
+    """The call identity of the latest handoff into this sub-agent, ``None`` without one.
+
+    Its ``step_key`` gives the sub-agent's container, the delegation step (rule 10, AC26), at any depth: the
+    handoff message carries the delegating agent's location key.
+    """
+    index = latest_subagent_task_index(messages)
+    if index is None:
+        return None
+    message = messages[index]
+    location_key = message.additional_kwargs.get(METADATA_KEY_HANDOFF_LOCATION) or ""
+    return CallIdentity(wire_id=message.tool_call_id or "", location_key=location_key)
+
+
 def _subagent_task_pre_model_hook(state: dict[str, Any]) -> dict[str, Any]:
     messages = state.get("messages", [])
     if not isinstance(messages, list) or not messages:
         return {}
 
-    task_message_index = next(
-        (index for index in range(len(messages) - 1, -1, -1) if _is_subagent_task_message(messages[index])),
-        None,
-    )
+    task_message_index = latest_subagent_task_index(messages)
     if task_message_index is None:
         return {}
 

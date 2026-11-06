@@ -23,10 +23,11 @@ tool selection, rather than reimplementing the react agent logic.
 """
 
 from collections.abc import Callable
-from typing import Literal, Optional, Union
+from typing import Any, Literal, Optional, Union
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
+from langgraph.errors import GraphBubbleUp
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import create_react_agent
 from pydantic import BaseModel
@@ -36,6 +37,9 @@ from codemie.agents.smart_tool_selector import SmartToolSelector
 from codemie.agents.smart_tool_state import SmartToolState, ToolRegistry
 from codemie.configs import config
 from codemie.configs.logger import logger
+
+# Builds an agent's ``post_model_hook`` for the tools bound to it, or ``None`` for no hook.
+PostModelHookFactory = Callable[[list[BaseTool]], Callable[..., Any] | None]
 
 
 def create_smart_react_agent(
@@ -49,6 +53,7 @@ def create_smart_react_agent(
     tool_selection_limit: int = 3,
     parallel_tool_calls: Optional[bool] = None,
     pre_model_hook: Optional[Callable[[dict], dict]] = None,
+    post_model_hook_factory: PostModelHookFactory | None = None,
 ):
     """
     Create a ReAct agent with smart tool selection.
@@ -71,6 +76,8 @@ def create_smart_react_agent(
         tool_selection_enabled: Whether to enable smart tool selection
         tool_selection_limit: Maximum number of tools to select per query
         parallel_tool_calls: Whether to enable parallel tool calling (None = use model default)
+        post_model_hook_factory: Builds the tool-call confirmation gate for the tools actually bound (all tools,
+            or one selection); ``None`` for no hook
 
     Returns:
         Compiled StateGraph with smart tool selection capabilities
@@ -87,6 +94,7 @@ def create_smart_react_agent(
             name=name,
             parallel_tool_calls=parallel_tool_calls,
             pre_model_hook=pre_model_hook,
+            post_model_hook=_post_model_hook(post_model_hook_factory, tools),
         )
 
     # Build tool registry
@@ -109,14 +117,19 @@ def create_smart_react_agent(
         name=name,
         parallel_tool_calls=parallel_tool_calls,
         pre_model_hook=pre_model_hook,
+        post_model_hook_factory=post_model_hook_factory,
     )
 
     # Compile and return
-    compiled_graph = workflow.compile()
+    compiled_graph = workflow.compile(name=name)
 
     logger.debug("SmartReactAgent: Graph compiled with tool selection and agent nodes")
 
     return compiled_graph
+
+
+def _post_model_hook(factory: PostModelHookFactory | None, tools: list[BaseTool]) -> Callable[..., Any] | None:
+    return factory(tools) if factory is not None else None
 
 
 def _create_standard_react_agent(
@@ -127,6 +140,7 @@ def _create_standard_react_agent(
     name: Optional[str],
     parallel_tool_calls: Optional[bool],
     pre_model_hook: Optional[Callable[[dict], dict]] = None,
+    post_model_hook: Callable[..., Any] | None = None,
 ):
     """Create a standard ReAct agent without smart tool selection."""
     logger.debug(
@@ -145,6 +159,7 @@ def _create_standard_react_agent(
         response_format=response_format,
         name=name,
         pre_model_hook=pre_model_hook,
+        post_model_hook=post_model_hook,
     )
     _patch_generate_structured_response_node(compiled)
     return compiled
@@ -161,6 +176,7 @@ def _build_smart_react_workflow(
     name: Optional[str],
     parallel_tool_calls: Optional[bool],
     pre_model_hook: Optional[Callable[[dict], dict]] = None,
+    post_model_hook_factory: PostModelHookFactory | None = None,
 ) -> StateGraph:
     """Build the smart ReAct workflow graph with tool selection and agent nodes."""
     # Build the wrapper graph
@@ -186,6 +202,7 @@ def _build_smart_react_workflow(
             name=name,
             parallel_tool_calls=parallel_tool_calls,
             pre_model_hook=pre_model_hook,
+            post_model_hook_factory=post_model_hook_factory,
         )
 
     # Define routing function
@@ -281,6 +298,7 @@ def _execute_agent_with_selected_tools(
     name: Optional[str],
     parallel_tool_calls: Optional[bool],
     pre_model_hook: Optional[Callable[[dict], dict]] = None,
+    post_model_hook_factory: PostModelHookFactory | None = None,
 ) -> dict:
     """Execute create_react_agent with currently available tools."""
     # Get selected tool IDs from state
@@ -302,6 +320,8 @@ def _execute_agent_with_selected_tools(
         name=name,
         parallel_tool_calls=parallel_tool_calls,
         pre_model_hook=pre_model_hook,
+        # The gate of this selection: it classifies exactly the tools bound below.
+        post_model_hook=_post_model_hook(post_model_hook_factory, available_tools),
     )
 
     # Invoke sub-agent with current state
@@ -309,6 +329,9 @@ def _execute_agent_with_selected_tools(
         result = sub_agent.invoke(state)
         logger.debug(f"AgentNode: Agent invocation completed. ResultKeys={list(result.keys())}")
         return result
+    except GraphBubbleUp:
+        # Interrupts and other control-flow signals must propagate untouched (not an error)
+        raise
     except Exception as e:
         logger.error(f"AgentNode: Agent invocation failed: {e}", exc_info=True)
         # Re-raise to let LangGraph handle the error
@@ -343,6 +366,7 @@ def _create_sub_agent(
     name: Optional[str],
     parallel_tool_calls: Optional[bool],
     pre_model_hook: Optional[Callable[[dict], dict]] = None,
+    post_model_hook: Callable[..., Any] | None = None,
 ):
     """Create a sub-agent with selected tools."""
     # Handle parallel_tool_calls setting if specified
@@ -361,6 +385,7 @@ def _create_sub_agent(
         response_format=response_format,
         name=name,
         pre_model_hook=pre_model_hook,
+        post_model_hook=post_model_hook,
     )
     _patch_generate_structured_response_node(compiled)
     return compiled

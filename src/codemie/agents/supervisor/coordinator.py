@@ -20,6 +20,7 @@ from uuid import UUID
 from langchain_core.messages import AIMessage, HumanMessage
 
 from codemie.agents.supervisor.constants import METADATA_KEY_HANDOFF_BACK
+from codemie.agents.tool_confirmation.call_identity import CallIdentity
 from codemie.core.utils import extract_text_from_llm_output, unpack_json_strings
 
 
@@ -33,6 +34,7 @@ class _SupervisorChunkContext:
     author_key: str
     author: str | None
     delegated_task: str | None
+    namespace: tuple[str, ...] = ()
 
     @classmethod
     def from_chunk(cls, chunk: tuple[Any, str, Any], default_name: str = "supervisor") -> "_SupervisorChunkContext":
@@ -42,6 +44,9 @@ class _SupervisorChunkContext:
 
         if chunk_author:
             author_key = chunk_author[-1]
+            if len(chunk_author) > 1 and author_key.split(":")[0] == default_name:
+                # A nested orchestrator's own agent: its chunks belong to the orchestrator's node.
+                author_key = chunk_author[-2]
             raw_author = author_key.split(":")[0]
 
         delegated_task = None
@@ -57,6 +62,7 @@ class _SupervisorChunkContext:
             author_key=author_key,
             author=None if raw_author == default_name else author_key,
             delegated_task=delegated_task,
+            namespace=tuple(chunk_author or ()),
         )
 
 
@@ -178,7 +184,14 @@ class SupervisorCoordinator:
         """Clear the handoff tracker wholesale — called once a fatal error ends the run."""
         self.tracker.reset()
 
-    def queue_supervisor_handoffs(self, handoff_calls: list[dict[str, Any]], author: str | None = None) -> None:
+    def queue_supervisor_handoffs(
+        self, handoff_calls: list[dict[str, Any]], author: str | None = None, location_key: str = ""
+    ) -> None:
+        """Queue one pending delegation step per handoff call.
+
+        ``location_key`` is the delegating agent's location: the step (the container of the sub-agent's steps)
+        is the call identity's ``step_key``, which is the call id itself at the root.
+        """
         self.tracker.clear_pending()
         handoff_counts: dict[str, int] = {}
         handoff_indexes: dict[str, int] = {}
@@ -188,7 +201,9 @@ class SupervisorCoordinator:
 
         for tool_call in handoff_calls:
             agent_name = self.extract_agent_name_from_tool(tool_call["name"])
-            run_id = self.tool_call_id_to_uuid(tool_call.get("id", ""))
+            run_id = self.tool_call_id_to_uuid(
+                CallIdentity(wire_id=tool_call.get("id", ""), location_key=location_key).step_key
+            )
             tool_args = unpack_json_strings(tool_call.get("args", {}))
             task = tool_args.get("task", "") if isinstance(tool_args, dict) else ""
             handoff_indexes[agent_name] = handoff_indexes.get(agent_name, 0) + 1

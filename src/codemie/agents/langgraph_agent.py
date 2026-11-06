@@ -16,6 +16,7 @@ import json
 import re
 from collections import deque
 from time import time
+from collections.abc import Collection
 from typing import Annotated, Any, List, Optional
 import uuid
 from uuid import UUID
@@ -31,6 +32,7 @@ from codemie.agents.supervisor.coordinator import (
 )
 from codemie.agents.supervisor.constants import (
     METADATA_KEY_HANDOFF_DESTINATION,
+    METADATA_KEY_HANDOFF_LOCATION,
     METADATA_KEY_PARALLEL_SUBAGENT_PARENT_HANDOFF,
     METADATA_KEY_SUBAGENT_TASK,
 )
@@ -50,11 +52,11 @@ from codemie.agents.langgraph_event_adapter import (
     LangGraphEventAdapter,
     get_truncation_indicator,
 )
+from codemie.agents.tool_confirmation.models import ToolCallPendingEvent
 from codemie.agents.tool_confirmation.tool_call_confirmation_mixin import ToolCallConfirmationMixin
 from codemie.agents.tools.agent import WorkspaceAwareAgent
 from codemie.core.models import ToolCallPolicy
 from codemie.core.errors import AgentErrorDetails, ErrorCategory, ErrorDetailLevel, ErrorResponse
-from codemie.core.exceptions import SubagentToolConfirmationUnsupportedException
 from codemie.enterprise.litellm.proxy_router import handle_agent_exception
 from codemie_tools.base.file_object import FileObject
 from langchain_core.callbacks import BaseCallbackHandler
@@ -139,8 +141,6 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
     MAX_CONCURRENCY = 10000
     SUPERVISOR_HANDOFF_TOOL_PREFIX = SUPERVISOR_HANDOFF_TOOL_PREFIX
     ASSISTANT_NAME_MAX_LENGTH = 64
-    INTERRUPT_BEFORE_TOOLS = ["tools"]
-    SUPERVISOR_NODE_NAME = "supervisor"
 
     #: The origin in force where this agent was built, replayed on the thread that runs it. Class
     #: level so an agent assembled without `__init__` still answers None rather than raising.
@@ -195,6 +195,9 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
         require_tool_confirmation: bool = False,
         tool_call_policy: Optional[ToolCallPolicy] = None,
         is_subagent: bool = False,
+        tree_requires_confirmation: bool = False,
+        can_resume_pause: bool = False,
+        received_request: AssistantChatRequest | None = None,
     ):
         ensure_langgraph_supervisor_compatibility()
 
@@ -258,6 +261,16 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
         self.require_tool_confirmation = require_tool_confirmation
         self.tool_call_policy = tool_call_policy
         self.is_subagent = is_subagent
+        # This agent or an agent built under it pauses its own calls (raised by the build from the children): the
+        # run uses the conversation saver, never hedges and looks for a pause at its end.
+        self.tree_requires_confirmation = bool(tree_requires_confirmation or require_tool_confirmation)
+        # The run can be resumed (a stream with history on): its gate pauses. Otherwise the gate answers the calls
+        # needing confirmation as unavailable (rule 9); a run with no generator to stream to never pauses either.
+        self.can_resume_pause = bool(can_resume_pause and thread_generator)
+        # The request as the handler received it, before conversation overrides: what a pause stores (rule 4).
+        self.received_request = received_request
+        self._pending_tool_confirmation = False
+        self.tool_pending_events: dict[str, ToolCallPendingEvent] = {}
 
         set_logging_info(
             uuid=request_uuid,
@@ -355,30 +368,13 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
                 _strip_subagent_task_messages_pre_model_hook,
                 _build_truncation_abort_pre_model_hook(self),
             ),
+            post_model_hook=self._confirmation_hook(all_tools),
         )
 
-        if self.require_tool_confirmation:
-            self._bake_interrupt_into_supervisor_node(builder)
-
+        if self.is_subagent:
+            # A nested orchestrator is a node of its parent's supervisor, which routes to it by graph name.
+            return builder.compile(name=self.format_assistant_name(self.agent_name))
         return builder.compile()
-
-    def _bake_interrupt_into_supervisor_node(self, builder) -> None:
-        """Recompile the supervisor's own react-loop node with interrupt_before=["tools"].
-
-        `create_supervisor` builds the supervisor's tool-calling loop as a genuine compiled
-        subgraph node (unlike sub-assistant nodes, which langgraph_supervisor wraps in an opaque
-        callable), so it's still mutable here, before the outer graph is compiled. This only
-        covers the supervisor's own direct/handoff tool calls, never a sub-assistant's internal
-        tool calls - sub-assistant confirmation is handled separately (see `init_agent`).
-        """
-        spec = builder.nodes.get(self.SUPERVISOR_NODE_NAME)
-        inner_builder = getattr(getattr(spec, "runnable", None), "builder", None)
-
-        if inner_builder is None:
-            logger.warning("Could not locate the supervisor's react-loop node to bake in a tool-confirmation interrupt")
-            return
-
-        spec.runnable = inner_builder.compile(interrupt_before=self.INTERRUPT_BEFORE_TOOLS)
 
     def _build_single_agent(self, llm, system_prompt: str, agent_name: str, parallel_tool_calling: bool):
         return create_smart_react_agent(
@@ -398,12 +394,10 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
                 _image_artifact_pre_model_hook,
                 _build_truncation_abort_pre_model_hook(self),
             ),
+            post_model_hook_factory=self._confirmation_hook,
         )
 
     def init_agent(self):
-        if self.is_subagent and self.require_tool_confirmation:
-            raise SubagentToolConfirmationUnsupportedException(self.agent_name, self.tool_call_policy)
-
         llm, parallel_tool_calling = self._prepare_llm_for_agent()
 
         self.callbacks = self.configure_callbacks()
@@ -476,17 +470,37 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
 
     @staticmethod
     def _build_handoff_tool_message(task: str, name: str, tool_call_id: str, agent_name: str) -> ToolMessage:
+        additional_kwargs: dict[str, Any] = {METADATA_KEY_SUBAGENT_TASK: True}
+        if location_key := LangGraphAgent._delegating_location_key():
+            # Below the root only: a root handoff keeps main's message shape.
+            additional_kwargs[METADATA_KEY_HANDOFF_LOCATION] = location_key
         return ToolMessage(
             content=task,
             name=name,
             tool_call_id=tool_call_id,
             response_metadata={METADATA_KEY_HANDOFF_DESTINATION: agent_name},
-            additional_kwargs={METADATA_KEY_SUBAGENT_TASK: True},
+            additional_kwargs=additional_kwargs,
         )
 
     @staticmethod
+    def _answered_tool_results(state_messages: list[Any]) -> list[ToolMessage]:
+        """The tool results already answered after the last AI message, such as the gate's denials.
+
+        The confirmation gate answers the calls it refuses before the allowed ones run, so an allowed handoff can
+        find those results after the AI message that made it.
+        """
+        answered: list[ToolMessage] = []
+        for message in reversed(state_messages):
+            if not isinstance(message, ToolMessage):
+                break
+            answered.append(message)
+        return answered[::-1]
+
+    @staticmethod
     def _resolve_handoff_messages(state: dict[str, Any], agent_name: str) -> tuple[list[Any], AIMessage]:
-        state_messages = state.get("messages") or []
+        state_messages = list(state.get("messages") or [])
+        if answered := LangGraphAgent._answered_tool_results(state_messages):
+            state_messages = state_messages[: -len(answered)]
         prompt_messages = state.get("llm_input_messages") or []
         messages = list(prompt_messages or state_messages)
         if not messages:
@@ -512,9 +526,14 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
         return tool_call, parallel_agent_name, parallel_task
 
     @classmethod
-    def _extract_parallel_handoff_specs(cls, ai_message: AIMessage) -> list[tuple[dict[str, Any], str, str]]:
+    def _extract_parallel_handoff_specs(
+        cls, ai_message: AIMessage, answered_ids: Collection[str] = ()
+    ) -> list[tuple[dict[str, Any], str, str]]:
+        """The handoff calls of ``ai_message`` still to dispatch; a call already answered (denied) is not sent."""
         handoff_tool_calls = [
-            tool_call for tool_call in ai_message.tool_calls if cls._check_is_handoff_tool(tool_call["name"])
+            tool_call
+            for tool_call in ai_message.tool_calls
+            if cls._check_is_handoff_tool(tool_call["name"]) and tool_call["id"] not in answered_ids
         ]
         return [cls._build_parallel_handoff_spec(tool_call) for tool_call in handoff_tool_calls]
 
@@ -583,8 +602,9 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
         ai_message: AIMessage,
         messages: list[Any],
         tool_call_id: str,
+        answered_ids: Collection[str] = (),
     ) -> Command | ToolMessage:
-        parallel_handoff_specs = cls._extract_parallel_handoff_specs(ai_message)
+        parallel_handoff_specs = cls._extract_parallel_handoff_specs(ai_message, answered_ids)
         parent_handoff_acks, parent_handoff_messages = cls._build_parallel_parent_handoff_artifacts(
             parallel_handoff_specs
         )
@@ -634,7 +654,11 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
             messages, ai_message = LangGraphAgent._resolve_handoff_messages(state, agent_name)
 
             if len(ai_message.tool_calls) > 1:
-                return LangGraphAgent._build_parallel_handoff_result(ai_message, messages, tool_call_id)
+                answered_ids = {
+                    result.tool_call_id
+                    for result in LangGraphAgent._answered_tool_results(list(state.get("messages") or []))
+                }
+                return LangGraphAgent._build_parallel_handoff_result(ai_message, messages, tool_call_id, answered_ids)
 
             handoff_messages = [*messages, tool_message]
 
@@ -857,13 +881,14 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
             execution_start = time()
             chunks_collector = []
 
-            if self.require_tool_confirmation and self.conversation_id:
-                from codemie.service.conversation_checkpoint_service import ConversationCheckpointService
-
-                ConversationCheckpointService().clear(self.conversation_id)
-
             auth_required_error: MCPAuthenticationRequiredException | None = None
             try:
+                if self.tree_requires_confirmation and self.conversation_id:
+                    from codemie.service.conversation_checkpoint_service import ConversationCheckpointService
+
+                    # Inside the try: a failing delete ends the stream with an error instead of leaving it open.
+                    ConversationCheckpointService().delete_checkpoints(self.conversation_id)
+
                 logger.info(f"Starting {self.agent_name} agent. request_uuid={self.request_uuid}")
                 result = self._agent_streaming(chunks_collector)
                 logger.info(f"Finish {self.agent_name} agent. request_uuid={self.request_uuid}")
@@ -911,6 +936,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
                     error_detail_level=error_detail_level,
                 )
             finally:
+                self._delete_checkpoints_after_run()
                 if auth_required_error is None:
                     self.thread_generator.close()
 
@@ -1076,7 +1102,6 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
             config=config,
             stream_mode=["updates", "messages"],
             subgraphs=bool(self.subagents),
-            interrupt_before=self.INTERRUPT_BEFORE_TOOLS if self.require_tool_confirmation else [],
         )
         last_message = ""
         has_structured_response = False
@@ -1119,6 +1144,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
                     stream.close()
                 except Exception:
                     logger.exception("Error closing LangGraph stream; ignoring in favor of the original exception")
+                self._event_adapter.finish_stream()
 
         if not last_message and self._last_subassistant_answer:
             # The supervisor's own final turn produced no text of its own after a handoff
@@ -1128,10 +1154,8 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
 
         self._finalize_stream_result(last_message)
 
-        if self.require_tool_confirmation:
-            last_message, needs_auto_resume = self.ask_for_tool_confirmation(config, last_message)
-            if needs_auto_resume:
-                return self._stream_graph(None, config, chunks_collector)
+        if self.tree_requires_confirmation:
+            self.ask_for_tool_confirmation(config)
 
         return last_message
 
@@ -1479,8 +1503,15 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
     def __parse_supervisor_update_type(self, value: dict, author: str | None = None):
         self._event_adapter.parse_supervisor_update_type(value, author=author)
 
-    def _queue_supervisor_handoffs(self, handoff_calls: list[dict[str, Any]], author: str | None = None) -> None:
-        self._supervisor_coordinator.queue_supervisor_handoffs(handoff_calls, author=author)
+    def _queue_supervisor_handoffs(
+        self, handoff_calls: list[dict[str, Any]], author: str | None = None, location_key: str = ""
+    ) -> None:
+        if location_key:
+            self._supervisor_coordinator.queue_supervisor_handoffs(
+                handoff_calls, author=author, location_key=location_key
+            )
+        else:
+            self._supervisor_coordinator.queue_supervisor_handoffs(handoff_calls, author=author)
 
     def __handle_supervisor_tool_calls(self, last_message: AIMessage, author: str | None = None) -> None:
         self._event_adapter.handle_supervisor_tool_calls(last_message, author=author)
@@ -1693,8 +1724,8 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
             truncation_reason=truncation_indicator,
         )
 
-    def _parse_tool_message(self, action: ToolMessage, author: str | None = None):
-        self._event_adapter.parse_tool_message(action, author=author)
+    def _parse_tool_message(self, action: ToolMessage, author: str | None = None, location_key: str = ""):
+        self._event_adapter.parse_tool_message(action, author=author, location_key=location_key)
 
     def _process_agent_streaming(self, token, chunks_collector: list[str], run_id: str, author: str | None = None):
         self._event_adapter.process_agent_streaming(token, chunks_collector, run_id, author=author)

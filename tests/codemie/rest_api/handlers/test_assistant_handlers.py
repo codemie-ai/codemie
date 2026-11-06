@@ -1254,6 +1254,10 @@ class TestGuardConversationNotFinished:
                 return_value=conv,
             ),
             patch("codemie.rest_api.handlers.assistant_handlers.Ability.can", return_value=True),
+            patch.multiple(
+                "codemie.service.conversation_checkpoint_service.ConversationCheckpointService",
+                cancel_pause=Mock(return_value=False),
+            ),
         ):
             handler._guard_conversation_not_finished(request)  # must not raise
 
@@ -1397,3 +1401,127 @@ class TestABackgroundRunCarriesTheRequestsOrigin:
         with ThreadPoolExecutor(max_workers=1) as pool:
             assert pool.submit(current_origin).result() is None
             assert pool.submit(run_in_snapshot, current_origin).result() is TrafficOrigin.CONVERSATION
+
+
+# ---------------------------------------------------------------------------
+# The turn-start clear of a pending pause (CR-012, CR-013)
+# ---------------------------------------------------------------------------
+
+_H = "codemie.rest_api.handlers.assistant_handlers"
+
+
+class TestTurnStartClearOfAPendingPause:
+    @pytest.fixture
+    def handler(self):
+        assistant = Mock()
+        assistant.id = "assistant-123"
+        user = Mock(spec=User)
+        user.id = "user-123"
+        return StandardAssistantHandler(assistant=assistant, user=user, request_uuid="req-uuid")
+
+    @staticmethod
+    def _conversation():
+        from codemie.rest_api.models.conversation import Conversation as ConvModel
+
+        conv = Mock(spec=ConvModel)
+        conv.id = "conv-abc"
+        conv.finished_at = None
+        return conv
+
+    @staticmethod
+    def _request():
+        request = Mock(spec=AssistantChatRequest)
+        request.conversation_id = "conv-abc"
+        return request
+
+    def _run(self, handler, can, pending=None):
+        from codemie.service.conversation_checkpoint_service import ConversationCheckpointService
+
+        with (
+            patch(f"{_H}.Conversation.find_by_id", return_value=self._conversation()),
+            patch(f"{_H}.Ability.can", side_effect=can),
+            patch.object(ConversationCheckpointService, "get_pending", return_value=pending) as get_pending,
+            patch.object(ConversationCheckpointService, "cancel_pause", return_value=False) as cancel,
+        ):
+            try:
+                handler._guard_conversation_not_finished(self._request())
+            finally:
+                self.cancels = cancel.call_count
+                self.pending_reads = get_pending.call_count
+
+    def test_owner_message_cancels_a_pause_without_reading_the_pending_row_first(self, handler):
+        self._run(handler, lambda a, s: True, pending=object())
+        assert self.cancels == 1
+        assert self.pending_reads == 0
+
+    def test_read_only_user_without_a_pause_is_not_refused_and_writes_nothing(self, handler):
+        from codemie.core.ability import Action
+
+        self._run(handler, lambda action, subject: action != Action.WRITE)
+        assert self.cancels == 0
+
+    def test_read_only_user_cannot_cancel_a_pending_pause(self, handler):
+        from fastapi import status
+
+        from codemie.core.ability import Action
+        from codemie.core.exceptions import ExtendedHTTPException
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            self._run(handler, lambda action, subject: action != Action.WRITE, pending=object())
+
+        assert exc_info.value.code == status.HTTP_403_FORBIDDEN
+        assert self.cancels == 0
+
+
+# ---------------------------------------------------------------------------
+# The build channel of each handler path (CR-014)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildChannels:
+    @pytest.fixture
+    def handler(self):
+        assistant = Mock()
+        assistant.id = "assistant-123"
+        assistant.project = "test-project"
+        user = Mock(spec=User)
+        user.id = "user-123"
+        return StandardAssistantHandler(assistant=assistant, user=user, request_uuid="req-uuid")
+
+    @staticmethod
+    def _raw_request():
+        raw_request = Mock()
+        raw_request.state.uuid = "req-uuid"
+        return raw_request
+
+    @staticmethod
+    def _channel(build) -> object:
+        return build.call_args.kwargs["channel"]
+
+    @pytest.mark.parametrize("channel_name", ["STREAM", "SYNC", "BACKGROUND"])
+    def test_each_handler_path_builds_for_its_own_channel(self, handler, channel_name):
+        from codemie.service.assistant.assistant_engine_builder import BuildChannel
+
+        request = AssistantChatRequest(text="run")
+        raw_request = self._raw_request()
+        run = {
+            "STREAM": lambda: handler._handle_stream(request, raw_request, 0.0),
+            "SYNC": lambda: handler._handle_sync(request=request, raw_request=raw_request, execution_start=0.0),
+            "BACKGROUND": lambda: handler._background_generate(
+                request=request, background_task_id="task-1", raw_request=raw_request, execution_start=0.0
+            ),
+        }[channel_name]
+        build_result = (
+            {"return_value": TestThoughtFinalizationOnSuccess._mock_agent()} if channel_name != "STREAM" else {}
+        )
+        with (
+            patch(f"{_H}.AssistantService.build_agent", **build_result) as build,
+            patch(f"{_H}.extract_custom_headers", return_value={}),
+            patch(f"{_H}.set_disable_prompt_cache"),
+            patch("codemie.service.generation_manager.GenerationManager"),
+            patch.object(handler, "save_chat_history"),
+            patch.object(handler, "_serve_data", return_value=iter([])),
+        ):
+            run()
+
+        assert self._channel(build) is getattr(BuildChannel, channel_name)

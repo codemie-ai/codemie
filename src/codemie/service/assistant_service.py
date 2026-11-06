@@ -19,7 +19,6 @@ from copy import deepcopy
 from elasticsearch import NotFoundError
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.tools import BaseTool, ToolException
-from langgraph.graph.state import CompiledStateGraph
 from sqlmodel import Session, and_, select
 
 from codemie.agents.assistant_agent import AIToolsAgent
@@ -48,7 +47,17 @@ from codemie.rest_api.models.index import IndexInfo
 from codemie.rest_api.security.user import User
 from codemie.rest_api.security.workflow_context import get_current_workflow_id
 from codemie.service.assistant import VirtualAssistantService
-from codemie.service.assistant.assistant_engine_builder import LangGraphAssistantBuilder
+from codemie.service.assistant.assistant_engine_builder import (
+    BuildChannel,
+    LangGraphAssistantBuilder,
+    ResolvedToolPolicy,
+    SubagentBuildContext,
+    SubagentHandle,
+)
+from codemie.service.assistant.agent_build_policy import (
+    agent_handle,
+    resolve_build_policy,
+)
 from codemie.service.assistant.assistant_user_mapping_service import assistant_user_mapping_service
 from codemie.service.aws_bedrock.bedrock_orchestration_service import BedrockOrchestratorService
 from codemie.service.llm.model_availability_service import resolve_assistant_model
@@ -330,7 +339,8 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
         request_uuid: str,
         thread_generator: MessageQueue,
         llm_model: str,
-    ) -> tuple[list[CompiledStateGraph[Any, Any, Any, Any]], set[str]]:
+        build_context: SubagentBuildContext,
+    ) -> list[SubagentHandle]:
         return LangGraphAssistantBuilder.create_subagent_executors(
             assistant=assistant,
             user=user,
@@ -338,6 +348,7 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
             request_uuid=request_uuid,
             thread_generator=thread_generator,
             llm_model=llm_model,
+            build_context=build_context,
         )
 
     @staticmethod
@@ -515,9 +526,12 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
         thread_generator: MessageQueue,
         llm_model: str,
         smart_tool_selection_enabled: bool,
-        allow_tool_confirmation: bool = False,
-    ) -> None:
-        LangGraphAssistantBuilder.configure_agent_kwargs(
+        resolved_policy: ResolvedToolPolicy,
+        build_context: SubagentBuildContext | None = None,
+        is_root: bool = True,
+    ) -> bool:
+        """Configure LangGraph kwargs; returns ``tree_requires_confirmation``."""
+        return LangGraphAssistantBuilder.configure_agent_kwargs(
             agent_kwargs=agent_kwargs,
             assistant=assistant,
             user=user,
@@ -526,7 +540,9 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
             thread_generator=thread_generator,
             llm_model=llm_model,
             smart_tool_selection_enabled=smart_tool_selection_enabled,
-            allow_tool_confirmation=allow_tool_confirmation,
+            resolved_policy=resolved_policy,
+            build_context=build_context or SubagentBuildContext(),
+            is_root=is_root,
             create_subagent_executors=cls._create_subagent_executors,
             get_subagent_descriptions=cls._get_subagent_descriptions,
         )
@@ -542,7 +558,45 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
         tool_callbacks: list[BaseCallbackHandler] = None,
         request_headers: dict[str, str] | None = None,
         is_subagent: bool = False,
+        build_context: SubagentBuildContext | None = None,
+        channel: BuildChannel | None = None,
     ):
+        """Build the agent for ``channel``.
+
+        The channel, together with the request's ``save_history``, decides whether a pause resumes.
+        """
+        return cls.build_agent_handle(
+            assistant=assistant,
+            request=request,
+            user=user,
+            request_uuid=request_uuid,
+            thread_generator=thread_generator,
+            tool_callbacks=tool_callbacks,
+            request_headers=request_headers,
+            is_subagent=is_subagent,
+            build_context=build_context,
+            channel=channel,
+        ).agent
+
+    @classmethod
+    def build_agent_handle(
+        cls,
+        assistant: Assistant,
+        request: AssistantChatRequest,
+        user: User,
+        request_uuid: str,
+        thread_generator: MessageQueue | None = None,
+        tool_callbacks: list[BaseCallbackHandler] | None = None,
+        request_headers: dict[str, str] | None = None,
+        is_subagent: bool = False,
+        build_context: SubagentBuildContext | None = None,
+        channel: BuildChannel | None = None,
+    ) -> SubagentHandle:
+        """Build the agent and return it with its resolved policy and tool-confirmation flags.
+
+        The effective tool-call policy is resolved exactly once here, before tool assembly and the
+        agent class choice; sub-assistants are built from ``build_context`` (or a root context for ``channel``).
+        """
         cache_disabled = get_disable_prompt_cache()
         logger.info(
             f"Building agent. Started. "
@@ -558,9 +612,13 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
             f"cache_disabled={cache_disabled}"
         )
         # Because we do inplace changes in following lines, do a copy to keep external object safe
+        received_request = request
         request = deepcopy(request)
 
         user_pick = cls._apply_conversation_runtime_overrides(assistant, request)
+
+        # Resolve the effective tool-call policy once for this assistant (any LangGraph agent may pause).
+        resolved_policy, build_context = resolve_build_policy(assistant, request, build_context, channel)
 
         file_objects = build_unique_file_objects(
             file_names=request.file_names, conversation_id=request.conversation_id, history_index=request.history_index
@@ -570,7 +628,10 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
         # Handle Bedrock assistants (both Agents and AgentCore Runtime) - early return
         if BedrockOrchestratorService.is_bedrock_assistant(assistant):
             set_llm_context(assistant, None, user)
-            return cls._build_bedrock_agent(assistant, request, user, request_uuid, thread_generator, tool_callbacks)
+            bedrock_agent = cls._build_bedrock_agent(
+                assistant, request, user, request_uuid, thread_generator, tool_callbacks
+            )
+            return agent_handle(bedrock_agent, tree_requires_confirmation=False, assistant=assistant)
 
         if dropped := cls.drop_missing_context(assistant):
             logger.warning(
@@ -588,6 +649,9 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
         set_llm_context(assistant, None, user, llm_model)
 
         is_react = llm_model in llm_service.get_react_llms()
+
+        # Select agent class based on configuration
+        agent_class = LangGraphAgent if config.ENABLE_LANGGRAPH_AITOOLS_AGENT and not is_react else AIToolsAgent
 
         # Determine if smart tools should be enabled (BOTH global flag AND assistant setting)
         smart_tool_selection_enabled = config.TOOL_SELECTION_ENABLED and assistant.smart_tool_selection_enabled
@@ -630,9 +694,6 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
         # Prepare system prompt with decorations and schema
         system_prompt = cls._prepare_system_prompt(assistant, user, request, thread_generator, workspace_notices)
 
-        # Select agent class based on configuration
-        agent_class = LangGraphAgent if config.ENABLE_LANGGRAPH_AITOOLS_AGENT and not is_react else AIToolsAgent
-
         # Build common agent initialization parameters
         agent_kwargs = {
             "agent_name": assistant.name,
@@ -654,8 +715,9 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
         }
 
         # Configure LangGraph-specific parameters if needed
+        tree_requires_confirmation = False
         if agent_class == LangGraphAgent:
-            cls._configure_langgraph_agent(
+            tree_requires_confirmation = cls._configure_langgraph_agent(
                 agent_kwargs,
                 assistant,
                 user,
@@ -664,9 +726,13 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
                 thread_generator,
                 llm_model,
                 smart_tool_selection_enabled,
-                allow_tool_confirmation=True,
+                resolved_policy=resolved_policy,
+                build_context=build_context,
+                is_root=not is_subagent,
             )
             agent_kwargs["is_subagent"] = is_subagent
+            if not is_subagent:
+                agent_kwargs["received_request"] = received_request
 
         agent = agent_class(**agent_kwargs)
         logger.info(
@@ -683,7 +749,7 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
             f"top_p={agent.top_p},"
             f"recursion_limit={agent.recursion_limit}]"
         )
-        return agent
+        return agent_handle(agent, tree_requires_confirmation, assistant=assistant)
 
     @classmethod
     def decorate_system_prompt(cls, prompt: str, request: IdeChatRequest):
@@ -953,7 +1019,18 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
         # Configure LangGraph-specific parameters if needed (reusing helper from build_agent)
         if agent_class == LangGraphAgent:
             cls._configure_langgraph_agent(
-                agent_kwargs, assistant, user, request, request_uuid, thread_generator, llm_model, False
+                agent_kwargs,
+                assistant,
+                user,
+                request,
+                request_uuid,
+                thread_generator,
+                llm_model,
+                False,
+                resolved_policy=LangGraphAssistantBuilder.resolve_tool_policy(
+                    assistant, request, allow_tool_confirmation=False
+                ),
+                build_context=SubagentBuildContext.root(BuildChannel.WORKFLOW),
             )
 
         agent = agent_class(**agent_kwargs)

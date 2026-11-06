@@ -20,6 +20,7 @@ from uuid import UUID
 from langchain_core.messages import AIMessage, ToolMessage
 
 from codemie.agents.supervisor.constants import METADATA_KEY_HANDOFF_BACK, METADATA_KEY_HANDOFF_DESTINATION
+from codemie.agents.tool_confirmation.stream_steps import ConfirmationStepRouter
 from codemie.chains.base import ThoughtOutputFormat
 from codemie.configs.logger import logger
 from codemie.core.constants import (
@@ -190,6 +191,8 @@ class LangGraphEventAdapter:
         # Response headers per streamed message id. Only the first chunk of a response carries
         # them, so they are stashed here and re-attached to the chunk that finalizes the call.
         self._response_headers: dict[str, dict[str, Any]] = {}
+        # The call-identity routing of the tool and handoff steps (EPMCDME-16463).
+        self._steps = ConfirmationStepRouter(agent, self._start_supervisor_steps, self._start_tool_steps)
 
     def _remember_response_headers(self, message: Any) -> None:
         """Stash HTTP response headers seen on a streamed chunk (first chunk only carries them)."""
@@ -251,36 +254,35 @@ class LangGraphEventAdapter:
         return True
 
     def parse_update_type(self, value: dict[str, Any]) -> None:
+        if self._steps.consume_identity_chunk(value, namespace_key=""):
+            return
         if "agent" in value:
-            last_message = value["agent"]["messages"][-1]
-            if self.agent.is_finish_reason_tool_calls(last_message):
-                self.agent._safe_check_for_truncation(last_message)
-                # Always restore headers and call _on_llm_end for tool-calling turns so the
-                # callback's routing tracker is updated before _on_tool_start fires. When the LLM
-                # makes a direct tool call with no text content the streaming callback still
-                # needs routing metadata to stamp routed_model onto the tool thought.
-                self._restore_response_headers(last_message)
-                self.agent._on_llm_end(response=last_message, run_id=last_message.id)
-                for tool_call in last_message.tool_calls:
-                    tool_name = tool_call["name"]
-                    tool_args = json.dumps(unpack_json_strings(tool_call["args"]), ensure_ascii=False)
-                    run_id = self.agent._tool_call_id_to_uuid(tool_call.get("id", ""))
-                    logger.debug(f"Calling Tool: {tool_name} with input {tool_args}")
-                    self.agent._on_tool_start(tool_name, tool_args, run_id=run_id)
-            elif self.agent.is_finish_reason_stop(last_message):
-                # Simple chat completion (no tools): finalize the LLM thought.
-                # The "messages" stream may not emit a dedicated stop chunk, so
-                # the "updates" stream is the reliable trigger for this path.
-                self.agent._on_llm_end(response=last_message, run_id=last_message.id)
-            else:
-                # Text-only response cut at max_tokens: no stop reason, so finalize it here.
-                self._finalize_truncated_text(last_message)
+            self._parse_agent_update(value["agent"]["messages"][-1])
         elif "tools" in value:
             for action in value["tools"]["messages"]:
                 if isinstance(action, ToolMessage):
                     self.agent._replay_tool_start_on_resume(action)
                     logger.debug(f"Tool {action.name} call result: {action.content}")
                     self.agent._parse_tool_message(action)
+
+    def _parse_agent_update(self, last_message: Any) -> None:
+        if self.agent.is_finish_reason_tool_calls(last_message):
+            self.agent._safe_check_for_truncation(last_message)
+            # Always restore headers and call _on_llm_end for tool-calling turns so the
+            # callback's routing tracker is updated before _on_tool_start fires. When the LLM
+            # makes a direct tool call with no text content the streaming callback still
+            # needs routing metadata to stamp routed_model onto the tool thought.
+            self._restore_response_headers(last_message)
+            self.agent._on_llm_end(response=last_message, run_id=last_message.id)
+            self._steps.defer((), last_message, None, "", supervisor=False)
+        elif self.agent.is_finish_reason_stop(last_message):
+            # Simple chat completion (no tools): finalize the LLM thought.
+            # The "messages" stream may not emit a dedicated stop chunk, so
+            # the "updates" stream is the reliable trigger for this path.
+            self.agent._on_llm_end(response=last_message, run_id=last_message.id)
+        else:
+            # Text-only response cut at max_tokens: no stop reason, so finalize it here.
+            self._finalize_truncated_text(last_message)
 
     def parse_supervisor_message_type(
         self,
@@ -320,7 +322,11 @@ class LangGraphEventAdapter:
         filtered = {key: item for key, item in value.items() if key not in self.agent.subagent_descriptions}
         return filtered or None
 
-    def parse_supervisor_update_type(self, value: dict[str, Any], author: str | None = None) -> None:
+    def parse_supervisor_update_type(
+        self, value: dict[str, Any], author: str | None = None, namespace: tuple[str, ...] = ()
+    ) -> None:
+        if self._steps.consume_identity_chunk(value, namespace_key=self._steps.namespace_key(namespace)):
+            return
         value = self._drop_echoed_subagent_updates(value, author)
         if value is None:
             return
@@ -338,7 +344,7 @@ class LangGraphEventAdapter:
         self._finalize_truncated_text(last_message, author=author)
 
         if isinstance(last_message, AIMessage) and self.agent.is_finish_reason_tool_calls(last_message):
-            self.handle_supervisor_tool_calls(last_message, author=author)
+            self._dispatch_supervisor_tool_calls(last_message, author=author, namespace=namespace)
         elif last_message.response_metadata.get(METADATA_KEY_HANDOFF_BACK):
             node_name = list(value.keys())[0]
             lookup_author = author or (node_name if node_name != "supervisor" else None)
@@ -356,27 +362,63 @@ class LangGraphEventAdapter:
         elif destination := last_message.response_metadata.get(METADATA_KEY_HANDOFF_DESTINATION):
             logger.debug(f"Transferring to {destination}")
         elif isinstance(last_message, ToolMessage):
-            logger.debug(f"Tool {last_message.name} call result: {last_message.content}")
+            self._parse_supervisor_tool_result(last_message, author=author, namespace=namespace)
+
+    def _dispatch_supervisor_tool_calls(
+        self, last_message: AIMessage, author: str | None, namespace: tuple[str, ...]
+    ) -> None:
+        if namespace:
+            self.handle_supervisor_tool_calls(last_message, author=author, namespace=namespace)
+        else:
+            self.handle_supervisor_tool_calls(last_message, author=author)
+
+    def _parse_supervisor_tool_result(
+        self, last_message: ToolMessage, author: str | None, namespace: tuple[str, ...]
+    ) -> None:
+        logger.debug(f"Tool {last_message.name} call result: {last_message.content}")
+        location_key = self._steps.location_key(namespace)
+        pending_events = getattr(self.agent, "tool_pending_events", None)
+        if isinstance(pending_events, dict) and pending_events:
+            self.agent._replay_tool_start_on_resume(last_message, author=author, location_key=location_key)
+        if location_key:
+            self.agent._parse_tool_message(last_message, author=author, location_key=location_key)
+        else:
             self.agent._parse_tool_message(last_message, author=author)
 
-    def handle_supervisor_tool_calls(self, last_message: AIMessage, author: str | None = None) -> None:
+    def handle_supervisor_tool_calls(
+        self, last_message: AIMessage, author: str | None = None, namespace: tuple[str, ...] = ()
+    ) -> None:
         self.agent._safe_check_for_truncation(last_message, author=author)
         if extract_text_from_llm_output(last_message.content):
             # Same as the agent path: restore the headers so routing signals survive.
             self._restore_response_headers(last_message)
             self.agent._on_llm_end(response=last_message, run_id=last_message.id, author=author)
 
-        handoff_calls = [tc for tc in last_message.tool_calls if self.agent._check_is_handoff_tool(tc["name"])]
-        regular_calls = [tc for tc in last_message.tool_calls if not self.agent._check_is_handoff_tool(tc["name"])]
+        self._steps.defer(namespace, last_message, author, self._steps.location_key(namespace), supervisor=True)
+
+    def _start_supervisor_steps(self, tool_calls: list[dict[str, Any]], author: str | None, location_key: str) -> None:
+        handoff_calls = [tc for tc in tool_calls if self.agent._check_is_handoff_tool(tc["name"])]
+        regular_calls = [tc for tc in tool_calls if not self.agent._check_is_handoff_tool(tc["name"])]
         if handoff_calls:
-            self.agent._queue_supervisor_handoffs(handoff_calls, author=author)
+            if location_key:
+                self.agent._queue_supervisor_handoffs(handoff_calls, author=author, location_key=location_key)
+            else:
+                self.agent._queue_supervisor_handoffs(handoff_calls, author=author)
         if regular_calls:
-            for tool_call in regular_calls:
-                tool_name = tool_call["name"]
-                tool_args = json.dumps(unpack_json_strings(tool_call["args"]), ensure_ascii=False)
-                run_id = self.agent._tool_call_id_to_uuid(tool_call.get("id", ""))
-                logger.debug(f"Calling Tool: {tool_name} with input {tool_args}")
+            self._start_tool_steps(regular_calls, author=author, location_key=location_key, with_author=True)
+
+    def _start_tool_steps(
+        self, tool_calls: list[dict[str, Any]], author: str | None, location_key: str, with_author: bool
+    ) -> None:
+        for tool_call in tool_calls:
+            tool_name = tool_call["name"]
+            tool_args = json.dumps(unpack_json_strings(tool_call["args"]), ensure_ascii=False)
+            run_id = self._steps.step_run_id(tool_call.get("id", ""), location_key)
+            logger.debug(f"Calling Tool: {tool_name} with input {tool_args}")
+            if with_author:
                 self.agent._on_tool_start(tool_name, tool_args, run_id=run_id, author=author)
+            else:
+                self.agent._on_tool_start(tool_name, tool_args, run_id=run_id)
 
     def process_chunk_for_agent(self, chunk: Any, chunks_collector: list[str]) -> None:
         chunk_type, value = chunk
@@ -389,10 +431,15 @@ class LangGraphEventAdapter:
         if context.chunk_type == "messages":
             self.parse_supervisor_message_type(context.value, chunks_collector, author=context.author)
         elif context.chunk_type == "updates":
-            self.parse_supervisor_update_type(context.value, author=context.author)
+            namespace = getattr(context, "namespace", ())
+            self.parse_supervisor_update_type(context.value, author=context.author, namespace=namespace)
 
     def process_chunk_for_supervisor(self, chunk: Any, chunks_collector: list[str]) -> None:
         context = self.agent._supervisor_chunk_context_type.from_chunk(chunk)
+        if self._steps.is_interrupt_update(context.chunk_type, context.value):
+            # The gate's interrupt is streamed at its own namespace and at the root; either one starts its steps.
+            self._steps.consume_identity_chunk(context.value, namespace_key="")
+            return
         if context.author:
             pending_handoffs = self.agent._pending_handoffs.get(context.raw_author)
             if pending_handoffs and self.agent._supervisor_coordinator.binding_for(context.author) is None:
@@ -414,14 +461,18 @@ class LangGraphEventAdapter:
 
         self.dispatch_supervisor_chunk(context, chunks_collector)
 
+    def finish_stream(self) -> None:
+        """The stream ended: start the steps still waiting for call identities that never came."""
+        self._steps.flush_deferred()
+
     def process_chunk(self, chunk: Any, chunks_collector: list[str]) -> None:
         if self.agent.subagents:
             self.process_chunk_for_supervisor(chunk, chunks_collector)
         else:
             self.process_chunk_for_agent(chunk, chunks_collector)
 
-    def parse_tool_message(self, action: ToolMessage, author: str | None = None) -> None:
-        run_id = self.agent._tool_call_id_to_uuid(action.tool_call_id or "")
+    def parse_tool_message(self, action: ToolMessage, author: str | None = None, location_key: str = "") -> None:
+        run_id = self._steps.step_run_id(action.tool_call_id or "", location_key)
         if action.status == "error":
             self.agent._on_tool_error(action.content, run_id=run_id, author=author)
             return

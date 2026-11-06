@@ -76,6 +76,8 @@ class TestAssistantServiceBuildAgentWithHeaders:
         mock_aitools_agent.return_value = Mock()
 
         assistant = Mock(spec=Assistant)
+
+        assistant.tool_permissions = None
         assistant.id = 'asst-123'
         assistant.name = 'Test Assistant'
         assistant.description = 'Test Description'
@@ -163,6 +165,8 @@ class TestAssistantServiceBuildAgentWithHeaders:
         mock_aitools_agent.return_value = Mock()
 
         assistant = Mock(spec=Assistant)
+
+        assistant.tool_permissions = None
         assistant.id = 'asst-123'
         assistant.name = 'Test Assistant'
         assistant.description = 'Test Description'
@@ -246,6 +250,8 @@ class TestAssistantServiceBuildAgentForWorkflowWithHeaders:
         mock_aitools_agent.return_value = Mock()
 
         assistant = Mock(spec=Assistant)
+
+        assistant.tool_permissions = None
         assistant.id = 'asst-123'
         assistant.name = 'Workflow Assistant'
         assistant.description = 'Workflow Description'
@@ -340,6 +346,8 @@ class TestAssistantServiceBuildAgentForWorkflowWithHeaders:
         mock_aitools_agent.return_value = Mock()
 
         assistant = Mock(spec=Assistant)
+
+        assistant.tool_permissions = None
         assistant.id = 'asst-123'
         assistant.name = 'Workflow Assistant'
         assistant.description = 'Workflow Description'

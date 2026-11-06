@@ -23,6 +23,7 @@ from starlette.responses import StreamingResponse
 from codemie.chains.base import Thought
 from codemie.core.errors import ErrorCode, ToolErrorDetails
 from codemie.core.models import BaseModelResponse, ChatRole
+from codemie.core.tool_step_states import WAITING_MESSAGE
 from codemie.rest_api.models.conversation import GeneratedMessage
 from codemie.service.assistant import tool_output_visibility as tov
 
@@ -201,7 +202,7 @@ def test_interrupted_thought_survives_stream_stripping_reduced():
         "author_name": "send_email",
         "author_type": "Tool",
         "input_text": '{"to": "a"}',
-        "message": "Tool call pending",
+        "message": WAITING_MESSAGE,
         "interrupted": True,
         "in_progress": False,
     }
@@ -331,3 +332,47 @@ def test_final_agent_failure_chunk_keeps_friendly_message_and_error_code():
     out = json.loads(tov.strip_chunk(chunk))
     assert out["generated"] == "The model provider is rate limiting requests. Please retry shortly."
     assert out["execution_error"] == "llm_rate_limit_error" and out["last"] is True
+
+
+def _nested_thoughts():
+    waiting = Thought(
+        id="w", parent_id="handoff", author_name="send_email", input_text='{"to": "a"}',
+        message="Confirm?", metadata={"s": 1}, interrupted=True,
+    )  # fmt: skip
+    handoff = Thought(
+        id="handoff", parent_id="root", author_name="sub_assistant", author_type="Agent",
+        message="secret output", input_text="secret input", metadata={"x": 1}, children=[waiting],
+    )  # fmt: skip
+    root = Thought(id="root", author_name="main", message="secret root", children=[handoff])
+    unrelated = Thought(id="other", message="tool output", children=[Thought(id="other-child")])
+    return [root, unrelated]
+
+
+def test_strip_history_keeps_waiting_step_and_its_ancestors_at_depth():
+    msg = GeneratedMessage(role=ChatRole.ASSISTANT, message="m", assistant_id="hidden", thoughts=_nested_thoughts())
+    with patch(A, return_value=[SimpleNamespace(id="hidden", hide_tool_outputs=True)]):
+        out = tov.strip_history([msg], None)
+    (root,) = out[0].thoughts
+    (handoff,) = root.children
+    (waiting,) = handoff.children
+    assert (root.id, handoff.id, waiting.id) == ("root", "handoff", "w")
+    assert handoff.parent_id == "root" and waiting.parent_id == "handoff"
+    assert waiting.interrupted is True and waiting.input_text == '{"to": "a"}' and waiting.metadata == {}
+    # Ancestors keep only their identity, never tool output.
+    for ancestor in (root, handoff):
+        assert ancestor.message is None and ancestor.input_text is None and ancestor.metadata == {}
+        assert ancestor.interrupted is False
+    assert len(msg.thoughts) == 2  # input untouched
+
+
+def test_strip_response_keeps_nested_waiting_tree():
+    response = BaseModelResponse(generated="x", thoughts=_nested_thoughts(), time_elapsed=0.1)
+    out = tov.strip_response(response)
+    assert [t.id for t in out.thoughts] == ["root"]
+    assert out.thoughts[0].children[0].children[0].id == "w"
+
+
+def test_stream_waiting_step_keeps_parent_id():
+    thought = {"id": "w", "parent_id": "handoff", "author_name": "t", "input_text": "{}", "interrupted": True}
+    out = json.loads(tov.strip_chunk(line(thought=thought)))
+    assert out["thought"]["parent_id"] == "handoff"
