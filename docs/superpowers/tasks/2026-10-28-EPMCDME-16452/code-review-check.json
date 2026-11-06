@@ -1,0 +1,10 @@
+{
+  "decision": "request-changes",
+  "rationale": "Check round could not grade CR-001: it is kind code but no changed_files was supplied (the fix-up changed no source) and no id-mapped fix_evidence was provided; verification-note.local.md is unmapped prose and cannot resolve a code finding. Re-dispatch with check_scope and fix_evidence mapped to CR-001, or a decision record, to close it.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [],
+  "findings": [],
+  "finding_status": []
+}

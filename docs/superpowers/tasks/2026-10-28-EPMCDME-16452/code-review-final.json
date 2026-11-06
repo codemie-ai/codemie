@@ -1,0 +1,26 @@
+{
+  "decision": "request-changes",
+  "rationale": "Acceptance did not run (no spec), so confidence is low. One edge-case candidate kept: oauthlib 3.x to 4.0.0 major bump reaches the live google_auth_oauthlib Flow path through requests-oauthlib, but compatibility could not be confirmed from source; the passing suite likely mocks OAuth. 0 deferred, 0 dismissed. Blind and verification-gap lenses not run under the compact profile.",
+  "confidence": "low",
+  "risk_flags": ["breaking-change"],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "commit-format", "status": "na", "notes": "Standards audit not part of this profile." },
+    { "kind": "code-quality", "status": "na", "notes": "Standards audit not part of this profile." },
+    { "kind": "security", "status": "na", "notes": "Standards audit not part of this profile." }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "poetry.lock",
+      "line": 7029,
+      "title": "oauthlib major bump unverified against OAuth flows",
+      "problem": "oauthlib moves from 3.3.1 to 4.0.0 (a major version) while requests-oauthlib only requires >=3.0.0 with no upper cap, so lock resolution does not prove compatibility. The repo reaches oauthlib indirectly via google_auth_oauthlib.flow.Flow in src/codemie/service/google_oauth/flow_service.py.",
+      "impact": "If oauthlib 3.x APIs were removed or changed, Google OAuth, Atlassian and exchangelib flows could fail at runtime. Reachability and compatibility were unconfirmed, so severity is capped at major.",
+      "recommendation": "Keep 4.0.0 (it carries the CVE fix; do not cap below 4). Add or run a test that exercises Flow.authorization_url and fetch_token without mocking oauthlib, and confirm requests-oauthlib and atlassian-python-api work under 4.0.0."
+    }
+  ]
+}
