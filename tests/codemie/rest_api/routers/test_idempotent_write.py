@@ -51,6 +51,7 @@ from codemie.rest_api.models.assistant import Assistant, AssistantConfiguration,
 from codemie.rest_api.models.category import Category
 from codemie.rest_api.models.guardrail import Guardrail, GuardrailAssignment
 from codemie.rest_api.models.index import IndexInfo
+from codemie.rest_api.models.permission import Permission
 from codemie.rest_api.models.settings import Settings, SettingType
 from codemie.rest_api.models.skill import Skill
 from codemie.rest_api.models.user_management import UserDB
@@ -110,6 +111,7 @@ TABLE_MODELS = (
     Guardrail,
     GuardrailAssignment,
     IndexInfo,
+    Permission,
     Settings,
     Skill,
     UserDB,  # target of assistants.marketplace_decided_by

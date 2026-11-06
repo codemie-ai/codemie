@@ -159,8 +159,10 @@ class Ability:
         },
     }
 
-    def __init__(self, user: User):
+    def __init__(self, user: User, granted_ids: set[str] | None = None):
         self.user = user
+        # Preloaded named-grant assistant IDs; None keeps the per-object lookup
+        self.granted_ids = granted_ids
 
     def can(self, action: Action, instance: Owned, check_resource_permissions: bool = False):
         """Check if the user has permission for the action on the instance"""
@@ -214,6 +216,8 @@ class Ability:
         return instance.is_managed_by(self.user)
 
     def shared_with(self, instance):
+        if self.granted_ids is not None and self.klass_name(instance) == "Assistant":
+            return instance.is_shared_with(self.user, granted_ids=self.granted_ids)
         return instance.is_shared_with(self.user)
 
     def _check_instance(self, instance: Owned):

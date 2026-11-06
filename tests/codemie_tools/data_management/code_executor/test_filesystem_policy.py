@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+import resource
 import subprocess
 import sys
 from pathlib import Path
@@ -109,18 +110,24 @@ def _run_guarded(tmp_path: Path, customer_code: str) -> subprocess.CompletedProc
 def _run_guarded_as_file_in_workspace(
     workspace_root: Path,
     customer_code: str,
+    *,
+    max_threads: int = 64,
+    extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Mirror production invocation: the guarded script is written to a file
     inside the workspace root and executed as `python <file>`, matching
     batch_job_runner.py writing script.py into workdir and running it there.
     """
-    script = build_guarded_python_script(customer_code, workspace_root=str(workspace_root))
+    script = build_guarded_python_script(customer_code, workspace_root=str(workspace_root), max_threads=max_threads)
     script_path = workspace_root / "script.py"
     script_path.write_text(script)
+    env = _clean_env()
+    if extra_env:
+        env = {**env, **extra_env}
     return subprocess.run(
         [sys.executable, str(script_path)],
         cwd=workspace_root,
-        env=_clean_env(),
+        env=env,
         text=True,
         capture_output=True,
         check=False,
@@ -835,6 +842,8 @@ def test_guard_matplotlib_writes_single_and_multipage_pdf(tmp_path: Path) -> Non
         "        pdf.savefig(fig)\n"
         "        plt.close(fig)\n"
         "print('saved')\n",
+        max_threads=resource.getrlimit(resource.RLIMIT_NPROC)[0],
+        extra_env={"OPENBLAS_NUM_THREADS": "1"},
     )
 
     assert result.returncode == 0, result.stderr
@@ -933,6 +942,10 @@ def test_guard_allows_matplotlib_png_generation(tmp_path: Path) -> None:
         "plt.plot([1, 2, 3], [4, 5, 6])\n"
         "plt.savefig('chart.png')\n"
         "print('saved')\n",
+        # Use the system's RLIMIT_NPROC so the sandbox doesn't reduce threads below
+        # the environment's existing process count, which would crash OpenBLAS/matplotlib.
+        max_threads=resource.getrlimit(resource.RLIMIT_NPROC)[0],
+        extra_env={"OPENBLAS_NUM_THREADS": "1"},
     )
     assert result.returncode == 0
     assert "saved" in result.stdout
@@ -958,6 +971,8 @@ def test_guard_allows_openpyxl_to_save_workbook(tmp_path: Path) -> None:
         "ws['A1'] = 'test'\n"
         "wb.save('out.xlsx')\n"
         "print('saved')\n",
+        max_threads=resource.getrlimit(resource.RLIMIT_NPROC)[0],
+        extra_env={"OPENBLAS_NUM_THREADS": "1"},
     )
     assert result.returncode == 0
     assert "saved" in result.stdout

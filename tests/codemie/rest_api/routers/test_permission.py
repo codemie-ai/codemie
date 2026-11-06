@@ -244,6 +244,7 @@ def test_delete_permission_access_denied(mock_delete, mock_auth, mock_user, mock
 
     assert exc_info.value.code == status.HTTP_401_UNAUTHORIZED
     assert exc_info.value.message == "Access denied"
+    assert "delete permissions for" in exc_info.value.details
 
 
 @patch("codemie.rest_api.security.authentication.authenticate")

@@ -1,0 +1,67 @@
+{
+  "findings": [
+    {
+      "id": "CR-001",
+      "status": "fixed",
+      "file": "src/codemie/rest_api/models/assistant.py",
+      "change": "Added `if not self.id: return False` guard at the top of is_shared_with",
+      "test": "tests/unit/routers/test_assistant_sharing_security.py::test_is_shared_with_none_id_returns_false"
+    },
+    {
+      "id": "CR-002",
+      "status": "fixed",
+      "file": "src/codemie/rest_api/routers/assistant.py",
+      "change": "Added `= Field(..., min_length=1)` to ShareUsersRequest.user_ids",
+      "test": "tests/unit/routers/test_assistant_sharing_security.py::test_share_users_request_rejects_empty_list"
+    },
+    {
+      "id": "CR-003",
+      "status": "fixed",
+      "file": "src/codemie/rest_api/routers/assistant.py",
+      "change": "get_shared_with now loads the assistant and calls AssistantShareService._require_owner before list_shared_with",
+      "test": "tests/unit/routers/test_assistant_sharing_security.py::test_get_shared_with_non_owner_raises_403"
+    },
+    {
+      "id": "CR-004",
+      "status": "fixed",
+      "file": "src/codemie/rest_api/routers/assistant.py",
+      "change": "get_sharable_users now loads the assistant and calls AssistantShareService._require_owner before search_sharable_users",
+      "test": "tests/unit/routers/test_assistant_sharing_security.py::test_get_sharable_users_non_owner_raises_403"
+    },
+    {
+      "id": "CR-005",
+      "status": "fixed",
+      "file": "src/codemie/service/assistant/assistant_repository.py",
+      "change": "Both per_user_grant_condition blocks now use ResourceType.ASSISTANT and PrincipalType.USER enum members instead of raw strings",
+      "test": "tests/unit/routers/test_assistant_sharing_security.py::test_per_user_grant_condition_uses_enum_not_literals"
+    },
+    {
+      "id": "CR-006",
+      "status": "fixed",
+      "file": "src/codemie/service/assistant/assistant_share_service.py",
+      "change": "grant() now does session.add(perm) inside the outer session and commits once after the loop; perm.save() removed",
+      "test": "tests/codemie/service/assistant/test_assistant_share_service.py::test_grant_creates_permission_rows"
+    },
+    {
+      "id": "CR-007",
+      "status": "fixed",
+      "file": "src/codemie/service/assistant/assistant_share_service.py",
+      "change": "revoke() now wraps the delete loop in a single Session block, uses session.delete(attached) and commits once",
+      "test": "tests/codemie/service/assistant/test_assistant_share_service.py::test_revoke_no_existing_grant_is_noop"
+    },
+    {
+      "id": "CR-008",
+      "status": "fixed",
+      "file": "src/codemie/repository/user_repository.py",
+      "change": "aquery_active_users gained exclude_user_type parameter; search_sharable_users passes config.EXTERNAL_USER_TYPE and removes Python-level filter",
+      "test": "tests/unit/routers/test_assistant_sharing_security.py::test_search_sharable_users_passes_exclude_external_to_query"
+    },
+    {
+      "id": "CR-009",
+      "status": "fixed",
+      "file": "src/external/alembic/versions/a1b2c3d4e5f8_add_assistant_to_resourcetype.py",
+      "change": "Migration new_values changed from [\"DATASOURCE\", \"ASSISTANT\"] to [\"datasource\", \"assistant\"] to match Python enum values; downgrade DELETE clause aligned too",
+      "test": "n/a - structural migration fix verified by enum value alignment"
+    }
+  ]
+}

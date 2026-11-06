@@ -101,7 +101,7 @@ def test_query_visible_to_admin_user(mock_session_class, mock_admin_user, mock_a
 def test_query_visible_to_user(mock_session_class, mock_user, mock_assistant):
     mock_session = MagicMock()
     mock_session_class.return_value.__enter__.return_value = mock_session
-    mock_session.exec.return_value.all.return_value = [mock_assistant]
+    mock_session.exec.return_value.all.side_effect = [[mock_assistant], []]  # page, then grant preload
     mock_session.exec.return_value.one.return_value = 1
 
     result = AssistantRepository().query(
@@ -122,7 +122,7 @@ def test_query_visible_to_user(mock_session_class, mock_user, mock_assistant):
 def test_query_created_by_user(mock_session_class, mock_user, mock_assistant):
     mock_session = MagicMock()
     mock_session_class.return_value.__enter__.return_value = mock_session
-    mock_session.exec.return_value.all.return_value = [mock_assistant]
+    mock_session.exec.return_value.all.side_effect = [[mock_assistant], []]  # page, then grant preload
     mock_session.exec.return_value.one.return_value = 1
 
     result = AssistantRepository().query(
@@ -170,7 +170,7 @@ def test_query_minimal_response(
 
     mock_session = MagicMock()
     mock_session_class.return_value.__enter__.return_value = mock_session
-    mock_session.exec.return_value.all.return_value = [mock_assistant]
+    mock_session.exec.return_value.all.side_effect = [[mock_assistant], []]  # page, then grant preload
     mock_session.exec.return_value.one.return_value = 1
 
     result = AssistantRepository().query(
@@ -196,7 +196,7 @@ def test_query_minimal_response(
 def test_query_with_search(mock_session_class, mock_user, mock_assistant):
     mock_session = MagicMock()
     mock_session_class.return_value.__enter__.return_value = mock_session
-    mock_session.exec.return_value.all.return_value = [mock_assistant]
+    mock_session.exec.return_value.all.side_effect = [[mock_assistant], []]  # page, then grant preload
     mock_session.exec.return_value.one.return_value = 1
 
     result = AssistantRepository().query(
@@ -355,7 +355,10 @@ def test_query_marketplace_internal_user_sees_all_projects(mock_session_class, m
     mock_session = MagicMock()
     mock_session_class.return_value.__enter__.return_value = mock_session
     # Internal users should see all marketplace assistants
-    mock_session.exec.return_value.all.return_value = [assistant_codemie, assistant_other]
+    mock_session.exec.return_value.all.side_effect = [
+        [assistant_codemie, assistant_other],
+        [],
+    ]  # page, then grant preload
     mock_session.exec.return_value.one.return_value = 2
 
     result = AssistantRepository().query(user=mock_user, scope=AssistantScope.MARKETPLACE, page=0, per_page=10)
@@ -686,7 +689,7 @@ class TestProjectWithMarketplaceQuery:
 
         mock_session = MagicMock()
         mock_session_class.return_value.__enter__.return_value = mock_session
-        mock_session.exec.return_value.all.return_value = [non_global, global_assist]
+        mock_session.exec.return_value.all.side_effect = [[non_global, global_assist], []]  # page, then grant preload
         mock_session.exec.return_value.one.return_value = 2
 
         result = repository.query(
@@ -717,7 +720,7 @@ class TestProjectWithMarketplaceQuery:
 
         mock_session = MagicMock()
         mock_session_class.return_value.__enter__.return_value = mock_session
-        mock_session.exec.return_value.all.return_value = [global_other_project]
+        mock_session.exec.return_value.all.side_effect = [[global_other_project], []]  # page, then grant preload
         mock_session.exec.return_value.one.return_value = 1
 
         result = repository.query(
@@ -801,6 +804,227 @@ def test_query_project_with_marketplace_sorts_by_clone_count_after_unique_users_
     unique_users_pos = order_by_str.index("unique_users_count")
     clone_count_pos = order_by_str.index("clone_count")
     assert unique_users_pos < clone_count_pos, "clone_count must sort after unique_users_count"
+
+
+@pytest.fixture(autouse=True)
+def _user_management_enabled(monkeypatch):
+    monkeypatch.setattr("codemie.rest_api.models.permission.config.ENABLE_USER_MANAGEMENT", True)
+
+
+def test_filter_omits_per_user_grant_path_when_user_management_disabled(monkeypatch):
+    monkeypatch.setattr("codemie.rest_api.models.permission.config.ENABLE_USER_MANAGEMENT", False)
+    user = MagicMock()
+    user.is_external_user = False
+    user.id = "user-99"
+
+    sql_str = str(AssistantRepository._per_user_grant_condition(user)).lower()
+
+    assert "permissions" not in sql_str
+
+
+def test_filter_includes_per_user_grant_path():
+    """Non-global base condition for regular user includes a permissions subquery."""
+    user = MagicMock()
+    user.is_admin = False
+    user.is_external_user = False
+    user.project_names = []
+    user.admin_project_names = []
+    user.id = "user-99"
+
+    repo = AssistantRepository()
+    condition = repo._get_non_global_base_condition(user)
+    sql_str = str(condition).lower()
+
+    assert "permissions" in sql_str
+    assert "resource_type" in sql_str
+
+
+def test_filter_for_regular_user_visibility_includes_per_user_grant():
+    """_filter_for_regular_user_visibility non-global branch includes a permissions subquery."""
+    from sqlmodel import select
+
+    user = MagicMock()
+    user.is_admin = False
+    user.is_external_user = False
+    user.project_names = []
+    user.admin_project_names = []
+    user.id = "user-99"
+
+    repo = AssistantRepository()
+    query = select(Assistant)
+    result_query = repo._filter_for_regular_user_visibility(query, user, include_global=False)
+    sql_str = str(result_query.whereclause).lower()
+
+    assert "permissions" in sql_str
+    assert "resource_type" in sql_str
+
+
+def test_external_user_predicates_skip_named_grants(mock_external_user):
+    """External users get no named-grant subquery in either list/count predicate (a8)."""
+    from sqlmodel import select
+
+    repo = AssistantRepository()
+    condition = repo._get_non_global_base_condition(mock_external_user)
+    assert "permissions" not in str(condition).lower()
+    for include_global in (False, True):
+        query = repo._filter_for_regular_user_visibility(select(Assistant), mock_external_user, include_global)
+        assert "permissions" not in str(query.whereclause).lower()
+
+
+@patch("codemie.rest_api.models.permission.Permission.get_by_fields")
+@patch("codemie.service.assistant.assistant_repository.Session")
+def test_query_preloads_grants_in_one_permission_query(mock_session_class, mock_get_by_fields, mock_user):
+    """A page of N assistants issues exactly one Permission query; granted rows still get READ (a9)."""
+    page = []
+    for i in range(3):
+        asst = Assistant(
+            id=f"asst-{i}",
+            name="n",
+            description="d",
+            system_prompt="p",
+            system_prompt_history=[],
+            project="OTHER",
+            toolkits=[],
+            shared=False,
+            is_react=True,
+            is_global=False,
+            created_date="2022-01-02T00:00:00.000Z",
+            agent_mode="general",
+            creator="someone-else",
+            update_date="2022-01-02T00:00:00.000Z",
+        )
+        page.append(asst)
+
+    statements = []
+
+    def _exec(stmt):
+        statements.append(str(stmt).lower())
+        result = MagicMock()
+        result.one.return_value = 3
+        if statements[-1].startswith("select cast(permissions.resource_id as text)"):
+            # A plain sa.select comes back as Row tuples; only .scalars() yields the bare ids
+            result.all.return_value = [("asst-0",), ("asst-2",)]
+            result.scalars.return_value.all.return_value = ["asst-0", "asst-2"]
+        else:
+            result.all.return_value = page
+        return result
+
+    mock_session = MagicMock()
+    mock_session.exec.side_effect = _exec
+    mock_session_class.return_value.__enter__.return_value = mock_session
+    mock_user.is_admin_or_maintainer = False
+
+    with patch("codemie.rest_api.models.assistant.Session") as model_session:
+        result = AssistantRepository().query(user=mock_user, scope=AssistantScope.VISIBLE_TO_USER)
+
+    permission_queries = [s for s in statements if s.startswith("select cast(permissions.resource_id as text)")]
+    assert len(permission_queries) == 1
+    model_session.assert_not_called()
+    mock_get_by_fields.assert_not_called()
+    abilities = {a.id: a.user_abilities for a in result["data"]}
+    from codemie.core.ability import Action
+
+    assert Action.READ in abilities["asst-0"]
+    assert abilities["asst-1"] == []
+    assert Action.READ in abilities["asst-2"]
+
+
+class TestPersonalProjectShowsNamedGrants:
+    """Assistants shared by name show under the recipient's personal project (named after their email)."""
+
+    EMAIL = "recipient@example.com"
+
+    @pytest.fixture
+    def user(self):
+        user = MagicMock()
+        user.is_admin = False
+        user.is_external_user = False
+        user.email = self.EMAIL
+        user.project_names = [self.EMAIL, "DEMO_PROJECT"]
+        user.admin_project_names = []
+        user.id = "recipient-id"
+        return user
+
+    @staticmethod
+    def _grant_subqueries(clause) -> int:
+        return str(clause).lower().count("from permissions")
+
+    @staticmethod
+    def _visible_query_sql(mock_session_class, user, filters) -> str:
+        statements = []
+        mock_session = MagicMock()
+
+        def _exec(stmt):
+            statements.append(stmt)
+            result = MagicMock()
+            result.one.return_value = 0
+            result.all.return_value = []
+            return result
+
+        mock_session.exec.side_effect = _exec
+        mock_session_class.return_value.__enter__.return_value = mock_session
+        AssistantRepository().query(user=user, scope=AssistantScope.VISIBLE_TO_USER, filters=filters)
+        return statements[0]  # the count query wraps the full filtered select
+
+    @pytest.mark.parametrize("project", [EMAIL, [EMAIL, "DEMO_PROJECT"]])
+    def test_project_with_marketplace_adds_grant_branch_for_personal_project(self, user, project):
+        repo = AssistantRepository()
+        personal = repo._build_project_with_marketplace_query(user, {"project": project})
+        other = repo._build_project_with_marketplace_query(user, {"project": "DEMO_PROJECT"})
+
+        assert self._grant_subqueries(personal.whereclause) == self._grant_subqueries(other.whereclause) + 1
+
+    def test_project_with_marketplace_grant_branch_keeps_other_filters(self, user):
+        repo = AssistantRepository()
+        filters = {"created_by": "Owner Name"}
+        personal = repo._build_project_with_marketplace_query(user, {**filters, "project": self.EMAIL})
+        other = repo._build_project_with_marketplace_query(user, {**filters, "project": "DEMO_PROJECT"})
+
+        # The personal-grant branch applies the created_by filter too, but not the project filter
+        def created_by_filters(query):
+            return str(query.whereclause).count("(assistants.created_by ->>")
+
+        def project_terms(query):
+            return str(query.whereclause).count("assistants.project = ")
+
+        assert created_by_filters(personal) == created_by_filters(other) + 1
+        assert project_terms(personal) == project_terms(other)
+
+    @patch("codemie.service.assistant.assistant_repository.Session")
+    def test_visible_to_user_relaxes_only_personal_project_filter(self, mock_session_class, user):
+        personal = self._visible_query_sql(mock_session_class, user, {"project": self.EMAIL})
+        other = self._visible_query_sql(mock_session_class, user, {"project": "DEMO_PROJECT"})
+
+        assert self._grant_subqueries(personal) == self._grant_subqueries(other) + 1
+
+    @patch("codemie.service.assistant.assistant_repository.Session")
+    def test_external_user_gets_no_grant_branch(self, mock_session_class, user):
+        user.is_external_user = True
+        repo = AssistantRepository()
+
+        assert self._grant_subqueries(repo._build_project_with_marketplace_query(user, {"project": self.EMAIL})) == 0
+        assert self._grant_subqueries(self._visible_query_sql(mock_session_class, user, {"project": self.EMAIL})) == 0
+
+    def test_no_grant_branch_without_email(self, user):
+        user.email = ""
+        assert AssistantRepository()._personal_project_grant_condition(user, {"project": ""}) is None
+
+
+def test_admin_path_unchanged():
+    """Admin _get_non_global_base_condition stays simple (no permissions subquery needed)."""
+    user = MagicMock()
+    user.is_admin = True
+    user.project_names = []
+    user.admin_project_names = []
+    user.id = "admin-1"
+
+    repo = AssistantRepository()
+    condition = repo._get_non_global_base_condition(user)
+    sql_str = str(condition).lower()
+
+    # Admin path: just a simple is_global = false check
+    assert "is_global" in sql_str
+    assert "permissions" not in sql_str
 
 
 class TestUpdatePrunesMsTeamsOnProjectMove:

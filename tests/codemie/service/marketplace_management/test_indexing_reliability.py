@@ -851,7 +851,7 @@ def test_deleting_a_published_assistant_removes_its_document(db: Engine, fake_in
     monkeypatch.setattr(assistant_router, "_track_mcp_usage_on_delete", lambda *a, **k: None)
     monkeypatch.setattr(assistant_router, "_track_assistant_management_metric", lambda *a, **k: None)
 
-    def _delete(assistant_id: str) -> None:
+    def _delete(assistant_id: str, user=None) -> None:
         with db.connect() as conn:
             conn.execute(text("delete from codemie.assistants where id = :i"), {"i": assistant_id})
             conn.commit()
@@ -882,7 +882,7 @@ def test_deleting_an_unpublished_assistant_does_not_error(db: Engine, fake_index
     monkeypatch.setattr(
         Assistant,
         "delete_assistant",
-        staticmethod(lambda assistant_id: None),
+        staticmethod(lambda assistant_id, user=None: None),
     )
 
     assistant_router.delete_assistant("del-draft", user=_fake_user())

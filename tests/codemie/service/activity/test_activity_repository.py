@@ -23,6 +23,7 @@ from codemie.service.activity.activity_models import (
     ActivityEvent,
     ActivityEventCreate,
     ActivityDomain,
+    AssistantEvent,
     UserManagementEvent,
     ActivityEntityType,
 )
@@ -76,6 +77,44 @@ def test_insert_adds_and_flushes_event():
     assert result.entity_type == ActivityEntityType.USER
     assert result.entity_id == "user-uuid-1"
     assert result.actor_id == "actor-uuid-1"
+
+
+def test_insert_strict_returns_none_and_adds_nothing_when_disabled():
+    session = MagicMock()
+
+    with patch("codemie.service.activity.activity_repository.config") as mock_config:
+        mock_config.ACTIVITY_EVENTS_ENABLED = False
+        result = _repo().insert_strict(_create_dto(), session)
+
+    assert result is None
+    session.add.assert_not_called()
+    session.flush.assert_not_called()
+
+
+def test_insert_strict_adds_and_flushes_in_callers_transaction():
+    session = MagicMock()
+    dto = _create_dto(domain=ActivityDomain.ASSISTANT, event_type=AssistantEvent.GRANT_ADDED)
+
+    with patch("codemie.service.activity.activity_repository.config") as mock_config:
+        mock_config.ACTIVITY_EVENTS_ENABLED = True
+        result = _repo().insert_strict(dto, session)
+
+    session.add.assert_called_once_with(result)
+    session.flush.assert_called_once()
+    session.begin_nested.assert_not_called()
+    assert result.domain == "assistant"
+    assert result.event_type == "assistant.grant.added"
+
+
+def test_insert_strict_reraises_flush_failure_while_insert_swallows_it():
+    session = MagicMock()
+    session.flush.side_effect = RuntimeError("db down")
+
+    with patch("codemie.service.activity.activity_repository.config") as mock_config:
+        mock_config.ACTIVITY_EVENTS_ENABLED = True
+        with pytest.raises(RuntimeError, match="db down"):
+            _repo().insert_strict(_create_dto(), session)
+        assert _repo().insert(_create_dto(), session) is None
 
 
 def test_insert_domain_level_event_with_no_entity():

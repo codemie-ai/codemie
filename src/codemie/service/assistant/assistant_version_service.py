@@ -26,6 +26,7 @@ from codemie.rest_api.models.assistant import (
     AssistantVersionHistoryResponse,
 )
 from codemie.rest_api.security.user import User
+from codemie.service.assistant.assistant_share_service import AssistantShareService
 from codemie.service.mcp.access_control import MCPAccessControlService
 from codemie.core.models import CreatedByUser
 from codemie.core.exceptions import ExtendedHTTPException
@@ -265,6 +266,8 @@ class AssistantVersionService:
 
         # A version saved before restricted mode was enabled may hold servers that are no longer allowed
         MCPAccessControlService.validate_on_restore(target_config.mcp_servers)
+        # Restoring a version must not reintroduce personal integrations onto a shared assistant
+        AssistantShareService.ensure_no_personal_integration_if_shared(assistant.id, target_config)
 
         # Create new version with target configuration
         new_version_number = assistant.version_count + 1
@@ -413,6 +416,8 @@ class AssistantVersionService:
 
         # Get the version configuration
         version_config = cls.get_version(assistant.id, version_number)
+        # An older version may still hold personal integrations a shared assistant must not run with
+        AssistantShareService.ensure_no_personal_integration_if_shared(assistant.id, version_config)
 
         # Create a new assistant instance with the base data
         asst = Assistant(**assistant.model_dump())

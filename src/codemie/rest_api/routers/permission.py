@@ -73,7 +73,7 @@ def delete_permission(permission_id: str, user: User = Depends(authenticate)):
     except PermissionResourceNotFound:
         raise_not_found(permission_id, "Permission")
     except PermissionAccessDenied:
-        raise_access_denied("create permissions for")
+        raise_access_denied("delete permissions for")
     except Exception as e:
         logger.error(f"Error deleting permission {str(e)}", exc_info=True)
         raise_unprocessable_entity(action="delete", resource="permission", exc=e)

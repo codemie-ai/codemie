@@ -1,0 +1,71 @@
+{
+  "decision": "request-changes",
+  "rationale": "CR-001..CR-009 are resolved at HEAD by current-source inspection of the changed files. CR-010 (kind: evidence) stays unresolved: fix_evidence maps only a user waiver (a decision record) to it, with no artifacts or exit-0 commands, and a decision cannot resolve an evidence finding. Re-kind it as a decision, or supply evidence, to accept the waiver. Tests were read, not run (Stage 7 owns execution).",
+  "confidence": "medium",
+  "risk_flags": ["security", "auth", "migration", "public-api"],
+  "business_review": [
+    {"kind": "story-ac", "item": "Migration: only change to resourcetype enum is new ASSISTANT label", "status": "pass", "notes": "sync_enum_values adds ASSISTANT; enums principaltype/action already exist with uppercase names"},
+    {"kind": "story-ac", "item": "Old code reads migrated rows without error; datasource checks unchanged", "status": "pass", "notes": "Existing labels untouched; mock-level tests only"},
+    {"kind": "story-ac", "item": "Downgrade deletes ASSISTANT grant rows first, then removes label", "status": "pass", "notes": "Order asserted in test_permission_migration.py"},
+    {"kind": "story-ac", "item": "User management disabled: all four sharing endpoints rejected", "status": "pass", "notes": "_require_user_management first in all four routes"},
+    {"kind": "story-ac", "item": "User search: query under 2 chars rejected or empty; at most 20 results", "status": "partial", "notes": "Omitted q passes min_length (default not validated) and lists up to 20 users; see CR-006"},
+    {"kind": "story-ac", "item": "Assistant with personal integration cannot be shared", "status": "pass", "notes": "grant checks stored setting_type before any write"},
+    {"kind": "story-ac", "item": "Shared assistant saved with personal integration is rejected", "status": "pass", "notes": "update_assistant guard before repository update"},
+    {"kind": "story-ac", "item": "Audit: one event per changed user, same transaction", "status": "pass", "notes": "insert_strict on same session as insert/delete"},
+    {"kind": "story-ac", "item": "Audit event cannot be stored: whole change rolled back", "status": "pass", "notes": "insert_strict propagates; commit after loop"},
+    {"kind": "story-ac", "item": "No-op request writes no audit event", "status": "pass", "notes": "Audit only when RETURNING yields a row"},
+    {"kind": "story-ac", "item": "Activity events disabled: grant/revoke succeeds, no audit event", "status": "pass", "notes": "insert_strict returns None when disabled"},
+    {"kind": "story-ac", "item": "Generic permission delete and assistant delete audited the same way", "status": "pass", "notes": "Both use share service paths; see CR-002 for atomicity"},
+    {"kind": "story-ac", "item": "Audit events follow existing retention setting", "status": "pass", "notes": "No retention code changed"},
+    {"kind": "story-ac", "item": "Recipient converted to external user loses named-grant access", "status": "pass", "notes": "Skipped in is_shared_with and both SQL predicates"},
+    {"kind": "story-ac", "item": "Duplicate/racing grant idempotent; validation all-or-none", "status": "pass", "notes": "Dedupe, validate first, ON CONFLICT DO NOTHING; constraint name exists"},
+    {"kind": "story-ac", "item": "Assistant delete removes grants, audit history kept", "status": "pass", "notes": "remove_all_grants one event per row"},
+    {"kind": "story-ac", "item": "Generic permission delete of named grant: grantor or admin, audited", "status": "pass", "notes": "Ability WRITE retained then revoke_permission"},
+    {"kind": "story-ac", "item": "Unknown assistant ID returns 404 on all four endpoints", "status": "pass", "notes": "_get_assistant_by_id_or_raise in all routes"},
+    {"kind": "story-ac", "item": "Listing: named-grant check costs one query per page", "status": "pass", "notes": "granted_ids preload via one IN query"},
+    {"kind": "story-ac", "item": "Routes use public share service ops; single named-grant helper", "status": "pass", "notes": "Permission.named_grant_resource_ids shared"},
+    {"kind": "spec", "item": "Migration rewritten in place; downgrade deletes ASSISTANT rows; values_callable removed", "status": "pass", "notes": "a1b2c3d4e5f8 and sa.Enum columns"},
+    {"kind": "spec", "item": "Gating 400 same message; q min_length=2; service caps at 20", "status": "partial", "notes": "Omitted q bypasses min_length; see CR-006"},
+    {"kind": "spec", "item": "All four routes use _get_assistant_by_id_or_raise; service does owner check", "status": "pass", "notes": "403 tests on service methods"},
+    {"kind": "spec", "item": "Personal-integration guard: grant rejects, update rejects when grants exist", "status": "pass", "notes": "assistant_uses_personal_integration on USER setting_type"},
+    {"kind": "spec", "item": "Audit constants, strict insert in caller session, durable actor in attributes", "status": "pass", "notes": "insert untouched; insert_strict added"},
+    {"kind": "spec", "item": "Grant, revoke, generic delete, assistant delete share one code path", "status": "pass", "notes": "_audit/_audit_deleted"},
+    {"kind": "spec", "item": "Generic delete: grantor-or-admin kept, delegates for ASSISTANT only", "status": "pass", "notes": "Datasource path unchanged"},
+    {"kind": "spec", "item": "a8: external users ignore named grants at three sites", "status": "pass", "notes": "Covered by tests"},
+    {"kind": "spec", "item": "a14: one helper builds the named-grant predicate", "status": "pass", "notes": "Permission.named_grant_resource_ids; weak tests, CR-004"},
+    {"kind": "spec", "item": "a9: list path loads granted IDs in one query", "status": "pass", "notes": "Ability(granted_ids) short-circuits DB call"},
+    {"kind": "spec", "item": "a13: dedupe, validate, conflict-safe insert, no duplicate audit", "status": "pass", "notes": "grant() in share service"},
+    {"kind": "spec", "item": "a18: delete_assistant deletes live grants with audit; history retained", "status": "pass", "notes": "Not atomic with assistant row; see CR-002"},
+    {"kind": "spec", "item": "Non-goals respected", "status": "pass", "notes": "No out-of-scope changes in diff"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "fail", "notes": "git-workflow.md requires 'EPMCDME-####: Description'; 20 of 21 subjects conform, one uses lowercase 'epmcdme-14786: add planning artifacts'"},
+    {"kind": "code-quality", "status": "partial", "notes": "New share service lacks future import and param annotations; bare list in response models; Optional[Select] in permission.py. Alembic migration out of scope per ignores"},
+    {"kind": "security", "status": "pass", "notes": "Routes use authenticate, owner checks, parameterized queries, external users skipped, no secrets in audit attributes"}
+  ],
+  "findings": [
+    {
+      "id": "CR-010",
+      "kind": "evidence",
+      "severity": "major",
+      "triage": "patch",
+      "file": "unknown",
+      "title": "Commit subject violates ticket-prefix format",
+      "problem": "git-workflow.md requires 'EPMCDME-####: Description'; the subject 'epmcdme-14786: add planning artifacts' uses a lowercase ticket prefix and description.",
+      "impact": "Breaks ticket-prefix tooling and history conventions; documented blocking commit-format standard.",
+      "recommendation": "Reword the commit to 'EPMCDME-14786: Add planning artifacts' or ensure the squash subject conforms."
+    }
+  ],
+  "finding_status": [
+    {"id": "CR-001", "status": "resolved", "notes": "assistant.py is_shared_with: id guard removed from the top; is_global and project-shared branches run first, `not self.id` now sits with the external-user check before the grant lookup. Two tests added."},
+    {"id": "CR-002", "status": "resolved", "notes": "delete_assistant opens one session; remove_all_grants(..., session) no longer commits; commit only after assistant.delete() succeeds. Test with a raising delete asserts no commit. assistant.delete() still uses its own session, so a commit failure after it could leave orphan grants (visible and revocable per CR-008)."},
+    {"id": "CR-003", "status": "resolved", "notes": "permission.py named_grant_resource_ids now returns Select | None."},
+    {"id": "CR-004", "status": "resolved", "notes": "test_ability.py compiles the predicate on the postgresql dialect and asserts the three = comparisons and bound params. Not run."},
+    {"id": "CR-005", "status": "resolved", "notes": "SharedWithResponse.shared_with and SharableUsersResponse.users typed list[dict[str, str | None]]."},
+    {"id": "CR-006", "status": "resolved", "notes": "q is now Query(..., min_length=2), required; test asserts 422 and no service call when omitted."},
+    {"id": "CR-007", "status": "resolved", "notes": "Future import added; assistant params annotated; returns parameterized in the share service."},
+    {"id": "CR-008", "status": "resolved", "notes": "list_shared_with now lists orphan grants (user not found) so the owner can revoke them; test added."},
+    {"id": "CR-009", "status": "resolved", "notes": "PermissionCreationService.run raises PermissionAccessDenied for ResourceType.ASSISTANT before any ability check or save; new untracked test covers it."},
+    {"id": "CR-010", "status": "unresolved", "notes": "kind evidence. fix_evidence has only a waiver decision (no artifacts, no exit-0 commands), and a decision record cannot resolve an evidence finding. Re-kind as a decision to accept the waiver."}
+  ]
+}

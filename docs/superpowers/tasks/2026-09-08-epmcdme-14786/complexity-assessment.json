@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "task": "Add per-user assistant sharing with grant/revoke endpoints, owner-only enforcement, visibility filter updates, and new Permission ResourceType for ASSISTANT",
+  "generated": "2026-09-08T10:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 6, "label": "XXL" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 5, "label": "XL" }
+  },
+  "total": 23,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Four or more components touched across 3+ layers: AssistantBase.is_shared_with (model), ResourceType enum + Permission model (data), PermissionCreationService._check_principal USER branch + owner guard (service), AssistantRepository._filter_for_regular_user_visibility + _get_non_global_base_condition + _build_project_with_marketplace_query (repository), share/revoke + user-search router endpoints (API). Bumped from L to XL because the Permission infrastructure and Ability system are core shared utilities."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "Closest pattern is DATASOURCE in the Permission table, but it does not cover three critical gaps: (1) PermissionCreationService._check_principal USER path is explicitly unimplemented (raises NotImplementedError); (2) AssistantRepository SQL visibility filter has no precedent for joining or subquerying the permissions table; (3) owner-only sharing constraint is stricter than the existing WRITE permission scope (which includes managers and admins), requiring a dedicated guard beyond Ability.can(WRITE). Auto-bumped for security-sensitive auth edge cases enumerated in ACs (AC#3 edit lock, AC#5 revoked-access denial, AC#7 non-owner rejection) with no existing test template. Further bumped for significant DB schema change (Alembic migration required). Net result: L → XL → XXL."
+    },
+    {
+      "dimension": "affected_layers",
+      "reason": "Four distinct layers: Data/Model (AssistantBase, Permission model, ResourceType enum), DB-Persistence (Alembic migration, SQL filter rewrite in AssistantRepository), Service (PermissionCreationService USER branch, owner guard), API (share/revoke endpoints, user-search endpoint). Bumped from L to XL because a significant schema change is included."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "Estimated 8-12 modified files (assistant.py model, permission.py, assistant_repository.py x2 methods, permission_creation_service.py, assistant.py router, ability.py, user_project_repository.py) plus 3-5 new files (Alembic migration, new test modules for repository grant path, service USER path, owner enforcement, personal-project view). Spans 5+ directories."
+    }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L(4) to XL(5): touches core shared utilities — Permission infrastructure and Ability system used by multiple resources",
+    "Technical Risk auto-bumped: security-sensitive auth/authz edge cases enumerated in ACs (AC#3, AC#5, AC#7) with no existing test template covering per-user grant read gates or revoke enforcement",
+    "Technical Risk bumped again for significant DB schema change (new Alembic migration required) — L(4) → XL(5) → XXL(6)",
+    "Affected Layers bumped from L(4) to XL(5): significant database schema change (Alembic migration)"
+  ],
+  "split_recommendation": null
+}

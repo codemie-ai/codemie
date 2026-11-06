@@ -57,11 +57,13 @@ class _FakeAssistant:
 def stubbed_delete_path(monkeypatch: pytest.MonkeyPatch) -> _FakeAssistant:
     """Neutralise everything `delete_assistant` touches except the purge."""
     from codemie.rest_api.models.assistant import Assistant
+    from codemie.service.assistant.assistant_share_service import AssistantShareService
     from codemie.service.guardrail.guardrail_service import GuardrailService
     from codemie.service.settings.scheduler_settings_service import SchedulerSettingsService
 
     fake = _FakeAssistant()
     monkeypatch.setattr(Assistant, "find_by_id", classmethod(lambda cls, _id: fake))
+    monkeypatch.setattr(AssistantShareService, "remove_all_grants", classmethod(lambda cls, *_a, **_kw: None))
     monkeypatch.setattr(
         SchedulerSettingsService,
         "delete_integrations_by_resource",
@@ -105,7 +107,12 @@ def _capture_purge(monkeypatch: pytest.MonkeyPatch, *, raises: bool = False) -> 
         def commit(self):
             pass
 
+        def delete(self, obj):
+            obj.delete()
+
     monkeypatch.setattr("sqlmodel.Session", _Session)
+    # delete_assistant imported Session by name, so it needs the stub too
+    monkeypatch.setattr("codemie.rest_api.models.assistant.Session", _Session)
 
     from codemie.clients import postgres as pg
 
@@ -207,7 +214,12 @@ def _install_sweep(
         def commit(self):
             pass
 
+        def delete(self, obj):
+            obj.delete()
+
     monkeypatch.setattr("sqlmodel.Session", _Session)
+    # delete_assistant imported Session by name, so it needs the stub too
+    monkeypatch.setattr("codemie.rest_api.models.assistant.Session", _Session)
 
     main._setup_marketplace_moderation_purge_scheduler(app)
     return swept

@@ -157,7 +157,10 @@ def test_revision_follows_the_previous_head():
     assert module.down_revision == "b7e2d4f6a8c1"
     versions = Path(importlib.import_module("external.alembic.versions").__path__[0])
     script = ScriptDirectory(str(versions.parent))
-    assert script.get_heads() == [module.revision]
+    heads = script.get_heads()
+    # Later migrations may chain after this one; the history must stay linear and still contain it
+    assert len(heads) == 1
+    assert module.revision in {rev.revision for rev in script.walk_revisions("base", heads[0])}
 
 
 def test_models_map_the_metadata_column_under_another_attribute():

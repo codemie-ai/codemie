@@ -29,6 +29,9 @@ class PermissionCreationService(PermissionBaseService):
 
     @classmethod
     def run(cls, request: PermissionCreateRequest, user: User) -> tuple[Permission, str]:
+        if request.resource_type == ResourceType.ASSISTANT:
+            # Assistant grants go through AssistantShareService so they are audited and validated.
+            raise PermissionAccessDenied
         try:
             cls._check_ability(resource_id=request.resource_id, resource_type=request.resource_type, user=user)
 

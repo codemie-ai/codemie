@@ -23,6 +23,7 @@ paths = [
   '''(^|/)\.codegraph/.*''',          # Local CodeGraph index (gitignored, SQLite pages hold indexed source strings)
   '''.venv/.*''',
   '''.vscode/.*''',
+  '''\.kube-local/.*''',                # Local k3s kubeconfigs (gitignored, contain cluster client keys)
   '''tests/codemie/datasource/loader/fixtures/xlsb/.*\.xlsb$''',  # Binary Excel test fixtures; password-protected workbook stores encryption key material (encryptedHmacKey/encryptedKeyValue), not real secrets
 ]
 

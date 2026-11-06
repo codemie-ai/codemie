@@ -43,6 +43,9 @@ class _NoAudit:
 
 @pytest.fixture
 def tms(monkeypatch):
+    for name in ("MockTokenManagementSystem", "OAuth2TokenData", "TokenNotFound"):
+        if not hasattr(mcp_auth, name):
+            pytest.skip(f"codemie_enterprise.mcp_auth.{name} unavailable")
     mock_tms = mcp_auth.MockTokenManagementSystem()
     monkeypatch.setattr(dependencies, "_tms", mock_tms, raising=False)
     monkeypatch.setattr(dependencies, "is_mcp_auth_enabled", lambda: True)

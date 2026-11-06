@@ -98,6 +98,10 @@ class ActivityEventRepository(ABC):
         """Return events in a domain within a time range, most recent first."""
 
     @abstractmethod
+    def insert_strict(self, event: ActivityEventCreate, session: Session) -> ActivityEvent | None:
+        """Persist an event in the caller's transaction; unlike insert(), propagates failures."""
+
+    @abstractmethod
     def find_all(
         self,
         *,
@@ -153,6 +157,14 @@ class SQLActivityEventRepository(ActivityEventRepository):
                 f"[activity_events] insert failed domain={event.domain!r} event_type={event.event_type!r}: {exc}"
             )
             return None
+
+    def insert_strict(self, event: ActivityEventCreate, session: Session) -> ActivityEvent | None:
+        if not config.ACTIVITY_EVENTS_ENABLED:
+            return None
+        row = ActivityEvent(**event.model_dump())
+        session.add(row)
+        session.flush()
+        return row
 
     async def async_insert(self, event: ActivityEventCreate, session: AsyncSession) -> ActivityEvent | None:
         """Persist a new event within the caller's async transaction."""

@@ -651,6 +651,7 @@ class UserRepository:
         session: AsyncSession,
         search: Optional[str] = None,
         projects: Optional[list[str]] = None,
+        exclude_user_type: Optional[str] = None,
     ) -> list["UserDB"]:
         """Return all active, non-deleted users, optionally filtered by text search and/or projects.
 
@@ -658,13 +659,16 @@ class UserRepository:
             session: Async database session
             search: Optional ILIKE pattern applied to email, username, and name
             projects: Optional list of project names to filter by
+            exclude_user_type: If set, exclude users with this user_type from results
 
         Returns:
             List of UserDB instances ordered by name then username
         """
         from codemie.rest_api.models.user_management import UserProject
 
-        stmt = select(UserDB).where(_ACTIVE)
+        stmt = select(UserDB).where(_ACTIVE)  # noqa: E712
+        if exclude_user_type:
+            stmt = stmt.where(UserDB.user_type != exclude_user_type)
         if search:
             escaped = escape_like_wildcards(search)
             pattern = f"%{escaped}%"

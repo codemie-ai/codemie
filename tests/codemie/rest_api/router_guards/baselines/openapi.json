@@ -20628,8 +20628,7 @@
           },
           "principal_type": {
             "$ref": "#/components/schemas/PrincipalType",
-            "description": "Type of principal (user, application)",
-            "maxLength": 20
+            "description": "Type of principal (user, application)"
           },
           "resource_id": {
             "description": "ID of the resource",
@@ -20639,8 +20638,7 @@
           },
           "resource_type": {
             "$ref": "#/components/schemas/ResourceType-Output",
-            "description": "Type of resource (datasource, assistant, workflow, etc.)",
-            "maxLength": 50
+            "description": "Type of resource (datasource, assistant, workflow, etc.)"
           },
           "update_date": {
             "anyOf": [
@@ -24594,7 +24592,8 @@
       },
       "ResourceType-Output": {
         "enum": [
-          "datasource"
+          "datasource",
+          "assistant"
         ],
         "title": "ResourceType",
         "type": "string"
@@ -26249,6 +26248,33 @@
         "title": "SettingsConfigLevel",
         "type": "string"
       },
+      "SharableUsersResponse": {
+        "description": "Response model listing users that can be granted access to an assistant",
+        "properties": {
+          "users": {
+            "items": {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": "object"
+            },
+            "title": "Users",
+            "type": "array"
+          }
+        },
+        "required": [
+          "users"
+        ],
+        "title": "SharableUsersResponse",
+        "type": "object"
+      },
       "ShareConversationRequest": {
         "properties": {
           "chat_id": {
@@ -26377,6 +26403,51 @@
           "site_url"
         ],
         "title": "SharePointIndexInfo",
+        "type": "object"
+      },
+      "ShareUsersRequest": {
+        "description": "Request model for sharing an assistant with specific users",
+        "properties": {
+          "user_ids": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "User Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "user_ids"
+        ],
+        "title": "ShareUsersRequest",
+        "type": "object"
+      },
+      "SharedWithResponse": {
+        "description": "Response model listing users an assistant is shared with",
+        "properties": {
+          "shared_with": {
+            "items": {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": "object"
+            },
+            "title": "Shared With",
+            "type": "array"
+          }
+        },
+        "required": [
+          "shared_with"
+        ],
+        "title": "SharedWithResponse",
         "type": "object"
       },
       "SkillAttachRequest": {
@@ -37492,7 +37563,8 @@
       },
       "codemie__rest_api__models__permission__ResourceType": {
         "enum": [
-          "datasource"
+          "datasource",
+          "assistant"
         ],
         "title": "ResourceType",
         "type": "string"
@@ -60646,6 +60718,238 @@
           }
         ],
         "summary": "React To Assistant",
+        "tags": [
+          "Assistant"
+        ]
+      }
+    },
+    "/v1/assistants/{assistant_id}/sharable-users": {
+      "get": {
+        "description": "Search internal users that can be granted access to the assistant.",
+        "operationId": "get_sharable_users_v1_assistants__assistant_id__sharable_users_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "assistant_id",
+            "required": true,
+            "schema": {
+              "title": "Assistant Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "minLength": 2,
+              "title": "Q",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharableUsersResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Get Sharable Users",
+        "tags": [
+          "Assistant"
+        ]
+      }
+    },
+    "/v1/assistants/{assistant_id}/share": {
+      "delete": {
+        "description": "Revoke per-user READ access to the assistant (owner only).",
+        "operationId": "revoke_assistant_share_v1_assistants__assistant_id__share_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "assistant_id",
+            "required": true,
+            "schema": {
+              "title": "Assistant Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShareUsersRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedWithResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Revoke Assistant Share",
+        "tags": [
+          "Assistant"
+        ]
+      },
+      "post": {
+        "description": "Grant per-user READ access to the assistant (owner only).",
+        "operationId": "share_assistant_v1_assistants__assistant_id__share_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "assistant_id",
+            "required": true,
+            "schema": {
+              "title": "Assistant Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShareUsersRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedWithResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Share Assistant",
+        "tags": [
+          "Assistant"
+        ]
+      }
+    },
+    "/v1/assistants/{assistant_id}/shared-with": {
+      "get": {
+        "description": "List users that have been explicitly granted access to this assistant.",
+        "operationId": "get_shared_with_v1_assistants__assistant_id__shared_with_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "assistant_id",
+            "required": true,
+            "schema": {
+              "title": "Assistant Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedWithResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Get Shared With",
         "tags": [
           "Assistant"
         ]

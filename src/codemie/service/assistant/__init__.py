@@ -12,9 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from .assistant_share_service import AssistantShareService
 from .virtual_assistant_service import VirtualAssistantService, VIRTUAL_ASSISTANT_PREFIX
 
 __all__ = [
+    "AssistantShareService",
     "VirtualAssistantService",
     "VIRTUAL_ASSISTANT_PREFIX",
 ]

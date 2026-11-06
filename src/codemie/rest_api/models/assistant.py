@@ -937,7 +937,7 @@ class AssistantBase(CommonBaseModel, Owned):
     def is_managed_by(self, user: User):
         return self.project in user.admin_project_names
 
-    def is_shared_with(self, user: User):
+    def is_shared_with(self, user: User, granted_ids: set[str] | None = None):
         if self.is_global:
             # For marketplace (global) assistants, check if external users have project access
             if user.is_external_user:
@@ -947,7 +947,22 @@ class AssistantBase(CommonBaseModel, Owned):
                 return self.project in allowed_projects
             # Internal users can access all marketplace assistants
             return True
-        return self.project in user.project_names and self.shared
+        # Project-wide sharing (original predicate — evaluated first, no DB call)
+        if self.project in user.project_names and self.shared:
+            return True
+        # Per-user grant (named grants never apply to external users)
+        from sqlalchemy import Text, cast
+        from codemie.rest_api.models.permission import Permission
+
+        if user.is_external_user or not self.id:
+            return False
+        if granted_ids is not None:
+            return self.id in granted_ids
+        grant_query = Permission.named_grant_resource_ids(user)
+        if grant_query is None:
+            return False
+        with Session(Permission.get_engine()) as session:
+            return session.exec(grant_query.where(cast(Permission.resource_id, Text) == self.id)).first() is not None
 
     @staticmethod
     def _should_update_field(field: str, fields_set: set | None) -> bool:
@@ -1256,7 +1271,8 @@ class Assistant(BaseModelWithSQLSupport, AssistantBase, table=True):
             )
 
     @classmethod
-    def delete_assistant(cls, assistant_id: str):
+    def delete_assistant(cls, assistant_id: str, user: User | None = None):
+        from codemie.service.assistant.assistant_share_service import AssistantShareService  # circular at import time
         from codemie.service.settings.scheduler_settings_service import SchedulerSettingsService
         from codemie.rest_api.models.settings import Settings
         from codemie_tools.base.models import CredentialTypes
@@ -1289,7 +1305,12 @@ class Assistant(BaseModelWithSQLSupport, AssistantBase, table=True):
             except Exception as e:
                 logger.warning(f"Failed to prune ms_teams assistant_ids for assistant {assistant_id}: {e}")
 
-            assistant.delete()
+            # Strict audit: a failure here aborts the delete so grants are never dropped unaudited.
+            # One transaction for grants + audit + the row itself: any failure rolls all of it back.
+            with Session(cls.get_engine()) as session:
+                AssistantShareService.remove_all_grants(user, assistant_internal_id, assistant_project, session)
+                session.delete(assistant)
+                session.commit()
             GuardrailService.remove_guardrail_assignments_for_entity(GuardrailEntity.ASSISTANT, assistant_internal_id)
             cls._purge_marketplace_moderation_data(assistant_id)
             return

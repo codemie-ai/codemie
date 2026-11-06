@@ -17,6 +17,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
+from sqlalchemy import Text, cast, false
 from sqlalchemy.sql.selectable import Select
 from sqlmodel import select, or_, and_, Session, func, case
 
@@ -185,9 +186,7 @@ class AssistantRepository:
 
                 # Apply custom filters if any
                 if filters:
-                    query = AssistantFilter.add_sql_filters(
-                        query, model_class=Assistant, raw_filters=filters, is_admin=user.is_admin
-                    )
+                    query = self._apply_custom_filters(query, user, scope, filters)
 
             # EPMCDME-13980: The multi-field wildcard search filter injects an ORDER BY
             # priority_case (title matches before description matches). Explicit metric
@@ -208,13 +207,24 @@ class AssistantRepository:
             # Execute query
             assistants = session.exec(query).all()
 
+            # Preload the page's named grants in one query instead of one lookup per row
+            from codemie.rest_api.models.permission import Permission
+
+            grant_query = Permission.named_grant_resource_ids(user)
+            page_ids = [item.id for item in assistants]
+            granted_ids = (
+                set(session.exec(grant_query.where(cast(Permission.resource_id, Text).in_(page_ids))).scalars().all())
+                if grant_query is not None and page_ids
+                else set()
+            )
+
         pages = math.ceil(total / per_page)
 
         meta = {"page": page, "per_page": per_page, "total": total, "pages": pages}
 
         # Add user abilities to each result
         for item in assistants:
-            item.user_abilities = Ability(user).list(item)
+            item.user_abilities = Ability(user, granted_ids=granted_ids).list(item)
 
         # Convert to response model if needed
         response_wrapper = AssistantListResponse if minimal_response else Assistant
@@ -577,6 +587,40 @@ class AssistantRepository:
         """
         return query.where(self._get_marketplace_condition(user))
 
+    @staticmethod
+    def _per_user_grant_condition(user: User):
+        from codemie.rest_api.models.permission import Permission
+
+        grant_query = Permission.named_grant_resource_ids(user)
+        return false() if grant_query is None else Assistant.id.in_(grant_query)
+
+    def _apply_custom_filters(self, query, user: User, scope: AssistantScope, filters: Dict[str, Any]):
+        personal_grant = (
+            self._personal_project_grant_condition(user, filters) if scope == AssistantScope.VISIBLE_TO_USER else None
+        )
+        if personal_grant is not None:
+            # Assistants shared by name also show under the recipient's personal project
+            query = query.where(or_(Assistant.project.in_(self._project_filter_values(filters)), personal_grant))
+            filters = {k: v for k, v in filters.items() if k != "project"}
+        return AssistantFilter.add_sql_filters(
+            query, model_class=Assistant, raw_filters=filters, is_admin=user.is_admin
+        )
+
+    @staticmethod
+    def _project_filter_values(filters: Dict[str, Any] | None) -> list:
+        project = (filters or {}).get("project")
+        return project if isinstance(project, list) else [project]
+
+    def _personal_project_grant_condition(self, user: User, filters: Dict[str, Any] | None):
+        """Non-global named grants when the project filter targets the user's personal project, else None.
+
+        The personal project is named after the user's email; assistants shared with the user by name
+        belong there regardless of the project they were created in.
+        """
+        if not user.email or user.email not in self._project_filter_values(filters):
+            return None
+        return and_(Assistant.is_global == False, self._per_user_grant_condition(user))  # noqa
+
     def _get_non_global_base_condition(self, user: User, project: str | None = None):
         """
         Get base condition for non-global assistants based on user permissions.
@@ -591,6 +635,7 @@ class AssistantRepository:
             # Admins see all non-global assistants from the project (no visibility restrictions)
             return Assistant.is_global == False  # noqa
 
+        per_user_grant_condition = self._per_user_grant_condition(user)
         user_guard_expr = or_(
             # Shared assistants in user's applications
             and_(Assistant.project.in_(user.project_names), Assistant.shared == True),  # noqa
@@ -598,6 +643,8 @@ class AssistantRepository:
             Assistant.project.in_(user.admin_project_names),
             # Assistants created by user
             self._created_by_user_condition(user),
+            # Per-user grant via Permission table
+            per_user_grant_condition,
         )
 
         if project:
@@ -655,8 +702,21 @@ class AssistantRepository:
         else:
             marketplace_condition = marketplace_base_condition
 
-        # Combine both conditions: (non-global with all filters) OR (global with filters except project)
-        query = select(Assistant).where(or_(non_global_condition, marketplace_condition))
+        conditions = [non_global_condition, marketplace_condition]
+
+        # Assistants shared by name show under the recipient's personal project, whatever their own project
+        personal_grant = self._personal_project_grant_condition(user, filters)
+        if personal_grant is not None:
+            shared_query = AssistantFilter.add_sql_filters(
+                select(Assistant).where(personal_grant),
+                model_class=Assistant,
+                raw_filters=marketplace_filters,
+                is_admin=user.is_admin,
+            )
+            conditions.append(shared_query.whereclause)
+
+        # (non-global with all filters) OR (global with filters except project) [OR personal-project grants]
+        query = select(Assistant).where(or_(*conditions))
 
         return query
 
@@ -671,6 +731,7 @@ class AssistantRepository:
         Returns:
             Modified query with regular user visibility filters applied
         """
+        per_user_grant_condition = self._per_user_grant_condition(user)
         if include_global:
             return query.where(
                 or_(
@@ -679,6 +740,7 @@ class AssistantRepository:
                     Assistant.creator == user.id,
                     Assistant.created_by['id'].astext == user.id,
                     Assistant.is_global,
+                    per_user_grant_condition,
                 )
             )
         return query.where(
@@ -691,6 +753,8 @@ class AssistantRepository:
                     Assistant.project.in_(user.admin_project_names),
                     # Assistants created by user
                     self._created_by_user_condition(user),
+                    # Per-user grant via Permission table
+                    per_user_grant_condition,
                 ),
             )
         )

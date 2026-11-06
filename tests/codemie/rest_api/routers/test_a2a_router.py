@@ -150,12 +150,14 @@ async def test_get_agent_card_authorized_succeeds_on_private_assistant(
 
 
 @pytest.mark.anyio
+@patch("codemie.rest_api.models.assistant.Session")
 @patch("codemie.rest_api.routers.a2a.Assistant.find_by_id")
 @patch("codemie.rest_api.routers.a2a.authenticate")
 async def test_get_agent_card_unauthorized_raises_403_on_private_assistant(
-    mock_authenticate, mock_find_by_id, private_assistant, mock_unauthorized_user
+    mock_authenticate, mock_find_by_id, mock_grant_session, private_assistant, mock_unauthorized_user
 ):
     """Authenticated request without READ access on a private assistant must return 403 Forbidden."""
+    mock_grant_session.return_value.__enter__.return_value.exec.return_value.first.return_value = None
     mock_find_by_id.return_value = private_assistant
     mock_authenticate.return_value = mock_unauthorized_user
 

@@ -1,0 +1,185 @@
+{
+  "decision": "request-changes",
+  "rationale": "4 of 11 acceptance criteria are partial (AC#1, AC#4, AC#6, AC#8), blocking merge on their own; 9 code defects found including two auth gaps on read endpoints and an enum case mismatch that makes per-user grants invisible in list queries. One reachability was uncertain (CR-001, capped at major). 2 findings deferred as pre-existing (deferred backlog: code-review-deferred.md); 1 dismissed as noise.",
+  "confidence": "medium",
+  "risk_flags": ["security", "breaking-change"],
+  "business_review": [
+    {
+      "kind": "acceptance",
+      "item": "AC#1 — POST /share with user_ids grants READ access; recipient can converse",
+      "status": "partial",
+      "notes": "grant() writes Permission rows and is_shared_with gains per-user predicate. Conversation runtime owner-context forwarding not visible in diff."
+    },
+    {
+      "kind": "acceptance",
+      "item": "AC#2 — Shared assistant appears in recipient accessible assistant list (VISIBLE_TO_USER scope)",
+      "status": "pass",
+      "notes": "_get_non_global_base_condition and _filter_for_regular_user_visibility gain per_user_grant_condition OR clause."
+    },
+    {
+      "kind": "acceptance",
+      "item": "AC#3 — Recipient cannot edit; Ability.can(WRITE) returns False",
+      "status": "pass",
+      "notes": "Permission rows carry permission_level=READ. Existing WRITE-ability check is unchanged."
+    },
+    {
+      "kind": "acceptance",
+      "item": "AC#4 — DELETE /share revokes access for listed users; subsequent reads return 403",
+      "status": "partial",
+      "notes": "revoke() deletes Permission rows. Post-revocation 403 depends on is_shared_with returning False; not explicitly tested in new tests."
+    },
+    {
+      "kind": "acceptance",
+      "item": "AC#5 — After revocation assistant no longer appears in revoked users' list",
+      "status": "pass",
+      "notes": "per_user_grant_condition in list queries uses subquery; once Permission row is deleted the OR arm is false."
+    },
+    {
+      "kind": "acceptance",
+      "item": "AC#6 — GET /sharable-users returns only is_external_user=False and is_active=True users",
+      "status": "partial",
+      "notes": "aquery_active_users filters is_active=True; external-user filter applied in Python after DB fetch, not in SQL."
+    },
+    {
+      "kind": "acceptance",
+      "item": "AC#7 — POST/DELETE /share by non-owner returns 403; no Permission row created or deleted",
+      "status": "pass",
+      "notes": "_require_owner raises 403 before any DB writes; tests cover grant and revoke non-owner paths."
+    },
+    {
+      "kind": "acceptance",
+      "item": "AC#8 — GET /shared-with returns current shared-with list for grant-access view",
+      "status": "partial",
+      "notes": "Endpoint exists and calls list_shared_with. No ownership guard — any authenticated caller can query another owner's list."
+    },
+    {
+      "kind": "acceptance",
+      "item": "AC#9 — Shared assistant appears in recipient personal project view",
+      "status": "pass",
+      "notes": "_filter_for_regular_user_visibility non-global branch includes per_user_grant_condition."
+    },
+    {
+      "kind": "acceptance",
+      "item": "AC#10 — shared:true and per-user grants coexist without conflict",
+      "status": "pass",
+      "notes": "is_shared_with evaluates project-shared first, then per-user grant; OR semantics in list queries are independent."
+    },
+    {
+      "kind": "acceptance",
+      "item": "AC#11 — Recipient conversation executes against assistant's datasources without error",
+      "status": "pending-stage-7",
+      "notes": "Runtime context forwarding not in this diff; requires integration or conversation test evidence."
+    }
+  ],
+  "standards_review": [],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/models/assistant.py",
+      "line": 858,
+      "title": "is_shared_with queries DB with None resource_id",
+      "problem": "is_shared_with calls Permission.get_by_fields with resource_id=self.id, which may be None on an unsaved Assistant instance. Reachability from live call sites could not be confirmed (uncertain).",
+      "impact": "A DB query with resource_id=None may return unexpected rows or raise a database error; exact live reachability unconfirmed.",
+      "recommendation": "Add an early guard: if not self.id: return False before the Permission query block."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/assistant.py",
+      "line": 142,
+      "title": "ShareUsersRequest accepts empty user_ids list",
+      "problem": "user_ids: List[str] has no minimum-length constraint; POST /share and DELETE /share accept an empty list, iterate zero times, and return 200.",
+      "impact": "Silent no-ops are indistinguishable from a successful operation by clients; duplicate or empty calls cannot be rejected at the API boundary.",
+      "recommendation": "Add min_length=1 to the field: user_ids: List[str] = Field(..., min_length=1)."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/assistant.py",
+      "line": 3231,
+      "title": "GET /shared-with missing ownership guard",
+      "problem": "get_shared_with authenticates the caller but never verifies the caller owns the assistant; any authenticated user can query another owner's full grantee list.",
+      "impact": "User enumeration: an attacker with any valid assistant ID learns every user who has been granted access, leaking internal user identities and sharing relationships.",
+      "recommendation": "Load the assistant and call _require_owner (or inline the ownership check) before calling list_shared_with, matching the pattern on POST /share and DELETE /share."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/assistant.py",
+      "line": 3254,
+      "title": "GET /sharable-users missing ownership guard",
+      "problem": "get_sharable_users authenticates the caller but never verifies ownership of the assistant; any authenticated user can pass any valid assistant ID to search the full internal user directory.",
+      "impact": "The internal user directory becomes searchable by any authenticated user via a valid assistant ID, exposing names, emails and usernames of all internal active users.",
+      "recommendation": "After Assistant.get_by_id, call _require_owner(user, assistant) before invoking search_sharable_users."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/service/assistant/assistant_repository.py",
+      "line": 596,
+      "title": "Literal enum strings bypass DB enum case",
+      "problem": "per_user_grant_condition in both _get_non_global_base_condition and _filter_for_regular_user_visibility uses literal strings \"assistant\" and \"user\" in WHERE clauses. The DB resourcetype and principaltype PostgreSQL enums store uppercase labels (DATASOURCE, ASSISTANT, USER) per all migrations; lowercase literals match nothing.",
+      "impact": "Per-user grants are never matched in list queries: shared assistants do not appear in AC#2 and AC#9 visibility paths, making the entire sharing feature non-functional for list views.",
+      "recommendation": "Replace literal strings with enum member comparisons: Permission.resource_type == ResourceType.ASSISTANT and Permission.principal_type == PrincipalType.USER, letting SQLAlchemy resolve the DB representation. Alternatively verify that the column is stored as a VARCHAR with lowercase values and document it."
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/assistant/assistant_share_service.py",
+      "line": 36,
+      "title": "grant() nested session breaks atomicity",
+      "problem": "grant() opens an explicit Session block, then each perm.save() call opens its own independent session and commits. Multiple Permission rows are written in separate transactions with no outer rollback boundary.",
+      "impact": "A failure after the first save leaves partial grants committed; concurrent requests may see inconsistent intermediate states during the grant sequence.",
+      "recommendation": "Pass the outer session into the save call, or perform the insert directly in the outer session: session.add(perm); session.commit() once after the loop."
+    },
+    {
+      "id": "CR-007",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/assistant/assistant_share_service.py",
+      "line": 72,
+      "title": "revoke() missing outer session context",
+      "problem": "revoke() calls perm.delete() for each uid with no enclosing Session; each delete opens and commits its own session. A mid-loop failure leaves some Permission rows deleted and others intact.",
+      "impact": "Partial revocation: some users lose access while others retain it without any error surfaced to the caller, making the access control state inconsistent.",
+      "recommendation": "Wrap the delete loop in a single Session block and call session.delete(perm) for each row, then session.commit() once at the end."
+    },
+    {
+      "id": "CR-008",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/assistant/assistant_share_service.py",
+      "line": 115,
+      "title": "search_sharable_users fetches all active users before filtering",
+      "problem": "aquery_active_users returns all active, non-deleted users regardless of user_type; the filter for external users is applied in Python after the full DB result set is fetched.",
+      "impact": "On large tenants, every sharable-user search transfers the full active-user table from DB to the application layer before stripping externals; AC#6 is only partially satisfied (external users are returned from DB and filtered in Python, not excluded at query time).",
+      "recommendation": "Add a user_type != config.EXTERNAL_USER_TYPE filter inside aquery_active_users (or as an additional WHERE clause in the call) so externals are excluded at the SQL level."
+    },
+    {
+      "id": "CR-009",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/external/alembic/versions/a1b2c3d4e5f8_add_assistant_to_resourcetype.py",
+      "line": 38,
+      "title": "Migration new_values uppercase contradicts Python model lowercase",
+      "problem": "The migration calls sync_enum_values with new_values=[\"DATASOURCE\", \"ASSISTANT\"] (uppercase), while ResourceType.DATASOURCE = \"datasource\" and ResourceType.ASSISTANT = \"assistant\" (lowercase). alembic_postgresql_enum's sync_enum_values replaces the live enum values set; if the DB currently stores lowercase labels for existing datasource Permission rows, running this migration drops the lowercase values and breaks existing data.",
+      "impact": "Running the upgrade may make existing datasource Permission rows invalid (enum value no longer in the type), causing runtime errors on any code path that reads them; the downgrade similarly references ASSISTANT which may not exist if the column stores lowercase.",
+      "recommendation": "Audit which case the DB actually stores (SELECT DISTINCT resource_type FROM codemie.permissions); if lowercase, set new_values=[\"datasource\", \"assistant\"]. Then align the Python enums and the repository literal strings to the same case. Document the canonical case in a comment."
+    }
+  ]
+}

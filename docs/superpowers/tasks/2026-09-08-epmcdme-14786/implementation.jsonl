@@ -1,0 +1,5 @@
+{"task_id":"1","status":"done","commit":"602111728","test_command":"poetry run pytest tests/codemie/rest_api/models/test_permission_models.py -v"}
+{"task_id":"2","status":"done","commit":"b5dbc3fe7","test_command":"poetry run pytest tests/codemie/core/test_ability.py -v"}
+{"task_id":"3","status":"done","commit":"c1794cf8d","test_command":"poetry run pytest tests/codemie/service/assistant/test_assistant_repository.py -v"}
+{"task_id":"4","status":"done","commit":"00a118d38","test_command":"poetry run pytest tests/codemie/service/assistant/test_assistant_share_service.py -v"}
+{"task_id":"5","status":"done","commit":"6970df1ac","test_command":"poetry run pytest tests/codemie/rest_api/routers/test_assistant_share.py -v"}

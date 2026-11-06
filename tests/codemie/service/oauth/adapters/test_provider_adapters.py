@@ -257,6 +257,10 @@ class _TokenExchangeClient(_RecordingClient):
 
 @pytest.mark.enterprise
 def test_gitlab_exchange_maps_enterprise_token_data(monkeypatch):
+    try:
+        from codemie_enterprise.mcp_auth import MCPAuthTokenExchangeError  # noqa: F401
+    except (ImportError, ModuleNotFoundError):
+        pytest.skip("codemie_enterprise.mcp_auth.MCPAuthTokenExchangeError unavailable")
     monkeypatch.setattr(provider_adapters.httpx, "Client", _TokenExchangeClient)
     payload = GitLabOAuthProviderAdapter.exchange_code_for_tokens(
         code="c",
@@ -277,6 +281,10 @@ def test_gitlab_exchange_maps_enterprise_token_data(monkeypatch):
 
 @pytest.mark.enterprise
 def test_atlassian_exchange_maps_enterprise_token_data(monkeypatch):
+    try:
+        from codemie_enterprise.mcp_auth import MCPAuthTokenExchangeError  # noqa: F401
+    except (ImportError, ModuleNotFoundError):
+        pytest.skip("codemie_enterprise.mcp_auth.MCPAuthTokenExchangeError unavailable")
     monkeypatch.setattr(provider_adapters.httpx, "Client", _TokenExchangeClient)
     payload = JiraOAuthProviderAdapter.exchange_code_for_tokens(
         code="c",

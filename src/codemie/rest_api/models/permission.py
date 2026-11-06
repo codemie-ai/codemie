@@ -14,6 +14,8 @@
 
 from uuid import UUID
 from typing import Optional, Any, Self
+import sqlalchemy as sa
+from sqlalchemy.sql.selectable import Select
 from sqlmodel import Field as SQLField, Column, Index, UniqueConstraint
 from enum import Enum
 from pydantic import BaseModel
@@ -23,11 +25,13 @@ from codemie.core.models import CreatedByUser
 from codemie.rest_api.models.base import BaseModelWithSQLSupport, PydanticType
 from codemie.rest_api.security.user import User
 from codemie.rest_api.models.index import IndexInfo
+from codemie.configs import config
 from codemie.configs.logger import logger
 
 
 class ResourceType(str, Enum):
     DATASOURCE = "datasource"
+    ASSISTANT = "assistant"
 
     @property
     def resource_class(self):
@@ -47,7 +51,9 @@ class ResourceType(str, Enum):
     @property
     def _lookup(cls):
         """Type to class mapping"""
-        return {cls.DATASOURCE: IndexInfo}
+        from codemie.rest_api.models.assistant import Assistant
+
+        return {cls.DATASOURCE: IndexInfo, cls.ASSISTANT: Assistant}
 
 
 class PrincipalType(str, Enum):
@@ -68,15 +74,28 @@ class Permission(BaseModelWithSQLSupport, Owned, table=True):
     )
 
     resource_type: ResourceType = SQLField(
-        nullable=False, max_length=50, description="Type of resource (datasource, assistant, workflow, etc.)"
+        sa_column=Column(
+            sa.Enum(ResourceType, schema="codemie"),
+            nullable=False,
+        ),
+        description="Type of resource (datasource, assistant, workflow, etc.)",
     )
     resource_id: UUID = SQLField(nullable=False, description="ID of the resource")
     principal_type: PrincipalType = SQLField(
-        nullable=False, max_length=20, description="Type of principal (user, application)"
+        sa_column=Column(
+            sa.Enum(PrincipalType, schema="codemie"),
+            nullable=False,
+        ),
+        description="Type of principal (user, application)",
     )
     principal_id: str = SQLField(nullable=False, max_length=255, description="ID/name/email of the principal")
     permission_level: Action = SQLField(
-        default=Action.READ, nullable=False, description="Permission level (READ, WRITE, DELETE)"
+        sa_column=Column(
+            sa.Enum(Action, schema="codemie"),
+            nullable=False,
+        ),
+        default=Action.READ,
+        description="Permission level (READ, WRITE, DELETE)",
     )
 
     created_by: Optional[CreatedByUser] = SQLField(default=None, sa_column=Column(PydanticType(CreatedByUser)))
@@ -89,6 +108,20 @@ class Permission(BaseModelWithSQLSupport, Owned, table=True):
 
     def is_shared_with(self, user: User):
         return self.created_by.id == user.id
+
+    @classmethod
+    def named_grant_resource_ids(cls, user: User) -> Select | None:
+        """Select of assistant IDs (as text) named-granted to the user.
+
+        None for external users and when user management is disabled (the sharing endpoints are off then too).
+        """
+        if user.is_external_user or not config.ENABLE_USER_MANAGEMENT:
+            return None
+        return sa.select(sa.cast(cls.resource_id, sa.Text)).where(
+            cls.resource_type == ResourceType.ASSISTANT,
+            cls.principal_type == PrincipalType.USER,
+            cls.principal_id == user.id,
+        )
 
     @classmethod
     def get_for(cls, user: User, instance: Any, action: Action) -> Optional[Self]:

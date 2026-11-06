@@ -1,0 +1,88 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-8.3.3, pluggy-1.5.0 -- /home/aliaksei_chumakou/codemie-dev/codemie/.venv/bin/python
+codspeed: 4.3.0 (disabled, mode: walltime, callgraph: enabled, timer_resolution: 1.0ns)
+cachedir: .pytest_cache
+benchmark: 5.2.3 (defaults: timer=time.perf_counter disable_gc=False min_rounds=5 min_time=0.000005 max_time=1.0 calibration_precision=10 warmup=False warmup_iterations=100000)
+rootdir: /home/aliaksei_chumakou/codemie-dev/codemie
+configfile: pytest.ini
+plugins: cov-5.0.0, env-1.1.5, httpx-0.35.0, langsmith-0.8.18, mock-3.14.0, benchmark-5.2.3, recording-0.13.4, syrupy-5.1.0, anyio-4.12.1, asyncio-0.23.8, socket-0.7.0, codspeed-4.3.0
+asyncio: mode=Mode.STRICT
+collecting ... collected 61 items
+
+tests/codemie/rest_api/models/test_permission_models.py::TestResourceType::test_resource_class PASSED [  1%]
+tests/codemie/rest_api/models/test_permission_models.py::TestResourceType::test_for_instance PASSED [  3%]
+tests/codemie/rest_api/models/test_permission_models.py::TestResourceType::test_for_instance_not_found PASSED [  4%]
+tests/codemie/rest_api/models/test_permission_models.py::test_resource_type_assistant_value PASSED [  6%]
+tests/codemie/rest_api/models/test_permission_models.py::test_type_for_instance_assistant PASSED [  8%]
+tests/codemie/core/test_ability.py::test_ability_init PASSED             [  9%]
+tests/codemie/core/test_ability.py::test_ability_can_creator PASSED      [ 11%]
+tests/codemie/core/test_ability.py::test_ability_can_admin PASSED        [ 13%]
+tests/codemie/core/test_ability.py::test_ability_can_non_creator PASSED  [ 14%]
+tests/codemie/core/test_ability.py::test_ability_with_permissions PASSED [ 16%]
+tests/codemie/core/test_ability.py::test_ability_wo_permissions PASSED   [ 18%]
+tests/codemie/core/test_ability.py::test_ability_list PASSED             [ 19%]
+tests/codemie/core/test_ability.py::test_is_shared_with_per_user_grant PASSED [ 21%]
+tests/codemie/core/test_ability.py::test_is_shared_with_no_grant_returns_false PASSED [ 22%]
+tests/codemie/core/test_ability.py::test_is_shared_with_project_shared_still_works PASSED [ 24%]
+tests/codemie/service/assistant/test_assistant_repository.py::test_query_visible_to_admin_user PASSED [ 26%]
+tests/codemie/service/assistant/test_assistant_repository.py::test_query_visible_to_user PASSED [ 27%]
+tests/codemie/service/assistant/test_assistant_repository.py::test_query_created_by_user PASSED [ 29%]
+tests/codemie/service/assistant/test_assistant_repository.py::test_query_minimal_response PASSED [ 31%]
+tests/codemie/service/assistant/test_assistant_repository.py::test_query_with_search PASSED [ 32%]
+tests/codemie/service/assistant/test_assistant_repository.py::test_get_users_postgres PASSED [ 34%]
+tests/codemie/service/assistant/test_assistant_repository.py::test_query_marketplace_external_user_filters_by_project PASSED [ 36%]
+tests/codemie/service/assistant/test_assistant_repository.py::test_query_all_scope_external_user_filters_by_project PASSED [ 37%]
+tests/codemie/service/assistant/test_assistant_repository.py::test_query_visible_to_user_external_user_filters_by_project PASSED [ 39%]
+tests/codemie/service/assistant/test_assistant_repository.py::test_query_marketplace_internal_user_sees_all_projects PASSED [ 40%]
+tests/codemie/service/assistant/test_assistant_repository.py::test_external_user_cannot_see_non_global_assistants PASSED [ 42%]
+tests/codemie/service/assistant/test_assistant_repository.py::test_update_clone_count_issues_atomic_derive_update PASSED [ 44%]
+tests/codemie/service/assistant/test_assistant_repository.py::TestEnrichSystemPromptHistory::test_enrich_system_prompt_history_no_assistant_id PASSED [ 45%]
+tests/codemie/service/assistant/test_assistant_repository.py::TestEnrichSystemPromptHistory::test_enrich_system_prompt_history_no_configs PASSED [ 47%]
+tests/codemie/service/assistant/test_assistant_repository.py::TestEnrichSystemPromptHistory::test_enrich_system_prompt_history_all_same_prompts PASSED [ 49%]
+tests/codemie/service/assistant/test_assistant_repository.py::TestEnrichSystemPromptHistory::test_enrich_system_prompt_history_with_changes PASSED [ 50%]
+tests/codemie/service/assistant/test_assistant_repository.py::TestEnrichSystemPromptHistory::test_enrich_system_prompt_history_skips_current_version PASSED [ 52%]
+tests/codemie/service/assistant/test_assistant_repository.py::TestEnrichSystemPromptHistory::test_enrich_system_prompt_history_error_handling PASSED [ 54%]
+tests/codemie/service/assistant/test_assistant_repository.py::TestEnrichSystemPromptHistory::test_enrich_system_prompt_history_preserves_metadata PASSED [ 55%]
+tests/codemie/service/assistant/test_assistant_repository.py::TestProjectWithMarketplaceQuery::test_marketplace_condition_project_filtering[False-False] PASSED [ 57%]
+tests/codemie/service/assistant/test_assistant_repository.py::TestProjectWithMarketplaceQuery::test_marketplace_condition_project_filtering[True-True] PASSED [ 59%]
+tests/codemie/service/assistant/test_assistant_repository.py::TestProjectWithMarketplaceQuery::test_non_global_base_condition_user_guard[True-None-False] PASSED [ 60%]
+tests/codemie/service/assistant/test_assistant_repository.py::TestProjectWithMarketplaceQuery::test_non_global_base_condition_user_guard[True-PROJECT1-False] PASSED [ 62%]
+tests/codemie/service/assistant/test_assistant_repository.py::TestProjectWithMarketplaceQuery::test_non_global_base_condition_user_guard[False-PROJECT1-True] PASSED [ 63%]
+tests/codemie/service/assistant/test_assistant_repository.py::TestProjectWithMarketplaceQuery::test_non_global_base_condition_user_guard[False-None-True] PASSED [ 65%]
+tests/codemie/service/assistant/test_assistant_repository.py::TestProjectWithMarketplaceQuery::test_non_global_with_project_includes_project_filter[False] PASSED [ 67%]
+tests/codemie/service/assistant/test_assistant_repository.py::TestProjectWithMarketplaceQuery::test_non_global_with_project_includes_project_filter[True] PASSED [ 68%]
+tests/codemie/service/assistant/test_assistant_repository.py::TestProjectWithMarketplaceQuery::test_project_with_marketplace_combines_global_and_non_global PASSED [ 70%]
+tests/codemie/service/assistant/test_assistant_repository.py::TestProjectWithMarketplaceQuery::test_project_filter_ignored_for_global_assistants PASSED [ 72%]
+tests/codemie/service/assistant/test_assistant_repository.py::TestProjectWithMarketplaceQuery::test_build_query_handles_search_filter_for_both_types PASSED [ 73%]
+tests/codemie/service/assistant/test_assistant_repository.py::TestProjectWithMarketplaceQuery::test_build_query_search_filter_matches_description_field PASSED [ 75%]
+tests/codemie/service/assistant/test_assistant_repository.py::test_query_marketplace_sorts_by_clone_count_after_unique_users_count PASSED [ 77%]
+tests/codemie/service/assistant/test_assistant_repository.py::test_query_project_with_marketplace_sorts_by_clone_count_after_unique_users_count PASSED [ 78%]
+tests/codemie/service/assistant/test_assistant_repository.py::test_filter_includes_per_user_grant_path PASSED [ 80%]
+tests/codemie/service/assistant/test_assistant_repository.py::test_filter_for_regular_user_visibility_includes_per_user_grant PASSED [ 81%]
+tests/codemie/service/assistant/test_assistant_repository.py::test_admin_path_unchanged PASSED [ 83%]
+tests/codemie/service/assistant/test_assistant_share_service.py::test_grant_non_owner_raises_403 PASSED [ 85%]
+tests/codemie/service/assistant/test_assistant_share_service.py::test_revoke_non_owner_raises_403 PASSED [ 86%]
+tests/codemie/service/assistant/test_assistant_share_service.py::test_grant_external_user_raises_400 PASSED [ 88%]
+tests/codemie/service/assistant/test_assistant_share_service.py::test_grant_creates_permission_rows PASSED [ 90%]
+tests/codemie/service/assistant/test_assistant_share_service.py::test_grant_idempotent_on_existing_grant PASSED [ 91%]
+tests/codemie/service/assistant/test_assistant_share_service.py::test_revoke_no_existing_grant_is_noop PASSED [ 93%]
+tests/codemie/rest_api/routers/test_assistant_share.py::test_get_shared_with_returns_list PASSED [ 95%]
+tests/codemie/rest_api/routers/test_assistant_share.py::test_post_share_non_owner_returns_403 PASSED [ 96%]
+tests/codemie/rest_api/routers/test_assistant_share.py::test_delete_share_revokes_access PASSED [ 98%]
+tests/codemie/rest_api/routers/test_assistant_share.py::test_sharable_users_filters_internal_only PASSED [100%]
+
+=============================== warnings summary ===============================
+.venv/lib/python3.12/site-packages/google/auth/transport/grpc.py:44
+  /home/aliaksei_chumakou/codemie-dev/codemie/.venv/lib/python3.12/site-packages/google/auth/transport/grpc.py:44: FutureWarning: grpcio < 1.83.0 does not support Post-Quantum Cryptography (PQC). Support for non-PQC environments is deprecated. In October 2026, google-auth will raise its minimum requirements to enforce grpcio >= 1.83.0. For more details on Google Cloud's post-quantum security migration, visit: https://cloud.google.com/security/resources/post-quantum-cryptography
+    warnings.warn(
+
+.venv/lib/python3.12/site-packages/langgraph/cache/base/__init__.py:8
+  /home/aliaksei_chumakou/codemie-dev/codemie/.venv/lib/python3.12/site-packages/langgraph/cache/base/__init__.py:8: LangChainPendingDeprecationWarning: The default value of `allowed_objects` will change in a future version. Pass an explicit value (e.g., allowed_objects='messages' or allowed_objects='core') to suppress this warning.
+    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+.venv/lib/python3.12/site-packages/fastapi/testclient.py:1
+  /home/aliaksei_chumakou/codemie-dev/codemie/.venv/lib/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+======================= 61 passed, 3 warnings in 17.11s ========================

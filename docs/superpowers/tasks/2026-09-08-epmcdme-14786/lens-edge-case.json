@@ -1,0 +1,74 @@
+[
+  {
+    "location": "src/codemie/rest_api/routers/assistant.py:3231-3235",
+    "trigger_condition": "Any authenticated user calls GET /assistants/{id}/shared-with for an assistant they do not own",
+    "guard_snippet": "if not assistant.is_owned_by(user): raise ExtendedHTTPException(code=403, ...)",
+    "potential_consequence": "User enumeration: grantee list exposed to non-owners"
+  },
+  {
+    "location": "src/codemie/rest_api/routers/assistant.py:3254-3263",
+    "trigger_condition": "Any authenticated user calls GET /assistants/{id}/sharable-users for an assistant they do not own",
+    "guard_snippet": "assistant = Assistant.get_by_id(id_=assistant_id); if not assistant.is_owned_by(user): raise ExtendedHTTPException(code=403, ...)",
+    "potential_consequence": "Internal user directory searchable by non-owners via any valid assistant ID"
+  },
+  {
+    "location": "src/codemie/service/assistant/assistant_share_service.py:251-283",
+    "trigger_condition": "grant() opens a Session block; perm.save() internally opens its own session",
+    "guard_snippet": "pass session to perm.save(session) or perform insert directly in the outer session",
+    "potential_consequence": "Two concurrent sessions; permission write may not be visible in the same transaction"
+  },
+  {
+    "location": "src/codemie/service/assistant/assistant_share_service.py:286-299",
+    "trigger_condition": "revoke() calls perm.delete() with no session context",
+    "guard_snippet": "open Session block around the delete loop, pass session to perm.delete(session)",
+    "potential_consequence": "Each delete uses its own implicit session; partial failures leave stale grants"
+  },
+  {
+    "location": "src/codemie/rest_api/routers/assistant.py:69-78",
+    "trigger_condition": "POST /share or DELETE /share called with user_ids: [] (empty list)",
+    "guard_snippet": "user_ids: List[str] = Field(..., min_length=1)",
+    "potential_consequence": "No-op call succeeds silently; callers cannot distinguish error from valid empty result"
+  },
+  {
+    "location": "src/codemie/rest_api/models/assistant.py:872-884",
+    "trigger_condition": "is_shared_with called when self.id is None (unsaved assistant instance)",
+    "guard_snippet": "if not self.id: return False",
+    "potential_consequence": "DB query with resource_id=None returns unexpected rows or raises"
+  },
+  {
+    "location": "src/codemie/service/assistant/assistant_repository.py:596-601 and 688-693",
+    "trigger_condition": "per_user_grant_condition uses literal string \"assistant\" and \"user\" not enum members",
+    "guard_snippet": "use ResourceType.ASSISTANT.value and PrincipalType.USER.value or the enum objects directly",
+    "potential_consequence": "If DB enum stores uppercase labels subquery matches nothing; grants invisible in list queries"
+  },
+  {
+    "location": "src/codemie/service/assistant/assistant_share_service.py:301-326",
+    "trigger_condition": "list_shared_with called after user referenced by a Permission row is hard-deleted",
+    "guard_snippet": "perm.delete() on orphaned rows when db_user is None, or log+skip and return marker",
+    "potential_consequence": "Orphaned Permission rows silently accumulate; no indication to owner that grant is dangling"
+  },
+  {
+    "location": "src/codemie/service/assistant/assistant_share_service.py:328-348",
+    "trigger_condition": "search_sharable_users returns all active users including externals; Python filter applied after DB fetch",
+    "guard_snippet": "add WHERE user_type != :ext_type inside aquery_active_users or pass user_type filter param",
+    "potential_consequence": "Large user tables cause unnecessary data transfer; external users visible until Python filter"
+  },
+  {
+    "location": "src/external/alembic/versions/a1b2c3d4e5f8_add_assistant_to_resourcetype.py:396-409",
+    "trigger_condition": "Migration new_values=[\"DATASOURCE\", \"ASSISTANT\"] (uppercase) while Python model declares lowercase values",
+    "guard_snippet": "align new_values with Python enum values: [\"datasource\", \"assistant\"], or verify alembic_postgresql_enum mapping",
+    "potential_consequence": "Migration may remove existing lowercase datasource rows or add uppercase variant leaving enum inconsistent"
+  },
+  {
+    "location": "src/codemie/rest_api/models/assistant.py:858-884",
+    "trigger_condition": "is_global is True AND user.is_external_user is False AND user has a per-user grant on a marketplace assistant",
+    "guard_snippet": "no change needed if global path always returns True for internal; confirm global assistants cannot have per-user grants (or document intent)",
+    "potential_consequence": "Per-user grants on global assistants are silently unreachable; grant/revoke endpoints would write orphaned rows"
+  },
+  {
+    "location": "src/codemie/rest_api/routers/assistant.py:3238-3243",
+    "trigger_condition": "POST /share called with duplicate user_ids in a single request (same uid appears twice)",
+    "guard_snippet": "deduplicate: user_ids = list(dict.fromkeys(body.user_ids))",
+    "potential_consequence": "Second iteration hits idempotency check and skips, but DB uniqueness constraint error possible if save() races"
+  }
+]

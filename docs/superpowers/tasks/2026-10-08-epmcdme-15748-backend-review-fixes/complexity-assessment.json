@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "task": "Apply backend MR review fixes for per-user assistant sharing: additive ASSISTANT enum migration, user-management gating and search limits, personal-integration guard, fail-closed same-transaction audit of grant/revoke (including generic permission delete and assistant delete), external-user skip, grant preload, conflict-safe dedup insert, 404 handling, shared predicate helper and public service entry points.",
+  "generated": "2026-10-08T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 22,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Touches the alembic migration, permission model, assistant share service, assistant router, assistant model (is_shared_with, delete_assistant), assistant repository predicates, generic permission router and PermissionDeletionService, activity repository and activity models, and assistant create/update validation. That is 4+ components across API, service and persistence, with shared utilities (activity repository, permission model) involved. Base is L, bumped to XL for the shared utilities." },
+    { "dimension": "technical_risk", "reason": "The nearest pattern is ActivityRepository.insert, which is fail-open: it is disabled-tolerant and swallows exceptions, and about 14 callers depend on that. A fail-closed, same-transaction variant has no precedent. The server-side personal-integration guard has no backend precedent (the existing rule is UI-only in AssistantSetupSection/AssistantForm). Dropping values_callable changes how the permission enums persist, and datasource app-permission checks share that table. The external-user skip has to land in all three predicate copies. Base is L, bumped to XL because the work is authorization-sensitive." },
+    { "dimension": "file_change_estimate", "reason": "About 11-13 modified source files (migration, models/permission.py, assistant_share_service.py, routers/assistant.py, models/assistant.py, assistant_repository.py, routers/permission.py, permission_deletion_service.py, activity_repository.py, activity_models.py, the assistant create/update path, possibly ability.py), plus 5 existing test files extended and new tests for the revoke route, permission deletion and the migration. These span the alembic, models, routers, service/assistant, service/permission and service/activity directories." },
+    { "dimension": "affected_layers", "reason": "API (four sharing routes plus the generic permission delete), Service (share, deletion and activity), and DB-Persistence (an enum migration with a downgrade that deletes rows, plus enum mapping changes). The schema change is additive, so it is not significant enough for a further bump." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L to XL: touches core shared utilities (activity repository strict-insert variant, permission model enum mapping)",
+    "Technical Risk bumped from L to XL: affects authorization (grantor-or-admin checks, external-user exclusion, ENABLE_USER_MANAGEMENT gating) and fail-closed audit"
+  ],
+  "split_recommendation": null
+}

@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "generated": "2026-09-08T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 19,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 14,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "4 components touched: 3 new API endpoints in assistant router, new AssistantShareService, Permission model extended with ASSISTANT ResourceType, and UserRepository used. Spans API + Service + DB-Persistence layers."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "Auth/authz path: owner-only guards on all sharing endpoints, is_shared_with DB lookup in AssistantBase, and ResourceType enum extension. Established Permission/ResourceType pattern (previously datasource-only) was extended; 9 security test cases (CR-001..CR-009) cover the new surface. Bumped from M to L by the 'affects authorization' red flag."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "14 files changed (diffstat: 14 files changed, 971 insertions(+), 2 deletions(-)): 1 alembic migration, 1 new service, 4 modified src files, 6 new/modified test files across 2 test directories. Maps to XL band (11-15 files)."
+    }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from M(3) to L(4): feature affects authorization (owner-only sharing grants and revocation, per-user READ permission checks on assistant access)"
+  ],
+  "split_recommendation": null
+}

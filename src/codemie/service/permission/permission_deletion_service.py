@@ -13,8 +13,9 @@
 # limitations under the License.
 
 from codemie.rest_api.security.user import User
-from codemie.rest_api.models.permission import Permission
+from codemie.rest_api.models.permission import Permission, ResourceType
 from codemie.core.ability import Ability, Action
+from codemie.service.assistant.assistant_share_service import AssistantShareService
 from .permission_exceptions import PermissionAccessDenied
 
 
@@ -27,5 +28,9 @@ class PermissionDeletionService:
 
         if not Ability(user).can(Action.WRITE, permission):
             raise PermissionAccessDenied
+
+        if permission.resource_type == ResourceType.ASSISTANT:
+            AssistantShareService.revoke_permission(user, permission)
+            return
 
         permission.delete()

@@ -563,6 +563,47 @@ class TestRollbackToVersion:
         mock_assistant.update.assert_called_once()
         assert mock_assistant.version_count == 4
 
+    @pytest.mark.parametrize(
+        "has_grants,personal,refused",
+        [(True, True, True), (True, False, False), (False, True, False)],
+    )
+    @patch('codemie.service.assistant.assistant_version_service.AssistantConfiguration')
+    @patch.object(AssistantVersionService, 'get_version')
+    def test_rollback_personal_integration_guard_on_shared_assistant(
+        self, mock_get_version, mock_config_class, mock_assistant, mock_config, mock_user, has_grants, personal, refused
+    ):
+        """A rollback must not bring personal integrations back onto an assistant shared with named users."""
+        from codemie.service.assistant.assistant_share_service import AssistantShareService
+
+        mock_assistant.version_count = 3
+        mock_get_version.return_value = mock_config
+
+        with (
+            patch("codemie.service.assistant.assistant_share_service.config.ENABLE_USER_MANAGEMENT", True),
+            patch.object(AssistantShareService, "has_named_grants", return_value=has_grants),
+            patch.object(
+                AssistantShareService, "assistant_uses_personal_integration", return_value=personal
+            ) as uses_personal,
+        ):
+            if refused:
+                with pytest.raises(ExtendedHTTPException) as exc:
+                    AssistantVersionService.rollback_to_version(
+                        assistant=mock_assistant, target_version_number=1, user=mock_user
+                    )
+                assert exc.value.code == 400
+                assert "personal integrations" in exc.value.message.lower()
+                mock_config_class.assert_not_called()
+                mock_assistant.update.assert_not_called()
+                assert mock_assistant.version_count == 3
+            else:
+                AssistantVersionService.rollback_to_version(
+                    assistant=mock_assistant, target_version_number=1, user=mock_user
+                )
+                mock_assistant.update.assert_called_once()
+
+        if has_grants:
+            uses_personal.assert_called_once_with(mock_config)
+
     @patch.object(AssistantVersionService, 'get_version')
     def test_rollback_to_current_version_fails(self, mock_get_version, mock_assistant, mock_user):
         """Test rollback to current version raises exception"""
@@ -712,3 +753,35 @@ class TestApplyVersionToAssistant:
         # Execute & Verify
         with pytest.raises(ExtendedHTTPException):
             AssistantVersionService.apply_version_to_assistant(assistant=mock_assistant, version_number=99)
+
+    @pytest.mark.parametrize(
+        "has_grants,personal,refused",
+        [(True, True, True), (True, False, False), (False, True, False)],
+    )
+    @patch.object(AssistantVersionService, 'get_version')
+    def test_apply_version_personal_integration_guard_on_shared_assistant(
+        self, mock_get_version, mock_assistant, mock_config, has_grants, personal, refused
+    ):
+        """Chatting with an older version must not run its personal integrations on a shared assistant."""
+        from codemie.service.assistant.assistant_share_service import AssistantShareService
+
+        mock_get_version.return_value = mock_config
+
+        with (
+            patch("codemie.service.assistant.assistant_share_service.config.ENABLE_USER_MANAGEMENT", True),
+            patch.object(AssistantShareService, "has_named_grants", return_value=has_grants),
+            patch.object(
+                AssistantShareService, "assistant_uses_personal_integration", return_value=personal
+            ) as uses_personal,
+        ):
+            if refused:
+                with pytest.raises(ExtendedHTTPException) as exc:
+                    AssistantVersionService.apply_version_to_assistant(assistant=mock_assistant, version_number=1)
+                assert exc.value.code == 400
+                assert "personal integrations" in exc.value.message.lower()
+            else:
+                result = AssistantVersionService.apply_version_to_assistant(assistant=mock_assistant, version_number=1)
+                assert result.version == mock_config.version_number
+
+        if has_grants:
+            uses_personal.assert_called_once_with(mock_config)

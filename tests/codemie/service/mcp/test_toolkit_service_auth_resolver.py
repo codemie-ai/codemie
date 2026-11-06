@@ -1083,6 +1083,7 @@ def test_get_mcp_server_tools_successful_discovery_becomes_blocking_auth_gate_pa
 async def test_nfr23_discovered_pipeline_preserves_current_scope_and_invokes_tool_with_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    pytest.importorskip("codemie_enterprise.mcp_auth.discovery")
     from codemie.configs import config as runtime_config
     from codemie.enterprise.mcp_auth import dependencies
     from codemie_enterprise.mcp_auth.discovery import DiscoveryProbeCandidate, probe_discovery_eligible_servers
@@ -1830,6 +1831,7 @@ def test_prepare_server_config_falls_back_to_legacy_after_registered_resolvers_d
 
 @pytest.mark.enterprise
 def test_prepare_server_config_falls_back_to_legacy_when_discovered_token_missing() -> None:
+    pytest.importorskip("codemie_enterprise.mcp_auth.models")
     from codemie_enterprise.mcp_auth.models import DiscoveryMetadataCacheEntry
     from codemie_enterprise.mcp_auth.resolver import MCPAuthResolver
     from codemie_enterprise.mcp_auth.tms_mock import MockTokenManagementSystem

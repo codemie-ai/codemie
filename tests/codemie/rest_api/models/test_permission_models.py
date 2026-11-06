@@ -46,6 +46,18 @@ class TestResourceType:
             ResourceType.type_for_instance(instance)
 
 
+def test_resource_type_assistant_value():
+    assert ResourceType.ASSISTANT == "assistant"
+
+
+def test_type_for_instance_assistant(mocker):
+    from codemie.rest_api.models.assistant import Assistant
+
+    assistant = mocker.MagicMock(spec=Assistant)
+    result = ResourceType.type_for_instance(assistant)
+    assert result == ResourceType.ASSISTANT
+
+
 class Permission:
     @patch("codemie.rest_api.models.permission.Permission.exists_for", return_value=True)
     def test_exists_for_true(self, _mock_exists_for, mock_index_info):

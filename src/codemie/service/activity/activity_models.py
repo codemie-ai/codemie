@@ -32,6 +32,7 @@ class ActivityDomain:
     PROJECT_MANAGEMENT = "project_management"
     CUSTOMER_CONFIG = "customer_config"
     MARKETPLACE = "marketplace"
+    ASSISTANT = "assistant"
 
 
 class ActivityEntityType:
@@ -72,6 +73,11 @@ class ProjectManagementEvent:
     PROJECT_UPDATED = "project.updated"
     PROJECT_DELETED = "project.deleted"
     PROJECT_OWNERSHIP_CHANGED = "project.ownership_changed"
+
+
+class AssistantEvent:
+    GRANT_ADDED = "assistant.grant.added"
+    GRANT_REMOVED = "assistant.grant.removed"
 
 
 class CustomerConfigEvent:

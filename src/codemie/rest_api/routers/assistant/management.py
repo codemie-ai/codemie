@@ -13,11 +13,14 @@
 # limitations under the License.
 
 
+from typing import List
+
 from sqlalchemy.exc import IntegrityError
 
-from fastapi import APIRouter, status, Depends, BackgroundTasks
+from fastapi import APIRouter, status, Depends, BackgroundTasks, Query
+from pydantic import BaseModel, Field
 
-from codemie.configs import logger
+from codemie.configs import config, logger
 from codemie.core.ability import Action
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.utils import slugify
@@ -40,6 +43,7 @@ from codemie.rest_api.routers.assistant._shared import (
     _track_assistant_management_metric,
     _validate_remote_entities_and_raise,
 )
+from codemie.rest_api.routers.user_management_router import _USER_MGMT_NOT_ENABLED
 from codemie.rest_api.routers.utils import check_user_can_access_assistant, get_assistant_by_id_or_raise
 from codemie.rest_api.security.authentication import project_access_check
 from codemie.rest_api.security.authentication import authenticate
@@ -61,11 +65,29 @@ from codemie.service.assistant.assistant_version_compare_service import Assistan
 from typing import Optional
 from codemie.rest_api.routers.assistant._publish_support import _publish_gate_findings
 from codemie.rest_api.routers.assistant._shared import _remove_marketplace_assistant
-from codemie.configs import config
 from codemie.configs.marketplace_management import is_approval_gate_armed
+from codemie.service.assistant.assistant_share_service import AssistantShareService
 
 
 router = APIRouter()
+
+
+class ShareUsersRequest(BaseModel):
+    """Request model for sharing an assistant with specific users"""
+
+    user_ids: List[str] = Field(..., min_length=1)
+
+
+class SharedWithResponse(BaseModel):
+    """Response model listing users an assistant is shared with"""
+
+    shared_with: list[dict[str, str | None]]
+
+
+class SharableUsersResponse(BaseModel):
+    """Response model listing users that can be granted access to an assistant"""
+
+    users: list[dict[str, str | None]]
 
 
 def _update_source_clone_count(source_assistant_id: str, user: User, clone_assistant_id: Optional[str] = None) -> None:
@@ -388,6 +410,7 @@ def update_assistant(
     project_access_check(user, request.project)
     assistant = get_assistant_by_id_or_raise(assistant_id)
     check_user_can_access_assistant(user, assistant, "update", Action.WRITE)
+    AssistantShareService.ensure_no_personal_integration_if_shared(assistant_id, request)
     _validate_remote_entities_and_raise(assistant)
 
     validation_response = _update_validation_response(request, user, assistant_id)
@@ -519,7 +542,7 @@ def delete_assistant(assistant_id: str, user: User = Depends(authenticate)):
     # Track MCP usage before deletion
     _track_mcp_usage_on_delete(assistant.mcp_servers)
 
-    Assistant.delete_assistant(assistant_id)
+    Assistant.delete_assistant(assistant_id, user=user)
 
     if was_global:
         # Deliberately *after* the row is gone and deliberately synchronous.
@@ -605,3 +628,63 @@ def _track_mcp_usage_changes(old_servers: list[MCPServerDetails], new_servers: l
         MCPConfigService.adjust_usage(increments=new_ids - old_ids, decrements=old_ids - new_ids)
     except Exception as e:
         logger.warning(f"Failed to track MCP usage changes: {e}", exc_info=True)
+
+
+def _require_user_management() -> None:
+    """Share routes depend on the user-management system (users, projects)."""
+    if not config.ENABLE_USER_MANAGEMENT:
+        raise ExtendedHTTPException(code=status.HTTP_400_BAD_REQUEST, message=_USER_MGMT_NOT_ENABLED)
+
+
+def _get_assistant_by_id_or_raise(assistant_id: str) -> Assistant:
+    """
+    Retrieves an assistant by ID or raises a standardized exception if not found
+    """
+    assistant = Assistant.find_by_id(assistant_id)
+    if not assistant:
+        raise ExtendedHTTPException(
+            code=status.HTTP_404_NOT_FOUND,
+            message="Assistant not found",
+            details=f"No assistant found with the id '{assistant_id}'.",
+            help="Please check the assistant id and ensure it is correct. ",
+        )
+    return assistant
+
+
+@router.get("/assistants/{assistant_id}/shared-with", response_model=SharedWithResponse)
+def get_shared_with(assistant_id: str, user: User = Depends(authenticate)):
+    """List users that have been explicitly granted access to this assistant."""
+    _require_user_management()
+    assistant = _get_assistant_by_id_or_raise(assistant_id)
+    return SharedWithResponse(shared_with=AssistantShareService.list_for_owner(user, assistant))
+
+
+@router.post("/assistants/{assistant_id}/share", response_model=SharedWithResponse)
+def share_assistant(assistant_id: str, body: ShareUsersRequest, user: User = Depends(authenticate)):
+    """Grant per-user READ access to the assistant (owner only)."""
+    _require_user_management()
+    assistant = _get_assistant_by_id_or_raise(assistant_id)
+    shared = AssistantShareService.grant(user, assistant, body.user_ids)
+    return SharedWithResponse(shared_with=shared)
+
+
+@router.delete("/assistants/{assistant_id}/share", response_model=SharedWithResponse)
+def revoke_assistant_share(assistant_id: str, body: ShareUsersRequest, user: User = Depends(authenticate)):
+    """Revoke per-user READ access to the assistant (owner only)."""
+    _require_user_management()
+    assistant = _get_assistant_by_id_or_raise(assistant_id)
+    shared = AssistantShareService.revoke(user, assistant, body.user_ids)
+    return SharedWithResponse(shared_with=shared)
+
+
+@router.get("/assistants/{assistant_id}/sharable-users", response_model=SharableUsersResponse)
+async def get_sharable_users(
+    assistant_id: str,
+    q: str = Query(..., min_length=2),
+    user: User = Depends(authenticate),
+):
+    """Search internal users that can be granted access to the assistant."""
+    _require_user_management()
+    assistant = _get_assistant_by_id_or_raise(assistant_id)
+    users = await AssistantShareService.search_sharable_users_for_owner(user, assistant, q)
+    return SharableUsersResponse(users=users)

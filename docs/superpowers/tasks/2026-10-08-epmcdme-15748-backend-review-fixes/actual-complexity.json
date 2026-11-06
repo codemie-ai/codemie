@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "generated": "2026-10-08T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 21,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 25,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Touches ability (authz), user repository, assistant model/repository, permission and assistant routers, activity models/repository, AssistantShareService and permission creation/deletion services: 3-4 components across API, service and persistence, with the shared ability/permission utilities involved." },
+    { "dimension": "technical_risk", "reason": "Authorization-sensitive sharing (owner checks, external-user and personal-integration rejection, grant/revoke with audit). Closest pattern is the existing DATASOURCE permission flow, which does not cover per-user ASSISTANT grants or concurrent grant races (handled with ON CONFLICT DO NOTHING), so scored as a divergence. Defensive edge cases (external/inactive/deleted users, duplicates, unknown users) are enumerated and covered by new error-path tests." },
+    { "dimension": "file_change_estimate", "reason": "About 25 files from this run (diffstat counts 47 for the whole branch including earlier feature work and planning artifacts): about 14 source files plus one alembic migration and about 14 test files across src/codemie, src/external and tests directories. Mostly small review-fix edits, but the count maps to the XXL band." },
+    { "dimension": "affected_layers", "reason": "API (assistant and permission routers), Service (share, permission creation/deletion), DB-persistence (alembic migration syncing the resourcetype enum with ASSISTANT, with a downgrade that deletes ASSISTANT rows). No UI or external layer." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk scored L: affects authorization (assistant sharing grants and ability checks)",
+    "Technical Risk scored L: enum schema migration with a data-deleting downgrade",
+    "Technical Risk scored L: enumerated edge and error cases are tested but the nearest precedent does not cover per-user ASSISTANT grants"
+  ],
+  "split_recommendation": null
+}

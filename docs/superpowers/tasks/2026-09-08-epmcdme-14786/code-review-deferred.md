@@ -1,0 +1,5 @@
+# Deferred from code review — 2026-09-08-epmcdme-14786 (2026-09-08)
+
+- **Orphaned Permission rows on user hard-delete** — `src/codemie/service/assistant/assistant_share_service.py` — `list_shared_with` silently skips rows where the grantee user no longer exists; stale grants accumulate with no indication to the owner. Pre-existing: the pattern of skipping missing referenced users is established across the codebase and not introduced by this change; clean-up belongs to a user-lifecycle or scheduled-maintenance task.
+
+- **Per-user grants on global (marketplace) assistants silently unreachable** — `src/codemie/rest_api/models/assistant.py:858` — `is_shared_with` short-circuits to `True` for all non-external users when `is_global` is set, so any per-user Permission row written against a global assistant is never consulted. Pre-existing: the is_global fast-path pre-dates this diff; whether global assistants should be grant-scoped is an intentional design question outside this change's scope.

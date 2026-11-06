@@ -1137,10 +1137,11 @@ class TestDeleteAssistantPrunesMsTeams:
         mock_delete_integrations.return_value = 0
         mock_prune.return_value = 1
 
-        Assistant.delete_assistant("assistant-1")
+        with patch("codemie.rest_api.models.assistant.Session") as mock_session_cls:
+            Assistant.delete_assistant("assistant-1")
 
         mock_prune.assert_called_once_with("assistant-1")
-        assistant.delete.assert_called_once()
+        mock_session_cls.return_value.__enter__.return_value.delete.assert_called_once_with(assistant)
 
     @patch("codemie.service.guardrail.guardrail_service.GuardrailService.remove_guardrail_assignments_for_entity")
     @patch("codemie.rest_api.models.settings.Settings.prune_ms_teams_assistant_id")
@@ -1159,6 +1160,7 @@ class TestDeleteAssistantPrunesMsTeams:
         mock_delete_integrations.return_value = 0
         mock_prune.side_effect = RuntimeError("boom")
 
-        Assistant.delete_assistant("assistant-1")
+        with patch("codemie.rest_api.models.assistant.Session") as mock_session_cls:
+            Assistant.delete_assistant("assistant-1")
 
-        assistant.delete.assert_called_once()
+        mock_session_cls.return_value.__enter__.return_value.delete.assert_called_once_with(assistant)
