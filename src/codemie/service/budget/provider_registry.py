@@ -60,6 +60,18 @@ def get_active_provider() -> BudgetEnforcementProvider:
     return _NOOP_PROVIDER
 
 
+def is_sync_current(provider_metadata: dict[str, Any] | None, provider: BudgetEnforcementProvider) -> bool:
+    """Whether a budget's stored sync still holds under `provider`; any other budget is pushed again.
+
+    A noop sync holds only while the noop provider is active, so a budget stored while enforcement was off is
+    pushed once a real provider is enabled.
+    """
+    sync_status = (provider_metadata or {}).get("sync_status", SyncStatus.OK)
+    if sync_status == SyncStatus.NOOP:
+        return provider.provider_name == _NOOP_PROVIDER_NAME
+    return sync_status == SyncStatus.OK
+
+
 class _NoopBudgetEnforcementProvider:
     """Noop provider used in non-enterprise mode.
 

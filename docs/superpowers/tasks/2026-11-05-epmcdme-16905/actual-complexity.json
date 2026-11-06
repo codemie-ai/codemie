@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "generated": "2026-11-06T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 6, "label": "XXL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 25,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 35,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Base XL: 18 source modules across several subsystems. Provisioning (budgets router, provisioning_access, provisioning models, new ProvisioningBudgetService, ProvisioningService), shared budget (ProjectBudgetService check_group_request/_check_group_plan, changed-or-failed category sync, budget_enums SYNCED_STATUSES, project_budget_repository for_update lock), project/cost-center/ServiceNow services, application_repository, and the LiteLLM budget_provider_adapter. A new check-phase plus two-commit abstraction was added. Raised to XXL by the shared-core-utilities red flag." },
+    { "dimension": "technical_risk", "reason": "Base L: no precedent for an all-or-nothing call that runs a read-only check phase and then two separate commits (project, then budget plus provider sync). The 500/502 resend contract relies on find-or-create idempotency, an IntegrityError retry and a group row lock against concurrent writers. Raised to XL by the authorization red flag: manage-projects is required only on some paths and is checked again inside commit 1." },
+    { "dimension": "file_change_estimate", "reason": "Diffstat reports 35 files (4793+/1941-), which falls in the 16+ band: 18 source, 15 test (including the regenerated OpenAPI baseline) and 3 docs (AGENTS.md and two API guides)." },
+    { "dimension": "affected_layers", "reason": "4 layers: API (router, security dependency, request/response models), Service, DB-Persistence (row lock and entity-count queries, no schema migration) and External (LiteLLM adapter update when there is no provider ref). LiteLLM is an existing integration, so the new-external-service bump does not apply." },
+    { "dimension": "calibration", "reason": "The nearest L example (epmcdme-10401, 22) agrees on the band. The adjacent XL example (epmcdme-10303, 27) scores Component Scope 5 for a new external integration; this change scores 6 here only because of the shared-utility red flag. Without that flag the total is 24, still L. The actual total of 25 is above the initial L 21, mainly because the file count (35 against the planned range) and the budget-service changes needed for the all-or-nothing and resend guarantees were not in the initial scope." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from XL to XXL: touches core shared utilities (ProjectBudgetService sync and plan check, project_budget_repository group lock, LiteLLM budget_provider_adapter) used by the existing budget management API",
+    "Technical Risk bumped from L to XL: affects authorization (manage-projects checked in the service check phase and again in commit 1)"
+  ],
+  "split_recommendation": null
+}

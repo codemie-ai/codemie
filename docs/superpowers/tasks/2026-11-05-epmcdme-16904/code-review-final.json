@@ -1,0 +1,470 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.check",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "Check round approve high confidence; CR-001..CR-004 resolved"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "User sent CR-001..CR-004 to one fix-up round; CR-003 resolved as option (a): drop the email BeforeValidator normalization"
+    },
+    {
+      "gate": "code-review.check",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "Check round approve high confidence; CR-001..CR-004 resolved"
+    }
+  ],
+  "reviewed_head": "c3d84a8a30b20cf5ae0445faaf15080f6b252471",
+  "rounds": [
+    "final",
+    "check"
+  ],
+  "rationale": "All 4 prior blocking findings are resolved. CR-001, CR-002 and CR-004 are confirmed in current source; CR-004's validator tests were restored in the untracked tests/codemie/rest_api/models/test_servicenow_integration.py. CR-003 is resolved by the mapped human decision for option (a), which accepts EmailStr's own whitespace trimming. business_review and standards_review are carried forward from the final round unchanged, so their CR-001 and CR-003 partial notes predate this fix-up.",
+  "confidence": "low",
+  "check_confidence": "high",
+  "risk_flags": [
+    "security",
+    "public-api"
+  ],
+  "open": 0,
+  "closed": {
+    "fixed": 3,
+    "moot": 0,
+    "decided": 1,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/configs/provisioning_clients_config.py",
+      "line": 22,
+      "title": "New modules miss future import, typed generics",
+      "problem": "code-quality.md Types And Imports requires `from __future__ import annotations` in new modules, parameterized generics instead of bare list/dict, and explicit return types on public functions. The new production module provisioning_clients_config.py has no future import (so load() at :73 needs a string forward reference) and _read_entries returns a bare `list` (:91). All 5 new test modules also omit the future import. There are bare annotations at test_provisioning_clients_config.py:42, test_provisioning_router.py:79 and test_provisioning_access.py:52, and the shared helper registered_clients (provisioning_clients_support.py:36) has no return type.",
+      "impact": "A documented code-quality standard for new code is unmet in one production module and five test modules. No automated gate enforces it, so the violation would merge unchecked.",
+      "recommendation": "Add `from __future__ import annotations` after the module docstring in provisioning_clients_config.py and in each new test module (provisioning_clients_support.py, test_provisioning_clients_config.py, test_provisioning_router.py, test_provisioning_access.py, test_provisioning_service.py). Annotate _read_entries as `-> list[object]` and drop the quotes around the load() return annotation. Parameterize the cited bare list/dict annotations, and give registered_clients its context-manager return type.",
+      "status": "resolved",
+      "check_notes": "Future import added to provisioning_clients_config.py and all 5 test modules. _read_entries is -> list[object], load() is unquoted, cited bare generics are parameterized, registered_clients is typed.",
+      "fix": {
+        "change": "Future import added to provisioning_clients_config.py and the 5 new test modules; _read_entries -> list[object], unquoted load() return, cited bare generics parameterized, registered_clients typed AbstractContextManager[list[ProvisioningClient]]",
+        "test": "n/a"
+      }
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/configs/provisioning_clients_config.py",
+      "line": 83,
+      "title": "Client lookup does not canonicalize the user id",
+      "problem": "ProvisioningClient._normalize_user_id stores str(UUID(value)), the canonical hyphenated lowercase form, but find_client only applies user_id.lower() to the caller's id. That id is the IdP subject as received: AuthenticationService._validate_user_id_uuid (authentication_service.py:413-425) checks it with UUID() but does not canonicalize it. A subject in a non-canonical UUID form, such as 32 hex digits without hyphens, therefore never matches its registry entry.",
+      "impact": "When find_client returns None, enforce_provisioning_scope does nothing and is_service_account returns false. A registered client then escapes the 403 lock: the access control fails open, and the client is treated as a regular user who gets a personal project. Reachability is unconfirmed: it needs an IdP that emits non-canonical UUID subjects, and Keycloak emits canonical ones.",
+      "recommendation": "Canonicalize both sides the same way. In find_client, parse the caller id with str(UUID(user_id)) and return None on ValueError. Add a test that finds a registered id when it is given hyphen-less or in uppercase.",
+      "status": "resolved",
+      "check_notes": "find_client canonicalizes via str(UUID(user_id)) and returns None on ValueError. All 4 registry lookups route through it. Hyphen-less, uppercase and non-UUID tests were added.",
+      "fix": {
+        "change": "find_client canonicalizes the caller id with str(UUID(...)) and returns None for a non-UUID id",
+        "test": "tests/codemie/configs/test_provisioning_clients_config.py::test_finds_client_by_non_canonical_form_of_its_id, ::test_non_uuid_caller_id_finds_no_client"
+      }
+    },
+    {
+      "id": "CR-003",
+      "kind": "decision",
+      "severity": "major",
+      "triage": "decision_needed",
+      "file": "src/codemie/rest_api/models/provisioning.py",
+      "line": 26,
+      "title": "Spec-mandated email normalization breaks security standard",
+      "problem": "NormalizedEmail (models/provisioning.py:22-26) runs strip().lower() in a BeforeValidator before EmailStr parses the client-supplied member_email of GET /v1/provisioning/projects (routers/provisioning/projects.py:53). security-patterns.md Untrusted Input Handling lists stripping and silent coercion before parsing under Avoid. Spec Design 5 explicitly requires the input to be normalized and the removed ServiceNow route's behaviour to be kept.",
+      "impact": "The third-party-facing lookup decides whose project memberships to disclose from a repaired value rather than the value sent: padded input returns 200 instead of 422. The approved spec and a documented security standard disagree, so the fix needs a human decision.",
+      "recommendation": "Decide one: (a) drop the BeforeValidator so EmailStr rejects padded input with 422, leave case folding to user_repository.get_by_emails, and update spec Design 5 and the OpenAPI parameter description; or (b) keep the normalization and record email case/whitespace folding as an accepted exception in .ai-run/guides/development/security-patterns.md.",
+      "status": "decided",
+      "check_notes": "Mapped decision chose option (a), with a rationale. The BeforeValidator was dropped, so the route takes list[EmailStr]. EmailStr's own trimming is accepted.",
+      "fix": {
+        "change": "member_email is list[EmailStr] with no pre-parse normalization; NormalizedEmail/_strip_and_lowercase moved back to models/servicenow_integration.py for the unrouted budget model; OpenAPI description, baseline and spec Design 5 updated",
+        "test": "tests/codemie/rest_api/routers/test_provisioning_router.py::TestMemberLookup::test_client_gets_sorted_union_for_repeated_member_email"
+      },
+      "decision": {
+        "outcome": "Option (a): drop the BeforeValidator normalization from the member_email query parameter",
+        "rationale": "User chose to follow security-patterns.md Untrusted Input Handling over spec Design 5; the lookup now takes list[EmailStr], case folding is left to user_repository.get_by_emails, spec Design 5 and the OpenAPI parameter description were updated. Note: pydantic 2.13.5 EmailStr itself trims surrounding whitespace, so padded input still parses (200), not 422. User confirmed keeping this: EmailStr's own trimming is accepted and no rejecting validator is added."
+      }
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/models/servicenow_integration.py",
+      "line": 34,
+      "title": "Retained budget model lost its validator tests",
+      "problem": "Deleting tests/codemie/rest_api/routers/test_servicenow_integration_router.py also removed TestServiceNowBudgetRequest. Those tests covered: set requires platform > 0; cancel clears amounts and admin_emails; non-finite and negative amounts are rejected; names are lowercased and defaulted; field limits hold. ServiceNowBudgetRequest stays, and this diff edits its _normalize_names (:75) to call the moved strip_and_lowercase. The remaining service tests use the model only as valid input, and no test now asserts its validation rules.",
+      "impact": "Spec Design 7 keeps the budget logic and what it uses in place, unrouted, for EPMCDME-16905, on the premise that the logic is 'implemented and tested'. Its input-validation rules, including the line this change edited, are no longer covered by any test, so 16905 would expose them to clients untested.",
+      "recommendation": "Restore the TestServiceNowBudgetRequest cases in a test module next to the model, for example tests/codemie/rest_api/models/test_servicenow_integration.py. Leave out the NormalizedEmail query-parameter case, which now belongs to the provisioning models.",
+      "status": "resolved",
+      "check_notes": "TestServiceNowBudgetRequest is restored in tests/codemie/rest_api/models/test_servicenow_integration.py. It covers set platform>0, cancel clearing, negative/inf/nan, name lowercasing and defaults, and field limits.",
+      "fix": {
+        "change": "Restored the ServiceNowBudgetRequest validator tests, minus the query-param case",
+        "test": "tests/codemie/rest_api/models/test_servicenow_integration.py::TestServiceNowBudgetRequest"
+      }
+    }
+  ],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "D1: registry YAML loaded once at startup, enforced whatever PROVISIONING_API_ENABLED says",
+      "status": "pass",
+      "notes": "module-level load at provisioning_clients_config.py:133-135"
+    },
+    {
+      "kind": "spec",
+      "item": "D1: client matched by user_id (CodeMie user id / token subject); key named user_id",
+      "status": "pass",
+      "notes": "find_client(user.id); extra=forbid rejects account_id; see CR-002 on id canonicalization"
+    },
+    {
+      "kind": "spec",
+      "item": "D1: permissions from a closed set of three; empty permissions list valid",
+      "status": "pass",
+      "notes": "ProvisioningPermission StrEnum; test_empty_permissions_list_is_valid"
+    },
+    {
+      "kind": "spec",
+      "item": "D1: startup fails naming the entry on invalid YAML, missing file, bad or duplicate name/user_id, unknown permission",
+      "status": "pass",
+      "notes": "_read_entries/_parse_entry/_reject_conflicts via _entry_error; tests cover each case"
+    },
+    {
+      "kind": "spec",
+      "item": "D1: repo ships the registry file with an empty list and a lifecycle header",
+      "status": "pass",
+      "notes": "config/provisioning_clients/provisioning-clients-config.yaml"
+    },
+    {
+      "kind": "spec",
+      "item": "D1: PROVISIONING_CLIENTS_CONFIG_DIR defaults to config/provisioning_clients",
+      "status": "pass",
+      "notes": "config.py; Dockerfile copies ./config into the image"
+    },
+    {
+      "kind": "spec",
+      "item": "D2: enforce_servicenow_scope replaced; registered client gets 403 outside the provisioning router",
+      "status": "pass",
+      "notes": "enforce_provisioning_scope in authenticate() external branch"
+    },
+    {
+      "kind": "spec",
+      "item": "D2: allowlist is the (method, route path) pairs of the parent provisioning router",
+      "status": "pass",
+      "notes": "set_provisioning_routes in mount_provisioning_api"
+    },
+    {
+      "kind": "spec",
+      "item": "D2/D7: internal bind_key branch unchanged",
+      "status": "pass",
+      "notes": "test_bind_key_branch_is_not_locked"
+    },
+    {
+      "kind": "spec",
+      "item": "D3: parent-router guard answers 403 to any non-client, admins included",
+      "status": "pass",
+      "notes": "provisioning_clients_only; test_non_client_and_admin_are_403"
+    },
+    {
+      "kind": "spec",
+      "item": "D3: each route declares one permission; client without it gets 403; guards run after authenticate",
+      "status": "pass",
+      "notes": "RequirePermission(READ_PROJECTS); TestRouteContract"
+    },
+    {
+      "kind": "spec",
+      "item": "D3: new access module replaces servicenow_access.py and servicenow_integration_access_only",
+      "status": "pass",
+      "notes": "servicenow_access.py deleted; provisioning_access.py added"
+    },
+    {
+      "kind": "spec",
+      "item": "D4: is_service_account true for service_account type or a registered id",
+      "status": "pass",
+      "notes": "user_type_validator.py; TestIsServiceAccount"
+    },
+    {
+      "kind": "spec",
+      "item": "D4: widened is_service_account reaches lookup, admin assignment and Teams sender resolution",
+      "status": "pass",
+      "notes": "provisioning_service filter; Teams sender test updated"
+    },
+    {
+      "kind": "spec",
+      "item": "D4: no personal project for registered clients on authentication or email change",
+      "status": "pass",
+      "notes": "is_personal_project_excluded_account at both sites; tests added"
+    },
+    {
+      "kind": "spec",
+      "item": "D4: registration and local login keep the stored-type check",
+      "status": "pass",
+      "notes": "registration_service.py and authentication_service.py:787 untouched"
+    },
+    {
+      "kind": "spec",
+      "item": "D5: routers/provisioning/ package, parent APIRouter tagged Provisioning",
+      "status": "pass",
+      "notes": "prefix /v1/provisioning"
+    },
+    {
+      "kind": "spec",
+      "item": "D5: GET /v1/provisioning/projects?member_email=, repeatable and normalized, needs read-projects",
+      "status": "pass",
+      "notes": "NormalizedEmail; conflicts with security-patterns, see CR-003"
+    },
+    {
+      "kind": "spec",
+      "item": "D5: lookup logic moves into a provisioning service",
+      "status": "pass",
+      "notes": "provisioning_service._list_member_projects_sync"
+    },
+    {
+      "kind": "spec",
+      "item": "D5: behaviour unchanged: sorted union, unknown/service-account emails skipped, [] on no match, 422",
+      "status": "pass",
+      "notes": "TestMemberLookup, test_provisioning_service"
+    },
+    {
+      "kind": "spec",
+      "item": "D6: mounted only with PROVISIONING_API_ENABLED and ENABLE_USER_MANAGEMENT; warning otherwise",
+      "status": "pass",
+      "notes": "mount_provisioning_api; TestMounting"
+    },
+    {
+      "kind": "spec",
+      "item": "D6: warning when the flag is on and the registry is empty",
+      "status": "pass",
+      "notes": "test_empty_registry_logs_warning"
+    },
+    {
+      "kind": "spec",
+      "item": "D6: logs use domain=provisioning and carry the client name",
+      "status": "pass",
+      "notes": "provisioning_access.py and lookup log lines"
+    },
+    {
+      "kind": "spec",
+      "item": "D7: remove the ServiceNow router, servicenow_access.py, their tests and router-only models",
+      "status": "pass",
+      "notes": "deleted; budget model kept but its validator tests went too, see CR-004"
+    },
+    {
+      "kind": "spec",
+      "item": "D7: remove SERVICENOW_INTEGRATION_ENABLED and SERVICENOW_SERVICE_ACCOUNT_ID and their uses",
+      "status": "pass",
+      "notes": "config.py, main.py, guarded_app.py, mock_config"
+    },
+    {
+      "kind": "spec",
+      "item": "D7: OpenAPI baseline regenerated",
+      "status": "pass",
+      "notes": "adds /v1/provisioning/projects, drops /v1/integrations/servicenow/*"
+    },
+    {
+      "kind": "spec",
+      "item": "D7: budget logic, what it uses and its service tests stay in place, unrouted",
+      "status": "pass",
+      "notes": "service and service tests kept; model validator tests lost, see CR-004"
+    },
+    {
+      "kind": "spec",
+      "item": "AC1: 200 with sorted union for repeated member_email; skips unknown/service accounts; [] no match; 422",
+      "status": "pass",
+      "notes": "test_client_gets_sorted_union_for_repeated_member_email, test_missing_or_invalid_member_email_is_422"
+    },
+    {
+      "kind": "spec",
+      "item": "AC2: registered client without provisioning:read-projects gets 403",
+      "status": "pass",
+      "notes": "test_client_without_read_projects_is_403"
+    },
+    {
+      "kind": "spec",
+      "item": "AC3: client outside provisioning router gets 403; router routes pass; bind_key unchanged",
+      "status": "pass",
+      "notes": "TestAuthenticateProvisioningScope; non-canonical id gap in CR-002"
+    },
+    {
+      "kind": "spec",
+      "item": "AC4: non-client, admin included, gets 403 on every /v1/provisioning route",
+      "status": "pass",
+      "notes": "provisioning_clients_only; TestProvisioningClientsOnly"
+    },
+    {
+      "kind": "spec",
+      "item": "AC5: client added only in the registry can, after rollout restart, call exactly the allowed routes",
+      "status": "pass",
+      "notes": "file-only registry consumed by all three guards"
+    },
+    {
+      "kind": "spec",
+      "item": "AC6: startup fails, naming the entry, on each registry defect",
+      "status": "pass",
+      "notes": "test_invalid_entry_fails_naming_it, test_unreadable_registry_fails"
+    },
+    {
+      "kind": "spec",
+      "item": "AC7: is_service_account true for registered account; no personal project on first call or email change",
+      "status": "pass",
+      "notes": "TestIsServiceAccount; finalize-auth and email-change tests"
+    },
+    {
+      "kind": "spec",
+      "item": "AC8: flag or user management off gives 404; servicenow paths always 404; no SERVICENOW_* refs",
+      "status": "pass",
+      "notes": "test_api_off_or_user_management_off_gives_404; test_no_vendor_integration_path_is_served"
+    },
+    {
+      "kind": "spec",
+      "item": "AC9: OpenAPI baseline has /v1/provisioning/projects, no servicenow path, vendor-free lookup",
+      "status": "pass",
+      "notes": "test_lookup_openapi_is_vendor_free"
+    },
+    {
+      "kind": "spec",
+      "item": "AC10: src/codemie_tools/itsm/servicenow/ unchanged",
+      "status": "pass",
+      "notes": "no changed path under src/codemie_tools/"
+    },
+    {
+      "kind": "spec",
+      "item": "AC11: test over every provisioning route asserts one permission and authenticate before guards",
+      "status": "pass",
+      "notes": "TestRouteContract"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: no budget write endpoints, change reference or provisioning pattern guide",
+      "status": "pass",
+      "notes": "only GET /projects added"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: budget logic in servicenow_integration_service.py not moved or renamed",
+      "status": "pass",
+      "notes": "only lookup methods removed"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: manage-projects and manage-budgets not checked on any route",
+      "status": "pass",
+      "notes": "only RequirePermission(READ_PROJECTS)"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: Teams bot account, teams resolver and authorized-apps registry unchanged",
+      "status": "pass",
+      "notes": "registry only reads TEAMS_SERVICE_ACCOUNT_ID to refuse it"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: ServiceNow agent tool and its settings unchanged",
+      "status": "pass",
+      "notes": "no changed path under src/codemie_tools/"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: no admin UI and no registry reload without restart",
+      "status": "pass",
+      "notes": "loaded once at import"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: internal bind_key branch not locked",
+      "status": "pass",
+      "notes": "bind_key branch untouched"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Project lookup: client with read-projects gets sorted union of shared projects; unknown skipped; [] on no match",
+      "status": "pass",
+      "notes": "list_shared_projects_for_users; TestMemberLookup"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Lookup needs its permission: client without provisioning:read-projects gets 403",
+      "status": "pass",
+      "notes": "RequirePermission"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Clients stay inside the provisioning API (403 elsewhere); only clients get in (admins 403)",
+      "status": "pass",
+      "notes": "enforce_provisioning_scope + provisioning_clients_only; see CR-002"
+    },
+    {
+      "kind": "story-ac",
+      "item": "New clients need only configuration: after restart a registered client calls exactly its permitted routes",
+      "status": "pass",
+      "notes": "file-only registry drives all guards"
+    },
+    {
+      "kind": "story-ac",
+      "item": "A broken registry fails loudly: unknown permission or missing account stops startup naming the entry",
+      "status": "pass",
+      "notes": "module-level load raises ValueError naming provisioning_clients[i]"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Clients count as service accounts whatever stored user type (lookup, admin assignment, Teams sender)",
+      "status": "pass",
+      "notes": "is_service_account; tests across four modules"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Switched off means absent: 404 on /v1/provisioning; ServiceNow routes and settings no longer exist",
+      "status": "pass",
+      "notes": "mount_provisioning_api; TestMounting"
+    },
+    {
+      "kind": "story-ac",
+      "item": "No vendor names in the published lookup route description",
+      "status": "pass",
+      "notes": "test_lookup_openapi_is_vendor_free"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "all 5 subjects in b870d1f1..HEAD match git-workflow.md 'EPMCDME-####: Description' with a capitalized description"
+    },
+    {
+      "kind": "code-quality",
+      "status": "partial",
+      "notes": "license headers and module cohesion met; Types And Imports unmet: provisioning_clients_config.py and 5 new test modules lack the future import; bare list/dict; registered_clients untyped"
+    },
+    {
+      "kind": "security",
+      "status": "partial",
+      "notes": "auth and secret handling met; Untrusted Input Handling unmet: NormalizedEmail strips/lowercases client-supplied member_email before EmailStr parsing (models/provisioning.py:22-26)"
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "There are 4 blocking findings. CR-003 is decision_needed: spec Design 5 requires member_email normalization, which security-patterns.md Untrusted Input Handling forbids. CR-002 (non-canonical ids escaping the registry lookup) is kept with its reachability unconfirmed. All 4 lenses and the standards audit ran; 0 findings were deferred and 17 candidates were dismissed as spec-mandated (including local login keeping the stored-type check under D4), already handled, gate-covered or speculative.",
+    "confidence": "low",
+    "risk_flags": [
+      "security",
+      "public-api"
+    ]
+  }
+}

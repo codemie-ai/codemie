@@ -95,15 +95,19 @@ class CostCenterService:
 
         existing = cost_center_repository.get_by_name_case_insensitive(session, validated_name)
         if existing:
-            if existing.deleted_at is not None:
-                raise ExtendedHTTPException(
-                    code=409,
-                    message=f"Cost center '{existing.name}' has been deleted",
-                    help="Restore the cost center or use a different EPAM project code.",
-                )
+            cls.ensure_not_deleted(existing)
             return existing, False
 
         return cls._insert(session, name=validated_name, description=None, created_by=created_by), True
+
+    @classmethod
+    def ensure_not_deleted(cls, cost_center: CostCenter) -> None:
+        if cost_center.deleted_at is not None:
+            raise ExtendedHTTPException(
+                code=409,
+                message=f"Cost center '{cost_center.name}' has been deleted",
+                help="Restore the cost center or use a different cost center name.",
+            )
 
     @classmethod
     def _insert(cls, session: Session, *, name: str, description: str | None, created_by: str) -> CostCenter:

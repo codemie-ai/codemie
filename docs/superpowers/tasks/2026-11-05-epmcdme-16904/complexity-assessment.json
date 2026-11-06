@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "task": "Replace the ServiceNow-only service-account access with a config registry of provisioning clients (permission codes, PROVISIONING_API_ENABLED), lock them to /v1/provisioning on the external auth branch, add GET /v1/provisioning/projects?member_email=, and remove the ServiceNow integration routes and settings.",
+  "generated": "2026-11-05T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 23,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Base L: provisioning client registry + loader, provisioning access module (replaces servicenow_access), authenticate() scope hook and per-route guard, user_type_validator, new provisioning router package + models, moved member lookup service, main.py/config wiring, ServiceNow router/service removal. Bumped for touching the shared is_service_account predicate also used by Teams sender resolution." },
+    { "dimension": "technical_risk", "reason": "Base M: closest pattern is servicenow_access (single subject id, scope allowlist from one router) plus AuthorizedApplicationsConfig as loader template. Bumped for authN/authZ change, and again because the pattern does not cover the new permission-code authorization per client nor a namespace-wide lock built from a router package. Additional risks: widening is_service_account semantics, @cache'd allowlist, verbatim OpenAPI baseline." },
+    { "dimension": "file_change_estimate", "reason": "~11-15 modified or deleted (authentication.py, user_type_validator.py, config.py, main.py, servicenow router/service/access removal, guarded_app.py, OpenAPI baseline, mock_config in 5 test files, auth tests) and 6+ new (router package __init__ + projects module, provisioning models, access module, registry loader, registry YAML, new tests) across security, routers, models, configs, config/ and tests." },
+    { "dimension": "requirements_clarity", "reason": "Permission codes, flag, endpoint and removals are explicit; open points are registry file location/env var and schema, and per-route permission mapping for codes not yet used by this child." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L to XL: touches core shared utility is_service_account (Teams sender resolution) and authenticate()",
+    "Technical Risk bumped from M to L: affects authentication and authorization",
+    "Technical Risk bumped from L to XL: closest pattern (servicenow_access) does not cover permission-code authorization checks for registered clients"
+  ],
+  "split_recommendation": null
+}

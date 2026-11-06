@@ -941,12 +941,19 @@ class ProjectBudgetGroupRepository:
         result = await session.execute(stmt)
         return result.scalars().first()
 
-    async def get_active_by_project(self, session: AsyncSession, project_name: str) -> ProjectBudgetGroup | None:
-        """Return the single active (deleted_at IS NULL) group for a project, or None."""
+    async def get_active_by_project(
+        self, session: AsyncSession, project_name: str, for_update: bool = False
+    ) -> ProjectBudgetGroup | None:
+        """Return the single active (deleted_at IS NULL) group for a project, or None.
+
+        With ``for_update`` the row stays locked until the session's transaction ends.
+        """
         stmt = select(ProjectBudgetGroup).where(
             ProjectBudgetGroup.project_name == project_name,
             ProjectBudgetGroup.deleted_at.is_(None),
         )
+        if for_update:
+            stmt = stmt.with_for_update()
         result = await session.execute(stmt)
         return result.scalars().first()
 

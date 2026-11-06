@@ -38,6 +38,7 @@ import pytest
 from codemie.core.models import Application
 from codemie.rest_api.models.user_management import UserProject
 from codemie.service.project.personal_project_service import PersonalProjectService
+from tests.codemie.configs.provisioning_clients_support import CLIENT_USER_ID, make_client, registered_clients
 
 
 def _make_async_session_cm(mock_session):
@@ -1101,4 +1102,24 @@ class TestPersonalProjectServiceEdgeCases:
         mock_session.add.assert_not_called()
         mock_user_proj_repo.aremove_project.assert_not_called()
         # New project creation NOT attempted
+        mock_ensure.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("codemie.clients.postgres.get_async_session")
+    @patch("codemie.service.project.personal_project_service.PersonalProjectService.ensure_personal_project_async")
+    @patch("codemie.service.project.personal_project_service.application_repository")
+    async def test_reconcile_on_email_change_skips_registered_client(
+        self, mock_app_repo, mock_ensure, mock_get_async_session
+    ):
+        mock_get_async_session.return_value = _make_async_session_cm(AsyncMock())
+        old_app = Application(name="old@example.com", project_type="personal", created_by=CLIENT_USER_ID)
+        mock_app_repo.aget_by_name = AsyncMock(return_value=old_app)
+
+        with registered_clients(make_client()):
+            result = await PersonalProjectService.reconcile_personal_project_on_email_change(
+                CLIENT_USER_ID, "old@example.com", "new@example.com", "regular"
+            )
+
+        assert result is False
+        assert old_app.deleted_at is None
         mock_ensure.assert_not_called()

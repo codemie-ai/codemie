@@ -56,6 +56,24 @@ async def test_get_user_id_by_identifier_returns_matching_id(repository: BudgetR
 
 
 @pytest.mark.asyncio
+async def test_get_active_by_name_looks_up_only_active_budgets(repository: BudgetRepository):
+    session = AsyncMock()
+    budget = SimpleNamespace(budget_id="budget-1")
+    execute_result = MagicMock()
+    execute_result.scalars.return_value.first.return_value = budget
+    session.execute.return_value = execute_result
+
+    result = await repository.get_active_by_name(session, "proj-a/cli")
+
+    stmt = session.execute.await_args.args[0]
+    compiled = stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})
+    sql_text = " ".join(str(compiled).lower().split())
+    assert result is budget
+    assert "budgets.name = 'proj-a/cli'" in sql_text
+    assert "budgets.deleted_at is null" in sql_text
+
+
+@pytest.mark.asyncio
 async def test_count_project_assignments_returns_count(repository: BudgetRepository):
     session = AsyncMock()
     execute_result = MagicMock()

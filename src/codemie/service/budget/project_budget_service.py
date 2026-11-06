@@ -38,7 +38,12 @@ from codemie.repository.project_budget_repository import (
     project_budget_group_repository,
     project_member_budget_assignment_repository,
 )
-from codemie.service.budget.budget_enums import AllocationMode, BudgetCategory, BudgetType, SyncStatus
+from codemie.service.budget.budget_enums import (
+    AllocationMode,
+    BudgetCategory,
+    BudgetType,
+    SyncStatus,
+)
 from codemie.service.budget.budget_models import (
     Budget,
     ProjectBudgetAssignment,
@@ -56,10 +61,12 @@ from codemie.service.activity.activity_models import (
 )
 from codemie.service.activity.activity_repository import activity_event_repository
 from codemie.service.budget.provider import BudgetEnforcementProvider, BudgetProviderMemberState, BudgetProviderState
-from codemie.service.budget.provider_registry import get_active_provider
+from codemie.service.budget.provider_registry import get_active_provider, is_sync_current
 
 if TYPE_CHECKING:
     from codemie.rest_api.models.project_budget import (
+        CategoryBudgetSpec,
+        CategoryBudgetSpecUpdate,
         ProjectBudgetCreateRequest,
         ProjectBudgetGroupCreateRequest,
         ProjectBudgetGroupUpdateRequest,
@@ -105,6 +112,11 @@ class ProjectBudgetService:
     # ==================== Validation ====================
 
     @staticmethod
+    def _validate_duration(budget_duration: str) -> None:
+        if not _DURATION_RE.match(budget_duration):
+            raise ValidationException(f"budget_duration must match r'^\\d+[smhd]$', got {budget_duration!r}")
+
+    @staticmethod
     def _validate_constraints(
         soft_budget: float,
         max_budget: float,
@@ -117,8 +129,7 @@ class ProjectBudgetService:
             raise ValidationException("soft_budget must be >= 0")
         if soft_budget > max_budget:
             raise ValidationException("soft_budget must be <= max_budget")
-        if not _DURATION_RE.match(budget_duration):
-            raise ValidationException(f"budget_duration must match r'^\\d+[smhd]$', got {budget_duration!r}")
+        ProjectBudgetService._validate_duration(budget_duration)
         valid_categories = {c.value for c in BudgetCategory}
         if budget_category not in valid_categories:
             raise ValidationException(f"budget_category must be one of {sorted(valid_categories)}")
@@ -597,12 +608,17 @@ class ProjectBudgetService:
                     f"budget_category={budget_category!r} allocation_id={allocation_id!r} "
                     f"user_id={user_id!r} error={exc}"
                 )
-                await project_member_budget_assignment_repository.update_provider_metadata(
-                    session,
-                    allocation_id=alloc.id,
-                    provider_metadata={"sync_status": SyncStatus.FAILED},
-                    sync_status=SyncStatus.FAILED,
-                )
+                await self._mark_member_sync_failed(session, alloc)
+
+    @staticmethod
+    async def _mark_member_sync_failed(session: AsyncSession, alloc: ProjectMemberBudgetAssignment) -> None:
+        # The marker makes the next update push this member again; its provider references stay for that push.
+        await project_member_budget_assignment_repository.update_provider_metadata(
+            session,
+            allocation_id=alloc.id,
+            provider_metadata={**(alloc.provider_metadata or {}), "sync_status": SyncStatus.FAILED},
+            sync_status=SyncStatus.FAILED,
+        )
 
     async def _sync_created_project_budget(
         self,
@@ -704,12 +720,17 @@ class ProjectBudgetService:
     def _effective_project_budget_values(
         budget: Budget,
         data: "ProjectBudgetUpdateRequest",
+        provider: BudgetEnforcementProvider,
     ) -> tuple[float, float, str, bool]:
         eff_soft = data.soft_budget if data.soft_budget is not None else budget.soft_budget
         eff_max = data.max_budget if data.max_budget is not None else budget.max_budget
         eff_duration = data.budget_duration if data.budget_duration is not None else budget.budget_duration
+        # A stored sync that no longer holds must be retried even when the amounts are resent unchanged.
         amounts_changed = (
-            data.soft_budget is not None or data.max_budget is not None or data.budget_duration is not None
+            Decimal(str(eff_max)) != Decimal(str(budget.max_budget))
+            or Decimal(str(eff_soft)) != Decimal(str(budget.soft_budget))
+            or eff_duration != budget.budget_duration
+            or not is_sync_current(budget.provider_metadata, provider)
         )
         return eff_soft, eff_max, eff_duration, amounts_changed
 
@@ -830,6 +851,10 @@ class ProjectBudgetService:
                 f"provider={getattr(provider, 'provider_name', 'unknown')!r} operation=update "
                 f"project_name={project_name!r} budget_id={budget_id!r} "
                 f"budget_category={budget.budget_category!r} error={exc}"
+            )
+            # The failed status makes the next update push this budget again, even with unchanged amounts.
+            budget = await budget_repository.update(
+                session, budget_id, {"provider_metadata": {**provider_meta, "sync_status": SyncStatus.FAILED}}
             )
         return budget, assignment, provider
 
@@ -1175,7 +1200,13 @@ class ProjectBudgetService:
                 f"budget_category={alloc.budget_category!r} allocation_id={alloc.id!r} "
                 f"user_id={alloc.user_id!r} error={exc}"
             )
+            await self._mark_member_sync_failed(session, alloc)
             return None
+
+    @staticmethod
+    async def _member_sync_failed(session: AsyncSession, budget_id: str) -> bool:
+        allocations = await project_member_budget_assignment_repository.get_active_by_budget_id(session, budget_id)
+        return any(allocation.sync_status == SyncStatus.FAILED for allocation in allocations)
 
     async def _ensure_shared_child_budget_after_resync(
         self,
@@ -1315,7 +1346,10 @@ class ProjectBudgetService:
             raise ExtendedHTTPException(code=404, message=f"Project budget not found: {budget_id}")
 
         changed_fields = self._changed_project_budget_fields(data)
-        eff_soft, eff_max, eff_duration, amounts_changed = self._effective_project_budget_values(budget, data)
+        eff_soft, eff_max, eff_duration, amounts_changed = self._effective_project_budget_values(
+            budget, data, get_active_provider()
+        )
+        amounts_changed = amounts_changed or await self._member_sync_failed(session, budget_id)
         if amounts_changed or data.models is not None:
             try:
                 self._validate_constraints(
@@ -1895,6 +1929,105 @@ class ProjectBudgetService:
         if total_amount <= 0:
             raise ExtendedHTTPException(code=400, message="total_amount must be > 0")
 
+    async def check_group_request(
+        self,
+        session: AsyncSession,
+        project_name: str,
+        data: "ProjectBudgetGroupCreateRequest | ProjectBudgetGroupUpdateRequest",
+    ) -> None:
+        """Reject a group request that its write would fail, before anything is written.
+
+        Read-only. Checks duration, categories, per-budget constraints and each existing
+        category's active member fixed limits against the planned limits (400), and that every
+        category the group would add is free outside it (409).
+        """
+        current = None
+        if data.categories is not None:
+            group = await project_budget_group_repository.get_active_by_project(session, project_name)
+            current = await self._load_group_full_result(session, group) if group is not None else None
+            if current is None and (data.total_amount is None or data.budget_duration is None):
+                raise ExtendedHTTPException(
+                    code=404, message=f"Active budget group not found for project: {project_name}"
+                )
+        self._check_group_plan(data, current)
+        await self._check_added_categories_free(session, project_name, data, current)
+
+    async def _check_added_categories_free(
+        self,
+        session: AsyncSession,
+        project_name: str,
+        data: "ProjectBudgetGroupCreateRequest | ProjectBudgetGroupUpdateRequest",
+        current: ProjectBudgetGroupFullResult | None,
+    ) -> None:
+        """Raise 409 when a category the group would add already has a budget outside it.
+
+        The added budget's name and its project category are unique among active budgets, so a taken one
+        would fail the write only after the caller's earlier writes are stored.
+        """
+        if data.categories is None:
+            return
+        in_group = {result.assignment.budget_category for result in current.categories} if current else set()
+        for category, spec in data.categories.items():
+            if spec.pct <= 0 or category in in_group:
+                continue
+            name = self._group_budget_name(project_name, category)
+            if await budget_repository.get_active_by_name(session, name) is not None:
+                raise ExtendedHTTPException(code=409, message=f"Budget name '{name}' already in use")
+            assignment = await project_budget_assignment_repository.get_active_by_project_category(
+                session, project_name, category
+            )
+            if assignment is not None:
+                raise ExtendedHTTPException(
+                    code=409,
+                    message=(
+                        f"An active project budget for project '{project_name}' "
+                        f"and category '{category}' already exists"
+                    ),
+                )
+
+    @staticmethod
+    def _group_budget_name(project_name: str, category: str) -> str:
+        return f"{project_name}/{category}"
+
+    def _check_group_plan(
+        self,
+        data: "ProjectBudgetGroupCreateRequest | ProjectBudgetGroupUpdateRequest",
+        current: ProjectBudgetGroupFullResult | None,
+    ) -> None:
+        """Plan the request's category limits; whatever it omits comes from the active group `current`."""
+        try:
+            if data.budget_duration is not None:
+                self._validate_duration(data.budget_duration)
+            if data.categories is None:
+                return
+            eff_total = data.total_amount if data.total_amount is not None else current.total_amount
+            eff_duration = data.budget_duration if data.budget_duration is not None else current.group.budget_duration
+            self._validate_group_categories(data.categories, eff_total)
+            existing_by_cat = {r.assignment.budget_category: r for r in current.categories} if current else {}
+            for cat_key, cat_spec in data.categories.items():
+                if cat_spec.pct > 0:
+                    self._check_category_plan(cat_key, cat_spec, eff_total, eff_duration, existing_by_cat.get(cat_key))
+        except ValidationException as exc:
+            raise ExtendedHTTPException(code=400, message=str(exc)) from exc
+
+    def _check_category_plan(
+        self,
+        cat_key: str,
+        cat_spec: CategoryBudgetSpec | CategoryBudgetSpecUpdate,
+        eff_total: float,
+        eff_duration: str,
+        existing: ProjectBudgetGroupCategoryResult | None,
+    ) -> None:
+        amount = self.category_amount(eff_total, cat_spec.pct)
+        soft_amount = self._resolve_soft_amount(cat_spec, amount)
+        self._validate_constraints(soft_amount, amount, eff_duration, cat_key)
+        if existing is not None:
+            self._equal_amounts_with_fixed_overrides(existing.allocations, amount, soft_amount)
+
+    @staticmethod
+    def category_amount(total_amount: float, pct: float) -> float:
+        return float(Decimal(str(total_amount)) * Decimal(str(pct)) / Decimal("100"))
+
     async def _load_group_full_result(
         self,
         session: AsyncSession,
@@ -1925,12 +2058,7 @@ class ProjectBudgetService:
         Atomically inserts the group, one Budget + one ProjectBudgetAssignment per
         included category, member allocations, and triggers provider sync for each.
         """
-        if not _DURATION_RE.match(data.budget_duration):
-            raise ExtendedHTTPException(
-                code=400,
-                message=f"budget_duration must match r'^\\d+[smhd]$', got {data.budget_duration!r}",
-            )
-        self._validate_group_categories(data.categories, data.total_amount)
+        self._check_group_plan(data, None)
 
         await self._ensure_project_budget_eligible(session, data.project_name)
 
@@ -1964,7 +2092,7 @@ class ProjectBudgetService:
             if cat_spec.pct <= 0:
                 continue
 
-            amount = float(Decimal(str(data.total_amount)) * Decimal(str(cat_spec.pct)) / Decimal("100"))
+            amount = self.category_amount(data.total_amount, cat_spec.pct)
             soft_amount = self._resolve_soft_amount(cat_spec, amount)
             budget_id = f"{data.project_name}-{cat_key}-{uuid.uuid4().hex[:8]}"
 
@@ -1972,7 +2100,7 @@ class ProjectBudgetService:
                 budget_id=budget_id,
                 budget_type=BudgetType.PROJECT.value,
                 project_name=data.project_name,
-                name=f"{data.project_name}/{cat_key}",
+                name=self._group_budget_name(data.project_name, cat_key),
                 soft_budget=soft_amount,
                 max_budget=amount,
                 budget_duration=data.budget_duration,
@@ -2164,6 +2292,7 @@ class ProjectBudgetService:
         if group is None or group.deleted_at is not None:
             raise ExtendedHTTPException(code=404, message=f"Project budget group not found: {group_id}")
 
+        await self.check_group_request(session, group.project_name, data)
         updated_fields = self._collect_updated_group_fields(data)
         await self._update_group_scalar_fields(session, group_id, data)
 
@@ -2201,7 +2330,6 @@ class ProjectBudgetService:
             return await self._load_group_full_result(session, group)
 
         if data.categories is not None:
-            self._validate_group_categories(data.categories, eff_total)
             await self._update_group_categories(
                 session,
                 group,
@@ -2244,11 +2372,6 @@ class ProjectBudgetService:
         updates = {}
 
         if data.budget_duration is not None:
-            if not _DURATION_RE.match(data.budget_duration):
-                raise ExtendedHTTPException(
-                    code=400,
-                    message=f"budget_duration must match r'^\\d+[smhd]$', got {data.budget_duration!r}",
-                )
             updates["budget_duration"] = data.budget_duration
 
         if data.name is not None:
@@ -2281,7 +2404,7 @@ class ProjectBudgetService:
         member_user_ids = await self._get_active_member_user_ids(session, group.project_name)
 
         for cat_key, cat_spec in categories.items():
-            amount = float(Decimal(str(eff_total)) * Decimal(str(cat_spec.pct)) / Decimal("100"))
+            amount = self.category_amount(eff_total, cat_spec.pct)
             soft_amount = self._resolve_soft_amount(cat_spec, amount)
 
             if cat_spec.pct <= 0:
@@ -2360,7 +2483,7 @@ class ProjectBudgetService:
             budget_id=budget_id,
             budget_type=BudgetType.PROJECT.value,
             project_name=group.project_name,
-            name=f"{group.project_name}/{cat_key}",
+            name=self._group_budget_name(group.project_name, cat_key),
             soft_budget=soft_amount,
             max_budget=amount,
             budget_duration=eff_duration,

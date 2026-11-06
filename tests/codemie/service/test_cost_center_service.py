@@ -257,7 +257,7 @@ class TestGetOrCreate:
 
         assert exc_info.value.code == 409
         assert exc_info.value.message == "Cost center 'nbs-cmpa' has been deleted"
-        assert exc_info.value.help == "Restore the cost center or use a different EPAM project code."
+        assert exc_info.value.help == "Restore the cost center or use a different cost center name."
         mock_repo.create.assert_not_called()
 
     def test_feature_disabled_raises_403(self, mock_repo, mock_customer_config):

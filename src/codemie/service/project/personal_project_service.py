@@ -28,7 +28,7 @@ from codemie.configs.logger import logger
 from codemie.core.models import Application
 from codemie.repository.user_project_repository import user_project_repository
 from codemie.repository.application_repository import application_repository
-from codemie.rest_api.security.user_type_validator import is_personal_project_excluded
+from codemie.rest_api.security.user_type_validator import is_personal_project_excluded_account
 from codemie.service.activity.activity_models import (
     ActivityDomain,
     ActivityEntityType,
@@ -122,7 +122,7 @@ class PersonalProjectService:
         from datetime import UTC, datetime
 
         try:
-            if is_personal_project_excluded(user_type):
+            if is_personal_project_excluded_account(user_id, user_type):
                 return False
 
             async with get_async_session() as session:

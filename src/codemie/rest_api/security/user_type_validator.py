@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from fastapi import status
 
 from codemie.configs.logger import logger
+from codemie.configs.provisioning_clients_config import provisioning_clients_config
 from codemie.core.exceptions import ExtendedHTTPException
 
 if TYPE_CHECKING:
@@ -42,10 +43,21 @@ def is_personal_project_excluded(user_type: str) -> bool:
     return user_type in PERSONAL_PROJECT_EXCLUDED_USER_TYPES
 
 
-def is_service_account(user: User | UserDB) -> bool:
-    from codemie.rest_api.security.servicenow_access import is_servicenow_service_account
+def is_personal_project_excluded_account(user_id: str, user_type: str) -> bool:
+    """Whether an authenticated account must not get a personal project.
 
-    return user.user_type == SERVICE_ACCOUNT_USER_TYPE or is_servicenow_service_account(user)
+    A provisioning client authenticates as a client-credentials account stored as 'regular',
+    so its registration counts alongside the stored type.
+    """
+    return is_personal_project_excluded(user_type) or _is_provisioning_client(user_id)
+
+
+def is_service_account(user: User | UserDB) -> bool:
+    return user.user_type == SERVICE_ACCOUNT_USER_TYPE or _is_provisioning_client(user.id)
+
+
+def _is_provisioning_client(user_id: str) -> bool:
+    return provisioning_clients_config.find_client(user_id) is not None
 
 
 def _describe_valid_user_types() -> str:

@@ -33,6 +33,7 @@ from codemie.rest_api.security.authentication import (
     kb_access_check,
     project_admin_or_admin_user_detail_access,
 )
+from codemie.rest_api.security import provisioning_access
 from codemie.rest_api.security.user import User
 from codemie.rest_api.security.user_context import (
     clear_current_auth_token,
@@ -42,6 +43,7 @@ from codemie.rest_api.security.user_context import (
 )
 from codemie.rest_api.security.idp.local import LocalIdp
 from codemie.configs import config
+from tests.codemie.configs.provisioning_clients_support import CLIENT_USER_ID, make_client, registered_clients
 
 
 @pytest.fixture
@@ -566,48 +568,63 @@ async def test_user_detail_access_project_admin_user_not_exists(
     mock_user_repo.get_by_id.assert_called_once_with(mock_session, "nonexistent-user")
 
 
-class TestAuthenticateServiceNowScope:
-    ALLOWED = frozenset({("POST", "/v1/integrations/servicenow/budgets")})
+class TestAuthenticateProvisioningScope:
+    PROJECTS_PATH = "/v1/provisioning/projects"
+    OTHER_PATH = "/v1/other"
 
-    async def _authenticate_as(self, mocker, caller: User, method: str, path: str):
+    @pytest.fixture(autouse=True)
+    def provisioning_routes(self, monkeypatch):
+        monkeypatch.setattr(provisioning_access, "_provisioning_routes", frozenset({("GET", self.PROJECTS_PATH)}))
+
+    @staticmethod
+    def _request(mocker, path: str, headers: dict | None = None):
         request = mocker.MagicMock()
-        request.headers = {}
-        request.method = method
+        request.headers = headers or {}
+        request.method = "GET"
         request.scope = {"route": mocker.MagicMock(path=path)}
+        return request
+
+    async def _authenticate_external(self, mocker, caller: User, path: str):
         provider = MagicMock()
         provider.authenticate_and_load_user = AsyncMock(return_value=caller)
         with (
             patch("codemie.rest_api.security.authentication.get_user_provider", return_value=provider),
             patch("codemie.rest_api.security.authentication.IdpFactory"),
-            patch("codemie.rest_api.security.servicenow_access.config") as mock_config,
-            patch("codemie.rest_api.security.servicenow_access._allowed_routes", return_value=self.ALLOWED),
+            registered_clients(make_client()),
         ):
-            mock_config.SERVICENOW_INTEGRATION_ENABLED = True
-            mock_config.SERVICENOW_SERVICE_ACCOUNT_ID = "sn-sa-1"
-            return await authenticate(request, internal_user_id=None, bind_key=None)
+            return await authenticate(self._request(mocker, path), internal_user_id=None, bind_key=None)
 
     @pytest.mark.anyio
-    async def test_service_account_on_blocked_route_is_403(self, mocker):
-        caller = User(id="sn-sa-1", project_names=[])
-
+    async def test_client_off_the_provisioning_routes_is_403(self, mocker):
         with pytest.raises(ExtendedHTTPException) as exc_info:
-            await self._authenticate_as(mocker, caller, "GET", "/v1/admin/project-budget-groups")
+            await self._authenticate_external(mocker, User(id=CLIENT_USER_ID, project_names=[]), self.OTHER_PATH)
 
         assert exc_info.value.code == 403
 
     @pytest.mark.anyio
-    async def test_service_account_on_allowed_route_returns_user(self, mocker):
-        caller = User(id="sn-sa-1", project_names=[])
+    async def test_client_on_a_provisioning_route_returns_user(self, mocker):
+        caller = User(id=CLIENT_USER_ID, project_names=[])
 
-        result = await self._authenticate_as(mocker, caller, "POST", "/v1/integrations/servicenow/budgets")
-
-        assert result is caller
+        assert await self._authenticate_external(mocker, caller, self.PROJECTS_PATH) is caller
 
     @pytest.mark.anyio
-    async def test_regular_user_on_blocked_route_returns_user(self, mocker):
+    async def test_regular_user_off_the_provisioning_routes_returns_user(self, mocker):
         caller = User(id="u1", username="regular_user", project_names=[])
 
-        result = await self._authenticate_as(mocker, caller, "GET", "/v1/admin/project-budget-groups")
+        assert await self._authenticate_external(mocker, caller, self.OTHER_PATH) is caller
+
+    @pytest.mark.anyio
+    async def test_bind_key_branch_is_not_locked(self, mocker):
+        caller = User(id=CLIENT_USER_ID, project_names=[])
+        request = self._request(mocker, self.OTHER_PATH, headers={"X-Bind-Nonce": "nonce", "X-Bind-Timestamp": "1"})
+
+        with (
+            patch("codemie.rest_api.security.authentication._verify_internal_request"),
+            patch("codemie.rest_api.security.authentication.LocalIdp") as local_idp,
+            registered_clients(make_client()),
+        ):
+            local_idp.return_value.authenticate = AsyncMock(return_value=caller)
+            result = await authenticate(request, internal_user_id=CLIENT_USER_ID, bind_key="bind-key")
 
         assert result is caller
 

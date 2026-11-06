@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "task": "Add PUT/PATCH/DELETE /v1/provisioning/projects/{project_name}/budget as an all-or-nothing composite call on the moved caller-neutral budget service, with idempotent resend, required X-Change-Reference header, conditional manage-projects permission, and provisioning guide/AGENTS.md documentation.",
+  "generated": "2026-11-05T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 21,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Three write routes in the provisioning router package, new caller-neutral request/response models, the moved and renamed budget service, and a conditional permission check, all orchestrating existing project, cost-center, assignment and project-budget services across API and Service layers." },
+    { "dimension": "technical_risk", "reason": "Closest pattern is the ServiceNow POST /budgets flow; business logic is reusable but the all-or-nothing guarantee is not: checks that today run after commit 1 (budget-group validation, conflict re-plan) must move before it, the post-commit concurrent-creation conflict must map to 5xx, and resend must converge after a LiteLLM provider failure mid-categories with provider idempotency unverified. Base L, bumped to XL for the authorization rule." },
+    { "dimension": "file_change_estimate", "reason": "About 9 modified (provisioning router registration, ServiceNow router/models/service consumers, cost center service help text, verbatim log-string tests, OpenAPI baseline, endpoint-conventions guide, AGENTS.md) and about 6 new (budget routes, budget models, moved service, its tests, router tests, provisioning guide) across rest_api, service, tests and docs. Counts straddle L/XL; with the total on the 20/21 boundary and Technical Risk at XL, the borderline rule was applied by taking the higher reading. Matches the bundled L calibration example (epmcdme-10401, total 22)." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from L to XL: affects authorization — provisioning:manage-projects is required only when the call creates the project or carries a project block, and the closest pattern (ServiceNow POST /budgets) has no such conditional check"
+  ],
+  "split_recommendation": null
+}

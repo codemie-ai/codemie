@@ -947,3 +947,268 @@ async def test_update_project_budget_group_logs_on_scalar_only_edit():
     assert "project_budget_group_update_completed" in message
     assert "project_name='proj-a'" in message
     assert "updated_fields=['budget_duration', 'name']" in message
+
+
+_BUDGET_REPO = "codemie.service.budget.project_budget_service.budget_repository"
+_ASSIGNMENT_REPO = "codemie.service.budget.project_budget_service.project_budget_assignment_repository"
+_MEMBER_REPO = "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository"
+_PROVIDER_LOOKUP = "codemie.service.budget.project_budget_service.get_active_provider"
+_ACTIVITY_REPO = "codemie.service.budget.project_budget_service.activity_event_repository"
+_ASSIGNMENT = SimpleNamespace(project_name="proj-a", budget_category="cli")
+
+
+def _stored_project_budget(sync_status: str = SyncStatus.OK.value, provider_budget_ref: str | None = "ref-1"):
+    provider_metadata = {"provider": "litellm", "sync_status": sync_status}
+    if provider_budget_ref is not None:
+        provider_metadata["provider_budget_ref"] = provider_budget_ref
+    return SimpleNamespace(
+        budget_id="proj-budget-1",
+        budget_type="project",
+        budget_category="cli",
+        soft_budget=20.0,
+        max_budget=25.0,
+        budget_duration="30d",
+        budget_reset_at=None,
+        provider_metadata=provider_metadata,
+    )
+
+
+def _update_request(**fields):
+    defaults = {
+        "name": None,
+        "description": None,
+        "soft_budget": None,
+        "max_budget": None,
+        "budget_duration": None,
+        "models": None,
+    }
+    return SimpleNamespace(**{**defaults, **fields})
+
+
+def _synced_provider() -> SimpleNamespace:
+    return SimpleNamespace(
+        provider_name="litellm",
+        update_project_budget=AsyncMock(
+            return_value=BudgetProviderState(
+                provider="litellm", provider_budget_ref="ref-1", sync_status=SyncStatus.OK, metadata={}
+            )
+        ),
+    )
+
+
+def _noop_provider() -> SimpleNamespace:
+    return SimpleNamespace(provider_name="noop", update_project_budget=AsyncMock())
+
+
+def _member_allocation(sync_status: str) -> SimpleNamespace:
+    return SimpleNamespace(id=f"alloc-{sync_status}", sync_status=sync_status)
+
+
+def _stored_update(budget):
+    """Stand in for budget_repository.update: write the fields onto `budget`, as the database would."""
+
+    async def update(_session, _budget_id, fields):
+        for name, value in fields.items():
+            setattr(budget, name, value)
+        return budget
+
+    return AsyncMock(side_effect=update)
+
+
+async def _update_project_budget_with_stubs(budget, data, provider, allocations=()):
+    service = ProjectBudgetService()
+    with (
+        patch(f"{_BUDGET_REPO}.get_by_id", new=AsyncMock(return_value=budget)),
+        patch(f"{_BUDGET_REPO}.update", new=_stored_update(budget)),
+        patch(f"{_ASSIGNMENT_REPO}.get_active_by_budget_id", new=AsyncMock(return_value=_ASSIGNMENT)),
+        patch(f"{_MEMBER_REPO}.get_active_by_budget_id", new=AsyncMock(return_value=list(allocations))),
+        patch(_PROVIDER_LOOKUP, return_value=provider),
+        patch(f"{_ACTIVITY_REPO}.async_insert", new=AsyncMock()),
+        patch.object(service, "_legacy_carry_alias", new=AsyncMock(return_value=None)),
+        patch.object(service, "_resync_member_allocations", new=AsyncMock()) as resync_members,
+    ):
+        await service.update_project_budget(AsyncMock(), budget.budget_id, data, actor_id="actor-1")
+    return resync_members
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("sync_status", "provider_factory"),
+    [(SyncStatus.OK.value, _synced_provider), (SyncStatus.NOOP.value, _noop_provider)],
+    ids=["ok-under-litellm", "noop-under-noop"],
+)
+async def test_update_with_stored_values_makes_no_provider_call(sync_status, provider_factory):
+    provider = provider_factory()
+    data = _update_request(soft_budget=20.0, max_budget=25.0, budget_duration="30d")
+    # A pending member is pushed by the runtime sync, so it must not force a re-sync here.
+    members = [_member_allocation(SyncStatus.OK.value), _member_allocation(SyncStatus.PENDING.value)]
+
+    resync_members = await _update_project_budget_with_stubs(
+        _stored_project_budget(sync_status=sync_status), data, provider, allocations=members
+    )
+
+    provider.update_project_budget.assert_not_awaited()
+    resync_members.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_with_stored_values_retries_a_failed_member_push():
+    provider = _synced_provider()
+    data = _update_request(soft_budget=20.0, max_budget=25.0, budget_duration="30d")
+    members = [_member_allocation(SyncStatus.OK.value), _member_allocation(SyncStatus.FAILED.value)]
+
+    resync_members = await _update_project_budget_with_stubs(
+        _stored_project_budget(), data, provider, allocations=members
+    )
+
+    resync_members.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_provider_failure_on_update_is_stored_and_an_identical_resend_repairs_it():
+    budget = _stored_project_budget()
+    provider = _synced_provider()
+    provider.update_project_budget.side_effect = [
+        RuntimeError("provider down"),
+        provider.update_project_budget.return_value,
+    ]
+    data = _update_request(soft_budget=24.0, max_budget=30.0, budget_duration="30d")
+
+    await _update_project_budget_with_stubs(budget, data, provider)
+
+    assert budget.provider_metadata == {
+        "provider": "litellm",
+        "sync_status": SyncStatus.FAILED,
+        "provider_budget_ref": "ref-1",
+    }
+
+    await _update_project_budget_with_stubs(budget, data, provider)
+    await _update_project_budget_with_stubs(budget, data, provider)
+
+    assert provider.update_project_budget.await_count == 2
+    assert budget.provider_metadata["sync_status"] == SyncStatus.OK
+
+
+@pytest.mark.asyncio
+async def test_budget_synced_while_enforcement_was_off_is_pushed_once_under_litellm():
+    budget = _stored_project_budget(sync_status=SyncStatus.NOOP.value, provider_budget_ref=None)
+    budget.provider_metadata["provider"] = "noop"
+    provider = _synced_provider()
+    data = _update_request(soft_budget=20.0, max_budget=25.0, budget_duration="30d")
+
+    await _update_project_budget_with_stubs(budget, data, provider)
+    await _update_project_budget_with_stubs(budget, data, provider)
+
+    provider.update_project_budget.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_failed_member_push_is_marked_failed_for_the_next_update():
+    service = ProjectBudgetService()
+    session = AsyncMock()
+    alloc = SimpleNamespace(
+        id="alloc-1",
+        user_id="user-a",
+        project_name="proj-a",
+        budget_category="cli",
+        allocation_mode=AllocationMode.EQUAL.value,
+        provider_metadata={"provider": "litellm", "sync_status": SyncStatus.OK, "raw": {"provider_member_ref": "m-1"}},
+    )
+    budget = SimpleNamespace(budget_id="proj-budget-1", budget_duration="30d", budget_reset_at=None)
+    provider = SimpleNamespace(
+        provider_name="litellm", sync_member_allocation=AsyncMock(side_effect=RuntimeError("provider down"))
+    )
+
+    with (
+        patch(f"{_MEMBER_REPO}.update_allocation", new=AsyncMock(return_value=alloc)),
+        patch(f"{_MEMBER_REPO}.update_provider_metadata", new=AsyncMock()) as update_metadata,
+    ):
+        result = await service._resync_member_allocation(
+            session,
+            budget_id="proj-budget-1",
+            budget=budget,
+            alloc=alloc,
+            new_amounts=(25.0, 20.0),
+            effective_max_budget=None,
+            provider=provider,
+        )
+
+    assert result is None
+    update_metadata.assert_awaited_once_with(
+        session,
+        allocation_id="alloc-1",
+        provider_metadata={
+            "provider": "litellm",
+            "sync_status": SyncStatus.FAILED,
+            "raw": {"provider_member_ref": "m-1"},
+        },
+        sync_status=SyncStatus.FAILED,
+    )
+
+
+@pytest.mark.asyncio
+async def test_group_update_with_stored_values_makes_no_provider_call():
+    service = ProjectBudgetService()
+    provider = _synced_provider()
+    budget = _stored_project_budget()
+    categories = {"cli": SimpleNamespace(pct=100.0, soft_budget=20.0)}
+
+    with (
+        patch(f"{_BUDGET_REPO}.get_by_id", new=AsyncMock(return_value=budget)),
+        patch(f"{_BUDGET_REPO}.update", new=AsyncMock(return_value=budget)),
+        patch(f"{_ASSIGNMENT_REPO}.get_active_by_budget_id", new=AsyncMock(return_value=_ASSIGNMENT)),
+        patch(f"{_MEMBER_REPO}.get_active_by_budget_id", new=AsyncMock(return_value=[])),
+        patch(_PROVIDER_LOOKUP, return_value=provider),
+        patch(f"{_ACTIVITY_REPO}.async_insert", new=AsyncMock()),
+        patch.object(service, "_get_active_member_user_ids", new=AsyncMock(return_value=[])),
+        patch.object(service, "_legacy_carry_alias", new=AsyncMock(return_value=None)),
+        patch.object(service, "_resync_member_allocations", new=AsyncMock()),
+    ):
+        await service._update_group_categories(
+            AsyncMock(),
+            SimpleNamespace(project_name="proj-a"),
+            categories,
+            {"cli": SimpleNamespace(budget=budget)},
+            eff_total=25.0,
+            eff_duration="30d",
+            actor_id="actor-1",
+        )
+
+    provider.update_project_budget.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "amounts",
+    [
+        pytest.param({"soft_budget": 20.0, "max_budget": 25.0, "budget_duration": "30d"}, id="resent-same-amounts"),
+        pytest.param({}, id="no-amounts-in-request"),
+    ],
+)
+@pytest.mark.parametrize("sync_status", [SyncStatus.FAILED.value, SyncStatus.PENDING.value])
+async def test_update_after_unfinished_sync_resyncs(amounts, sync_status):
+    provider = _synced_provider()
+    budget = _stored_project_budget(sync_status=sync_status, provider_budget_ref=None)
+
+    resync_members = await _update_project_budget_with_stubs(budget, _update_request(**amounts), provider)
+
+    provider.update_project_budget.assert_awaited_once()
+    assert provider.update_project_budget.await_args.kwargs["budget_state"].provider_budget_ref is None
+    resync_members.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "changed_amount",
+    [{"max_budget": 30.0}, {"soft_budget": 22.5}, {"budget_duration": "60d"}],
+    ids=["max", "soft", "duration"],
+)
+async def test_update_with_changed_value_syncs_provider(changed_amount):
+    provider = _synced_provider()
+
+    resync_members = await _update_project_budget_with_stubs(
+        _stored_project_budget(), _update_request(**changed_amount), provider
+    )
+
+    provider.update_project_budget.assert_awaited_once()
+    resync_members.assert_awaited_once()

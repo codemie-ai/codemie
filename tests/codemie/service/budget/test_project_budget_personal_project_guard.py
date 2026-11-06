@@ -128,7 +128,7 @@ def _make_group_payload(project_name: str = "proj-x"):
         total_amount=100.0,
         budget_duration="30d",
         description=None,
-        categories={"platform": SimpleNamespace(pct=100.0)},
+        categories={"platform": SimpleNamespace(pct=100.0, soft_budget=None)},
         notification_owner_email=None,
         soft_limit_notify_once=False,
         soft_limit_notification_enabled=False,

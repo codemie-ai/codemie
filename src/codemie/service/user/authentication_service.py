@@ -389,10 +389,10 @@ class AuthenticationService:
             security.User with relationships populated
         """
         from codemie.clients.postgres import get_async_session
-        from codemie.rest_api.security.user_type_validator import is_personal_project_excluded
+        from codemie.rest_api.security.user_type_validator import is_personal_project_excluded_account
         from codemie.service.project.personal_project_service import personal_project_service
 
-        if not is_personal_project_excluded(security_user_ins.user_type):
+        if not is_personal_project_excluded_account(security_user_ins.id, security_user_ins.user_type):
             await personal_project_service.ensure_personal_project_async(security_user_ins.id, security_user_ins.email)
 
         async with get_async_session() as session:
@@ -725,7 +725,7 @@ class AuthenticationService:
         """
         from codemie.clients.postgres import get_async_session
         from codemie.rest_api.security.jwt_local import generate_access_token
-        from codemie.rest_api.security.user_type_validator import is_personal_project_excluded
+        from codemie.rest_api.security.user_type_validator import is_personal_project_excluded_account
         from codemie.service.project.personal_project_service import personal_project_service
 
         async with get_async_session() as session:
@@ -784,7 +784,7 @@ class AuthenticationService:
         # Story 9: Ensure personal project exists (local login flow, ISOLATED transaction)
         # FR-7.1: Personal project auto-created on authentication
         # Uses separate session to prevent rollback affecting authentication
-        if not is_personal_project_excluded(user_type):
+        if not is_personal_project_excluded_account(user_id, user_type):
             await personal_project_service.ensure_personal_project_async(user_id, user_email)
 
         access_token = generate_access_token(user_id, user_email, "local")

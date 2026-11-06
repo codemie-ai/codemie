@@ -786,3 +786,17 @@ def test_clear_project_on_deleted_groups_flushes_without_commit():
 
     session.flush.assert_called_once()
     session.commit.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("for_update", "locks"), [(False, False), (True, True)])
+async def test_get_active_group_by_project_locks_the_row_only_when_asked(for_update, locks):
+    repository = ProjectBudgetGroupRepository()
+    session = AsyncMock()
+    session.execute.return_value = MagicMock()
+
+    await repository.get_active_by_project(session, "my-project", for_update=for_update)
+
+    stmt = session.execute.call_args[0][0]
+    sql_text = str(stmt.compile(dialect=postgresql.dialect())).lower()
+    assert sql_text.endswith("for update") is locks

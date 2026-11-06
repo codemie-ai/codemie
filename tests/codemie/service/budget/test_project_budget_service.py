@@ -230,11 +230,13 @@ def test_changed_project_budget_fields_includes_only_provided_values():
 
 
 def test_effective_project_budget_values_fall_back_to_existing_budget_values():
-    budget = SimpleNamespace(soft_budget=5.0, max_budget=20.0, budget_duration="7d")
+    budget = SimpleNamespace(
+        soft_budget=5.0, max_budget=20.0, budget_duration="7d", provider_metadata={"sync_status": "ok"}
+    )
     request = SimpleNamespace(soft_budget=None, max_budget=25.0, budget_duration=None)
 
     eff_soft, eff_max, eff_duration, amounts_changed = ProjectBudgetService._effective_project_budget_values(
-        budget, request
+        budget, request, SimpleNamespace(provider_name="litellm")
     )
 
     assert (eff_soft, eff_max, eff_duration, amounts_changed) == (5.0, 25.0, "7d", True)
@@ -251,7 +253,7 @@ def test_validate_allocation_mode_rejects_invalid_value():
 async def test_sync_created_member_allocations_marks_failures():
     service = ProjectBudgetService()
     session = AsyncMock()
-    allocation = SimpleNamespace(id="alloc-1", user_id="user-1", allocated_max_budget=25.0)
+    allocation = SimpleNamespace(id="alloc-1", user_id="user-1", allocated_max_budget=25.0, provider_metadata=None)
     provider = SimpleNamespace(sync_member_allocation=AsyncMock(side_effect=RuntimeError("sync failed")))
 
     with patch(

@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "generated": "2026-11-05T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 24,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 33,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "New abstractions across one service: ProvisioningClientsConfig registry, provisioning_access (scope lock, provisioning_clients_only guard, RequirePermission), provisioning router package and ProvisioningService, plus edits to authenticate(), user_type_validator, authentication_service, personal_project_service and main.py, and removal of the ServiceNow router, access module and settings. Base L, bumped for touching the core authenticate() path." },
+    { "dimension": "technical_risk", "reason": "Authorization-sensitive: every registered client is confined to the provisioning router's (method, path) allowlist from inside authenticate(), with per-route permissions and fail-fast startup on a bad registry. The closest precedent, the ServiceNow-only service-account check, was replaced rather than reused, so there is no exact pattern. Base L, bumped for affecting auth/authz." },
+    { "dimension": "file_change_estimate", "reason": "33 files in the diffstat (1473+/1588-) across config/, src/codemie/{configs,rest_api,service} and tests/, which maps to XXL. The count is inflated by mirrored test files, the regenerated OpenAPI baseline and the ServiceNow deletions; the new production code is about 6 files." },
+    { "dimension": "calibration", "reason": "Agrees with the bundled L example epmcdme-10401 (22: registry + config + multi-layer). Differs from the bundled XL example epmcdme-10303 (27), which adds a heavyweight dependency and a cross-system integration. This change has neither: no new packages, and the repositories are reused unchanged." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from L to XL: affects authentication and authorization (scope lock enforced in authenticate(), per-route RequirePermission)",
+    "Component Scope bumped from L to XL: touches core shared utilities (authenticate() and is_service_account/user_type_validator, used by the auth and personal-project services)"
+  ],
+  "split_recommendation": null
+}

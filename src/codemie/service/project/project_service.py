@@ -252,6 +252,35 @@ class ProjectService:
         return project
 
     @classmethod
+    def link_cost_center_in_session(
+        cls,
+        session: Session,
+        *,
+        actor: User,
+        project: Application,
+        cost_center_id: UUID,
+    ) -> UUID | None:
+        """Link a cost center only while the project has no active one, inside the caller's transaction.
+
+        Does not commit; caller must authorize and validate the cost center. Returns the link actually
+        stored, which is another caller's when a concurrent link got there first.
+        """
+        linked = application_repository.set_cost_center_if_unset(session, project.id, cost_center_id)
+        session.refresh(project)
+        if linked:
+            activity_event_repository.insert(
+                ActivityEventCreate(
+                    domain=ActivityDomain.PROJECT_MANAGEMENT,
+                    event_type=ProjectManagementEvent.PROJECT_UPDATED,
+                    entity_type=ActivityEntityType.PROJECT,
+                    entity_id=project.name,
+                    actor_id=actor.id,
+                ),
+                session,
+            )
+        return project.cost_center_id
+
+    @classmethod
     def update_project(
         cls,
         user: User,

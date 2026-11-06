@@ -34,6 +34,7 @@ from codemie.rest_api.models.user_management import UserDB, UserProject
 from codemie.rest_api.security import user as security_user
 from codemie.service.activity.activity_models import UserManagementEvent
 from codemie.service.user.authentication_service import AuthenticationService, clear_auth_token_cache
+from tests.codemie.configs.provisioning_clients_support import CLIENT_USER_ID, make_client, registered_clients
 
 
 @pytest.fixture(autouse=True)
@@ -1566,6 +1567,37 @@ class TestFinalizeAuthenticationPersonalProjectGuard:
 
             mock_personal.ensure_personal_project_async.assert_called_once_with(user_id, "test@example.com")
 
+    @pytest.mark.asyncio
+    async def test_finalize_authentication_skips_personal_project_for_registered_client(self):
+        security_user_ins = security_user.User(
+            id=CLIENT_USER_ID,
+            username="client",
+            name="Provisioning Client",
+            email="client@example.com",
+            user_type="regular",
+            roles=[],
+            project_names=[],
+            admin_project_names=[],
+            knowledge_bases=[],
+            is_admin=False,
+        )
+
+        with (
+            patch("codemie.clients.postgres.get_async_session") as mock_get_session,
+            patch("codemie.service.user.authentication_service.user_project_repository") as mock_proj_repo,
+            patch("codemie.service.user.authentication_service.user_kb_repository") as mock_kb_repo,
+            patch("codemie.service.project.personal_project_service.personal_project_service") as mock_personal,
+            registered_clients(make_client()),
+        ):
+            mock_get_session.return_value = _make_async_session_cm(AsyncMock())
+            mock_proj_repo.aget_by_user_id = AsyncMock(return_value=[])
+            mock_kb_repo.aget_by_user_id = AsyncMock(return_value=[])
+            mock_personal.ensure_personal_project_async = AsyncMock()
+
+            await AuthenticationService._finalize_authentication(security_user_ins, "persistent")
+
+            mock_personal.ensure_personal_project_async.assert_not_called()
+
 
 class TestFinalizeAuthenticationDefaultProject:
     """The persistent/IdP login path must carry the default project (EPMCDME-15111 attribution)."""
@@ -1811,6 +1843,46 @@ class TestAuthenticateAndLogin:
 
             mock_personal.ensure_personal_project_async.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_skips_ensure_personal_project_for_registered_client(self):
+        email = "client@example.com"
+        password = "ValidPassword123"
+        mock_user = UserDB(
+            id=CLIENT_USER_ID,
+            username="client",
+            email=email,
+            name="Provisioning Client",
+            user_type="regular",
+            is_active=True,
+            is_admin=False,
+            auth_source="local",
+            email_verified=True,
+            password_hash="$argon2id$v=19$m=65536,t=3,p=4$hash",
+            last_login_at=None,
+            project_limit=10,
+        )
+
+        with (
+            patch("codemie.clients.postgres.get_async_session") as mock_get_session,
+            patch(
+                "codemie.service.user.authentication_service.AuthenticationService.authenticate_local",
+                new_callable=AsyncMock,
+            ) as mock_auth,
+            patch("codemie.service.user.authentication_service.user_project_repository") as mock_proj_repo,
+            patch("codemie.service.project.personal_project_service.personal_project_service") as mock_personal,
+            patch("codemie.rest_api.security.jwt_local.generate_access_token") as mock_gen_token,
+            registered_clients(make_client()),
+        ):
+            mock_get_session.return_value = _make_async_session_cm(AsyncMock())
+            mock_auth.return_value = mock_user
+            mock_proj_repo.aget_by_user_id = AsyncMock(return_value=[])
+            mock_personal.ensure_personal_project_async = AsyncMock()
+            mock_gen_token.return_value = "jwt-token-123"
+
+            await AuthenticationService.authenticate_and_login(email, password)
+
+            mock_personal.ensure_personal_project_async.assert_not_called()
+
 
 class TestAuthenticateTeamsSender:
     """Tests for authenticate_teams_sender() method"""
@@ -1901,11 +1973,11 @@ class TestAuthenticateTeamsSender:
             assert exc_info.value.code == 401
 
     @pytest.mark.asyncio
-    async def test_raises_401_when_resolved_user_is_servicenow_account_of_regular_type(self):
+    async def test_raises_401_when_resolved_user_is_registered_client_of_regular_type(self):
         mock_session = AsyncMock()
         db_user = MagicMock(
-            id="sn-sa-1",
-            email="servicenow@example.com",
+            id=CLIENT_USER_ID,
+            email="client@example.com",
             user_type="regular",
             is_active=True,
             deleted_at=None,
@@ -1914,15 +1986,13 @@ class TestAuthenticateTeamsSender:
         with (
             patch("codemie.clients.postgres.get_async_session") as mock_get_session,
             patch("codemie.service.user.authentication_service.user_repository") as mock_user_repo,
-            patch("codemie.rest_api.security.servicenow_access.config") as mock_config,
+            registered_clients(make_client()),
         ):
             mock_get_session.return_value = _make_async_session_cm(mock_session)
             mock_user_repo.aget_by_email = AsyncMock(return_value=db_user)
-            mock_config.SERVICENOW_INTEGRATION_ENABLED = True
-            mock_config.SERVICENOW_SERVICE_ACCOUNT_ID = "sn-sa-1"
 
             with pytest.raises(ExtendedHTTPException) as exc_info:
-                await AuthenticationService.authenticate_teams_sender("servicenow@example.com")
+                await AuthenticationService.authenticate_teams_sender("client@example.com")
 
             assert exc_info.value.code == 401
 

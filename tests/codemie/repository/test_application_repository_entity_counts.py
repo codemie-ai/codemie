@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for ApplicationRepository.get_project_entity_counts_bulk and update_fields."""
+"""Unit tests for ApplicationRepository.get_project_entity_counts_bulk, update_fields and set_cost_center_if_unset."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
+from uuid import uuid4
 
 from sqlalchemy.dialects import postgresql
 
@@ -312,3 +313,57 @@ class TestApplicationRepositoryUpdateFields:
 
         # update_date should have been changed from the old value
         assert app.update_date != old_update_date
+
+
+# ---------------------------------------------------------------------------
+# Tests for ApplicationRepository.set_cost_center_if_unset
+# ---------------------------------------------------------------------------
+
+
+class TestApplicationRepositorySetCostCenterIfUnset:
+    """Tests for ApplicationRepository.set_cost_center_if_unset."""
+
+    def test_updates_only_the_live_row_without_an_active_link(self):
+        """The guard is what makes the link race-safe; a link to a deleted cost center counts as none, and a project
+        deleted after it was read is not linked."""
+        mock_session = MagicMock()
+        cost_center_id = uuid4()
+
+        application_repository.set_cost_center_if_unset(mock_session, "my-project", cost_center_id)
+
+        statement = mock_session.execute.call_args.args[0]
+        set_clause, where_clause = _compile_sql(statement).split(" where ")
+        assert set_clause.startswith("update applications set")
+        assert f"cost_center_id='{cost_center_id}'" in set_clause
+        assert " ".join(where_clause.split()) == (
+            "applications.id = 'my-project' and applications.deleted_at is null and (applications.cost_center_id is "
+            "null or applications.cost_center_id in (select cost_centers.id from cost_centers where "
+            "cost_centers.deleted_at is not null))"
+        )
+
+    def test_update_date_is_timezone_aware_utc(self):
+        mock_session = MagicMock()
+
+        application_repository.set_cost_center_if_unset(mock_session, "my-project", uuid4())
+
+        update_date = mock_session.execute.call_args.args[0].compile().params["update_date"]
+        assert update_date.utcoffset() == timedelta(0)
+
+    def test_returns_true_when_the_row_was_updated(self):
+        mock_session = MagicMock()
+        mock_session.execute.return_value.rowcount = 1
+
+        assert application_repository.set_cost_center_if_unset(mock_session, "my-project", uuid4()) is True
+
+    def test_returns_false_when_the_project_is_already_linked(self):
+        mock_session = MagicMock()
+        mock_session.execute.return_value.rowcount = 0
+
+        assert application_repository.set_cost_center_if_unset(mock_session, "my-project", uuid4()) is False
+
+    def test_does_not_commit(self):
+        mock_session = MagicMock()
+
+        application_repository.set_cost_center_if_unset(mock_session, "my-project", uuid4())
+
+        mock_session.commit.assert_not_called()

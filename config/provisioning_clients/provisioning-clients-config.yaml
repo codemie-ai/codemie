@@ -1,0 +1,30 @@
+# Provisioning clients: third-party systems allowed to call the /v1/provisioning API.
+#
+# This repository copy ships empty; never add entries here. A deployment lists its clients in its own
+# file, mounted over this one or placed in the directory that PROVISIONING_CLIENTS_CONFIG_DIR names.
+#
+# A client is matched by user_id, which is its CodeMie user id: the token subject (`sub`), a UUID.
+# It is NOT the username or the IdP client name. Every listed id is confined to /v1/provisioning
+# (403 elsewhere), whatever PROVISIONING_API_ENABLED says. Internal calls signed with the bind key
+# are exempt from this lock. Startup fails on any invalid entry.
+#
+# name: at most 35 characters; it names the client in log lines and, with the change reference, in the
+# name of a budget the client creates.
+#
+# permissions (any subset, [] allowed):
+#   provisioning:read-projects, provisioning:manage-projects, provisioning:manage-budgets
+#
+# Lifecycle:
+# - Only listed ids are confined, so deleting an entry releases the account.
+# - Onboarding: the entry reaches every workload before the third party receives its credentials.
+# - Offboarding: stop and revoke the client's tokens first (below), then set its permissions to [].
+# - Apply a change by a rollout restart, right after the edit, of every workload that runs the API
+#   image: api, ds-pool, proxy-pool. A bad file then stalls the rollout while the old pods keep serving.
+# - Tokens are validated offline. Disabling the client's IdP client stops new tokens, but tokens
+#   already issued stay valid until they expire. Deactivating its CodeMie user revokes those too:
+#   they get 401 within AUTH_TOKEN_CACHE_TTL.
+provisioning_clients: []
+  # - name: support-portal
+  #   user_id: "00000000-0000-0000-0000-000000000000"
+  #   permissions:
+  #     - provisioning:read-projects

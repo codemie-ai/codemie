@@ -52,6 +52,12 @@ class BudgetRepository:
         result = await session.execute(stmt)
         return result.scalars().first()
 
+    async def get_active_by_name(self, session: AsyncSession, name: str) -> Budget | None:
+        """Return the active Budget holding `name`, which is unique among active budgets, or None."""
+        stmt = select(Budget).where(Budget.name == name, Budget.deleted_at.is_(None))
+        result = await session.execute(stmt)
+        return result.scalars().first()
+
     async def get_child_budget(
         self,
         session: AsyncSession,

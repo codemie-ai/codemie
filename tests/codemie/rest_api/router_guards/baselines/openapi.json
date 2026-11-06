@@ -23713,6 +23713,363 @@
         "title": "ProviderToolkitMetadata",
         "type": "object"
       },
+      "ProvisioningBudgetCategoryResponse": {
+        "properties": {
+          "budget_reset_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the budget next resets (ISO 8601), or null when not yet known.",
+            "examples": [
+              "2026-11-18T00:00:00Z"
+            ],
+            "title": "Budget Reset At"
+          },
+          "category": {
+            "$ref": "#/components/schemas/BudgetCategory",
+            "description": "Budget category.",
+            "examples": [
+              "platform"
+            ]
+          },
+          "max_budget": {
+            "description": "Hard monthly limit in USD.",
+            "examples": [
+              500.0
+            ],
+            "title": "Max Budget",
+            "type": "number"
+          },
+          "soft_budget": {
+            "description": "Monthly soft limit in USD.",
+            "examples": [
+              400.0
+            ],
+            "title": "Soft Budget",
+            "type": "number"
+          }
+        },
+        "required": [
+          "category",
+          "max_budget",
+          "soft_budget"
+        ],
+        "title": "ProvisioningBudgetCategoryResponse",
+        "type": "object"
+      },
+      "ProvisioningBudgetGroupResponse": {
+        "properties": {
+          "budget_duration": {
+            "description": "Budget period.",
+            "examples": [
+              "30d"
+            ],
+            "title": "Budget Duration",
+            "type": "string"
+          },
+          "categories": {
+            "description": "Budget state per category.",
+            "items": {
+              "$ref": "#/components/schemas/ProvisioningBudgetCategoryResponse"
+            },
+            "title": "Categories",
+            "type": "array"
+          },
+          "total_amount": {
+            "description": "Sum of the category limits in USD.",
+            "examples": [
+              650.0
+            ],
+            "title": "Total Amount",
+            "type": "number"
+          }
+        },
+        "required": [
+          "total_amount",
+          "budget_duration",
+          "categories"
+        ],
+        "title": "ProvisioningBudgetGroupResponse",
+        "type": "object"
+      },
+      "ProvisioningBudgetRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "amounts": {
+            "additionalProperties": {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            "description": "Monthly budget per category in USD (platform, cli, premium_models). At least one category.",
+            "examples": [
+              {
+                "cli": 100,
+                "platform": 500,
+                "premium_models": 50
+              }
+            ],
+            "minProperties": 1,
+            "propertyNames": {
+              "$ref": "#/components/schemas/BudgetCategory"
+            },
+            "title": "Amounts",
+            "type": "object"
+          },
+          "project": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProvisioningProjectBlock"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Project settings applied together with the budget. Optional."
+          }
+        },
+        "required": [
+          "amounts"
+        ],
+        "title": "ProvisioningBudgetRequest",
+        "type": "object"
+      },
+      "ProvisioningBudgetResponse": {
+        "properties": {
+          "admins_assigned": {
+            "description": "Requested emails whose user is a project admin after the call, including existing admins.",
+            "examples": [
+              [
+                "approver@example.com"
+              ]
+            ],
+            "items": {
+              "type": "string"
+            },
+            "title": "Admins Assigned",
+            "type": "array"
+          },
+          "admins_not_assigned": {
+            "description": "Requested emails with no active, non-service-account user, who therefore were not made admins.",
+            "examples": [
+              [
+                "requester@example.com"
+              ]
+            ],
+            "items": {
+              "type": "string"
+            },
+            "title": "Admins Not Assigned",
+            "type": "array"
+          },
+          "budget": {
+            "$ref": "#/components/schemas/ProvisioningBudgetGroupResponse",
+            "description": "The project budget after the call."
+          },
+          "cost_center": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Name of the cost center the project is linked to after the call, or null.",
+            "examples": [
+              "eng-123"
+            ],
+            "title": "Cost Center"
+          },
+          "created_budget": {
+            "description": "True when the call created the budget.",
+            "title": "Created Budget",
+            "type": "boolean"
+          },
+          "created_cost_center": {
+            "description": "True when the call created the cost center.",
+            "title": "Created Cost Center",
+            "type": "boolean"
+          },
+          "created_project": {
+            "description": "True when the call created the project.",
+            "title": "Created Project",
+            "type": "boolean"
+          },
+          "project_name": {
+            "description": "CodeMie project name as stored (unique). A name not created by this API, such as a legacy one, may have upper-case letters.",
+            "examples": [
+              "epm-aimf"
+            ],
+            "title": "Project Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_name",
+          "cost_center",
+          "created_project",
+          "created_cost_center",
+          "created_budget",
+          "budget",
+          "admins_assigned",
+          "admins_not_assigned"
+        ],
+        "title": "ProvisioningBudgetResponse",
+        "type": "object"
+      },
+      "ProvisioningBudgetSetRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "amounts": {
+            "additionalProperties": {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            "description": "Monthly budget per category in USD (platform, cli, premium_models). At least one category.",
+            "examples": [
+              {
+                "cli": 100,
+                "platform": 500,
+                "premium_models": 50
+              }
+            ],
+            "minProperties": 1,
+            "propertyNames": {
+              "$ref": "#/components/schemas/BudgetCategory"
+            },
+            "title": "Amounts",
+            "type": "object"
+          },
+          "project": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProvisioningProjectBlock"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Project settings applied together with the budget. Optional."
+          }
+        },
+        "required": [
+          "amounts"
+        ],
+        "title": "ProvisioningBudgetSetRequest",
+        "type": "object"
+      },
+      "ProvisioningProjectBlock": {
+        "additionalProperties": false,
+        "properties": {
+          "admin_emails": {
+            "description": "People to make project admins. Matched to users case-insensitively, so an email repeated in any case counts once, as first sent.",
+            "examples": [
+              [
+                "requester@example.com"
+              ]
+            ],
+            "items": {
+              "format": "email",
+              "type": "string"
+            },
+            "title": "Admin Emails",
+            "type": "array"
+          },
+          "cost_center": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "minLength": 3,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Cost center to link the project to while it has no active one (none, or a deleted one). Ignored when the project is linked to an active cost center; otherwise it must match `^[a-z0-9]+-[a-z0-9]+$`, else 400.",
+            "examples": [
+              "eng-123"
+            ],
+            "title": "Cost Center"
+          }
+        },
+        "title": "ProvisioningProjectBlock",
+        "type": "object"
+      },
+      "ProvisioningProjectResponse": {
+        "properties": {
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Human-readable project name, or null when the project has none.",
+            "examples": [
+              "AI Multimodal Framework"
+            ],
+            "title": "Display Name"
+          },
+          "project_name": {
+            "description": "CodeMie project name as stored (unique). A name not created by this API, such as a legacy one, may have upper-case letters.",
+            "examples": [
+              "epm-aimf"
+            ],
+            "title": "Project Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_name"
+        ],
+        "title": "ProvisioningProjectResponse",
+        "type": "object"
+      },
+      "ProvisioningValidationErrorBody": {
+        "properties": {
+          "details": {
+            "description": "One entry per validation problem: loc, msg and type.",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Details",
+            "type": "array"
+          },
+          "message": {
+            "description": "Summary of the first validation problems.",
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message",
+          "details"
+        ],
+        "title": "ProvisioningValidationErrorBody",
+        "type": "object"
+      },
+      "ProvisioningValidationErrorResponse": {
+        "description": "Body of the platform's 422 answer, documented for OpenAPI only.",
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ProvisioningValidationErrorBody"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "title": "ProvisioningValidationErrorResponse",
+        "type": "object"
+      },
       "PublishToMarketplaceResponse": {
         "description": "Result of a publish attempt.\n\nUnder the approval gate a publish is a *submission*, so the caller needs\nmore than a sentence: which state the assistant landed in, when it entered\nthe queue, and what the deterministic gates found (OPTIONAL findings are\nadvisory and are returned for acknowledgment rather than blocking).\n`message` keeps its existing meaning and position for existing clients.",
         "properties": {
@@ -25459,270 +25816,6 @@
           }
         },
         "title": "SecurityScheme",
-        "type": "object"
-      },
-      "ServiceNowBudgetAction": {
-        "description": "Budget action requested by ServiceNow.",
-        "enum": [
-          "set",
-          "adjust",
-          "cancel"
-        ],
-        "title": "ServiceNowBudgetAction",
-        "type": "string"
-      },
-      "ServiceNowBudgetCategoryResponse": {
-        "properties": {
-          "budget_reset_at": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Next reset time, or null.",
-            "title": "Budget Reset At"
-          },
-          "category": {
-            "$ref": "#/components/schemas/BudgetCategory",
-            "description": "Budget category."
-          },
-          "max_budget": {
-            "description": "Monthly limit.",
-            "title": "Max Budget",
-            "type": "number"
-          },
-          "soft_budget": {
-            "description": "Warning threshold; 80% of the limit unless one was already set.",
-            "title": "Soft Budget",
-            "type": "number"
-          }
-        },
-        "required": [
-          "category",
-          "max_budget",
-          "soft_budget"
-        ],
-        "title": "ServiceNowBudgetCategoryResponse",
-        "type": "object"
-      },
-      "ServiceNowBudgetGroupResponse": {
-        "properties": {
-          "budget_duration": {
-            "description": "Budget period; 30d for budgets created by this integration.",
-            "title": "Budget Duration",
-            "type": "string"
-          },
-          "categories": {
-            "description": "Budget per category.",
-            "items": {
-              "$ref": "#/components/schemas/ServiceNowBudgetCategoryResponse"
-            },
-            "title": "Categories",
-            "type": "array"
-          },
-          "total_amount": {
-            "description": "Sum of all category budgets.",
-            "title": "Total Amount",
-            "type": "number"
-          }
-        },
-        "required": [
-          "total_amount",
-          "budget_duration",
-          "categories"
-        ],
-        "title": "ServiceNowBudgetGroupResponse",
-        "type": "object"
-      },
-      "ServiceNowBudgetRequest": {
-        "properties": {
-          "action": {
-            "$ref": "#/components/schemas/ServiceNowBudgetAction",
-            "description": "set replaces the budget, adjust merges into it, cancel deletes it."
-          },
-          "admin_emails": {
-            "description": "People to make project admins (requester and approvers). Ignored by cancel.",
-            "items": {
-              "format": "email",
-              "type": "string"
-            },
-            "title": "Admin Emails",
-            "type": "array"
-          },
-          "amounts": {
-            "anyOf": [
-              {
-                "additionalProperties": {
-                  "minimum": 0.0,
-                  "type": "number"
-                },
-                "propertyNames": {
-                  "$ref": "#/components/schemas/BudgetCategory"
-                },
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Monthly budget per category in USD (platform, cli, premium_models). Required for set and adjust; set must include platform > 0. Ignored by cancel.",
-            "examples": [
-              {
-                "cli": 100,
-                "platform": 500,
-                "premium_models": 50
-              }
-            ],
-            "title": "Amounts"
-          },
-          "codemie_project_name": {
-            "anyOf": [
-              {
-                "maxLength": 100,
-                "minLength": 3,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "CodeMie project to manage. Optional; defaults to epam_project_code. Case-insensitive.",
-            "examples": [
-              "epm-aimf"
-            ],
-            "title": "Codemie Project Name"
-          },
-          "epam_project_code": {
-            "description": "EPAM project code. Used as the CodeMie project name when codemie_project_name is omitted; when the two differ, it names the cost center a new project is linked to. Case-insensitive.",
-            "examples": [
-              "nbs-cmpa"
-            ],
-            "maxLength": 100,
-            "minLength": 3,
-            "title": "Epam Project Code",
-            "type": "string"
-          },
-          "request_id": {
-            "description": "ServiceNow request number, used for audit logs and the name of a newly created budget.",
-            "examples": [
-              "RITM0012345"
-            ],
-            "maxLength": 64,
-            "minLength": 1,
-            "title": "Request Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "action",
-          "request_id",
-          "epam_project_code"
-        ],
-        "title": "ServiceNowBudgetRequest",
-        "type": "object"
-      },
-      "ServiceNowBudgetResponse": {
-        "properties": {
-          "admins_assigned": {
-            "description": "Requested emails whose users are project admins after the request, including those who already were.",
-            "items": {
-              "type": "string"
-            },
-            "title": "Admins Assigned",
-            "type": "array"
-          },
-          "admins_pending": {
-            "description": "Requested emails that couldn't be assigned: no active CodeMie user (they haven't signed in yet) or a service account.",
-            "items": {
-              "type": "string"
-            },
-            "title": "Admins Pending",
-            "type": "array"
-          },
-          "budget": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/ServiceNowBudgetGroupResponse"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Budget after the request, or null after cancel."
-          },
-          "cost_center": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Cost center the project is linked to, or null.",
-            "title": "Cost Center"
-          },
-          "created_cost_center": {
-            "description": "Whether this request created the cost center.",
-            "title": "Created Cost Center",
-            "type": "boolean"
-          },
-          "created_project": {
-            "description": "Whether this request created the project.",
-            "title": "Created Project",
-            "type": "boolean"
-          },
-          "project_name": {
-            "description": "Project the request was applied to, as stored in CodeMie.",
-            "title": "Project Name",
-            "type": "string"
-          }
-        },
-        "required": [
-          "project_name",
-          "cost_center",
-          "created_project",
-          "created_cost_center",
-          "budget",
-          "admins_assigned",
-          "admins_pending"
-        ],
-        "title": "ServiceNowBudgetResponse",
-        "type": "object"
-      },
-      "ServiceNowProjectResponse": {
-        "properties": {
-          "display_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Human-readable project name, or null when the project has none.",
-            "examples": [
-              "AI Multimodal Framework"
-            ],
-            "title": "Display Name"
-          },
-          "project_name": {
-            "description": "CodeMie project name (unique, lowercase).",
-            "examples": [
-              "epm-aimf"
-            ],
-            "title": "Project Name",
-            "type": "string"
-          }
-        },
-        "required": [
-          "project_name"
-        ],
-        "title": "ServiceNowProjectResponse",
         "type": "object"
       },
       "SettingDeclarationResponse": {
@@ -68264,197 +68357,6 @@
         ]
       }
     },
-    "/v1/integrations/servicenow/budgets": {
-      "post": {
-        "description": "Applies an approved ServiceNow request to a project's monthly budget.\n\n| `action` | Missing project | Missing budget | Existing budget |\n|---|---|---|---|\n| `set` | created (+ cost center when the names differ) | created | **replaced**: categories not sent are removed |\n| `adjust` | created (+ cost center when the names differ) | created from the request | **merged**: categories not sent are kept; `0` removes one |\n| `cancel` | 404 | nothing to do (200) | deleted |\n\n- `set` and `adjust` make every `admin_emails` user a project admin. Unknown and service-account emails are reported in `admins_pending`. `cancel` ignores `admin_emails` and `amounts`.\n- Every check runs before anything is written: a request that fails changes nothing.\n- An existing project is never renamed, and its cost center link never changes.\n- Requests are safe to retry: the same input produces the same final state.\n\nCallable only by the ServiceNow integration service account.",
-        "operationId": "apply_servicenow_budget_v1_integrations_servicenow_budgets_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "examples": {
-                "adjust": {
-                  "summary": "Adjust one category",
-                  "value": {
-                    "action": "adjust",
-                    "amounts": {
-                      "cli": 200
-                    },
-                    "codemie_project_name": "epm-aimf",
-                    "epam_project_code": "nbs-cmpa",
-                    "request_id": "RITM0012346"
-                  }
-                },
-                "cancel": {
-                  "summary": "Cancel the budget",
-                  "value": {
-                    "action": "cancel",
-                    "codemie_project_name": "epm-aimf",
-                    "epam_project_code": "nbs-cmpa",
-                    "request_id": "RITM0012347"
-                  }
-                },
-                "set": {
-                  "summary": "Set a new budget",
-                  "value": {
-                    "action": "set",
-                    "admin_emails": [
-                      "requester@epam.com",
-                      "approver@epam.com"
-                    ],
-                    "amounts": {
-                      "cli": 100,
-                      "platform": 500,
-                      "premium_models": 50
-                    },
-                    "codemie_project_name": "epm-aimf",
-                    "epam_project_code": "nbs-cmpa",
-                    "request_id": "RITM0012345"
-                  }
-                }
-              },
-              "schema": {
-                "$ref": "#/components/schemas/ServiceNowBudgetRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServiceNowBudgetResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "A project or cost center name to be created is invalid, or an adjust would leave platform at 0."
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "The caller is not the ServiceNow service account, the project is a personal project, or a cost center is needed while cost centers are disabled."
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "cancel on a project that doesn't exist."
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "The name belongs to a deleted project or cost center."
-          },
-          "422": {
-            "description": "Invalid request body (unknown category, negative or non-finite amount, missing amounts, set without platform, invalid email)."
-          }
-        },
-        "security": [
-          {
-            "user-id": []
-          },
-          {
-            "X-Bind-Key": []
-          }
-        ],
-        "summary": "Apply a ServiceNow budget request to a project",
-        "tags": [
-          "ServiceNow Integration"
-        ]
-      }
-    },
-    "/v1/integrations/servicenow/projects": {
-      "get": {
-        "description": "Returns the CodeMie projects that any of the given users belong to. Personal projects are excluded.\n\nThe result is the deduplicated union across all emails, sorted by project name. Emails with no active CodeMie user are skipped; if no email matches, the response is an empty list.\n\nCallable only by the ServiceNow integration service account.",
-        "operationId": "list_servicenow_projects_v1_integrations_servicenow_projects_get",
-        "parameters": [
-          {
-            "description": "Requester and approver emails. Letter case and surrounding spaces are ignored.",
-            "in": "query",
-            "name": "emails",
-            "required": true,
-            "schema": {
-              "description": "Requester and approver emails. Letter case and surrounding spaces are ignored.",
-              "examples": [
-                "requester@epam.com"
-              ],
-              "items": {
-                "format": "email",
-                "type": "string"
-              },
-              "title": "Emails",
-              "type": "array"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/ServiceNowProjectResponse"
-                  },
-                  "title": "Response List Servicenow Projects V1 Integrations Servicenow Projects Get",
-                  "type": "array"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "The caller is not the ServiceNow integration service account."
-          },
-          "422": {
-            "description": "Invalid query: no emails or an invalid email."
-          }
-        },
-        "security": [
-          {
-            "user-id": []
-          },
-          {
-            "X-Bind-Key": []
-          }
-        ],
-        "summary": "List projects for the given users",
-        "tags": [
-          "ServiceNow Integration"
-        ]
-      }
-    },
     "/v1/katas": {
       "get": {
         "description": "List katas with pagination and filtering, including user progress.\n\nFilters format (JSON encoded string):\n{\n    \"search\": \"text to search in title/description\",\n    \"level\": \"beginner|intermediate|advanced\",\n    \"tags\": [\"tag1\", \"tag2\"],\n    \"roles\": [\"role1\", \"role2\"],\n    \"status\": \"draft|published|archived\",  # Only admins can filter by draft/archived\n    \"author\": \"user_id\",\n    \"progress_status\": \"not_started|in_progress|completed\"  # Filter by user's progress\n}\n\nNote:\n- Regular users can only see published katas\n- Admins can filter by any status (draft, published, archived)\n- progress_status filters katas based on the current user's enrollment status\n\nArgs:\n    page: Page number (1-indexed)\n    per_page: Items per page (max 100)\n    filters: Optional JSON-encoded filter object\n    user: Authenticated user\n\nReturns:\n    Paginated list of katas with user progress info",
@@ -73211,6 +73113,461 @@
         "summary": "Update Provider",
         "tags": [
           "Provider"
+        ]
+      }
+    },
+    "/v1/provisioning/projects": {
+      "get": {
+        "description": "Returns the CodeMie projects that any of the given people belong to. Personal projects are excluded.\n\nThe result is the deduplicated union across all emails, sorted by project name. Emails with no active CodeMie user and service-account emails are skipped; if no email matches, the response is an empty list.\n\nCallable only by registered provisioning clients holding `provisioning:read-projects`.",
+        "operationId": "list_member_projects_v1_provisioning_projects_get",
+        "parameters": [
+          {
+            "description": "Email of a person whose projects to list; repeat for several. Matched case-insensitively.",
+            "in": "query",
+            "name": "member_email",
+            "required": true,
+            "schema": {
+              "description": "Email of a person whose projects to list; repeat for several. Matched case-insensitively.",
+              "examples": [
+                "requester@epam.com"
+              ],
+              "items": {
+                "format": "email",
+                "type": "string"
+              },
+              "title": "Member Email",
+              "type": "array"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ProvisioningProjectResponse"
+                  },
+                  "title": "Response List Member Projects V1 Provisioning Projects Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The caller is not a registered provisioning client holding provisioning:read-projects."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProvisioningValidationErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid query: no member_email or an invalid email."
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "List projects for the given people",
+        "tags": [
+          "Provisioning"
+        ]
+      }
+    },
+    "/v1/provisioning/projects/{project_name}/budget": {
+      "delete": {
+        "description": "Deletes the project's budget. A project without a budget is not an error: the answer is still 204. A project that does not exist is 404.\n\nEvery check runs before anything is written, so a 4xx means nothing changed. After a 500 send the same request again.\n\nCallable only by registered provisioning clients holding `provisioning:manage-budgets`.",
+        "operationId": "cancel_project_budget_v1_provisioning_projects__project_name__budget_delete",
+        "parameters": [
+          {
+            "description": "CodeMie project name, used exactly as sent; 3-100 characters. An existing project is matched regardless of case and the response names it as stored. A project the call creates needs a name matching `^[a-z0-9][a-z0-9_-]*$` that is not reserved, else 400.",
+            "in": "path",
+            "name": "project_name",
+            "required": true,
+            "schema": {
+              "description": "CodeMie project name, used exactly as sent; 3-100 characters. An existing project is matched regardless of case and the response names it as stored. A project the call creates needs a name matching `^[a-z0-9][a-z0-9_-]*$` that is not reserved, else 400.",
+              "examples": [
+                "epm-aimf"
+              ],
+              "maxLength": 100,
+              "minLength": 3,
+              "title": "Project Name",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The caller's reference for this change. It names a new budget and is logged. 1-64 characters.",
+            "in": "header",
+            "name": "X-Change-Reference",
+            "required": true,
+            "schema": {
+              "description": "The caller's reference for this change. It names a new budget and is logged. 1-64 characters.",
+              "examples": [
+                "CHG0012345"
+              ],
+              "maxLength": 64,
+              "minLength": 1,
+              "title": "X-Change-Reference",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The caller is not a registered provisioning client holding provisioning:manage-budgets, or the project is a personal one."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The project does not exist."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The project is deleted."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProvisioningValidationErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid project name or X-Change-Reference header."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The cancel did not complete; send the same request again."
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Cancel a project's budget",
+        "tags": [
+          "Provisioning"
+        ]
+      },
+      "patch": {
+        "description": "Merges the given amounts into the project's budget: a category listed changes, a category left out keeps its amount, and 0 removes a category. The merged `platform` amount must stay above 0. Creates the project and the budget when missing.\n\nAlways answers 200. Every check runs before anything is written, so a 4xx means nothing changed. After a 500 or 502 the call is partly applied: send the same request again.\n\nCallable only by registered provisioning clients holding `provisioning:manage-budgets`. A call that would create the project, or that names a cost center or admins, also needs `provisioning:manage-projects`.",
+        "operationId": "adjust_project_budget_v1_provisioning_projects__project_name__budget_patch",
+        "parameters": [
+          {
+            "description": "CodeMie project name, used exactly as sent; 3-100 characters. An existing project is matched regardless of case and the response names it as stored. A project the call creates needs a name matching `^[a-z0-9][a-z0-9_-]*$` that is not reserved, else 400.",
+            "in": "path",
+            "name": "project_name",
+            "required": true,
+            "schema": {
+              "description": "CodeMie project name, used exactly as sent; 3-100 characters. An existing project is matched regardless of case and the response names it as stored. A project the call creates needs a name matching `^[a-z0-9][a-z0-9_-]*$` that is not reserved, else 400.",
+              "examples": [
+                "epm-aimf"
+              ],
+              "maxLength": 100,
+              "minLength": 3,
+              "title": "Project Name",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The caller's reference for this change. It names a new budget and is logged. 1-64 characters.",
+            "in": "header",
+            "name": "X-Change-Reference",
+            "required": true,
+            "schema": {
+              "description": "The caller's reference for this change. It names a new budget and is logged. 1-64 characters.",
+              "examples": [
+                "CHG0012345"
+              ],
+              "maxLength": 64,
+              "minLength": 1,
+              "title": "X-Change-Reference",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProvisioningBudgetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProvisioningBudgetResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The amounts do not make a valid budget, the new project's name is invalid, or the cost center name is invalid."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The caller is not a registered provisioning client holding provisioning:manage-budgets, or the call would create the project or carries a project block naming a cost center or admins and the client lacks provisioning:manage-projects, or the project is a personal one, or cost centers are disabled and the call would create or link a cost center."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The project or the named cost center is deleted."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProvisioningValidationErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid project name, X-Change-Reference header or body."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The call was partly applied; send the same request again."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The budget provider sync failed; the call was partly applied. Send the same request again."
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Adjust a project's budget",
+        "tags": [
+          "Provisioning"
+        ]
+      },
+      "put": {
+        "description": "Replaces the amounts of the project's budget with the given ones, creating the project and the budget when missing. A category left out gets 0; `platform` must be above 0. An existing budget keeps its period; a new budget gets a 30-day period.\n\nThe optional `project` block links the project to a cost center while it has no active one and makes the listed people project admins.\n\nAnswers 201 when the call created the budget and 200 when it replaced one. Every check runs before anything is written, so a 4xx means nothing changed. After a 500 or 502 the call is partly applied: send the same request again.\n\nCallable only by registered provisioning clients holding `provisioning:manage-budgets`. A call that would create the project, or that names a cost center or admins, also needs `provisioning:manage-projects`.",
+        "operationId": "set_project_budget_v1_provisioning_projects__project_name__budget_put",
+        "parameters": [
+          {
+            "description": "CodeMie project name, used exactly as sent; 3-100 characters. An existing project is matched regardless of case and the response names it as stored. A project the call creates needs a name matching `^[a-z0-9][a-z0-9_-]*$` that is not reserved, else 400.",
+            "in": "path",
+            "name": "project_name",
+            "required": true,
+            "schema": {
+              "description": "CodeMie project name, used exactly as sent; 3-100 characters. An existing project is matched regardless of case and the response names it as stored. A project the call creates needs a name matching `^[a-z0-9][a-z0-9_-]*$` that is not reserved, else 400.",
+              "examples": [
+                "epm-aimf"
+              ],
+              "maxLength": 100,
+              "minLength": 3,
+              "title": "Project Name",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The caller's reference for this change. It names a new budget and is logged. 1-64 characters.",
+            "in": "header",
+            "name": "X-Change-Reference",
+            "required": true,
+            "schema": {
+              "description": "The caller's reference for this change. It names a new budget and is logged. 1-64 characters.",
+              "examples": [
+                "CHG0012345"
+              ],
+              "maxLength": 64,
+              "minLength": 1,
+              "title": "X-Change-Reference",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProvisioningBudgetSetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProvisioningBudgetResponse"
+                }
+              }
+            },
+            "description": "The call replaced the existing budget."
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProvisioningBudgetResponse"
+                }
+              }
+            },
+            "description": "The call created the budget."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The amounts do not make a valid budget, the new project's name is invalid, or the cost center name is invalid."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The caller is not a registered provisioning client holding provisioning:manage-budgets, or the call would create the project or carries a project block naming a cost center or admins and the client lacks provisioning:manage-projects, or the project is a personal one, or cost centers are disabled and the call would create or link a cost center."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The project or the named cost center is deleted."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProvisioningValidationErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid project name, X-Change-Reference header or body."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The call was partly applied; send the same request again."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The budget provider sync failed; the call was partly applied. Send the same request again."
+          }
+        },
+        "security": [
+          {
+            "user-id": []
+          },
+          {
+            "X-Bind-Key": []
+          }
+        ],
+        "summary": "Set a project's budget",
+        "tags": [
+          "Provisioning"
         ]
       }
     },

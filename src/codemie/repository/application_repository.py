@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import literal, union_all
+from sqlalchemy import literal, union_all, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import BooleanClauseList, ColumnElement
@@ -27,7 +27,7 @@ from sqlmodel import Session, and_, case, func, or_, select
 
 from codemie.configs.logger import logger
 from codemie.core.db_utils import escape_like_wildcards
-from codemie.core.models import Application
+from codemie.core.models import Application, CostCenter
 from codemie.rest_api.models.user_management import UserProject
 from codemie.service.budget.budget_models import ProjectBudgetAssignment
 
@@ -793,6 +793,28 @@ class ApplicationRepository:
         session.flush()
         session.refresh(application)
         return application
+
+    def set_cost_center_if_unset(self, session: Session, project_id: str, cost_center_id: UUID) -> bool:
+        """Link a cost center only while the project has no active one: none, or a deleted one.
+
+        The guard lets exactly one of several concurrent links win. The loaded Application is not
+        synchronized: refresh it to read the link actually stored. Does not commit.
+
+        Returns:
+            True if this call set the link, False if the project has an active link (or is deleted or gone)
+        """
+        deleted_cost_center_ids = select(CostCenter.id).where(CostCenter.deleted_at.is_not(None))
+        result = session.execute(
+            update(Application)
+            .where(
+                Application.id == project_id,
+                Application.deleted_at.is_(None),
+                or_(Application.cost_center_id.is_(None), Application.cost_center_id.in_(deleted_cost_center_ids)),
+            )
+            .values(cost_center_id=cost_center_id, update_date=datetime.now(UTC))
+            .execution_options(synchronize_session=False)
+        )
+        return result.rowcount == 1
 
     def list_projects_by_cost_center_id(self, session: Session, cost_center_id: UUID) -> list[Application]:
         """Return active projects linked to the given cost center."""

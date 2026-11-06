@@ -36,6 +36,9 @@ def dump() -> dict[str, Any]:
         pytest.param("get", "/v1/admin/users/{user_id}", "user_management_router (ENABLE_USER_MANAGEMENT)", id="users"),
         pytest.param("post", "/v1/local-auth/login", "local_auth_router (IDP_PROVIDER=local)", id="local-auth"),
         pytest.param("post", "/v1/workflows/generate", "WORKFLOW_GENERATION_ENABLED", id="workflow-generation"),
+        pytest.param(
+            "get", "/v1/provisioning/projects", "provisioning router (PROVISIONING_API_ENABLED)", id="provisioning"
+        ),
     ],
 )
 def test_conditional_route_is_in_the_guarded_openapi(dump, method, path, enabled_by):
@@ -51,3 +54,9 @@ def test_conditional_routes_are_registered_on_the_app(dump):
 
 def test_building_the_app_attempts_no_network_connection(dump):
     assert dump["contacts_attempted"] == []
+
+
+def test_no_vendor_integration_path_is_served(dump):
+    served = [path for path in dump["openapi"]["paths"] if path.startswith("/v1/integrations/servicenow")]
+
+    assert served == []

@@ -133,6 +133,7 @@ class Config(BaseSettings):
     # A URL host matches if it equals a listed domain or is a subdomain of one.
     # Empty list => reject all URL-based keys (only local public_key_path allowed).
     AUTHORIZED_APPS_ALLOWED_KEY_DOMAINS: list[str] = []
+    PROVISIONING_CLIENTS_CONFIG_DIR: Path = Path(__file__).absolute().parents[3] / "config/provisioning_clients"
     INDEX_DUMPS_DIR: Path = Path(__file__).absolute().parents[3] / "config/index-dumps"
     ALEMBIC_MIGRATIONS_DIR: Path = Path(__file__).absolute().parents[2] / "external/alembic"
     ALEMBIC_INI_PATH: Path = Path(__file__).absolute().parents[2] / "external/alembic/alembic.ini"
@@ -257,10 +258,9 @@ class Config(BaseSettings):
     COST_CENTER_NAME_PATTERN: str = r"^[a-z0-9]+-[a-z0-9]+$"
 
     # ===========================================
-    # ServiceNow Integration
+    # Provisioning API
     # ===========================================
-    SERVICENOW_INTEGRATION_ENABLED: bool = False
-    SERVICENOW_SERVICE_ACCOUNT_ID: str = ""
+    PROVISIONING_API_ENABLED: bool = False
 
     # ===========================================
     # Admin Bootstrap

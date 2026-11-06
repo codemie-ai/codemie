@@ -1,0 +1,707 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.check",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "user approved the check round over the security flag (escalation trigger 4); also asked to revert the unrelated f-string edit at budget_provider_adapter.py:771 in the fix commit."
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "deterministic",
+      "rationale": "code-review-final.json: request-changes, confidence low; 10 findings (CR-004 critical; CR-001..003, CR-005..010 major; CR-001 and CR-009 need a decision). Coverage gap: verification-gap lens timed out, its file landed after triage and was not graded (full profile owes it)."
+    },
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "user (escalation trigger 4, low-confidence coverage gap): re-grade once with all five lens files incl. the late verification-gap file, then run the one fix-and-check round. Decisions: CR-001 drop coercion (match values as sent, malformed name -> 422, emails plain EmailStr, update guide); CR-009 a link to a deleted cost center counts as unlinked, so the named cost center is linked."
+    },
+    {
+      "gate": "code-review.check",
+      "decision": "approve",
+      "source": "deterministic",
+      "rationale": "code-review-check.local.json: approve, confidence high; all 12 final-round findings resolved (10 code fixes verified in source; CR-002 and CR-011 settled by hitl decisions and implemented); targeted-verifier ran. risk_flags include security -> escalation trigger 4."
+    },
+    {
+      "gate": "code-review.check",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "user approved the check round over the security flag (escalation trigger 4); also asked to revert the unrelated f-string edit at budget_provider_adapter.py:771 in the fix commit."
+    }
+  ],
+  "reviewed_head": "b16c33d690e8dcb3e6f93b349816be9117039e6d",
+  "rounds": [
+    "final",
+    "check"
+  ],
+  "rationale": "All 12 prior blocking findings are resolved: the 10 code findings were verified in the current source (every path is in changed_files, and HEAD 9b943ad7d3 matches reviewed_head), and CR-002/CR-011 are settled by mapped hitl decisions that are also implemented. business_review and standards_review are carried forward unchanged from code-review-final.json, so their partial rows (Design 6, code-quality, security) still describe the pre-fix state behind CR-005/CR-006/CR-007/CR-002. No mapped commands were supplied or run, because test execution belongs to Stage 7; the brief was written to code-review-brief.local.md.",
+  "confidence": "low",
+  "check_confidence": "high",
+  "risk_flags": [
+    "auth",
+    "public-api",
+    "data-contract",
+    "security"
+  ],
+  "open": 0,
+  "closed": {
+    "fixed": 10,
+    "moot": 0,
+    "decided": 2,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": ".ai-run/guides/api/provisioning-api.md",
+      "line": 71,
+      "title": "Guide misstates provider-failure 502 body",
+      "problem": "provisioning-api.md:71 says a failed provider sync in commit 2 'is 502 with the same message' ('partly applied; send the same request again'). A provider failure while creating the group actually reaches the caller as create_project_budget_group's own 502, 'Failed to sync project budget with enforcement provider': _create_group re-raises every non-409 error (provisioning_budget_service.py:466-467), and _commit_budget_after_project re-raises every non-4xx error (:416-417). Only the unsynced-category path (:447-449) uses PARTLY_APPLIED_MESSAGE, and test_provider_502_passes_through_and_resend_creates pins the pass-through. Spec Design 6 says LiteLLM's 502 is kept.",
+      "impact": "Future provisioning endpoints copy the pattern guide, and it states an error body the code does not produce. A client or endpoint author who keys on the 502 message gets group-create provider failures wrong, so the 'pattern is documented' criterion delivers an inaccurate rule.",
+      "recommendation": "Follow spec Design 6 ('LiteLLM's 502 is kept'): reword provisioning-api.md:71 so a provider failure during the group write passes the provider's own 502 through, and only a category left unsynced after commit 2 answers 502 'partly applied; send the same request again'.",
+      "status": "resolved",
+      "check_notes": "provisioning-api.md:71 now says the provider's own 502 passes through and only an unsynced category is 502 partly applied; matches _commit_budget_after_project:420-426.",
+      "fix": {
+        "change": "provisioning-api.md commit-2 row: provider's own 502 passes through; unsynced category is 502 partly applied; 4xx or unexpected error is 500",
+        "test": "n/a"
+      }
+    },
+    {
+      "id": "CR-002",
+      "kind": "decision",
+      "severity": "major",
+      "triage": "decision_needed",
+      "file": "src/codemie/rest_api/models/provisioning.py",
+      "line": 32,
+      "title": "Input normalized before authorization decisions",
+      "problem": "security-patterns.md (Untrusted Input Handling) says to avoid stripping or silent coercion before a security decision. ProvisioningProjectName (strip_whitespace, to_lower) and NormalizedEmail (strip + lower) coerce the project_name path value, cost_center and admin_emails before _check_project decides whether manage-projects is required and whether the project is personal, and before the emails resolve to users who are made project admins. Spec Design 1 and the new provisioning-api.md:42 prescribe this normalization (carried over from the deleted servicenow model), so the spec and the security guide conflict.",
+      "impact": "Authorization and admin-grant decisions run on a value the caller did not send, and the new guide codifies the opposite of the security standard for every future provisioning endpoint. The security standards row stays partial until this is settled.",
+      "recommendation": "Decide which rule wins: either reject non-canonical names and emails with 422 (a lowercase pattern with no surrounding whitespace) instead of coercing them, or record an explicit, reasoned exception for identifier case-folding in security-patterns.md and align provisioning-api.md:42 with it.",
+      "status": "decided",
+      "check_notes": "Mapped decision (a) with hitl rationale: no coercion. Also implemented: ProvisioningProjectName is 3-100 only, admin_emails is list[EmailStr]; guide:42 and spec Design 1 aligned.",
+      "fix": {
+        "change": "ProvisioningProjectName keeps only 3-100 (no strip/lower); admin_emails is plain list[EmailStr]; assign_admins promotes a user once when two spellings resolve to it; path/model/guide/spec wording and OpenAPI baseline updated",
+        "test": "tests/codemie/rest_api/models/test_provisioning.py::TestProvisioningProjectName::test_is_kept_exactly_as_sent, test_cost_center_is_kept_exactly_as_sent, test_emails_keep_their_local_part_case_and_exact_duplicates_are_dropped; tests/codemie/service/test_provisioning_service.py::TestAssignAdmins::test_two_spellings_of_one_email_promote_the_user_once"
+      },
+      "decision": {
+        "outcome": "(a) Drop the coercion: project name, cost center and admin emails are used exactly as sent; no custom trimming or lowercasing; names keep the existing 3-100 rule (422); admin emails are plain EmailStr with no custom normalizer, as for member_email in EPMCDME-16904. provisioning-api.md:42 and the spec are aligned.",
+        "rationale": "security-patterns.md forbids coercing input before a security decision; the user chose the security standard over the spec's carried-over normalization at the review escalation (hitl)."
+      }
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/provisioning/budgets.py",
+      "line": 85,
+      "title": "Cancel route OpenAPI docs misstate its contract",
+      "problem": "_CANCEL_RESPONSES includes _PARTLY_APPLIED_RESPONSES, so DELETE documents a 502 'The budget provider sync failed; the call was partly applied'. cancel_budget is a single commit, never raises PARTLY_APPLIED_MESSAGE, and has no provider-failure 502 path, because a failed provider deletion is swallowed (DF-004). _CANCEL_DESCRIPTION also leaves out the resend-after-5xx sentence that provisioning-api.md requires of every write route ('Every write route's description says so'). The shared 422 text mentions a body that DELETE does not take.",
+      "impact": "External provisioning clients build their retry logic from this OpenAPI contract. The DELETE contract advertises an outcome it cannot produce and leaves out the one rule the guide says every write route states.",
+      "recommendation": "Give DELETE its own 422 text (project name or X-Change-Reference header, no body), drop the 502 'budget provider sync failed' entry from _CANCEL_RESPONSES, word its 500 entry for cancel, and add the 'a 4xx means nothing changed; after a 5xx send the same request again' sentence to _CANCEL_DESCRIPTION. If DELETE is later made to surface provider-deletion failure (DF-004), document that 502 deliberately.",
+      "status": "resolved",
+      "check_notes": "_CANCEL_RESPONSES (budgets.py:123-138) has a no-body 422, a cancel-specific 500 and no 502; _CANCEL_DESCRIPTION:89-90 states the 4xx/resend rule.",
+      "fix": {
+        "change": "DELETE gets its own 422 (no body) and 500 texts, no 502, and the 4xx/resend sentence in its description",
+        "test": "tests/codemie/rest_api/routers/test_provisioning_budgets_router.py::TestOpenApi::test_delete_documents_neither_a_body_nor_a_partly_applied_answer, test_every_route_states_the_resend_rule"
+      }
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/provisioning/budgets.py",
+      "line": 105,
+      "title": "Write-route 403/400 docs omit conditions",
+      "problem": "provisioning-api.md requires the route's 403 description to name every condition that can produce it. The _WRITE_RESPONSES 403 text leaves out the cost-centers-disabled 403 from CostCenterService.ensure_feature_enabled, reached through check_project_prerequisites -> _check_cost_center. The 400 text, 'The amounts do not make a valid budget.', leaves out the 400s for an invalid new project name (ProjectService.validate_shared_project_name) and an invalid cost center name (CostCenterService.validate_name).",
+      "impact": "A provisioning client that receives these 403 or 400 answers cannot map them to the published contract, and the change breaks a rule that it documents itself.",
+      "recommendation": "Add the cost-centers-disabled case to the 403 description (the call would create or link a cost center while the feature is off), and add the invalid new project name and invalid cost center name cases to the 400 description.",
+      "status": "resolved",
+      "check_notes": "_WRITE_RESPONSES 400 (budgets.py:96-102) names invalid new project and cost center names; 403 (:103-111) names cost centers disabled.",
+      "fix": {
+        "change": "Write-route 403 adds cost-centers-disabled; 400 adds invalid new project name and invalid cost center name; OpenAPI baseline regenerated",
+        "test": "tests/codemie/rest_api/routers/test_provisioning_budgets_router.py::TestOpenApi::test_write_errors_name_every_condition"
+      }
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/budget/project_budget_service.py",
+      "line": 717,
+      "title": "Unchanged re-save no longer repairs member pushes",
+      "problem": "_effective_project_budget_values now sets amounts_changed only when a stored max, soft limit or duration differs or the budget's own sync_status is not ok, so re-saving unchanged amounts skips _resync_member_allocations. Before this change, any supplied amount re-ran the member resync. A failed member push is swallowed with no failure marker: _resync_member_allocation logs a warning and returns None (:1179-1187). The runtime path does not repair it either, because ensure_project_member_runtime_ready returns early when the member's provider ref and budget id are current (project_member_runtime_sync.py:128-143). Every new test mocks _resync_member_allocations, so no test models a failed member push followed by an unchanged re-save. The edge-case lens's deletion row also covers provider-key re-pushes; that part is mandated by AC20 and is not a defect.",
+      "impact": "After one failed member push, the member keeps a stale provider limit. Nothing repairs it: not the admin REST PUT (project_budget_router.py:313), not a group update, not a provisioning resend. The regression ships unnoticed because no test covers it.",
+      "recommendation": "Make a failed member push count as a failed sync that the next update retries (for example, record a failure marker on the allocation or budget and include it in amounts_changed). Add the lifecycle test the lens describes: stored budget ok, a member allocation whose previous provider push raised, update_project_budget called with the stored values, assert the allocation is synced again.",
+      "status": "resolved",
+      "check_notes": "_resync_member_allocation:1196-1201 marks a failed push FAILED; update_project_budget:1348 resyncs when any allocation is FAILED; _sync_member_allocation:540-552 clears it on success.",
+      "fix": {
+        "change": "_resync_member_allocation marks a failed member push FAILED on the allocation; update_project_budget re-syncs when any allocation is FAILED",
+        "test": "tests/codemie/service/budget/test_project_budget_service_lifecycle.py::test_failed_member_push_is_marked_failed_for_the_next_update, test_update_with_stored_values_retries_a_failed_member_push"
+      }
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/service/budget/project_budget_service.py",
+      "line": 721,
+      "title": "Resync rule re-syncs noop and pending budgets",
+      "problem": "Spec Design 6 requires pbs to sync a category only when its effective max, soft limit or duration changed, or its last sync failed. _effective_project_budget_values sets amounts_changed whenever last_sync_status != SyncStatus.OK, so NOOP and PENDING also trigger a provider sync and _resync_member_allocations on every unchanged update (reported by the blind, edge-case and acceptance lenses). provisioning_budget_service._SYNCED_STATUSES = {OK, NOOP} treats NOOP as synced, so the two modules disagree on what synced means.",
+      "impact": "A required spec behavior is only partly met (the acceptance row is partial). Every unchanged update of a noop or pending budget, including the admin REST PUT, re-runs the provider sync and the member reallocation, and the provisioning 502 check and the pbs resync rule use different definitions of synced.",
+      "recommendation": "Retry only when the last sync failed, as the spec says (`or last_sync_status == SyncStatus.FAILED`), and keep NOOP counted as synced, as provisioning_budget_service._SYNCED_STATUSES does. If PENDING must also retry, define one shared set of synced statuses for both modules and record that rule in the spec. Keep the CR-005 failure marker inside the same rule.",
+      "status": "resolved",
+      "check_notes": "Shared SYNCED_STATUSES {ok,noop} (budget_enums.py) drives pbs amounts_changed (:729) and the provisioning unsynced check (:452); noop no longer resyncs; spec Design 6 records the pending retry.",
+      "fix": {
+        "change": "Shared SYNCED_STATUSES={ok,noop} in budget_enums used by pbs resync rule and provisioning 502 check; noop no longer re-syncs, pending still does; spec Design 6 line updated",
+        "test": "tests/codemie/service/budget/test_project_budget_service_lifecycle.py::test_update_with_stored_values_makes_no_provider_call[noop], test_update_after_unfinished_sync_resyncs"
+      }
+    },
+    {
+      "id": "CR-007",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/budget/project_budget_service.py",
+      "line": 1952,
+      "title": "cat_spec typed as Any in new method",
+      "problem": "code-quality.md (Types And Imports) requires spelling out the accepted union for a duck-typed parameter. The new _check_category_plan declares cat_spec: Any, although it receives the CategoryBudgetSpec | CategoryBudgetSpecUpdate values of ProjectBudgetGroupCreateRequest | ProjectBudgetGroupUpdateRequest.",
+      "impact": "New code does not meet the documented typing standard (the code-quality standards row is partial), and type checking cannot catch misuse of pct or soft_budget on the spec.",
+      "recommendation": "Annotate cat_spec as CategoryBudgetSpec | CategoryBudgetSpecUpdate.",
+      "status": "resolved",
+      "check_notes": "_check_category_plan cat_spec is CategoryBudgetSpec | CategoryBudgetSpecUpdate via TYPE_CHECKING imports; from __future__ import annotations present; Any still used elsewhere.",
+      "fix": {
+        "change": "_check_category_plan cat_spec annotated CategoryBudgetSpec | CategoryBudgetSpecUpdate",
+        "test": "n/a"
+      }
+    },
+    {
+      "id": "CR-008",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/provisioning_budget_service.py",
+      "line": 214,
+      "title": "Client 4xx rejections logged at ERROR",
+      "problem": "_failure_logged logs every exception with logger.error, including routine 400/403/404/409 caller rejections such as cancelling a project that does not exist. logging-patterns.md:34 lists 'Error logs for expected validation failures' as an anti-pattern and says to use a warning or a structured client error instead.",
+      "impact": "Caller mistakes from external provisioning clients show up at ERROR and feed error-level alerting, burying real 5xx causes.",
+      "recommendation": "Log ExtendedHTTPException with 400 <= code < 500 at warning, and keep error for 5xx and unexpected exceptions.",
+      "status": "resolved",
+      "check_notes": "_failure_logged (provisioning_budget_service.py:216-224) logs a 4xx ExtendedHTTPException at warning and everything else at error.",
+      "fix": {
+        "change": "_failure_logged logs 4xx ExtendedHTTPException at warning, 5xx and unexpected errors at error",
+        "test": "tests/codemie/service/test_provisioning_budget_service.py::TestLogging::test_client_rejection_is_logged_at_warning_with_status_and_message, test_partly_applied_500_is_logged_at_error"
+      }
+    },
+    {
+      "id": "CR-009",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/provisioning_budget_service.py",
+      "line": 354,
+      "title": "manage-projects checked only on check-phase snapshot",
+      "problem": "_check_project requires manage-projects only when find_project returned None during the check phase. Commit 1 (_commit_project_once -> ProvisioningService.resolve_project) reads the project again and creates it when it is missing, without checking the permission again. The project delete path hard-deletes the row (ProjectService -> application_repository.delete_by_name, project_service.py:724), so a project deleted between the two phases is recreated by a client that holds only manage-budgets.",
+      "impact": "In that window, a client without manage-projects creates a project, which is exactly what the permission is meant to stop (D12). The race needs a concurrent admin delete of a resource-free project, so it cannot be triggered at will.",
+      "recommendation": "In _commit_project_once, before session.commit(), require manage-projects when resolve_project created the project but the check phase did not require it. Raise 403 there: commit 1 has not committed yet, so the 4xx still means nothing changed. Alternatively, pass the check phase's project presence into resolve_project and refuse to create.",
+      "status": "resolved",
+      "check_notes": "_commit_project_once:381-383 calls require_permission(MANAGE_PROJECTS) when resolve_project created the project, before session.commit(), so the 403 leaves nothing committed.",
+      "fix": {
+        "change": "_commit_project_once requires manage-projects before commit when resolve_project created the project",
+        "test": "tests/codemie/service/test_provisioning_budget_service.py::TestConcurrencyAndResend::test_project_deleted_after_the_check_is_not_recreated_without_manage_projects"
+      }
+    },
+    {
+      "id": "CR-010",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/provisioning_budget_service.py",
+      "line": 413,
+      "title": "Non-HTTP errors after commit 1 skip partly-applied",
+      "problem": "_commit_budget_after_project converts only ExtendedHTTPException 4xx errors. Three other kinds escape as a generic 500, without _log_partly_applied: an IntegrityError that _create_group re-raises when no group survives the conflict, a pydantic ValidationError from _create_request/_update_request during re-planning, and any provider or DB exception. The _failure_logged line carries no project= field (reported by the blind and edge-case lenses).",
+      "impact": "After commit 1 has stored the project, the 500 body lacks the documented partly-applied message, and the cause is logged without the project. That contradicts provisioning-api.md: 'The cause of a 5xx is logged with client, change_reference and the project'.",
+      "recommendation": "In _commit_budget_after_project, also catch Exception: call _log_partly_applied(call, project_name, _failure_reason(e)) and raise ExtendedHTTPException(code=500, message=PARTLY_APPLIED_MESSAGE) from e. Add project= to the _failure_logged line.",
+      "status": "resolved",
+      "check_notes": "_commit_budget_after_project:420-426 catches Exception; only HTTP 5xx passes through, the rest is logged as partly applied and raised as 500; the _failure_logged line carries project=.",
+      "fix": {
+        "change": "_commit_budget_after_project turns any non-5xx-HTTP error into 500 partly applied with _log_partly_applied; failure log carries project=",
+        "test": "tests/codemie/service/test_provisioning_budget_service.py::TestPartialWrites::test_unexpected_error_after_project_commit_is_500_logged_with_project, test_conflict_with_no_surviving_group_is_500"
+      }
+    },
+    {
+      "id": "CR-011",
+      "kind": "decision",
+      "severity": "major",
+      "triage": "decision_needed",
+      "file": "src/codemie/service/provisioning_service.py",
+      "line": 103,
+      "title": "Deleted cost-center link hides named cost center",
+      "problem": "A project linked to a soft-deleted cost center keeps cost_center_id set, so check_project_prerequisites skips the named cost center and resolve_project never links it, while _active_cost_center_name reports cost_center as null (pinned by test_deleted_link_is_reported_as_no_cost_center). The caller sees 'not linked' and resends with a cost center, but the link never changes (reported by the blind and edge-case lenses).",
+      "impact": "Billing linkage silently stays on a deleted cost center while the response claims there is no link, and the client cannot fix it by resending. The spec says an existing link never changes, but it does not say whether a link to a deleted cost center counts.",
+      "recommendation": "Decide the intended behavior. Either treat a link to a deleted cost center as unlinked and link the named one, reject the call with 409 naming the deleted linked cost center, or report the deleted link's name instead of null. Then update the spec and the pinning test.",
+      "status": "decided",
+      "check_notes": "Mapped decision (a) with hitl rationale. Also implemented: set_cost_center_if_unset replaces a deleted link; check_project_prerequisites:103-106 and resolve_project:130-139 treat it as none.",
+      "fix": {
+        "change": "A link to a deleted cost center counts as none: set_cost_center_if_unset also replaces it (deleted-ids subquery), check_project_prerequisites checks and resolve_project links the named one; descriptions and spec updated",
+        "test": "tests/codemie/service/test_provisioning_service.py::TestResolveProject::test_link_to_a_deleted_cost_center_counts_as_none_and_the_named_one_is_linked, TestCheckProjectPrerequisites::test_link_to_a_deleted_cost_center_counts_as_none_and_the_named_one_is_checked; tests/codemie/repository/test_application_repository_entity_counts.py::TestApplicationRepositorySetCostCenterIfUnset::test_updates_only_the_row_without_an_active_link"
+      },
+      "decision": {
+        "outcome": "(a) A link to a deleted cost center counts as no link, so the named cost center is checked and linked; the pinning test and the spec are updated.",
+        "rationale": "Matches the cost_center: null the response already reports, and lets a client repair the link by resending; decided by the user at the review escalation (hitl)."
+      }
+    },
+    {
+      "id": "CR-012",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/provisioning_service.py",
+      "line": 130,
+      "title": "Lost link race reports created cost center",
+      "problem": "When a concurrent call links another cost center first, link_cost_center_in_session returns the stored link (because of the set_cost_center_if_unset IS NULL guard). created_cost_center stays True from CostCenterService.get_or_create, so the response reports created_cost_center true next to a different cost_center, and the newly created cost center is committed unlinked.",
+      "impact": "Under concurrent provisioning calls, the response misreports what was created and an orphan cost center is committed.",
+      "recommendation": "After link_cost_center_in_session, set created_cost_center = created_cost_center and cost_center_id == named.id, so that a lost race never reports a cost center as created next to a different linked one.",
+      "status": "resolved",
+      "check_notes": "resolve_project:145 reports created_cost_center only when the stored link is the named cost center.",
+      "fix": {
+        "change": "resolve_project reports created_cost_center only when the named cost center is the one linked",
+        "test": "tests/codemie/service/test_provisioning_service.py::TestResolveProject::test_concurrent_link_wins_and_its_cost_center_is_reported"
+      }
+    }
+  ],
+  "deferred": [
+    {
+      "id": "DF-001",
+      "severity": "major",
+      "file": "src/codemie/enterprise/litellm/budget_provider_adapter.py",
+      "line": 911,
+      "title": "Orphan provider key when ref was never stored",
+      "problem": "update_project_budget recreates the key alias and deletes the old key only when old_provider_budget_ref is not None, so a provider key whose ref was never saved stays at the provider.",
+      "preexisting": "The orphan comes from an earlier failed sync that never stored its ref; the old code left it too; spec non-goal: no LiteLLM cleanup."
+    },
+    {
+      "id": "DF-002",
+      "severity": "major",
+      "file": "src/codemie/rest_api/models/provisioning.py",
+      "line": 64,
+      "title": "admin_emails list has no size bound",
+      "problem": "ProvisioningProjectBlock.admin_emails has no max_length, so one request drives an unbounded user lookup and bulk admin assignment inside commit 1.",
+      "preexisting": "The deleted servicenow_integration model had the same unbounded admin_emails Field, carried over unchanged."
+    },
+    {
+      "id": "DF-003",
+      "severity": "major",
+      "file": "src/codemie/rest_api/models/provisioning.py",
+      "line": 79,
+      "title": "Unbounded amounts overflow to infinity",
+      "problem": "Two categories near 1e308 make the total in build_category_specs inf, and the Decimal pct derivation then fails as an unhandled 500.",
+      "preexisting": "The deleted servicenow model had the same ge=0, allow_inf_nan=False amount rule; the spec keeps today's amount rules."
+    },
+    {
+      "id": "DF-004",
+      "severity": "major",
+      "file": "src/codemie/service/budget/project_budget_service.py",
+      "line": 1834,
+      "title": "Cancel swallows provider key deletion failure",
+      "problem": "delete_project_budget continues past a failed provider deletion, so cancel answers 204 while the provider key may keep enforcing.",
+      "preexisting": "The pbs delete path predates this change; the deleted servicenow cancel called delete_project_budget_group the same way."
+    },
+    {
+      "id": "DF-005",
+      "severity": "major",
+      "file": "src/codemie/service/provisioning_budget_service.py",
+      "line": 111,
+      "title": "pct search duplicates the budget amount formula",
+      "problem": "_exact_pct derives amounts through its own _derived_amount copy instead of ProjectBudgetService._category_amount (identical today), and no test ties the two together.",
+      "preexisting": "_derived_amount was copied verbatim from the deleted servicenow_integration_service; the two formulas match today."
+    },
+    {
+      "id": "DF-006",
+      "severity": "major",
+      "file": "src/codemie/service/provisioning_budget_service.py",
+      "line": 516,
+      "title": "Concurrent cancels can answer 404",
+      "problem": "_delete_group reads the active group without a row lock, so when two concurrent DELETEs both find it, the loser's delete_project_budget_group raises 404.",
+      "preexisting": "The deleted servicenow cancel read the group the same way, unlocked through get_active_by_project."
+    }
+  ],
+  "coverage_graded_at": "final",
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "Design 1: budgets.py sub-router; PUT|PATCH|DELETE /v1/provisioning/projects/{project_name}/budget each declare one RequirePermission(MANAGE_BUDGETS)",
+      "status": "pass",
+      "notes": "include_router(budgets.router); three routes each with one RequirePermission(MANAGE_BUDGETS)"
+    },
+    {
+      "kind": "spec",
+      "item": "Design 1: required X-Change-Reference header, 1-64 chars",
+      "status": "pass",
+      "notes": "Header(min_length=1, max_length=64); header tests"
+    },
+    {
+      "kind": "spec",
+      "item": "Design 1: path name stripped, lowercased, 3-100 chars",
+      "status": "pass",
+      "notes": "ProvisioningProjectName StringConstraints; its conflict with the security guide is raised as CR-002"
+    },
+    {
+      "kind": "spec",
+      "item": "Design 1 / D7: OpenAPI documents the 422 in the platform shape",
+      "status": "pass",
+      "notes": "ProvisioningValidationErrorResponse on all routes"
+    },
+    {
+      "kind": "spec",
+      "item": "Design 2: body {amounts, project{cost_center, admin_emails}}; unknown fields 422; amounts keep today's rules; PUT needs platform > 0",
+      "status": "pass",
+      "notes": "extra=forbid; amounts min_length=1, ge=0, allow_inf_nan=False; platform > 0 validator"
+    },
+    {
+      "kind": "spec",
+      "item": "Design 3: PUT/PATCH return today's result shape plus created_budget; admins_pending renamed admins_not_assigned",
+      "status": "pass",
+      "notes": "ProvisioningBudgetResponse"
+    },
+    {
+      "kind": "spec",
+      "item": "Design 3: PUT 201 on create else 200; PATCH 200; DELETE 204 also without budget; missing 404, deleted 409, personal 403",
+      "status": "pass",
+      "notes": "status codes set in budgets.py; find_project 409/403; _find_project_to_cancel 404"
+    },
+    {
+      "kind": "spec",
+      "item": "Design 4: service moved to service/provisioning_budget_service.py (ProvisioningBudgetService) keeping amounts, group writes and cancel",
+      "status": "pass",
+      "notes": "servicenow_integration_service.py deleted; no source importers remain"
+    },
+    {
+      "kind": "spec",
+      "item": "Design 4: project steps become public in-session functions of provisioning_service.py",
+      "status": "pass",
+      "notes": "find_project, check_project_prerequisites, resolve_project, assign_admins"
+    },
+    {
+      "kind": "spec",
+      "item": "Design 4: models to rest_api/models/provisioning.py, servicenow_integration.py deleted, tests moved, business rules unchanged",
+      "status": "pass",
+      "notes": "amount helpers identical to the deleted service"
+    },
+    {
+      "kind": "spec",
+      "item": "Design 5.1: check phase starts with project lookup (deleted 409, personal 403)",
+      "status": "pass",
+      "notes": "_check_project calls find_project first"
+    },
+    {
+      "kind": "spec",
+      "item": "Design 5.2 / D12: manage-projects via public require_permission when project missing or block names cost center/admins; cancel never needs it",
+      "status": "pass",
+      "notes": "require_permission in _check_project; the missing recheck in commit 1 is raised as CR-009"
+    },
+    {
+      "kind": "spec",
+      "item": "Design 5.3/5.4: new project name valid; named cost center checked only when created or linked; existing link ignores the named one",
+      "status": "pass",
+      "notes": "check_project_prerequisites/_check_cost_center; the deleted-link case is raised as CR-011"
+    },
+    {
+      "kind": "spec",
+      "item": "Design 5.5: exact group request built in check phase (400) and passed to read-only pbs check_group_request",
+      "status": "pass",
+      "notes": "_check builds the request; group create/update run the plan check before writes"
+    },
+    {
+      "kind": "spec",
+      "item": "Design 6: commit 1 creates cost center and project or links an unlinked one, recording PROJECT_UPDATED",
+      "status": "pass",
+      "notes": "link_cost_center_in_session + set_cost_center_if_unset IS NULL guard; the lost-race report is raised as CR-012"
+    },
+    {
+      "kind": "spec",
+      "item": "Design 6: commit 1 promotes admins with an action label naming the provisioning route",
+      "status": "pass",
+      "notes": "SET_BUDGET_ROUTE / ADJUST_BUDGET_ROUTE passed to assign_admins"
+    },
+    {
+      "kind": "spec",
+      "item": "Design 6: commit 2 locks the existing group row and re-plans against its current amounts",
+      "status": "pass",
+      "notes": "get_active_by_project(for_update=True); _update_group re-reads budgets"
+    },
+    {
+      "kind": "spec",
+      "item": "Design 6 / D2: new group named f'{client.name} {reference}'[:100]",
+      "status": "pass",
+      "notes": "_create_request"
+    },
+    {
+      "kind": "spec",
+      "item": "Design 6: 4xx after commit 1 becomes 500 'partly applied'; cause logged with client, change_reference and request id",
+      "status": "pass",
+      "notes": "_commit_budget_after_project; the gap for non-HTTP errors is raised as CR-010"
+    },
+    {
+      "kind": "spec",
+      "item": "Design 6: LiteLLM 502 kept; after commit 2 an unsynced category answers 502 with the same message",
+      "status": "pass",
+      "notes": "_SYNCED_STATUSES check in _commit_budget; the guide misstates the provider 502 body (CR-001)"
+    },
+    {
+      "kind": "spec",
+      "item": "Design 6: adapter update rebuilds a missing provider reference from project and category",
+      "status": "pass",
+      "notes": "the old key is deleted only when a ref exists; orphan keys deferred as DF-001"
+    },
+    {
+      "kind": "spec",
+      "item": "Design 6: pbs syncs a category only when its effective max, soft limit or duration changed, or its last sync failed",
+      "status": "partial",
+      "notes": "amounts_changed uses last_sync_status != OK, so noop and pending re-sync too (CR-006); failed member pushes are never marked failed (CR-005)"
+    },
+    {
+      "kind": "spec",
+      "item": "Design 7: logs domain=provisioning with client= and change_reference=; servicenow_* events renamed provisioning_*",
+      "status": "pass",
+      "notes": "_Call.log_context on all request lines"
+    },
+    {
+      "kind": "spec",
+      "item": "Design 8: no vendor names in routes, models, descriptions or help texts",
+      "status": "pass",
+      "notes": "vendor-term tests"
+    },
+    {
+      "kind": "spec",
+      "item": "Design 9: provisioning-api.md covers the story's pattern list, links endpoint-conventions.md and states only departures",
+      "status": "pass",
+      "notes": ".ai-run/guides/api/provisioning-api.md; the 502 wording on line 71 is raised as CR-001"
+    },
+    {
+      "kind": "spec",
+      "item": "Design 9: registry rule (provisioning clients in provisioning registry, signed-request apps in authorized applications)",
+      "status": "pass",
+      "notes": "Client Registry section"
+    },
+    {
+      "kind": "spec",
+      "item": "Design 9: guide and package docstring state one declared permission per route and require_permission in the check phase",
+      "status": "pass",
+      "notes": "Permission Checks section; routers/provisioning/__init__.py docstring"
+    },
+    {
+      "kind": "spec",
+      "item": "Design 9: AGENTS.md Guide Imports and Task Classifier rows; endpoint-conventions.md pointer",
+      "status": "pass",
+      "notes": "AGENTS.md rows; endpoint-conventions.md pointer"
+    },
+    {
+      "kind": "spec",
+      "item": "Design 9: OpenAPI baseline regenerated",
+      "status": "pass",
+      "notes": "router_guards/baselines/openapi.json updated"
+    },
+    {
+      "kind": "spec",
+      "item": "AC1-AC12: the story's twelve criteria",
+      "status": "pass",
+      "notes": "audited row by row under story-ac"
+    },
+    {
+      "kind": "spec",
+      "item": "AC13: PUT 201 when it created the budget, 200 when replaced; PATCH 200 even when it created the project; both report created_budget",
+      "status": "pass",
+      "notes": "created_budget is set whenever commit 2 found no group"
+    },
+    {
+      "kind": "spec",
+      "item": "AC14: a 4xx after commit 1 answers 500, commit 1 rows remain, resend reaches the uninterrupted state",
+      "status": "pass",
+      "notes": "conflict and replan-failure tests"
+    },
+    {
+      "kind": "spec",
+      "item": "AC15: LiteLLM failure on a new budget's second category gives 502; resend creates the budget with every category",
+      "status": "pass",
+      "notes": "502 passes through _commit_budget_after_project"
+    },
+    {
+      "kind": "spec",
+      "item": "AC16: unknown field, missing/empty amounts, negative or non-finite amount, PUT platform <= 0 give 422 in the platform shape",
+      "status": "pass",
+      "notes": "invalid-body 422 tests; 422 documented in OpenAPI"
+    },
+    {
+      "kind": "spec",
+      "item": "AC17: each budget route declares exactly manage-budgets; budget-only client without cost center/admins succeeds on an existing project",
+      "status": "pending-stage-7",
+      "notes": "routes declare one RequirePermission; the suite result belongs to Stage 7"
+    },
+    {
+      "kind": "spec",
+      "item": "AC18: no servicenow_integration module, ServiceNow* names or servicenow_* log events in src/tests; ITSM names unchanged",
+      "status": "pass",
+      "notes": "modules and tests deleted; only stale __pycache__ remains"
+    },
+    {
+      "kind": "spec",
+      "item": "AC19: adjust below members' fixed limits answers 400, no row and no LiteLLM key changes",
+      "status": "pass",
+      "notes": "check_group_request -> _check_category_plan"
+    },
+    {
+      "kind": "spec",
+      "item": "AC20: key-generation failure on existing budget answers 502; resend restores key and ref; resending an applied request makes no LiteLLM call",
+      "status": "pass",
+      "notes": "unsynced 502 + adapter ref rebuild + failed-sync resync"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: no provider-sync change beyond Design 6's two changes; no cleanup of LiteLLM budgets",
+      "status": "pass",
+      "notes": "adapter diff limited to ref handling"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: no compensating rollback of commit 1",
+      "status": "pass",
+      "notes": "5xx + resend only"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: admin project-budget-groups routes, bodies, status codes and public pbs signatures unchanged",
+      "status": "pass",
+      "notes": "only check_group_request added"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: no re-link of an existing link, no rename, no admin removal",
+      "status": "pass",
+      "notes": "IS NULL guard; assign_admins is add-only"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal / D6: no project limit and no creator membership for provisioned projects",
+      "status": "pass",
+      "notes": "create_shared_project_in_session"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Set a budget for a new project: project, cost center and admins created, budget created, 201 reporting what was created and admins not assigned",
+      "status": "pass",
+      "notes": "_upsert -> resolve_project, assign_admins, _create_group"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Set replaces the budget: categories not sent removed, 200",
+      "status": "pass",
+      "notes": "replace_amounts fills missing categories with 0"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Adjust merges: only sent categories change, 0 removes, others stay; platform left at 0 is 400 and nothing changes",
+      "status": "pass",
+      "notes": "merge_amounts + build_category_specs 400 in check phase"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Cancel removes the budget, 204; no budget 204 no change; missing project 404 nothing created",
+      "status": "pass",
+      "notes": "cancel_budget/_delete_group/_find_project_to_cancel"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Change reference: missing is 422 and nothing changes; logged with client name; new budget named '<client name> <reference>'",
+      "status": "pass",
+      "notes": "required header; _Call.log_context; _create_request name"
+    },
+    {
+      "kind": "story-ac",
+      "item": "A rejected request changes nothing: invalid new project/cost center name, deleted project or cost center, personal project, cost centers disabled, broken rule",
+      "status": "pass",
+      "notes": "all raised in the read-only check phase"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Resending completes a request: partial application answers 5xx, every 4xx means nothing changed, resend reaches the uninterrupted state",
+      "status": "pass",
+      "notes": "the gap for non-HTTP errors is raised as CR-010"
+    },
+    {
+      "kind": "story-ac",
+      "item": "A cost center link is set once: linked to A stays A and response shows A; unlinked gets B and response shows B",
+      "status": "pass",
+      "notes": "the deleted-link case is raised as CR-011"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Admins are only added: unknown email and service account reported not assigned, nobody removed, assigned on resend after sign-in",
+      "status": "pass",
+      "notes": "ProvisioningService.assign_admins"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Permissions: budget-only client works without project block; 403 when creating project or naming cost center/admins; cancel works; no manage-budgets 403",
+      "status": "pass",
+      "notes": "_check_project + RequirePermission; commit-1 race raised as CR-009"
+    },
+    {
+      "kind": "story-ac",
+      "item": "No vendor names: budget routes contain no ServiceNow, no EPAM project code, no action field",
+      "status": "pass",
+      "notes": "vendor-term tests"
+    },
+    {
+      "kind": "story-ac",
+      "item": "The pattern is documented: provisioning guide covers the listed items and links conventions; AGENTS.md points to it",
+      "status": "pass",
+      "notes": "provisioning-api.md; AGENTS.md rows"
+    },
+    {
+      "kind": "story-ac",
+      "item": "Out of scope respected: change reference not recorded in activity history; no automatic admin assignment at first sign-in",
+      "status": "pass",
+      "notes": "PROJECT_UPDATED carries no reference; no sign-in hook"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "All 9 subjects in e3a5c4639d..HEAD match git-workflow.md 'EPMCDME-####: Description'"
+    },
+    {
+      "kind": "code-quality",
+      "status": "partial",
+      "notes": "Headers, future annotations, typing and module placement are met. Unmet: _check_category_plan types cat_spec as Any (project_budget_service.py:1952), see CR-007. Ruff not adjudicated."
+    },
+    {
+      "kind": "security",
+      "status": "partial",
+      "notes": "Auth deps, the manage-projects check and log hygiene are met. Unmet: names and admin emails are normalized before security decisions (models/provisioning.py:32-41), see CR-002."
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "Request changes: Design 6's resync rule is only partly met (CR-006, critical), with 9 more patch findings and 2 decision_needed (CR-002, input normalization against security-patterns.md; CR-011, a link to a deleted cost center). All four lenses and the standards audit ran, but the 309 KB oversized diff was read only at the locations the lenses cited, so hunks no lens flagged are unverified. 6 items were deferred to code-review-deferred.local.md (pre-existing: orphan provider key, unbounded admin_emails, amounts overflow, swallowed provider delete on cancel, duplicated pct formula, unlocked concurrent cancel); 13 candidates were dismissed as already handled, spec-mandated or below the floor.",
+    "confidence": "low",
+    "risk_flags": [
+      "auth",
+      "public-api",
+      "data-contract",
+      "security"
+    ]
+  }
+}

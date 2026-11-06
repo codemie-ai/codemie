@@ -1,0 +1,133 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-16904",
+  "head": "c3d84a8a30b20cf5ae0445faaf15080f6b252471",
+  "runner": "custom",
+  "started_at": "2026-11-05T19:44:11Z",
+  "completed_at": "2026-11-05T19:54:31Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1322,
+      "command": "make ruff",
+      "exit_code": 0,
+      "notes": "Also covers the codemie-pre-commit hook chain (ruff staged format check, ruff check); license step covered by license-check. No hooks installed in .git/hooks on this checkout."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 5525,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 724,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 14862,
+      "command": "make gitleaks",
+      "exit_code": 2,
+      "notes": "5 findings, all in untracked gitignored local files outside the branch diff: .codex/config.toml, .mcp.json.lock, opencode.json, opencode.json.lock, docs/superpowers/tasks/2026-10-10-epmcdme-15651-step7-projects-service/code-review.local.diff. `gitleaks dir` scans the whole working tree."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 250540,
+      "command": "make test",
+      "exit_code": 2,
+      "notes": "29 failed, 29628 passed, 411 skipped. 28 in tests/codemie/repository/cli_analytics/postgres/test_live_{harness_label,summary_skill_names}.py: TypeError PostgresCliAnalyticsReader.get_session_detail_meta()/get_skill_names_by_session() missing keyword-only argument 'scope'. 1 in tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py (OpenBLAS RLIMIT_NPROC 64). Branch diff touches neither area; branch base b870d1f18f, origin/main now e95e1d2a08 (EPMCDME-16496 CLI analytics scope). Skip-if not applied: sdlc-standard Stage 7 calls for tests."
+    },
+    {
+      "id": "cli-analytics-live",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make test-cli-analytics-live",
+      "exit_code": null,
+      "notes": "Skip if: change does not touch src/codemie/repository/cli_analytics/postgres/ - branch diff does not."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make coverage",
+      "exit_code": null,
+      "notes": "Skip if: user did not request coverage."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 257408,
+      "command": "make sonar-local",
+      "exit_code": 2,
+      "notes": "Stopped at '[sonar-local] coverage generation exited with code 1' (same 29 test failures); scan never ran. sonar-scanner is not on PATH, so the scan step would fail next; SONAR_TOKEN is set. Also the second step of the opt-in codemie-pre-push hook (CODEMIE_PREPUSH_ENABLED)."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 14829,
+      "command": "make verify",
+      "exit_code": 2,
+      "notes": "ruff and license passed; stopped at gitleaks (same 5 findings); its test step never ran under verify."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "exit_code": null,
+      "notes": "Skip if: not opening an MR - this run does not. Required before the MR: `## Test harness` section for auto_epm-cdme_vcs checks 3.1/3.2. Needs the local app on :8080 (not running) plus ~/.codemie/test-harness.json (present)."
+    },
+    {
+      "id": "codemie-gitleaks",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 415,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": 0,
+      "notes": "Self-skip: 0 staged files, output 'scanned ~0 bytes (0) in 55.3ms'. Scans staged changes only, so committed branch content is not covered; no git hooks installed in .git/hooks, so it never ran at commit time. Committed content is covered only by `make gitleaks`."
+    },
+    {
+      "id": "commit-msg",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 66,
+      "command": "rc=0; for c in $(git rev-list origin/main..HEAD); do f=/tmp/claude-1000/-home-taras-spashchenko-EPAM-cm-codemie/38fb61ec-643e-4ba0-bfe3-a5730c5b32be/scratchpad/msgs/$c.txt; git log -1 --format=%B $c > $f; printf \"== %s \" $c; bash scripts/git-hooks/commit_msg.sh $f && echo accepted || rc=1; done; exit $rc",
+      "exit_code": 0,
+      "notes": "All 6 commits in origin/main..HEAD accepted. A first attempt via process substitution self-skipped ('[commit-msg] No commit message file provided; skipping.') and was rerun with message files."
+    },
+    {
+      "id": "ci-wait-ci-init",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": ".gitlab-ci.yml job wait-ci-init (extends .wait-ci-init-template)",
+      "exit_code": null,
+      "notes": "N/A: needs a GitLab MR pipeline; waits for external contexts ci-pipeline and compliance-report that run outside this repo - only CI can settle them. Mismatch: quality-gates.md 'After merge' and AGENTS.md say this repo has no pipeline config, but .gitlab-ci.yml exists (codemie-gitlab-templates pre-ci-guard 0.1.2)."
+    }
+  ],
+  "failures": {
+    "gitleaks": "docker run --rm -v \"./:/workspace\" ghcr.io/gitleaks/gitleaks:v8.30.1 \\\n    dir --no-banner --verbose --redact --config=/workspace/.gitleaks.toml /workspace\nFinding:     http_headers = { \"CONTEXT7_API_KEY\" = \"REDACTED\" }\nSecret:      REDACTED\nRuleID:      generic-api-key\nEntropy:     4.016284\nFile:        /workspace/.codex/config.toml\nLine:        15\nFingerprint: /workspace/.codex/config.toml:generic-api-key:15\n\nFinding:     \"BRAVE_API_KEY\": \"REDACTED\"\nSecret:      REDACTED\nRuleID:      generic-api-key\nEntropy:     4.696132\nFile:        /workspace/.mcp.json.lock\nLine:        11\nFingerprint: /workspace/.mcp.json.lock:generic-api-key:11\n\nFinding:     ...idget_rows, key_row=key_row, REDACTED or {}\nSecret:      REDACTED\nRuleID:      generic-api-key\nEntropy:     3.511086\nFile:        /workspace/docs/superpowers/tasks/2026-10-10-epmcdme-15651-step7-projects-service/code-review.local.diff\nLine:        2122\nFingerprint: /workspace/docs/superpowers/tasks/2026-10-10-epmcdme-15651-step7-projects-service/code-review.local.diff:generic-api-key:2122\n\nFinding:     \"CONTEXT7_API_KEY\": \"REDACTED\"\nSecret:      REDACTED\nRuleID:      generic-api-key\nEntropy:     4.016284\nFile:        /workspace/opencode.json\nLine:        26\nFingerprint: /workspace/opencode.json:generic-api-key:26\n\nFinding:     \"CONTEXT7_API_KEY\": \"REDACTED\"\nSecret:      REDACTED\nRuleID:      generic-api-key\nEntropy:     4.016284\nFile:        /workspace/opencode.json.lock\nLine:        303\nFingerprint: /workspace/opencode.json.lock:generic-api-key:303\n\n7:44PM INF scanned ~104354855 bytes (104.35 MB) in 14.4s\n7:44PM WRN leaks found: 5\nmake: *** [Makefile:73: gitleaks] Error 1",
+    "unit": "\ntests/codemie/service/settings/test_settings_transfer_service.py::TestTransferBothFlagsFalse::test_both_flags_false_raises_422\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:308: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService.transfer(\"source\", \"target\", TransferMode.MOVE, set(), None)\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestValidateProjects::test_rejects_same_source_and_target\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:347: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._validate_projects(\"same\", \"same\")\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestValidateAliasesPresent::test_rejects_row_with_empty_alias\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/settings/test_settings_transfer_service.py:391: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    SettingsTransferService._validate_aliases_present([row])\n\ntests/codemie/service/settings/test_settings_transfer_service.py::TestTransfer::test_null_alias_trigger_row_is_rejected_before_response_construction\n  /home/taras_spashchenko/EPAM/cm/codemie/src/codemie/service/settings/settings_transfer_service.py:426: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    cls._validate_aliases_present(candidates)\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_harness_label.py::test_codemie_claude_service_name_has_its_label_override\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_harness_label.py::test_claude_code_service_name_has_its_label_override\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_harness_label.py::test_hooks_only_session_takes_its_harness_from_the_hook_platform\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_harness_label.py::test_hooks_only_session_of_copilot_cli_has_its_label_override\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_harness_label.py::test_hooks_only_session_platform_is_trimmed_before_the_label_lookup\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_harness_label.py::test_hooks_only_session_with_a_blank_platform_has_no_harness\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_harness_label.py::test_otel_session_whose_resource_row_is_gone_falls_back_to_the_session_platform\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_harness_label.py::test_otel_service_name_wins_over_a_different_hook_platform\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_harness_label.py::test_resource_without_a_usable_service_name_falls_back_to_the_hook_platform[absent]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_harness_label.py::test_resource_without_a_usable_service_name_falls_back_to_the_hook_platform[empty]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_harness_label.py::test_resource_without_a_usable_service_name_falls_back_to_the_hook_platform[blank]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_harness_label.py::test_resource_without_a_usable_service_name_and_no_platform_has_no_harness[absent]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_harness_label.py::test_resource_without_a_usable_service_name_and_no_platform_has_no_harness[empty]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_harness_label.py::test_resource_without_a_usable_service_name_and_no_platform_has_no_harness[blank]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_harness_label.py::test_earliest_resource_with_a_usable_service_name_wins_over_an_earlier_blank_one\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_harness_label.py::test_a_later_blank_platform_does_not_replace_the_valid_one\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_summary_skill_names.py::test_summary_commands_classify_stlc[stlc-factory:exploratory]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_summary_skill_names.py::test_summary_commands_classify_stlc[stlc-feature]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_summary_skill_names.py::test_summary_commands_classify_stlc[stlc-factory:stlc-foundation]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_summary_skill_names.py::test_summary_commands_classify_stlc[stlc-factory:suite-health]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_summary_skill_names.py::test_summary_commands_example_from_ticket\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_summary_skill_names.py::test_malformed_commands_elements_dropped\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_summary_skill_names.py::test_summary_session_unions_dispatch_and_session_skills\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_summary_skill_names.py::test_dispatch_long_after_the_last_dimension_hook_is_still_classified\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_summary_skill_names.py::test_list_names_equal_classifier_input\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_summary_skill_names.py::test_dispatch_far_before_the_session_start_is_outside_the_lower_bound\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_summary_skill_names.py::test_a_session_without_started_at_keeps_its_dispatch_names\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_summary_skill_names.py::test_a_slash_command_row_alone_classifies_a_session_without_summary_or_dispatch\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_matplotlib_writes_single_and_multipage_pdf\n=== 29 failed, 29628 passed, 411 skipped, 439 warnings in 246.18s (0:04:06) ====\nmake: *** [Makefile:31: test] Error 1",
+    "sonar": "tests/codemie/service/marketplace_management/test_gate_errors.py::test_body_carries_the_failing_rules_and_every_finding\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/marketplace_management/test_gate_errors.py:28: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    error = critical_gate_blocked_error(\"a-1\", _FINDINGS, _FINDINGS[:1])\n\ntests/codemie/service/marketplace_management/test_gate_errors.py::test_only_the_help_text_may_differ_between_callers\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/marketplace_management/test_gate_errors.py:41: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    publish = critical_gate_blocked_error(\"a-1\", _FINDINGS, _FINDINGS[:1])\n\ntests/codemie/service/marketplace_management/test_gate_errors.py::test_only_the_help_text_may_differ_between_callers\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/marketplace_management/test_gate_errors.py:42: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    approve = critical_gate_blocked_error(\"a-1\", _FINDINGS, _FINDINGS[:1], help=\"use force-publish\")\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n================================ tests coverage ================================\n_______________ coverage: platform linux, python 3.12.13-final-0 _______________\n\nCoverage XML written to file coverage.xml\n=========================== short test summary info ============================\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_harness_label.py::test_codemie_claude_service_name_has_its_label_override\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_harness_label.py::test_claude_code_service_name_has_its_label_override\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_harness_label.py::test_hooks_only_session_takes_its_harness_from_the_hook_platform\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_harness_label.py::test_hooks_only_session_of_copilot_cli_has_its_label_override\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_harness_label.py::test_hooks_only_session_platform_is_trimmed_before_the_label_lookup\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_harness_label.py::test_hooks_only_session_with_a_blank_platform_has_no_harness\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_harness_label.py::test_otel_session_whose_resource_row_is_gone_falls_back_to_the_session_platform\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_harness_label.py::test_otel_service_name_wins_over_a_different_hook_platform\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_harness_label.py::test_resource_without_a_usable_service_name_falls_back_to_the_hook_platform[absent]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_harness_label.py::test_resource_without_a_usable_service_name_falls_back_to_the_hook_platform[empty]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_harness_label.py::test_resource_without_a_usable_service_name_falls_back_to_the_hook_platform[blank]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_harness_label.py::test_resource_without_a_usable_service_name_and_no_platform_has_no_harness[absent]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_harness_label.py::test_resource_without_a_usable_service_name_and_no_platform_has_no_harness[empty]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_harness_label.py::test_resource_without_a_usable_service_name_and_no_platform_has_no_harness[blank]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_harness_label.py::test_earliest_resource_with_a_usable_service_name_wins_over_an_earlier_blank_one\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_harness_label.py::test_a_later_blank_platform_does_not_replace_the_valid_one\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_summary_skill_names.py::test_summary_commands_classify_stlc[stlc-factory:exploratory]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_summary_skill_names.py::test_summary_commands_classify_stlc[stlc-feature]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_summary_skill_names.py::test_summary_commands_classify_stlc[stlc-factory:stlc-foundation]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_summary_skill_names.py::test_summary_commands_classify_stlc[stlc-factory:suite-health]\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_summary_skill_names.py::test_summary_commands_example_from_ticket\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_summary_skill_names.py::test_malformed_commands_elements_dropped\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_summary_skill_names.py::test_summary_session_unions_dispatch_and_session_skills\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_summary_skill_names.py::test_dispatch_long_after_the_last_dimension_hook_is_still_classified\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_summary_skill_names.py::test_list_names_equal_classifier_input\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_summary_skill_names.py::test_dispatch_far_before_the_session_start_is_outside_the_lower_bound\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_summary_skill_names.py::test_a_session_without_started_at_keeps_its_dispatch_names\nFAILED tests/codemie/repository/cli_analytics/postgres/test_live_summary_skill_names.py::test_a_slash_command_row_alone_classifies_a_session_without_summary_or_dispatch\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_matplotlib_writes_single_and_multipage_pdf\n=== 29 failed, 29628 passed, 411 skipped, 439 warnings in 251.98s (0:04:11) ====\n[sonar-local] coverage generation exited with code 1\nmake: *** [Makefile:86: sonar-local] Error 1",
+    "verify": "Processed 2700 files...\nProcessed 2800 files...\nProcessed 2900 files...\n\nChecked 2999 files, 0 missing license headers\ndocker run --rm -v \"./:/workspace\" ghcr.io/gitleaks/gitleaks:v8.30.1 \\\n    dir --no-banner --verbose --redact --config=/workspace/.gitleaks.toml /workspace\nFinding:     http_headers = { \"CONTEXT7_API_KEY\" = \"REDACTED\" }\nSecret:      REDACTED\nRuleID:      generic-api-key\nEntropy:     4.016284\nFile:        /workspace/.codex/config.toml\nLine:        15\nFingerprint: /workspace/.codex/config.toml:generic-api-key:15\n\nFinding:     \"BRAVE_API_KEY\": \"REDACTED\"\nSecret:      REDACTED\nRuleID:      generic-api-key\nEntropy:     4.696132\nFile:        /workspace/.mcp.json.lock\nLine:        11\nFingerprint: /workspace/.mcp.json.lock:generic-api-key:11\n\nFinding:     ...idget_rows, key_row=key_row, REDACTED or {}\nSecret:      REDACTED\nRuleID:      generic-api-key\nEntropy:     3.511086\nFile:        /workspace/docs/superpowers/tasks/2026-10-10-epmcdme-15651-step7-projects-service/code-review.local.diff\nLine:        2122\nFingerprint: /workspace/docs/superpowers/tasks/2026-10-10-epmcdme-15651-step7-projects-service/code-review.local.diff:generic-api-key:2122\n\nFinding:     \"CONTEXT7_API_KEY\": \"REDACTED\"\nSecret:      REDACTED\nRuleID:      generic-api-key\nEntropy:     4.016284\nFile:        /workspace/opencode.json\nLine:        26\nFingerprint: /workspace/opencode.json:generic-api-key:26\n\nFinding:     \"CONTEXT7_API_KEY\": \"REDACTED\"\nSecret:      REDACTED\nRuleID:      generic-api-key\nEntropy:     4.016284\nFile:        /workspace/opencode.json.lock\nLine:        303\nFingerprint: /workspace/opencode.json.lock:generic-api-key:303\n\n7:54PM INF scanned ~102261987 bytes (102.26 MB) in 11.6s\n7:54PM WRN leaks found: 5\nmake: *** [Makefile:73: gitleaks] Error 1"
+  }
+}

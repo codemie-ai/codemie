@@ -17,6 +17,7 @@ Detailed project guidance lives under `.ai-run/guides/`, which is the source of 
 | Tool Overview | `.ai-run/guides/agents/tool-overview.md` | Toolkit layering overview |
 | API | `.ai-run/guides/api/rest-api-patterns.md` | FastAPI router patterns |
 | Endpoint Conventions | `.ai-run/guides/api/endpoint-conventions.md` | Route and response conventions |
+| Provisioning API | `.ai-run/guides/api/provisioning-api.md` | `/v1/provisioning` rules: client registry, permissions, change reference, all-or-nothing contract |
 | Architecture | `.ai-run/guides/architecture/layered-architecture.md` | Layered architecture |
 | Project Structure | `.ai-run/guides/architecture/project-structure.md` | Package boundaries |
 | Service Layer | `.ai-run/guides/architecture/service-layer-patterns.md` | Service orchestration |
@@ -61,6 +62,7 @@ Detailed project guidance lives under `.ai-run/guides/`, which is the source of 
 | Architecture | system structure, boundaries, where code belongs | where should this go?; refactor service boundaries | `.ai-run/guides/architecture/layered-architecture.md` | `.ai-run/guides/architecture/project-structure.md` |
 | Agents & Tools | agents, tools, toolkits, callbacks | add tool; modify agent; tool schema | `.ai-run/guides/agents/langchain-agent-patterns.md` | `.ai-run/guides/agents/agent-tools.md` |
 | API | FastAPI routes, models, validation | add endpoint; change response model | `.ai-run/guides/api/rest-api-patterns.md` | `.ai-run/guides/api/endpoint-conventions.md` |
+| Provisioning API | `/v1/provisioning` endpoints for external systems | add provisioning endpoint; new provisioning permission; register a client | `.ai-run/guides/api/provisioning-api.md` | `.ai-run/guides/api/endpoint-conventions.md` |
 | Database | SQLModel, repositories, PostgreSQL | add query; change model; optimize DB | `.ai-run/guides/data/database-patterns.md` | `.ai-run/guides/data/repository-patterns.md` |
 | Search | Elasticsearch, vector or hybrid search | index stats; ES query; search bug | `.ai-run/guides/data/elasticsearch-integration.md` | `.ai-run/guides/data/database-optimization.md` |
 | Development | errors, logging, config, performance | handle error; add logging; config var | `.ai-run/guides/development/error-handling.md` | `.ai-run/guides/development/logging-patterns.md` |

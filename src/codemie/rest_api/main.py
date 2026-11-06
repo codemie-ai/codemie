@@ -81,7 +81,6 @@ from codemie.rest_api.routers import (
     settings,
     projects,
     cost_centers,
-    servicenow_integration,
     llm_models,
     files,
     conversation,
@@ -115,6 +114,7 @@ from codemie.rest_api.routers import google_oauth
 from codemie.rest_api.routers import gitlab_oauth
 from codemie.rest_api.routers import jira_oauth
 from codemie.rest_api.routers import confluence_oauth
+from codemie.rest_api.routers.provisioning import mount_provisioning_api
 from codemie.service.oauth_security import (
     assert_oauth_state_signing_secret_configured,
     assert_token_vault_available,
@@ -1508,19 +1508,7 @@ if config.ENABLE_USER_MANAGEMENT:
         app.include_router(local_auth_router.router)
     app.include_router(activity_events_router.router)
 
-if config.SERVICENOW_INTEGRATION_ENABLED:
-    if not config.ENABLE_USER_MANAGEMENT:
-        logger.warning(
-            "servicenow_integration_disabled: requires ENABLE_USER_MANAGEMENT=true, router not registered,"
-            " domain=servicenow_integration"
-        )
-    else:
-        if not config.SERVICENOW_SERVICE_ACCOUNT_ID:
-            logger.warning(
-                "servicenow_integration_misconfigured: SERVICENOW_SERVICE_ACCOUNT_ID is empty,"
-                " every request will be rejected, domain=servicenow_integration"
-            )
-        app.include_router(servicenow_integration.router)
+mount_provisioning_api(app)
 
 app.include_router(get_mcp_auth_router())
 app.include_router(get_cimd_router())

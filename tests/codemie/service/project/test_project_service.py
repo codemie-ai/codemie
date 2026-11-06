@@ -511,6 +511,74 @@ class TestCreateSharedProjectInSession:
             ProjectService.create_shared_project_in_session(MagicMock(), actor=service_account, name="epm-aimf")
 
 
+@patch("codemie.service.project.project_service.activity_event_repository")
+@patch("codemie.service.project.project_service.application_repository")
+class TestLinkCostCenterInSession:
+    @staticmethod
+    def _session_storing(stored_cost_center_id):
+        """Session whose refresh loads the link the database holds, as a real refresh would."""
+        session = MagicMock()
+        session.refresh.side_effect = lambda project: setattr(project, "cost_center_id", stored_cost_center_id)
+        return session
+
+    def test_unlinked_project_gets_the_link_and_a_project_updated_event(
+        self, mock_application_repository, mock_activity, service_account
+    ):
+        cost_center_id = uuid4()
+        session = self._session_storing(cost_center_id)
+        project = SimpleNamespace(id="epm-aimf", name="epm-aimf", cost_center_id=None)
+        mock_application_repository.set_cost_center_if_unset.return_value = True
+
+        result = ProjectService.link_cost_center_in_session(
+            session, actor=service_account, project=project, cost_center_id=cost_center_id
+        )
+
+        assert result == cost_center_id
+        mock_application_repository.set_cost_center_if_unset.assert_called_once_with(
+            session, "epm-aimf", cost_center_id
+        )
+        mock_activity.insert.assert_called_once()
+        event, event_session = mock_activity.insert.call_args.args
+        assert event.event_type == ProjectManagementEvent.PROJECT_UPDATED
+        assert event.entity_id == "epm-aimf"
+        assert event.actor_id == service_account.id
+        assert event.attributes is None
+        assert event_session is session
+        session.commit.assert_not_called()
+
+    def test_linked_project_keeps_its_link_and_records_no_event(
+        self, mock_application_repository, mock_activity, service_account
+    ):
+        existing_cost_center_id = uuid4()
+        session = self._session_storing(existing_cost_center_id)
+        project = SimpleNamespace(id="epm-aimf", name="epm-aimf", cost_center_id=existing_cost_center_id)
+        mock_application_repository.set_cost_center_if_unset.return_value = False
+
+        result = ProjectService.link_cost_center_in_session(
+            session, actor=service_account, project=project, cost_center_id=uuid4()
+        )
+
+        assert result == existing_cost_center_id
+        mock_activity.insert.assert_not_called()
+        session.commit.assert_not_called()
+
+    def test_concurrent_link_wins_and_is_the_one_returned(
+        self, mock_application_repository, mock_activity, service_account
+    ):
+        concurrent_cost_center_id = uuid4()
+        session = self._session_storing(concurrent_cost_center_id)
+        project = SimpleNamespace(id="epm-aimf", name="epm-aimf", cost_center_id=None)
+        mock_application_repository.set_cost_center_if_unset.return_value = False
+
+        result = ProjectService.link_cost_center_in_session(
+            session, actor=service_account, project=project, cost_center_id=uuid4()
+        )
+
+        assert result == concurrent_cost_center_id
+        assert project.cost_center_id == concurrent_cost_center_id
+        mock_activity.insert.assert_not_called()
+
+
 class TestProjectServiceValidation:
     @pytest.mark.parametrize(
         "name", ["my project", "test.env", "project@work", "hello/world", "_private", "-draft", "MyProject"]

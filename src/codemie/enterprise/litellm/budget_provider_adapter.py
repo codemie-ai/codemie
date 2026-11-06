@@ -886,13 +886,12 @@ class LiteLLMBudgetEnforcementProvider:
             f"budget_duration={budget_duration!r} model_count={len(models or [])}"
         )
         service = self._get_service()
-        provider_budget_ref = budget_state.provider_budget_ref
-        if service is None or provider_budget_ref is None:
+        if service is None:
             logger.debug(
                 f"budget_event=provider_project_budget_sync_failed component=litellm_budget_provider "
                 f"provider={_PROVIDER_NAME!r} operation=update project_name={project_name!r} "
                 f"budget_id={budget_id!r} budget_category={budget_category.value!r} "
-                f"reason={'provider_unavailable' if service is None else 'missing_provider_budget_ref'}"
+                "reason=provider_unavailable"
             )
             return BudgetProviderState(provider=_PROVIDER_NAME, sync_status=SyncStatus.FAILED)
 
@@ -908,8 +907,8 @@ class LiteLLMBudgetEnforcementProvider:
             legacy_key_alias=legacy_key_alias,
         )
 
-        old_provider_budget_ref = provider_budget_ref
-        if old_provider_budget_ref != state.provider_budget_ref:
+        old_provider_budget_ref = budget_state.provider_budget_ref
+        if old_provider_budget_ref is not None and old_provider_budget_ref != state.provider_budget_ref:
             await self._delete_project_api_key(project_name=project_name, key_alias=old_provider_budget_ref)
 
         logger.debug(

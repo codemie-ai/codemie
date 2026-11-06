@@ -24,14 +24,20 @@ Coverage: validation logic, error handling, normalization
 """
 
 import pytest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.security.user_type_validator import (
     VALID_USER_TYPES,
     is_personal_project_excluded,
+    is_personal_project_excluded_account,
+    is_service_account,
     validate_user_type,
 )
+from tests.codemie.configs.provisioning_clients_support import CLIENT_USER_ID, make_client, registered_clients
+
+UNREGISTERED_USER_ID = "9e8d7c6b-5a4f-4e3d-8c2b-1a0f9e8d7c6b"
 
 
 class TestValidateUserType:
@@ -265,3 +271,28 @@ class TestIsPersonalProjectExcluded:
     )
     def test_is_personal_project_excluded(self, user_type: str, expected: bool) -> None:
         assert is_personal_project_excluded(user_type) is expected
+
+
+class TestIsServiceAccount:
+    @pytest.mark.parametrize("user_type", ["regular", "external", "service_account"])
+    def test_registered_client_is_service_account_whatever_its_type(self, user_type: str) -> None:
+        with registered_clients(make_client()):
+            assert is_service_account(SimpleNamespace(id=CLIENT_USER_ID, user_type=user_type)) is True
+
+    def test_unregistered_regular_user_is_not_service_account(self) -> None:
+        with registered_clients(make_client()):
+            assert is_service_account(SimpleNamespace(id=UNREGISTERED_USER_ID, user_type="regular")) is False
+
+
+class TestIsPersonalProjectExcludedAccount:
+    @pytest.mark.parametrize(
+        "user_id,user_type,expected",
+        [
+            (CLIENT_USER_ID, "regular", True),
+            (UNREGISTERED_USER_ID, "regular", False),
+            (UNREGISTERED_USER_ID, "external", True),
+        ],
+    )
+    def test_excludes_registered_clients_and_excluded_types(self, user_id: str, user_type: str, expected: bool) -> None:
+        with registered_clients(make_client()):
+            assert is_personal_project_excluded_account(user_id, user_type) is expected

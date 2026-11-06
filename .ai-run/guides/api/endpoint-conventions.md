@@ -26,6 +26,8 @@ Evidence: assistant request handling uses `src/codemie/rest_api/handlers/assista
 
 ## Update Semantics (PUT)
 
+Provisioning PUT routes depart from this: see `.ai-run/guides/api/provisioning-api.md`.
+
 PUT routes are full-replace, not patch. Re-sending the same complete body leaves the stored entity unchanged, apart from `update_date`, `updated_date` and `last_reindex_date`. Pinned by `tests/codemie/rest_api/routers/test_idempotent_write.py` and `test_index.py`; the status codes and response schemas are pinned by `test_contract_baseline.py`.
 
 | Behaviour | Where | Notes |
