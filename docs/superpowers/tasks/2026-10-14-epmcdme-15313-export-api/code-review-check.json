@@ -1,0 +1,81 @@
+{
+  "decision": "request-changes",
+  "rationale": "CR-001..CR-010 are resolved in current source (read at the finding locations and covered by new tests); CR-011 (commit subject lacking EPMCDME-####) is unresolved: no fix_evidence maps it, and the user will reword the commit after this round. Behavior of tests was not executed here.",
+  "confidence": "medium",
+  "risk_flags": ["public-API", "data-contract", "security"],
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "Cross-entity references fail export when target name not unique in scope",
+      "status": "partial",
+      "notes": "Only clashes among referenced ids detected"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC3 Applying export yields equivalent entity",
+      "status": "partial",
+      "notes": "Known limits pinned as strict xfail"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC9 Update round-trip leaves entity unchanged",
+      "status": "partial",
+      "notes": "Known xfail cases change entity"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC13 Ambiguous referenced name fails naming the clash",
+      "status": "partial",
+      "notes": "Unreferenced duplicate not detected"
+    },
+    {
+      "kind": "spec",
+      "item": "Cyclomatic complexity <= 15",
+      "status": "pending-stage-7",
+      "notes": "Owned by Stage 7"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "fail",
+      "notes": "One commit subject lacks EPMCDME-####: Description format."
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "License headers present; no Optional[X] or lossy decode found."
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "Central authenticate dependency applied; no credential logging found."
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-011",
+      "kind": "evidence",
+      "severity": "major",
+      "triage": "patch",
+      "file": "unknown",
+      "title": "Commit subject lacks EPMCDME-#### format",
+      "problem": "Subject 'epmcdme-15313-export-api: add planning artifacts' violates git-workflow.md.",
+      "impact": "Blocking commit-format rule broken.",
+      "recommendation": "Reword to 'EPMCDME-15313: Add planning artifacts' or squash."
+    }
+  ],
+  "finding_status": [
+    {"id": "CR-001", "status": "resolved", "notes": "Router now maps ValidationError/AttributeError to 422 naming kind and id, without echoing values; tested."},
+    {"id": "CR-002", "status": "resolved", "notes": "_sorted uses a total key (missing/mixed keys sort last, content tie-break); order-independence test added."},
+    {"id": "CR-003", "status": "resolved", "notes": "code/svn/git_faq/google links go through redact_link; SharePoint site URL with credentials refused with 422 (accepted deviation); leak tests added."},
+    {"id": "CR-004", "status": "resolved", "notes": "Toolkit None check precedes schema lookup; schema errors map to ExportError; duplicate base/create names refused."},
+    {"id": "CR-005", "status": "resolved", "notes": "Server-name uniqueness check, type-safe MCP field redaction, tool-level credential entries, free-form tool_args/custom_nodes/states redaction added with tests."},
+    {"id": "CR-006", "status": "resolved", "notes": "url_has_credentials catches ValueError and fails closed (redacts); parametrised test added."},
+    {"id": "CR-007", "status": "resolved", "notes": "auth pattern tightened (author excluded), short flags, exact key/sig names, token literals handled; benign and leak tests added."},
+    {"id": "CR-008", "status": "resolved", "notes": "NameResolver now checks name uniqueness against all in-scope entities via names lookup; pinning test replaced."},
+    {"id": "CR-009", "status": "resolved", "notes": "reference_access applies READ checks for assistant and integration references before names are disclosed; categories are global and unchecked by design."},
+    {"id": "CR-010", "status": "resolved", "notes": "Negative tests added for reserved-key clash, SharePoint without URL, SVN without link, provider without fields, removed toolkit, schema failure."},
+    {"id": "CR-011", "status": "unresolved", "notes": "Evidence finding with no mapped fix_evidence; pending by user decision to reword the unpushed commit after this round."}
+  ]
+}

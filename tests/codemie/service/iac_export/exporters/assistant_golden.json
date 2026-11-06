@@ -1,0 +1,84 @@
+{
+  "version": "v1",
+  "meta": {
+    "kind": "assistant",
+    "name": "Helper"
+  },
+  "spec": {
+    "name": "Helper",
+    "description": "Helps",
+    "system_prompt": "Be {{tone}} with {{api_key}}",
+    "project": "demo",
+    "context": [
+      {
+        "context_type": "code",
+        "name": "repo"
+      }
+    ],
+    "llm_model_type": "gpt-4",
+    "toolkits": [
+      {
+        "toolkit": "vcs",
+        "tools": [
+          {
+            "name": "alpha",
+            "label": "Alpha",
+            "settings_config": false,
+            "settings": "Jira",
+            "auto_credentials_lookup": true
+          },
+          {
+            "name": "zeta",
+            "label": "Zeta",
+            "settings_config": false,
+            "auto_credentials_lookup": true
+          }
+        ],
+        "label": "",
+        "settings_config": false,
+        "is_external": false,
+        "settings": "Jira",
+        "auto_credentials_lookup": true
+      }
+    ],
+    "conversation_starters": [],
+    "shared": true,
+    "is_react": true,
+    "is_global": false,
+    "categories": [
+      "Support"
+    ],
+    "slug": "helper",
+    "mcp_servers": [
+      {
+        "name": "docs",
+        "enabled": true,
+        "use_custom_config": false,
+        "mcp_connect_url": "env:HELPER_DOCS_MCP_CONNECT_URL",
+        "settings": "Docs Env",
+        "mcp_connect_auth_token": "Docs Token",
+        "resolve_dynamic_values_in_arguments": false
+      }
+    ],
+    "assistant_ids": [
+      "Sub Helper"
+    ],
+    "enabled_builtin_subagents": [],
+    "skill_ids": [
+      "Skill A",
+      "Skill B"
+    ],
+    "interactive_enabled": false,
+    "enable_image_generation": false,
+    "prompt_variables": [
+      {
+        "key": "api_key",
+        "default_value": ""
+      },
+      {
+        "key": "tone",
+        "default_value": "friendly"
+      }
+    ]
+  }
+}

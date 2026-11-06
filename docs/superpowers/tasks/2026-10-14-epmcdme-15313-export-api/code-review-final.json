@@ -1,0 +1,20 @@
+{
+  "decision": "approve",
+  "rationale": "All four lenses and standards ran; no blocking defect survived. 0 deferred; 10 candidates filtered as noise (user-approved meta.name=name with name-based reference resolution already in place, speculative test-wording/lint remarks, empty-name case not shown reachable). Reachability was checked only for the assistant meta.name site; the test-harness claims (blind items on update semantics, _must_not_be_called signature) were not individually opened, so confidence is capped at medium.",
+  "confidence": "medium",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "spec", "item": "meta.name for an assistant is the assistant name, not the slug (slug stays in spec.slug)", "status": "pass", "notes": "assistant.py:300; golden and test assert meta, spec.name, spec.slug"},
+    {"kind": "spec", "item": "Datasource: provider cron_expression/timezone non-exportable; other types still export them", "status": "pass", "notes": "with_schedule flag; two tests pin both sides"},
+    {"kind": "spec", "item": "Workflow supervisor_prompt/meta_config kept; start_hint lost pinned by strict xfail", "status": "pass", "notes": "xfail narrowed to start_hint; passing parametrised test added"},
+    {"kind": "spec", "item": "Inline MCP secrets round trip pinned by strict xfail with real-engine caveat", "status": "pass", "notes": "xfail reasons reworded; behaviour unchanged"},
+    {"kind": "spec", "item": "Determinism / AC5: no run-specific values introduced", "status": "pass", "notes": "static field selection only"},
+    {"kind": "spec", "item": "Remaining spec criteria AC1-AC13 not touched by this delta", "status": "na", "notes": "not auditable from this diff"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "all 6 subjects in the review range use the documented EPMCDME-####: Description format"},
+    {"kind": "code-quality", "status": "pass", "notes": "small src changes; typed with_schedule parameter; no guide rule broken"},
+    {"kind": "security", "status": "pass", "notes": "no auth, secret logging or untrusted-input handling changes"}
+  ],
+  "findings": []
+}

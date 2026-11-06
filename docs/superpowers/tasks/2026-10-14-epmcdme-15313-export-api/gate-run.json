@@ -1,0 +1,160 @@
+{
+ "schema": 1,
+ "branch": "EPMCDME-15313_export-api",
+ "head": "36a0f17c97ceb6b025507d920b51a49cc0bcd187",
+ "runner": "poetry",
+ "started_at": "2026-10-15T00:00:00Z",
+ "completed_at": "2026-10-15T00:03:00Z",
+ "status": "BLOCKED",
+ "drift_detected": false,
+ "gates": [
+  {
+   "id": "lint",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 2000,
+   "command": "make ruff",
+   "exit_code": 0
+  },
+  {
+   "id": "build",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 3000,
+   "command": "make build",
+   "exit_code": 0
+  },
+  {
+   "id": "license",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 1000,
+   "command": "make license-check",
+   "exit_code": 0
+  },
+  {
+   "id": "secrets",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 6000,
+   "command": "make gitleaks",
+   "exit_code": 0,
+   "notes": "no leaks found"
+  },
+  {
+   "id": "unit",
+   "source": "guide",
+   "status": "FAIL",
+   "duration_ms": 88000,
+   "command": "make test",
+   "exit_code": 2,
+   "notes": "56 failed, 20863 passed, 198 skipped, 7 xfailed, 1 error; every failing id is in the known environment set (enterprise/mcp_auth, openapi snapshot, provider_adapters, toolkit_service_auth_resolver, logout_token_cleanup error); none new"
+  },
+  {
+   "id": "sonar-local",
+   "source": "hook",
+   "status": "SKIPPED",
+   "duration_ms": 0,
+   "command": "make sonar-local",
+   "exit_code": null,
+   "notes": "Not run: needs Sonar server/token and network (pre-push hook); only CI/human can settle it"
+  },
+  {
+   "id": "test-harness",
+   "source": "guide",
+   "status": "N/A",
+   "duration_ms": 0,
+   "command": "make test-harness",
+   "exit_code": null,
+   "notes": "Not run: needs docker stack and MR-only; owed before MR"
+  }
+ ],
+ "failures": {
+  "unit": {
+   "summary": "56 failed, 20863 passed, 198 skipped, 7 xfailed, 1 error; all within the known environment set",
+   "by_file": {
+    "tests/codemie/service/mcp/test_toolkit_service_auth_resolver.py": [
+     "test_nfr23_discovered_pipeline_preserves_current_scope_and_invokes_tool_with_token",
+     "test_prepare_server_config_falls_back_to_legacy_when_discovered_token_missing"
+    ],
+    "tests/codemie/service/oauth/adapters/test_provider_adapters.py": [
+     "test_gitlab_exchange_maps_enterprise_token_data",
+     "test_atlassian_exchange_maps_enterprise_token_data"
+    ],
+    "tests/codemie/rest_api/router_guards/test_openapi_snapshot.py": [
+     "test_openapi_matches_baseline"
+    ],
+    "tests/enterprise/mcp_auth/test_client_metadata_bridge.py": [
+     "test_enabled_cimd_route_returns_public_document_headers_and_does_not_require_auth",
+     "test_enabled_cimd_route_rejects_query_without_echoing_tainted_inputs",
+     "test_enabled_cimd_route_sanitizes_invalid_configured_base_url_without_echoing_tainted_values"
+    ],
+    "tests/enterprise/mcp_auth/test_discovery_probe_bridge.py": [
+     "test_discovered_auth_gate_registration_failures_return_config_error_payload[no_supported_registration_mechanism-attempted_mechanisms0]",
+     "test_discovered_auth_gate_registration_failures_return_config_error_payload[dcr_timeout-attempted_mechanisms1]",
+     "test_discovered_auth_gate_registration_failures_return_config_error_payload[dcr_unavailable-attempted_mechanisms2]",
+     "test_discovery_probe_bridge_does_not_await_async_db_engine_in_worker_loop"
+    ],
+    "tests/enterprise/mcp_auth/test_oauth2_callback_bridge.py": [
+     "test_callback_entry_log_state_prefix_joins_to_initiate"
+    ],
+    "tests/enterprise/mcp_auth/test_oauth2_initiate_bridge.py": [
+     "test_initiate_route_recovery_attempt_three_returns_auth_required_envelope",
+     "test_build_oauth2_initiate_response_passes_canonical_resource_to_enterprise_builder",
+     "test_raise_client_error_logs_warning_with_sanitized_details_before_raising",
+     "test_static_oauth2_initiate_logs_info_with_state_prefix_and_authorize_fields",
+     "test_static_oauth2_initiate_info_log_never_contains_full_state",
+     "test_saml_initiate_logs_info_with_state_prefix_and_authorize_fields",
+     "test_build_saml_initiate_passes_mcp_config_id_as_required_param",
+     "test_static_initiate_survives_malformed_authorize_url"
+    ],
+    "tests/enterprise/mcp_auth/test_insufficient_scope_recovery_bridge.py": [
+     "test_bridge_maps_real_assistant_recovery_payload_snapshot"
+    ],
+    "tests/enterprise/mcp_auth/test_post_auth_401_bridge.py": [
+     "test_post_auth_401_bridge_returns_retry_header_after_successful_force_refresh",
+     "test_post_auth_401_bridge_logs_retry_401_and_does_not_force_refresh_twice",
+     "test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-token_not_found]",
+     "test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-reauth_required0]",
+     "test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-tms_unavailable]",
+     "test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-tms_persistence_error0]",
+     "test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-token_refresh_error]",
+     "test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-reauth_required1]",
+     "test_post_auth_401_bridge_maps_force_refresh_failures[<lambda>-tms_persistence_error1]",
+     "test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-warning-token_not_found]",
+     "test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-warning-reauth_required0]",
+     "test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-error-tms_unavailable]",
+     "test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-error-tms_persistence_error0]",
+     "test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-error-token_refresh_error]",
+     "test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-warning-reauth_required1]",
+     "test_post_auth_401_bridge_logs_force_refresh_failures[<lambda>-error-tms_persistence_error1]",
+     "test_post_auth_401_bridge_prompts_without_calling_tms_for_no_refresh_decisions[None-missing_www_authenticate]",
+     "test_post_auth_401_bridge_prompts_without_calling_tms_for_no_refresh_decisions[Bearer",
+     "test_post_auth_401_bridge_detects_configured_discovered_identity_conflict",
+     "test_post_auth_401_bridge_prompts_non_oauth_config_without_oauth_payload",
+     "test_post_auth_401_bridge_normalizes_or_rejects_refreshed_token_type[bearer-Bearer",
+     "test_post_auth_401_bridge_normalizes_or_rejects_refreshed_token_type[Basic-None-refresh_result_invalid]",
+     "test_post_auth_401_bridge_prompts_when_oauth2_identity_is_incomplete[execution_context0-missing_user_id]",
+     "test_post_auth_401_bridge_prompts_when_oauth2_identity_is_incomplete[execution_context1-missing_auth_config_id]",
+     "test_post_auth_401_bridge_uses_discovered_oauth2_identity_when_no_configured_id",
+     "test_post_auth_401_bridge_rejects_env_delivered_oauth2_refresh",
+     "test_post_auth_401_bridge_omits_initiate_url_for_workflow_payload",
+     "test_post_auth_401_bridge_uses_live_discovered_snapshot_for_reauth_initiate_url",
+     "test_post_auth_401_bridge_rebuilds_discovered_snapshot_from_exact_flow_config",
+     "test_post_auth_401_bridge_discovered_snapshot_missing_without_exact_config_is_non_resumable"
+    ],
+    "tests/enterprise/mcp_auth/test_mcp_auth_status_bridge.py": [
+     "test_build_discovered_auth_status_response_uses_flow_store_and_tms[False-authentication_required]",
+     "test_build_discovered_auth_status_response_uses_flow_store_and_tms[True-authenticated]",
+     "test_build_discovered_auth_status_response_returns_config_error_snapshot"
+    ],
+    "tests/enterprise/mcp_auth/test_private_network_allowlist_bridge.py": [
+     "test_private_network_allowlist_reader_output_passes_to_enterprise_as_discovery"
+    ],
+    "tests/codemie/service/security/test_logout_token_cleanup_mock_tms.py": [
+     "test_logout_removes_only_the_users_rows_and_pod_fallback"
+    ]
+   }
+  }
+ }
+}

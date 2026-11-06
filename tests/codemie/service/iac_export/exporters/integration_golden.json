@@ -1,0 +1,1 @@
+{"version":"v1","meta":{"kind":"integration","name":"My Jira"},"spec":{"project_name":"demo","alias":"My Jira","default":false,"is_global":false,"credential_type":"Jira","credential_values":[{"key":"openapi_spec","ref":"env:MY_JIRA_OPENAPI_SPEC"},{"key":"token","ref":"env:MY_JIRA_TOKEN"},{"key":"url","ref":"env:MY_JIRA_URL"}],"setting_type":"project"}}

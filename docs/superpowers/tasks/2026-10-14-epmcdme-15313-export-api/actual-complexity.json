@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "generated": "2026-10-14T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 25,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 59,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "New iac_export service package with per-kind serialisers (six kinds, 11 datasource types), new export router, main.py wiring, and a shared envelope contract with a committed JSON schema." },
+    { "dimension": "requirements_clarity", "reason": "Exports initially did not parse in the real envelope (1 of 19 documents); required a 43-file re-base on the envelope specs and an env: derivation alignment, indicating the contract was under-specified at start." },
+    { "dimension": "technical_risk", "reason": "Public byte-stable REST contract with OpenAPI baseline, name-for-id substitution and env: credential references (secret-handling sensitivity); no exact precedent; a review fix-up addressed 12 findings." },
+    { "dimension": "file_change_estimate", "reason": "59 files changed, +9967 lines, 19 commits, mostly new files in one new package plus tests and fixtures." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk: security-sensitive credential reference handling (env: references) and public byte-stable contract",
+    "Requirements Clarity: late-discovered contract mismatch with the envelope (EPMCDME-15309)"
+  ],
+  "split_recommendation": null
+}

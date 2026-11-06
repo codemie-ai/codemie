@@ -1,0 +1,3579 @@
+{
+  "meta": {
+    "$defs": {
+      "DocumentKind": {
+        "enum": [
+          "assistant",
+          "datasource",
+          "integration",
+          "skill",
+          "category",
+          "workflow"
+        ],
+        "type": "string"
+      }
+    },
+    "additionalProperties": false,
+    "properties": {
+      "kind": {
+        "$ref": "#/$defs/DocumentKind"
+      },
+      "name": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "kind",
+      "name"
+    ],
+    "type": "object"
+  },
+  "specs": {
+    "assistant": {
+      "$defs": {
+        "ContextSpec": {
+          "additionalProperties": false,
+          "properties": {
+            "context_type": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "context_type",
+            "name"
+          ],
+          "type": "object"
+        },
+        "CredentialRef": {
+          "type": "string"
+        },
+        "HedgingConfig": {
+          "properties": {
+            "input_mapping": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "output_field": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "provider_tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/HedgingProviderToolDetails"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "timeout_ms": {
+              "default": 200,
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            "tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/HedgingToolDetails"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "HedgingProviderToolDetails": {
+          "properties": {
+            "datasource_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "provider_name": {
+              "type": "string"
+            },
+            "result_condition": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "tool_name": {
+              "type": "string"
+            },
+            "toolkit_name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "provider_name",
+            "toolkit_name",
+            "tool_name"
+          ],
+          "type": "object"
+        },
+        "HedgingToolDetails": {
+          "properties": {
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": "object"
+        },
+        "MCPServerConfigSpec": {
+          "additionalProperties": false,
+          "properties": {
+            "args": {
+              "items": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/CredentialRef"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "type": "array"
+            },
+            "audience": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "auth_config": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "auth_token": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CredentialRef"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "command": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "env": {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/CredentialRef"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "type": "object"
+            },
+            "headers": {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/CredentialRef"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "type": "object"
+            },
+            "single_usage": {
+              "default": false,
+              "type": "boolean"
+            },
+            "tools": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "type": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "url": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CredentialRef"
+                },
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "MCPServerDetailsSpec": {
+          "additionalProperties": false,
+          "properties": {
+            "arguments": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CredentialRef"
+                },
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "command": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "config": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/MCPServerConfigSpec"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "description": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "integration_alias": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "mcp_config_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "mcp_connect_auth_token": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "mcp_connect_url": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CredentialRef"
+                },
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "name": {
+              "type": "string"
+            },
+            "resolve_dynamic_values_in_arguments": {
+              "default": false,
+              "type": "boolean"
+            },
+            "settings": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "tools": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "tools_tokens_size_limit": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "use_custom_config": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "name",
+            "enabled"
+          ],
+          "type": "object"
+        },
+        "PromptVariableSpec": {
+          "additionalProperties": false,
+          "properties": {
+            "default_value": {
+              "type": "string"
+            },
+            "description": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "key": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "key",
+            "default_value"
+          ],
+          "type": "object"
+        },
+        "ToolCallPolicy": {
+          "enum": [
+            "auto_approve",
+            "approve_for_me",
+            "ask_for_approval"
+          ],
+          "type": "string"
+        },
+        "ToolDetailsSpec": {
+          "additionalProperties": false,
+          "properties": {
+            "auto_credentials_lookup": {
+              "default": true,
+              "type": "boolean"
+            },
+            "label": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "name": {
+              "type": "string"
+            },
+            "settings": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "settings_config": {
+              "default": false,
+              "type": "boolean"
+            },
+            "user_description": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": "object"
+        },
+        "ToolKitDetailsSpec": {
+          "additionalProperties": false,
+          "properties": {
+            "auto_credentials_lookup": {
+              "default": true,
+              "type": "boolean"
+            },
+            "is_external": {
+              "default": false,
+              "type": "boolean"
+            },
+            "label": {
+              "default": "",
+              "type": "string"
+            },
+            "settings": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "settings_config": {
+              "default": false,
+              "type": "boolean"
+            },
+            "toolkit": {
+              "type": "string"
+            },
+            "tools": {
+              "items": {
+                "$ref": "#/$defs/ToolDetailsSpec"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "toolkit"
+          ],
+          "type": "object"
+        },
+        "ToolPermissionsConfigSpec": {
+          "additionalProperties": false,
+          "properties": {
+            "allow_override": {
+              "default": true,
+              "type": "boolean"
+            },
+            "tool_call_policy": {
+              "$ref": "#/$defs/ToolCallPolicy",
+              "default": "auto_approve"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "assistant_ids": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "categories": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "context": {
+          "items": {
+            "$ref": "#/$defs/ContextSpec"
+          },
+          "type": "array"
+        },
+        "conversation_starters": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "description": {
+          "type": "string"
+        },
+        "enable_image_generation": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": false
+        },
+        "enabled_builtin_subagents": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "file_attachment_enabled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "hedging_config": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HedgingConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "icon_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "interactive_enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "is_global": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": false
+        },
+        "is_react": {
+          "default": false,
+          "type": "boolean"
+        },
+        "llm_model_type": {
+          "type": "string"
+        },
+        "mcp_servers": {
+          "items": {
+            "$ref": "#/$defs/MCPServerDetailsSpec"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        },
+        "project": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "prompt_variables": {
+          "items": {
+            "$ref": "#/$defs/PromptVariableSpec"
+          },
+          "type": "array"
+        },
+        "shared": {
+          "default": false,
+          "type": "boolean"
+        },
+        "skill_ids": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "skip_integration_validation": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": false
+        },
+        "slug": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "system_prompt": {
+          "type": "string"
+        },
+        "temperature": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "tool_permissions": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolPermissionsConfigSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "toolkits": {
+          "items": {
+            "$ref": "#/$defs/ToolKitDetailsSpec"
+          },
+          "type": "array"
+        },
+        "tools_tokens_size_limit": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "top_p": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "system_prompt",
+        "llm_model_type"
+      ],
+      "type": "object"
+    },
+    "category": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "datasource": {
+      "$defs": {
+        "AzureDevOpsWikiDatasourceSpec": {
+          "additionalProperties": false,
+          "properties": {
+            "cron_expression": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "description": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "organization": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "project": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "project_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "setting_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "shared_with_project": {
+              "default": false,
+              "type": "boolean"
+            },
+            "timezone": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "type": {
+              "const": "knowledge_base_azure_devops_wiki",
+              "default": "knowledge_base_azure_devops_wiki",
+              "type": "string"
+            },
+            "wiki_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "wiki_query": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "name",
+            "description"
+          ],
+          "type": "object"
+        },
+        "AzureDevOpsWorkItemDatasourceSpec": {
+          "additionalProperties": false,
+          "properties": {
+            "cron_expression": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "description": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "organization": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "project": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "project_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "setting_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "shared_with_project": {
+              "default": false,
+              "type": "boolean"
+            },
+            "timezone": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "type": {
+              "const": "knowledge_base_azure_devops_work_item",
+              "default": "knowledge_base_azure_devops_work_item",
+              "type": "string"
+            },
+            "wiql_query": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "name",
+            "description"
+          ],
+          "type": "object"
+        },
+        "CodeDatasourceSpec": {
+          "additionalProperties": false,
+          "properties": {
+            "branch": {
+              "maxLength": 1000,
+              "minLength": 1,
+              "type": "string"
+            },
+            "cron_expression": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "description": {
+              "type": "string"
+            },
+            "docs_generation": {
+              "default": false,
+              "type": "boolean"
+            },
+            "embeddings_model": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "files_filter": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": ""
+            },
+            "index_type": {
+              "enum": [
+                "code",
+                "summary",
+                "chunk-summary"
+              ],
+              "type": "string"
+            },
+            "link": {
+              "maxLength": 1000,
+              "minLength": 1,
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "project_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "prompt": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "setting_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "shared_with_project": {
+              "default": false,
+              "type": "boolean"
+            },
+            "summarization_model": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "timezone": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "type": {
+              "const": "code",
+              "default": "code",
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "description",
+            "link",
+            "branch",
+            "index_type"
+          ],
+          "type": "object"
+        },
+        "ConfluenceDatasourceSpec": {
+          "additionalProperties": false,
+          "properties": {
+            "cql": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "cron_expression": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "description": {
+              "type": "string"
+            },
+            "include_archived_content": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "include_attachments": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "include_comments": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "include_restricted_content": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "keep_markdown_format": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "keep_newlines": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "max_pages": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "name": {
+              "type": "string"
+            },
+            "pages_per_request": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "project_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "setting_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "shared_with_project": {
+              "default": false,
+              "type": "boolean"
+            },
+            "timezone": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "type": {
+              "const": "knowledge_base_confluence",
+              "default": "knowledge_base_confluence",
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "description"
+          ],
+          "type": "object"
+        },
+        "CredentialRef": {
+          "type": "string"
+        },
+        "FileDatasourceSpec": {
+          "additionalProperties": false,
+          "properties": {
+            "cron_expression": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "description": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "project_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "setting_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "shared_with_project": {
+              "default": false,
+              "type": "boolean"
+            },
+            "timezone": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "type": {
+              "const": "knowledge_base_file",
+              "default": "knowledge_base_file",
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "description"
+          ],
+          "type": "object"
+        },
+        "GitFaqDatasourceSpec": {
+          "additionalProperties": false,
+          "properties": {
+            "branch": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "cron_expression": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "description": {
+              "type": "string"
+            },
+            "embedding_model": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "files_filter": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "link": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "name": {
+              "type": "string"
+            },
+            "project_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "setting_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "shared_with_project": {
+              "default": false,
+              "type": "boolean"
+            },
+            "timezone": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "type": {
+              "const": "knowledge_base_git_faq",
+              "default": "knowledge_base_git_faq",
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "description"
+          ],
+          "type": "object"
+        },
+        "GoogleDatasourceSpec": {
+          "additionalProperties": false,
+          "properties": {
+            "cron_expression": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "description": {
+              "type": "string"
+            },
+            "google_doc": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "name": {
+              "type": "string"
+            },
+            "project_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "setting_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "shared_with_project": {
+              "default": false,
+              "type": "boolean"
+            },
+            "timezone": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "type": {
+              "const": "llm_routing_google",
+              "default": "llm_routing_google",
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "description"
+          ],
+          "type": "object"
+        },
+        "JiraDatasourceSpec": {
+          "additionalProperties": false,
+          "properties": {
+            "cron_expression": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "custom_fields": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "description": {
+              "type": "string"
+            },
+            "jql": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "name": {
+              "type": "string"
+            },
+            "project_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "setting_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "shared_with_project": {
+              "default": false,
+              "type": "boolean"
+            },
+            "timezone": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "type": {
+              "const": "knowledge_base_jira",
+              "default": "knowledge_base_jira",
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "description"
+          ],
+          "type": "object"
+        },
+        "ProviderDatasourceSpec": {
+          "additionalProperties": false,
+          "properties": {
+            "cron_expression": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "description": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "project_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "provider_name": {
+              "type": "string"
+            },
+            "setting_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "settings": {
+              "additionalProperties": true,
+              "default": {},
+              "type": "object"
+            },
+            "shared_with_project": {
+              "default": false,
+              "type": "boolean"
+            },
+            "timezone": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "toolkit_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "provider",
+              "default": "provider",
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "description",
+            "provider_name",
+            "toolkit_id"
+          ],
+          "type": "object"
+        },
+        "SharepointDatasourceSpec": {
+          "additionalProperties": false,
+          "properties": {
+            "access_token": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CredentialRef"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "auth_type": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "integration",
+                    "oauth_codemie",
+                    "oauth_custom"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "cron_expression": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "description": {
+              "type": "string"
+            },
+            "embedding_model": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "files_filter": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "include_documents": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "include_lists": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "include_pages": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "max_file_size_mb": {
+              "anyOf": [
+                {
+                  "maximum": 500,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "name": {
+              "type": "string"
+            },
+            "oauth_client_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "oauth_tenant_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "project_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "setting_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "shared_with_project": {
+              "default": false,
+              "type": "boolean"
+            },
+            "site_url": {
+              "maxLength": 1000,
+              "pattern": "^https://\\S+$",
+              "type": "string"
+            },
+            "timezone": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "type": {
+              "const": "knowledge_base_sharepoint",
+              "default": "knowledge_base_sharepoint",
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "description",
+            "site_url"
+          ],
+          "type": "object"
+        },
+        "SvnDatasourceSpec": {
+          "additionalProperties": false,
+          "properties": {
+            "branch": {
+              "default": "trunk",
+              "maxLength": 1000,
+              "minLength": 1,
+              "type": "string"
+            },
+            "cron_expression": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "description": {
+              "type": "string"
+            },
+            "docs_generation": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "embeddings_model": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "files_filter": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "index_type": {
+              "default": "code",
+              "enum": [
+                "code",
+                "summary",
+                "chunk-summary"
+              ],
+              "type": "string"
+            },
+            "link": {
+              "maxLength": 1000,
+              "minLength": 1,
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "project_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "prompt": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "setting_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "shared_with_project": {
+              "default": false,
+              "type": "boolean"
+            },
+            "timezone": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "type": {
+              "const": "svn",
+              "default": "svn",
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "description",
+            "link"
+          ],
+          "type": "object"
+        },
+        "XWikiDatasourceSpec": {
+          "additionalProperties": false,
+          "properties": {
+            "cron_expression": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "description": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "project_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "setting_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "shared_with_project": {
+              "default": false,
+              "type": "boolean"
+            },
+            "space": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "timezone": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "type": {
+              "const": "knowledge_base_xwiki",
+              "default": "knowledge_base_xwiki",
+              "type": "string"
+            },
+            "wiki": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "name",
+            "description"
+          ],
+          "type": "object"
+        },
+        "XrayDatasourceSpec": {
+          "additionalProperties": false,
+          "properties": {
+            "cron_expression": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "description": {
+              "type": "string"
+            },
+            "embedding_model": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "jql": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "project_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "setting_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "shared_with_project": {
+              "default": false,
+              "type": "boolean"
+            },
+            "timezone": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "type": {
+              "const": "knowledge_base_xray",
+              "default": "knowledge_base_xray",
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "description",
+            "jql"
+          ],
+          "type": "object"
+        }
+      },
+      "discriminator": {
+        "mapping": {
+          "code": "#/$defs/CodeDatasourceSpec",
+          "knowledge_base_azure_devops_wiki": "#/$defs/AzureDevOpsWikiDatasourceSpec",
+          "knowledge_base_azure_devops_work_item": "#/$defs/AzureDevOpsWorkItemDatasourceSpec",
+          "knowledge_base_confluence": "#/$defs/ConfluenceDatasourceSpec",
+          "knowledge_base_file": "#/$defs/FileDatasourceSpec",
+          "knowledge_base_git_faq": "#/$defs/GitFaqDatasourceSpec",
+          "knowledge_base_jira": "#/$defs/JiraDatasourceSpec",
+          "knowledge_base_sharepoint": "#/$defs/SharepointDatasourceSpec",
+          "knowledge_base_xray": "#/$defs/XrayDatasourceSpec",
+          "knowledge_base_xwiki": "#/$defs/XWikiDatasourceSpec",
+          "llm_routing_google": "#/$defs/GoogleDatasourceSpec",
+          "provider": "#/$defs/ProviderDatasourceSpec",
+          "svn": "#/$defs/SvnDatasourceSpec"
+        },
+        "propertyName": "type"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/CodeDatasourceSpec"
+        },
+        {
+          "$ref": "#/$defs/GitFaqDatasourceSpec"
+        },
+        {
+          "$ref": "#/$defs/JiraDatasourceSpec"
+        },
+        {
+          "$ref": "#/$defs/ConfluenceDatasourceSpec"
+        },
+        {
+          "$ref": "#/$defs/GoogleDatasourceSpec"
+        },
+        {
+          "$ref": "#/$defs/FileDatasourceSpec"
+        },
+        {
+          "$ref": "#/$defs/AzureDevOpsWikiDatasourceSpec"
+        },
+        {
+          "$ref": "#/$defs/AzureDevOpsWorkItemDatasourceSpec"
+        },
+        {
+          "$ref": "#/$defs/XWikiDatasourceSpec"
+        },
+        {
+          "$ref": "#/$defs/SvnDatasourceSpec"
+        },
+        {
+          "$ref": "#/$defs/SharepointDatasourceSpec"
+        },
+        {
+          "$ref": "#/$defs/XrayDatasourceSpec"
+        },
+        {
+          "$ref": "#/$defs/ProviderDatasourceSpec"
+        }
+      ]
+    },
+    "integration": {
+      "$defs": {
+        "CredentialRef": {
+          "type": "string"
+        },
+        "CredentialRefEntry": {
+          "additionalProperties": false,
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "ref": {
+              "$ref": "#/$defs/CredentialRef"
+            }
+          },
+          "required": [
+            "key",
+            "ref"
+          ],
+          "type": "object"
+        },
+        "CredentialTypes": {
+          "enum": [
+            "Jira",
+            "Confluence",
+            "Git",
+            "Kubernetes",
+            "AWS",
+            "GCP",
+            "Keycloak",
+            "Azure",
+            "Elastic",
+            "OpenAPI",
+            "Plugin",
+            "FileSystem",
+            "Scheduler",
+            "Webhook",
+            "Email",
+            "AzureDevOps",
+            "Sonar",
+            "SQL",
+            "Telegram",
+            "ZephyrScale",
+            "ServiceNow",
+            "DIAL",
+            "A2A",
+            "MCP",
+            "LiteLLM",
+            "ReportPortal",
+            "Xray",
+            "SharePoint",
+            "GoogleOAuth",
+            "XWiki",
+            "MSTeams",
+            "MSExchange"
+          ],
+          "type": "string"
+        },
+        "IntegrationType": {
+          "enum": [
+            "user",
+            "project"
+          ],
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "alias": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "credential_type": {
+          "$ref": "#/$defs/CredentialTypes"
+        },
+        "credential_values": {
+          "items": {
+            "$ref": "#/$defs/CredentialRefEntry"
+          },
+          "type": "array"
+        },
+        "default": {
+          "default": false,
+          "type": "boolean"
+        },
+        "is_global": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": false
+        },
+        "project_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "setting_type": {
+          "$ref": "#/$defs/IntegrationType",
+          "default": "user"
+        }
+      },
+      "required": [
+        "credential_type",
+        "credential_values"
+      ],
+      "type": "object"
+    },
+    "skill": {
+      "$defs": {
+        "SkillVisibility": {
+          "enum": [
+            "project",
+            "private",
+            "public"
+          ],
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "categories": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 3,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "content": {
+          "minLength": 100,
+          "type": "string"
+        },
+        "description": {
+          "maxLength": 1000,
+          "minLength": 10,
+          "type": "string"
+        },
+        "enabled_builtin_subagents": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "name": {
+          "pattern": "^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$",
+          "type": "string"
+        },
+        "project": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "visibility": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SkillVisibility"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": "project"
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "content"
+      ],
+      "type": "object"
+    },
+    "workflow": {
+      "$defs": {
+        "CredentialRef": {
+          "type": "string"
+        },
+        "CredentialRefEntry": {
+          "additionalProperties": false,
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "ref": {
+              "$ref": "#/$defs/CredentialRef"
+            }
+          },
+          "required": [
+            "key",
+            "ref"
+          ],
+          "type": "object"
+        },
+        "CustomWorkflowNode": {
+          "additionalProperties": false,
+          "properties": {
+            "config": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "custom_node_id": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "model": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "system_prompt": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "id",
+            "custom_node_id"
+          ],
+          "type": "object"
+        },
+        "MCPServerConfig": {
+          "properties": {
+            "args": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "audience": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "auth_config": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "auth_token": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "command": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "env": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "headers": {
+              "anyOf": [
+                {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "single_usage": {
+              "default": false,
+              "type": "boolean"
+            },
+            "tools": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "type": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "url": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "WorkflowAssistant": {
+          "additionalProperties": false,
+          "properties": {
+            "assistant_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "datasource_ids": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "exclude_extra_context_tools": {
+              "default": false,
+              "type": "boolean"
+            },
+            "id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "limit_tool_output_tokens": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": 10000
+            },
+            "mcp_servers": {
+              "items": {
+                "$ref": "#/$defs/WorkflowMCPServer"
+              },
+              "type": "array"
+            },
+            "model": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "skill_ids": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "system_prompt": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "temperature": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "tools": {
+              "items": {
+                "$ref": "#/$defs/WorkflowAssistantTool"
+              },
+              "type": "array"
+            }
+          },
+          "type": "object"
+        },
+        "WorkflowAssistantTool": {
+          "additionalProperties": false,
+          "properties": {
+            "integration_alias": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": "object"
+        },
+        "WorkflowDefinition": {
+          "additionalProperties": false,
+          "properties": {
+            "assistants": {
+              "additionalProperties": {
+                "$ref": "#/$defs/WorkflowAssistant"
+              },
+              "type": "object"
+            },
+            "custom_nodes": {
+              "items": {
+                "$ref": "#/$defs/CustomWorkflowNode"
+              },
+              "type": "array"
+            },
+            "description": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "enable_summarization_node": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "icon_url": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "max_iteration_key_output_limit": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "messages_limit_before_summarization": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "mode": {
+              "$ref": "#/$defs/WorkflowMode"
+            },
+            "name": {
+              "type": "string"
+            },
+            "shared": {
+              "default": false,
+              "type": "boolean"
+            },
+            "states": {
+              "items": {
+                "$ref": "#/$defs/WorkflowState"
+              },
+              "type": "array"
+            },
+            "tokens_limit_before_summarization": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "tools": {
+              "items": {
+                "$ref": "#/$defs/WorkflowTool"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "name",
+            "mode"
+          ],
+          "type": "object"
+        },
+        "WorkflowMCPServer": {
+          "additionalProperties": false,
+          "properties": {
+            "command": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "config": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/MCPServerConfig"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "description": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "integration_alias": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "mcp_config_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "mcp_connect_url": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": "object"
+        },
+        "WorkflowMode": {
+          "enum": [
+            "Sequential",
+            "Autonomous"
+          ],
+          "type": "string"
+        },
+        "WorkflowNextState": {
+          "additionalProperties": false,
+          "properties": {
+            "append_to_context": {
+              "default": false,
+              "type": "boolean"
+            },
+            "clear_context_store": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "const": "keep_current",
+                  "type": "string"
+                }
+              ],
+              "default": false
+            },
+            "clear_prior_messages": {
+              "default": false,
+              "type": "boolean"
+            },
+            "condition": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/WorkflowStateCondition"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "include_in_iterator_context": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "include_in_llm_history": {
+              "default": true,
+              "type": "boolean"
+            },
+            "iter_key": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "output_key": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "reset_keys_in_context_store": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "state_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "state_ids": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "store_in_context": {
+              "default": true,
+              "type": "boolean"
+            },
+            "switch": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/WorkflowStateSwitch"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "WorkflowRetryPolicy": {
+          "additionalProperties": false,
+          "properties": {
+            "backoff_factor": {
+              "type": "number"
+            },
+            "initial_interval": {
+              "type": "number"
+            },
+            "max_attempts": {
+              "type": "integer"
+            },
+            "max_interval": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "initial_interval",
+            "backoff_factor",
+            "max_interval",
+            "max_attempts"
+          ],
+          "type": "object"
+        },
+        "WorkflowState": {
+          "additionalProperties": false,
+          "properties": {
+            "assistant_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "custom_node_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "finish_iteration": {
+              "default": false,
+              "type": "boolean"
+            },
+            "id": {
+              "type": "string"
+            },
+            "interrupt_before": {
+              "default": false,
+              "type": "boolean"
+            },
+            "next": {
+              "$ref": "#/$defs/WorkflowNextState"
+            },
+            "output_schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "resolve_dynamic_values_in_prompt": {
+              "default": false,
+              "type": "boolean"
+            },
+            "result_as_human_message": {
+              "default": false,
+              "type": "boolean"
+            },
+            "retry_policy": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/WorkflowRetryPolicy"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "task": {
+              "default": "",
+              "type": "string"
+            },
+            "tool_args": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "tool_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "workflow_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "id",
+            "next"
+          ],
+          "type": "object"
+        },
+        "WorkflowStateCondition": {
+          "additionalProperties": false,
+          "properties": {
+            "expression": {
+              "type": "string"
+            },
+            "otherwise": {
+              "type": "string"
+            },
+            "then": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "expression",
+            "then",
+            "otherwise"
+          ],
+          "type": "object"
+        },
+        "WorkflowStateSwitch": {
+          "additionalProperties": false,
+          "properties": {
+            "cases": {
+              "items": {
+                "$ref": "#/$defs/WorkflowStateSwitchCondition"
+              },
+              "type": "array"
+            },
+            "default": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "cases",
+            "default"
+          ],
+          "type": "object"
+        },
+        "WorkflowStateSwitchCondition": {
+          "additionalProperties": false,
+          "properties": {
+            "condition": {
+              "type": "string"
+            },
+            "state_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "condition",
+            "state_id"
+          ],
+          "type": "object"
+        },
+        "WorkflowTool": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "input_key": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "integration_alias": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "mcp_server": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/WorkflowMCPServer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "resolve_dynamic_values_in_response": {
+              "default": false,
+              "type": "boolean"
+            },
+            "tokens_size_limit": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "tool": {
+              "type": "string"
+            },
+            "tool_access": {
+              "anyOf": [
+                {
+                  "items": {
+                    "$ref": "#/$defs/WorkflowAssistantTool"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "tool_args": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "tool_result_json_pointer": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "trace": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "id",
+            "tool"
+          ],
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "credential_values": {
+          "items": {
+            "$ref": "#/$defs/CredentialRefEntry"
+          },
+          "type": "array"
+        },
+        "start_hint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "workflow": {
+          "$ref": "#/$defs/WorkflowDefinition"
+        }
+      },
+      "required": [
+        "workflow"
+      ],
+      "type": "object"
+    }
+  }
+}

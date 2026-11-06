@@ -1,0 +1,61 @@
+{
+  "version": "v1",
+  "meta": {
+    "kind": "workflow",
+    "name": "Release Flow"
+  },
+  "spec": {
+    "start_hint": "Say go",
+    "workflow": {
+      "name": "Release Flow",
+      "description": "Ships releases",
+      "mode": "Sequential",
+      "shared": true,
+      "enable_summarization_node": false,
+      "assistants": {
+        "a1": {
+          "id": "a1",
+          "assistant_id": "Helper",
+          "model": "gpt-4"
+        },
+        "a2": {
+          "id": "a2",
+          "model": "gpt-4",
+          "system_prompt": "Ship it",
+          "skill_ids": [
+            "Release Skill"
+          ],
+          "mcp_servers": [
+            {
+              "name": "docs",
+              "config": {
+                "command": "env:RELEASE_FLOW_A2_DOCS_COMMAND",
+                "env": {
+                  "TOKEN": "env:RELEASE_FLOW_A2_DOCS_ENV_TOKEN"
+                },
+                "auth_token": "env:RELEASE_FLOW_A2_DOCS_AUTH_TOKEN"
+              }
+            }
+          ]
+        }
+      },
+      "tools": [],
+      "custom_nodes": [],
+      "states": [
+        {
+          "id": "s1",
+          "assistant_id": "a1",
+          "next": {
+            "state_id": "end"
+          }
+        }
+      ]
+    },
+    "credential_values": [
+      {
+        "key": "Release Flow_a2_docs",
+        "ref": "env:RELEASE_FLOW_A2_DOCS_AUTH_TOKEN"
+      }
+    ]
+  }
+}

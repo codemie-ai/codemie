@@ -1,0 +1,12 @@
+[
+  {"identifier": "my-alias", "key": "api_key", "expected": "env:MY_ALIAS_API_KEY"},
+  {"identifier": "My Alias", "key": "token", "expected": "env:MY_ALIAS_TOKEN"},
+  {"identifier": "jira.cloud", "key": "base.url", "expected": "env:JIRA_CLOUD_BASE_URL"},
+  {"identifier": "a---b   c", "key": "k", "expected": "env:A_B_C_K"},
+  {"identifier": "--lead-trail--", "key": "__key__", "expected": "env:_LEAD_TRAIL___KEY_"},
+  {"identifier": "café über", "key": "töken", "expected": "env:CAF_BER_T_KEN"},
+  {"identifier": "日本語", "key": "token", "error": true},
+  {"identifier": "", "key": "token", "error": true},
+  {"identifier": "!!!", "key": "password", "error": true},
+  {"identifier": "svc42", "key": "Key-2", "expected": "env:SVC42_KEY_2"}
+]
