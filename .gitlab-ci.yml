@@ -21,6 +21,21 @@ no-op:
   rules:
     - if: '$CI_MERGE_REQUEST_TARGET_BRANCH_NAME != "main"'
 
+check-alembic-heads:
+  stage: pre-ci-guard
+  image: alpine:3.23.5
+  interruptible: true
+  timeout: 5m
+  variables:
+    GIT_DEPTH: "1"
+  before_script:
+    - apk add --no-cache git python3
+  script:
+    - git fetch --depth 1 origin "+refs/heads/main:refs/remotes/origin/main"
+    - python3 scripts/check_alembic_heads.py --merge-with origin/main
+  rules:
+    - if: '$CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'
+
 wait-ci-init:
   extends: .wait-ci-init-template
 

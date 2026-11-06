@@ -176,7 +176,7 @@ Three hooks enforce quality gates at different points in the workflow:
 |---|---|---|
 | `pre-commit` | `git commit` (fast) | `ruff format/check` on staged files + Apache 2.0 license header check |
 | `commit-msg` | after writing commit message | Enforces `EPMCDME-<n>:` subject prefix |
-| `pre-push` | `git push` (heavy) | Full `pytest` (excluding `tests/enterprise/`) + `make sonar-local` |
+| `pre-push` | `git push` | Always: Alembic migration heads check (`make check-alembic`). Opt-in: full `pytest` (excluding `tests/enterprise/`) + `make sonar-local` |
 
 Install (one-time, after `poetry install`):
 ```bash
@@ -186,7 +186,7 @@ make install-hooks
 
 Hook toggle:
 - `pre-commit` and `commit-msg` run on every commit — no toggle, always active.
-- `pre-push` is opt-in (disabled by default to avoid blocking pushes while pre-existing test failures exist on main):
+- `pre-push`: the Alembic migration heads check always runs and blocks a push whose migration history has more than one head (the same check runs in the MR pipeline for MRs targeting `main`; run it by hand with `make check-alembic`). The heavy part is opt-in (disabled by default to avoid blocking pushes while pre-existing test failures exist on main):
   - `CODEMIE_PREPUSH_ENABLED=false` (default) — pre-push hook is skipped
   - `CODEMIE_PREPUSH_ENABLED=true` — enables full pytest + sonar before every push
   - Add to `.env` (or `.env.local` for personal preference) or export in shell: `export CODEMIE_PREPUSH_ENABLED=true`

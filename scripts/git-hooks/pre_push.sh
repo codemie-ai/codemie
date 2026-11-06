@@ -13,16 +13,42 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# pre-push hook: run the heavy quality gates before code reaches the remote.
+# pre-push hook: the migration check always runs; the heavy quality gates are opt-in.
+#   0) Alembic migration heads check (always, no database, a few milliseconds): a push with two or more heads is
+#      blocked. ALEMBIC_CHECK_CMD overrides the command for unit testing.
 #   1) full pytest (excluding tests/enterprise, which need codemie_enterprise)
 #      with coverage -> coverage.xml
 #   2) make sonar-local, reusing that coverage.xml (SONAR_SKIP_TESTS=1)
 #
-# Opt-in: set CODEMIE_PREPUSH_ENABLED=true to enable. Disabled by default so
-# the hook never blocks pushes unless the developer explicitly opts in.
+# Opt-in (steps 1 and 2 only): set CODEMIE_PREPUSH_ENABLED=true to enable. Disabled by default so
+# the hook never blocks pushes on pre-existing test failures unless the developer explicitly opts in.
 # PYTEST_CMD / SONAR_CMD override the tool invocations for unit testing.
 
 set -euo pipefail
+
+# Migration heads check: always on, before the opt-in gate. Compares with origin/main when that ref is present
+# (no fetch, so the push stays fast); the pipeline repeats it against a fresh main.
+if [[ -z "${ALEMBIC_CHECK_CMD:-}" ]]; then
+  # Take the first interpreter that actually runs: on Windows `python3` can be the Microsoft Store placeholder,
+  # which exists on PATH but fails, and must not block every push.
+  _py=""
+  for _cand in python3 python; do
+    if "$_cand" -c "import sys" >/dev/null 2>&1; then _py="$_cand"; break; fi
+  done
+  if [[ -n "$_py" ]]; then
+    ALEMBIC_CHECK_CMD="$_py $(dirname "${BASH_SOURCE[0]}")/../check_alembic_heads.py"
+    if git rev-parse --verify --quiet refs/remotes/origin/main >/dev/null 2>&1; then
+      ALEMBIC_CHECK_CMD="$ALEMBIC_CHECK_CMD --merge-with origin/main"
+    fi
+  else
+    echo "[pre-push] No working python3/python found: install Python 3 (it runs the Alembic migration check) and push again; push blocked." >&2
+    exit 1
+  fi
+fi
+if ! $ALEMBIC_CHECK_CMD; then
+  echo "[pre-push] Alembic migration check failed: push blocked. Fix the migration parent(s) above, then push again." >&2
+  exit 1
+fi
 
 # Backward compatibility: CODEMIE_PRECOMMIT_ENABLED=true used to enable the
 # heavy suite when it lived in the pre-commit hook. Treat it as opt-in for

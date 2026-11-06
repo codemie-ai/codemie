@@ -48,6 +48,10 @@ test-cli-analytics-live:
 	  if echo "$$out" | grep -q skipped; then echo "live tests skipped: the database was not reached" >&2; exit 1; fi; \
 	done
 
+# Fails when the Alembic migration history has more than one head (also against what origin/main brings in).
+check-alembic:
+	python scripts/check_alembic_heads.py --merge-with origin/main
+
 ruff:
 	poetry run ruff format
 	poetry run ruff check --fix
