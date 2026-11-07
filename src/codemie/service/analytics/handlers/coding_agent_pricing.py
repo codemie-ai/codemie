@@ -119,27 +119,34 @@ class CatalogPricer:
         return self._cost(model) is not None
 
     def price(self, model: str, counts: TokenCounts) -> float:
+        return self.price_flagged(model, counts)[0]
+
+    def price_flagged(self, model: str, counts: TokenCounts) -> tuple[float, bool]:
+        """`price`, and whether some of these tokens had no price (the model is then in `unpriced`)."""
         # The split never prices more than the cache write it splits.
         cache_1h = min(counts.cache_1h or 0, counts.cache_creation)
         cache_5m = min(counts.cache_5m or 0, counts.cache_creation - cache_1h)
         unsplit = counts.cache_creation - cache_1h - cache_5m
         cost = self._cost(model)
+        total, missing = 0.0, False
         if cost is None:
-            if counts.input or counts.output or counts.cache_read or counts.cache_creation or cache_5m or cache_1h:
-                self._unpriced.add(model)
-            return 0.0
-        total = 0.0
-        for tokens, rate in (
-            (counts.input, cost.input),
-            (counts.output, cost.output),
-            (counts.cache_read, cost.cache_read_input_token_cost),
-            (cache_5m + unsplit, cost.cache_creation_input_token_cost),
-            (cache_1h, cost.cache_creation_input_token_cost_above_1hr),
-        ):
-            if tokens <= 0:
-                continue
-            if rate is None:
-                self._unpriced.add(model)
-                continue
-            total += tokens * rate
-        return total
+            missing = bool(
+                counts.input or counts.output or counts.cache_read or counts.cache_creation or cache_5m or cache_1h
+            )
+        else:
+            for tokens, rate in (
+                (counts.input, cost.input),
+                (counts.output, cost.output),
+                (counts.cache_read, cost.cache_read_input_token_cost),
+                (cache_5m + unsplit, cost.cache_creation_input_token_cost),
+                (cache_1h, cost.cache_creation_input_token_cost_above_1hr),
+            ):
+                if tokens <= 0:
+                    continue
+                if rate is None:
+                    missing = True
+                    continue
+                total += tokens * rate
+        if missing:
+            self._unpriced.add(model)
+        return total, missing

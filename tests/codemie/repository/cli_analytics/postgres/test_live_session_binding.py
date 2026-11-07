@@ -22,6 +22,7 @@ TEST_LOCAL_PG_URL every test is skipped; with it a test is skipped (not failed) 
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import os
 import uuid
@@ -1048,3 +1049,28 @@ async def test_a_legacy_request_on_a_bound_session_stays_discarded_by_its_own_gu
         # project but the bound one is a conflict, so the lifecycle discard is the evidence path's.
         assert json.loads(result.body).get("reason") == "session_project_conflict"
         assert await live.count("hook_events", sid) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_legacy_request_never_appends_to_a_contract_bound_session() -> None:
+    """Review f-aa09e547e185: a legacy (None, None) request on a session bound by the publication contract is a
+    contract conflict on every route; rows, bindings and the funding claim stay as they were."""
+    sid = _sid()
+    bound = dataclasses.replace(
+        _CORPORATE, contract_version="1", work_consent="explicit-folder", funding_route="api_based"
+    )
+    async with _live(sid) as live:
+        assert await live.hooks([_hook(sid, _NOW, _SHARED)], binding=bound) == {}
+        before = await live.binding(sid)
+        rows = await live.count("hook_events", sid)
+        for signal, body in (("metrics", _metric(sid)), ("logs", _log(sid)), ("traces", _trace(sid))):
+            assert await live.otlp(signal, body) == "session_contract_conflict"
+        answer = await live.hooks([_hook(sid, _NOW + timedelta(seconds=5), _SHARED)])
+        assert answer["reason"] == "session_contract_conflict" and answer["accepted"] == 0
+        assert await live.binding(sid) == before
+        assert await live.count("hook_events", sid) == rows
+        async with live.engine.acquire() as conn:
+            stored = await conn.fetchrow(
+                "SELECT contract_version, work_consent, funding_route FROM session_dims WHERE session_id = $1", sid
+            )
+        assert tuple(stored.values()) == ("1", "explicit-folder", "api_based")

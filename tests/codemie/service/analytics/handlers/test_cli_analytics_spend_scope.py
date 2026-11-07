@@ -35,8 +35,10 @@ CATALOG = "codemie.service.analytics.handlers.coding_agent_pricing.llm_service.g
 MODEL = "claude-haiku"
 # input $1 per 1M tokens: 1_000_000 input tokens cost exactly $1.
 SESSIONS = {
-    "corp": {"dev": "alice", "repo": "repo-a", "paid": "corporate", "tokens": 1_000_000},  # the only spend session
-    "pers1": {"dev": "bob", "repo": "repo-b", "paid": "personal", "tokens": 2_000_000},  # Personal-paid, work project
+    # the only spend session; `route` is the client-asserted funding route (absent = NULL, read as unknown)
+    "corp": {"dev": "alice", "repo": "repo-a", "paid": "corporate", "tokens": 1_000_000, "route": "api_based"},
+    # Personal-paid, work project
+    "pers1": {"dev": "bob", "repo": "repo-b", "paid": "personal", "tokens": 2_000_000, "route": "subscription"},
     "pers2": {"dev": "bob", "repo": "repo-b", "paid": "personal", "tokens": 1_000_000},
 }
 CORPORATE_COST = 1.0
@@ -49,7 +51,7 @@ def make_filter():
 
 def catalog():
     model = MagicMock()
-    model.base_name = MODEL
+    model.base_name = model.deployment_name = MODEL  # a string, so a model missing from the catalog is unpriced
     model.cost = CostConfig(input=1e-6, output=5e-6)
     return patch(CATALOG, return_value=[model])
 
@@ -59,12 +61,19 @@ def handler_over(sessions):
     spend = {sid for sid, s in sessions.items() if s["paid"] != "personal"}
     calls: list[bool] = []
 
+    def row(sid, s):
+        model = s.get("model", MODEL)
+        return {"session_id": sid, "model_name": model, "normalized_model_name": model, "input_tokens": s["tokens"]}
+
     async def model_costs(_f, *, spend_only=False):
         calls.append(spend_only)
+        return [row(sid, s) for sid, s in sessions.items() if not spend_only or sid in spend]
+
+    async def funding_costs(_f):
+        # as the SQL: every selected session, NULL route read as unknown, the billing class as a flag
         return [
-            {"session_id": sid, "model_name": MODEL, "normalized_model_name": MODEL, "input_tokens": s["tokens"]}
+            {**row(sid, s), "funding_route": s.get("route") or "unknown", "personal_billed": s["paid"] == "personal"}
             for sid, s in sessions.items()
-            if not spend_only or sid in spend
         ]
 
     by_dev: dict[str, list[str]] = {}
@@ -73,6 +82,7 @@ def handler_over(sessions):
 
     repo = MagicMock()
     repo.get_session_model_costs = model_costs
+    repo.get_session_funding_costs = funding_costs
     repo.get_cost_kpis = AsyncMock(return_value=[{"total_sessions": len(sessions), "spend_sessions": len(spend)}])
     repo.get_cost_by_user = AsyncMock(
         return_value=[{"developer_name": d, "session_ids": ids} for d, ids in by_dev.items()]

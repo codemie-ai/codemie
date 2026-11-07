@@ -61,6 +61,10 @@ HEADER_CODEMIE_SUBSCRIPTION_TYPE = "X-CodeMie-Subscription-Type"
 HEADER_CODEMIE_POLICY_VERSION = "X-CodeMie-Policy-Version"
 HEADER_CODEMIE_REPO_REMOTE = "X-CodeMie-Repo-Remote"
 HEADER_CODEMIE_VERSION = "X-CodeMie-Version"
+# Publication contract headers (EPMCDME-16849)
+HEADER_CODEMIE_PUBLICATION_CONTRACT = "X-CodeMie-Publication-Contract"
+HEADER_CODEMIE_WORK_CONSENT = "X-CodeMie-Work-Consent"
+HEADER_CODEMIE_FUNDING_ROUTE = "X-CodeMie-Funding-Route"
 HEADER_CODEMIE_TAGGING_PROJECT = "X-CodeMie-Project"
 LITELLM_CUSTOMER_ID_HEADER = "x-litellm-customer-id"
 

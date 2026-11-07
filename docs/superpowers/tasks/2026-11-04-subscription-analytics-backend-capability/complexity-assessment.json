@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "task": "Backend: accept explicit-connect and funding-route signals, route connected personal-funded sessions to the project after access checks, store a funding-route dimension, expose API/subscription aggregates and an incomplete-price flag, keep personal funding out of budget spend, leave legacy unchanged.",
+  "generated": "2026-11-04T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 25,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Touches ingest router, project gate/resolve_destination, EvidenceGate and session binding, ingestor/otlp, rollups, reader and scope, pricing handler, analytics routers and the budget consumer; adds a new dimension and aggregate layer." },
+    { "dimension": "requirements_clarity", "reason": "Contract names are draft and not frozen until the CLI spike reports; budget consumer (budget_usage_service/member_spend_service) is unconfirmed for AC6; no existing API-vs-subscription precedent." },
+    { "dimension": "technical_risk", "reason": "Closest pattern is the existing personal/shared routing and scope P/N/M truth table, which does not cover an explicit-link override for personal-capable users; privacy regression at the P/N boundary, client assertion is untrusted, and old-client binding compatibility must hold. No test template covers the enumerated edge cases (contradictory/malformed signal, unknown bucket)." },
+    { "dimension": "file_change_estimate", "reason": "About 11-14 modified files (gate, ingest route, ingestor, otlp, binding, ports, rollups, reader, scope, pricing, routers, budget reader) plus new alembic migration and new tests across several directories." },
+    { "dimension": "affected_layers", "reason": "API, Service, DB-Persistence (schema column and migration on alembic_cli_analytics) plus budget/spend consumer." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped to XL: security-sensitive visibility/authorization routing for private sessions and untrusted client assertions",
+    "Technical Risk: enumerated edge/error cases with no existing test template covering them",
+    "Changes database schema: Affected Layers raised to L and Technical Risk raised"
+  ],
+  "split_recommendation": null
+}

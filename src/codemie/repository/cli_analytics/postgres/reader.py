@@ -714,6 +714,32 @@ class PostgresCliAnalyticsReader:
             window_params(f),
         )
 
+    async def get_session_funding_costs(self, f: LocalAnalyticsFilter) -> Rows:
+        """The `get_session_model_costs` rows of every selected session (no spend filter), each with the session's
+        client-asserted `funding_route` (NULL reads 'unknown') and `personal_billed` (the billing class): the rows
+        the funding and personal-billed estimate buckets are priced from. Same `sel`, so the same read scope."""
+        model_name = self._normalized_model_name("c.model_name")
+        return await self._q(
+            f"""
+        WITH {self._sessions_cte(f)}
+        SELECT c.session_id,
+               c.model_name                                 AS model_name,
+               {model_name}                                 AS normalized_model_name,
+               coalesce(d.funding_route, 'unknown') AS funding_route,
+               {sql_personal_billed("s")} AS personal_billed,
+               sum(c.input_tokens)::bigint                  AS input_tokens,
+               sum(c.output_tokens)::bigint                 AS output_tokens,
+               sum(c.cache_read_tokens)::bigint             AS cache_read_tokens,
+               sum(c.cache_creation_tokens)::bigint         AS cache_creation_tokens,
+               sum(c.cache_creation_5m_tokens)::bigint      AS cache_creation_5m_tokens,
+               sum(c.cache_creation_1h_tokens)::bigint      AS cache_creation_1h_tokens
+        FROM {_token_rows(*_SEL_SESSIONS)}
+        JOIN sel s ON s.session_id = c.session_id
+        LEFT JOIN session_dims d ON d.session_id = c.session_id
+        GROUP BY c.session_id, c.model_name, d.funding_route, s.subscription_type""",
+            window_params(f),
+        )
+
     async def get_cost_by_user(self, f: LocalAnalyticsFilter) -> Rows:
         return await self._q(
             f"""

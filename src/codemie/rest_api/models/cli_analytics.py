@@ -67,6 +67,36 @@ class LocalAnalyticsResponseMetadata(BaseModel):
             "Null on an endpoint that returns no money (/tools, /activity)."
         ),
     )
+    cost_incomplete: bool = Field(
+        False, description="True when unpriced_models is not empty: the money values are partial, not a real 0."
+    )
+
+
+class LocalAnalyticsCostBucket(BaseModel):
+    """Catalog money of one estimate bucket, describing only that bucket's models."""
+
+    cost_usd: float = 0.0
+    session_count: int = 0
+    cost_incomplete: bool = Field(False, description="True when some of the bucket's tokens had no catalog price")
+    unpriced_models: list[str] = Field(default_factory=list, description="The bucket's models without a price")
+
+
+class LocalAnalyticsFundingBuckets(BaseModel):
+    """Money by the client-asserted funding route of each session (its first claim; no claim reads unknown)."""
+
+    api_based: LocalAnalyticsCostBucket = Field(default_factory=LocalAnalyticsCostBucket)
+    subscription: LocalAnalyticsCostBucket = Field(default_factory=LocalAnalyticsCostBucket)
+    unknown: LocalAnalyticsCostBucket = Field(default_factory=LocalAnalyticsCostBucket)
+
+
+class _EstimateBuckets(BaseModel):
+    """Additive estimates next to the spend: every selected session by funding route, and the personal-billed
+    sessions (by derived billing class) whose cost stays out of every spend value."""
+
+    funding: LocalAnalyticsFundingBuckets = Field(
+        default_factory=LocalAnalyticsFundingBuckets, description="Client-asserted estimate, not proof of billing"
+    )
+    personal_billed: LocalAnalyticsCostBucket = Field(default_factory=LocalAnalyticsCostBucket)
 
 
 class PaginationMetadata(BaseModel):
@@ -109,7 +139,7 @@ class LocalAnalyticsModelBreakdownRow(_ClassLists):
     session_count: int
 
 
-class LocalAnalyticsOverviewData(BaseModel):
+class LocalAnalyticsOverviewData(_EstimateBuckets):
     kpis: LocalAnalyticsOverviewKPIs
     daily_buckets: list[LocalAnalyticsOverviewDailyBucket]
     model_breakdown: list[LocalAnalyticsModelBreakdownRow]
@@ -139,7 +169,7 @@ class LocalAnalyticsRepositoryBranchRow(_ClassLists):
     )
 
 
-class LocalAnalyticsRepositoryRow(_ClassLists):
+class LocalAnalyticsRepositoryRow(_ClassLists, _EstimateBuckets):
     repository: str | None = Field(
         None, description="Repository name. None for the unattributed bucket (plugin was not active)."
     )
@@ -163,7 +193,7 @@ class LocalAnalyticsRepositoryRow(_ClassLists):
     )
 
 
-class LocalAnalyticsRepositoriesData(BaseModel):
+class LocalAnalyticsRepositoriesData(_EstimateBuckets):
     rows: list[LocalAnalyticsRepositoryRow]
     pagination: PaginationMetadata
 
@@ -181,7 +211,7 @@ class LocalAnalyticsDailyActivityBucket(_ClassLists):
     session_count: int
 
 
-class LocalAnalyticsUserRow(_ClassLists):
+class LocalAnalyticsUserRow(_ClassLists, _EstimateBuckets):
     developer_name: str = Field(..., description="Resolved user email")
     user_email: str = Field("", description=_SAME_AS_DEVELOPER_NAME)
     session_count: int
@@ -200,7 +230,7 @@ class LocalAnalyticsUserRow(_ClassLists):
     daily_activity: list[LocalAnalyticsDailyActivityBucket] = Field(default_factory=list)
 
 
-class LocalAnalyticsUsersData(BaseModel):
+class LocalAnalyticsUsersData(_EstimateBuckets):
     rows: list[LocalAnalyticsUserRow]
     avg_session_duration_ms: int | None = None
     total_count: int | None = None
@@ -384,21 +414,25 @@ class LocalAnalyticsCostKPIs(_ClassLists):
     avg_cost_per_session: float
 
 
-class LocalAnalyticsCostByUserRow(_ClassLists):
+class LocalAnalyticsCostByUserRow(_ClassLists, _EstimateBuckets):
     developer_name: str
     user_email: str = Field("", description=_SAME_AS_DEVELOPER_NAME)
     cost_usd: float
 
 
-class LocalAnalyticsCostByModelRow(_ClassLists):
+class LocalAnalyticsCostByModelRow(_ClassLists, _EstimateBuckets):
     model_name: str
     cost_usd: float
 
 
-class LocalAnalyticsCostData(BaseModel):
+class LocalAnalyticsCostData(_EstimateBuckets):
     kpis: LocalAnalyticsCostKPIs
     cost_by_user: list[LocalAnalyticsCostByUserRow] = Field(default_factory=list)
     cost_by_model: list[LocalAnalyticsCostByModelRow] = Field(default_factory=list)
+    models_without_spend: list[LocalAnalyticsCostByModelRow] = Field(
+        default_factory=list,
+        description="Models only the estimate priced (no spend): cost_usd 0 plus buckets; never in cost_by_model",
+    )
 
 
 class LocalAnalyticsCostResponse(BaseModel):
@@ -438,7 +472,7 @@ class LocalAnalyticsCodeChangesKPIs(_ClassLists):
     net_lines: int | None = None
 
 
-class LocalAnalyticsEfficiencyData(BaseModel):
+class LocalAnalyticsEfficiencyData(_EstimateBuckets):
     kpis: LocalAnalyticsEfficiencyKPIs
     dead_sessions: LocalAnalyticsDeadSessionsKPIs
     session_depth: list[LocalAnalyticsSessionDepthBucket]

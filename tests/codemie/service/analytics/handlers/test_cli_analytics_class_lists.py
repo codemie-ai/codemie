@@ -88,6 +88,7 @@ def _fake_reader(with_lists: bool) -> MagicMock:
     repo.get_tool_success_by_session = rows([])
     repo.get_session_durations = rows([])
     repo.get_session_model_costs = rows([])
+    repo.get_session_funding_costs = rows([])
     repo.get_lines_by_session = rows([])
     repo.get_lines_by_user = rows([])
     repo.get_users_last_active = rows([])

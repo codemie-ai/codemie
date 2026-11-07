@@ -81,6 +81,7 @@ from codemie.repository.cli_analytics.postgres.otlp import (
 )
 from codemie.repository.cli_analytics.postgres.rollups import carries_lines_sql
 from codemie.repository.cli_analytics.postgres.session_binding import (
+    FUNDING_EVENTS,
     RECORD_KINDS,
     SESSION_DISCARDS,
     Sender,
@@ -100,7 +101,13 @@ from codemie.repository.cli_analytics.postgres.session_binding import (
 )
 from codemie.repository.cli_analytics.vocabulary import LINES_METRICS
 
-__all__ = ["REASON_OWNER_CONFLICT", "REASON_PROJECT_CONFLICT", "REASON_SESSION_BOUNDARY", "SESSION_DISCARDS"]
+__all__ = [
+    "FUNDING_EVENTS",
+    "REASON_OWNER_CONFLICT",
+    "REASON_PROJECT_CONFLICT",
+    "REASON_SESSION_BOUNDARY",
+    "SESSION_DISCARDS",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -277,14 +284,24 @@ def otlp_response(signal: OtlpSignal, rejected: int) -> bytes:
 
 
 def _otlp_result(
-    signal: OtlpSignal, content_type: str, rejected: int, stored: int, message: str = _REJECTED_MESSAGE
+    signal: OtlpSignal,
+    content_type: str,
+    rejected: int,
+    stored: int,
+    message: str = _REJECTED_MESSAGE,
+    discarded: bool = False,
 ) -> IngestResult:
     """The OTLP answer, in the media type the request used."""
     response = _otlp_message(signal, rejected, message)
     if content_type.split(";", 1)[0].strip().lower() == JSON_MEDIA_TYPE:
         body = json_format.MessageToJson(response, indent=None).encode()
-        return IngestResult(body=body, media_type=JSON_MEDIA_TYPE, accepted=stored)
-    return IngestResult(body=response.SerializeToString(), media_type=_PROTOBUF_RESPONSE_MEDIA_TYPE, accepted=stored)
+        return IngestResult(body=body, media_type=JSON_MEDIA_TYPE, accepted=stored, discarded=discarded)
+    return IngestResult(
+        body=response.SerializeToString(),
+        media_type=_PROTOBUF_RESPONSE_MEDIA_TYPE,
+        accepted=stored,
+        discarded=discarded,
+    )
 
 
 def _subset(batch: DecodedBatch, records: list[tuple[str, Any]]) -> DecodedBatch:
@@ -423,12 +440,12 @@ class PostgresTelemetryIngestor:
             _raise_if_stale(stale_policy_version)
             if gate is not None and (reason := await gate(frozenset(batch.explicit_projects))):
                 record_gate_discard("otlp", reason, batch.wire_count, gate.user_hash, batch.session_ids())
-                return _otlp_result(signal, content_type, batch.wire_count, 0, reason)
+                return _otlp_result(signal, content_type, batch.wire_count, 0, reason, discarded=True)
             sender = _sender(gate, user_email, binding, evidence_session_id)
             stored, rejected = await self._store(_attributed_to(batch, accepted_project(gate)), sender)
         except SessionDiscard as exc:
             log_discard(exc, batch.wire_count)
-            return _otlp_result(signal, content_type, batch.wire_count, 0, exc.reason)
+            return _otlp_result(signal, content_type, batch.wire_count, 0, exc.reason, discarded=True)
         return _otlp_result(signal, content_type, rejected, stored)
 
     async def ingest_hook_events(
@@ -454,7 +471,9 @@ class PostgresTelemetryIngestor:
             if gate is not None and (reason := await gate(frozenset(batch.explicit_projects))):
                 record_gate_discard("hooks", reason, batch.wire_count, gate.user_hash, batch.session_ids())
                 discarded = {"accepted": 0, "dropped": batch.wire_count, "reason": reason}
-                return IngestResult(body=json_text(discarded).encode(), media_type=JSON_MEDIA_TYPE, accepted=0)
+                return IngestResult(
+                    body=json_text(discarded).encode(), media_type=JSON_MEDIA_TYPE, accepted=0, discarded=True
+                )
             sender = _sender(gate, user_email, binding, evidence_session_id)
             stored, _rejected = await self._store(_attributed_to(batch, accepted_project(gate)), sender)
         except SessionDiscard as exc:
@@ -465,7 +484,9 @@ class PostgresTelemetryIngestor:
                 "reason": exc.reason,
                 "other_sessions_dropped": exc.other_sessions,
             }
-            return IngestResult(body=json_text(discarded).encode(), media_type=JSON_MEDIA_TYPE, accepted=0)
+            return IngestResult(
+                body=json_text(discarded).encode(), media_type=JSON_MEDIA_TYPE, accepted=0, discarded=True
+            )
         return IngestResult(body=b"{}", media_type=JSON_MEDIA_TYPE, accepted=stored)
 
     async def _decode(self, decode: Callable[[], DecodedBatch], size: int) -> DecodedBatch:

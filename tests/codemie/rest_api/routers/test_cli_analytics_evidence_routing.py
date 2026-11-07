@@ -247,7 +247,7 @@ def test_personal_sessions_are_stored_without_separate_enablement(env, route):
     assert response.status_code == 200, response.text
     binding_args = env.sql("INSERT INTO session_dims")[0]
     assert binding_args[1:4] == (EMAIL, "personal", "personal")
-    assert binding_args[-1] == [EMAIL]
+    assert binding_args[5] == [EMAIL]
     assert _writes(env)
     env.provision.assert_not_awaited()
     env.resolve.assert_not_awaited()
@@ -462,7 +462,7 @@ def test_rebinding_stores_only_the_destination_project(env, route):
     assert response.status_code == 200
     assert env.resolve.await_args.kwargs["header_project"] == "hdr-proj"
     assert env.resolve.await_args.kwargs["project_source"] == "linked_folder"
-    ((sessions, owner, kind, origin, note, projects),) = env.sql("INSERT INTO session_dims")
+    ((sessions, owner, kind, origin, note, projects, *contract),) = env.sql("INSERT INTO session_dims")
     assert (sessions, owner, kind, origin, note, projects) == (
         [SID],
         EMAIL,
@@ -471,6 +471,7 @@ def test_rebinding_stores_only_the_destination_project(env, route):
         "",
         ["dest-proj"],
     )
+    assert contract == [None, None, None]  # no publication contract yet: stored as NULL
     if route == "hooks":
         stored = _projects_stored(env, "hook_events")
         assert "dest-proj" in stored and "hdr-proj" not in stored

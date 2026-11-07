@@ -565,7 +565,7 @@ async def test_an_evidence_request_binds_a_new_session_and_stamps_its_hook_rows(
     await _ingestor(engine).ingest_hook_events(_project_events("sent"), "dev@example.com", 0, binding=binding)
 
     (bind_args,) = engine.conn.sql("INSERT INTO session_dims")
-    assert bind_args == (["s0"], "dev@example.com", "corporate", "linked_folder", "", ["dest"])
+    assert bind_args == (["s0"], "dev@example.com", "corporate", "linked_folder", "", ["dest"], None, None, None)
     (hook_args,) = engine.conn.sql("INSERT INTO hook_events")
     columns = dict(zip(HookRow._fields[2:], hook_args, strict=True))
     assert columns["codemie_project_name"] == ["dest"] and columns["client_policy_version"] == ["v1"]
@@ -854,7 +854,7 @@ async def test_an_empty_otlp_request_that_is_discarded_is_the_plain_success_resp
         "logs", b.logs_request(RESOURCE, []).SerializeToString(), "application/x-protobuf", gate=_gate("x")
     )
 
-    assert result == IngestResult(body=b"", media_type="application/x-protobuf", accepted=0)
+    assert result == IngestResult(body=b"", media_type="application/x-protobuf", accepted=0, discarded=True)
 
 
 @pytest.mark.asyncio

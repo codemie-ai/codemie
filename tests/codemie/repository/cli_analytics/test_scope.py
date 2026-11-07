@@ -129,3 +129,18 @@ def test_personal_detection_and_vocabulary_share_one_normalisation():
         assert f"{sql_norm(f'x.{col}')} = 'personal'" in cond
     assert sql_norm("x.subscription_type") in sql_subscription_type("x.subscription_type")
     assert sql_norm("x.project_origin") in sql_project_origin("x.project_origin")
+
+
+@pytest.mark.parametrize(
+    ("version", "consent", "expected"),
+    [
+        (None, None, {"personal"}),
+        (None, "explicit-folder", {"personal"}),
+        ("1", None, {"personal", "unknown"}),
+        ("1", "explicit-folder", set()),
+    ],
+)
+def test_private_classes_truth_table(version, consent, expected):
+    from codemie.repository.cli_analytics.scope import private_classes
+
+    assert private_classes(version, consent) == expected

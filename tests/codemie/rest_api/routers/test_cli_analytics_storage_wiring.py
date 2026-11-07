@@ -489,9 +489,15 @@ async def test_users_and_repositories_metadata_carry_the_handler_pricing():
             ),
         ]
 
+    empty_bucket = {"cost_usd": 0.0, "session_count": 0, "cost_incomplete": False, "unpriced_models": []}
     for response in responses:
-        metadata = json.loads(response.body)["metadata"]
+        body = json.loads(response.body)
+        metadata = body["metadata"]
         assert (metadata["unpriced_models"], metadata["catalog_source"]) == (["", "mystery-model"], "litellm")
+        assert metadata["cost_incomplete"] is True
+        # the real _respond renders the additive buckets even when the handler sent none
+        assert body["data"]["personal_billed"] == empty_bucket
+        assert body["data"]["funding"] == dict.fromkeys(("api_based", "subscription", "unknown"), empty_bucket)
 
 
 _PRICER = MagicMock(unpriced=["", "mystery-model"], catalog_source="litellm")
@@ -536,6 +542,7 @@ async def test_filtered_money_routes_metadata_carry_the_handler_pricing(route, h
 
     metadata = json.loads(response.body)["metadata"]
     assert (metadata["unpriced_models"], metadata["catalog_source"]) == (["", "mystery-model"], "litellm")
+    assert metadata["cost_incomplete"] is True
 
 
 @pytest.mark.asyncio
@@ -554,6 +561,7 @@ async def test_session_detail_metadata_carries_the_handler_pricing(storage):
 
     metadata = json.loads(response.body)["metadata"]
     assert (metadata["unpriced_models"], metadata["catalog_source"]) == (["", "mystery-model"], "litellm")
+    assert metadata["cost_incomplete"] is True
 
 
 @pytest.mark.asyncio

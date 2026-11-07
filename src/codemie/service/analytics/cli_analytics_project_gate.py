@@ -31,6 +31,7 @@ import dataclasses
 import hashlib
 import hmac
 import logging
+import re
 from collections import Counter
 from dataclasses import dataclass
 from functools import partial
@@ -40,10 +41,13 @@ from codemie.clients.postgres import get_async_session, get_session
 from codemie.configs import config
 from codemie.core.models import Application
 from codemie.repository.application_repository import application_repository
-from codemie.repository.cli_analytics.scope import ORIGIN_LEGACY_PROJECT, SHARED_ORIGINS
+from codemie.repository.cli_analytics.scope import ORIGIN_LEGACY_PROJECT, SHARED_ORIGINS, private_classes
+from codemie.repository.cli_analytics.postgres.session_binding import note_funding, same, same_contract
 from codemie.repository.cli_analytics.ports import (
+    REASON_CONTRACT_CONFLICT,
     REASON_PROJECT_CONFLICT,
     IngestGate,
+    PublicationRejectedError,
     SessionBinding,
     TelemetryStorageUnavailableError,
 )
@@ -143,6 +147,10 @@ NOTE_REGISTRATION_AMBIGUOUS = "registration_ambiguous"
 REASON_PERSONAL_UNAVAILABLE = "personal_destination_unavailable"
 REASON_DEFAULT_UNAVAILABLE = "default_project_unavailable"
 REASON_SESSION_PROJECT_UNAVAILABLE = "session_project_unavailable"
+REASON_PROJECT_UNAVAILABLE = "project_unavailable"
+REASON_ANALYTICS_NOT_ENABLED = "project_analytics_not_enabled"
+REASON_CONSENT_PERSONAL_PROJECT = "consent_personal_project"
+REASON_DESTINATION_UNSUPPORTED = "destination_unsupported"
 PERSONAL = Application.ProjectType.PERSONAL
 # Routing outcomes since this process started (spec 5, 9): `route_note:<note>` for every stored route note and
 # `default_project_unavailable:discard|retry`. Read by tests and diagnostics, like the ingestor's SESSION_DISCARDS.
@@ -176,6 +184,7 @@ async def resolve_destination(
     repo_remote: str | None,
     client_subscription_type: str = "",
     client_policy_version: str = "",
+    private: bool | None = None,
 ) -> DestinationDecision:
     """Destination of an evidence request from the derived `subscription_type` (spec 5, 9).
 
@@ -192,7 +201,7 @@ async def resolve_destination(
         client_subscription_type=client_subscription_type,
         client_policy_version=client_policy_version,
     )
-    if _owns_personal_project(user, subscription_type):
+    if _owns_personal_project(user, subscription_type) if private is None else private:
         application = await _owned_personal_project(user)
         return decide(project=application.name, project_type=PERSONAL.value, project_origin=ORIGIN_PERSONAL)
 
@@ -346,10 +355,28 @@ async def validate_destination(user: User, binding: SessionBinding, bound: bool)
         if is_personal_project_excluded(user.user_type or ""):
             logger.error("cli_analytics: personal destination unavailable for user type, user_id=%s", user.id)
             return REASON_PERSONAL_UNAVAILABLE  # an old personal project never receives their sessions
-        if binding.subscription_type == "personal" and binding.project_origin in SHARED_ORIGINS:
+        classes = private_classes(binding.contract_version, binding.work_consent)
+        if binding.subscription_type in classes and binding.project_origin in SHARED_ORIGINS:
             return REASON_PROJECT_CONFLICT  # a private project is never stamped with a shared origin
         return None
     return None if application.cli_analytics_enabled else REASON_DISABLED
+
+
+# The CLI's rawProjectHeader ranges: printable ASCII and printable latin-1 (no controls, CR/LF, DEL or non-latin-1).
+_HEADER_VALUE = re.compile(r"[\x20-\x7e\xa0-\xff]+")
+
+
+def _check_echoable(binding: SessionBinding) -> SessionBinding:
+    """A new-contract request echoes its project name as a header value. A destination that cannot be represented
+    (the CLI's printable header-value ranges, not merely latin-1) is held (503) before anything is written, never
+    stored and then failed; the reason names no project."""
+    if (
+        binding.contract_version
+        and binding.project_origin != ORIGIN_PERSONAL
+        and not _HEADER_VALUE.fullmatch(binding.project_name)
+    ):
+        raise PublicationRejectedError(503, REASON_DESTINATION_UNSUPPORTED)
+    return binding
 
 
 class EvidenceGate:
@@ -371,13 +398,20 @@ class EvidenceGate:
         subscription_type: str,
         client_subscription_type: str = "",
         client_policy_version: str = "",
+        contract_version: str | None = None,
+        work_consent: str | None = None,
+        funding_route: str | None = None,
     ) -> None:
         self._user = user
+        self._funding = funding_route
+        self._contract = (contract_version, work_consent)
         self._header = header_project
         self._source = project_source
         self._remote = repo_remote
         self._subscription_type = subscription_type
-        self._private = _owns_personal_project(user, subscription_type)
+        self._private = subscription_type in private_classes(*self._contract) and not is_personal_project_excluded(
+            user.user_type or ""
+        )
         self._client = (client_subscription_type, client_policy_version)
         self.binding: SessionBinding | None = None
 
@@ -408,6 +442,10 @@ class EvidenceGate:
         decided by a read-only lookup, so nothing is provisioned for a request that is discarded.
         """
         self.binding = None
+        if bound is not None and not same_contract(bound, *self._contract):
+            return REASON_CONTRACT_CONFLICT
+        if bound is not None:
+            note_funding(bound, self._contract[0], self._funding)
         if await self._personal_anchor_conflict(bound.project_name if bound is not None else legacy_project, bound):
             return REASON_PROJECT_CONFLICT
         if bound is not None:
@@ -433,6 +471,9 @@ class EvidenceGate:
                     project_origin=ORIGIN_LEGACY_PROJECT,
                     client_subscription_type=self._client[0],
                     client_policy_version=self._client[1],
+                    contract_version=self._contract[0],
+                    work_consent=self._contract[1],
+                    funding_route=self._funding,
                 )
             )
         decision = await resolve_destination(
@@ -443,6 +484,7 @@ class EvidenceGate:
             repo_remote=self._remote or hook_repo_remote,
             client_subscription_type=self._client[0],
             client_policy_version=self._client[1],
+            private=self._private,
         )
         if decision.reason:
             return decision.reason
@@ -453,7 +495,11 @@ class EvidenceGate:
             route_note=decision.route_note,
             client_subscription_type=decision.client_subscription_type,
             client_policy_version=decision.client_policy_version,
+            contract_version=self._contract[0],
+            work_consent=self._contract[1],
+            funding_route=self._funding,
         )
+        _check_echoable(self.binding)
         return self.binding
 
     async def _personal_anchor_conflict(self, anchor: str | None, bound: SessionBinding | None) -> bool:
@@ -476,8 +522,70 @@ class EvidenceGate:
         return binding
 
     async def validate_destination(self, binding: SessionBinding, bound: bool = False) -> str | None:
-        return await validate_destination(self._user, binding, bound)
+        reason = await validate_destination(self._user, binding, bound)
+        if reason is None:
+            _check_echoable(binding)  # every effective destination (bound, legacy, fresh), before any write
+        return reason
+
+
+class ConsentGate(EvidenceGate):
+    """N1 (EPMCDME-16849 item 3): contract `1` with explicit work consent. The destination is exactly the project the
+    header names, for any class and user type: no personal, shared-route or default fallback, no `Project-Source`.
+    It shares the context-conflict check, `_usable`, `validate_destination` and `same()` with the evidence gate."""
+
+    async def resolve_session(
+        self, bound: SessionBinding | None, legacy_project: str | None, hook_repo_remote: str | None
+    ) -> SessionBinding | str:
+        self.binding = None
+        header = self._header or ""
+        if bound is not None:
+            if not same_contract(bound, *self._contract):
+                return REASON_CONTRACT_CONFLICT
+            note_funding(bound, self._contract[0], self._funding)
+            if not same(bound.project_name, header):
+                return REASON_PROJECT_CONFLICT
+            # Never re-resolved or rerouted: only the bound destination is validated (a final discard when gone).
+            stamped = cast(
+                SessionBinding,
+                dataclasses.replace(
+                    bound, client_subscription_type=self._client[0], client_policy_version=self._client[1]
+                ),
+            )
+            return await self._adopt(stamped, bound=True)
+        if legacy_project and not same(legacy_project, header):
+            return REASON_PROJECT_CONFLICT  # legacy rows of another project are never adopted
+        application = await self._named_project(header)
+        if application.project_type == PERSONAL:
+            raise PublicationRejectedError(422, REASON_CONSENT_PERSONAL_PROJECT)
+        if not application.cli_analytics_enabled:
+            raise PublicationRejectedError(503, REASON_ANALYTICS_NOT_ENABLED)
+        self.binding = SessionBinding(
+            project_name=application.name,
+            subscription_type=self._subscription_type,
+            project_origin="linked_folder",
+            client_subscription_type=self._client[0],
+            client_policy_version=self._client[1],
+            contract_version=self._contract[0],
+            work_consent=self._contract[1],
+            funding_route=self._funding,
+        )
+        _check_echoable(self.binding)
+        return self.binding
+
+    async def _named_project(self, name: str) -> Application:
+        """The usable project the header names; unusable for any reason is one answer (no existence leak)."""
+        try:
+            async with get_async_session() as session:
+                application = await _usable(session, self._user, name) if name.strip() else None
+        except Exception as exc:
+            logger.warning(_LOOKUP_FAILED_LOG, type(exc).__name__)
+            raise TelemetryStorageUnavailableError(_LOOKUP_FAILED_MESSAGE) from exc
+        if application is None:
+            raise PublicationRejectedError(503, REASON_PROJECT_UNAVAILABLE)
+        return application
 
 
 def build_evidence_gate(user: User, **kwargs) -> EvidenceGate:
+    if kwargs.get("contract_version") and kwargs.get("work_consent"):
+        return ConsentGate(user, **kwargs)
     return EvidenceGate(user, **kwargs)

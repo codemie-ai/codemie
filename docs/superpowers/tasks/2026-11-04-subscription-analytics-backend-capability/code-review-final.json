@@ -1,0 +1,226 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.check",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "Controller approved commit of reviewed 4-file fix; CR-001 resolved, CR-003 resolved (controller-added), CR-002 conditional hardening"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "Controller: CR-001 confirmed, CR-002 conditional, CR-003 confirmed acceptance gap (per-model bucket projection); scope in review-fix-scope.local.md"
+    },
+    {
+      "gate": "code-review.check",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "Controller approved commit of reviewed 4-file fix; CR-001 resolved, CR-003 resolved (controller-added), CR-002 conditional hardening"
+    }
+  ],
+  "reviewed_head": "bb83b827cc08a2a036144b7df8acd4d598a9ac21",
+  "rounds": [
+    "final",
+    "check"
+  ],
+  "rationale": "CR-001 resolved: check_publication_contract now rejects a contract request without a session id with 422 before any write, covered per route. CR-002 superseded: project names match ^[a-z0-9][a-z0-9_-]*$ (ProjectService), so the non-latin-1 echo path is unreachable via that path; conditional hardening only. Note CR-003 (per-model bucket projection for personal-only models) verified in source and test.",
+  "confidence": "medium",
+  "check_confidence": "medium",
+  "risk_flags": [
+    "security",
+    "auth",
+    "migration",
+    "public-api",
+    "data-contract"
+  ],
+  "open": 0,
+  "closed": {
+    "fixed": 1,
+    "moot": 1,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/cli_analytics_ingest_route.py",
+      "line": 194,
+      "title": "Contract headers without evidence headers silently legacy",
+      "problem": "IngestRoute selects the legacy gate when none of EVIDENCE_HEADERS is present. The publication-contract, consent and funding headers are not in that tuple, so a request carrying only those is parsed and accepted by check_publication_contract, then stored under the legacy project gate with a 200, no echo and no consent/contract binding.",
+      "impact": "Violates 'legacy only when all new headers absent' and 'malformed/unsupported is non-success': a consent or contract request is ignored and stored by legacy rules instead of being rejected or held, and the client gets a success without the echo.",
+      "recommendation": "When a PublicationContract was parsed and no evidence/session id is present, reject with 422 (e.g. publication_contract_requires_session) before any write; add a test per ingest route.",
+      "status": "resolved",
+      "check_notes": "cli_analytics_ingest_route.py:159 raises 422 publication_contract_requires_session after the rollout check; test added for all routes.",
+      "fix": {
+        "change": "check_publication_contract rejects a contract request without a non-blank session id with 422 publication_contract_requires_session before body/write",
+        "test": "test_contract_without_session_is_422_never_legacy"
+      }
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/cli_analytics_ingest_route.py",
+      "line": 235,
+      "title": "Echo header may fail to encode project name",
+      "problem": "echo_headers puts binding.project_name into a response header. Starlette encodes header values as latin-1, so a project name with non-latin-1 or control characters raises at response build time, after the data was stored. Whether project names can contain such characters was not confirmed.",
+      "impact": "Client sees a 500 after a successful write and retries; reachability unconfirmed, so severity capped at major.",
+      "recommendation": "Emit the bound-project header only when the name is latin-1 printable (no CR/LF), else send destination only; add a test with a non-ASCII project name.",
+      "status": "superseded",
+      "check_notes": "Project names are ASCII-only by ProjectService.PROJECT_NAME_PATTERN; unreachable, hardening deferred to controller note.",
+      "fix": {
+        "change": "no code change: project names are ASCII-only (PROJECT_NAME_PATTERN), header-safe; noted as conditional hardening in the CLI handoff",
+        "test": "n/a"
+      }
+    }
+  ],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "1. Parse, switch and cheap holds before the body",
+      "status": "pass",
+      "notes": "check_publication_contract runs before body/size checks"
+    },
+    {
+      "kind": "spec",
+      "item": "2. Regimes L0/L1/N0/N1 and one privacy decision via private_classes",
+      "status": "pass",
+      "notes": "single private_classes decision"
+    },
+    {
+      "kind": "spec",
+      "item": "3. ConsentGate behaviour",
+      "status": "pass",
+      "notes": "holds vs final per spec"
+    },
+    {
+      "kind": "spec",
+      "item": "4. Funding first-wins client assertion",
+      "status": "pass",
+      "notes": "funding_claim_differs counter"
+    },
+    {
+      "kind": "spec",
+      "item": "5. Binding columns and (contract, consent) compare",
+      "status": "pass",
+      "notes": "migration and same_contract in both gates"
+    },
+    {
+      "kind": "spec",
+      "item": "6. Readers unchanged",
+      "status": "pass",
+      "notes": "no scope changes"
+    },
+    {
+      "kind": "spec",
+      "item": "7. Buckets and excluded estimate",
+      "status": "pass",
+      "notes": "additive only"
+    },
+    {
+      "kind": "spec",
+      "item": "8. Budget isolation evidence",
+      "status": "pass",
+      "notes": "personal_billed separate from spend"
+    },
+    {
+      "kind": "spec",
+      "item": "9. Rollout and pause",
+      "status": "pass",
+      "notes": "setting default false"
+    },
+    {
+      "kind": "spec",
+      "item": "Wire contract: echo headers and 422/503 bodies",
+      "status": "pass",
+      "notes": "echo only on accepted new-contract responses"
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goals respected",
+      "status": "pass",
+      "notes": "policy_version unchanged"
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC1 N1 session stored under project",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC2/AC3 personal/unknown without consent",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC5 funding buckets through real reader",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC6 personal funding excluded from budget spend",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC7 unpriced model marks aggregate incomplete",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC9/AC11 legacy unchanged, contract persisted",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC-neg malformed assertions never grant visibility",
+      "status": "pass",
+      "notes": ""
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "8 subjects in range all match the documented EPMCDME-####: Description format"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "new migration has license header; no Optional[] or untyped additions found in added src lines; additions to large modules (handler, reader) are within their core analytics/read responsibility"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "no credential logging or lossy input normalization found in added src lines; ingest routes check publication contract before body"
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "Contract/consent headers sent without any evidence header skip the contract path and are stored under the legacy gate with a 200, and the bound-project echo header may fail to encode for non-latin-1 project names (reachability unconfirmed). 15 lens candidates were dismissed as noise, by-design or already handled; no lens failed and standards were clean.",
+    "confidence": "medium",
+    "risk_flags": [
+      "security",
+      "auth",
+      "migration",
+      "public-api",
+      "data-contract"
+    ]
+  }
+}

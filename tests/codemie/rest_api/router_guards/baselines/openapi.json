@@ -15484,15 +15484,53 @@
         "title": "LocalAnalyticsCodeChangesKPIs",
         "type": "object"
       },
+      "LocalAnalyticsCostBucket": {
+        "description": "Catalog money of one estimate bucket, describing only that bucket's models.",
+        "properties": {
+          "cost_incomplete": {
+            "default": false,
+            "description": "True when some of the bucket's tokens had no catalog price",
+            "title": "Cost Incomplete",
+            "type": "boolean"
+          },
+          "cost_usd": {
+            "default": 0.0,
+            "title": "Cost Usd",
+            "type": "number"
+          },
+          "session_count": {
+            "default": 0,
+            "title": "Session Count",
+            "type": "integer"
+          },
+          "unpriced_models": {
+            "description": "The bucket's models without a price",
+            "items": {
+              "type": "string"
+            },
+            "title": "Unpriced Models",
+            "type": "array"
+          }
+        },
+        "title": "LocalAnalyticsCostBucket",
+        "type": "object"
+      },
       "LocalAnalyticsCostByModelRow": {
         "properties": {
           "cost_usd": {
             "title": "Cost Usd",
             "type": "number"
           },
+          "funding": {
+            "$ref": "#/components/schemas/LocalAnalyticsFundingBuckets",
+            "description": "Client-asserted estimate, not proof of billing"
+          },
           "model_name": {
             "title": "Model Name",
             "type": "string"
+          },
+          "personal_billed": {
+            "$ref": "#/components/schemas/LocalAnalyticsCostBucket"
           },
           "project_origins": {
             "description": "Distinct project origins (linked_folder, profile, registered_repository, default_project, legacy_project, none, other), sorted",
@@ -15527,6 +15565,13 @@
           "developer_name": {
             "title": "Developer Name",
             "type": "string"
+          },
+          "funding": {
+            "$ref": "#/components/schemas/LocalAnalyticsFundingBuckets",
+            "description": "Client-asserted estimate, not proof of billing"
+          },
+          "personal_billed": {
+            "$ref": "#/components/schemas/LocalAnalyticsCostBucket"
           },
           "project_origins": {
             "description": "Distinct project origins (linked_folder, profile, registered_repository, default_project, legacy_project, none, other), sorted",
@@ -15574,8 +15619,23 @@
             "title": "Cost By User",
             "type": "array"
           },
+          "funding": {
+            "$ref": "#/components/schemas/LocalAnalyticsFundingBuckets",
+            "description": "Client-asserted estimate, not proof of billing"
+          },
           "kpis": {
             "$ref": "#/components/schemas/LocalAnalyticsCostKPIs"
+          },
+          "models_without_spend": {
+            "description": "Models only the estimate priced (no spend): cost_usd 0 plus buckets; never in cost_by_model",
+            "items": {
+              "$ref": "#/components/schemas/LocalAnalyticsCostByModelRow"
+            },
+            "title": "Models Without Spend",
+            "type": "array"
+          },
+          "personal_billed": {
+            "$ref": "#/components/schemas/LocalAnalyticsCostBucket"
           }
         },
         "required": [
@@ -15826,8 +15886,15 @@
           "dead_sessions": {
             "$ref": "#/components/schemas/LocalAnalyticsDeadSessionsKPIs"
           },
+          "funding": {
+            "$ref": "#/components/schemas/LocalAnalyticsFundingBuckets",
+            "description": "Client-asserted estimate, not proof of billing"
+          },
           "kpis": {
             "$ref": "#/components/schemas/LocalAnalyticsEfficiencyKPIs"
+          },
+          "personal_billed": {
+            "$ref": "#/components/schemas/LocalAnalyticsCostBucket"
           },
           "session_depth": {
             "items": {
@@ -15953,6 +16020,22 @@
         "title": "LocalAnalyticsFrameworksResponse",
         "type": "object"
       },
+      "LocalAnalyticsFundingBuckets": {
+        "description": "Money by the client-asserted funding route of each session (its first claim; no claim reads unknown).",
+        "properties": {
+          "api_based": {
+            "$ref": "#/components/schemas/LocalAnalyticsCostBucket"
+          },
+          "subscription": {
+            "$ref": "#/components/schemas/LocalAnalyticsCostBucket"
+          },
+          "unknown": {
+            "$ref": "#/components/schemas/LocalAnalyticsCostBucket"
+          }
+        },
+        "title": "LocalAnalyticsFundingBuckets",
+        "type": "object"
+      },
       "LocalAnalyticsInvocationRow": {
         "properties": {
           "count": {
@@ -16072,6 +16155,10 @@
             "title": "Daily Buckets",
             "type": "array"
           },
+          "funding": {
+            "$ref": "#/components/schemas/LocalAnalyticsFundingBuckets",
+            "description": "Client-asserted estimate, not proof of billing"
+          },
           "kpis": {
             "$ref": "#/components/schemas/LocalAnalyticsOverviewKPIs"
           },
@@ -16081,6 +16168,9 @@
             },
             "title": "Model Breakdown",
             "type": "array"
+          },
+          "personal_billed": {
+            "$ref": "#/components/schemas/LocalAnalyticsCostBucket"
           }
         },
         "required": [
@@ -16225,8 +16315,15 @@
       },
       "LocalAnalyticsRepositoriesData": {
         "properties": {
+          "funding": {
+            "$ref": "#/components/schemas/LocalAnalyticsFundingBuckets",
+            "description": "Client-asserted estimate, not proof of billing"
+          },
           "pagination": {
             "$ref": "#/components/schemas/codemie__rest_api__models__cli_analytics__PaginationMetadata"
+          },
+          "personal_billed": {
+            "$ref": "#/components/schemas/LocalAnalyticsCostBucket"
           },
           "rows": {
             "items": {
@@ -16391,6 +16488,10 @@
             "title": "Files Changed",
             "type": "integer"
           },
+          "funding": {
+            "$ref": "#/components/schemas/LocalAnalyticsFundingBuckets",
+            "description": "Client-asserted estimate, not proof of billing"
+          },
           "lines_added": {
             "anyOf": [
               {
@@ -16423,6 +16524,9 @@
               }
             ],
             "title": "Net Lines"
+          },
+          "personal_billed": {
+            "$ref": "#/components/schemas/LocalAnalyticsCostBucket"
           },
           "project_name": {
             "anyOf": [
@@ -16513,6 +16617,12 @@
             ],
             "description": "The catalog that priced the money of this response: 'litellm' (the LiteLLM proxy's model info) or 'yaml' (the LLM config files); named on every money endpoint, even when the selection is empty. Null on an endpoint that returns no money (/tools, /activity).",
             "title": "Catalog Source"
+          },
+          "cost_incomplete": {
+            "default": false,
+            "description": "True when unpriced_models is not empty: the money values are partial, not a real 0.",
+            "title": "Cost Incomplete",
+            "type": "boolean"
           },
           "data_as_of": {
             "description": "ISO 8601 date/datetime of the most recent data included",
@@ -17418,6 +17528,10 @@
             "title": "Developer Name",
             "type": "string"
           },
+          "funding": {
+            "$ref": "#/components/schemas/LocalAnalyticsFundingBuckets",
+            "description": "Client-asserted estimate, not proof of billing"
+          },
           "input_tokens": {
             "title": "Input Tokens",
             "type": "integer"
@@ -17448,6 +17562,9 @@
           "output_tokens": {
             "title": "Output Tokens",
             "type": "integer"
+          },
+          "personal_billed": {
+            "$ref": "#/components/schemas/LocalAnalyticsCostBucket"
           },
           "project_origins": {
             "description": "Distinct project origins (linked_folder, profile, registered_repository, default_project, legacy_project, none, other), sorted",
@@ -17539,6 +17656,13 @@
               }
             ],
             "title": "Avg Session Duration Ms"
+          },
+          "funding": {
+            "$ref": "#/components/schemas/LocalAnalyticsFundingBuckets",
+            "description": "Client-asserted estimate, not proof of billing"
+          },
+          "personal_billed": {
+            "$ref": "#/components/schemas/LocalAnalyticsCostBucket"
           },
           "rows": {
             "items": {

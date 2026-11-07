@@ -170,6 +170,15 @@ PROJECT_ORIGINS = (
 SHARED_ORIGINS = tuple(o for o in PROJECT_ORIGINS if o != "personal")
 
 
+def private_classes(contract_version: str | None, work_consent: str | None) -> frozenset[str]:
+    """The subscription classes whose destination is private (owner-only), decided once for every consumer.
+    Legacy (no contract): personal. Contract 1 without work consent: personal and unknown (an unclassified
+    session is not disclosed on an organization list). Contract 1 with consent: none."""
+    if contract_version is None:
+        return frozenset({"personal"})
+    return frozenset() if work_consent else frozenset({"personal", "unknown"})
+
+
 def _normalise(value: str | None, known: tuple[str, ...], missing: str) -> str:
     v = _py_norm(value)
     if not v:

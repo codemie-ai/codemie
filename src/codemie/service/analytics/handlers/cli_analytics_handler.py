@@ -46,6 +46,7 @@ from codemie.service.analytics.cli_analytics_project_gate import (
 )
 from codemie.service.analytics.delivery_framework import classify_delivery_framework
 from codemie.service.analytics.handlers.coding_agent_pricing import CatalogPricer, normalize_model
+from codemie.service.analytics.handlers.funding_buckets import buckets, models_without_spend, price_bucket_rows
 from codemie.service.analytics.handlers.session_money import (
     dispatch_money,
     has_priced_model,
@@ -278,6 +279,7 @@ def _new_repository_bucket(repository: str | None, branch: str | None, project: 
         "_projects": {},
         "_subs": set(),
         "_origins": set(),
+        "_sids": set(),  # kept past finalizing: the handler prices the row's buckets from it
     }
 
 
@@ -350,8 +352,10 @@ def _group_branches_into_repositories(branch_rows: list[dict]) -> list[dict]:
                 "branches": [],
                 "subscription_types": [],
                 "project_origins": [],
+                "_sids": set(),
             },
         )
+        repo["_sids"] |= row["_sids"]
         for field in _REPO_SUM_FIELDS:
             if field in _NULLABLE_SUM_FIELDS:
                 repo[field] = _nsum(repo[field], row[field])
@@ -396,6 +400,7 @@ def _build_repository_rows(
             key, bucket_branch, bucket_project = (repository,), None, None
         bucket = buckets.setdefault(key, _new_repository_bucket(repository, bucket_branch, bucket_project))
         bucket["session_count"] += 1
+        bucket["_sids"].add(sid)
         bucket["turns"] += turns_by_session.get(sid, 0)
         bucket["cost_usd"] += session_money.get(sid, 0.0)
         bucket["files_changed"] += _i(files_by_session.get(sid, {}).get("files_changed"))
@@ -514,6 +519,7 @@ class LocalAnalyticsHandler:
             self._repo.get_class_lists(f, "model"),
             self._repo.get_class_lists(f, "day"),
         )
+        estimate = buckets(price_bucket_rows(await self._repo.get_session_funding_costs(f)))
 
         money = price_session_models(session_model_rows)
         kpi = _first(kpi_rows)
@@ -579,7 +585,7 @@ class LocalAnalyticsHandler:
 
         data_as_of = max((_iso(r.get("day")) for r in lines_daily if r.get("nonzero")), default=None)
         return (
-            {"kpis": kpis, "daily_buckets": daily_buckets, "model_breakdown": model_breakdown},
+            {"kpis": kpis, "daily_buckets": daily_buckets, "model_breakdown": model_breakdown, **estimate},
             money.pricer,
             data_as_of,
         )
@@ -612,6 +618,7 @@ class LocalAnalyticsHandler:
         )
         by_model = _by_key(model_classes)
         money = price_session_models(session_model_rows)
+        priced = price_bucket_rows(await self._repo.get_session_funding_costs(f))
         kpi = _first(kpi_rows)
         total_sessions = _i(kpi.get("total_sessions"))
         total_cost = money.total
@@ -628,6 +635,7 @@ class LocalAnalyticsHandler:
                 "user_email": _s(r.get("developer_name")),
                 "cost_usd": money.of_sessions([_s(sid) for sid in (r.get("session_ids") or [])]),
                 **_lists(r),
+                **buckets(priced, [_s(sid) for sid in (r.get("session_ids") or [])]),
             }
             for r in by_user
         ]
@@ -635,7 +643,7 @@ class LocalAnalyticsHandler:
         cost_by_user.sort(key=lambda r: _float_sort_key(r["cost_usd"]), reverse=True)
         cost_by_model = sorted(
             (
-                {"model_name": name, "cost_usd": cost, **_lists(by_model.get(name))}
+                {"model_name": name, "cost_usd": cost, **_lists(by_model.get(name)), **buckets(priced, model=name)}
                 for name, cost in money.by_model.items()
             ),
             key=lambda r: (-_float_sort_key(r["cost_usd"]), r["model_name"]),
@@ -650,6 +658,8 @@ class LocalAnalyticsHandler:
             },
             "cost_by_user": cost_by_user,
             "cost_by_model": cost_by_model,
+            "models_without_spend": models_without_spend(priced, money.by_model),
+            **buckets(priced),
         }
         return data, money.pricer
 
@@ -681,6 +691,7 @@ class LocalAnalyticsHandler:
         )
 
         money = price_session_models(session_model_rows)
+        priced = price_bucket_rows(await self._repo.get_session_funding_costs(f))
         turns_by_session = {_s(r.get("session_id")): _i(r.get("turns")) for r in turns_rows}
         success_by_session = {_s(r.get("session_id")): r for r in success_rows}
         last_active = {_s(r.get("developer_name")): r.get("last_active") for r in last_active_rows}
@@ -718,6 +729,7 @@ class LocalAnalyticsHandler:
                     "user_id": None,  # filled in by the router via UserIdentityResolver
                     "daily_activity": daily_by_user.get(name, []),
                     **_lists(row),
+                    **buckets(priced, session_ids),
                 }
             )
 
@@ -743,6 +755,7 @@ class LocalAnalyticsHandler:
             "rows": rows,
             "avg_session_duration_ms": avg_duration,
             "total_count": total_count,
+            **buckets(priced),
         }, money.pricer
 
     # ── Repositories ─────────────────────────────────────────────────────────
@@ -772,6 +785,7 @@ class LocalAnalyticsHandler:
         )
         returned = {_s(r.get("session_id")) for r in cost_facts}
         money = price_session_models([r for r in session_model_rows if _s(r.get("session_id")) in returned])
+        priced = price_bucket_rows(await self._repo.get_session_funding_costs(f))
 
         # cost_facts already includes repository/branch/project_name via LEFT JOIN with
         # v_session_dimensions (NULL for plugin-less sessions that have no dimensions row).
@@ -811,7 +825,9 @@ class LocalAnalyticsHandler:
                 "has_more": (page + 1) * per_page < total_count,
             }
 
-        return {"rows": page_rows, "pagination": pagination}, money.pricer
+        for row in page_rows:
+            row.update(buckets(priced, row.pop("_sids")))
+        return {"rows": page_rows, "pagination": pagination, **buckets(priced, returned)}, money.pricer
 
     # ── Sessions ─────────────────────────────────────────────────────────────
 
@@ -1386,6 +1402,7 @@ class LocalAnalyticsHandler:
                 "net_lines": _nnet(_ni(lines.get("lines_added")), _ni(lines.get("lines_removed"))),
                 **_union_lists(classes, code_ids),
             },
+            **buckets(price_bucket_rows(await self._repo.get_session_funding_costs(f))),
         }
         return data, money.pricer
 

@@ -42,6 +42,7 @@ from codemie.repository.cli_analytics.scope import (
     normalise_subscription_type,
     sql_list_condition,
     sql_norm,
+    sql_personal_billed,
     sql_private,
     sql_project_origin,
     sql_subscription_type,
@@ -1619,3 +1620,46 @@ def test_sql_vocabulary_expression_mirrors_the_python_mapping():
         sql.count("'unknown'") == 2 and "'other'" in sql and "IN ('codemie', 'corporate', 'personal', 'unknown')" in sql
     )
     assert "'none'" in sql_project_origin("c") and "'registered_repository'" in sql_project_origin("c")
+
+
+# ── funding / personal-billed bucket rows (EPMCDME-16849 item 7) ──
+
+
+class _ArgsRecorder(_SqlRecorder):
+    def __init__(self) -> None:
+        super().__init__()
+        self.args: list[tuple] = []
+
+    async def fetch(self, sql, *args):
+        self.args.append(args)
+        return await super().fetch(sql, *args)
+
+
+async def _sql_and_args(method: str, f: LocalAnalyticsFilter, **kwargs) -> tuple[str, tuple]:
+    recorder = _ArgsRecorder()
+    await getattr(PostgresCliAnalyticsReader(recorder), method)(f, **kwargs)  # type: ignore[arg-type]
+    assert len(recorder.statements) == 1
+    return " ".join(recorder.statements[0].split()), recorder.args[0]
+
+
+@pytest.mark.parametrize(
+    "filters", [{}, {"projects": ["p"]}, {"deny_all": True}], ids=["unfiltered", "projects", "deny"]
+)
+@pytest.mark.asyncio
+async def test_funding_rows_read_the_spend_rows_scope_without_the_spend_filter(filters):
+    f = _flt(**filters)
+    sql, args = await _sql_and_args("get_session_funding_costs", f)
+    spend_sql, spend_args = await _sql_and_args("get_session_model_costs", f, spend_only=True)
+    head, spend_head = sql.split(" SELECT c.session_id,")[0], spend_sql.split(" SELECT c.session_id,")[0]
+
+    # the same `sel` (viewer scope, window, filters) and parameters as the spend rows: no read is widened
+    assert head.startswith("WITH sel AS (") and "SELECT * FROM ( SELECT d.session_id" in head
+    assert head == spend_head
+    assert args == spend_args
+    # the spend rows keep their filter; the bucket rows read every selected session
+    assert "NOT IN (SELECT session_id FROM sel WHERE" in spend_sql
+    assert "NOT IN (SELECT session_id FROM sel WHERE" not in sql
+    assert "coalesce(d.funding_route, 'unknown') AS funding_route" in sql
+    assert " ".join(f"{sql_personal_billed('s')} AS personal_billed".split()) in sql
+    assert "LEFT JOIN session_dims d ON d.session_id = c.session_id" in sql
+    assert "JOIN sel s ON s.session_id = c.session_id" in sql

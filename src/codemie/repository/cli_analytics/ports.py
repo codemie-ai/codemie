@@ -74,6 +74,8 @@ class IngestResult:
     body: bytes = b""
     media_type: str | None = None
     accepted: int | None = None
+    # True when the request was discarded (a gate or session guard reason): the answer carries no publication echo.
+    discarded: bool = False
 
 
 # Decides, before anything is stored, whether a request is discarded. It receives every explicit
@@ -113,6 +115,10 @@ class SessionBinding:
     route_note: str = ""
     client_subscription_type: str = ""
     client_policy_version: str = ""
+    # The publication contract the session was bound under; None = bound before it (legacy).
+    contract_version: str | None = None
+    work_consent: str | None = None
+    funding_route: str | None = None
 
 
 # A gate that accepts an evidence request also hands over, in attributes set when it answers None, the
@@ -138,6 +144,7 @@ SessionResolver = Callable[["SessionBinding | None", "str | None", "str | None"]
 REASON_OWNER_CONFLICT = "session_owner_conflict"
 REASON_PROJECT_CONFLICT = "session_project_conflict"
 REASON_SESSION_BOUNDARY = "evidence_session_conflict"
+REASON_CONTRACT_CONFLICT = "session_contract_conflict"
 
 
 def gate_resolver(gate: IngestGate | None) -> SessionResolver | None:
@@ -190,6 +197,16 @@ class StalePolicyError(TelemetryIngestError):
     def __init__(self, policy_version: str) -> None:
         super().__init__("stale_policy")
         self.policy_version = policy_version
+
+
+class PublicationRejectedError(TelemetryIngestError):
+    """A contract request refused with `{"reason", "disposition"}`: 422 is final, 503 a hold (nothing is stored)."""
+
+    def __init__(self, status_code: int, reason: str) -> None:
+        super().__init__(reason)
+        self.status_code = status_code
+        self.reason = reason
+        self.disposition = "final" if status_code == 422 else "hold"
 
 
 class TelemetryStorageUnavailableError(TelemetryIngestError):
@@ -257,6 +274,8 @@ class CliAnalyticsReader(Protocol):
     async def get_model_breakdown(self, f: LocalAnalyticsFilter) -> Rows: ...
 
     async def get_session_model_costs(self, f: LocalAnalyticsFilter, *, spend_only: bool = False) -> Rows: ...
+
+    async def get_session_funding_costs(self, f: LocalAnalyticsFilter) -> Rows: ...
 
     async def get_class_lists(self, f: LocalAnalyticsFilter, by: str = "all") -> Rows: ...
 

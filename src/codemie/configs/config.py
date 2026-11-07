@@ -233,6 +233,8 @@ class Config(BaseSettings):
     CLI_ANALYTICS_ROLLUP_BATCH_SIZE: int = Field(default=5_000, ge=1)
     CLI_ANALYTICS_PARTITION_PREMAKE_WEEKS: int = Field(default=4, ge=1)
     CLI_ANALYTICS_MAINTENANCE_INTERVAL_MINUTES: int = Field(default=60, ge=1)
+    # Rollout switch: advertise publication contract "1" in the classification policy so plugins may send it.
+    CLI_ANALYTICS_PUBLICATION_CONTRACTS_ENABLED: bool = False
 
     INDEXES_PERMITTED_FOR_SEARCH: list[str] = [
         KZ_USERS_INDEX,

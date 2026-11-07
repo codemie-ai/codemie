@@ -66,6 +66,7 @@ from codemie.repository.cli_analytics.ports import (
     IngestResult,
     InvalidTelemetryPayloadError,
     OtlpSignal,
+    PublicationRejectedError,
     CliAnalyticsStorageConfigError,
     StalePolicyError,
     TelemetryIngestError,
@@ -86,7 +87,13 @@ from codemie.rest_api.models.cli_analytics import (
     LocalAnalyticsToolsResponse,
     LocalAnalyticsUsersResponse,
 )
-from codemie.rest_api.routers.cli_analytics_ingest_route import IngestRoute, corporate_organizations
+from codemie.rest_api.routers.cli_analytics_ingest_route import (
+    IngestRoute,
+    PublicationContract,
+    PublicationContractRejected,
+    check_publication_contract,
+    corporate_organizations,
+)
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
 from codemie.service.analytics.cli_analytics_project_gate import build_ingest_gate
@@ -169,11 +176,18 @@ async def classification_policy() -> dict[str, Any]:
     orgs = corporate_organizations()
     # `organization_encodings` is optional and not part of the version: a client that sends the encoded organization
     # header must see it here first (the support of one instance does not prove all instances are upgraded).
-    return {"organizations": orgs, "version": policy_version(orgs), "organization_encodings": [ORGANIZATION_ENCODING]}
+    policy: dict[str, Any] = {
+        "organizations": orgs,
+        "version": policy_version(orgs),
+        "organization_encodings": [ORGANIZATION_ENCODING],
+    }
+    if config.CLI_ANALYTICS_PUBLICATION_CONTRACTS_ENABLED:  # key omitted (not null) when off
+        policy["publication_contracts"] = ["1"]
+    return policy
 
 
-def _ingest_route(request: Request) -> IngestRoute:
-    return IngestRoute(request, build_ingest_gate)  # the builder is passed in, so tests patch it here
+def _ingest_route(request: Request, contract: PublicationContract | None = None) -> IngestRoute:
+    return IngestRoute(request, build_ingest_gate, contract)  # the builder is passed in, so tests patch it here
 
 
 def _stale_response(exc: StalePolicyError) -> Response:
@@ -182,8 +196,14 @@ def _stale_response(exc: StalePolicyError) -> Response:
     )
 
 
-def _ingest_response(result: IngestResult) -> Response:
-    return Response(content=result.body, status_code=200, media_type=result.media_type)
+def _ingest_response(result: IngestResult, route: IngestRoute) -> Response:
+    return Response(
+        content=result.body, status_code=200, media_type=result.media_type, headers=route.echo_headers(result)
+    )
+
+
+def _publication_rejected_response(exc: PublicationRejectedError) -> Response:
+    return JSONResponse(status_code=exc.status_code, content={"reason": exc.reason, "disposition": exc.disposition})
 
 
 def _ingest_http_error(exc: TelemetryIngestError) -> HTTPException:
@@ -192,11 +212,15 @@ def _ingest_http_error(exc: TelemetryIngestError) -> HTTPException:
 
 async def _ingest_otlp(request: Request, signal: OtlpSignal) -> Response:
     _ensure_enabled()
+    try:
+        contract = check_publication_contract(request, request.state.user)
+    except PublicationContractRejected as exc:
+        return exc.response()
     body = await request.body()
     if len(body) > config.ANALYTICS_INGEST_MAX_BODY_BYTES:
         raise HTTPException(status_code=413, detail=_ERR_BODY_TOO_LARGE)
     content_type = request.headers.get("content-type", _PROTOBUF_CONTENT_TYPE)
-    route = _ingest_route(request)
+    route = _ingest_route(request, contract)
     try:
         result = await get_cli_analytics_storage().ingestor.ingest_otlp(
             signal,
@@ -209,11 +233,13 @@ async def _ingest_otlp(request: Request, signal: OtlpSignal) -> Response:
         )
     except StalePolicyError as exc:
         return _stale_response(exc)
+    except PublicationRejectedError as exc:
+        return _publication_rejected_response(exc)
     except TelemetryIngestError as exc:
         raise _ingest_http_error(exc) from exc
     except CliAnalyticsStorageConfigError as exc:  # retried by the client until the configuration is fixed
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=_ERR_STORAGE_MISCONFIGURED) from exc
-    return _ingest_response(result)
+    return _ingest_response(result, route)
 
 
 def _parse_ndjson(body: bytes) -> list[dict]:
@@ -410,6 +436,7 @@ def _metadata(
         "execution_time_ms": round((time.monotonic_ns() - start_ns) / 1_000_000, 2),
         "unpriced_models": unpriced,
         "catalog_source": catalog_source,
+        "cost_incomplete": bool(unpriced),
     }
 
 
@@ -446,6 +473,10 @@ async def ingest_traces(request: Request) -> Response:
 @router.post("/event-hooks", status_code=200)
 async def ingest_event_hooks(request: Request) -> Response:
     _ensure_enabled()
+    try:
+        contract = check_publication_contract(request, request.state.user)
+    except PublicationContractRejected as exc:
+        return exc.response()
     ct = request.headers.get("content-type", "")
     if ct and not ct.startswith("application/x-ndjson"):
         raise HTTPException(status_code=415, detail="Expected application/x-ndjson")
@@ -458,7 +489,7 @@ async def ingest_event_hooks(request: Request) -> Response:
     if not events:
         raise HTTPException(status_code=400, detail="No parseable events")
     now_ns = datetime_to_ns(datetime.now(timezone.utc))
-    route = _ingest_route(request)
+    route = _ingest_route(request, contract)
     try:
         result = await get_cli_analytics_storage().ingestor.ingest_hook_events(
             events,
@@ -470,11 +501,13 @@ async def ingest_event_hooks(request: Request) -> Response:
         )
     except StalePolicyError as exc:
         return _stale_response(exc)
+    except PublicationRejectedError as exc:
+        return _publication_rejected_response(exc)
     except TelemetryIngestError as exc:
         raise _ingest_http_error(exc) from exc
     except CliAnalyticsStorageConfigError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=_ERR_STORAGE_MISCONFIGURED) from exc
-    return _ingest_response(result)
+    return _ingest_response(result, route)
 
 
 # ── Read endpoints ──────────────────────────────────────────────────────────
@@ -753,5 +786,6 @@ async def get_session_detail(
         "execution_time_ms": round((time.monotonic_ns() - start_ns) / 1_000_000, 2),
         "unpriced_models": unpriced,
         "catalog_source": catalog_source,
+        "cost_incomplete": bool(unpriced),
     }
     return _respond({"data": detail, "metadata": metadata}, LocalAnalyticsSessionDetailResponse)

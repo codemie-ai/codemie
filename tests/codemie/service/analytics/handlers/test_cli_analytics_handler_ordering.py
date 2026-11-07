@@ -68,6 +68,7 @@ def _handler(cost_facts=(), turns=(), invocations=()) -> LocalAnalyticsHandler:
         "get_lines_by_session",
         "get_model_breakdown",
         "get_session_model_costs",
+        "get_session_funding_costs",
         "get_skill_names_by_session",
         "get_file_facts_by_session",
         "get_lines_totals",

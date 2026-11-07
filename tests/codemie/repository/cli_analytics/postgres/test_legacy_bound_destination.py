@@ -313,3 +313,72 @@ async def test_an_adopted_legacy_project_is_stored_with_the_legacy_project_origi
     (hook_args,) = engine.conn.sql("INSERT INTO hook_events")
     columns = dict(zip(HookRow._fields[2:], hook_args, strict=True))
     assert (columns["subscription_type"], columns["project_origin"]) == ([subscription], ["legacy_project"])
+
+
+@pytest.mark.asyncio
+async def test_a_consent_binding_keeps_its_canonical_project_and_origin_next_to_legacy_rows():
+    engine = FakeEngine()
+    row = _bound("s0", owner=OWNER, project="legacy") | {"owner_email": None, "legacy_project": "legacy"}
+    engine.conn.bindings = [row]
+    evidence = _Evidence(
+        SessionBinding("Legacy", "personal", "linked_folder", contract_version="1", work_consent="yes")
+    )
+
+    await _ingestor(engine).ingest_hook_events(_project_events(None), OWNER, 0, gate=evidence, evidence_session_id="s0")
+
+    (bind_args,) = engine.conn.sql("INSERT INTO session_dims")
+    assert bind_args[2:5] == ("personal", "linked_folder", "")
+
+
+# --- a legacy request never appends to a session bound by the publication contract ---------------------------
+
+NEW_CONTRACT = [("1", None), ("1", "explicit-folder")]  # N0 (no consent), N1 (explicit folder consent)
+
+
+def _contract_bound(session: str, contract: tuple[str, str | None], project: str = "ProjectA") -> dict:
+    return {
+        **_bound(session, owner=OWNER, project=project),
+        "contract_version": contract[0],
+        "work_consent": contract[1],
+        "funding_route": "api_based",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ROUTES)
+@pytest.mark.parametrize("contract", NEW_CONTRACT)
+async def test_a_legacy_request_never_appends_to_a_contract_bound_session(route, contract):
+    engine = FakeEngine()
+    engine.conn.bindings = [_contract_bound("s1", contract)]
+    gate = LegacyGate("ProjectA")
+
+    result = await send(route, engine, gate, "s1")
+
+    assert reason_of(route, result) == "session_contract_conflict"
+    assert engine.conn.sql("INSERT INTO") == []  # no rows, ledger, binding or funding write
+    assert engine.conn.sql("UPDATE") == []
+    assert gate.validated == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ROUTES)
+async def test_a_mixed_legacy_and_contract_bound_batch_writes_nothing(route):
+    engine = FakeEngine()
+    engine.conn.bindings = [_bound("s1", owner=OWNER, project="ProjectA"), _contract_bound("s2", NEW_CONTRACT[1])]
+
+    result = await send(route, engine, LegacyGate("ProjectA"), "s1", "s2")
+
+    assert reason_of(route, result) == "session_contract_conflict"
+    assert engine.conn.sql("INSERT INTO") == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("contract", NEW_CONTRACT)
+async def test_legacy_hook_events_never_append_to_a_contract_bound_session(contract):
+    engine = FakeEngine()
+    engine.conn.bindings = [_contract_bound("s0", contract)]
+
+    result = await _ingestor(engine).ingest_hook_events(_project_events(None), OWNER, 0, gate=LegacyGate("ProjectA"))
+
+    assert json.loads(result.body)["reason"] == "session_contract_conflict"
+    assert engine.conn.sql("INSERT INTO") == []

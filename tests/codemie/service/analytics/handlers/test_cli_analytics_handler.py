@@ -41,6 +41,7 @@ def make_handler(cost_facts=None):
     repo.get_lines_by_session = AsyncMock(return_value=[])
     repo.get_model_breakdown = AsyncMock(return_value=[])
     repo.get_session_model_costs = AsyncMock(return_value=[])
+    repo.get_session_funding_costs = AsyncMock(return_value=[])
     repo.get_skill_names_by_session = AsyncMock(return_value=[])
     return LocalAnalyticsHandler(repo)
 
@@ -364,6 +365,7 @@ def make_repo_handler(cost_facts):
     repo.get_tool_success_by_session = AsyncMock(return_value=[])
     repo.get_lines_by_session = AsyncMock(return_value=[])
     repo.get_session_model_costs = AsyncMock(return_value=[])
+    repo.get_session_funding_costs = AsyncMock(return_value=[])
     return LocalAnalyticsHandler(repo)
 
 
@@ -501,6 +503,7 @@ async def test_is_unattributed_filter_delegates_to_repository():
     repo.get_lines_by_session = AsyncMock(return_value=[])
     repo.get_model_breakdown = AsyncMock(return_value=[])
     repo.get_session_model_costs = AsyncMock(return_value=[])
+    repo.get_session_funding_costs = AsyncMock(return_value=[])
     repo.get_skill_names_by_session = AsyncMock(return_value=[])
     handler = LocalAnalyticsHandler(repo)
 
@@ -526,6 +529,7 @@ async def test_is_unattributed_false_delegates_to_repository():
     repo.get_lines_by_session = AsyncMock(return_value=[])
     repo.get_model_breakdown = AsyncMock(return_value=[])
     repo.get_session_model_costs = AsyncMock(return_value=[])
+    repo.get_session_funding_costs = AsyncMock(return_value=[])
     repo.get_skill_names_by_session = AsyncMock(return_value=[])
     handler = LocalAnalyticsHandler(repo)
 
@@ -548,6 +552,7 @@ async def test_repositories_search_delegates_to_repository():
     repo.get_tool_success_by_session = AsyncMock(return_value=[])
     repo.get_lines_by_session = AsyncMock(return_value=[])
     repo.get_session_model_costs = AsyncMock(return_value=[])
+    repo.get_session_funding_costs = AsyncMock(return_value=[])
     handler = LocalAnalyticsHandler(repo)
 
     await handler.get_repositories(make_filter(), page=0, per_page=50, include_branches=False, search="codem")
@@ -568,6 +573,7 @@ async def test_repositories_search_none_delegates_to_repository():
     repo.get_tool_success_by_session = AsyncMock(return_value=[])
     repo.get_lines_by_session = AsyncMock(return_value=[])
     repo.get_session_model_costs = AsyncMock(return_value=[])
+    repo.get_session_funding_costs = AsyncMock(return_value=[])
     handler = LocalAnalyticsHandler(repo)
 
     await handler.get_repositories(make_filter(), page=0, per_page=50, include_branches=False, search=None)
@@ -585,6 +591,7 @@ async def test_branch_filter_forwarded_to_get_session_cost_facts():
     repo.get_lines_by_session = AsyncMock(return_value=[])
     repo.get_model_breakdown = AsyncMock(return_value=[])
     repo.get_session_model_costs = AsyncMock(return_value=[])
+    repo.get_session_funding_costs = AsyncMock(return_value=[])
     repo.get_skill_names_by_session = AsyncMock(return_value=[])
     handler = LocalAnalyticsHandler(repo)
 
@@ -605,6 +612,7 @@ async def test_branch_none_when_not_provided():
     repo.get_lines_by_session = AsyncMock(return_value=[])
     repo.get_model_breakdown = AsyncMock(return_value=[])
     repo.get_session_model_costs = AsyncMock(return_value=[])
+    repo.get_session_funding_costs = AsyncMock(return_value=[])
     repo.get_skill_names_by_session = AsyncMock(return_value=[])
     handler = LocalAnalyticsHandler(repo)
 
@@ -1150,6 +1158,7 @@ def _users_repo(user_rows):
         "get_file_facts_by_session",
         "get_tool_success_by_session",
         "get_session_model_costs",
+        "get_session_funding_costs",
     ):
         setattr(repo, name, AsyncMock(return_value=[]))
     repo.get_users = AsyncMock(return_value=user_rows)
@@ -1266,6 +1275,7 @@ async def test_rows_with_developer_name_also_carry_user_email() -> None:
         "get_cost_kpis",
         "get_model_breakdown",
         "get_session_model_costs",
+        "get_session_funding_costs",
         "get_session_detail_cost",
         "get_session_detail_model_costs",
         "get_session_detail_scalars",
@@ -1341,6 +1351,7 @@ async def test_overview_avg_context_per_call_divides_by_api_call_count():
     repo.get_tool_success_by_session = AsyncMock(return_value=[])
     repo.get_session_durations = AsyncMock(return_value=[])
     repo.get_session_model_costs = AsyncMock(return_value=[])
+    repo.get_session_funding_costs = AsyncMock(return_value=[])
     repo.get_class_lists = AsyncMock(return_value=[])
     repo.get_session_cost_facts = AsyncMock(return_value=[{**BASE_COST_ROW, "session_id": "s1"}])
     handler = LocalAnalyticsHandler(repo)
@@ -1368,6 +1379,7 @@ async def test_sessions_ctx_per_call_field_uses_api_call_count_and_sorts_by_it()
     repo.get_model_breakdown = AsyncMock(return_value=[])
     repo.get_skill_names_by_session = AsyncMock(return_value=[])
     repo.get_session_model_costs = AsyncMock(return_value=[])
+    repo.get_session_funding_costs = AsyncMock(return_value=[])
     handler = LocalAnalyticsHandler(repo)
 
     data, _, _ = await handler.get_sessions(make_filter(), page=0, per_page=20, sort_by="ctx_per_call", search=None)
@@ -1403,6 +1415,7 @@ async def test_efficiency_worst_session_and_avg_use_api_call_count():
         ]
     )
     repo.get_session_model_costs = AsyncMock(return_value=[])
+    repo.get_session_funding_costs = AsyncMock(return_value=[])
     repo.get_session_cost_facts = AsyncMock(return_value=[s1, s2])
     # turns-based ratio would make s2 (1000/5=200) "worse" than s1 (1000/100=10) — reversed.
     repo.get_turns_by_session = AsyncMock(
@@ -1677,6 +1690,7 @@ def _money_handler(model_rows, **overrides):
     for name in _MONEY_READS:
         setattr(repo, name, AsyncMock(return_value=[]))
     repo.get_session_model_costs = AsyncMock(return_value=model_rows)
+    repo.get_session_funding_costs = AsyncMock(return_value=[])
     for name, rows in overrides.items():
         setattr(repo, name, AsyncMock(return_value=rows))
     return LocalAnalyticsHandler(repo)
@@ -1838,6 +1852,7 @@ def _efficiency_handler(row):
     repo = MagicMock()
     repo.get_cost_kpis = AsyncMock(return_value=[{"total_sessions": 1, "total_api_calls": 10}])
     repo.get_session_model_costs = AsyncMock(return_value=[])
+    repo.get_session_funding_costs = AsyncMock(return_value=[])
     repo.get_session_cost_facts = AsyncMock(return_value=[row])
     repo.get_turns_by_session = AsyncMock(return_value=[])
     repo.get_file_facts_by_session = AsyncMock(return_value=[])
@@ -2211,6 +2226,7 @@ async def test_overview_total_sessions_is_read_from_get_cost_kpis_not_recomputed
     repo.get_tool_success_by_session = AsyncMock(return_value=[])
     repo.get_session_durations = AsyncMock(return_value=[])
     repo.get_session_model_costs = AsyncMock(return_value=[])
+    repo.get_session_funding_costs = AsyncMock(return_value=[])
     repo.get_skill_names_by_session = AsyncMock(return_value=[])
     repo.get_lines_by_session = AsyncMock(return_value=[])
     repo.get_class_lists = AsyncMock(return_value=[])

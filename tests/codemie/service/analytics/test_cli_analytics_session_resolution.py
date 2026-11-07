@@ -19,6 +19,7 @@ the hook-row repo_remote fallback and the routing counters. The database lookups
 
 from __future__ import annotations
 
+import dataclasses
 from unittest.mock import patch
 
 import pytest
@@ -31,7 +32,11 @@ from codemie.repository.cli_analytics.ports import (
     gate_resolver,
     gate_validator,
 )
-from codemie.repository.cli_analytics.postgres.session_binding import SessionDiscard, _resolve_session
+from codemie.repository.cli_analytics.postgres.session_binding import (
+    SessionDiscard,
+    _resolve_session,
+    private_personal,
+)
 from codemie.repository.cli_analytics.scope import SHARED_ORIGINS, normalise_project_origin
 from codemie.service.analytics.cli_analytics_project_gate import (
     DESTINATION_EVENTS,
@@ -49,7 +54,7 @@ from tests.codemie.service.analytics.test_cli_analytics_destination import (  # 
 LINKED = SessionBinding("Linked", "corporate", "linked_folder", "")
 
 
-def gate(user=None, *, subscription="corporate", remote=None, header=None, source=None):
+def gate(user=None, *, subscription="corporate", remote=None, header=None, source=None, **contract):
     return build_evidence_gate(
         user or make_user(default_project="Default"),
         header_project=header,
@@ -58,6 +63,7 @@ def gate(user=None, *, subscription="corporate", remote=None, header=None, sourc
         subscription_type=subscription,
         client_subscription_type=subscription,
         client_policy_version="v1",
+        **contract,
     )
 
 
@@ -560,3 +566,130 @@ def test_a_private_personal_candidate_against_another_legacy_project_is_still_a_
         _resolve_session("s", {"owner_email": None, "legacy_project": "Linked"}, private, 1)
 
     assert exc.value.reason == "session_project_conflict"
+
+
+# --- EPMCDME-16849 item 2: `private_classes` read by every privacy consumer ---
+N0 = {"contract_version": "1", "work_consent": None}
+N0_CONSENT = {"contract_version": "1", "work_consent": "explicit-folder"}
+
+
+@pytest.mark.asyncio
+async def test_n0_unknown_for_a_regular_user_lands_in_the_personal_project_stamped_with_the_contract(world):
+    outcome = await gate(subscription="unknown", header="Linked", source="profile", **N0).resolve_session(
+        None, None, None
+    )
+
+    assert (outcome.project_name, outcome.project_origin, outcome.subscription_type) == (EMAIL, "personal", "unknown")
+    assert (outcome.contract_version, outcome.work_consent) == ("1", None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("anchor", ["bound", "legacy"])
+async def test_n0_unknown_on_a_session_anchored_elsewhere_is_a_conflict_never_adoption(world, anchor):
+    bound, legacy = (dataclasses.replace(LINKED, contract_version="1"), None) if anchor == "bound" else (None, "Linked")
+
+    outcome = await gate(subscription="unknown", **N0).resolve_session(bound, legacy, None)
+
+    assert outcome == "session_project_conflict"
+    world.ensure.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unknown_with_consent_is_the_consent_gate_and_never_adopts_a_legacy_project(world):
+    routed = await gate(subscription="unknown", header="Linked", source="profile", **N0_CONSENT).resolve_session(
+        None, None, None
+    )
+    adopted = await gate(subscription="unknown", header="Linked", **N0_CONSENT).resolve_session(None, "Linked", None)
+
+    assert (routed.project_name, routed.project_origin) == ("Linked", "linked_folder")
+    assert (adopted.project_name, adopted.project_origin) == ("Linked", "linked_folder")
+
+
+@pytest.mark.asyncio
+async def test_n0_unknown_never_validates_a_personal_project_with_a_shared_origin(world):
+    stamped = SessionBinding(EMAIL, "unknown", "linked_folder", "", contract_version="1")
+
+    assert await gate(subscription="unknown", **N0).validate_destination(stamped, True) == "session_project_conflict"
+    consented = SessionBinding(
+        EMAIL, "unknown", "linked_folder", "", contract_version="1", work_consent="explicit-folder"
+    )
+    assert await gate(subscription="unknown", **N0_CONSENT).validate_destination(consented, True) is None
+
+
+@pytest.mark.asyncio
+async def test_legacy_unknown_is_unchanged_by_the_contract_predicate(world):
+    adopted = await gate(subscription="unknown").resolve_session(None, "Linked", None)
+    bound = await gate(subscription="unknown", header="Linked", source="profile").resolve_session(LINKED, None, None)
+
+    assert (adopted.project_name, adopted.project_origin, adopted.contract_version) == (
+        "Linked",
+        "legacy_project",
+        None,
+    )
+    assert bound.project_name == "Linked"
+
+
+def test_private_personal_reads_the_binding_contract():
+    own = {"project_name": "u@example.com", "project_origin": "personal", "route_note": ""}
+    assert private_personal(SessionBinding(subscription_type="unknown", **own)) is False
+    assert private_personal(SessionBinding(subscription_type="unknown", contract_version="1", **own)) is True
+    assert private_personal(SessionBinding(subscription_type="personal", **own)) is True
+    consent = SessionBinding(subscription_type="personal", contract_version="1", work_consent="explicit-folder", **own)
+    assert private_personal(consent) is False
+
+
+# --- EPMCDME-16849 item 5: (contract, consent) compared before anything else ---
+N0_LINKED = SessionBinding("Linked", "corporate", "linked_folder", "", contract_version="1")
+CONSENT_LINKED = SessionBinding(
+    "Linked", "corporate", "linked_folder", "", contract_version="1", work_consent="explicit-folder"
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bound, request_contract",
+    [
+        (LINKED, N0),  # legacy-bound, contract request
+        (N0_LINKED, {}),  # contract-bound, legacy request
+        (N0_LINKED, N0_CONSENT),  # personally bound, consent request
+        (CONSENT_LINKED, N0),  # consent-bound, plain contract request
+    ],
+)
+async def test_a_contract_or_consent_mismatch_with_the_bound_session_is_a_final_discard(world, bound, request_contract):
+    outcome = await gate(header="Linked", source="profile", **request_contract).resolve_session(bound, None, None)
+
+    assert outcome == "session_contract_conflict"
+
+
+@pytest.mark.asyncio
+async def test_a_matching_contract_and_consent_on_a_bound_session_proceeds_and_funding_is_not_compared(world):
+    same_n0 = await gate(**N0).resolve_session(N0_LINKED, None, None)
+    funded = await gate(**N0).resolve_session(
+        SessionBinding("Linked", "corporate", "linked_folder", "", contract_version="1", funding_route="personal"),
+        None,
+        None,
+    )
+
+    assert same_n0.project_name == funded.project_name == "Linked"
+
+
+@pytest.mark.asyncio
+async def test_legacy_l1_on_a_legacy_bound_session_is_unchanged(world):
+    outcome = await gate(header="Linked", source="profile").resolve_session(LINKED, None, None)
+
+    assert isinstance(outcome, SessionBinding) and outcome.project_name == "Linked"
+    assert (outcome.contract_version, outcome.work_consent) == (None, None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("subscription", ["codemie", "corporate"])
+async def test_n0_codemie_and_corporate_resolve_by_todays_route_not_against_the_header_project(world, subscription):
+    """The header is a route hint here (a profile source), never compared to a stored project."""
+    outcome = await gate(subscription=subscription, header="Linked", source="profile", **N0).resolve_session(
+        None, None, None
+    )
+    defaulted = await gate(subscription=subscription, **N0).resolve_session(None, None, None)
+
+    assert (outcome.project_name, outcome.project_origin) == ("Linked", "profile")
+    assert (defaulted.project_name, defaulted.project_origin) == ("Default", "default_project")
+    assert (outcome.contract_version, outcome.work_consent) == ("1", None)

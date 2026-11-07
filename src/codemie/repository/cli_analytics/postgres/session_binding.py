@@ -31,6 +31,7 @@ from typing import Any, cast
 import asyncpg
 
 from codemie.repository.cli_analytics.ports import (
+    REASON_CONTRACT_CONFLICT,
     REASON_OWNER_CONFLICT,
     REASON_PROJECT_CONFLICT,
     REASON_SESSION_BOUNDARY,
@@ -40,7 +41,7 @@ from codemie.repository.cli_analytics.ports import (
     TelemetryPayloadTooLargeError,
 )
 from codemie.repository.cli_analytics.postgres.otlp import DecodedBatch
-from codemie.repository.cli_analytics.scope import ORIGIN_LEGACY_PROJECT
+from codemie.repository.cli_analytics.scope import ORIGIN_LEGACY_PROJECT, private_classes
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,8 @@ RECORD_KINDS = ("logs", "hooks", "usage", "spans", "metrics")
 PERSONAL = "personal"
 # Session guard discards by reason, since this process started (read by tests and diagnostics).
 SESSION_DISCARDS: Counter[str] = Counter()
+# Funding events by bounded reason only (`funding_claim_differs`): a later claim that differs from the stored one.
+FUNDING_EVENTS: Counter[str] = Counter()
 
 # Sorted, so two batches sharing sessions take their locks in one order and cannot deadlock.
 SESSION_LOCKS_SQL = "SELECT pg_advisory_xact_lock(k) FROM unnest($1::bigint[]) AS k ORDER BY k"
@@ -58,6 +61,7 @@ SESSION_LOCKS_SQL = "SELECT pg_advisory_xact_lock(k) FROM unnest($1::bigint[]) A
 # user lookups compare them. No known email = an unavailable legacy identity, which a first binding may adopt.
 BINDINGS_SQL = """
 SELECT s AS session_id, d.owner_email, d.project_name, d.subscription_type, d.project_origin, d.route_note,
+    d.contract_version, d.work_consent, d.funding_route,
     CASE WHEN $2 AND d.owner_email IS NULL THEN coalesce(nullif(d.project_name, ''), (
         SELECT h.codemie_project_name FROM hook_events h WHERE h.session_id = s AND h.codemie_project_name <> ''
         ORDER BY h.ts LIMIT 1)) END AS legacy_project,
@@ -68,10 +72,20 @@ SELECT s AS session_id, d.owner_email, d.project_name, d.subscription_type, d.pr
 FROM unnest($1::text[]) AS s LEFT JOIN session_dims d ON d.session_id = s"""
 
 # The first accepted evidence request binds the session; a bound row only gets updated_at (EPMCDME-16440).
-_BINDING_COLUMNS = ("owner_email", "subscription_type", "project_origin", "route_note", "project_name", "jwt_email")
+_BINDING_COLUMNS = (
+    "owner_email",
+    "subscription_type",
+    "project_origin",
+    "route_note",
+    "project_name",
+    "jwt_email",
+    "contract_version",
+    "work_consent",
+    "funding_route",
+)
 _BIND_SQL = f"""
 INSERT INTO session_dims AS sd (session_id, {", ".join(_BINDING_COLUMNS)}, updated_at)
-SELECT s, $2, $3, $4, $5, p, $2, now() FROM unnest($1::text[], $6::text[]) AS u(s, p)
+SELECT s, $2, $3, $4, $5, p, $2, $7, $8, $9, now() FROM unnest($1::text[], $6::text[]) AS u(s, p)
 ORDER BY s
 ON CONFLICT (session_id) DO UPDATE
     SET {", ".join(f"{c} = EXCLUDED.{c}" for c in _BINDING_COLUMNS)}, updated_at = now()
@@ -113,6 +127,18 @@ def same(a: str | None, b: str | None) -> bool:
     return (a or "").lower() == (b or "").lower()
 
 
+def same_contract(binding: SessionBinding, contract_version: str | None, work_consent: str | None) -> bool:
+    """A bound session's stored (contract, consent) must equal the request's; legacy L1 is (None, None). Funding is
+    never compared."""
+    return (binding.contract_version, binding.work_consent) == (contract_version, work_consent)
+
+
+def note_funding(bound: SessionBinding, contract_version: str | None, funding_route: str | None) -> None:
+    """A later claim of a bound new-contract session that differs from the first is ignored and counted."""
+    if contract_version and (bound.funding_route or "unknown") != funding_route:
+        FUNDING_EVENTS["funding_claim_differs"] += 1
+
+
 def same_user(a: str | None, b: str | None) -> bool:
     """Emails identify a user case-insensitively: the user lookups compare `lower(email)` (user_repository)."""
     return bool(a) and bool(b) and a.strip().lower() == b.strip().lower()  # type: ignore[union-attr]
@@ -120,7 +146,8 @@ def same_user(a: str | None, b: str | None) -> bool:
 
 def private_personal(binding: SessionBinding) -> bool:
     """The owner's personal project (origin `personal`); a Personal-paid binding on a work project is not."""
-    return binding.subscription_type == PERSONAL and binding.project_origin == PERSONAL
+    classes = private_classes(binding.contract_version, binding.work_consent)
+    return binding.subscription_type in classes and binding.project_origin == PERSONAL
 
 
 def check_boundary(batch: DecodedBatch, expected: str | None) -> None:
@@ -160,8 +187,22 @@ def stored_binding(row: Any) -> SessionBinding | None:
     if not row or not row["owner_email"]:
         return None
     return SessionBinding(
-        row["project_name"] or "", row["subscription_type"] or "", row["project_origin"] or "", row["route_note"] or ""
+        row["project_name"] or "",
+        row["subscription_type"] or "",
+        row["project_origin"] or "",
+        row["route_note"] or "",
+        contract_version=_get(row, "contract_version"),
+        work_consent=_get(row, "work_consent"),
+        funding_route=_get(row, "funding_route"),
     )
+
+
+def _get(row: Any, key: str) -> str | None:
+    """A column of a binding row; a row read without it (a dict built by an older caller) reads NULL."""
+    try:
+        return row[key]
+    except KeyError:
+        return None
 
 
 def check_owner(sessions: list[str], dims: dict[str, Any], user_email: str) -> None:
@@ -199,6 +240,10 @@ def _resolve_session(
     on an unbound session (unchanged). Raises SessionDiscard when a Personal request meets another project."""
     conflict = SessionDiscard(REASON_PROJECT_CONFLICT, session_id, session_count - 1)
     if (stored := stored_binding(d)) is not None:
+        if binding is None and not same_contract(stored, None, None):
+            # A legacy request carries (None, None): it never appends to a contract-bound session. An evidence
+            # request's own (contract, consent) is compared by its gate's `resolve_session`.
+            raise SessionDiscard(REASON_CONTRACT_CONFLICT, session_id, session_count - 1)
         if binding is not None and private_personal(binding) and not same(stored.project_name, binding.project_name):
             raise conflict  # Personal never joins a shared session
         return _with_client_fields(stored, binding), True
@@ -206,10 +251,11 @@ def _resolve_session(
         return None
     legacy = d.get("legacy_project")
     stored = binding
-    if legacy and private_personal(binding):
+    if legacy and (private_personal(binding) or binding.work_consent):
         if not same(legacy, binding.project_name):
             raise conflict
-        # The owner's own personal project is the legacy anchor: the private origin stays, never a shared one.
+        # The owner's own personal project is the legacy anchor: the private origin stays, never a shared one. A
+        # consent binding (N1) names its project explicitly: canonical name and `linked_folder` stay, never adopted.
     elif legacy:
         # All but private Personal join the legacy project, whether or not the candidate names it: the candidate's
         # origin and note describe a route the legacy rows do not prove, so every classification reads
@@ -349,6 +395,7 @@ async def bind(
         first = effective[to_bind[0]]  # one evidence request: one type, origin and note for all
         projects = [effective[s].project_name for s in to_bind]
         args = (user_email, first.subscription_type, first.project_origin, first.route_note, projects)
+        args += (first.contract_version, first.work_consent, first.funding_route)
         await conn.execute(_BIND_SQL, to_bind, *args)
     if bound:
         await conn.execute(_TOUCH_BOUND_SQL, bound)

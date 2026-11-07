@@ -1,0 +1,108 @@
+{
+ "schema": 1,
+ "branch": "EPMCDME-16849_backend-capability",
+ "head": "45b2eaf2b43332a9003a6cec53233926092a9698",
+ "gates_ran_at": "bb83b827cc08a2a036144b7df8acd4d598a9ac21",
+ "head_note": "HEAD advanced by one commit (45b2eaf2b) that changes only tests/codemie/rest_api/router_guards/baselines/openapi.json (one $ref restored to the namespaced cli_analytics PaginationMetadata). Passing gates were NOT rerun for it; the OpenAPI components comparison was checked once against live (identical).",
+ "accepted_exception": "Controller accepted feature.verification WITH explicit limitations for the backend handoff only (not MR/merge readiness): (1) full OpenAPI guard FAIL: 24 LLM-proxy path entries missing live (codemie_enterprise absent in this Windows env; same on baseline 25a3458) and test_baseline::test_matching_live_object_passes fails (Windows newline translation in Path.write_text, source-identified, not baseline-executed); (2) 7 live test_live_dispatch_gate failures on PG14/PG17, 2 proven on baseline 25a3458, 5 same-cause by inference only; (3) live-PG ran only the affected files; no real CLI/E2E. Raw FAIL/BLOCKED entries below are preserved unchanged.",
+ "runner": "poetry",
+ "started_at": "2026-11-05",
+ "completed_at": "2026-11-05",
+ "status": "BLOCKED",
+ "drift_detected": false,
+ "gates": [
+  {
+   "id": "lint",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 9177,
+   "command": "make ruff",
+   "exit_code": 0
+  },
+  {
+   "id": "build",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 23909,
+   "command": "make build",
+   "exit_code": 0
+  },
+  {
+   "id": "license",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 5395,
+   "command": "make license-check",
+   "exit_code": 0,
+   "notes": "2997 files, 0 missing headers"
+  },
+  {
+   "id": "unit-targeted",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 46027,
+   "command": "pytest 5 review-fix files with pyroscope stub",
+   "exit_code": 0,
+   "notes": "230 passed. T8 selection (685 passed/11 skipped) reused from earlier run, not rerun."
+  },
+  {
+   "id": "openapi-guard",
+   "source": "guide",
+   "status": "FAIL",
+   "duration_ms": 36195,
+   "command": "PYTHONPATH=<worktree>/src;<worktree> C:/codemie-dev/_local/venv-16025/Scripts/python.exe <scratchpad>/runguard.py (pytest -n 0 tests/codemie/rest_api/router_guards, OS-env wrapper for app_probe only)",
+   "exit_code": 1,
+   "notes": "Guard actually ran (venv-16025, Python 3.12.10, read-only, msgraph.generated.models imports). codemie.__file__ = worktree src\\codemie\\__init__.py; guarded_app = worktree tests\\...\\guarded_app.py; HEAD bb83b827c. Result: 2 failed, 44 passed (test_openapi_snapshot::test_openapi_matches_baseline and test_baseline::test_matching_live_object_passes). Live vs committed baselines/openapi.json: (1) BRANCH-SPECIFIC: components.schemas.LocalAnalyticsRepositoriesData.pagination $ref is '#/components/schemas/PaginationMetadata' in baseline but live emits '#/components/schemas/codemie__rest_api__models__cli_analytics__PaginationMetadata' (two PaginationMetadata classes, models/analytics.py and models/cli_analytics.py; schema naming flipped; same exact-baseline run on 25a3458 shows no schema change); no paths/schemas added or removed otherwise. (2) ENVIRONMENT, also on baseline 25a3458 with same venv/wrapper: 17+ LLM-proxy top-level paths (/chat/completions, /completions, /embeddings, /health, /messages, /models..., /responses, /v1/...) absent from the live app though present in committed baseline. Snapshot not regenerated. Diff (1) must be resolved or baseline regenerated and reviewed."
+  },
+  {
+   "id": "live-pg-pg14",
+   "source": "guide",
+   "status": "FAIL",
+   "duration_ms": 185170,
+   "command": "pytest test_live_dispatch_gate.py test_live_consent_scope.py test_live_funding_buckets.py test_binding_contract_columns.py test_live_session_binding.py on podman postgres:14 (epmcdme16849-live-pg14, 127.0.0.1:55514, password redacted)",
+   "exit_code": 1,
+   "notes": "171 passed, 7 failed, 0 skipped. All 7 failures are in test_live_dispatch_gate.py (4x duplicated-inline-slash TypeError missing kw-only 'scope' at :3146; :3187 and :596 same TypeError; 1x otlp.py:464 OSError Errno 22 fromtimestamp year-9999 on Windows). Consent/funding/binding live files all passed. Failures NOT reproduced on baseline: not labeled pre-existing. Baseline diagnosis on PG17 (podman epmcdme16849-live-pg17): test_live_dispatch_gate.py::test_live_a_session_that_only_dispatches_a_factory_subagent_is_a_factory_session (TypeError missing kw-only 'scope', line 596) and ::test_live_an_agent_end_on_the_last_calendar_day_queues_no_day_after_it (OSError Errno 22, otlp.py:464) both FAIL on baseline 25a3458 (pytest exit 1, 2 failed): existing failures. Test file, otlp.py, filters.py byte-identical to 25a3458; reader.py differs by +26 lines (funding bucket read) unrelated to scope. The other 5 failures share the same missing-scope TypeError from the same unchanged test file; not individually baseline-executed: same-cause SOURCE-BACKED INFERENCE (same unchanged test file and filters.py)."
+  },
+  {
+   "id": "live-pg-pg17",
+   "source": "guide",
+   "status": "FAIL",
+   "duration_ms": 175720,
+   "command": "same on postgres:17 (epmcdme16849-live-pg17, 127.0.0.1:55517)",
+   "exit_code": 1,
+   "notes": "171 passed, 7 failed, 0 skipped; same 7 dispatch_gate failures as pg14. Baseline diagnosis on PG17 (podman epmcdme16849-live-pg17): test_live_dispatch_gate.py::test_live_a_session_that_only_dispatches_a_factory_subagent_is_a_factory_session (TypeError missing kw-only 'scope', line 596) and ::test_live_an_agent_end_on_the_last_calendar_day_queues_no_day_after_it (OSError Errno 22, otlp.py:464) both FAIL on baseline 25a3458 (pytest exit 1, 2 failed): existing failures. Test file, otlp.py, filters.py byte-identical to 25a3458; reader.py differs by +26 lines (funding bucket read) unrelated to scope. The other 5 failures share the same missing-scope TypeError from the same unchanged test file; not individually baseline-executed: same-cause SOURCE-BACKED INFERENCE (same unchanged test file and filters.py)."
+  },
+  {
+   "id": "migration-pg14",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 0,
+   "command": "mig.py (run_migrations; alembic downgrade -1; run_migrations x2)",
+   "exit_code": 0,
+   "notes": "head a1c1a0000010; downgrade -> a1c1a0000007 dropping contract_version, funding_route, work_consent; re-upgrade x2 restores columns."
+  },
+  {
+   "id": "migration-pg17",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 0,
+   "command": "same",
+   "exit_code": 0,
+   "notes": "identical result"
+  },
+  {
+   "id": "gitleaks",
+   "source": "guide",
+   "status": "PASS",
+   "duration_ms": 20768,
+   "command": "podman run ghcr.io/gitleaks/gitleaks:v8.30.1 dir --no-banner --verbose --redact --config=/workspace/.gitleaks.toml /workspace",
+   "exit_code": 0,
+   "notes": "no leaks found; run through Podman instead of Docker"
+  }
+ ],
+ "failures": {
+  "openapi-guard": "see g-openapi.local.log and g-openapi-baseline.local.log",
+  "live-pg-pg14": "see g-live-pg14.local.log",
+  "live-pg-pg17": "see g-live-pg17.local.log"
+ }
+}
