@@ -36,6 +36,8 @@ from codemie.repository.spend_logs_repository import (
     _ledger_branch,
     _metric_store_branch,
     _person_total_predicate,
+    _project_scoped_match,
+    _project_scoped_match_any,
     _require_class_groupable_scope,
     _require_union_dimension,
     composed_predicate,
@@ -182,6 +184,46 @@ class TestTheProjectHolders:
         assert "attr_project IN " in rendered
         assert "acme" in rendered and "beta" in rendered
         assert "attr_form = 'project_scoped'" in rendered
+
+
+class TestTheProjectHoldersExcludeRowsThatChargedNoCustomer:
+    HOLDERS = [
+        ProjectHolder("acme", BudgetCategory.PLATFORM),
+        ProjectMemberHolder("acme", BudgetCategory.PLATFORM, USER),
+        ProjectGroupHolder(frozenset({"acme", "beta"}), BudgetCategory.PLATFORM),
+    ]
+
+    @pytest.mark.parametrize("holder", HOLDERS, ids=["project", "member", "group"])
+    def test_the_holder_drops_rows_billed_to_no_customer(self, holder):
+        assert "end_user NOT IN ('N/A', '')" in sql(predicate_for_holder(holder))
+
+    @pytest.mark.parametrize("holder", HOLDERS, ids=["project", "member", "group"])
+    def test_the_holder_does_not_match_on_a_customer_prefix(self, holder):
+        assert "LIKE" not in sql(predicate_for_holder(holder))
+
+    def test_the_project_holder_keeps_its_project_and_category_conjuncts(self):
+        rendered = sql(predicate_for_holder(ProjectHolder("acme", BudgetCategory.PLATFORM)))
+        assert "attr_form = 'project_scoped'" in rendered
+        assert "attr_project = 'acme'" in rendered
+        assert "attr_category = 'platform'" in rendered
+
+    def test_the_member_holder_keeps_its_user_conjunct(self):
+        rendered = sql(predicate_for_holder(ProjectMemberHolder("acme", BudgetCategory.PLATFORM, USER)))
+        assert "attr_project = 'acme'" in rendered
+        assert f"attr_user_id = '{USER}'" in rendered
+
+    def test_the_group_holder_keeps_its_project_set(self):
+        rendered = sql(predicate_for_holder(ProjectGroupHolder(frozenset({"acme"}), BudgetCategory.PLATFORM)))
+        assert "attr_project IN " in rendered
+        assert "attr_category = 'platform'" in rendered
+
+    def test_the_shared_project_matches_stay_free_of_the_customer_term(self):
+        assert "end_user" not in sql(_project_scoped_match("acme"))
+        assert "end_user" not in sql(_project_scoped_match_any(["acme"]))
+
+    def test_the_personal_holder_rendering_is_unchanged(self):
+        rendered = sql(predicate_for_holder(PersonalHolder(USER, BudgetCategory.PLATFORM, None)))
+        assert rendered.count("end_user NOT IN ('N/A', '')") == 1
 
 
 class TestThePersonTotalIsTheOneHolderThatSpansBothPots:

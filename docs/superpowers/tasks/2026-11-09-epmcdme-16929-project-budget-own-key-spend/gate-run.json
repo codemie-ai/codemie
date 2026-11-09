@@ -1,0 +1,104 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-16929_project-budget-own-key-spend",
+  "head": "6fdedf4bcd6df7b6f0396bf6fc6c179c536c73d4",
+  "runner": "poetry",
+  "started_at": "2026-11-09T11:54:59.841692+00:00",
+  "completed_at": "2026-11-09T11:54:59.841692+00:00",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 15000,
+      "command": "poetry run ruff format --check && poetry run ruff check",
+      "exit_code": 0,
+      "notes": "Non-mutating equivalent of 'make ruff' (run constraint: no source modification); 3434 files already formatted, ruff check clean. Same checks as the pre-commit hook."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 10000,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 3000,
+      "command": "make license-check",
+      "exit_code": 0,
+      "notes": "Also covers the pre-commit license hook step."
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 35000,
+      "command": "make gitleaks",
+      "exit_code": 0,
+      "notes": "no leaks found (working tree scan via Docker). The staged-diff hook codemie-gitleaks has nothing staged."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 269000,
+      "command": "make test",
+      "exit_code": 2,
+      "notes": "111 failed, 30792 passed, 588 skipped, 217 errors. None of the 4 changed test files fail (205 passed when run alone). Failures look environmental: ModuleNotFoundError codemie_enterprise (tests/enterprise, test_attribution mirror check), marketplace tests erroring at setup, live cli_analytics postgres tests failing; no spend/budget file other than tests/codemie/service/spend/test_attribution.py (codemie_enterprise missing) is affected. Not compared against a base-branch run."
+    },
+    {
+      "id": "alembic-heads",
+      "source": "ci",
+      "status": "PASS",
+      "duration_ms": 500,
+      "command": "python3 scripts/check_alembic_heads.py --merge-with origin/main",
+      "exit_code": 0,
+      "notes": "Declared in .gitlab-ci.yml and pre-push hook. 'make check-alembic' itself fails locally with 'python: No such file or directory' (no bare python on PATH), so it was run with python3 as the pre-push hook does."
+    },
+    {
+      "id": "live-sql",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make test-cli-analytics-live",
+      "exit_code": null,
+      "notes": "Diff does not touch src/codemie/repository/cli_analytics/postgres/."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make sonar-local",
+      "exit_code": null,
+      "notes": "SONAR_TOKEN not set (scripts/sonar/run-local-sonar.js logs 'Skipping Sonar scan because SONAR_TOKEN is not set.'); set SONAR_TOKEN (or in .env.local) to run. Also pre-push hook step, opt-in via CODEMIE_PREPUSH_ENABLED."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "exit_code": null,
+      "notes": "Requires running docker stack and MR; not opened by this run."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make coverage",
+      "exit_code": null,
+      "notes": "Coverage not requested."
+    }
+  ],
+  "failures": {
+    "unit": "ERROR tests/codemie/rest_api/routers/test_marketplace_approval_negative.py::test_approve_publishes_and_indexes_the_control_case\nERROR tests/codemie/rest_api/routers/test_marketplace_approval_negative.py::test_a_failed_deindex_is_reported_rather_than_reported_as_success\nERROR tests/codemie/rest_api/routers/test_marketplace_approval_negative.py::test_a_non_admin_is_403_on_every_moderation_route[approve]\nERROR tests/codemie/rest_api/routers/test_marketplace_approval_negative.py::test_a_non_admin_is_403_on_every_moderation_route[reject]\nERROR tests/codemie/rest_api/routers/test_marketplace_approval_negative.py::test_a_non_admin_is_403_on_every_moderation_route[force-publish]\nERROR tests/codemie/rest_api/routers/test_marketplace_approval_negative.py::test_a_non_admin_is_403_on_every_moderation_route[withdraw]\nERROR tests/codemie/rest_api/routers/test_marketplace_approval_negative.py::test_an_unauthenticated_caller_is_401_on_every_moderation_route[approve]\nERROR tests/codemie/rest_api/routers/test_marketplace_approval_negative.py::test_an_unauthenticated_caller_is_401_on_every_moderation_route[reject]\nERROR tests/codemie/rest_api/routers/test_marketplace_approval_negative.py::test_an_unauthenticated_caller_is_401_on_every_moderation_route[force-publish]\nERROR tests/codemie/rest_api/routers/test_marketplace_approval_negative.py::test_an_unauthenticated_caller_is_401_on_every_moderation_route[withdraw]\nERROR tests/codemie/rest_api/routers/test_marketplace_approval_negative.py::test_the_recorded_actor_is_the_principal_not_a_body_field[approve]\nERROR tests/codemie/rest_api/routers/test_marketplace_approval_negative.py::test_the_recorded_actor_is_the_principal_not_a_body_field[reject]\nERROR tests/codemie/rest_api/routers/test_marketplace_approval_negative.py::test_the_recorded_actor_is_the_principal_not_a_body_field[force-publish]\nERROR tests/codemie/rest_api/routers/test_marketplace_approval_negative.py::test_the_recorded_actor_is_the_principal_not_a_body_field[withdraw]\nERROR tests/codemie/rest_api/routers/test_marketplace_approval_negative.py::test_an_owner_may_submit_for_review_but_cannot_reach_approved\nERROR tests/codemie/rest_api/routers/test_marketplace_approval_negative.py::test_overview_emits_cleanup_reasons_from_the_persisted_verdicts\nERROR tests/codemie/rest_api/routers/test_marketplace_approval_negative.py::test_a_second_audit_run_is_409_and_does_not_launch_a_competing_run\nERROR tests/codemie/rest_api/routers/test_marketplace_approval_negative.py::test_overview_stays_under_a_second_while_an_audit_is_running\nERROR tests/codemie/rest_api/routers/test_marketplace_approval_negative.py::test_a_rerun_is_idempotent_and_leaves_the_status_clean\nERROR tests/codemie/rest_api/routers/test_marketplace_approval_negative.py::test_an_audit_run_does_not_mutate_marketplace_status\nERROR tests/codemie/rest_api/routers/test_marketplace_draft_default.py::test_create_persists_draft_not_approved\nERROR tests/codemie/rest_api/routers/test_marketplace_draft_default.py::test_the_column_server_default_is_draft\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_cleanup_paginates_in_sql\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_cleanup_pages_do_not_overlap\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_cleanup_excludes_assistants_withdrawn_since_the_audit_ran\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_cleanup_excludes_assistants_rejected_since_the_audit_ran\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_catalogue_facet_scope_matches_the_adapter\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_facets_include_reason_tier_bucket_rule\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_facet_tiers_buckets_and_rules_are_filterable_too\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_cleanup_row_is_flat_for_the_frontend\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_bad_filter_value_is_422[bucket]\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_bad_filter_value_is_422[tier]\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_bad_filter_value_is_422[reason]\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_bad_filter_value_is_422[rule]\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_empty_bucket_still_means_no_bucket_filter\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_verified_bucket_included_in_all\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_actor_cannot_be_spoofed\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_actor_omitted_still_records_the_real_user\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_overview_emits_pending_block\nERROR tests/codemie/rest_api/routers/test_marketplace_management_contract.py::test_adapter_scope_excludes_private_approved_rows\nERROR tests/codemie/rest_api/routers/test_publish_bypass.py::test_bypass_is_denied_for_non_admin_on_critical\nERROR tests/codemie/rest_api/routers/test_publish_bypass.py::test_bypass_never_skips_deterministic_gates\nERROR tests/codemie/rest_api/routers/test_publish_bypass.py::test_admin_bypass_waives_only_optional_findings\nERROR tests/codemie/rest_api/routers/test_publish_runs_deterministic_gates.py::test_critical_gate_blocks_publish\nERROR tests/codemie/rest_api/routers/test_publish_runs_deterministic_gates.py::test_optional_gate_does_not_block\nERROR tests/codemie/rest_api/routers/test_publish_runs_deterministic_gates.py::test_gate_results_are_persisted_with_the_submission\nERROR tests/codemie/rest_api/routers/test_publish_runs_deterministic_gates.py::test_pending_and_detail_agree_after_a_post_submit_edit\n= 111 failed, 30792 passed, 588 skipped, 5 xfailed, 582 warnings, 217 errors in 263.37s (0:04:23) =\nmake: *** [test] Error 1\nexit 2"
+  }
+}

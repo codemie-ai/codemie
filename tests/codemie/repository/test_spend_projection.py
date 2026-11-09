@@ -50,7 +50,7 @@ from codemie.repository.spend_projection import (
 )
 from codemie.service.budget.budget_enums import BudgetCategory
 from codemie.service.spend.coverage import TimeRange
-from codemie.service.spend.ledger import PersonalHolder, bucket_origin
+from codemie.service.spend.ledger import PersonalHolder, ProjectHolder, ProjectMemberHolder, bucket_origin
 from codemie.service.spend.traffic_class import request_resolved, request_unresolved
 
 IDS = ("a", "b")
@@ -232,6 +232,21 @@ class TestProjectedStatementFallsBackToRawWhole:
         statement = sql(projected_statement(ALIGNED, fixed(shape)))
         assert "FROM litellm_spend_hourly" in statement
         assert "(litellm_spend_hourly.end_user NOT LIKE 'codemie:project:' || '%%' ESCAPE '/')" in statement
+        assert "litellm_spend_hourly.end_user != ALL (ARRAY['N/A', ''])" in statement
+
+    @pytest.mark.parametrize(
+        "holder",
+        [
+            ProjectHolder("acme", BudgetCategory.PLATFORM),
+            ProjectMemberHolder("acme", BudgetCategory.PLATFORM, "user-1"),
+        ],
+        ids=["project", "member"],
+    )
+    def test_a_project_holder_is_answered_from_the_projection_without_no_customer_rows(self, holder):
+        shape = ReadShape(where=predicate_for_holder(holder), aggregates=(Aggregate(label="spent"),))
+
+        statement = sql(projected_statement(ALIGNED, fixed(shape)))
+        assert "FROM litellm_spend_hourly" in statement
         assert "litellm_spend_hourly.end_user != ALL (ARRAY['N/A', ''])" in statement
 
     def test_a_named_execution_is_answered_raw(self):

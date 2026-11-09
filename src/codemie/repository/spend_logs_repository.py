@@ -255,13 +255,18 @@ def predicate_for_holder(holder: BudgetHolder) -> ColumnElement[bool]:
     **Two pots exist today and these predicates keep them apart.** LiteLLM already holds a
     person's spend in two different customers: a personal one, and a project one. A call made
     with a project in context lands in the *project* pot only - it does not also consume the
-    caller's personal budget.
+    caller's personal budget. A project pot also excludes rows that charged no customer - the
+    own-credentials bypass - because no project customer's counter holds them.
     """
     match holder:
         case PersonalHolder():
             return _personal_predicate(holder)
         case ProjectHolder():
-            return and_(_project_scoped_match(holder.project), Row.attr_category == holder.category.value)
+            return and_(
+                _project_scoped_match(holder.project),
+                Row.attr_category == holder.category.value,
+                _charged_a_customer(),
+            )
         case ProjectMemberHolder():
             # Keyed on project AND user id. A pre-rollout principal row carries neither, which is
             # why a figure for this holder reaching below the identity floor is a mixed quantity
@@ -270,16 +275,22 @@ def predicate_for_holder(holder: BudgetHolder) -> ColumnElement[bool]:
                 _project_scoped_match(holder.project),
                 Row.attr_category == holder.category.value,
                 Row.attr_user_id == holder.user_id,
+                _charged_a_customer(),
             )
         case ProjectGroupHolder():
             return and_(
                 Row.attr_form == _PROJECT_SCOPED,
                 Row.attr_project.in_(tuple(holder.projects)),
                 Row.attr_category == holder.category.value,
+                _charged_a_customer(),
             )
         case PersonTotalHolder():
             return _person_total_predicate(holder)
     raise TypeError(f"no predicate is defined for holder {type(holder).__name__}")
+
+
+def _charged_a_customer() -> ColumnElement[bool]:
+    return Row.end_user.notin_(_NO_CUSTOMER)
 
 
 def _project_scoped_match(project: str) -> ColumnElement[bool]:

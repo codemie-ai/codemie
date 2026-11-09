@@ -1,0 +1,61 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.final",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "Compact review: 0 findings"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "Compact review: 0 findings"
+    }
+  ],
+  "reviewed_head": "6fdedf4bcd6df7b6f0396bf6fc6c179c536c73d4",
+  "rounds": [
+    "final"
+  ],
+  "rationale": "Compact profile: only the edge-case lens ran; acceptance skipped (no spec), so confidence is low. The one edge-case claim (NULL end_user rows dropping from project figures) was dismissed: the column is nullable, but a NULL end_user charged no customer and the module documents it as outside every customer's figure, matching the fix's intent. 1 dismissed, 0 deferred.",
+  "confidence": "low",
+  "check_confidence": null,
+  "risk_flags": [],
+  "open": 0,
+  "closed": {
+    "fixed": 0,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "na",
+      "notes": "Standards audit not expected for this review profile."
+    },
+    {
+      "kind": "code-quality",
+      "status": "na",
+      "notes": "Standards audit not expected for this review profile."
+    },
+    {
+      "kind": "security",
+      "status": "na",
+      "notes": "Standards audit not expected for this review profile."
+    }
+  ],
+  "final_round": {
+    "decision": "approve",
+    "rationale": "Compact profile: only the edge-case lens ran; acceptance skipped (no spec), so confidence is low. The one edge-case claim (NULL end_user rows dropping from project figures) was dismissed: the column is nullable, but a NULL end_user charged no customer and the module documents it as outside every customer's figure, matching the fix's intent. 1 dismissed, 0 deferred.",
+    "confidence": "low",
+    "risk_flags": []
+  }
+}

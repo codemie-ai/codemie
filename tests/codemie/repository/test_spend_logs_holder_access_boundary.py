@@ -84,7 +84,7 @@ ALICE_TOTAL = PersonTotalHolder(user_id=ALICE, aliases=None)
 PROJECT_A = ProjectHolder(project="A", category=BudgetCategory.PLATFORM)
 
 
-def _project_row(request_id: str, user_id: str, project: str, spend: str) -> Row:
+def _project_row(request_id: str, user_id: str, project: str, spend: str, end_user: str | None = None) -> Row:
     """One attributed, project-scoped spend row - the project pot."""
     return Row(
         request_id=request_id,
@@ -100,6 +100,7 @@ def _project_row(request_id: str, user_id: str, project: str, spend: str) -> Row
         attr_project=project,
         attr_category=BudgetCategory.PLATFORM.value,
         attr_user_id=user_id,
+        end_user=end_user or f"codemie:project:{project}:category:platform:user:{user_id}",
         codemie_request_id=request_id,
     )
 
@@ -477,3 +478,73 @@ class TestABatchPastOneChunkAgreesWithTheSingleHolderReadOnEveryMatchPath:
 
         assert batched == {holder: _single(every_match_path, holder, None) for holder in holders}
         assert sum(1 for figure in batched.values() if figure) == 9
+
+
+OWN_CUSTOMER = "alice@example.com"
+ALICE_PERSONAL = PersonalHolder(user_id=ALICE, category=BudgetCategory.PLATFORM, aliases=None)
+ALICE_IN_A = ProjectMemberHolder(project="A", category=BudgetCategory.PLATFORM, user_id=ALICE)
+
+
+def _principal_scoped_row(request_id: str, user_id: str, spend: str, end_user: str) -> Row:
+    return Row(
+        request_id=request_id,
+        start_time=IN_PERIOD,
+        end_time=IN_PERIOD,
+        spend=Decimal(spend),
+        status="success",
+        prompt_tokens=0,
+        completion_tokens=0,
+        total_tokens=0,
+        attr_source="explicit",
+        attr_form="principal",
+        attr_project=None,
+        attr_category=BudgetCategory.PLATFORM.value,
+        attr_user_id=user_id,
+        end_user=end_user,
+        codemie_request_id=request_id,
+    )
+
+
+@pytest.fixture
+def own_key_session():
+    """One user, one period, and every way a call can be charged:
+
+    | row | form | end_user | spend |
+    | --- | --- | --- | --- |
+    | project-funded member customer in A | project_scoped | codemie:project:A:... | 1.00 |
+    | own key in A | project_scoped | N/A | 2.00 |
+    | own key in A | project_scoped | empty | 4.00 |
+    | stopped budget in A, own customer | project_scoped | alice@example.com | 8.00 |
+    | personal project, own key | principal | N/A | 16.00 |
+    | personal project, own customer | principal | alice@example.com | 32.00 |
+    """
+    engine = create_engine("sqlite://")
+    Row.metadata.create_all(engine, tables=[Row.__table__])
+    with Session(engine) as sync_session:
+        sync_session.add_all(
+            [
+                _project_row("funded", ALICE, "A", "1.00"),
+                _project_row("own-key-na", ALICE, "A", "2.00", end_user="N/A"),
+                Row(**{**_project_row("own-key-empty", ALICE, "A", "4.00").__dict__, "end_user": ""}),
+                _project_row("stopped", ALICE, "A", "8.00", end_user=OWN_CUSTOMER),
+                _principal_scoped_row("personal-own-key", ALICE, "16.00", "N/A"),
+                _principal_scoped_row("personal-own-customer", ALICE, "32.00", OWN_CUSTOMER),
+            ]
+        )
+        sync_session.commit()
+        yield _SyncSessionAsAsync(sync_session)
+
+
+class TestSpendBilledToNoCustomerIsNotAProjectBudgetFigure:
+    def test_the_project_holder_counts_project_funded_and_stopped_budget_rows_only(self, own_key_session) -> None:
+        assert _batched(own_key_session, PROJECT_A, None) == Decimal("9.00")
+
+    def test_the_member_holder_counts_the_same_rows_for_that_member(self, own_key_session) -> None:
+        assert _batched(own_key_session, ALICE_IN_A, None) == Decimal("9.00")
+
+    def test_the_personal_holder_keeps_its_own_customer_rows_and_never_the_own_key_ones(self, own_key_session) -> None:
+        assert _batched(own_key_session, ALICE_PERSONAL, None) == Decimal("40.00")
+
+    @pytest.mark.parametrize("holder", [PROJECT_A, ALICE_IN_A, ALICE_PERSONAL], ids=["project", "member", "personal"])
+    def test_the_batch_agrees_with_the_single_holder_read(self, own_key_session, holder) -> None:
+        assert _batched(own_key_session, holder, None) == _single(own_key_session, holder, None)
