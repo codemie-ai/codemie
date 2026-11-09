@@ -1,0 +1,184 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.check",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "User approved check round; CR-001 fixed (Option B), verify.py B/C now pass"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "CR-001: user chose to fix key selection: personal fallback must not authenticate with the project premium key (non-personal credentials never sent; app key used)"
+    },
+    {
+      "gate": "code-review.check",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "User approved check round; CR-001 fixed (Option B), verify.py B/C now pass"
+    }
+  ],
+  "reviewed_head": "1af0214569905372a5f1f0a639a09e7b5e6c3d57",
+  "rounds": [
+    "final",
+    "check"
+  ],
+  "rationale": "Targeted check (evidence-only): CR-001 (decision) resolved by the recorded human decision at the code-review.final gate (Option B: a non-personal project premium key never authenticates a personal fallback), mapped in fix_evidence with a non-empty rationale. The fix-up's uncommitted proxy_router.py/test edits were seen to match that outcome but are not re-reviewed as code here; DF-001 stays deferred and is not re-checked.",
+  "confidence": "low",
+  "check_confidence": "high",
+  "risk_flags": [
+    "breaking-change"
+  ],
+  "open": 0,
+  "closed": {
+    "fixed": 0,
+    "moot": 0,
+    "decided": 1,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "decision",
+      "severity": "critical",
+      "triage": "decision_needed",
+      "file": "src/codemie/enterprise/litellm/proxy_router.py",
+      "line": 1001,
+      "title": "Project premium-key fallback names no project",
+      "problem": "For a premium model with no personal key, resolve_litellm_user_credentials returns the project's premium-models key (codemie:project:<p>:category:premium_models, is_personal=False). That skips the bypass at :945 and runs budget routing. When no project runtime is selected (admin non-member, no allocation in the category, dispatch None), :1001 now sets SPEND_ATTRIBUTION_PROJECT=None, but _apply_proxy_auth_header (:334-336) still authenticates with the project key and _create_global_budget_body_stream sets litellm_customer_id to the person. Before this change the header named the project on this path.",
+      "impact": "The project's LiteLLM key is charged but the spend row names no project, so the project ledger undercounts its key spend (AC4 partial). This also contradicts the new spend_logs_metadata.py contract that codemie_project names the project whose key was charged. Reachability confirmed: a live path from any premium-model proxy call made without a personal LiteLLM key.",
+      "recommendation": "Decide the intended attribution when a fallback call uses the project premium key. Option A: set request_info[SPEND_ATTRIBUTION_PROJECT] = project_name if user_credentials is not None and not user_credentials.is_personal else None on the fallback branch. That matches AC4 and the new contract, but the row then counts in both the project and personal figures because end_user is the person, which conflicts with AC2 and the :425 docstring. Option B: keep the project unnamed and stop authenticating personal-fallback calls with the project premium key. Add a parametrized test case for the chosen behaviour.",
+      "status": "decided",
+      "check_notes": "Mapped decision.outcome Option B with rationale; matches HITL code-review.final record in decisions.jsonl; command record head equals HEAD 93308c2.",
+      "fix": {
+        "change": "_apply_proxy_auth_header uses resolved user credentials only when is_personal; non-personal project premium key falls through to the app key on personal fallback",
+        "test": "tests/enterprise/litellm/test_spend_logs_metadata_transport.py::TestAProjectPremiumKeyNeverAuthenticatesAPersonalFallback (personal_fallback_with_project_premium_key, funded_premium_member, own_credentials_bypass)"
+      },
+      "decision": {
+        "outcome": "Option B: send the caller's resolved credentials only when they are personal; a non-personal project premium key never authenticates a call, so a personal fallback goes out with the app key and codemie_project stays absent.",
+        "rationale": "Keeps AC2 (fallback spend counts in the personal budget only) and the codemie_project contract consistent: the key LiteLLM charges now always matches the project the row names, so no project key is charged without its ledger seeing the row."
+      }
+    }
+  ],
+  "deferred": [
+    {
+      "id": "DF-001",
+      "severity": "major",
+      "file": "src/codemie/enterprise/litellm/proxy_router.py",
+      "line": 437,
+      "title": "Funded project named like caller loses project",
+      "problem": "On a funded project-runtime call to a shared project whose name equals the caller's username or email, the username/email filter drops codemie_project; the row lands principal with a project-member end_user.",
+      "preexisting": "The pre-change _proxy_project_in_context applied the same username/email filter to the same project name on every path."
+    }
+  ],
+  "coverage_graded_at": "final",
+  "business_review": [
+    {
+      "kind": "story-ac",
+      "item": "AC1: fallback call carries no codemie_project; user_id and category still sent",
+      "status": "pass",
+      "notes": "proxy_router.py:1001 sets SPEND_ATTRIBUTION_PROJECT=None; category set at :979; header reads only the new key (:434)."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC2: fallback spend counts in personal budget only",
+      "status": "pass",
+      "notes": "Row lands principal; test_the_row_lands_in_exactly_one_budget checks project and personal holders."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC3: admin non-member, member without allocation in routed category, member whose dispatch returns None",
+      "status": "pass",
+      "notes": "All three reach the single fallback assignment at :1001; each has a parametrized test."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC4: for non-own-credentials traffic, project ledger spend matches spend on its LiteLLM key",
+      "status": "partial",
+      "notes": "Fallback with non-personal project premium key authenticates with the project key (:334-336) but :1001 drops the project. See CR-001."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC5: funded member still sends codemie_project and increments project current_spending",
+      "status": "pass",
+      "notes": ":988 records project_name on the runtime branch; funded_member case asserts header and project-only landing."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC6: tests cover funded member and each AC3 fallback path; row lands in exactly one budget",
+      "status": "pass",
+      "notes": "TestTheProxyNamesOnlyTheProjectItCharged parametrized over all four cases; tests not run in review."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC7: no project header or username/email project still sends no codemie_project",
+      "status": "pass",
+      "notes": "Username/email filter kept at :437; bypass email case tested."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC8: own-credentials bypass naming a project still sends codemie_project",
+      "status": "pass",
+      "notes": ":957 records request_info[PROJECT]; test_a_bypass_call_naming_a_project_still_names_it."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC9: manual verify.py Cases A-E",
+      "status": "pending-stage-7",
+      "notes": "Requires live stack run of .local/epmcdme-16989/verify.py."
+    },
+    {
+      "kind": "spec",
+      "item": "Change 1: helper renamed/docstring rewritten to describe attribution project",
+      "status": "pass",
+      "notes": "_proxy_project_in_context renamed _proxy_attribution_project; no remaining references to the old name."
+    },
+    {
+      "kind": "spec",
+      "item": "Change 2: request_info[PROJECT] unchanged",
+      "status": "pass",
+      "notes": "No write to PROJECT in the diff."
+    },
+    {
+      "kind": "spec",
+      "item": "Change 3: _personal_predicate docstring reworded; predicate unchanged",
+      "status": "pass",
+      "notes": "Docstring-only hunk in spend_logs_repository.py."
+    },
+    {
+      "kind": "spec",
+      "item": "Change 4: codemie_project contract stated in spend_logs_metadata.py",
+      "status": "pass",
+      "notes": "Sentence added; the non-personal premium-key fallback contradicts it (see CR-001)."
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "na",
+      "notes": "Standards audit not part of the compact profile."
+    },
+    {
+      "kind": "code-quality",
+      "status": "na",
+      "notes": "Standards audit not part of the compact profile."
+    },
+    {
+      "kind": "security",
+      "status": "na",
+      "notes": "Standards audit not part of the compact profile."
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "One decision_needed blocker: a personal-budget fallback authenticated with the project premium-models key now names no project, so AC4 is partial and the project ledger undercounts that key; naming it would put the row back in two budgets, which AC2 forbids. Blind, verification-gap and standards did not run under the compact profile; both edge-case candidates were checked in source, 0 dismissed. 1 deferred (proxy_router.py:437 username/email filter on the funded branch predates this change) -> code-review-deferred.local.md.",
+    "confidence": "low",
+    "risk_flags": [
+      "breaking-change"
+    ]
+  }
+}

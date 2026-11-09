@@ -122,6 +122,8 @@ UNKNOWN = "unknown"
 
 #: Key under which the resolved budget category travels on `request_info` to the header builder.
 SPEND_ATTRIBUTION_CATEGORY = "spend_attribution_category"
+#: Key under which the project routing charged travels on `request_info` to the header builder.
+SPEND_ATTRIBUTION_PROJECT = "spend_attribution_project"
 
 # HTTP headers that should NOT be forwarded between proxies (hop-by-hop headers)
 # See: https://datatracker.ietf.org/doc/html/rfc2616#section-13.5.1
@@ -329,7 +331,9 @@ def _apply_proxy_auth_header(
         )
         return None
 
-    if user_credentials is not None:
+    # A non-personal key is the project's premium key; a call with no project runtime fell back to the
+    # personal budget and names no project, so that key must not pay for it.
+    if user_credentials is not None and user_credentials.is_personal:
         api_key = user_credentials.credentials.api_key
         headers["Authorization"] = f"Bearer {api_key}"
         _log_proxy_auth_source_selected(
@@ -409,22 +413,27 @@ def _apply_spend_logs_metadata_header(headers: dict, request_info: dict | None, 
             run_id=run_id,
             user_id=user.id if user else None,
             category=category,
-            project=_proxy_project_in_context(request_info, user),
+            project=_proxy_attribution_project(request_info, user),
             origin=(TrafficOrigin.CLI if _is_cli_request(request_info) else TrafficOrigin.PROXY).value,
         )
     )
 
 
-def _proxy_project_in_context(request_info: dict, user: User | None) -> str | None:
-    """The project this proxied call was made inside, or None.
+def _proxy_attribution_project(request_info: dict, user: User | None) -> str | None:
+    """The project budget routing charged this proxied call to, or None.
 
-    The request metadata's project falls back to the caller's **username** when no project header
-    was sent, and a header naming the caller's personal project carries their **email**, so it is
-    not always a project. Sent as `codemie_project` either would attribute a person's spend to a
-    "project" named after them - a well-formed row pointing at something that is not a project.
-    Both are checked because they differ wherever the identity provider's username is not the email.
+    Routing records it on `request_info[SPEND_ATTRIBUTION_PROJECT]`. A call that fell back to the
+    personal budget records None even though it named a project: LiteLLM charged the person, so
+    naming the project too would count one call in two budgets. `request_info[PROJECT]` is not read
+    here, because it still holds the named project for credential and runtime lookups.
+
+    On the own-credentials bypass the recorded project is the request's own, and that falls back to
+    the caller's **username** when no project header was sent, while a header naming the caller's
+    personal project carries their **email**. Sent as `codemie_project` either would attribute a
+    person's spend to a "project" named after them. Both are checked because they differ wherever
+    the identity provider's username is not the email.
     """
-    project = request_info.get(PROJECT) or None
+    project = request_info.get(SPEND_ATTRIBUTION_PROJECT) or None
     if not project:
         return None
     if user and project in {user.username, user.email}:
@@ -947,6 +956,7 @@ async def _resolve_budget_attribution_stream(
         # project-member holder blind to this traffic and leaves the rest depending on the alias set.
         # Classified by traffic kind, since no budget is selected on this path to agree with.
         request_info[SPEND_ATTRIBUTION_CATEGORY] = _classify_proxy_traffic(user, request_info).value
+        request_info[SPEND_ATTRIBUTION_PROJECT] = request_info.get(PROJECT) or None
         return await _resolve_bypass_mode_stream(body_bytes)
 
     if user_credentials is not None:
@@ -977,6 +987,7 @@ async def _resolve_budget_attribution_stream(
     )
     project_name = request_info.get(PROJECT) or None
     if project_runtime is not None:
+        request_info[SPEND_ATTRIBUTION_PROJECT] = project_name
         return await _create_project_runtime_body_stream(
             body_bytes=body_bytes,
             user=user,
@@ -988,7 +999,8 @@ async def _resolve_budget_attribution_stream(
         )
 
     # No project runtime was selected for the actual category. An allocation in some
-    # other category does not make this request project-funded.
+    # other category does not make this request project-funded, so the row names no project.
+    request_info[SPEND_ATTRIBUTION_PROJECT] = None
     _flag_personal_budget_fallback(user, request_info, availability, project_budget_used=False)
     return await _create_global_budget_body_stream(
         body_bytes=body_bytes,

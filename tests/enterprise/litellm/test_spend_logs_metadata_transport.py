@@ -20,13 +20,22 @@ the request itself and must first STRIP whatever the client sent.
 """
 
 import json
-from contextlib import nullcontext
+from contextlib import ExitStack, asynccontextmanager, nullcontext
+from datetime import datetime, timezone
+from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
 
+from codemie.enterprise.litellm.runtime_budget_selection import RuntimeBudgetMode
+from codemie.repository.spend_logs_model import LiteLLMSpendLog as Row
+from codemie.repository.spend_logs_repository import SpendLogsRepository
 from codemie.service.budget.budget_enums import BudgetCategory
+from codemie.service.spend.coverage import TimeRange
+from codemie.service.spend.ledger import PersonalHolder, ProjectHolder
 from codemie.service.spend.origin_context import spend_origin
 from codemie.service.spend.run_context import publish_run_scope, reset_run_scope
 from codemie.service.spend.spend_logs_metadata import SPEND_LOGS_METADATA_HEADER
@@ -230,6 +239,7 @@ class TestTheProxyStripsWhatTheClientSentAndSetsItsOwn:
         request_info = {
             proxy_router.REQUEST_ID: "req-1",
             proxy_router.PROJECT: "acme",
+            proxy_router.SPEND_ATTRIBUTION_PROJECT: "acme",
             proxy_router.SPEND_ATTRIBUTION_CATEGORY: BudgetCategory.CLI.value,
         }
 
@@ -301,6 +311,7 @@ class TestTheProxyStripsWhatTheClientSentAndSetsItsOwn:
             {
                 proxy_router.REQUEST_ID: "req-1",
                 proxy_router.PROJECT: "alice",  # the fallback when no project header was sent
+                proxy_router.SPEND_ATTRIBUTION_PROJECT: "alice",
                 proxy_router.SPEND_ATTRIBUTION_CATEGORY: "cli",
             },
             SimpleNamespace(id=USER_ID, username="alice", email="alice@example.com"),
@@ -319,6 +330,7 @@ class TestTheProxyStripsWhatTheClientSentAndSetsItsOwn:
             {
                 proxy_router.REQUEST_ID: "req-1",
                 proxy_router.PROJECT: "alice@example.com",
+                proxy_router.SPEND_ATTRIBUTION_PROJECT: "alice@example.com",
                 proxy_router.SPEND_ATTRIBUTION_CATEGORY: "cli",
             },
             SimpleNamespace(id=USER_ID, username="alice", email="alice@example.com"),
@@ -431,6 +443,325 @@ class TestTheOwnCredentialsBypassStillSendsIdentity:
         payload = metadata_in(headers)
         assert payload["codemie_user_id"] == USER_ID
         assert payload["codemie_category"] == "cli"
+
+    async def _bypass(self, project: str) -> tuple[dict, dict]:
+        import importlib
+
+        proxy_router = importlib.import_module("codemie.enterprise.litellm.proxy_router")
+
+        user = SimpleNamespace(id=USER_ID, username="alice", email="alice@example.com")
+        request_info = {
+            proxy_router.REQUEST_ID: "req-1",
+            proxy_router.LLM_MODEL: "gpt-4.1",
+            proxy_router.CLIENT_TYPE: "codemie-cli",
+            proxy_router.PROJECT: project,
+        }
+        with patch.object(proxy_router, "get_premium_username", return_value=None):
+            with patch.object(proxy_router, "_resolve_bypass_mode_stream", return_value="stream"):
+                await proxy_router._resolve_budget_attribution_stream(
+                    body_bytes=b"{}",
+                    user=user,
+                    request_info=request_info,
+                    user_credentials=SimpleNamespace(is_personal=True, alias="my-key"),
+                )
+        headers: dict = {}
+        proxy_router._apply_spend_logs_metadata_header(headers, request_info, user)
+        return request_info, metadata_in(headers)
+
+    @pytest.mark.asyncio
+    async def test_a_bypass_call_naming_a_project_still_names_it(self):
+        """Own-key calls keep their project until their own follow-up decides otherwise."""
+        import importlib
+
+        proxy_router = importlib.import_module("codemie.enterprise.litellm.proxy_router")
+
+        request_info, payload = await self._bypass("project-a")
+        assert request_info[proxy_router.SPEND_ATTRIBUTION_PROJECT] == "project-a"
+        assert payload["codemie_project"] == "project-a"
+
+    @pytest.mark.asyncio
+    async def test_a_bypass_call_in_the_callers_personal_project_names_no_project(self):
+        _, payload = await self._bypass("alice@example.com")
+        assert "codemie_project" not in payload
+        assert payload["codemie_user_id"] == USER_ID
+
+
+IN_PERIOD = datetime(2026, 8, 10, tzinfo=timezone.utc)
+LEDGER_PERIOD = TimeRange(datetime(2026, 8, 1, tzinfo=timezone.utc), datetime(2026, 9, 1, tzinfo=timezone.utc))
+DISPATCH_RETURNS_NONE = object()
+ALICE_ALIASES = frozenset({"alice", "alice@example.com"})
+PROXY_ROUTER = "codemie.enterprise.litellm.proxy_router"
+
+
+def _ledger_row(payload: dict, end_user: str) -> Row:
+    """The row the uploader stores for a complete identity triple (codemie-enterprise `attribution.decide`)."""
+    project = payload.get("codemie_project")
+    return Row(
+        request_id="req-1",
+        start_time=IN_PERIOD,
+        end_time=IN_PERIOD,
+        spend=Decimal("1.25"),
+        status="success",
+        prompt_tokens=0,
+        completion_tokens=0,
+        total_tokens=0,
+        attr_source="explicit",
+        attr_form="project_scoped" if project else "principal",
+        attr_project=project,
+        attr_category=payload["codemie_category"],
+        attr_user_id=payload["codemie_user_id"],
+        end_user=end_user,
+    )
+
+
+class _SyncSessionAsAsync:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    async def execute(self, statement):
+        return self._session.execute(statement)
+
+
+@asynccontextmanager
+async def _no_session():
+    yield MagicMock()
+
+
+def _routing_cases():
+    from codemie.enterprise.litellm.budget_categories import BudgetCategory as ProxyBudgetCategory
+
+    funded_runtime = SimpleNamespace(
+        headers={"x-litellm-customer-id": f"codemie:project:project-a:category:cli:user:{USER_ID}"}
+    )
+    cli = {ProxyBudgetCategory.CLI}
+    return [
+        pytest.param("codemie-cli", cli, funded_runtime, "project-a", "project", id="funded_member"),
+        pytest.param("codemie-cli", set(), None, None, "personal", id="admin_non_member"),
+        pytest.param(None, cli, None, None, "personal", id="member_other_category"),
+        pytest.param("codemie-cli", cli, DISPATCH_RETURNS_NONE, None, "personal", id="allocation_dispatch_none"),
+    ]
+
+
+ROUTING_CASE_FIELDS = "client_type, probe_scopes, runtime, expected_project, expected_budget"
+
+
+class _Dispatched:
+    """A project runtime produced by the real resolver from this dispatch result."""
+
+    def __init__(self, result) -> None:
+        self.result = result
+
+
+async def _route_proxy_call(
+    client_type,
+    probe_scopes,
+    runtime,
+    *,
+    llm_model: str = "gpt-4.1",
+    premium_username: str | None = None,
+    user_credentials=None,
+) -> tuple[dict, MagicMock]:
+    import importlib
+
+    proxy_router = importlib.import_module(PROXY_ROUTER)
+
+    user = MagicMock(id=USER_ID, username="alice", email="alice@example.com")
+    request_info = {
+        proxy_router.REQUEST_ID: "req-1",
+        proxy_router.LLM_MODEL: llm_model,
+        proxy_router.PROJECT: "project-a",
+    }
+    if client_type:
+        request_info[proxy_router.CLIENT_TYPE] = client_type
+
+    budget_ids = {"platform": None, "cli": "cli-budget", "premium_models": None}
+    member_tracking = SimpleNamespace(mode=RuntimeBudgetMode.PROJECT_BUDGET_WITH_MEMBER_TRACKING)
+    patches = [
+        patch(f"{PROXY_ROUTER}.get_premium_username", return_value=premium_username),
+        patch(
+            f"{PROXY_ROUTER}.budget_service.get_all_category_budget_ids_for_request",
+            new=AsyncMock(return_value=budget_ids),
+        ),
+        patch(f"{PROXY_ROUTER}._probe_project_budget_scopes", new=AsyncMock(return_value=probe_scopes)),
+        patch(f"{PROXY_ROUTER}.select_runtime_budget_mode", return_value=member_tracking),
+        patch(f"{PROXY_ROUTER}.check_user_budget", return_value=MagicMock()),
+        patch(f"{PROXY_ROUTER}.resolve_mirrored_budget_id", return_value=None),
+        patch(f"{PROXY_ROUTER}.budget_service.track_proxy_budget_assignment_for_request", new=AsyncMock()),
+    ]
+    if runtime is DISPATCH_RETURNS_NONE or isinstance(runtime, _Dispatched):
+        dispatched = None if runtime is DISPATCH_RETURNS_NONE else runtime.result
+        patches += [
+            patch(f"{PROXY_ROUTER}.ensure_project_member_runtime_ready", new=AsyncMock()),
+            patch(f"{PROXY_ROUTER}.get_async_session", new=_no_session),
+            patch(f"{PROXY_ROUTER}.budget_resolution_service.resolve", new=AsyncMock(return_value=MagicMock())),
+            patch(
+                f"{PROXY_ROUTER}.budget_resolution_service.dispatch_runtime",
+                new=AsyncMock(return_value=dispatched),
+            ),
+        ]
+    else:
+        patches.append(patch(f"{PROXY_ROUTER}._resolve_project_budget_runtime", new=AsyncMock(return_value=runtime)))
+
+    with ExitStack() as stack:
+        for active in patches:
+            stack.enter_context(active)
+        await proxy_router._resolve_budget_attribution_stream(
+            body_bytes=b"{}", user=user, request_info=request_info, user_credentials=user_credentials
+        )
+    return request_info, user
+
+
+class TestTheProxyNamesOnlyTheProjectItCharged:
+    """A personal-budget fallback was charged to the person, so naming the project in its header
+    filed the same call under the project as well - one call, two budgets.
+
+    `member_other_category` is a member with only a CLI allocation making a platform call: routing
+    picks `platform`, and the project has no runtime for it.
+    """
+
+    async def _route(self, client_type, probe_scopes, runtime) -> tuple[dict, MagicMock]:
+        return await _route_proxy_call(client_type, probe_scopes, runtime)
+
+    async def _routed_payload(self, client_type, probe_scopes, runtime) -> tuple[dict, dict]:
+        import importlib
+
+        proxy_router = importlib.import_module(PROXY_ROUTER)
+
+        request_info, user = await self._route(client_type, probe_scopes, runtime)
+        headers: dict = {}
+        proxy_router._apply_spend_logs_metadata_header(headers, request_info, user)
+        return request_info, metadata_in(headers)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(ROUTING_CASE_FIELDS, _routing_cases())
+    async def test_routing_records_the_project_it_charged(
+        self, client_type, probe_scopes, runtime, expected_project, expected_budget
+    ):
+        import importlib
+
+        proxy_router = importlib.import_module(PROXY_ROUTER)
+
+        request_info, _ = await self._route(client_type, probe_scopes, runtime)
+        assert request_info[proxy_router.SPEND_ATTRIBUTION_PROJECT] == expected_project
+        assert request_info[proxy_router.PROJECT] == "project-a"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(ROUTING_CASE_FIELDS, _routing_cases())
+    async def test_a_fallback_header_keeps_identity_but_names_no_project(
+        self, client_type, probe_scopes, runtime, expected_project, expected_budget
+    ):
+        import importlib
+
+        proxy_router = importlib.import_module(PROXY_ROUTER)
+
+        request_info, payload = await self._routed_payload(client_type, probe_scopes, runtime)
+        assert payload.get("codemie_project") == expected_project
+        assert payload["codemie_user_id"] == USER_ID
+        assert payload["codemie_category"] == request_info[proxy_router.SPEND_ATTRIBUTION_CATEGORY]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(ROUTING_CASE_FIELDS, _routing_cases())
+    async def test_the_row_lands_in_exactly_one_budget(
+        self, client_type, probe_scopes, runtime, expected_project, expected_budget
+    ):
+        request_info, payload = await self._routed_payload(client_type, probe_scopes, runtime)
+        category = BudgetCategory(payload["codemie_category"])
+        holders = {
+            "project": ProjectHolder("project-a", category),
+            "personal": PersonalHolder(USER_ID, category, ALICE_ALIASES),
+        }
+
+        engine = create_engine("sqlite://")
+        Row.metadata.create_all(engine, tables=[Row.__table__])
+        with Session(engine) as sync_session:
+            sync_session.add(_ledger_row(payload, end_user=request_info["litellm_customer_id"]))
+            sync_session.commit()
+            session = _SyncSessionAsAsync(sync_session)
+            sums = {
+                name: await SpendLogsRepository().sum_for_holder(session, holder, LEDGER_PERIOD, None)
+                for name, holder in holders.items()
+            }
+
+        assert {name for name, total in sums.items() if total} == {expected_budget}
+
+
+APP_KEY = "sk-app"
+PROJECT_PREMIUM_KEY = "sk-project-premium"
+BUDGET_PROVIDER_KEY = "sk-budget-provider"
+OWN_KEY = "sk-alice"
+
+
+def _credentials(api_key: str, *, is_personal: bool):
+    return SimpleNamespace(
+        credentials=SimpleNamespace(api_key=api_key),
+        alias="codemie:project:project-a:category:premium_models" if not is_personal else "alice-key",
+        is_personal=is_personal,
+        setting_id="setting-1",
+    )
+
+
+def _premium_auth_cases():
+    from codemie.enterprise.litellm.budget_categories import BudgetCategory as ProxyBudgetCategory
+
+    funded = _Dispatched(
+        SimpleNamespace(
+            provider="litellm",
+            headers={"x-litellm-customer-id": f"codemie:project:project-a:category:premium_models:user:{USER_ID}"},
+            api_key=BUDGET_PROVIDER_KEY,
+            base_url=None,
+        )
+    )
+    project_key = _credentials(PROJECT_PREMIUM_KEY, is_personal=False)
+    return [
+        pytest.param(project_key, set(), None, APP_KEY, None, id="personal_fallback_with_project_premium_key"),
+        pytest.param(
+            project_key,
+            {ProxyBudgetCategory.PREMIUM_MODELS},
+            funded,
+            BUDGET_PROVIDER_KEY,
+            "project-a",
+            id="funded_premium_member",
+        ),
+        pytest.param(
+            _credentials(OWN_KEY, is_personal=True), set(), None, OWN_KEY, "project-a", id="own_credentials_bypass"
+        ),
+    ]
+
+
+class TestAProjectPremiumKeyNeverAuthenticatesAPersonalFallback:
+    """A call that fell back to the personal budget names no project, so the project's premium key
+    must not pay for it either: LiteLLM would charge a project whose ledger never sees the row.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "user_credentials, probe_scopes, runtime, expected_key, expected_project", _premium_auth_cases()
+    )
+    async def test_the_key_that_pays_matches_the_project_the_row_names(
+        self, user_credentials, probe_scopes, runtime, expected_key, expected_project
+    ):
+        import importlib
+
+        proxy_router = importlib.import_module(PROXY_ROUTER)
+
+        request_info, user = await _route_proxy_call(
+            "codemie-cli",
+            probe_scopes,
+            runtime,
+            llm_model="claude-opus-4-6-20260205",
+            premium_username="alice_premium",
+            user_credentials=user_credentials,
+        )
+        request = MagicMock()
+        request.headers = {"content-type": "application/json"}
+        with (
+            patch.object(proxy_router, "_apply_context_headers"),
+            patch.object(proxy_router.config, "LITE_LLM_PROXY_APP_KEY", APP_KEY),
+        ):
+            headers = proxy_router._prepare_proxy_headers(request, request_info, user_credentials, user)
+
+        assert headers["Authorization"] == f"Bearer {expected_key}"
+        assert metadata_in(headers).get("codemie_project") == expected_project
 
 
 class TestTheTwoBudgetCategoryEnumsMustNotDrift:

@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "generated": "2026-11-09T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 16,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 4,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "technical_risk", "reason": "Proxy provider-credential selection now refuses the project premium key on a personal-budget fallback, and spend attribution no longer names a project it did not charge. That changes which key authenticates a call and which budget ledger a row is counted in. The routing pattern and the metadata builder already existed, which keeps the base at M. The authentication-path red flag bumps it to L." },
+    { "dimension": "component_scope", "reason": "Three components across two layers: proxy router routing and auth-source selection (enterprise litellm), the spend-logs metadata builder (service), and the spend-logs repository personal-predicate contract. The repository and metadata changes are mostly contract and docstring alignment." },
+    { "dimension": "file_change_estimate", "reason": "4 files changed (3 modified source, 1 test file extended with member/non-member routing and premium-auth parameterized cases), 365 insertions mostly in tests. 4 files maps to M." },
+    { "dimension": "calibration", "reason": "Agrees with the bundled M example epmcdme-10203 (total 15, three layers, known pattern). It scores one point higher here on technical risk because the auth-key path is involved. It sits above the S example epmcdme-10102 because more layers are touched and the risk is higher." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from M to L: affects authentication (project premium key must not authenticate personal-budget fallback calls)"
+  ],
+  "split_recommendation": null
+}

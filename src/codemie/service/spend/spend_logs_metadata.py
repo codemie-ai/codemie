@@ -23,6 +23,9 @@ Seven keys in **four groups**, kept apart because their failure semantics differ
 | dimension | `codemie_workflow_id` | **normal** - most calls are not inside a workflow |
 | origin | `codemie_origin` | **normal** - what the request was for; absent before the sending release |
 
+`codemie_project` names the project whose project key or project-member customer was charged; the
+own-credentials bypass is the one known exception.
+
 **The header value is built with `json.dumps` and never by concatenation, and that is not style.**
 LiteLLM parses this header with a swallow-everything `safe_json_loads` and then *skips the
 assignment* when it returns None. One malformed character therefore discards **all seven keys at

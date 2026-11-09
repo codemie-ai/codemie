@@ -1,0 +1,137 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-16989_non-member-project-spend",
+  "head": "1af0214569905372a5f1f0a639a09e7b5e6c3d57",
+  "runner": "custom",
+  "started_at": "2026-11-09T11:22:26Z",
+  "completed_at": "2026-11-09T11:27:59Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 3646,
+      "command": "make ruff",
+      "exit_code": 0,
+      "notes": "Also covers the codemie-pre-commit hook ruff steps; 3439 files unchanged, no working-tree modifications."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 16988,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1802,
+      "command": "make license-check",
+      "exit_code": 0,
+      "notes": "Also covers the codemie-pre-commit hook license step; 3117 files checked, 0 missing."
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make gitleaks",
+      "notes": "Skip if Docker unavailable: docker not on PATH (Podman installed and running). Enable by providing a docker CLI or alias to Podman; still owed, no CI pipeline in this repo runs it."
+    },
+    {
+      "id": "secrets-staged",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1036,
+      "command": "W=$(cygpath -w \"$PWD\"); MSYS_NO_PATHCONV=1 podman run --rm -v \"$W:/repo\" ghcr.io/gitleaks/gitleaks:v8.30.1 git --no-banner --redact --config=/repo/.gitleaks.toml --log-opts=\"3ec102f3f..HEAD\" /repo",
+      "exit_code": 0,
+      "notes": "Retry 1 (2026-11-09T11:27:58Z): caller-directed substitute for the guide command 'bash scripts/git-hooks/validate_secrets.sh', which failed to run (exit 125, MSYS path conversion broke the podman .git mount) and would scan nothing since all changes are committed. Scanned the branch's own commits 3ec102f3f..HEAD (= merge-base with origin/main) with the same image and .gitleaks.toml: '3 commits scanned', '~18809 bytes', 'no leaks found'. Other gates kept from the earlier run at the same HEAD."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "N/A",
+      "command": "make test",
+      "notes": "Out of requested scope: caller/workspace policy runs only tests related to changed files; replaced by the affected gate."
+    },
+    {
+      "id": "affected",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 73115,
+      "command": "poetry run pytest tests/codemie/agents/test_agents_utils.py tests/codemie/agents/test_assistant_agent/test_agent_error_flow.py tests/codemie/agents/tools/test_abstract_agent.py tests/codemie/repository/test_spend_logs_access_boundary.py tests/codemie/repository/test_spend_logs_holder_access_boundary.py tests/codemie/repository/test_spend_logs_repository.py tests/codemie/repository/test_spend_logs_repository_projection.py tests/codemie/repository/test_spend_projection.py tests/codemie/service/spend/test_batched_holder_reads.py tests/codemie/service/spend/test_class_split_aggregation.py tests/codemie/service/spend/test_composed_scope.py tests/codemie/service/spend/test_cutover.py tests/codemie/service/spend/test_dimension_split_aggregation.py tests/codemie/service/spend/test_model_dimension.py tests/codemie/service/spend/test_spend_group_aggregation.py tests/codemie/service/spend/test_spend_logs_metadata.py tests/codemie/service/spend/test_traffic_class.py tests/enterprise/litellm/test_premium_models_budget.py tests/enterprise/litellm/test_proxy_router.py tests/enterprise/litellm/test_spend_logs_metadata_transport.py",
+      "exit_code": 0,
+      "notes": "897 passed, 0 skipped; tests referencing spend_logs_repository, spend_logs_metadata, proxy_router."
+    },
+    {
+      "id": "cli-analytics-live",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make test-cli-analytics-live",
+      "notes": "Skip if: diff does not touch src/codemie/repository/cli_analytics/postgres/."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make coverage",
+      "notes": "Skip if: user did not request coverage."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make sonar-local",
+      "notes": "Skip if credentials unavailable: SONAR_TOKEN unset and no .env.local; runner would self-skip with 'Skipping Sonar scan because SONAR_TOKEN is not set.' Enable by setting SONAR_TOKEN and SONAR_HOST_URL in .env.local; the MR common pipeline runs Sonar for real."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make verify",
+      "notes": "Composite of ruff, license, gitleaks, test, each recorded individually; its gitleaks component needs Docker (unavailable)."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "notes": "Skip if not opening an MR: this run only reports readiness. Owed before MR (terminal summary goes in the MR '## Test harness' section); prerequisite ~/.codemie/test-harness.json is missing."
+    },
+    {
+      "id": "alembic-heads",
+      "source": "ci",
+      "status": "PASS",
+      "duration_ms": 2397,
+      "command": "make check-alembic",
+      "exit_code": 0,
+      "notes": "Enforced by CI job check-alembic-heads and the codemie-pre-push hook, but absent from the quality-gates guide (guide/repo mismatch)."
+    },
+    {
+      "id": "commit-msg",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 1340,
+      "command": "bash scripts/git-hooks/commit_msg.sh <msg-file> (per commit in origin/main..HEAD)",
+      "exit_code": 0,
+      "notes": "All 3 branch commits carry the EPMCDME-<n>: prefix. Repo hooks are not installed in .git/hooks on this machine."
+    },
+    {
+      "id": "wait-ci-init",
+      "source": "ci",
+      "status": "N/A",
+      "command": ".wait-ci-init-template (codemie-gitlab-templates pre-ci-guard.yml)",
+      "notes": "Waits on external ci-pipeline and compliance-report contexts; needs GitLab CI infrastructure."
+    }
+  ],
+  "failures": {}
+}

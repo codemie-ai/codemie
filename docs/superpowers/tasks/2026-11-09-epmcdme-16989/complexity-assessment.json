@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "task": "Stop the LiteLLM proxy path from attributing personal-budget-fallback spend to the named X-CodeMie-Project, so each request lands in exactly one ledger budget, with member and non-member regression tests.",
+  "generated": "2026-11-09T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 13,
+  "size": "S",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "requirements_clarity", "reason": "Acceptance criteria are concrete, but the ticket contradicts the documented EPMCDME-15204 decision in the ledger's personal predicate (double count accepted as intended). The non-member premise only holds for admin/maintainer non-members and for members without a category allocation, and three scope questions are open: whether the own-credentials bypass path is in scope, header-level vs predicate-level fix, and whether stored historical rows stay as they are." },
+    { "dimension": "technical_risk", "reason": "The closest pattern is the platform path (llm_factory _record_direct_budget_attribution plus _project_in_context), which already suppresses the project on fallback, so the proxy fix in _proxy_project_in_context is copy-and-adapt. The risk is billing and ledger correctness: dropping codemie_project changes attr_form/attr_project for fallback rows, and every attr_project consumer (ProjectHolder, member/group holders, access narrowing, hourly rollup) reads those columns. No auth or security surface changes. Existing proxy-router and spend-metadata transport test templates cover the member/non-member assertions, so no defensive-test bump applies." },
+    { "dimension": "component_scope", "reason": "One component: the enterprise LiteLLM proxy router's spend-logs metadata helper, plus its tests. A predicate-level change in spend_logs_repository is possible but is flagged as the riskier alternative, not the expected path." },
+    { "dimension": "file_change_estimate", "reason": "Expected changes: proxy_router.py, test_proxy_router.py, test_spend_logs_metadata_transport.py, and possibly a docstring update in spend_logs_repository.py. That is 3-4 modified files and 0-1 new. Calibration matches the bundled S example epmcdme-10102 (3 files, total 11) and falls short of the M example epmcdme-10203 (6 files, three layers)." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

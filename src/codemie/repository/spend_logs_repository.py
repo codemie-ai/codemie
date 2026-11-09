@@ -332,12 +332,12 @@ def _personal_predicate(holder: PersonalHolder) -> ColumnElement[bool]:
 
     LiteLLM charges whichever customer a request carries in `end_user`, and attribution does not
     decide that. A project with no live budget for the category routes the call to the person's
-    personal budget, so the row is attributed `project_scoped` yet carries the person's **own**
-    customer - EPMCDME-15204 found every such row missing from the personal figure while LiteLLM's
-    counter held it. So the explicit half keys on the customer, not on the form: any `end_user` that
-    is neither a project-member customer nor the `_NO_CUSTOMER` placeholder. A project row charged to
-    the person is then in this figure *and* in the project's attributed one - charged to the person,
-    attributed to the project - exactly as LiteLLM's two counters hold it.
+    personal budget. Such a call now arrives `principal`, because the proxy names no project it did
+    not charge. Rows stored before that (since 2026-11-01) are still `project_scoped` with the
+    person's **own** customer - EPMCDME-15204 found every such row missing from the personal figure
+    while LiteLLM's counter held it - and they remain in this figure *and* in the project's attributed
+    one. That is why the explicit half keys on the customer, not on the form: any `end_user` that is
+    neither a project-member customer nor the `_NO_CUSTOMER` placeholder.
 
     The bare `attr_user_id = :user_id AND attr_category = :category` is still the sharpest
     available mistake here: an explicit row carrying a project lands `attr_form='project_scoped'`
