@@ -1,0 +1,33 @@
+{
+  "decision": "approve",
+  "rationale": "CR-001 is resolved on reachability: session_dims.started_at is written only by the rollup refresher (rollups.py upsert ~2010 and _SESSION_DIMS ~1445), session_binding's _BINDING_COLUMNS excludes it, and derive_session_activity runs at the end of the same _recompute transaction for every session_id of the batch keys; session_purge only deletes whole sessions. The fix-up adds the invariant docs and tests, with no behaviour change. I did not run the new tests (Stage 7 owns execution).",
+  "confidence": "medium",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "All commit subjects use the EPMCDME-####: Description format"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "New concerns extracted into new modules; license headers present"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "No credential logging; f-string SQL built from internal constants only"
+    }
+  ],
+  "findings": [],
+  "deferred": [],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "resolved",
+      "notes": "Premise verified in source: started_at writers are the refresher only; derive_session_activity runs in the same _recompute transaction (rollups.py ~2314); the binding writes no started_at or day row. Invariant documented and tested."
+    }
+  ]
+}

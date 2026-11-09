@@ -32,7 +32,8 @@ test:
 
 # The live CLI Analytics SQL tests (test_live_*.py) skip without TEST_LOCAL_PG_URL; this runs them on throwaway
 # PostgreSQL 17 and 14 containers on loopback, removed afterwards, never on the docker-compose database; a skipped
-# test fails it.
+# test fails it. They share one database and refresh the same rollup days, so they run in one process (-n0): under
+# the default xdist workers one test's refresh removes another's rows (KeyError on seeded sessions, statement timeouts).
 LIVE_PG_PASSWORD ?= password
 test-cli-analytics-live:
 	@trap 'docker rm -f codemie-cli-analytics-live-pg17 codemie-cli-analytics-live-pg14 >/dev/null 2>&1' EXIT INT TERM; \
@@ -43,7 +44,7 @@ test-cli-analytics-live:
 	  for i in $$(seq 60); do docker exec $$name pg_isready -h 127.0.0.1 -U postgres >/dev/null 2>&1 && break; sleep 1; done; \
 	  docker exec $$name pg_isready -h 127.0.0.1 -U postgres >/dev/null 2>&1 || { echo "postgres:$$v not ready in 60 s" >&2; exit 1; }; \
 	  out=$$(env -u CLI_ANALYTICS_PG_URL TEST_LOCAL_PG_URL=postgresql://postgres:$(LIVE_PG_PASSWORD)@127.0.0.1:$$port/postgres \
-	    poetry run pytest -q tests/codemie/repository/cli_analytics/postgres -k live -rs 2>&1); rc=$$?; echo "$$out"; \
+	    poetry run pytest -q -n0 tests/codemie/repository/cli_analytics/postgres -k live -rs 2>&1); rc=$$?; echo "$$out"; \
 	  docker rm -f $$name >/dev/null; [ $$rc -eq 0 ] || exit $$rc; \
 	  if echo "$$out" | grep -q skipped; then echo "live tests skipped: the database was not reached" >&2; exit 1; fi; \
 	done

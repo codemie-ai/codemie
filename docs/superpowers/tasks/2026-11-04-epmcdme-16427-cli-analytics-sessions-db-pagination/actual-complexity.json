@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "generated": "2026-11-05T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 24,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 29,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Reader, ports, session-derived and cost-key SQL modules in the CLI analytics repository, plus the analytics handler and pricing, a new alembic migration and bench scripts." },
+    { "dimension": "technical_risk", "reason": "Performance-critical DB pagination with new indexes (migration) and a single-pass filtered start_time page cut; parity with existing Cost/Efficiency results had to be guarded by baseline and live tests." },
+    { "dimension": "file_change_estimate", "reason": "29 files changed (3755 insertions, 334 deletions) across src, tests, scripts, docs and Makefile." },
+    { "dimension": "affected_layers", "reason": "Service (handlers), DB-Persistence (repository, indexes migration), and Infrastructure (Makefile, bench tooling); REST router is touched only via tests." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped: performance is the primary concern and an index schema migration is included"
+  ],
+  "split_recommendation": null
+}

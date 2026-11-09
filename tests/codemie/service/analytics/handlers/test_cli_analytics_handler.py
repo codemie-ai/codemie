@@ -12,18 +12,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
+
 import pytest
 from datetime import date, datetime, timedelta, timezone
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
+from tests.codemie.repository.cli_analytics.support.bounded import bounded_to_itself
 from tests.codemie.repository.cli_analytics.support.scopes import DETAIL_SCOPE, EXCLUDE_SCOPE
 from codemie.configs.llm_config import CostConfig
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
+from codemie.repository.cli_analytics.ports import SESSION_PAGE_SORTS, ModelRates
+from codemie.repository.cli_analytics.scope import ViewerScope
 from codemie.service.analytics.handlers.cli_analytics_handler import (
     LocalAnalyticsHandler,
     _count_dispatch_subtypes,
     _iso,
 )
+
+
+UNPRICED_MODEL = "definitely-not-a-real-model-xyz-9999"
+
+# A non-admin's Sessions view: only the viewer's own Personal sessions.
+OWN_SCOPE = ViewerScope(viewer_email="dev@x.com", unrestricted=False, admin_projects=frozenset(), mode="own_only")
 
 
 def page_reader(cost_facts, ordered_ids=None):
@@ -43,7 +54,32 @@ def make_handler(cost_facts=None):
     repo.get_session_model_costs = AsyncMock(return_value=[])
     repo.get_session_funding_costs = AsyncMock(return_value=[])
     repo.get_skill_names_by_session = AsyncMock(return_value=[])
-    return LocalAnalyticsHandler(repo)
+    with_window_reads(repo, cost_facts)
+    return LocalAnalyticsHandler(bounded_to_itself(repo))
+
+
+def with_window_reads(repo, cost_facts=None, flags=()):
+    """The window statements of the Sessions list: the model kind flags and the framework window (every listed
+    session in order, no skill names), the reads `get_sessions` makes before it picks the page."""
+    ids = [r["session_id"] for r in cost_facts or []]
+    repo.get_window_model_flags = AsyncMock(return_value=list(flags))
+    repo.get_cost_models = AsyncMock(return_value=[model for model, _ in flags])
+    repo.get_cost_page = AsyncMock(return_value=(len(ids), list(ids), list(flags)))
+    repo.get_framework_page = framework_page_reader([(sid, []) for sid in ids], flags)
+    return repo
+
+
+def framework_page_reader(window, flags=()):
+    """`get_framework_page` as the database answers it: the window's distinct name sets go to `matching`, and the
+    page is cut from the sessions of the accepted sets in the window's order, with the exact total."""
+
+    async def get_framework_page(f, sort_by, page, per_page, matching, rates=None, search=None, is_unattributed=False):
+        sets = [list(names) for names in {tuple(names) for _, names in window}]
+        accepted = {tuple(names) for names in matching(sets)}
+        ids = [sid for sid, names in window if tuple(names) in accepted]
+        return len(ids), ids[page * per_page : (page + 1) * per_page], list(flags)
+
+    return AsyncMock(side_effect=get_framework_page)
 
 
 BASE_COST_ROW = {
@@ -156,17 +192,231 @@ async def test_the_readers_page_order_is_the_response_order():
     assert [s["trace_id"] for s in data["sessions"]] == ["a", "b"]
 
 
-@pytest.mark.parametrize(("sort_by", "framework"), [("cost_usd", None), ("start_time", "Pure chat")])
+_DETAIL_READS = (
+    "get_session_cost_facts",
+    "get_turns_by_session",
+    "get_tool_success_by_session",
+    "get_lines_by_session",
+    "get_session_model_costs",
+)
+_INPUT_ONLY = (True, False, False, False, False)
+_NO_TOKENS = (False,) * 5
+
+
+def _assert_details_read_only(repo, page_ids):
+    for name in _DETAIL_READS:
+        assert getattr(repo, name).call_args.args[0].session_ids == page_ids, name
+    assert repo.get_skill_names_by_session.call_args.args[0] == page_ids
+
+
+_FILTER_COMBINATIONS = [(None, False), ("fix", False), (None, True), ("fix", True)]
+
+
+@pytest.mark.parametrize("sort_by", SESSION_PAGE_SORTS)
+@pytest.mark.parametrize(("search", "is_unattributed"), _FILTER_COMBINATIONS)
 @pytest.mark.asyncio
-async def test_cost_sort_and_framework_filter_page_in_python_over_the_whole_window(sort_by, framework):
-    rows = [{**BASE_COST_ROW, "session_id": f"s{n}"} for n in range(3)]
-    handler = make_handler(cost_facts=rows)
+async def test_every_sort_reads_details_only_for_the_database_page(sort_by, search, is_unattributed):
+    handler = make_handler(cost_facts=[{**BASE_COST_ROW, "session_id": "s7"}])
+    repo = handler._repo
+    repo.get_session_page = AsyncMock(return_value=(41, ["s7"]))
+    repo.get_cost_models = AsyncMock(return_value=["claude-haiku"])
+    repo.get_cost_page = AsyncMock(return_value=(41, ["s7"], [("claude-haiku", _INPUT_ONLY)]))
+    with _two_model_catalog():
+        data, _, _ = await handler.get_sessions(
+            make_filter(), page=2, per_page=1, sort_by=sort_by, search=search, is_unattributed=is_unattributed
+        )
+    if sort_by == "cost_usd":  # the cost sort is one statement with the flags; the window is not read twice
+        assert repo.get_cost_page.call_args.args[1:3] == (2, 1)
+        assert repo.get_cost_page.call_args.args[4:] == (search, is_unattributed)
+        repo.get_session_page.assert_not_called()
+        repo.get_window_model_flags.assert_not_called()
+    else:
+        assert repo.get_session_page.call_args.args[1:] == (sort_by, 2, 1, search, is_unattributed)
+    assert ([s["trace_id"] for s in data["sessions"]], data["total"]) == (["s7"], 41)
+    _assert_details_read_only(repo, ["s7"])
+    repo.get_framework_page.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_the_cost_sort_pages_at_the_catalog_rates_of_every_window_model():
+    handler = make_handler(cost_facts=[BASE_COST_ROW])
+    repo = handler._repo
+    repo.get_cost_models = AsyncMock(return_value=["claude-haiku", UNPRICED_MODEL])
+    with _two_model_catalog():
+        await handler.get_sessions(make_filter(), page=0, per_page=20, sort_by="cost_usd", search=None)
+    assert repo.get_cost_page.call_args.args[3] == [
+        ModelRates("claude-haiku", input=1e-6, output=5e-6, cache_read=0.1e-6),
+        ModelRates(UNPRICED_MODEL),
+    ]
+    # The rates come from the models of the token rows, never from a page.
+    assert repo.get_cost_page.call_args.args[0].session_ids is None
+
+
+@pytest.mark.parametrize("sort_by", ["start_time", "ctx_per_call"])
+@pytest.mark.asyncio
+async def test_sorts_without_money_page_without_rates(sort_by):
+    handler = make_handler(cost_facts=[BASE_COST_ROW])
+    await handler.get_sessions(make_filter(), page=0, per_page=20, sort_by=sort_by, search=None)
+    assert handler._repo.get_session_page.call_args.kwargs.get("rates") is None
+
+
+_WINDOW = [("s1", []), ("s2", ["sdlc-factory:complexity-assessor"]), ("s3", []), ("s4", [])]
+
+
+@pytest.mark.parametrize("sort_by", SESSION_PAGE_SORTS)
+@pytest.mark.parametrize(("search", "is_unattributed"), _FILTER_COMBINATIONS)
+@pytest.mark.asyncio
+async def test_the_framework_filter_classifies_the_ordered_window_and_reads_details_only_for_its_page(
+    sort_by, search, is_unattributed
+):
+    """s1, s3 and s4 are Pure chat in the reader's order; page 1 of 2 per page is s4 alone, of 3."""
+    handler = make_handler(cost_facts=[{**BASE_COST_ROW, "session_id": "s4"}])
+    repo = handler._repo
+    repo.get_framework_page = framework_page_reader(_WINDOW)
     data, _, _ = await handler.get_sessions(
-        make_filter(), page=1, per_page=2, sort_by=sort_by, search=None, framework=framework
+        make_filter(),
+        page=1,
+        per_page=2,
+        sort_by=sort_by,
+        search=search,
+        framework="Pure chat",
+        is_unattributed=is_unattributed,
     )
-    handler._repo.get_session_page.assert_not_called()
-    assert handler._repo.get_session_cost_facts.call_args.args[0].session_ids is None
-    assert ([s["trace_id"] for s in data["sessions"]], data["total"]) == (["s2"], 3)
+    call = repo.get_framework_page.call_args
+    assert call.args[1] == sort_by
+    assert (call.kwargs["search"], call.kwargs["is_unattributed"]) == (search, is_unattributed)
+    assert ([s["trace_id"] for s in data["sessions"]], data["total"]) == (["s4"], 3)
+    _assert_details_read_only(repo, ["s4"])
+    repo.get_session_page.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_the_framework_filter_keeps_the_readers_order():
+    handler = make_handler(cost_facts=[{**BASE_COST_ROW, "session_id": sid} for sid in ("s1", "s3", "s4")])
+    handler._repo.get_framework_page = framework_page_reader([("s4", []), ("s1", []), ("s3", [])])
+    data, _, _ = await handler.get_sessions(
+        make_filter(), page=0, per_page=20, sort_by="start_time", search=None, framework="Pure chat"
+    )
+    assert [s["trace_id"] for s in data["sessions"]] == ["s4", "s1", "s3"]
+
+
+@pytest.mark.asyncio
+async def test_the_framework_filter_with_the_cost_sort_orders_the_window_at_the_catalog_rates():
+    handler = make_handler(cost_facts=[{**BASE_COST_ROW, "session_id": "s4"}])
+    repo = handler._repo
+    repo.get_cost_models = AsyncMock(return_value=["claude-haiku"])
+    repo.get_window_model_flags = AsyncMock(return_value=[("claude-haiku", _INPUT_ONLY)])
+    repo.get_framework_page = framework_page_reader(_WINDOW, [("claude-haiku", _INPUT_ONLY)])
+    with _two_model_catalog():
+        await handler.get_sessions(
+            make_filter(), page=0, per_page=20, sort_by="cost_usd", search=None, framework="Pure chat"
+        )
+    assert repo.get_framework_page.call_args.kwargs["rates"] == [
+        ModelRates("claude-haiku", input=1e-6, output=5e-6, cache_read=0.1e-6)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_framework_page_past_the_end_lists_nothing_with_the_matched_total_and_reads_no_facts():
+    handler = make_handler()
+    handler._repo.get_framework_page = framework_page_reader(_WINDOW)
+    data, _, data_as_of = await handler.get_sessions(
+        make_filter(), page=5, per_page=2, sort_by="start_time", search=None, framework="Pure chat"
+    )
+    assert (data, data_as_of) == ({"sessions": [], "page": 5, "per_page": 2, "total": 3}, None)
+    handler._repo.get_session_cost_facts.assert_not_called()
+
+
+# The window's models: one uncatalogued and used, one catalogued without a cache-write rate and used for cache
+# writes, one uncatalogued with zero tokens only, and the page's priced model. Only the last is on the page.
+_WINDOW_FLAGS = [
+    (UNPRICED_MODEL, _INPUT_ONLY),
+    ("claude-opus-5", (False, False, False, True, False)),
+    ("zero-token-model-xyz", _NO_TOKENS),
+    ("claude-haiku", (True, True, False, False, False)),
+]
+_PAGE_MODEL_ROWS = [{"session_id": "s1", "model_name": "claude-haiku", "input_tokens": 10, "output_tokens": 1}]
+
+
+@pytest.mark.parametrize(
+    ("sort_by", "framework", "search"),
+    [("cost_usd", None, None), ("start_time", "Pure chat", None), ("cost_usd", "Pure chat", "fix")],
+)
+@pytest.mark.asyncio
+async def test_unpriced_models_cover_the_whole_filtered_window_on_the_cost_sort_and_the_framework_filter(
+    sort_by, framework, search
+):
+    handler = make_handler(cost_facts=[BASE_COST_ROW])
+    repo = handler._repo
+    repo.get_window_model_flags = AsyncMock(return_value=_WINDOW_FLAGS)
+    repo.get_cost_models = AsyncMock(return_value=[model for model, _ in _WINDOW_FLAGS])
+    repo.get_cost_page = AsyncMock(return_value=(1, ["s1"], _WINDOW_FLAGS))
+    repo.get_framework_page = framework_page_reader([("s1", [])], _WINDOW_FLAGS)
+    repo.get_session_model_costs = AsyncMock(return_value=_PAGE_MODEL_ROWS)
+    with _two_model_catalog():
+        data, pricer, _ = await handler.get_sessions(
+            make_filter(), page=0, per_page=1, sort_by=sort_by, search=search, framework=framework
+        )
+    assert [s["trace_id"] for s in data["sessions"]] == ["s1"]
+    assert pricer.unpriced == sorted([UNPRICED_MODEL, "claude-opus-5"])
+
+
+@pytest.mark.parametrize(("sort_by", "search"), [("start_time", None), ("ctx_per_call", None), ("start_time", "fix")])
+@pytest.mark.asyncio
+async def test_unpriced_models_cover_only_the_pages_rows_on_the_other_sorts_with_no_window_statement(sort_by, search):
+    """As on main: the models of the page's rows, priced by the page's tokens; nothing is read for the window."""
+    handler = make_handler(cost_facts=[BASE_COST_ROW])
+    repo = handler._repo
+    repo.get_window_model_flags = AsyncMock(return_value=_WINDOW_FLAGS)
+    page_rows = [*_PAGE_MODEL_ROWS, {"session_id": "s1", "model_name": UNPRICED_MODEL, "input_tokens": 5}]
+    repo.get_session_model_costs = AsyncMock(return_value=page_rows)
+    with _two_model_catalog():
+        _, pricer, _ = await handler.get_sessions(
+            make_filter(), page=0, per_page=1, sort_by=sort_by, search=search, framework=None
+        )
+    repo.get_window_model_flags.assert_not_called()
+    repo.get_framework_page.assert_not_called()
+    assert pricer.unpriced == [UNPRICED_MODEL]  # claude-opus-5 is used only off the page: not listed
+
+
+@pytest.mark.asyncio
+async def test_a_zero_token_uncatalogued_model_on_the_page_is_not_listed():
+    handler = make_handler(cost_facts=[BASE_COST_ROW])
+    handler._repo.get_session_model_costs = AsyncMock(
+        return_value=[{"session_id": "s1", "model_name": "zero-token-model-xyz"}]
+    )
+    with _two_model_catalog():
+        _, pricer, _ = await handler.get_sessions(make_filter(), page=0, per_page=1, sort_by="start_time", search=None)
+    assert pricer.unpriced == []
+
+
+@pytest.mark.asyncio
+async def test_an_empty_page_reports_no_unpriced_models_on_the_default_sort():
+    handler = make_handler()
+    handler._repo.get_session_page = AsyncMock(return_value=(3, []))
+    _, pricer, _ = await handler.get_sessions(make_filter(), page=9, per_page=5, sort_by="start_time", search=None)
+    assert pricer.unpriced == []
+    handler._repo.get_window_model_flags.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_an_empty_cost_sort_page_still_reports_the_windows_unpriced_models():
+    handler = make_handler()
+    handler._repo.get_cost_page = AsyncMock(return_value=(3, [], [(UNPRICED_MODEL, _INPUT_ONLY)]))
+    _, pricer, _ = await handler.get_sessions(make_filter(), page=9, per_page=5, sort_by="cost_usd", search=None)
+    assert pricer.unpriced == [UNPRICED_MODEL]
+
+
+@pytest.mark.asyncio
+async def test_unpriced_models_come_from_the_viewers_own_sessions_under_own_only():
+    """Page rows are the viewer's own sessions; the cost sort's flags statement carries the viewer's scope."""
+    own = LocalAnalyticsFilter(scope=OWN_SCOPE, start_dt=datetime(2026, 1, 1), end_dt=datetime(2026, 12, 31))
+    handler = make_handler(cost_facts=[BASE_COST_ROW])
+    handler._repo.get_cost_page = AsyncMock(return_value=(1, ["s1"], [(UNPRICED_MODEL, _INPUT_ONLY)]))
+    _, pricer, _ = await handler.get_sessions(own, page=0, per_page=20, sort_by="cost_usd", search=None)
+    flags_filter = handler._repo.get_cost_page.call_args.args[0]
+    assert (flags_filter.scope, flags_filter.session_ids) == (OWN_SCOPE, None)
+    assert pricer.unpriced == [UNPRICED_MODEL]
 
 
 @pytest.mark.asyncio
@@ -182,10 +432,13 @@ async def test_costless_sessions_are_logged_as_a_count_only():
 
 @pytest.mark.parametrize(("sort_by", "framework"), [("cost_usd", None), ("start_time", "Pure chat")])
 @pytest.mark.asyncio
-async def test_python_paged_costless_log_counts_only_the_listed_page(sort_by, framework):
-    """Three sessions are fetched for the whole window but one is listed: the log says 1, not 3."""
+async def test_costless_log_counts_only_the_listed_page(sort_by, framework):
+    """Three sessions match the window but one is listed: the log says 1, not 3."""
     rows = [{**COSTLESS_ROW, "session_id": f"s{n}"} for n in range(3)]
-    handler = make_handler(cost_facts=rows)
+    handler = make_handler(cost_facts=rows[:1])
+    handler._repo.get_session_page = AsyncMock(return_value=(3, ["s0"]))
+    handler._repo.get_cost_page = AsyncMock(return_value=(3, ["s0"], []))
+    handler._repo.get_framework_page = framework_page_reader([(r["session_id"], []) for r in rows])
     with patch("codemie.service.analytics.handlers.cli_analytics_handler.logger") as log:
         data, _, _ = await handler.get_sessions(
             make_filter(), page=0, per_page=1, sort_by=sort_by, search=None, framework=framework
@@ -206,9 +459,6 @@ async def test_totals_only_session_is_not_counted_as_costless_in_the_log():
         data, _, _ = await handler.get_sessions(make_filter(), page=0, per_page=20, sort_by="start_time", search=None)
     assert {s["trace_id"]: s["cost_available"] for s in data["sessions"]} == {"s2": False, "s4": True}
     assert log.info.call_args.args[1:] == (1, 1, 0)
-
-
-UNPRICED_MODEL = "definitely-not-a-real-model-xyz-9999"
 
 
 @pytest.mark.asyncio
@@ -366,7 +616,7 @@ def make_repo_handler(cost_facts):
     repo.get_lines_by_session = AsyncMock(return_value=[])
     repo.get_session_model_costs = AsyncMock(return_value=[])
     repo.get_session_funding_costs = AsyncMock(return_value=[])
-    return LocalAnalyticsHandler(repo)
+    return LocalAnalyticsHandler(bounded_to_itself(repo))
 
 
 BASE_COST_FACT = {
@@ -498,6 +748,7 @@ async def test_is_unattributed_filter_delegates_to_repository():
     repo = MagicMock()
     repo.get_session_cost_facts = AsyncMock(return_value=unattributed_rows)
     repo.get_session_page = page_reader(unattributed_rows)
+    with_window_reads(repo)
     repo.get_turns_by_session = AsyncMock(return_value=[])
     repo.get_tool_success_by_session = AsyncMock(return_value=[])
     repo.get_lines_by_session = AsyncMock(return_value=[])
@@ -505,7 +756,7 @@ async def test_is_unattributed_filter_delegates_to_repository():
     repo.get_session_model_costs = AsyncMock(return_value=[])
     repo.get_session_funding_costs = AsyncMock(return_value=[])
     repo.get_skill_names_by_session = AsyncMock(return_value=[])
-    handler = LocalAnalyticsHandler(repo)
+    handler = LocalAnalyticsHandler(bounded_to_itself(repo))
 
     await handler.get_sessions(
         make_filter(), page=0, per_page=20, sort_by="start_time", search=None, is_unattributed=True
@@ -524,6 +775,7 @@ async def test_is_unattributed_false_delegates_to_repository():
     repo = MagicMock()
     repo.get_session_cost_facts = AsyncMock(return_value=rows)
     repo.get_session_page = page_reader(rows)
+    with_window_reads(repo)
     repo.get_turns_by_session = AsyncMock(return_value=[])
     repo.get_tool_success_by_session = AsyncMock(return_value=[])
     repo.get_lines_by_session = AsyncMock(return_value=[])
@@ -531,7 +783,7 @@ async def test_is_unattributed_false_delegates_to_repository():
     repo.get_session_model_costs = AsyncMock(return_value=[])
     repo.get_session_funding_costs = AsyncMock(return_value=[])
     repo.get_skill_names_by_session = AsyncMock(return_value=[])
-    handler = LocalAnalyticsHandler(repo)
+    handler = LocalAnalyticsHandler(bounded_to_itself(repo))
 
     await handler.get_sessions(
         make_filter(), page=0, per_page=20, sort_by="start_time", search=None, is_unattributed=False
@@ -553,7 +805,7 @@ async def test_repositories_search_delegates_to_repository():
     repo.get_lines_by_session = AsyncMock(return_value=[])
     repo.get_session_model_costs = AsyncMock(return_value=[])
     repo.get_session_funding_costs = AsyncMock(return_value=[])
-    handler = LocalAnalyticsHandler(repo)
+    handler = LocalAnalyticsHandler(bounded_to_itself(repo))
 
     await handler.get_repositories(make_filter(), page=0, per_page=50, include_branches=False, search="codem")
     repo.get_session_cost_facts.assert_called_once_with(ANY, search="codem", include_costless=True)
@@ -574,7 +826,7 @@ async def test_repositories_search_none_delegates_to_repository():
     repo.get_lines_by_session = AsyncMock(return_value=[])
     repo.get_session_model_costs = AsyncMock(return_value=[])
     repo.get_session_funding_costs = AsyncMock(return_value=[])
-    handler = LocalAnalyticsHandler(repo)
+    handler = LocalAnalyticsHandler(bounded_to_itself(repo))
 
     await handler.get_repositories(make_filter(), page=0, per_page=50, include_branches=False, search=None)
     repo.get_session_cost_facts.assert_called_once_with(ANY, search=None, include_costless=True)
@@ -586,6 +838,7 @@ async def test_branch_filter_forwarded_to_get_session_cost_facts():
     repo = MagicMock()
     repo.get_session_cost_facts = AsyncMock(return_value=[BASE_COST_ROW])
     repo.get_session_page = page_reader([BASE_COST_ROW])
+    with_window_reads(repo)
     repo.get_turns_by_session = AsyncMock(return_value=[])
     repo.get_tool_success_by_session = AsyncMock(return_value=[])
     repo.get_lines_by_session = AsyncMock(return_value=[])
@@ -593,7 +846,7 @@ async def test_branch_filter_forwarded_to_get_session_cost_facts():
     repo.get_session_model_costs = AsyncMock(return_value=[])
     repo.get_session_funding_costs = AsyncMock(return_value=[])
     repo.get_skill_names_by_session = AsyncMock(return_value=[])
-    handler = LocalAnalyticsHandler(repo)
+    handler = LocalAnalyticsHandler(bounded_to_itself(repo))
 
     await handler.get_sessions(make_filter(), page=0, per_page=20, sort_by="start_time", search=None, branch="main")
 
@@ -607,6 +860,7 @@ async def test_branch_none_when_not_provided():
     repo = MagicMock()
     repo.get_session_cost_facts = AsyncMock(return_value=[BASE_COST_ROW])
     repo.get_session_page = page_reader([BASE_COST_ROW])
+    with_window_reads(repo)
     repo.get_turns_by_session = AsyncMock(return_value=[])
     repo.get_tool_success_by_session = AsyncMock(return_value=[])
     repo.get_lines_by_session = AsyncMock(return_value=[])
@@ -614,7 +868,7 @@ async def test_branch_none_when_not_provided():
     repo.get_session_model_costs = AsyncMock(return_value=[])
     repo.get_session_funding_costs = AsyncMock(return_value=[])
     repo.get_skill_names_by_session = AsyncMock(return_value=[])
-    handler = LocalAnalyticsHandler(repo)
+    handler = LocalAnalyticsHandler(bounded_to_itself(repo))
 
     await handler.get_sessions(make_filter(), page=0, per_page=20, sort_by="start_time", search=None)
 
@@ -707,12 +961,13 @@ async def test_get_sessions_prices_cache_reads_per_model_and_lists_all_models():
     repo = MagicMock()
     repo.get_session_cost_facts = AsyncMock(return_value=cost_facts)
     repo.get_session_page = page_reader(cost_facts)
+    with_window_reads(repo)
     repo.get_turns_by_session = AsyncMock(return_value=[])
     repo.get_tool_success_by_session = AsyncMock(return_value=[])
     repo.get_lines_by_session = AsyncMock(return_value=[])
     repo.get_session_model_costs = AsyncMock(return_value=model_costs)
     repo.get_skill_names_by_session = AsyncMock(return_value=[])
-    handler = LocalAnalyticsHandler(repo)
+    handler = LocalAnalyticsHandler(bounded_to_itself(repo))
 
     with _two_model_catalog():
         data, pricer, _ = await handler.get_sessions(
@@ -1175,14 +1430,14 @@ def _users_repo(user_rows):
 @pytest.mark.asyncio
 async def test_get_users_avg_duration_only_priced_sessions():
     repo = _users_repo([{"developer_name": "dev", "session_ids": ["s1", "s2"]}])
-    result, _ = await LocalAnalyticsHandler(repo).get_users(make_filter(), page=None, per_page=None)
+    result, _ = await LocalAnalyticsHandler(bounded_to_itself(repo)).get_users(make_filter(), page=None, per_page=None)
     assert result["avg_session_duration_ms"] == 2000
 
 
 @pytest.mark.asyncio
 async def test_get_users_avg_duration_none_when_no_priced_sessions():
     repo = _users_repo([])
-    result, _ = await LocalAnalyticsHandler(repo).get_users(make_filter(), page=None, per_page=None)
+    result, _ = await LocalAnalyticsHandler(bounded_to_itself(repo)).get_users(make_filter(), page=None, per_page=None)
     assert result["avg_session_duration_ms"] is None
 
 
@@ -1290,6 +1545,7 @@ async def test_rows_with_developer_name_also_carry_user_email() -> None:
     repo.get_cost_by_user = AsyncMock(return_value=[{"developer_name": email, "session_ids": ["s1"]}])
     repo.get_session_cost_facts = AsyncMock(return_value=[{**BASE_COST_ROW, "developer_name": email}])
     repo.get_session_page = page_reader([BASE_COST_ROW])
+    with_window_reads(repo)
     repo.get_session_detail_meta = AsyncMock(
         return_value=[
             {
@@ -1300,7 +1556,7 @@ async def test_rows_with_developer_name_also_carry_user_email() -> None:
             }
         ]
     )
-    handler = LocalAnalyticsHandler(repo)
+    handler = LocalAnalyticsHandler(bounded_to_itself(repo))
 
     users, _ = await handler.get_users(make_filter(), page=None, per_page=None)
     cost, _ = await handler.get_cost(make_filter())
@@ -1354,7 +1610,7 @@ async def test_overview_avg_context_per_call_divides_by_api_call_count():
     repo.get_session_funding_costs = AsyncMock(return_value=[])
     repo.get_class_lists = AsyncMock(return_value=[])
     repo.get_session_cost_facts = AsyncMock(return_value=[{**BASE_COST_ROW, "session_id": "s1"}])
-    handler = LocalAnalyticsHandler(repo)
+    handler = LocalAnalyticsHandler(bounded_to_itself(repo))
 
     data, _, _ = await handler.get_overview(make_filter())
 
@@ -1370,6 +1626,7 @@ async def test_sessions_ctx_per_call_field_uses_api_call_count_and_sorts_by_it()
     repo.get_session_cost_facts = AsyncMock(return_value=[s1, s2])
     # The reader orders the page (highest cache-read tokens per API call first); the handler keeps that order.
     repo.get_session_page = page_reader([s1, s2], ordered_ids=["s2", "s1"])
+    with_window_reads(repo)
     # turns-based ratio would rank s1 (1000/10=100) above s2 (1000/100=10) — the opposite order.
     repo.get_turns_by_session = AsyncMock(
         return_value=[{"session_id": "s1", "turns": 10}, {"session_id": "s2", "turns": 100}]
@@ -1380,7 +1637,7 @@ async def test_sessions_ctx_per_call_field_uses_api_call_count_and_sorts_by_it()
     repo.get_skill_names_by_session = AsyncMock(return_value=[])
     repo.get_session_model_costs = AsyncMock(return_value=[])
     repo.get_session_funding_costs = AsyncMock(return_value=[])
-    handler = LocalAnalyticsHandler(repo)
+    handler = LocalAnalyticsHandler(bounded_to_itself(repo))
 
     data, _, _ = await handler.get_sessions(make_filter(), page=0, per_page=20, sort_by="ctx_per_call", search=None)
 
@@ -1425,7 +1682,7 @@ async def test_efficiency_worst_session_and_avg_use_api_call_count():
     repo.get_lines_totals = AsyncMock(return_value=[])
     repo.get_lines_by_session = AsyncMock(return_value=[])
     repo.get_class_lists = AsyncMock(return_value=[])
-    handler = LocalAnalyticsHandler(repo)
+    handler = LocalAnalyticsHandler(bounded_to_itself(repo))
 
     data, _ = await handler.get_efficiency(make_filter())
 
@@ -1467,7 +1724,7 @@ def make_detail_handler(meta_row):
     repo.get_session_detail_dispatches = AsyncMock(return_value=[])
     repo.get_session_detail_model_costs = AsyncMock(return_value=[])
     repo.get_skill_names_by_session = AsyncMock(return_value=[{"skill_names": []}])
-    return LocalAnalyticsHandler(repo)
+    return LocalAnalyticsHandler(bounded_to_itself(repo))
 
 
 @pytest.mark.asyncio
@@ -1693,7 +1950,7 @@ def _money_handler(model_rows, **overrides):
     repo.get_session_funding_costs = AsyncMock(return_value=[])
     for name, rows in overrides.items():
         setattr(repo, name, AsyncMock(return_value=rows))
-    return LocalAnalyticsHandler(repo)
+    return LocalAnalyticsHandler(bounded_to_itself(repo))
 
 
 async def _priced(call, source: str = "litellm"):
@@ -1796,12 +2053,13 @@ async def test_repositories_and_sessions_price_only_the_sessions_they_return():
     repo_handler = _money_handler(
         model_rows, get_session_cost_facts=[{**BASE_COST_FACT, "session_id": "s-opus", "repository": "repo"}]
     )
+    # The reader's search finds s-opus alone; the window also holds s-other, whose model is uncatalogued.
     session_handler = _money_handler(
-        model_rows,
-        get_session_cost_facts=[
-            {**BASE_COST_ROW, "session_id": "s-opus", "prompt": "fix the parser"},
-            {**BASE_COST_ROW, "session_id": "s-other", "prompt": "write the docs"},
-        ],
+        [_OPUS_ROW],
+        get_session_cost_facts=[{**BASE_COST_ROW, "session_id": "s-opus", "prompt": "fix the parser"}],
+        get_session_page=(1, ["s-opus"]),
+        get_cost_models=["claude-opus-5-5", "mystery-model"],
+        get_cost_page=(1, ["s-opus"], [("claude-opus-5-5", (True,) * 5), ("mystery-model", (True,) * 5)]),
     )
 
     repos, repo_pricer = await _priced(repo_handler.get_repositories(make_filter(), 0, 20, False, search="repo"))
@@ -1813,7 +2071,9 @@ async def test_repositories_and_sessions_price_only_the_sessions_they_return():
     assert [(s["trace_id"], s["cost_usd"]) for s in sessions["sessions"]] == [
         ("s-opus", pytest.approx(26.96510036, abs=1e-9))
     ]
-    assert repo_pricer.unpriced == session_pricer.unpriced == []
+    assert session_handler._repo.get_cost_page.call_args.args[4] == "parser"
+    # Unpriced models describe the whole filtered window, not only the listed page.
+    assert (repo_pricer.unpriced, session_pricer.unpriced) == ([], ["mystery-model"])
 
 
 @pytest.mark.asyncio
@@ -1841,10 +2101,9 @@ _MARKUP = '<pasted_content id="b23a">\nStep 1: log in\n</pasted_content id="b23a
 _CLEAN = "Step 1: log in"
 
 
-async def _served_sessions(*rows, search=None):
+async def _served_sessions(*rows):
     handler = make_handler(cost_facts=[{**BASE_COST_ROW, **r} for r in rows])
-    # cost_usd is paged in Python, so the search runs over the handler's served rows, not in a stubbed SQL page.
-    data, _, _ = await handler.get_sessions(make_filter(), page=0, per_page=20, sort_by="cost_usd", search=search)
+    data, _, _ = await handler.get_sessions(make_filter(), page=0, per_page=20, sort_by="cost_usd", search=None)
     return data["sessions"]
 
 
@@ -1859,7 +2118,7 @@ def _efficiency_handler(row):
     repo.get_lines_totals = AsyncMock(return_value=[])
     repo.get_lines_by_session = AsyncMock(return_value=[])
     repo.get_class_lists = AsyncMock(return_value=[])
-    return LocalAnalyticsHandler(repo)
+    return LocalAnalyticsHandler(bounded_to_itself(repo))
 
 
 @pytest.mark.asyncio
@@ -1917,37 +2176,6 @@ async def test_a_first_prompt_that_cleans_to_nothing_is_served_as_the_repository
 async def test_a_session_row_carries_no_first_prompt_key():
     (row,) = await _served_sessions({"prompt": "x", "session_title": "Name"})
     assert "first_prompt" not in row and "session_title" not in row
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("term", "expected"),
-    [
-        ("release", 1),  # a word of the name
-        ("smoke", 1),  # a word of the first prompt of a named session
-        ("my-repo", 1),
-        ("feature-x", 1),
-        ("pasted_content", 0),
-        ("nothing-like-this", 0),
-    ],
-)
-async def test_a_named_session_is_found_by_name_prompt_repository_and_branch(term, expected):
-    rows = await _served_sessions(
-        {
-            "prompt": "Run the smoke test\n\n" + _MARKUP,
-            "session_title": "Release plan",
-            "repository": "my-repo",
-            "branch": "feature-x",
-        },
-        search=term,
-    )
-    assert len(rows) == expected
-
-
-@pytest.mark.asyncio
-async def test_a_search_for_the_markup_name_finds_no_unnamed_session_either():
-    rows = await _served_sessions({"prompt": _MARKUP, "session_title": ""}, search="pasted_content")
-    assert rows == []
 
 
 @pytest.mark.asyncio
@@ -2232,10 +2460,45 @@ async def test_overview_total_sessions_is_read_from_get_cost_kpis_not_recomputed
     repo.get_class_lists = AsyncMock(return_value=[])
     repo.get_session_cost_facts = AsyncMock(return_value=[BASE_COST_ROW])
     repo.get_session_page = page_reader([BASE_COST_ROW])
-    handler = LocalAnalyticsHandler(repo)
+    with_window_reads(repo, [BASE_COST_ROW])
+    handler = LocalAnalyticsHandler(bounded_to_itself(repo))
 
     overview, _, _ = await handler.get_overview(make_filter())
     sessions, _, _ = await handler.get_sessions(make_filter(), page=0, per_page=20, sort_by="start_time", search=None)
 
     assert overview["kpis"]["total_sessions"] == 5
     assert len(sessions["sessions"]) == 1
+
+
+@pytest.mark.parametrize("search", ["", " ", "  \t\n"])
+@pytest.mark.asyncio
+async def test_a_blank_search_is_read_as_no_search(search):
+    handler = make_handler(cost_facts=[{**BASE_COST_ROW, "session_id": "s7"}])
+    repo = handler._repo
+    await handler.get_sessions(make_filter(), page=0, per_page=20, sort_by="start_time", search=search)
+    assert repo.get_session_page.call_args.args[4] is None
+
+
+@pytest.mark.asyncio
+async def test_a_failing_detail_statement_raises_itself_and_cancels_its_siblings_before_the_reader_is_released():
+    handler = make_handler(cost_facts=[{**BASE_COST_ROW, "session_id": "s7"}])
+    repo = handler._repo
+    repo.get_session_page = AsyncMock(return_value=(1, ["s7"]))
+    cancelled = []
+
+    async def pending(*_args, **_kwargs):
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            cancelled.append("turns")
+            raise
+
+    async def failing(*_args, **_kwargs):
+        await asyncio.sleep(0)  # let the sibling start first
+        raise TimeoutError("statement timeout")
+
+    repo.get_turns_by_session = pending
+    repo.get_lines_by_session = failing
+    with pytest.raises(TimeoutError, match="statement timeout"):  # not an ExceptionGroup
+        await handler.get_sessions(make_filter(), page=0, per_page=20, sort_by="start_time", search=None)
+    assert cancelled == ["turns"]  # cancelled and awaited before get_sessions returned

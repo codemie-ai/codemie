@@ -30,6 +30,7 @@ from codemie.repository.cli_analytics.postgres import dirty, rollups, session_de
 from codemie.repository.cli_analytics.postgres.dirty import RollupFamily
 from codemie.repository.cli_analytics.postgres.fork_attribution import executed_tool_span, executed_tool_start
 from codemie.repository.cli_analytics.postgres.rollups import RECOMPUTE, RollupRefresher
+from codemie.repository.cli_analytics.postgres.session_activity import DERIVE_SQL
 from codemie.repository.cli_analytics.vocabulary import (
     PASTED_CONTENT_TAG_SQL,
     SENTINEL_PREFIX_RAW,
@@ -44,6 +45,7 @@ class QueueConnection:
         self.queued = queued
         self.batch_size = batch_size
         self.executed: list[str] = []
+        self.executed_args: list[tuple] = []
         self.timeouts: dict[str, float | None] = {}
         self.transactions = 0
 
@@ -62,6 +64,7 @@ class QueueConnection:
 
     async def execute(self, sql, *args, timeout=None):
         self.executed.append(sql)
+        self.executed_args.append(args)
         self.timeouts[sql] = timeout
         return "INSERT 0 42"
 
@@ -122,7 +125,9 @@ async def test_a_batch_recomputes_every_family_then_releases_its_keys_in_one_tra
     assert conn.executed[0].startswith("SET LOCAL statement_timeout")
     assert conn.executed[-3:] == [rollups._LOCK_CLAIMED_KEYS, rollups._RELEASE_KEYS, rollups._RESTAMP_KEYS]
     assert "r.version = k.version" in rollups._RELEASE_KEYS  # only keys not marked again meanwhile
-    assert conn.executed[-3 - len(RECOMPUTE) : -3] == RECOMPUTE
+    # the stored activity facts of the batch's sessions are derived after the last family, before the keys are released
+    assert conn.executed[-4] == DERIVE_SQL
+    assert conn.executed[-4 - len(RECOMPUTE) : -4] == RECOMPUTE
 
 
 def test_request_grouping_reads_as_far_as_usage_rows_mark_the_neighbour_day() -> None:
@@ -671,7 +676,13 @@ async def test_recompute_updates_derived_columns_after_session_statements() -> N
     assert timeout == rollups._REFRESH_CLIENT_TIMEOUT_S  # the refresh budget, as every other statement
     assert session_ids == ["s1", "s2"]
     assert conn.executed[position - len(RECOMPUTE) : position] == RECOMPUTE  # after the SESSION statements
-    assert conn.executed[position:] == [rollups._LOCK_CLAIMED_KEYS, rollups._RELEASE_KEYS, rollups._RESTAMP_KEYS]
+    assert conn.executed[position:] == [
+        DERIVE_SQL,  # every session of the keys, whatever the kind (but not the empty id)
+        rollups._LOCK_CLAIMED_KEYS,
+        rollups._RELEASE_KEYS,
+        rollups._RESTAMP_KEYS,
+    ]
+    assert conn.executed_args[position] == (["s1", "s2", "s3"],)
 
 
 def test_subagent_invocations_is_upserted_by_session() -> None:

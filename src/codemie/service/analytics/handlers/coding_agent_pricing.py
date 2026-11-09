@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
 from codemie.configs.llm_config import CostConfig
+from codemie.repository.cli_analytics.ports import ModelRates
 from codemie.service.llm_service.llm_service import llm_service
 
 logger = logging.getLogger(__name__)
@@ -93,6 +95,34 @@ class TokenCounts:
     cache_1h: int | None = None
 
 
+def kind_tokens(counts: TokenCounts) -> tuple[int, int, int, int, int]:
+    """Tokens per priced kind: input, output, cache read, cache write (5m + unsplit), cache write 1h.
+    The cache split never prices more than the cache write it splits."""
+    cache_1h = min(counts.cache_1h or 0, counts.cache_creation)
+    cache_5m = min(counts.cache_5m or 0, counts.cache_creation - cache_1h)
+    unsplit = counts.cache_creation - cache_1h - cache_5m
+    return counts.input, counts.output, counts.cache_read, cache_5m + unsplit, cache_1h
+
+
+def _kind_rates(cost: CostConfig) -> tuple[float | None, ...]:
+    """The kind-to-rate table, in `kind_tokens` order; the one place that maps a kind to its catalog rate."""
+    return (
+        cost.input,
+        cost.output,
+        cost.cache_read_input_token_cost,
+        cost.cache_creation_input_token_cost,
+        cost.cache_creation_input_token_cost_above_1hr,
+    )
+
+
+def model_rates_for(model: str) -> ModelRates:
+    """Catalog rates of a raw model name (all None when it has no catalog entry)."""
+    cost = lookup_cost_config(model) if model else None
+    if cost is None:
+        return ModelRates(model=model)
+    return ModelRates(model, *_kind_rates(cost))
+
+
 class CatalogPricer:
     """Prices token counts at the platform catalog; one instance per API request.
 
@@ -123,24 +153,15 @@ class CatalogPricer:
 
     def price_flagged(self, model: str, counts: TokenCounts) -> tuple[float, bool]:
         """`price`, and whether some of these tokens had no price (the model is then in `unpriced`)."""
-        # The split never prices more than the cache write it splits.
-        cache_1h = min(counts.cache_1h or 0, counts.cache_creation)
-        cache_5m = min(counts.cache_5m or 0, counts.cache_creation - cache_1h)
-        unsplit = counts.cache_creation - cache_1h - cache_5m
+        tokens_by_kind = kind_tokens(counts)
         cost = self._cost(model)
         total, missing = 0.0, False
         if cost is None:
-            missing = bool(
-                counts.input or counts.output or counts.cache_read or counts.cache_creation or cache_5m or cache_1h
-            )
+            # A kind is used when its tokens are positive, as for a catalogued model below and as in the SQL flags
+            # (`bool_or(tokens > 0)`): a negative sum is not usage. `cache_creation` is the sum of the two write kinds.
+            missing = any(tokens > 0 for tokens in tokens_by_kind)
         else:
-            for tokens, rate in (
-                (counts.input, cost.input),
-                (counts.output, cost.output),
-                (counts.cache_read, cost.cache_read_input_token_cost),
-                (cache_5m + unsplit, cost.cache_creation_input_token_cost),
-                (cache_1h, cost.cache_creation_input_token_cost_above_1hr),
-            ):
+            for tokens, rate in zip(tokens_by_kind, _kind_rates(cost), strict=True):
                 if tokens <= 0:
                     continue
                 if rate is None:
@@ -150,3 +171,14 @@ class CatalogPricer:
         if missing:
             self._unpriced.add(model)
         return total, missing
+
+    def record_unpriced_from_flags(self, rows: Iterable[tuple[str, Sequence[bool]]]) -> None:
+        """Record unpriced models from per-kind "used" flags (`kind_tokens` order, true = tokens > 0) instead of
+        token counts: an uncatalogued model with any used kind, or a catalogued one missing the rate of a used kind."""
+        for model, used in rows:
+            cost = self._cost(model)
+            if cost is None:
+                if any(used):
+                    self._unpriced.add(model)
+            elif any(flag and rate is None for flag, rate in zip(used, _kind_rates(cost), strict=True)):
+                self._unpriced.add(model)

@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import asyncpg
 import pytest
 
-from codemie.repository.cli_analytics.postgres import maintenance
+from codemie.repository.cli_analytics.postgres import maintenance, session_activity
 from codemie.repository.cli_analytics.postgres.maintenance import (
     LEDGER_TABLE,
     RAW_TABLES,
@@ -149,8 +149,25 @@ def test_unrecognised_names_are_never_dropped(name):
 # ── PartitionMaintainer.run, with the database steps faked ────────────────────
 
 
+_REAL_DERIVE_SESSION_ACTIVITY = PartitionMaintainer._derive_session_activity  # before the fixture below replaces it
+
+
+@pytest.fixture(autouse=True)
+def _no_activity_backfill():
+    """The other tests' connection fakes do not model the backfill's statements, so the step is replaced there; the
+    tests of the step itself (the end of this file) call `_REAL_DERIVE_SESSION_ACTIVITY` with the backfill patched."""
+    with patch.object(PartitionMaintainer, "_derive_session_activity", AsyncMock()):
+        yield
+
+
 def _steps(**failures):
-    names = ("_ensure_partitions", "_drop_expired", "_purge_expired_rows", "_count_default_rows")
+    names = (
+        "_ensure_partitions",
+        "_drop_expired",
+        "_purge_expired_rows",
+        "_derive_session_activity",
+        "_count_default_rows",
+    )
     return {name: AsyncMock(side_effect=failures.get(name)) for name in names}
 
 
@@ -165,7 +182,7 @@ async def test_a_failing_step_is_logged_and_the_later_steps_still_run():
         report = await maintainer.run(RecordingConnection())  # type: ignore[arg-type]
 
     # Retention must keep dropping and purging even while partition creation keeps failing.
-    for name in ("_drop_expired", "_purge_expired_rows", "_count_default_rows"):
+    for name in ("_drop_expired", "_purge_expired_rows", "_derive_session_activity", "_count_default_rows"):
         steps[name].assert_awaited_once()
     assert report.failed == ["_ensure_partitions"]
     assert "_ensure_partitions" in logger.exception.call_args.args[0]
@@ -301,3 +318,112 @@ def test_usage_requests_is_a_raw_table_partitioned_on_ts() -> None:
     assert "usage_requests" in RAW_TABLES
     assert maintenance.PARTITION_KEY["usage_requests"] == "ts"
     assert "usage_requests" in maintenance.PARTITIONED_TABLES
+
+
+def _run_conn_with_backlog() -> RecordingConnection:
+    """RecordingConnection answers fetchval with the database date; the activity step's count needs a number."""
+    conn = RecordingConnection()
+    original = conn.fetchval
+
+    async def fetchval(sql, *args, **kwargs):
+        return 0 if "has_activity IS NULL" in sql else await original(sql, *args, **kwargs)
+
+    conn.fetchval = fetchval  # type: ignore[method-assign]
+    return conn
+
+
+def _conn_with_backlog(backlog: int) -> MagicMock:
+    conn = MagicMock()
+    conn.fetchval = AsyncMock(return_value=backlog)
+    return conn
+
+
+@pytest.mark.asyncio
+async def test_the_activity_step_runs_the_backfill_with_its_batch_budget_and_statement_timeout_and_reports_the_count():
+    conn = _conn_with_backlog(10)
+    report = maintenance.MaintenanceReport()
+    backfill = AsyncMock(return_value=1234)
+
+    with patch.object(session_activity, "backfill_session_activity", backfill):
+        await _REAL_DERIVE_SESSION_ACTIVITY(PartitionMaintainer(MagicMock(), POLICY), conn, report)  # type: ignore[arg-type]
+
+    # 5,000 sessions a transaction, the steady 120 s with a small backlog, the maintenance statement timeout: a wrong
+    # value or a dropped result would leave the sessions that predate the facts NULL for good
+    backfill.assert_awaited_once_with(conn, 5000, 120.0, maintenance.MAINTENANCE_STATEMENT_TIMEOUT_S)
+    assert report.derived_sessions == 1234
+
+
+@pytest.mark.asyncio
+async def test_the_activity_step_works_longer_while_a_large_backlog_is_left_and_not_at_the_threshold() -> None:
+    above, at = maintenance._ACTIVITY_CATCH_UP_ABOVE + 1, maintenance._ACTIVITY_CATCH_UP_ABOVE
+    for backlog, budget in ((above, 600.0), (at, 120.0), (0, 120.0)):
+        conn = _conn_with_backlog(backlog)
+        backfill = AsyncMock(return_value=0)
+
+        with patch.object(session_activity, "backfill_session_activity", backfill):
+            await _REAL_DERIVE_SESSION_ACTIVITY(  # type: ignore[arg-type]
+                PartitionMaintainer(MagicMock(), POLICY), conn, maintenance.MaintenanceReport()
+            )
+
+        assert backfill.await_args.args[2] == budget, backlog
+
+
+@pytest.mark.asyncio
+async def test_the_backlog_count_never_reads_more_rows_than_the_catch_up_threshold_needs() -> None:
+    conn = _conn_with_backlog(0)
+
+    with patch.object(session_activity, "backfill_session_activity", AsyncMock(return_value=0)):
+        await _REAL_DERIVE_SESSION_ACTIVITY(  # type: ignore[arg-type]
+            PartitionMaintainer(MagicMock(), POLICY), conn, maintenance.MaintenanceReport()
+        )
+
+    sql = conn.fetchval.await_args.args[0]
+    assert f"LIMIT {maintenance._ACTIVITY_CATCH_UP_ABOVE + 1}" in sql and "has_activity IS NULL" in sql
+
+
+@pytest.mark.asyncio
+async def test_the_activity_step_adds_to_what_the_report_already_counts():
+    report = maintenance.MaintenanceReport(derived_sessions=10)
+
+    with patch.object(session_activity, "backfill_session_activity", AsyncMock(return_value=5)):
+        await _REAL_DERIVE_SESSION_ACTIVITY(  # type: ignore[arg-type]
+            PartitionMaintainer(MagicMock(), POLICY), _conn_with_backlog(0), report
+        )
+
+    assert report.derived_sessions == 15
+
+
+@pytest.mark.asyncio
+async def test_a_failing_activity_step_is_reported_and_does_not_stop_the_other_steps():
+    steps = _steps()
+    del steps["_derive_session_activity"]  # the real step runs, with a backfill that fails
+    maintainer = PartitionMaintainer(MagicMock(), POLICY, clock=lambda: TODAY)
+    failing = AsyncMock(
+        side_effect=asyncpg.exceptions.QueryCanceledError("canceling statement due to statement timeout")
+    )
+
+    with (
+        patch.multiple(PartitionMaintainer, **steps),
+        patch.object(PartitionMaintainer, "_derive_session_activity", _REAL_DERIVE_SESSION_ACTIVITY),
+        patch.object(session_activity, "backfill_session_activity", failing),
+        patch.object(maintenance, "logger"),
+    ):
+        report = await maintainer.run(_run_conn_with_backlog())  # type: ignore[arg-type]
+
+    assert report.failed == ["_derive_session_activity"]
+    steps["_count_default_rows"].assert_awaited_once()  # the step after it still ran
+    failing.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_the_activity_step_runs_after_the_retention_steps():
+    order: list[str] = []
+    steps = _steps()
+    for name, step in steps.items():
+        step.side_effect = lambda *a, _n=name, **k: order.append(_n)
+
+    with patch.multiple(PartitionMaintainer, **steps):
+        await PartitionMaintainer(MagicMock(), POLICY, clock=lambda: TODAY).run(RecordingConnection())  # type: ignore[arg-type]
+
+    # retention first: a slow backfill must not delay dropping partitions or purging sessions
+    assert order.index("_derive_session_activity") > order.index("_purge_expired_rows")

@@ -1,0 +1,93 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-16427_sessions-db-pagination",
+  "head": "a9fd738463736062d15f78b667404604378f8af7",
+  "runner": "poetry",
+  "started_at": "2026-11-05T15:35:00Z",
+  "completed_at": "2026-11-06T11:05:25.179203+00:00",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2000,
+      "command": "make ruff",
+      "exit_code": 0,
+      "notes": "Re-run on 15273ac6eb: passes; ruff changed no files."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 5000,
+      "command": "make build",
+      "exit_code": 0,
+      "notes": "Re-run on 15273ac6eb: passes."
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2000,
+      "command": "make license-check",
+      "exit_code": 0,
+      "notes": "Re-run on 15273ac6eb: passes."
+    },
+    {
+      "id": "secrets",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 74000,
+      "command": "make gitleaks",
+      "exit_code": 2,
+      "notes": "RECORDED AS PASS BY USER DECISION (2026-11-05). Raw result: exit_code 2. Re-run on 4984385287: one finding (private-key) in .kube/docker-desktop-config.yaml, Docker Desktop's local Kubernetes config. It is not tracked: .kube/ is listed in .git/info/exclude and is never committed (git ls-files .kube is empty). gitleaks dir scans the whole working directory, so the local file is picked up. No finding in tracked or committed files."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 628000,
+      "command": "make test",
+      "exit_code": 2,
+      "notes": "raw exit 2, 108 failed + 2 errors (baseline at 4984385287: 105 failed + 2 errors), recorded PASS by user decision 2026-11-05. The 3 above the baseline are live-Postgres tests of test_live_session_duration_fallback.py that the unit run executes against the dev database; main's window rule excludes their sessions and the same file fails on origin/main. Full run on fd65f64a61 (the last commit that changed the reader, refresher or migration); since then the source changed only in session_activity.py (a docstring) and maintenance.py (the activity step: a 600 s catch-up budget while more than 50,000 sessions lack their facts), covered by targeted runs on 15273ac6eb: 3,534 CLI analytics / analytics-service / Sessions-router unit tests passed, ruff clean, and the live test_live_session_activity.py (22 tests, including the real maintenance step) passed on PostgreSQL 17. A second full run was not repeated (requester, 2026-11-06)."
+    },
+    {
+      "id": "cli-analytics-live-pg17",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 587000,
+      "command": "make test-cli-analytics-live",
+      "exit_code": 2,
+      "notes": "pg17. Re-run 2026-11-06 on fd65f64a61 (fresh throwaway container, schema built from revision 1 through the merged a1c1a0000010): 459 passed, 39 failed, 0 skipped; no failure outside the pre-existing set. The 39 = 34 TypeErrors missing keyword-only 'scope' (harness_label 16+, summary_skill_names 12, dispatch_gate 6, one LocalAnalyticsFilter) and 5 KeyErrors of sessions seeded without an activity row (test_live_session_duration_fallback, test_live_session_subagent_cost), all failing on origin/main too (verified there for the duration_fallback and subagent_cost files: 18 of 19 fail). New this session and passing: test_live_session_activity.py (19) and every scenario of test_live_session_activity_window.py in both underived and derived modes (80). Full run on fd65f64a61 (the last commit that changed the reader, refresher or migration); since then the source changed only in session_activity.py (a docstring) and maintenance.py (the activity step: a 600 s catch-up budget while more than 50,000 sessions lack their facts), covered by targeted runs on 15273ac6eb: 3,534 CLI analytics / analytics-service / Sessions-router unit tests passed, ruff clean, and the live test_live_session_activity.py (22 tests, including the real maintenance step) passed on PostgreSQL 17. A second full run was not repeated (requester, 2026-11-06)."
+    },
+    {
+      "id": "cli-analytics-live-pg14",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 359000,
+      "command": "env -u CLI_ANALYTICS_PG_URL TEST_LOCAL_PG_URL=postgresql://postgres:password@127.0.0.1:55414/postgres poetry run pytest -q -n0 tests/codemie/repository/cli_analytics/postgres -k live -rfs",
+      "exit_code": 1,
+      "notes": "pg14 throwaway container removed. Re-run 2026-11-06 on fd65f64a61 (fresh throwaway container, schema built from revision 1 through the merged a1c1a0000010): 459 passed, 39 failed, 0 skipped; no failure outside the pre-existing set. The 39 = 34 TypeErrors missing keyword-only 'scope' (harness_label 16+, summary_skill_names 12, dispatch_gate 6, one LocalAnalyticsFilter) and 5 KeyErrors of sessions seeded without an activity row (test_live_session_duration_fallback, test_live_session_subagent_cost), all failing on origin/main too (verified there for the duration_fallback and subagent_cost files: 18 of 19 fail). New this session and passing: test_live_session_activity.py (19) and every scenario of test_live_session_activity_window.py in both underived and derived modes (80). Full run on fd65f64a61 (the last commit that changed the reader, refresher or migration); since then the source changed only in session_activity.py (a docstring) and maintenance.py (the activity step: a 600 s catch-up budget while more than 50,000 sessions lack their facts), covered by targeted runs on 15273ac6eb: 3,534 CLI analytics / analytics-service / Sessions-router unit tests passed, ruff clean, and the live test_live_session_activity.py (22 tests, including the real maintenance step) passed on PostgreSQL 17. A second full run was not repeated (requester, 2026-11-06)."
+    },
+    {
+      "id": "sonar",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make sonar-local",
+      "exit_code": null,
+      "notes": "CI-owned"
+    }
+  ],
+  "failures": {
+    "unit": "none counted: raw exit 2, 108 failed + 2 errors, pre-existing (also on main; user decision 2026-11-05); recorded PASS",
+    "cli-analytics-live-pg17": "39 known pre-existing failures (34 'scope' TypeErrors, 5 sessions-without-activity KeyErrors), also on main; 459 passed",
+    "cli-analytics-live-pg14": "39 known pre-existing failures (34 'scope' TypeErrors, 5 sessions-without-activity KeyErrors), also on main; 459 passed",
+    "secrets": "none counted: raw exit 2 from the untracked local file .kube/docker-desktop-config.yaml (git-excluded, not committed); recorded PASS by user decision"
+  },
+  "rerun_at": "2026-11-06T11:05:25.179203+00:00",
+  "disposition": "secrets and unit are recorded as PASS by user decision on 2026-11-05; their raw exit codes (2) and reasons are in each gate's notes: secrets = a local git-excluded .kube file that is never committed (not re-run); unit = pre-existing failures that also fail on main. The two CLI analytics live gates ran on 2026-11-06 on PostgreSQL 17 and 14 and fail only on the pre-existing set (39 each, also on main), so they keep FAIL and the top-level status stays BLOCKED for that reason. Review r10 and r11 findings are fixed or accepted; the AC15 limits were approved by the requester on 2026-11-06.",
+  "rebase": "2026-11-06: rebased onto origin/main a9e4d4c66e (EPMCDME-16463, which touches the main application's migrations and assistants, not CLI analytics); no conflicts. After the rebase on a9fd738463: ruff clean, 3,562 CLI analytics / analytics-service / Sessions-router / alembic unit tests passed. The test harness (make test-harness, sanity-api) was run by the requester on 2026-11-06 between 13:07 and 13:12 against the local backend (Docker, branch code mounted): 196 passed, 4 skipped. The sanity suite does not call the Sessions list."
+}

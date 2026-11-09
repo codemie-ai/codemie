@@ -55,6 +55,36 @@ CLASSIFIER_NAMES_SQL = f"""(SELECT array_agg(x.name ORDER BY x.name COLLATE "C")
                   CASE WHEN jsonb_typeof(sd.commands) = 'array' THEN sd.commands END) c
               WHERE jsonb_typeof(c) = 'string') x
         WHERE x.name <> '')"""
+
+
+def classifier_names_by_session_sql(sel: str = "sel") -> str:
+    """The same names as `CLASSIFIER_NAMES_SQL`, for many sessions at once: the derived table `(session_id, names)`
+    with a row only for a session that has a name, built set-wise (one pass over each source, `session_dims` read
+    once) instead of one correlated subquery per session. `sel` is the CTE of the selected sessions (`session_id`,
+    `started_at`); every source is scoped to it, and the invocations are bounded by each session's start. Keep the
+    expressions in step with `CLASSIFIER_NAMES_SQL`."""
+    scope = f"SELECT session_id FROM {sel}"
+    return f"""(SELECT x.session_id, array_agg(DISTINCT x.name COLLATE "C" ORDER BY x.name COLLATE "C") AS names
+        FROM (SELECT ss.session_id, ss.skill_name AS name FROM session_skills ss
+              WHERE ss.session_id IN ({scope})
+              UNION ALL
+              SELECT i.session_id, i.name FROM invocations_hourly i JOIN {sel} w ON w.session_id = i.session_id
+              WHERE i.session_id IN ({scope}) AND i.kind IN (2, 4)
+                AND i.hour >= coalesce(date_trunc('hour', w.started_at) - interval '1 hour', '-infinity'::timestamptz)
+              UNION ALL
+              SELECT sd.session_id, n.name
+              FROM session_dims sd,
+                   LATERAL (SELECT k.name FROM jsonb_object_keys({_SKILLS_OBJECT}) k (name)
+                            UNION ALL
+                            SELECT k.name FROM jsonb_object_keys({_AGENTS_OBJECT}) k (name)
+                            UNION ALL
+                            SELECT c #>> '{{}}' FROM jsonb_array_elements(
+                                CASE WHEN jsonb_typeof(sd.commands) = 'array' THEN sd.commands END) c
+                            WHERE jsonb_typeof(c) = 'string') n
+              WHERE sd.session_id IN ({scope})) x
+        WHERE x.name <> '' GROUP BY x.session_id) nm"""
+
+
 _READ = f"""
 SELECT sd.session_id, sd.branch_dominant,
        {CLASSIFIER_NAMES_SQL} AS skill_names

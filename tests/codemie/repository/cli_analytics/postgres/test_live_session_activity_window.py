@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, time, timedelta, timezone
 
 import asyncpg
@@ -49,6 +50,7 @@ from codemie.repository.cli_analytics.postgres.maintenance import (
 )
 from codemie.repository.cli_analytics.postgres.reader import PostgresCliAnalyticsReader
 from codemie.repository.cli_analytics.postgres.rollups import RollupRefresher
+from codemie.repository.cli_analytics.postgres.session_activity import derive_session_activity
 from codemie.repository.cli_analytics.postgres.settings import AnalyticsPgSettings
 from codemie.service.analytics.handlers.cli_analytics_handler import LocalAnalyticsHandler
 from tests.codemie.repository.cli_analytics.support.live_rollup_lock import live_rollup_lock
@@ -82,6 +84,31 @@ _LINES_SQL = """
 """
 
 
+# Every scenario runs twice: with the sessions' stored activity facts NULL (as before they were derived: the rule is asked
+# of the rollup tables) and with them derived from what the test seeded (the stored facts decide the candidates). The
+# result must be the rule's in both. The seeds below write the tables directly, so "derived" derives on each acquire.
+@pytest.fixture(autouse=True, params=["underived", "derived"])
+def _activity_facts(request, monkeypatch):
+    monkeypatch.setattr(f"{__name__}._DERIVED", request.param == "derived")
+
+
+_DERIVED = False
+
+
+def _deriving(engine: AnalyticsPgEngine) -> AnalyticsPgEngine:
+    acquire = engine.acquire
+
+    @asynccontextmanager
+    async def acquire_deriving(*args, **kwargs):
+        async with acquire(*args, **kwargs) as conn:
+            ids = [r["session_id"] for r in await conn.fetch("SELECT session_id FROM session_dims")]
+            await derive_session_activity(conn, ids, 120)
+            yield conn
+
+    engine.acquire = acquire_deriving  # type: ignore[method-assign]
+    return engine
+
+
 async def _engine() -> AnalyticsPgEngine:
     try:
         settings = AnalyticsPgSettings.from_config(Config(PG_URL=_LOCAL_PG_URL))
@@ -96,7 +123,7 @@ async def _engine() -> AnalyticsPgEngine:
     )
     async with engine.acquire() as conn:
         await maintainer._ensure_partitions(conn, datetime.now(timezone.utc).date(), MaintenanceReport())
-    return engine
+    return _deriving(engine) if _DERIVED else engine
 
 
 async def _cleanup(engine: AnalyticsPgEngine, session_ids: list[str]) -> None:

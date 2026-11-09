@@ -24,6 +24,7 @@ aliases each method documents in the adapter.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal, Protocol, runtime_checkable
@@ -32,8 +33,23 @@ from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
 
 Rows = list[dict[str, Any]]
 OtlpSignal = Literal["logs", "metrics", "traces"]
-# The session-list sorts `get_session_page` decides in SQL; the handler pages every other sort in Python.
-SESSION_PAGE_SORTS = ("start_time", "ctx_per_call")
+# The session-list sorts the database decides: `get_session_page` (`start_time`, `ctx_per_call`), `get_cost_page`
+# (`cost_usd`, which needs the catalog `ModelRates`) and `get_framework_page` (any sort, for the framework filter).
+SESSION_PAGE_SORTS = ("start_time", "cost_usd", "ctx_per_call")
+
+
+@dataclass(frozen=True)
+class ModelRates:
+    """Per-token catalog rates of one raw model name, resolved by the service layer (the repository never
+    imports it). A rate is None when the model has no catalog entry or the catalog lacks that kind.
+    `cache_write` prices the 5-minute and unsplit cache writes, `cache_write_1h` the one-hour writes."""
+
+    model: str
+    input: float | None = None
+    output: float | None = None
+    cache_read: float | None = None
+    cache_write: float | None = None
+    cache_write_1h: float | None = None
 
 
 @dataclass(frozen=True)
@@ -275,6 +291,17 @@ class CliAnalyticsReader(Protocol):
 
     async def get_session_model_costs(self, f: LocalAnalyticsFilter, *, spend_only: bool = False) -> Rows: ...
 
+    def bounded(self) -> AbstractAsyncContextManager[CliAnalyticsReader]:
+        """A reader whose statements run on the one pool connection one request holds, released at block end."""
+        ...
+
+    def widened(self) -> AbstractAsyncContextManager[CliAnalyticsReader]:
+        """This reader with a second pool connection for the block, at most two statements at a time (one connection
+        if the pool has no second free soon)."""
+        ...
+
+    async def get_window_model_flags(self, f: LocalAnalyticsFilter) -> list[tuple[str, tuple[bool, ...]]]: ...
+
     async def get_session_funding_costs(self, f: LocalAnalyticsFilter) -> Rows: ...
 
     async def get_class_lists(self, f: LocalAnalyticsFilter, by: str = "all") -> Rows: ...
@@ -333,7 +360,40 @@ class CliAnalyticsReader(Protocol):
         per_page: int,
         search: str | None = None,
         is_unattributed: bool = False,
+        rates: Sequence[ModelRates] | None = None,
     ) -> tuple[int, list[str]]: ...
+
+    async def get_cost_models(self, f: LocalAnalyticsFilter) -> list[str]:
+        """The raw model names token rows carry in the filtered window and viewer scope: the models whose catalog
+        rates the cost sort resolves."""
+        ...
+
+    async def get_cost_page(
+        self,
+        f: LocalAnalyticsFilter,
+        page: int,
+        per_page: int,
+        rates: Sequence[ModelRates],
+        search: str | None = None,
+        is_unattributed: bool = False,
+    ) -> tuple[int, list[str], list[tuple[str, tuple[bool, ...]]]]:
+        """One cost-ordered page `(total, session_ids, model_flags)`; the flags cover the whole filtered window."""
+        ...
+
+    async def get_framework_page(
+        self,
+        f: LocalAnalyticsFilter,
+        sort_by: str,
+        page: int,
+        per_page: int,
+        matching: Callable[[list[list[str]]], list[list[str]]],
+        rates: Sequence[ModelRates] | None = None,
+        search: str | None = None,
+        is_unattributed: bool = False,
+    ) -> tuple[int, list[str], list[tuple[str, tuple[bool, ...]]]]:
+        """One page of the sessions whose classifier name set `matching` accepts (the framework filter, a Python
+        rule): `(total, session_ids, model_flags)`, in the order of the other pages. Runs on one connection."""
+        ...
 
     async def get_session_start_times(self, f: LocalAnalyticsFilter) -> Rows: ...
 

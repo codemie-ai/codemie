@@ -31,6 +31,7 @@ from codemie.repository.cli_analytics.postgres.reader import PostgresCliAnalytic
 from codemie.repository.cli_analytics.scope import normalise_project_origin, normalise_subscription_type
 from codemie.rest_api.models import cli_analytics as models
 from codemie.service.analytics.handlers.cli_analytics_handler import LocalAnalyticsHandler
+from tests.codemie.repository.cli_analytics.support.bounded import bounded_to_itself
 from tests.codemie.repository.cli_analytics.support.scopes import EXCLUDE_SCOPE
 
 DAY = date(2026, 9, 2)
@@ -119,6 +120,7 @@ def _fake_reader(with_lists: bool) -> MagicMock:
     ]
     repo.get_session_cost_facts = rows(facts)
     repo.get_session_page = rows((len(ids), ids))
+    repo.get_window_model_flags = rows([])
     repo.get_users = rows(
         [
             {
@@ -158,7 +160,7 @@ def _has_lists(row: dict, subs=EXPECTED_SUBS, origins=EXPECTED_ORIGINS) -> bool:
 
 
 async def _all(with_lists: bool) -> dict:
-    h = LocalAnalyticsHandler(_fake_reader(with_lists))
+    h = LocalAnalyticsHandler(bounded_to_itself(_fake_reader(with_lists)))
     f = _flt()
     overview, _, _ = await h.get_overview(f)
     cost, _ = await h.get_cost(f)
@@ -277,7 +279,7 @@ async def test_class_list_queries_read_sel_with_the_viewer_scope_and_sum_nothing
     sql = _flat(r.sql[0])
     assert "sel AS" in sql and "array_agg(DISTINCT" in sql
     assert not re.search(r"\bsum\(", sql.split(") x", 1)[-1])
-    assert sql.count("WHERE d.started_at IS NOT NULL") == 1  # the one window/scope source
+    assert sql.count("WHERE d.started_at IS NOT NULL") == 5  # the one window/scope source: its five admission arms
 
 
 @pytest.mark.asyncio

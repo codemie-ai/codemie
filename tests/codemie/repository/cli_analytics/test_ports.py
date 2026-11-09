@@ -24,6 +24,10 @@ from tests.codemie.repository.cli_analytics.support.contracts import port_method
 
 def test_the_handler_calls_only_queries_the_reader_port_declares():
     # A query the handler calls outside the port would exist in one engine's reader only.
-    called = set(re.findall(r"self\._repo\.(\w+)\(", inspect.getsource(LocalAnalyticsHandler)))
+    # Sessions code reads through the `repo` yielded by `bounded()` (a parameter of the static readers), so those calls count too.
+    called = set(re.findall(r"(?:self\._repo|\brepo)\.(\w+)\(", inspect.getsource(LocalAnalyticsHandler)))
 
-    assert called and called <= set(port_methods(CliAnalyticsReader))
+    declared = set(port_methods(CliAnalyticsReader)) | {"bounded", "widened"}  # context managers, not queries
+
+    assert called and called <= declared
+    assert callable(getattr(CliAnalyticsReader, "bounded", None))

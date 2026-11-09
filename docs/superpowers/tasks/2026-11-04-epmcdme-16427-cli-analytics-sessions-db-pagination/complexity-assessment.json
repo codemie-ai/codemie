@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "task": "Make GET /v1/analytics/cli-analytics/sessions page, search and sort in Postgres (page IDs first, then details), add a safe started_at index migration verified with EXPLAIN, and cap per-request concurrent DB connections, keeping response shape, money and filters unchanged.",
+  "generated": "2026-11-04T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 23,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Touches the reader adapter (get_session_page, possibly _sessions_cte), the CliAnalyticsReader port and SESSION_PAGE_SORTS, filters.restricted_to, the handler get_sessions (pricing and framework paths), a per-request connection limiter around the shared asyncpg pool/engine, and a new Alembic revision. That is 4 or more components over repository, service and schema, and the existing in-SQL paging path is a clear pattern to extend." },
+    { "dimension": "requirements_clarity", "reason": "Core goals are stated, but the ticket's own open questions (framework filtering, unpriced-model metadata, SLA, connection management) are design decisions that remain open. Moving the cost_usd sort into SQL conflicts with catalog pricing that lives in Python. The stored delivery_framework can be NULL or stale compared with read-time classification. The two paths match search differently (served/cleaned prompt vs ILIKE), and the handler line references in the ticket are out of date." },
+    { "dimension": "technical_risk", "reason": "The closest pattern is the existing get_session_page plus the restricted_to SQL path and its live parity tests. It does not cover the cost_usd sort, the framework filter, a whole-window total count, or the cost of the _activity_cte probes. There is no precedent for building an index on a populated, frequently updated session_dims table: the migration runner wraps everything in one transaction (transactional_ddl=True), so CREATE INDEX CONCURRENTLY cannot run as-is, and a plain build takes a SHARE lock that blocks refresher writes. No limiter for pool concurrency exists. The task is performance-critical with an 825 ms target." },
+    { "dimension": "file_change_estimate", "reason": "About 8-10 modified files (reader.py, ports.py, filters.py, the handler, engine/settings/config for the concurrency cap, the storage guide, test_reader, handler tests, test_migrations, live session-page test) plus 2-3 new ones (migration revision, EXPLAIN/plan or concurrency tests), spread across repository, service, external/alembic and tests." },
+    { "dimension": "affected_layers", "reason": "Service, Repository/DB-Persistence with a schema index migration, and Infrastructure (the connection pool shared with ingest and background jobs). The API contract stays fixed." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from L to XL: performance is the primary concern (8.6-12.9 s down to an 825 ms target, ingest starvation)"
+  ],
+  "split_recommendation": null
+}

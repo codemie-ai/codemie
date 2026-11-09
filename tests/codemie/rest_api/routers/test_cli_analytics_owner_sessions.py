@@ -16,9 +16,12 @@
 
 from __future__ import annotations
 
+import inspect
+import typing
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import asyncpg
 import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
@@ -290,3 +293,38 @@ def test_an_ordinary_auditor_stays_out_of_the_aggregates(make):
 
     assert client.get(f"{BASE}/overview").status_code == 403
     env.handler.get_overview.assert_not_awaited()
+
+
+def test_the_sessions_sort_choices_are_exactly_the_sorts_the_database_pages():
+    """A sort the router accepts must have a database order: a fourth one cannot reach the router without SQL."""
+    from codemie.repository.cli_analytics.ports import SESSION_PAGE_SORTS
+
+    hints = typing.get_type_hints(inspect.unwrap(router_module.get_sessions))
+    assert typing.get_args(hints["sort_by"]) == SESSION_PAGE_SORTS
+
+
+def test_a_sessions_query_timeout_is_a_504_with_a_clear_message_on_the_sessions_route_only(make):
+    client, env = make(ORDINARY())
+    env.handler.get_sessions = AsyncMock(side_effect=asyncpg.QueryCanceledError("canceling statement"))
+
+    resp = client.get(f"{BASE}/sessions", params={"sort_by": "cost_usd"})
+
+    assert resp.status_code == 504
+    assert resp.json()["message"] == "The sessions list took too long to build"
+
+
+def test_a_client_side_sessions_timeout_is_a_504_too(make):
+    client, env = make(ORDINARY())
+    env.handler.get_sessions = AsyncMock(side_effect=TimeoutError())
+
+    resp = client.get(f"{BASE}/sessions", params={"search": "x" * 500, "framework": "f" * 500})
+
+    assert resp.status_code == 504
+    assert resp.json()["message"] == "The sessions list took too long to build"
+
+
+def test_other_storage_errors_on_the_sessions_route_keep_their_503(make):
+    client, env = make(ORDINARY())
+    env.handler.get_sessions = AsyncMock(side_effect=asyncpg.PostgresError("down"))
+
+    assert client.get(f"{BASE}/sessions").status_code == 503

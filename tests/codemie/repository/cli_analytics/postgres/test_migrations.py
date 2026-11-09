@@ -34,7 +34,7 @@ def _run(settings: AnalyticsPgSettings, schema_exists: bool = False) -> tuple[Ma
     """Runs the migrations with SQLAlchemy and Alembic mocked; returns
     (create_engine, connection, upgrade, register_iam, engine)."""
     engine = MagicMock()
-    connection = engine.begin.return_value.__enter__.return_value
+    connection = engine.connect.return_value.__enter__.return_value
     connection.execute.return_value.scalar.return_value = 1 if schema_exists else None
     with (
         patch.object(migrations, "create_engine", return_value=engine) as create_engine,
@@ -60,7 +60,7 @@ def test_migrations_hold_an_advisory_lock_then_prepare_the_schema():
     _, connection, _, _, _ = _run(SETTINGS)
 
     statements = _statements(connection)
-    assert statements[1] == "SELECT pg_advisory_xact_lock(:key)"
+    assert statements[1] == "SELECT pg_advisory_lock(:key)"  # session-level: it outlives a commit of the revision
     assert connection.execute.call_args_list[1].args[1] == {"key": SETTINGS.lock_key("migrations")}
     assert 'CREATE SCHEMA IF NOT EXISTS "codemie_analytics"' in statements
     assert statements[-1] == 'SET search_path TO "codemie_analytics"'
@@ -90,13 +90,54 @@ def test_a_database_that_does_not_answer_fails_the_migration_within_seconds():
     assert migrations.CONNECT_TIMEOUT_S <= 30
 
 
-def test_alembic_upgrades_to_head_on_that_connection_and_schema():
+def test_alembic_upgrades_one_revision_at_a_time_ending_at_the_head_on_that_connection_and_schema():
     _, connection, upgrade, _, _ = _run(SETTINGS)
 
-    cfg, target = upgrade.call_args.args
-    assert target == "head"
+    targets = [call.args[1] for call in upgrade.call_args_list]
+    assert len(targets) > 3 and len(set(targets)) == len(targets)
+    assert targets[0] == "a1c1a0000001" and targets[-1] == "a1c1a0000011"  # the first and the head
+    assert targets.index("a1c1a0000010") < targets.index("a1c1a0000011")  # main's publication contract first
+    cfg = upgrade.call_args.args[0]
     assert cfg.attributes == {"connection": connection, "schema": "codemie_analytics"}
     assert cfg.get_main_option("script_location").endswith("alembic_cli_analytics")
+
+
+def test_each_revision_runs_on_its_own_connection_with_its_own_lock_wait_and_session_lock_and_is_committed():
+    # A revision that fails (an index build past its lock timeout) must roll back only itself: the revisions before it
+    # stay committed. The advisory lock is session-level, so a revision that commits part-way keeps it.
+    _, connection, upgrade, _, engine = _run(SETTINGS)
+
+    revisions = upgrade.call_count
+    assert engine.connect.call_count == revisions
+    assert connection.commit.call_count == revisions
+    statements = _statements(connection)
+    assert statements.count("SELECT pg_advisory_lock(:key)") == revisions
+    assert not any("pg_advisory_xact_lock" in sql for sql in statements)
+    assert statements.count(f"SET LOCAL lock_timeout = '{migrations.LOCK_TIMEOUT}'") == revisions
+
+
+def test_a_failing_revision_leaves_the_earlier_ones_applied_and_stops_the_later_ones():
+    engine = MagicMock()
+    outcomes = {"a1c1a0000011": RuntimeError("lock timeout")}
+    done: list[str] = []
+
+    def upgrade(cfg, revision):
+        if revision in outcomes:
+            raise outcomes[revision]
+        done.append(revision)
+
+    with (
+        patch.object(migrations, "create_engine", return_value=engine),
+        patch.object(migrations.command, "upgrade", side_effect=upgrade),
+        pytest.raises(RuntimeError, match="lock timeout"),
+    ):
+        migrations.run_migrations(SETTINGS)
+
+    assert "a1c1a0000010" in done and "a1c1a0000011" not in done  # main's revision was upgraded before this one failed
+    assert (
+        engine.connect.return_value.__exit__.call_count == len(done) + 1
+    )  # each on its own connection, the last unwound
+    engine.dispose.assert_called_once()
 
 
 def test_iam_deployments_authenticate_the_migration_engine_with_a_token_for_the_analytics_database():
@@ -342,3 +383,126 @@ def test_the_routing_columns_are_declared_for_ingest_and_recompute() -> None:
 
     for table, columns in _ROUTING_COLUMNS.items():
         assert set(columns) <= declared[table], table
+
+
+FACTS = _load_revision("a1c1a0000011_cli_analytics_session_activity_facts.py")
+_ALL_INDEXES = [
+    "session_dims_started_at",
+    "session_dims_started_shared",
+    "session_dims_active_started",
+    "session_dims_active_shared_cov",
+    "session_dims_resumed_last",
+    "session_dims_activity_pending",
+]
+
+
+def test_the_activity_facts_are_one_revision_after_the_publication_contract_with_one_head() -> None:
+    assert FACTS.revision == "a1c1a0000011"
+    assert FACTS.down_revision == "a1c1a0000010"  # the publication contract, the head of main
+
+    versions = Path(migrations.ALEMBIC_DIR) / "versions"
+    revisions = {}
+    for path in versions.glob("a1c1a*.py"):
+        module = _load_revision(path.name)
+        revisions[module.revision] = module.down_revision
+    heads = set(revisions) - {down for down in revisions.values() if down}
+    assert heads == {"a1c1a0000011"}
+
+
+def test_the_activity_columns_are_nullable_without_default_under_a_bounded_lock_wait() -> None:
+    statements = [_normalized(s) for s in FACTS.column_statements()]
+
+    # NULL = not derived yet: no default, so the add rewrites nothing and no pre-existing row reads as "no activity"
+    assert statements == ["SET LOCAL lock_timeout = '5s'", _normalized(FACTS.ADD_COLUMNS)]
+    add = statements[1]
+    for column in ("has_activity boolean", "last_activity_day date", "resumed boolean"):
+        assert f"ADD COLUMN IF NOT EXISTS {column}" in add
+    assert "NOT NULL" not in add and "DEFAULT" not in add
+
+
+def test_the_upgrade_commits_the_columns_before_the_index_builds_and_the_downgrade_drops_indexes_then_columns() -> None:
+    events: list[str] = []
+    bind = MagicMock()
+    bind.commit.side_effect = lambda: events.append("COMMIT")
+    with (
+        patch.object(FACTS.op, "execute", side_effect=events.append),
+        patch.object(FACTS.op, "get_bind", return_value=bind),
+    ):
+        FACTS.upgrade()
+        events.append("--")
+        FACTS.downgrade()
+
+    # the columns, a commit of them, then the indexes: a lock timeout of the builds cannot take the columns back
+    assert events == [
+        *FACTS.column_statements(),
+        "COMMIT",
+        *FACTS.index_statements(),
+        "--",
+        *FACTS.INDEXES_DOWNGRADE,
+        *FACTS.COLUMNS_DOWNGRADE,
+    ]
+    drop = FACTS.COLUMNS_DOWNGRADE[0]
+    assert drop.startswith("ALTER TABLE session_dims DROP COLUMN IF EXISTS")
+    for column in ("has_activity", "last_activity_day", "resumed"):
+        assert column in drop
+
+
+def test_the_index_step_bounds_the_lock_wait_once_builds_idempotently_and_restores_it() -> None:
+    statements = [_normalized(s) for s in FACTS.index_statements()]
+
+    assert statements[0] == "SET LOCAL lock_timeout = '5s'"
+    assert statements[1:-1] == [
+        s for name, create in FACTS.INDEXES for s in (_normalized(FACTS.drop_if_invalid(name)), _normalized(create))
+    ]
+    assert statements[-1] == f"SET LOCAL lock_timeout = '{migrations.LOCK_TIMEOUT}'"
+    assert sum(s.startswith("SET LOCAL lock_timeout") for s in statements) == 2  # the bound and the restore
+    creates = [s for s in statements if s.startswith("CREATE INDEX IF NOT EXISTS")]
+    assert [c.split()[5] for c in creates] == _ALL_INDEXES
+    # the columns are the first step's: this step neither adds nor drops one
+    assert not any("ADD COLUMN" in s or "DROP COLUMN" in s for s in statements)
+    # the covering index of the plain-window list is superseded by the one over the activity fact
+    assert "session_dims_started_shared_cov" not in " ".join(statements)
+
+
+@pytest.mark.parametrize("index", _ALL_INDEXES)
+def test_an_invalid_leftover_index_is_dropped_before_the_idempotent_create(index: str) -> None:
+    # A failed CREATE INDEX CONCURRENTLY leaves an invalid index; IF NOT EXISTS alone would skip it and report success.
+    drop = _normalized(FACTS.drop_if_invalid(index))
+
+    assert f"c.relname = '{index}'" in drop
+    assert "NOT i.indisvalid" in drop
+    assert f"DROP INDEX {index};" in drop
+    statements = [_normalized(s) for s in FACTS.index_statements()]
+    create = next(i for i, s in enumerate(statements) if s.startswith(f"CREATE INDEX IF NOT EXISTS {index} "))
+    assert statements.index(drop) == create - 1
+
+
+def test_list_indexes_shared_predicate_is_the_listed_not_private_scope() -> None:
+    from codemie.repository.cli_analytics.scope import sql_private
+
+    # The list's scope predicate over alias `x`, with the alias dropped, is exactly NOT (the index predicate).
+    private = _normalized(sql_private("x")).replace("x.", "")
+    assert _normalized(FACTS.SHARED_PREDICATE).endswith(f"NOT {private}")
+
+
+def test_list_indexes_are_partial_over_the_facts_and_the_shared_scope() -> None:
+    create = {name: _normalized(sql) for name, sql in FACTS.INDEXES}
+    shared = _normalized(FACTS.SHARED_PREDICATE)
+
+    assert (
+        create["session_dims_started_at"]
+        == "CREATE INDEX IF NOT EXISTS session_dims_started_at ON session_dims (started_at)"
+    )
+    assert create["session_dims_started_shared"].endswith(f"(started_at) WHERE {shared}")
+    # the covering index has the shared predicate and the activity fact, so the planner proves both from it; the id rides in the leaf
+    assert create["session_dims_active_shared_cov"] == (
+        "CREATE INDEX IF NOT EXISTS session_dims_active_shared_cov ON session_dims (started_at) "
+        f"INCLUDE (session_id) WHERE has_activity AND {shared}"
+    )
+    assert create["session_dims_active_started"].endswith("(started_at) WHERE has_activity")
+    assert create["session_dims_resumed_last"].endswith("(last_activity_day) WHERE resumed")
+    assert create["session_dims_activity_pending"].endswith("(started_at) WHERE has_activity IS NULL")
+
+
+def test_the_indexes_downgrade_drops_the_indexes_in_reverse() -> None:
+    assert [f"DROP INDEX IF EXISTS {name}" for name in reversed(_ALL_INDEXES)] == FACTS.INDEXES_DOWNGRADE

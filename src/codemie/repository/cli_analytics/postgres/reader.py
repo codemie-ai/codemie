@@ -35,15 +35,30 @@ lands after the window end still counts as successful.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
-from codemie.repository.cli_analytics.ports import SESSION_PAGE_SORTS, Rows
+from codemie.repository.cli_analytics.ports import SESSION_PAGE_SORTS, ModelRates, Rows
+from codemie.repository.cli_analytics.postgres.cost_key_sql import (
+    _RATE_COLUMNS,
+    _SEL_SESSIONS,
+    _spend,
+    _token_rows,
+    cost_groups_cte,
+    cost_key_from_groups_sql,
+    model_flags_sql,
+    model_token_groups,
+    normalized_model_name,
+    rates_params,
+    session_cost_key_sql,
+)
 from codemie.repository.cli_analytics.postgres.engine import AnalyticsPgEngine
 from codemie.repository.cli_analytics.postgres.fork_attribution import (
     dispatch_fork_candidate,
@@ -60,6 +75,18 @@ from codemie.repository.cli_analytics.postgres.inline_skill_attribution import I
 from codemie.repository.cli_analytics.postgres.otlp import MAX_KEY_BYTES
 from codemie.repository.cli_analytics.postgres.rollups import _BLANKS, _attr_ms, _has_totals
 from codemie.repository.cli_analytics.postgres.session_derived import CLASSIFIER_NAMES_SQL
+from codemie.repository.cli_analytics.postgres.session_page_sql import (
+    FRAMEWORK_NAMES_TABLE,
+    cost_page_sql,
+    framework_count_sql,
+    framework_flags_select,
+    framework_names_sql,
+    framework_page_sql,
+    searched_start_time_page_sql,
+    start_time_count_sql,
+    start_time_page_sql,
+    window_count_sql,
+)
 from codemie.repository.cli_analytics.scope import (
     sql_detail_condition,
     sql_list_condition,
@@ -128,12 +155,6 @@ _SUMMARY_METRICS = (
 _MAX_PAGE_OFFSET = 2**62  # far below the int64 bound of `OFFSET $offset::bigint`, far beyond any real row count
 
 
-# Spend is what the company or a project pays: the cost of a Personal-paid session (also one stored under a work
-# project) stays out of every aggregate money value, while the session itself remains in `sel` as activity.
-def _spend(alias: str) -> str:
-    return f"{alias}.session_id NOT IN (SELECT session_id FROM sel WHERE {sql_personal_billed('sel')})"
-
-
 # The response vocabulary of a selected session (`s` = sel); see scope.py.
 _SUB = sql_subscription_type("s.subscription_type")
 _ORIGIN = sql_project_origin("s.project_origin")
@@ -157,11 +178,17 @@ _LAST_WHOLE_DAY_UTC = "(($end_dt::timestamptz AT TIME ZONE 'UTC') + interval '1 
 _ACTIVITY_TABLES = ("turns_daily", "tool_facts_daily", "cost_daily", "session_usage", "lines_daily")
 
 
-def _activity_exists(alias: str, days: tuple[str, str] | None = None) -> str:
+def _activity_exists(alias: str, days: tuple[str, str] | None = None, fenced: bool = False) -> str:
     """A prompt, a tool call, a cost/usage row or a line-count row for the session named by
-    `alias`.session_id, on a day from `days[0]` to `days[1]` when given, at any time otherwise."""
-    bound = f" AND x.day >= {days[0]} AND x.day <= {days[1]}" if days else ""
-    clauses = (f"EXISTS (SELECT 1 FROM {t} x WHERE x.session_id = {alias}.session_id{bound})" for t in _ACTIVITY_TABLES)
+    `alias`.session_id, on a day from `days[0]` to `days[1]` when given, at any time otherwise.
+    `fenced` ends each probe with `OFFSET 0`: PostgreSQL then keeps it a per-row index probe, where otherwise it may
+    turn it into a hash of every row of the window (right for a million sessions, ruinous for a few thousand)."""
+    bound = f" AND ax.day >= {days[0]} AND ax.day <= {days[1]}" if days else ""
+    fence = " OFFSET 0" if fenced else ""
+    clauses = (
+        f"EXISTS (SELECT 1 FROM {t} ax WHERE ax.session_id = {alias}.session_id{bound}{fence})"
+        for t in _ACTIVITY_TABLES
+    )
     return "(" + " OR ".join(clauses) + ")"
 
 
@@ -189,26 +216,31 @@ _RAW_ACTIVITY_SOURCES = (
 )
 
 
-def _raw_activity_in_window(alias: str) -> str:
+def _raw_activity_in_window(alias: str, fenced: bool = False) -> str:
     """A raw activity record of the session named by `alias`.session_id, stamped inside the window."""
+    fence = " OFFSET 0" if fenced else ""
     clauses = (
         f"EXISTS (SELECT 1 FROM {table} r WHERE r.session_id = {alias}.session_id "
-        f"AND r.ts >= $start_dt::timestamptz AND r.ts <= $end_dt::timestamptz{kind})"
+        f"AND r.ts >= $start_dt::timestamptz AND r.ts <= $end_dt::timestamptz{kind}{fence})"
         for table, kind in _RAW_ACTIVITY_SOURCES
     )
     return "(" + " OR ".join(clauses) + ")"
 
 
-def _active_in_window(alias: str) -> str:
+def _active_in_window(alias: str, fenced: bool = False, raw_first: bool = False) -> str:
     """Activity rescue arm: an old session resumed with no new activity in the window stays excluded from
     `sel`, an old session with fresh activity in the window is included. A day row on a UTC day wholly
     inside the window is enough. A day the window covers only in part also needs a raw activity record
     stamped inside the window, so a sub-day window does not admit a session active on the same day at
     another time. Raw records are kept for the raw retention only, which is why whole days keep the
     day-row rule."""
-    whole_days = _activity_exists(alias, (_FIRST_WHOLE_DAY_UTC, _LAST_WHOLE_DAY_UTC))
-    window_days = _activity_exists(alias, (_START_DAY_UTC, _END_DAY_UTC))
-    return f"({whole_days} OR ({window_days} AND {_raw_activity_in_window(alias)}))"
+    whole_days = _activity_exists(alias, (_FIRST_WHOLE_DAY_UTC, _LAST_WHOLE_DAY_UTC), fenced)
+    window_days = _activity_exists(alias, (_START_DAY_UTC, _END_DAY_UTC), fenced)
+    raw = _raw_activity_in_window(alias, fenced)
+    if raw_first:
+        # The same rule with the selective half first, for sessions whose rows all sit on one partial day.
+        return f"(({raw} AND {window_days}) OR {whole_days})"
+    return f"({whole_days} OR ({window_days} AND {raw}))"
 
 
 def _has_any_activity(alias: str) -> str:
@@ -223,6 +255,71 @@ def _has_any_activity(alias: str) -> str:
 
 
 _SESSION_ADMITTED_IN_WINDOW = f"(({_STARTED_IN_WINDOW} AND {_has_any_activity('d')}) OR {_active_in_window('d')})"
+
+
+def _started_in_window(alias: str) -> str:
+    return f"{alias}.started_at BETWEEN $start_dt::timestamptz AND $end_dt::timestamptz"
+
+
+_START_DAY_BEGIN = f"({_START_DAY_UTC}::timestamp AT TIME ZONE 'UTC')"
+_AFTER_END_DAY = f"(({_END_DAY_UTC} + 1)::timestamp AT TIME ZONE 'UTC')"
+
+
+def _admitted_arms(alias: str, columns: str, scope: str | None = None) -> tuple[str, ...]:
+    """`_SESSION_ADMITTED_IN_WINDOW` as five SELECTs of `session_dims {alias}`, each served by its own index (a
+    single OR of them would not be). A session is in exactly one arm. The stored facts of `session_activity`
+    (`has_activity`, `last_activity_day`, `resumed`) stand for the rollup-table probes; a session whose facts are
+    not derived yet (NULL) is asked of the tables, as the rule itself does, so the result is the rule's at every
+    point of the roll-out.
+
+    - started: started in the window and `has_activity`.
+    - started, underived: started in the window, `has_activity` NULL: `_has_any_activity`, as the rule says.
+    - outside, underived: started outside the window, `has_activity` NULL: `_active_in_window`, as the rule says.
+    - outside, resumed: started outside the window, `resumed`, last activity day not before the window's first day.
+    - outside, one day: started outside the window, not `resumed` (all rows on its start day), and that day is the
+      window's first (started before it) or last (started after it): the raw records decide first.
+    Both derived arms run `_active_in_window` with per-row probes (`fenced`) on the candidates only.
+    `columns` is the select list, `scope` an extra condition on `alias` (the viewer scope of the ids-only form)."""
+    a = alias
+    base = f"FROM session_dims {a} WHERE {a}.started_at IS NOT NULL" + (f" AND {scope}" if scope else "")
+    started = _started_in_window(a)
+    outside = f"NOT ({started}) AND {a}.has_activity"
+    on_edge_day = (
+        f"(({a}.started_at >= {_START_DAY_BEGIN} AND {a}.started_at < $start_dt::timestamptz)"
+        f" OR ({a}.started_at > $end_dt::timestamptz AND {a}.started_at < {_AFTER_END_DAY}))"
+    )
+    return (
+        f"SELECT {columns} {base} AND {started} AND {a}.has_activity",
+        f"SELECT {columns} {base} AND {started} AND {a}.has_activity IS NULL AND {_has_any_activity(a)}",
+        f"SELECT {columns} {base} AND NOT ({started}) AND {a}.has_activity IS NULL AND {_active_in_window(a)}",
+        f"SELECT {columns} {base} AND {outside} AND {a}.resumed AND {a}.last_activity_day >= {_START_DAY_UTC}"
+        f" AND {_active_in_window(a, True)}",
+        f"SELECT {columns} {base} AND {outside} AND NOT {a}.resumed AND {on_edge_day}"
+        f" AND {_active_in_window(a, True, True)}",
+    )
+
+
+def _sel_ctes(arms: tuple[str, ...], where: str = "", star: bool = True, split: bool = False) -> str:
+    """The CTE `sel`: the union of the arms (`where` filters the full projection). With `split` it is followed by
+    `sel_main` (the started arm: the start_time page walks it in index order and the count reads it index-only) and
+    `sel_rest` (the other arms, few rows). The unfiltered start_time page and count read those two directly, because
+    the union hides the index order (the planner sorts every row of the started arm) and slows the count threefold;
+    `sel` itself is then not read, so nothing is computed twice."""
+    main, *others = arms
+    union = " UNION ALL ".join(arms)
+    body = f"SELECT * FROM ({union}) x{where}" if star else union
+    ctes = f"""
+        sel AS ({body})"""
+    if split:
+        rest = " UNION ALL ".join(others)
+        if star:
+            main, rest = f"SELECT * FROM ({main}) x{where}", f"SELECT * FROM ({rest}) x{where}"
+        ctes += f""",
+        sel_main AS ({main}),
+        sel_rest AS ({rest})"""
+    return ctes
+
+
 # The person of a session_dims row `d`: the JWT email, else the largest developer name seen, else the developer name.
 # One expression for the session list and for the framework sessions, so the two cannot name a person differently.
 _SESSION_USER_EMAIL = (
@@ -233,6 +330,9 @@ _SESSION_USER_EMAIL = (
 _TS = "ts BETWEEN $start_dt::timestamptz AND $end_dt::timestamptz"
 # Slash commands have one source per session: a session with a summary counts only the `commands`
 # of its summary, so its OTel `user_prompt` records (kind 4 of the rollup) add nothing.
+
+
+_SEARCH_COLUMNS = ("first_prompt", "session_title", "repository", "branch")
 
 
 def _escape_like(term: str) -> str:
@@ -307,33 +407,6 @@ def _cost_rows(where: str) -> str:
     return (
         f"(SELECT c.*, {_GRAIN_CALLS}, {_session_email('c')} FROM cost_daily c WHERE {where} "
         f"WINDOW w AS (PARTITION BY {_GRAIN})) c"
-    )
-
-
-_SEL_SESSIONS = ("c.session_id IN (SELECT session_id FROM sel)", "u.session_id IN (SELECT session_id FROM sel)")
-
-
-def _token_rows(session_where: str, usage_where: str) -> str:
-    """Token rows of the selected sessions: `cost_daily` plus the subagent totals-only rows of `session_usage`
-    (attrs.token_source = 'subagent_usage'), which are priced at query time. The writer guarantees a totals row
-    exists only when no request of that agent is kept, so nothing is counted twice. The 5m / 1h sums stay
-    NULL when no row carries a split; only the four base counts are coalesced.
-
-    Date, user, project, repository and branch filters need no copy here: both branches are scoped by
-    `session_id IN (SELECT session_id FROM sel)`, and `sel` (see `_sessions_cte`) is where the window and
-    every filter are decided."""
-    return (
-        "(SELECT t.session_id, t.model_name, t.input_tokens, t.output_tokens, t.cache_read_tokens,"
-        " t.cache_creation_tokens, t.cache_creation_5m_tokens, t.cache_creation_1h_tokens FROM ("
-        "SELECT c.session_id, c.model_name, c.input_tokens, c.output_tokens, c.cache_read_tokens,"
-        " c.cache_creation_tokens, c.cache_creation_5m_tokens, c.cache_creation_1h_tokens"
-        f" FROM cost_daily c WHERE {session_where}"
-        " UNION ALL "
-        "SELECT u.session_id, u.model, coalesce(u.input_tokens, 0), coalesce(u.output_tokens, 0),"
-        " coalesce(u.cache_read_tokens, 0), coalesce(u.cache_creation_tokens, 0),"
-        " u.cache_creation_5m_tokens, u.cache_creation_1h_tokens"
-        f" FROM session_usage u WHERE u.attrs->>'token_source' = 'subagent_usage' AND {usage_where}"
-        ") t) c"
     )
 
 
@@ -495,11 +568,87 @@ def _activity_range(alias: str) -> tuple[str, str]:
     return f"least({start}, {probes('min', earlier)})", f"greatest({end}, {probes('max', later)})"
 
 
+# A request's second connection is only taken if the pool has one free this soon: waiting longer, while holding the
+# first, is how requests that each hold one connection and wait for another would deadlock a nearly exhausted pool.
+SECOND_CONNECTION_TIMEOUT_S = 0.5
+
+
+class _ConnectionPair:
+    """The slice of the engine the reader uses over the connections one request holds: `acquire()` hands out a
+    free one and takes it back, so at most `len(connections)` statements run at once. `widen()` adds a second
+    connection from the engine for a block."""
+
+    def __init__(self, engine: Any, connections: list[Any]) -> None:
+        self._engine = engine
+        self._free: asyncio.Queue[Any] = asyncio.Queue()
+        for conn in connections:
+            self._free.put_nowait(conn)
+
+    @contextlib.asynccontextmanager
+    async def acquire(self, timeout: float | None = None) -> AsyncIterator[Any]:
+        conn = await self._free.get()
+        try:
+            yield conn
+        finally:
+            self._free.put_nowait(conn)
+
+    @contextlib.asynccontextmanager
+    async def widen(self) -> AsyncIterator[None]:
+        """A second connection for the block, if the pool has one free within `SECOND_CONNECTION_TIMEOUT_S`; the block
+        runs on the one connection otherwise. (The timeout is swallowed around the acquire only, never around the
+        block, so a statement's own timeout is not hidden.) The second connection returns to the pool when the block
+        ends, which is after every statement of the block has finished."""
+        async with contextlib.AsyncExitStack() as stack:
+            second = None
+            with contextlib.suppress(TimeoutError):
+                second = await stack.enter_async_context(self._engine.acquire(timeout=SECOND_CONNECTION_TIMEOUT_S))
+            if second is not None:
+                self._free.put_nowait(second)
+            try:
+                yield
+            finally:
+                if second is not None:
+                    self._withdraw(second)
+
+    def _withdraw(self, conn: Any) -> None:
+        kept = []
+        while not self._free.empty():
+            item = self._free.get_nowait()
+            if item is not conn:
+                kept.append(item)
+        for item in kept:
+            self._free.put_nowait(item)
+
+
 class PostgresCliAnalyticsReader:
     """Read-only PostgreSQL access for the Local Analytics endpoints."""
 
     def __init__(self, engine: AnalyticsPgEngine) -> None:
         self._engine = engine
+
+    @contextlib.asynccontextmanager
+    async def bounded(self) -> AsyncIterator[PostgresCliAnalyticsReader]:
+        """A reader whose statements run on the one pool connection this request holds (statements one after another).
+
+        The connection is waited for like any other. A request takes a second one only around statements that can use
+        it (`widened`), so a long single-connection statement never keeps an idle connection from ingest. Both return
+        to the pool when their blocks end, so the caller keeps Python work (pricing, row building) outside the block.
+        """
+        async with self._engine.acquire() as first:
+            yield PostgresCliAnalyticsReader(_ConnectionPair(self._engine, [first]))
+
+    @contextlib.asynccontextmanager
+    async def widened(self) -> AsyncIterator[PostgresCliAnalyticsReader]:
+        """This bounded reader with a second connection for the block (at most two statements at once). Waits for
+        the second only for `SECOND_CONNECTION_TIMEOUT_S`, so two requests cannot each hold one and wait for another:
+        a request that finds the pool nearly exhausted runs the block on the one connection it has. A reader that is
+        not bounded is returned as it is."""
+        widen = getattr(self._engine, "widen", None)
+        if widen is None:
+            yield self
+            return
+        async with widen():
+            yield self
 
     async def _q(self, sql: str, params: dict[str, Any]) -> Rows:
         text, args = positional(sql, params)
@@ -532,7 +681,14 @@ class PostgresCliAnalyticsReader:
         return conditions
 
     @staticmethod
-    def _sessions_cte(f: LocalAnalyticsFilter) -> str:
+    def _sessions_cte(
+        f: LocalAnalyticsFilter,
+        lean: bool = False,
+        searchable: bool = False,
+        ids_only: bool = False,
+        with_start: bool = False,
+        split_arms: bool = False,
+    ) -> str:
         """Every session's dimensions (dimensions plus the session's email).
 
         Sessions admitted by `_SESSION_ADMITTED_IN_WINDOW`: started in the window and with at least
@@ -541,34 +697,43 @@ class PostgresCliAnalyticsReader:
         prompt, tool call, cost/usage or line-count row is excluded entirely, not merely flagged dead.
         This is the only place the window is decided. Strings are never NULL in the result, so missing
         values become '' for the filters.
+        `lean` leaves out the columns only the detail statements and the search read (prompt, title, activity and
+        end times); `searchable` keeps the prompt and the title, the two long searched columns.
+        A window-wide statement that needs just the ids, the filters and the start reads far less heap.
+        `ids_only` outputs the session id alone (the viewer scope is applied inside the scan): for the unfiltered shared
+        list nothing else reads `sel`, and the planner then serves it from `session_dims_active_shared_cov` as an
+        Index Only Scan. Callers use it only when `_narrows_window` is false and nothing reads the other columns.
+        `with_start` adds `started_at` to the ids-only output (the covering index keys it, so the scan stays index-only)
+        for the statements that order by the start or bound the invocations by it (the framework filter).
         """
+        searched = """
+                       coalesce(d.first_prompt, '') AS first_prompt,
+                       coalesce(d.session_title, '') AS session_title,"""
+        activity = """
+                       d.last_event_at,
+                       d.activity_started_at,
+                       d.ended_at,"""
+        if ids_only:
+            # The scope is applied under the alias `x` inside the scan, so `sel` outputs the id alone.
+            columns = "x.session_id, x.started_at" if with_start else "x.session_id"
+            return _sel_ctes(_admitted_arms("x", columns, sql_list_condition(f.scope)[0]), star=False)
+        wide = ("" if lean else activity) + (searched if searchable or not lean else "")
         # The viewer scope is always the first condition: nothing appended later can displace it.
         conditions = [sql_list_condition(f.scope)[0]]
         conditions.extend(["false"] if f.deny_all else PostgresCliAnalyticsReader._filter_conditions(f))
         where = ("\n            WHERE " + _AND.join(conditions)) if conditions else ""
-        return f"""
-        sel AS (
-            SELECT * FROM (
-                SELECT d.session_id,
+        columns = f"""d.session_id,
                        coalesce(nullif(d.repo_remote, ''), nullif(d.repository, ''), '') AS repository,
                        coalesce(d.branch, '')       AS branch,
                        coalesce(d.repo_remote, '')  AS repo_remote,
                        coalesce(d.project_name, '') AS project_name,
                        {_SESSION_USER_EMAIL} AS user_email,
-                       d.started_at,
-                       d.last_event_at,
-                       d.activity_started_at,
-                       d.ended_at,
-                       coalesce(d.first_prompt, '') AS first_prompt,
-                       coalesce(d.session_title, '') AS session_title,
+                       d.started_at,{wide}
                        d.owner_email,
                        d.subscription_type,
                        d.project_origin,
-                       d.route_note
-                FROM session_dims d
-                WHERE d.started_at IS NOT NULL AND {_SESSION_ADMITTED_IN_WINDOW}
-            ) x{where}
-        )"""
+                       d.route_note"""
+        return _sel_ctes(_admitted_arms("d", columns), where, split=split_arms)
 
     @staticmethod
     def _activity_cte() -> str:
@@ -588,22 +753,8 @@ class PostgresCliAnalyticsReader:
 
     @staticmethod
     def _normalized_model_name(column: str) -> str:
-        """Strip an optional leading LiteLLM Bedrock provider wrapper ('bedrock/'), a routing
-        prefix ('converse/' or 'invoke/'), an optional region token plus 'anthropic.' provider
-        prefix (e.g. 'us.anthropic.', 'us-gov-west-1.anthropic.', 'anthropic.'), and a trailing
-        Bedrock inference-profile version tag ('-v1:0'-style) when it immediately follows an
-        8-digit date stamp, e.g. '-20251001-v1:0'.
-        CR-002: LiteLLM's own Bedrock provider convention nests an API-path marker behind the
-        'bedrock/' provider prefix (e.g. 'bedrock/converse/...'); not yet observed in this
-        telemetry source, but a documented real pattern, so the wrapper is stripped defensively.
-        The routing-prefix and provider-prefix strips are case-insensitive (CR-001: a routing
-        layer that emits a different case for these tokens must still normalize the same way).
-        Never touches a date stamp on its own, a model's own version dash inside the id,
-        or a trailing '-v\\d+:\\d+' shape that is not preceded by that date stamp.
-        """
-        without_routing_prefix = f"regexp_replace({column}, '^(bedrock/)?(converse|invoke)/', '', 'i')"
-        without_prefix = f"regexp_replace({without_routing_prefix}, '^([a-z0-9-]+\\.)?anthropic\\.', '', 'i')"
-        return f"regexp_replace({without_prefix}, '(\\d{{8}})-v\\d+:\\d+$', '\\1')"
+        """The SQL spelling of the canonical model id; see `normalized_model_name`."""
+        return normalized_model_name(column)
 
     # ── cost / token facts (cost_daily) ──────────────────────────────────────
 
@@ -695,24 +846,22 @@ class PostgresCliAnalyticsReader:
         every money value is priced from. The 5m / 1h sums are NULL when no row of the group has a split.
         `spend_only` leaves out Personal-paid sessions: aggregate spend is company/project-paid only, while a
         single session keeps its own cost."""
-        model_name = self._normalized_model_name("c.model_name")
         return await self._q(
-            f"""
-        WITH {self._sessions_cte(f)}
-        SELECT c.session_id,
-               c.model_name                                 AS model_name,
-               {model_name}                                 AS normalized_model_name,
-               sum(c.input_tokens)::bigint                  AS input_tokens,
-               sum(c.output_tokens)::bigint                 AS output_tokens,
-               sum(c.cache_read_tokens)::bigint             AS cache_read_tokens,
-               sum(c.cache_creation_tokens)::bigint         AS cache_creation_tokens,
-               sum(c.cache_creation_5m_tokens)::bigint      AS cache_creation_5m_tokens,
-               sum(c.cache_creation_1h_tokens)::bigint      AS cache_creation_1h_tokens
-        FROM {_token_rows(*_SEL_SESSIONS)}
-        WHERE true{f" AND {_spend('c')}" if spend_only else ""}
-        GROUP BY c.session_id, c.model_name""",
+            f"WITH {self._sessions_cte(f)} SELECT g.* FROM {model_token_groups(spend_only)}",
             window_params(f),
         )
+
+    async def get_window_model_flags(self, f: LocalAnalyticsFilter) -> list[tuple[str, tuple[bool, ...]]]:
+        """Per raw model of the filtered window, which priced token kinds (`kind_tokens` order) were used: the
+        input of `CatalogPricer.record_unpriced_from_flags` and the model list the cost sort resolves rates for."""
+        # The flags read only the window's session ids: an unfiltered window is an Index Only Scan of the cover index.
+        ids_only = f.session_ids is None and not self._narrows_window(f)
+        rows = await self._q(
+            f"WITH {self._sessions_cte(f, lean=True, ids_only=ids_only)} "
+            f"SELECT * FROM {model_flags_sql()} ORDER BY model_name {_C}",
+            window_params(f),
+        )
+        return [(r["model_name"], tuple(bool(r[f"used_{c}"]) for c in _RATE_COLUMNS)) for r in rows]
 
     async def get_session_funding_costs(self, f: LocalAnalyticsFilter) -> Rows:
         """The `get_session_model_costs` rows of every selected session (no spend filter), each with the session's
@@ -1080,6 +1229,75 @@ class PostgresCliAnalyticsReader:
             params,
         )
 
+    @staticmethod
+    def _sort_clause(
+        sort_by: str, rates: Sequence[ModelRates] | None, with_groups: bool, params: dict[str, Any]
+    ) -> tuple[str, str]:
+        """The joins of `filtered` and the SQL of its sort key; the cost key adds its rates to `params`."""
+        if sort_by == "start_time":
+            return "", "s.started_at"
+        if sort_by == "cost_usd":
+            params.update(rates_params(rates or []))
+            key = cost_key_from_groups_sql() if with_groups else session_cost_key_sql()
+            return f"LEFT JOIN {key} ON k.session_id = s.session_id", "coalesce(k.cost_key, 0::numeric)"
+        joins = f"""LEFT JOIN (SELECT session_id, sum(cache_read_tokens) AS cache_read, sum(api_call_count) AS calls
+                       FROM cost_daily WHERE session_id IN (SELECT session_id FROM sel) GROUP BY session_id) c
+                  ON c.session_id = s.session_id
+             LEFT JOIN {_totals_join()} ON t.session_id = s.session_id"""
+        sort_key = (
+            "CASE WHEN coalesce(c.calls, 0) = 0 THEN 0::numeric ELSE "
+            "round((coalesce(c.cache_read, 0) + coalesce(t.cache_read_tokens, 0)) / c.calls, 9) END"
+        )
+        return joins, sort_key
+
+    def _ordered_window(
+        self,
+        f: LocalAnalyticsFilter,
+        sort_by: str,
+        rates: Sequence[ModelRates] | None,
+        search: str | None,
+        is_unattributed: bool,
+        with_groups: bool = False,
+        framework: bool = False,
+        split_arms: bool = False,
+    ) -> tuple[str, dict[str, Any]]:
+        """The one order builder of the session list: the CTEs `sel` and `filtered(session_id, sort_key)` (the
+        sessions of `sel` that pass `search` and `is_unattributed`, with the key of `sort_by`) and their parameters.
+        Callers order by `sort_key DESC, session_id COLLATE "C"`. `start_time` is the stored start, `cost_usd` the
+        rounded SQL cost key priced with `rates`, `ctx_per_call` the cache-read tokens (totals-only subagent rows
+        included) per API call, 0 without calls. `framework` (the statements of the framework filter) reads `sel` as
+        the ids and the start alone, like `ctx_per_call`, whatever the sort."""
+        if sort_by not in SESSION_PAGE_SORTS:
+            raise ValueError(f"cannot order sessions by {sort_by!r}; sorts: {SESSION_PAGE_SORTS}")
+        if sort_by == "cost_usd" and rates is None:
+            raise ValueError("sorting by cost_usd needs the rates of the window models")
+        params = window_params(f)
+        conditions = ["true"]
+        if search:
+            conditions.append(
+                "(" + " OR ".join(f"s.{c} ILIKE $search::text ESCAPE '\\'" for c in _SEARCH_COLUMNS) + ")"
+            )
+            params["search"] = "%" + _escape_like(search.strip().lower()) + "%"
+        if is_unattributed:
+            conditions.append("s.repository = ''")
+        joins, sort_key = self._sort_clause(sort_by, rates, with_groups, params)
+        groups = f",\n        {cost_groups_cte()}" if with_groups and sort_by == "cost_usd" else ""
+        # The ctx_per_call key reads only session ids from `sel`; the unfiltered shared list can scan them index-only.
+        ids_only = (sort_by == "ctx_per_call" or framework) and not (
+            search or is_unattributed or f.session_ids is not None or self._narrows_window(f)
+        )
+        sel = self._sessions_cte(
+            f, lean=True, searchable=bool(search), ids_only=ids_only, with_start=framework, split_arms=split_arms
+        )
+        ctes = f"""{sel}{groups},
+        filtered AS (
+            SELECT s.session_id, {sort_key} AS sort_key
+            FROM sel s
+                 {joins}
+            WHERE {_AND.join(conditions)}
+        )"""
+        return ctes, params
+
     async def get_session_page(
         self,
         f: LocalAnalyticsFilter,
@@ -1088,51 +1306,25 @@ class PostgresCliAnalyticsReader:
         per_page: int,
         search: str | None = None,
         is_unattributed: bool = False,
+        rates: Sequence[ModelRates] | None = None,
     ) -> tuple[int, list[str]]:
         """One page of the session list, decided in SQL: `(total, session_ids)` of the sessions of `sel` that
-        pass `search` (case-insensitive substring of the first prompt, repository or branch, `%`, `_` and `\\`
-        matched literally) and `is_unattributed`, ordered by the `sort_by` key DESC then session_id ASC.
-        `start_time` is the reported session start, `ctx_per_call` the cache-read tokens (totals-only subagent
-        rows included) per API call, 0 without calls. `total` counts every such session, not the page."""
-        if sort_by not in SESSION_PAGE_SORTS:
-            raise ValueError(f"get_session_page cannot sort by {sort_by!r}; sorts: {SESSION_PAGE_SORTS}")
+        pass `search` (case-insensitive substring of the first prompt, title, repository or branch, `%`, `_` and
+        `\\` matched literally) and `is_unattributed`, ordered by the `sort_by` key DESC then session_id ASC
+        (`_ordered_window`; `cost_usd` needs `rates`). `total` counts every such session, not the page."""
         if search and "\x00" in search:
             return 0, []  # PostgreSQL text cannot hold a NUL, so no session matches; the driver would reject it
-        params = window_params(f)
+        indexed = sort_by == "start_time" and not (search or is_unattributed or self._narrows_window(f))
+        ctes, params = self._ordered_window(f, sort_by, rates, search, is_unattributed, split_arms=indexed)
         params["limit"] = per_page
         params["offset"] = min(page * per_page, _MAX_PAGE_OFFSET)
-        conditions = ["true"]
-        if search:
-            conditions.append(
-                "(s.first_prompt ILIKE $search::text ESCAPE '\\' OR s.repository ILIKE $search::text ESCAPE '\\'"
-                " OR s.branch ILIKE $search::text ESCAPE '\\')"
-            )
-            params["search"] = "%" + _escape_like(search.strip().lower()) + "%"
-        if is_unattributed:
-            conditions.append("s.repository = ''")
         if sort_by == "start_time":
-            ctes = f"{self._sessions_cte(f)},{self._activity_cte()}"
-            joins = "JOIN act a ON a.session_id = s.session_id"
-            sort_key = "a.session_start"
-        else:
-            ctes = self._sessions_cte(f)
-            joins = f"""LEFT JOIN (SELECT session_id, sum(cache_read_tokens) AS cache_read, sum(api_call_count) AS calls
-                       FROM cost_daily WHERE session_id IN (SELECT session_id FROM sel) GROUP BY session_id) c
-                  ON c.session_id = s.session_id
-             LEFT JOIN {_totals_join()} ON t.session_id = s.session_id"""
-            sort_key = (
-                "CASE WHEN coalesce(c.calls, 0) = 0 THEN 0::numeric ELSE "
-                "round((coalesce(c.cache_read, 0) + coalesce(t.cache_read_tokens, 0)) / c.calls, 9) END"
-            )
+            if not indexed:
+                return await self._searched_start_time_page(ctes, params, page * per_page > 0)
+            return await self._start_time_page(ctes, params)
         rows = await self._q(
             f"""
         WITH {ctes},
-        filtered AS (
-            SELECT s.session_id, {sort_key} AS sort_key
-            FROM sel s
-                 {joins}
-            WHERE {_AND.join(conditions)}
-        ),
         page AS (
             SELECT session_id, sort_key FROM filtered
             ORDER BY sort_key DESC, session_id {_C}
@@ -1144,6 +1336,171 @@ class PostgresCliAnalyticsReader:
             params,
         )
         return int(rows[0]["total"]), list(rows[0]["session_ids"])
+
+    @staticmethod
+    def _narrows_window(f: LocalAnalyticsFilter) -> bool:
+        """True when a filter or the viewer scope keeps only some of the window's sessions by a column no index
+        orders (user, project, repository, branch, class, owner): the index-ordered walk of `_start_time_page` would
+        then read the whole window to find a rare (or nonexistent) match, so the page is cut in one pass instead.
+        Only the unrestricted shared list, narrowed by nothing, takes the index-ordered path."""
+        scope = f.scope
+        return bool(
+            f.deny_all
+            or f.users
+            or f.projects
+            or f.project_unattributed
+            or f.repositories
+            or f.branch
+            or f.subscription_types
+            or f.project_origins
+            or scope.mode != "exclude"
+            or not scope.unrestricted
+        )
+
+    async def _searched_start_time_page(
+        self, ctes: str, params: dict[str, Any], past_first: bool
+    ) -> tuple[int, list[str]]:
+        """A searched or filtered start_time page in one pass over the window: a leading-wildcard ILIKE (or a filter on
+        a column no index orders) cannot use the start_time index, so the rows it must read are read once, counted by
+        a window function and cut to the page by a top-N sort.
+        A page past the last match returns no row, so the exact total then comes from a count (`past_first`)."""
+        rows = await self._q(
+            searched_start_time_page_sql(ctes),
+            params,
+        )
+        if rows:
+            return int(rows[0]["total"]), [r["session_id"] for r in rows]
+        if not past_first:
+            return 0, []
+        count_params = {k: v for k, v in params.items() if k not in ("limit", "offset")}
+        count_rows = await self._q(window_count_sql(ctes), count_params)
+        return int(count_rows[0]["total"]), []
+
+    async def _start_time_page(self, ctes: str, params: dict[str, Any]) -> tuple[int, list[str]]:
+        """The start_time page as two statements: `filtered` is read once by each, so it is inlined (not
+        materialised) and the page walks `session_dims_started_at` in order, stopping after offset + limit rows,
+        instead of sorting the whole window. The count is the only statement that reads the whole window."""
+        page_rows = await self._q(
+            start_time_page_sql(ctes),
+            params,
+        )
+        count_params = {k: v for k, v in params.items() if k not in ("limit", "offset")}
+        count_rows = await self._q(start_time_count_sql(ctes), count_params)
+        return int(count_rows[0]["total"]), list(page_rows[0]["session_ids"])
+
+    async def get_cost_models(self, f: LocalAnalyticsFilter) -> list[str]:
+        """The distinct raw model names that token rows (`cost_daily`, and the subagent totals of `session_usage`)
+        carry in the filtered window and viewer scope: the models whose catalog rates the cost sort resolves before
+        it reads the window. Scoped by `sel` like every other window statement, so a model used only by sessions
+        outside the window or the viewer's scope never reaches rate resolution."""
+        ids_only = f.session_ids is None and not self._narrows_window(f)
+        rows = await self._q(
+            f"WITH {self._sessions_cte(f, lean=True, ids_only=ids_only)} "
+            f"SELECT c.model_name FROM {_token_rows(*_SEL_SESSIONS)} "
+            f'WHERE c.model_name IS NOT NULL GROUP BY c.model_name ORDER BY c.model_name COLLATE "C"',
+            window_params(f),
+        )
+        return [r["model_name"] for r in rows]
+
+    async def get_cost_page(
+        self,
+        f: LocalAnalyticsFilter,
+        page: int,
+        per_page: int,
+        rates: Sequence[ModelRates],
+        search: str | None = None,
+        is_unattributed: bool = False,
+    ) -> tuple[int, list[str], list[tuple[str, tuple[bool, ...]]]]:
+        """`get_session_page` for the cost sort plus the kind flags of the whole filtered window, from one build of
+        the (session, model) token groups: `(total, session_ids, model_flags)`. The flags are `get_window_model_flags`'
+        input of `CatalogPricer.record_unpriced_from_flags` and are not narrowed by `search` / `is_unattributed`."""
+        if search and "\x00" in search:
+            return 0, [], await self.get_window_model_flags(f)
+        ctes, params = self._ordered_window(f, "cost_usd", rates, search, is_unattributed, with_groups=True)
+        params["limit"] = per_page
+        params["offset"] = min(page * per_page, _MAX_PAGE_OFFSET)
+        rows = await self._q(
+            cost_page_sql(ctes),
+            params,
+        )
+        row = rows[0]
+        flags = json.loads(row["flags"]) if isinstance(row["flags"], str) else row["flags"]
+        return (
+            int(row["total"]),
+            list(row["session_ids"]),
+            [(entry[0], tuple(bool(v) for v in entry[1:])) for entry in flags],
+        )
+
+    async def get_framework_page(
+        self,
+        f: LocalAnalyticsFilter,
+        sort_by: str,
+        page: int,
+        per_page: int,
+        matching: Callable[[list[list[str]]], list[list[str]]],
+        rates: Sequence[ModelRates] | None = None,
+        search: str | None = None,
+        is_unattributed: bool = False,
+    ) -> tuple[int, list[str], list[tuple[str, tuple[bool, ...]]]]:
+        """One page of the sessions whose classifier names (`CLASSIFIER_NAMES_SQL`) the framework rule accepts, in
+        the order of `get_session_page`: `(total, session_ids, model_flags)`. The rule is Python (the customer's
+        regex config), so the work is split around it on one connection and one transaction:
+
+        1. the names of every session of the filtered window are built set-wise into a temp table, and the DISTINCT
+           name sets (a handful) are read;
+        2. `matching(sets)` returns the sets the framework accepts;
+        3. the page is cut from the sessions whose set is accepted, ordered by the sort key, with the exact total.
+
+        `model_flags` covers the whole filtered window like `get_window_model_flags` (the cost sort takes them from
+        the groups of its key). `matching` must be fast and synchronous: it runs while the connection is held."""
+        if search and "\x00" in search:
+            return 0, [], await self.get_window_model_flags(f)
+        # The names need no sort key: the window is read in the cheap start_time order, whatever the final sort.
+        names_ctes, names_params = self._ordered_window(f, "start_time", None, search, is_unattributed, framework=True)
+        with_groups = sort_by == "cost_usd"
+        ctes, params = self._ordered_window(
+            f, sort_by, rates, search, is_unattributed, with_groups=with_groups, framework=True
+        )
+        params["limit"] = per_page
+        params["offset"] = min(page * per_page, _MAX_PAGE_OFFSET)
+        flags_select = framework_flags_select(with_groups)
+        async with self._engine.acquire() as conn, conn.transaction():
+            await self._fetch(
+                conn,
+                framework_names_sql(names_ctes),
+                names_params,
+            )
+            # A temp table has no statistics for the planner.
+            await self._fetch(conn, f"ANALYZE {FRAMEWORK_NAMES_TABLE}", {})
+            sets = [
+                list(r["names"])
+                for r in await self._fetch(conn, f"SELECT names FROM {FRAMEWORK_NAMES_TABLE} GROUP BY names", {})
+            ]
+            params["matching"] = json.dumps(matching(sets))
+            rows = await self._fetch(
+                conn,
+                framework_page_sql(ctes, flags_select),
+                params,
+            )
+            total = int(rows[0]["total"]) if rows else 0
+            raw_flags = rows[0]["flags"] if rows else None
+            if not rows and page * per_page > 0:
+                count = await self._fetch(
+                    conn,
+                    framework_count_sql(),
+                    {"matching": params["matching"]},
+                )
+                total = int(count[0]["total"])
+        ids = [r["session_id"] for r in rows]
+        if raw_flags is None:
+            return total, ids, await self.get_window_model_flags(f)
+        flags = json.loads(raw_flags) if isinstance(raw_flags, str) else raw_flags
+        return total, ids, [(entry[0], tuple(bool(v) for v in entry[1:])) for entry in flags]
+
+    async def _fetch(self, conn: Any, sql: str, params: dict[str, Any]) -> Rows:
+        text, args = positional(sql, params)
+        records = await conn.fetch(text, *args)
+        return [{key: normalise(value) for key, value in record.items()} for record in records]
 
     async def get_session_start_times(self, f: LocalAnalyticsFilter) -> Rows:
         return await self._q(

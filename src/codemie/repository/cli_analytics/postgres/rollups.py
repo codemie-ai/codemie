@@ -58,6 +58,7 @@ from codemie.repository.cli_analytics.postgres.dirty import (
 from codemie.repository.cli_analytics.postgres.engine import CLIENT_TIMEOUT_MARGIN_S, AnalyticsPgEngine
 from codemie.repository.cli_analytics.postgres.maintenance import TODAY_UTC_SQL
 from codemie.repository.cli_analytics.postgres.otlp import MAX_KEY_BYTES, MAX_PATH_BYTES
+from codemie.repository.cli_analytics.postgres.session_activity import derive_session_activity
 from codemie.repository.cli_analytics.postgres.session_derived import update_session_derived
 from codemie.repository.cli_analytics.postgres.fork_attribution import (
     executed_tool_span,
@@ -2309,6 +2310,8 @@ class RollupRefresher:
             # Last: feature_id and delivery_framework derive from what the SESSION statements wrote.
             sessions = sorted({k["session_id"] for k in keys if k["kinds"] & _SESSION_KEY_BITS and k["session_id"]})
             await update_session_derived(conn, sessions, self._classify, timeout)
+            # Also last: the activity facts read the day rows the statements above wrote, for every session of the keys.
+            await derive_session_activity(conn, [k["session_id"] for k in keys], timeout)
             for statement in (_LOCK_CLAIMED_KEYS, _RELEASE_KEYS, _RESTAMP_KEYS):
                 await conn.execute(statement, timeout=timeout)
 

@@ -34,7 +34,7 @@ from datetime import date, timedelta
 
 import asyncpg
 
-from codemie.repository.cli_analytics.postgres import session_purge
+from codemie.repository.cli_analytics.postgres import session_activity, session_purge
 from codemie.repository.cli_analytics.postgres.engine import CLIENT_TIMEOUT_MARGIN_S, AnalyticsPgEngine
 from codemie.repository.cli_analytics.postgres.settings import AnalyticsPgSettings
 
@@ -221,6 +221,7 @@ class MaintenanceReport:
     moved_rows: int = 0
     dropped: list[str] = field(default_factory=list)
     purged_rows: int = 0
+    derived_sessions: int = 0  # sessions whose stored activity facts this run derived (see session_activity)
     rows_in_default: dict[str, int] = field(default_factory=dict)
     failed: list[str] = field(default_factory=list)  # steps, partitions or purges that raised; the rest ran
     defaults_ready: bool = False  # every table has its DEFAULT partition: ingest always has a target
@@ -246,6 +247,18 @@ _RAISED_CLIENT_TIMEOUT_S = MAINTENANCE_STATEMENT_TIMEOUT_S + CLIENT_TIMEOUT_MARG
 # What one step, partition or purge may fail with while the others still run: a database
 # error, or the client giving up on a statement (asyncpg raises TimeoutError).
 _ISOLATED_FAILURES = (asyncpg.PostgresError, TimeoutError)
+# Deriving the activity facts of the sessions that predate them: one transaction per batch, one run's share of time.
+_ACTIVITY_BATCH = 5_000
+_ACTIVITY_BUDGET_S = 120.0
+# While more than _ACTIVITY_CATCH_UP_ABOVE sessions still lack their facts (right after the deployment of the revision
+# that adds them) a run may work longer, so a large database is derived in a few runs instead of many hourly ones; it
+# returns to the steady budget as soon as the backlog is small. The count is capped: it never reads more rows than that.
+_ACTIVITY_CATCH_UP_BUDGET_S = 600.0
+_ACTIVITY_CATCH_UP_ABOVE = 50_000
+_ACTIVITY_BACKLOG_SQL = (
+    "SELECT count(*) FROM (SELECT 1 FROM session_dims WHERE has_activity IS NULL "
+    f"LIMIT {_ACTIVITY_CATCH_UP_ABOVE + 1}) p"
+)
 
 
 class PartitionMaintainer:
@@ -273,6 +286,7 @@ class PartitionMaintainer:
             ("_ensure_partitions", lambda: self._ensure_partitions(conn, today, report)),
             ("_drop_expired", lambda: self._drop_expired(conn, today, report)),
             ("_purge_expired_rows", lambda: self._purge_expired_rows(conn, today, report)),
+            ("_derive_session_activity", lambda: self._derive_session_activity(conn, report)),
             ("_count_default_rows", lambda: self._count_default_rows(conn, report)),
         )
         for name, step in steps:
@@ -288,6 +302,16 @@ class PartitionMaintainer:
                 "cli_analytics: rows outside every planned partition (DEFAULT partitions): %s", report.rows_in_default
             )
         return report
+
+    async def _derive_session_activity(self, conn: asyncpg.Connection, report: MaintenanceReport) -> None:
+        """Derive the stored activity facts of the sessions that existed before they were stored. A run works
+        `_ACTIVITY_BUDGET_S`, or `_ACTIVITY_CATCH_UP_BUDGET_S` while a large backlog is left (the Sessions list is exact
+        meanwhile, only slower for the sessions without facts)."""
+        backlog = int(await conn.fetchval(_ACTIVITY_BACKLOG_SQL, timeout=_RAISED_CLIENT_TIMEOUT_S))
+        budget = _ACTIVITY_CATCH_UP_BUDGET_S if backlog > _ACTIVITY_CATCH_UP_ABOVE else _ACTIVITY_BUDGET_S
+        report.derived_sessions += await session_activity.backfill_session_activity(
+            conn, _ACTIVITY_BATCH, budget, MAINTENANCE_STATEMENT_TIMEOUT_S
+        )
 
     async def _existing(self, conn: asyncpg.Connection) -> set[tuple[str, str]]:
         rows = await conn.fetch(_EXISTING_PARTITIONS_SQL, self._engine.settings.schema)

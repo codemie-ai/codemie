@@ -26,6 +26,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests.codemie.repository.cli_analytics.support.bounded import bounded_to_itself
 from tests.codemie.repository.cli_analytics.support.scopes import EXCLUDE_SCOPE
 from codemie.configs.llm_config import CostConfig
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
@@ -80,7 +81,7 @@ def _handler(cost_facts=(), turns=(), invocations=()) -> LocalAnalyticsHandler:
     repo.get_turns_by_session = AsyncMock(return_value=list(turns))
     repo.get_invocations = AsyncMock(return_value=list(invocations))
     repo.get_cost_kpis = AsyncMock(return_value=[{"total_sessions": len(cost_facts), "total_cost_usd": 1.0}])
-    return LocalAnalyticsHandler(repo)
+    return LocalAnalyticsHandler(bounded_to_itself(repo))
 
 
 @pytest.mark.parametrize(
@@ -100,6 +101,7 @@ async def test_sessions_with_equal_start_times_are_ordered_by_trace_id():
         handler = _handler(cost_facts=perm)
         # start_time is ordered and paged by the reader (key DESC, session_id ASC); the handler keeps its page order.
         handler._repo.get_session_page = AsyncMock(return_value=(3, ["c", "a", "b"]))
+        handler._repo.get_window_model_flags = AsyncMock(return_value=[])
         data, _, _ = await handler.get_sessions(_flt(), 0, 20, "start_time", None)
         orders.add(tuple(s["trace_id"] for s in data["sessions"]))
 
@@ -107,8 +109,9 @@ async def test_sessions_with_equal_start_times_are_ordered_by_trace_id():
 
 
 @pytest.mark.asyncio
-async def test_sessions_with_equal_cost_are_ordered_by_trace_id():
-    # The producer cost_usd orders a = b > c; the catalog prices c at 0.001 and a = b at 0.00001 each.
+async def test_sessions_with_equal_cost_keep_the_readers_order():
+    """The reader orders cost_usd (catalog cost DESC, session_id COLLATE "C"); the handler keeps its page order
+    whatever order the detail rows arrive in, and prices the served rows at the catalog."""
     rows = [_cost_row("b", cost_usd=2.0), _cost_row("a", cost_usd=2.0), _cost_row("c", cost_usd=1.0)]
     model_rows = [
         {"session_id": sid, "model_name": "claude-sonnet", "output_tokens": tokens}
@@ -125,11 +128,16 @@ async def test_sessions_with_equal_cost_are_ordered_by_trace_id():
     ):
         for perm in permutations(rows):
             handler = _handler(cost_facts=perm)
+            handler._repo.get_session_page = AsyncMock(return_value=(3, ["c", "a", "b"]))
+            handler._repo.get_cost_models = AsyncMock(return_value=["claude-sonnet"])
+            handler._repo.get_cost_page = AsyncMock(
+                return_value=(3, ["c", "a", "b"], [("claude-sonnet", (False, True, False, False, False))])
+            )
             handler._repo.get_session_model_costs = AsyncMock(return_value=model_rows)
             data, _, _ = await handler.get_sessions(_flt(), 0, 20, "cost_usd", None)
-            orders.add(tuple(s["trace_id"] for s in data["sessions"]))
+            orders.add(tuple((s["trace_id"], round(s["cost_usd"], 9)) for s in data["sessions"]))
 
-    assert orders == {("c", "a", "b")}
+    assert orders == {(("c", 0.001), ("a", 1e-5), ("b", 1e-5))}
 
 
 @pytest.mark.asyncio

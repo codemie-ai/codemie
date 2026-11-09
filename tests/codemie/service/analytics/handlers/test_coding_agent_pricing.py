@@ -429,3 +429,94 @@ class TestCatalogPricer:
 
         with patch(f"{_MODULE}.llm_service.catalog_source", return_value="litellm"):
             assert CatalogPricer().catalog_source == "litellm"
+
+
+_PARTIAL = _priced_model("partial-model", 1.0e-6, 5.0e-6, None, None, None)
+
+# Shared token/rate case table (also drives the SQL cost key twin): (model, counts, expected cost, unpriced).
+# Kinds in order: input, output, cache_read, cache_write (5m + unsplit), cache_write_1h.
+PRICING_CASES = [
+    pytest.param("claude-haiku-4-5", {"input": 10, "output": 100}, 0.00051, False, id="plain"),
+    pytest.param("claude-haiku-4-5", {"cache_creation": 1_000}, 0.00125, False, id="unsplit-cache"),
+    pytest.param(
+        "claude-haiku-4-5", {"cache_creation": 1_000, "cache_5m": 600, "cache_1h": 400}, 0.00155, False, id="split"
+    ),
+    pytest.param(
+        "claude-haiku-4-5",
+        {"cache_creation": 1_000, "cache_5m": 1_000, "cache_1h": 1_000},
+        0.002,
+        False,
+        id="split-clamped-to-creation",
+    ),
+    pytest.param(
+        "claude-haiku-4-5",
+        {"cache_creation": 0, "cache_5m": 300, "cache_1h": 700},
+        0.0,
+        False,
+        id="split-without-write",
+    ),
+    pytest.param("claude-haiku-4-5", {"input": -5, "output": 0}, 0.0, False, id="negative-and-zero-sums"),
+    pytest.param("no-1h-model", {"cache_creation": 100, "cache_1h": 100}, 0.0, True, id="missing-1h-rate-used"),
+    pytest.param("no-1h-model", {"input": 10, "cache_creation": 1_000}, 0.00126, False, id="missing-1h-rate-unused"),
+    pytest.param("partial-model", {"input": 10, "cache_read": 10}, 0.00001, True, id="missing-cache-read-rate-used"),
+    pytest.param("partial-model", {"input": 10, "output": 2}, 0.00002, False, id="missing-rates-unused"),
+    pytest.param("unknown-model", {"input": 5}, 0.0, True, id="uncatalogued-with-tokens"),
+    pytest.param("unknown-model", {"input": 0, "cache_5m": 300}, 0.0, False, id="uncatalogued-zero-tokens"),
+    # a negative sum is not usage: no kind is used, so the model is not unpriced (the SQL flags are tokens > 0)
+    pytest.param("unknown-negative-model", {"input": -5, "output": 0}, 0.0, False, id="uncatalogued-negative-sums"),
+    pytest.param(
+        "unknown-negative-model", {"cache_creation": -100}, 0.0, False, id="uncatalogued-negative-cache-write"
+    ),
+    pytest.param("unknown-mixed-model", {"input": -5, "output": 7}, 0.0, True, id="uncatalogued-negative-and-positive"),
+]
+
+
+class TestUnpricedFromFlags:
+    @pytest.mark.parametrize(("model", "counts", "expected", "unpriced"), PRICING_CASES)
+    def test_flags_record_what_price_records(self, model, counts, expected, unpriced):
+        from codemie.service.analytics.handlers.coding_agent_pricing import (
+            CatalogPricer,
+            TokenCounts,
+            kind_tokens,
+        )
+
+        tc = TokenCounts(**counts)
+        with _patch_config([_HAIKU, _NO_1H, _PARTIAL]):
+            priced = CatalogPricer()
+            assert priced.price(model, tc) == pytest.approx(expected, abs=1e-12)
+            assert (priced.unpriced == [model]) is unpriced
+
+            flagged = CatalogPricer()
+            flagged.record_unpriced_from_flags([(model, tuple(t > 0 for t in kind_tokens(tc)))])
+            assert flagged.unpriced == priced.unpriced
+
+    def test_flags_without_any_used_kind_record_nothing(self):
+        from codemie.service.analytics.handlers.coding_agent_pricing import CatalogPricer
+
+        with _patch_config([]):
+            pricer = CatalogPricer()
+            pricer.record_unpriced_from_flags([("unknown-model", (False,) * 5)])
+            assert pricer.unpriced == []
+
+
+class TestModelRatesFor:
+    def test_builds_rates_through_catalog(self):
+        from codemie.repository.cli_analytics.ports import ModelRates
+        from codemie.service.analytics.handlers.coding_agent_pricing import model_rates_for
+
+        with _patch_config([_NO_1H]):
+            assert model_rates_for("no-1h-model") == ModelRates(
+                model="no-1h-model",
+                input=1.0e-6,
+                output=5.0e-6,
+                cache_read=0.10e-6,
+                cache_write=1.25e-6,
+                cache_write_1h=None,
+            )
+
+    def test_uncatalogued_model_has_no_rates(self):
+        from codemie.repository.cli_analytics.ports import ModelRates
+        from codemie.service.analytics.handlers.coding_agent_pricing import model_rates_for
+
+        with _patch_config([]):
+            assert model_rates_for("unknown-model") == ModelRates(model="unknown-model")

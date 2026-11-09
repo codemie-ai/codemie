@@ -1,0 +1,308 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "approve",
+  "gate_decision": {
+    "gate": "code-review.check",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "User approved the check round: 5/5 prior findings resolved"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "User chose request-changes at the final review gate; fix-up done, check round next"
+    },
+    {
+      "gate": "code-review.check",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "User approved the check round: 5/5 prior findings resolved"
+    }
+  ],
+  "reviewed_head": "90e6f2dffa38e1aa2986a66f6429d76913bff2a4",
+  "rounds": [
+    "final",
+    "check"
+  ],
+  "rationale": "All 5 prior blocking findings are resolved on kind-appropriate proof; no new findings sought. The parity test is skipped without TEST_LOCAL_PG_URL, so its live run was not re-executed here.",
+  "confidence": "low",
+  "check_confidence": "high",
+  "risk_flags": [
+    "migration",
+    "data-contract",
+    "breaking-change"
+  ],
+  "open": 0,
+  "closed": {
+    "fixed": 4,
+    "moot": 0,
+    "decided": 1,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "decision",
+      "severity": "critical",
+      "triage": "decision_needed",
+      "file": ".ai-run/guides/integration/cli-analytics-storage.md",
+      "title": "AC15 performance limits need approval",
+      "problem": "Spec AC15 requires before/after 30-day benchmarks and either the 825 ms target met or a documented, approved limitation. The guide records only after-figures: default sort meets it, search ~2 s, ctx_per_call ~10 s, cost 17 s, framework filter 36-38 s with intermittent 30 s timeouts. No before baseline; approval pending at MR review. Reachability not code-verifiable (spec criterion).",
+      "impact": "Required criterion partially met; shipping the framework filter with statement timeouts may be a regression against main.",
+      "recommendation": "Record before (main) figures per request type and obtain the requester's explicit decision on the documented limits.",
+      "status": "decided",
+      "check_notes": "Decision outcome and rationale mapped; main baseline recorded in guide.",
+      "fix": {
+        "change": "Recorded measured main vs branch baseline (7d/30d, parallel on/off) and the approved rationale in the guide and bench/README.md",
+        "test": "n/a"
+      },
+      "decision": {
+        "outcome": "Approved: ship the slow sorts as documented limits, main baseline measured first",
+        "rationale": "Default sort (the ticket's measured case) meets 825 ms (44-150 ms vs 12-28 s on main). Search, ctx_per_call, cost and framework are bound by window-wide aggregations; a rollup or stored column (S4) is out of scope; requester approved at the Stage 6 review on 2026-11-05. Main baseline recorded in the guide's Known performance limits and bench/README.md; framework filter did not regress (main never finishes it)."
+      }
+    },
+    {
+      "id": "CR-002",
+      "kind": "evidence",
+      "severity": "critical",
+      "triage": "patch",
+      "file": ".ai-run/guides/integration/cli-analytics-storage.md",
+      "title": "AC9 EXPLAIN evidence not recorded",
+      "problem": "AC9 requires EXPLAIN (ANALYZE, BUFFERS) for 7/30/90-day windows with selected-row fractions and the window token statement. run_sessions_bench.py explain mode exists but no recorded plans appear in the diff or guide.",
+      "impact": "Index choice and window-size behaviour are unproven for the required criterion.",
+      "recommendation": "Run the explain mode on the production-ratio seed and record the plans and fractions in the task folder or guide.",
+      "status": "resolved",
+      "check_notes": "Three EXPLAIN artifacts non-empty; plans and fractions recorded in guide; commands exit 0.",
+      "fix": {
+        "change": "Ran explain mode for 7/30/90 days (fixed the bench explain spy for the shipped statements) and recorded plans, selected-row fractions and timings",
+        "test": "n/a"
+      },
+      "evidence": {
+        "artifacts": [
+          {
+            "path": "docs/superpowers/tasks/2026-11-04-epmcdme-16427-cli-analytics-sessions-db-pagination/bench/explain-ac9-trimmed.json"
+          },
+          {
+            "path": "docs/superpowers/tasks/2026-11-04-epmcdme-16427-cli-analytics-sessions-db-pagination/bench/explain-ac9-trimmed.json"
+          },
+          {
+            "path": "docs/superpowers/tasks/2026-11-04-epmcdme-16427-cli-analytics-sessions-db-pagination/bench/explain-ac9-trimmed.json"
+          },
+          {
+            "path": ".ai-run/guides/integration/cli-analytics-storage.md"
+          },
+          {
+            "path": "docs/superpowers/tasks/2026-11-04-epmcdme-16427-cli-analytics-sessions-db-pagination/bench/README.md"
+          }
+        ],
+        "commands": [
+          {
+            "command": "PG_URL=postgresql://postgres:***@localhost:5432/postgres poetry run python scripts/cli_analytics_bench/run_sessions_bench.py explain --days 7 --only default search ctx_per_call cost framework",
+            "exit_code": 0
+          },
+          {
+            "command": "PG_URL=postgresql://postgres:***@localhost:5432/postgres poetry run python scripts/cli_analytics_bench/run_sessions_bench.py explain --days 30 --only default search ctx_per_call cost framework",
+            "exit_code": 0
+          },
+          {
+            "command": "PG_URL=postgresql://postgres:***@localhost:5432/postgres poetry run python scripts/cli_analytics_bench/run_sessions_bench.py explain --days 90 --only default search ctx_per_call cost framework",
+            "exit_code": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/repository/cli_analytics/postgres/reader.py",
+      "title": "Cost-key SQL builders bloat reader.py",
+      "problem": "Standards (code-quality Module Cohesion, partial): reader.py is ~1866 lines and gained ~470, including the self-contained cost-key, rate-join and kind-flag SQL builders with their constants.",
+      "impact": "Documented code-quality standard blocks the workflow; duplicated cost-key/flag spellings are harder to keep in step.",
+      "recommendation": "Extract the cost-key/model-flag SQL builders and constants into their own module next to reader.py and import them.",
+      "status": "resolved",
+      "check_notes": "Builders moved to cost_key_sql.py; reader.py now imports them (1719 lines).",
+      "fix": {
+        "change": "Moved cost-key, rate-join, kind-flag and token-group SQL builders from reader.py (-145 lines) into postgres/cost_key_sql.py",
+        "test": "tests/codemie/repository/cli_analytics/postgres/test_reader.py (SQL text assertions) and test_live_session_cost_key.py"
+      }
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/repository/cli_analytics/postgres/session_derived.py",
+      "title": "Framework classifier twin lacks parity test",
+      "problem": "AC6 partial: classifier_names_by_session_sql (set-wise rewrite of CLASSIFIER_NAMES_SQL, five sources, started_at-1h bound, array_agg DISTINCT) is exercised live only via session_dims.skills; session_skills, invocations_hourly (kind 2/4, hour bound), agents and commands branches are untested against CLASSIFIER_NAMES_SQL.",
+      "impact": "Drift would make the framework filter list a different session set and total than each row's delivery_framework, with no failing test.",
+      "recommendation": "Add a live-Postgres test seeding every name source (incl. rows just before/well before started_at and a kind outside 2,4) asserting both builders return equal name arrays and get_framework_page keeps exactly the matching sessions.",
+      "status": "resolved",
+      "check_notes": "New live-Postgres parity test seeds every name source and bound and checks get_framework_page.",
+      "fix": {
+        "change": "Added a live parity test of classifier_names_by_session_sql against CLASSIFIER_NAMES_SQL for every source and bound, and of get_framework_page's session set",
+        "test": "tests/codemie/repository/cli_analytics/postgres/test_live_framework_names_parity.py"
+      }
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/external/alembic_cli_analytics/versions/a1c1a0000010_cli_analytics_session_started_at_index.py",
+      "title": "Invalid leftover index silently skipped",
+      "problem": "upgrade uses CREATE INDEX IF NOT EXISTS; an invalid index of the same name left by a failed CONCURRENTLY pre-build is skipped, so migration reports success while the index is unused.",
+      "impact": "start_time sort stays slow after a supposedly successful deploy. Reachability: only the IF NOT EXISTS statement was read, runbook path unconfirmed.",
+      "recommendation": "Drop the index first when pg_index.indisvalid is false, then create it; apply the same to the shared-count index revision.",
+      "status": "resolved",
+      "check_notes": "Migration drops an invalid index before CREATE IF NOT EXISTS; both indexes merged into a1c1a0000010.",
+      "fix": {
+        "change": "One revision a1c1a0000010 creates both indexes, dropping an invalid leftover of the same name first (verified live: invalid indexes rebuilt valid)",
+        "test": "tests/codemie/repository/cli_analytics/postgres/test_migrations.py::test_an_invalid_leftover_index_is_dropped_before_the_idempotent_create"
+      }
+    }
+  ],
+  "deferred": [],
+  "coverage_graded_at": "final",
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "AC1: DB chooses page ids for every sort and filter",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "AC2: response shape and per-row cost unchanged",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "AC3: cost_usd order matches price_session_models",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "AC4: start_time order by session_dims.started_at",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "AC5: search over prompt/title/repo/branch",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "AC6: framework filter parity with live classification",
+      "status": "partial",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "AC7: pages neither repeat nor skip",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "AC8: migration revisions and runbook",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "AC9: EXPLAIN recorded for 7/30/90-day windows",
+      "status": "partial",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "AC10: at most 2 connections / 2 concurrent statements",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "AC11: viewer scope unchanged",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "AC12: guide and docstrings updated",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "AC13: unpriced/catalog_source scope",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "AC14: automated tests",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "AC15: before/after benchmarks, 825 ms or approved limit",
+      "status": "partial",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "AC16: connection use measured, K=4 and 7",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "AC17: Cost and Efficiency parity",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "AC18: index build timing and runbook threshold",
+      "status": "pass",
+      "notes": ""
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "all 16 subjects in the review range match the documented EPMCDME-####: Description format"
+    },
+    {
+      "kind": "code-quality",
+      "status": "partial",
+      "notes": "Module Cohesion: reader.py is 1866 lines and gained ~470, incl. a self-contained SQL cost-key/rate-join/kind-flag builder concern"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "user values are bound parameters, search escaped; sort_by validated against SESSION_PAGE_SORTS"
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "All four lenses and standards ran; 5 blocking findings: AC6 framework-classifier parity untested, AC9 EXPLAIN evidence missing, AC15 perf limits (framework 36-38 s, cost 17 s, no before baseline) need requester approval (decision_needed), reader.py cohesion, and invalid-index skip in the migration. 0 deferred; 8 candidates dismissed as noise or documented design (e.g. start_time ordering by started_at is AC4); reachability was checked only for a few candidates.",
+    "confidence": "low",
+    "risk_flags": [
+      "migration",
+      "data-contract",
+      "breaking-change"
+    ]
+  }
+}

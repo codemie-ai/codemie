@@ -1,0 +1,39 @@
+{
+  "decision": "request-changes",
+  "rationale": "Oversized diff: blind lens read only the first ~3400 lines and the later test hunks went unreviewed; reachability was checked for the main candidates only, so one finding is unconfirmed. 1 major finding: stored activity facts can go stale when session_dims.started_at changes outside the refresher. 0 deferred, 18 dismissed or filtered as noise.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "All commit subjects use the EPMCDME-####: Description format"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "New concerns extracted into new modules; license headers present"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "No credential logging; f-string SQL built from internal constants only"
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/repository/cli_analytics/postgres/session_activity.py",
+      "line": 64,
+      "title": "Stale resumed/has_activity when started_at changes",
+      "problem": "DERIVE_SQL derives resumed from session_dims.started_at, but facts are only derived by the refresher batch and maintenance for NULL facts. If started_at changes through an ingest binding with no new rollup key, or session_usage is written outside the refresher, a stale false fact makes the admitted-arms filter drop sessions the rule would admit.",
+      "impact": "Sessions silently missing from the Sessions list and its total. Reachability was not confirmed, since the writers of started_at were not traced.",
+      "recommendation": "Re-derive the facts wherever started_at is updated, or compare the stored start day inside the arm predicate; otherwise document the staleness window."
+    }
+  ],
+  "deferred": []
+}

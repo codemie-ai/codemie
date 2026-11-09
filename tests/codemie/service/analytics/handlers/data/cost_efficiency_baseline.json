@@ -1,0 +1,304 @@
+{
+  "cost": {
+    "cost_by_model": [
+      {
+        "cost_usd": 27.01024436,
+        "funding": {
+          "api_based": {
+            "cost_incomplete": false,
+            "cost_usd": 0,
+            "session_count": 0,
+            "unpriced_models": []
+          },
+          "subscription": {
+            "cost_incomplete": false,
+            "cost_usd": 0,
+            "session_count": 0,
+            "unpriced_models": []
+          },
+          "unknown": {
+            "cost_incomplete": false,
+            "cost_usd": 0,
+            "session_count": 0,
+            "unpriced_models": []
+          }
+        },
+        "model_name": "claude-opus-5-5",
+        "personal_billed": {
+          "cost_incomplete": false,
+          "cost_usd": 0,
+          "session_count": 0,
+          "unpriced_models": []
+        },
+        "project_origins": [],
+        "subscription_types": []
+      },
+      {
+        "cost_usd": 0.32193315,
+        "funding": {
+          "api_based": {
+            "cost_incomplete": false,
+            "cost_usd": 0,
+            "session_count": 0,
+            "unpriced_models": []
+          },
+          "subscription": {
+            "cost_incomplete": false,
+            "cost_usd": 0,
+            "session_count": 0,
+            "unpriced_models": []
+          },
+          "unknown": {
+            "cost_incomplete": false,
+            "cost_usd": 0,
+            "session_count": 0,
+            "unpriced_models": []
+          }
+        },
+        "model_name": "claude-sonnet-4-6",
+        "personal_billed": {
+          "cost_incomplete": false,
+          "cost_usd": 0,
+          "session_count": 0,
+          "unpriced_models": []
+        },
+        "project_origins": [],
+        "subscription_types": []
+      },
+      {
+        "cost_usd": 0.0,
+        "funding": {
+          "api_based": {
+            "cost_incomplete": false,
+            "cost_usd": 0,
+            "session_count": 0,
+            "unpriced_models": []
+          },
+          "subscription": {
+            "cost_incomplete": false,
+            "cost_usd": 0,
+            "session_count": 0,
+            "unpriced_models": []
+          },
+          "unknown": {
+            "cost_incomplete": false,
+            "cost_usd": 0,
+            "session_count": 0,
+            "unpriced_models": []
+          }
+        },
+        "model_name": "mystery-model",
+        "personal_billed": {
+          "cost_incomplete": false,
+          "cost_usd": 0,
+          "session_count": 0,
+          "unpriced_models": []
+        },
+        "project_origins": [],
+        "subscription_types": []
+      }
+    ],
+    "cost_by_user": [
+      {
+        "cost_usd": 26.96510036,
+        "developer_name": "bob",
+        "funding": {
+          "api_based": {
+            "cost_incomplete": false,
+            "cost_usd": 0,
+            "session_count": 0,
+            "unpriced_models": []
+          },
+          "subscription": {
+            "cost_incomplete": false,
+            "cost_usd": 0,
+            "session_count": 0,
+            "unpriced_models": []
+          },
+          "unknown": {
+            "cost_incomplete": false,
+            "cost_usd": 0,
+            "session_count": 0,
+            "unpriced_models": []
+          }
+        },
+        "personal_billed": {
+          "cost_incomplete": false,
+          "cost_usd": 0,
+          "session_count": 0,
+          "unpriced_models": []
+        },
+        "project_origins": [],
+        "subscription_types": [],
+        "user_email": "bob"
+      },
+      {
+        "cost_usd": 0.36707715,
+        "developer_name": "alice",
+        "funding": {
+          "api_based": {
+            "cost_incomplete": false,
+            "cost_usd": 0,
+            "session_count": 0,
+            "unpriced_models": []
+          },
+          "subscription": {
+            "cost_incomplete": false,
+            "cost_usd": 0,
+            "session_count": 0,
+            "unpriced_models": []
+          },
+          "unknown": {
+            "cost_incomplete": false,
+            "cost_usd": 0,
+            "session_count": 0,
+            "unpriced_models": []
+          }
+        },
+        "personal_billed": {
+          "cost_incomplete": false,
+          "cost_usd": 0,
+          "session_count": 0,
+          "unpriced_models": []
+        },
+        "project_origins": [],
+        "subscription_types": [],
+        "user_email": "alice"
+      }
+    ],
+    "funding": {
+      "api_based": {
+        "cost_incomplete": false,
+        "cost_usd": 0,
+        "session_count": 0,
+        "unpriced_models": []
+      },
+      "subscription": {
+        "cost_incomplete": false,
+        "cost_usd": 0,
+        "session_count": 0,
+        "unpriced_models": []
+      },
+      "unknown": {
+        "cost_incomplete": false,
+        "cost_usd": 0,
+        "session_count": 0,
+        "unpriced_models": []
+      }
+    },
+    "kpis": {
+      "avg_cost_per_session": 0.0,
+      "project_origins": [],
+      "subscription_types": [],
+      "total_cost_usd": 27.33217751,
+      "total_sessions": 3,
+      "total_tokens": 42470305
+    },
+    "models_without_spend": [],
+    "personal_billed": {
+      "cost_incomplete": false,
+      "cost_usd": 0,
+      "session_count": 0,
+      "unpriced_models": []
+    }
+  },
+  "cost_unpriced": [
+    "mystery-model"
+  ],
+  "efficiency": {
+    "code_changes": {
+      "files_changed": 0,
+      "files_edited": 0,
+      "files_written": 0,
+      "net_lines": 8,
+      "project_origins": [],
+      "subscription_types": []
+    },
+    "dead_sessions": {
+      "avg_cost_per_dead": 9.110725836666667,
+      "count": 3,
+      "pct_of_sessions": 0.0,
+      "project_origins": [],
+      "subscription_types": [],
+      "wasted_cost_usd": 27.33217751
+    },
+    "funding": {
+      "api_based": {
+        "cost_incomplete": false,
+        "cost_usd": 0,
+        "session_count": 0,
+        "unpriced_models": []
+      },
+      "subscription": {
+        "cost_incomplete": false,
+        "cost_usd": 0,
+        "session_count": 0,
+        "unpriced_models": []
+      },
+      "unknown": {
+        "cost_incomplete": false,
+        "cost_usd": 0,
+        "session_count": 0,
+        "unpriced_models": []
+      }
+    },
+    "kpis": {
+      "avg_context_per_call": 0.0,
+      "bloat_pct": 32.6,
+      "cache_read_cost_usd": 8.91491931,
+      "project_origins": [],
+      "subscription_types": [],
+      "total_cost_usd": 27.33217751,
+      "worst_session_ctx_per_call": null,
+      "worst_session_prompt": null,
+      "worst_session_trace_id": null
+    },
+    "personal_billed": {
+      "cost_incomplete": false,
+      "cost_usd": 0,
+      "session_count": 0,
+      "unpriced_models": []
+    },
+    "session_depth": [
+      {
+        "bucket": "1",
+        "count": 1,
+        "project_origins": [],
+        "subscription_types": []
+      },
+      {
+        "bucket": "2-5",
+        "count": 2,
+        "project_origins": [],
+        "subscription_types": []
+      },
+      {
+        "bucket": "6-10",
+        "count": 0,
+        "project_origins": [],
+        "subscription_types": []
+      },
+      {
+        "bucket": "11-25",
+        "count": 0,
+        "project_origins": [],
+        "subscription_types": []
+      },
+      {
+        "bucket": "26-50",
+        "count": 0,
+        "project_origins": [],
+        "subscription_types": []
+      },
+      {
+        "bucket": "50+",
+        "count": 0,
+        "project_origins": [],
+        "subscription_types": []
+      }
+    ]
+  },
+  "efficiency_unpriced": [
+    "mystery-model"
+  ]
+}

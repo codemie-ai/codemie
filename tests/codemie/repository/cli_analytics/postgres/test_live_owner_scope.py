@@ -845,3 +845,26 @@ async def test_personal_paid_session_on_a_work_project_is_visible_but_not_spend(
     sessions, _, _ = await handler.get_sessions(f, 0, 50, "start_time", None)
     by_id = {s["trace_id"]: s for s in sessions["sessions"]}
     assert by_id[work]["cost_usd"] > 0 and by_id[work]["subscription_type"] == "personal"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sort_by", ["start_time", "cost_usd", "ctx_per_call"])
+async def test_sessions_unpriced_models_are_the_viewers_own_never_another_scopes(case, sort_by):
+    """AC13: under own_only the unpriced list holds the viewer's own models and never a model of a session the viewer
+    cannot list; the admin's view lists the reverse. The cost sort reads the whole window, so it lists the viewer's
+    model used only off the page (page of 1); the other sorts list the page's models (a page holding both)."""
+    per_page = 1 if sort_by == "cost_usd" else 50
+    own_model, shared_model = f"mystery-own-{case.tag}", f"mystery-shared-{case.tag}"
+    await case.seed("a-priced", sub="personal", origin="personal", owner=OWNER, model=_PRICED)
+    await case.seed("b-own", sub="personal", origin="personal", owner=OWNER, model=own_model, cost=0.0)
+    await case.seed("c-shared", sub="corporate", origin="profile", owner=OWNER, model=shared_model, cost=0.0)
+    handler = LocalAnalyticsHandler(case.reader)
+
+    own, own_pricer, _ = await handler.get_sessions(case.f(_scope("own_only", OWNER)), 0, per_page, sort_by, None)
+    shared, shared_pricer, _ = await handler.get_sessions(
+        case.f(_scope("exclude", "admin@x.com", unrestricted=True)), 0, per_page, sort_by, None
+    )
+
+    assert (len(own["sessions"]), own["total"]) == (per_page if per_page == 1 else 2, 2)
+    assert own_pricer.unpriced == [own_model]
+    assert shared_pricer.unpriced == [shared_model]

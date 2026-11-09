@@ -35,7 +35,7 @@ from datetime import date, datetime, timezone
 from typing import Any
 
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
-from codemie.repository.cli_analytics.ports import SESSION_PAGE_SORTS, CliAnalyticsReader
+from codemie.repository.cli_analytics.ports import CliAnalyticsReader, ModelRates
 from codemie.repository.cli_analytics.vocabulary import BLANK_CHARS, humanize_harness_name, strip_pasted_content
 from codemie.service.analytics.cli_analytics_project_gate import (
     NOTE_FOLDER_NOT_LINKED,
@@ -45,7 +45,7 @@ from codemie.service.analytics.cli_analytics_project_gate import (
     ORIGIN_DEFAULT,
 )
 from codemie.service.analytics.delivery_framework import classify_delivery_framework
-from codemie.service.analytics.handlers.coding_agent_pricing import CatalogPricer, normalize_model
+from codemie.service.analytics.handlers.coding_agent_pricing import CatalogPricer, model_rates_for, normalize_model
 from codemie.service.analytics.handlers.funding_buckets import buckets, models_without_spend, price_bucket_rows
 from codemie.service.analytics.handlers.session_money import (
     dispatch_money,
@@ -896,54 +896,69 @@ class LocalAnalyticsHandler:
         }
 
     @staticmethod
-    def _filter_sessions(
-        sessions: list[dict],
-        search: str | None,
-        framework: str | None,
-        named_first_prompt: dict[str, str],
-    ) -> list[dict]:
-        if search:
-            term = search.strip().lower()
-            sessions = [
-                s
-                for s in sessions
-                if term in s["prompt"].lower()
-                or term in named_first_prompt.get(s["trace_id"], "").lower()
-                or term in (s["repository"] or "").lower()
-                or term in (s["branch"] or "").lower()
-            ]
-
-        if framework:
-            sessions = [s for s in sessions if s.get("delivery_framework") == framework]
-        return sessions
-
-    @staticmethod
-    def _page_sessions(
-        sessions: list[dict],
-        in_sql: bool,
-        sql_total: int,
-        page_ids: list[str],
-        sort_by: str,
+    async def _read_window(
+        repo: CliAnalyticsReader,
+        f: LocalAnalyticsFilter,
         page: int,
         per_page: int,
-    ) -> tuple[list[dict], int]:
-        if in_sql:
-            # The reader already ordered, searched and paged; its page order is the response order.
-            position = {sid: i for i, sid in enumerate(page_ids)}
-            return sorted(sessions, key=lambda s: position[s["trace_id"]]), sql_total
+        sort_by: str,
+        search: str | None,
+        framework: str | None,
+        is_unattributed: bool,
+    ) -> tuple[list[tuple[str, tuple[bool, ...]]] | None, int, list[str]]:
+        """The window's reads, chosen by the database for every sort: (model flags, total, page ids).
+        The flags (whole filtered window) exist only for the cost sort and the framework filter; the other sorts
+        report unpriced models from the page's own rows, as before, and issue no window-wide token statement.
 
-        sort_key = {
-            "start_time": lambda s: s["start_time"],
-            "cost_usd": lambda s: _float_sort_key(s["cost_usd"]),
-            "ctx_per_call": lambda s: _float_sort_key(s["ctx_per_call"]),
-        }.get(sort_by, lambda s: s["start_time"])
-        # Equal sort values (e.g. sessions without plugin data share one start time) keep
-        # a stable trace_id order, so pages neither repeat nor skip sessions.
-        sessions.sort(key=lambda s: s["trace_id"])
-        sessions.sort(key=sort_key, reverse=True)
+        The cost sort needs the catalog rates of the window's models first (`get_cost_models`). The framework filter
+        is the customer's regex config, so the reader hands it the distinct classifier name sets of the window and
+        pages the sessions of the sets it accepts. Runs statements one after another.
+        """
+        rates: list[ModelRates] | None = None
+        if sort_by == "cost_usd":
+            rates = [model_rates_for(model) for model in await repo.get_cost_models(f)]
+        if framework:
+            total, page_ids, flags = await repo.get_framework_page(
+                f,
+                sort_by,
+                page,
+                per_page,
+                lambda sets: [names for names in sets if classify_delivery_framework(names) == framework],
+                rates=rates,
+                search=search,
+                is_unattributed=is_unattributed,
+            )
+            return flags, total, page_ids
+        if sort_by == "cost_usd":
+            # One statement builds the (session, model) groups once for the key, the page, the count and the flags.
+            total, page_ids, flags = await repo.get_cost_page(f, page, per_page, rates or [], search, is_unattributed)
+            return flags, total, page_ids
+        total, page_ids = await repo.get_session_page(f, sort_by, page, per_page, search, is_unattributed, rates=rates)
+        return None, total, page_ids
 
-        offset = page * per_page
-        return sessions[offset : offset + per_page], len(sessions)
+    @staticmethod
+    async def _read_details(repo: CliAnalyticsReader, f: LocalAnalyticsFilter, page_ids: list[str], unattributed: bool):
+        """The page's detail statements, run together: the bounded reader runs at most two of them at a time.
+
+        A task group, not `gather`: when one statement fails the others are cancelled and awaited before this returns,
+        so the bounded block never releases a connection while a sibling statement is still running on it. The first
+        failure is re-raised as itself (not as an ExceptionGroup), so callers see the same exception types as before.
+        """
+        try:
+            async with asyncio.TaskGroup() as group:
+                tasks = (
+                    group.create_task(
+                        repo.get_session_cost_facts(f, is_unattributed=unattributed, include_costless=True)
+                    ),
+                    group.create_task(repo.get_turns_by_session(f)),
+                    group.create_task(repo.get_tool_success_by_session(f)),
+                    group.create_task(repo.get_lines_by_session(f)),
+                    group.create_task(repo.get_session_model_costs(f)),
+                    group.create_task(repo.get_skill_names_by_session(page_ids, scope=f.scope)),
+                )
+        except ExceptionGroup as failure:
+            raise failure.exceptions[0] from None
+        return tuple(task.result() for task in tasks)
 
     async def get_sessions(
         self,
@@ -957,67 +972,56 @@ class LocalAnalyticsHandler:
         branch: str | None = None,
     ) -> tuple[dict[str, Any], CatalogPricer, str | None]:
         f.branch = branch or None
-        # cost_usd sorts by catalog prices and framework filters by customer regex config: neither is
-        # expressible in SQL, so those requests are filtered, sorted and paged in Python over the whole window.
-        in_sql = sort_by in SESSION_PAGE_SORTS and not framework
-        sql_total = 0
-        page_ids: list[str] = []
-        if in_sql:
-            sql_total, page_ids = await self._repo.get_session_page(f, sort_by, page, per_page, search, is_unattributed)
-            if not page_ids:
-                return {"sessions": [], "page": page, "per_page": per_page, "total": sql_total}, CatalogPricer(), None
-            f = f.restricted_to(page_ids)
-
-        cost_facts, turns_rows, success_rows, lines_rows, session_model_rows = await asyncio.gather(
-            self._repo.get_session_cost_facts(f, is_unattributed=is_unattributed, include_costless=True),
-            self._repo.get_turns_by_session(f),
-            self._repo.get_tool_success_by_session(f),
-            self._repo.get_lines_by_session(f),
-            self._repo.get_session_model_costs(f),
-        )
-
-        session_ids = [_s(r.get("session_id")) for r in cost_facts]
-        skill_rows = await self._repo.get_skill_names_by_session(session_ids, scope=f.scope)
+        # A blank search filters nothing: it must not route the request through the searched statements.
+        search = search if search and search.strip() else None
+        pricer = CatalogPricer()
+        # One analytics connection for the window statements and a second one only for the details, held only while
+        # statements run: pricing and the row building happen outside them. (The framework filter's classification of
+        # the window's few name sets runs inside the hold.)
+        async with self._repo.bounded() as repo:
+            flags, total, page_ids = await self._read_window(
+                repo, f, page, per_page, sort_by, search, framework, is_unattributed
+            )
+            details = None
+            if page_ids:
+                # The window statements ran on the one connection; only the detail statements use a second one.
+                async with repo.widened() as wide:
+                    details = await self._read_details(wide, f.restricted_to(page_ids), page_ids, is_unattributed)
+        if flags is not None:
+            # Whole filtered window, only where the request already read it (the cost sort, the framework filter).
+            pricer.record_unpriced_from_flags(flags)
+        if not page_ids:
+            return {"sessions": [], "page": page, "per_page": per_page, "total": total}, pricer, None
+        cost_facts, turns_rows, success_rows, lines_rows, session_model_rows, skill_rows = details
         skills_by_session = {_s(r["session_id"]): r["skill_names"] for r in skill_rows}
 
         turns_by_session = {_s(r.get("session_id")): r for r in turns_rows}
         success_by_session = {_s(r.get("session_id")): r for r in success_rows}
         lines_by_session = {_s(r.get("session_id")): r for r in lines_rows}
-
         model_rows_by_session = self._group_by_session(session_model_rows)
-
-        pricer = CatalogPricer()
         priced_sessions = priced_session_ids(session_model_rows, pricer)
 
-        sessions = [
+        rows_by_session = {_s(r.get("session_id")): r for r in cost_facts}
+        # The page order is the response order; a page id without a fact row is not listed.
+        page_rows = [
             self._session_row(
-                row,
+                rows_by_session[sid],
                 turns_by_session,
                 success_by_session,
                 lines_by_session,
                 skills_by_session,
                 model_rows_by_session,
             )
-            for row in cost_facts
+            for sid in page_ids
+            if sid in rows_by_session
         ]
 
-        if not in_sql:
-            # A named session is also found by its first prompt; an unnamed one is served as that prompt already.
-            named_first_prompt = {
-                _s(r.get("session_id")): strip_pasted_content(_s(r.get("prompt")))
-                for r in cost_facts
-                if _s(r.get("session_title")).strip(BLANK_CHARS)
-            }
-            sessions = self._filter_sessions(sessions, search, framework, named_first_prompt)
-
-        returned = {s["trace_id"] for s in sessions}
-        money = price_session_models([r for r in session_model_rows if _s(r.get("session_id")) in returned], pricer)
-        for s in sessions:
+        listed = {s["trace_id"] for s in page_rows}
+        money = price_session_models([r for r in session_model_rows if _s(r.get("session_id")) in listed], pricer)
+        for s in page_rows:
             s["cost_usd"] = money.by_session.get(s["trace_id"], 0.0)
             s["cost_available"] = s["trace_id"] in priced_sessions
             s["bloat_pct"] = _pct(money.cache_read_by_session.get(s["trace_id"], 0.0), s["cost_usd"])
-
-        page_rows, total = self._page_sessions(sessions, in_sql, sql_total, page_ids, sort_by, page, per_page)
         self._log_unavailable_cost([s["trace_id"] for s in page_rows], model_rows_by_session, priced_sessions)
 
         data_as_of = max((s["start_time"] for s in page_rows), default=None)

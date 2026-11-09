@@ -742,9 +742,27 @@ async def get_sessions(
     f = await filters.resolve_sessions(user, is_project_unattributed, personal_only)
     resolved_page = page if page is not None else DEFAULT_PAGE
     resolved_per_page = per_page if per_page is not None else DEFAULT_PER_PAGE
-    data, pricer, data_as_of = await _handler().get_sessions(
-        f, resolved_page, resolved_per_page, sort_by, search, framework, is_unattributed, branch
-    )
+    try:
+        data, pricer, data_as_of = await _handler().get_sessions(
+            f, resolved_page, resolved_per_page, sort_by, search, framework, is_unattributed, branch
+        )
+    except (asyncpg.QueryCanceledError, TimeoutError) as e:
+        # The heavy windows (framework filter, cost sort, search over a long range) can outrun the statement timeout
+        # (server side: QueryCanceledError) or the client-side command timeout (TimeoutError). A busy pool cannot
+        # surface here: `bounded()` waits for its first connection without a limit and swallows the second's timeout.
+        logger.warning(
+            "Sessions list timed out (sort_by=%s, framework=%.80r, search=%s): %s",
+            sort_by,
+            framework,
+            bool(search),
+            type(e).__name__,
+        )
+        raise ExtendedHTTPException(
+            code=status.HTTP_504_GATEWAY_TIMEOUT,
+            message="The sessions list took too long to build",
+            details="The query exceeded the analytics statement timeout for this date range and filters.",
+            help="Narrow the date range or drop the search, framework filter or cost sort, then try again.",
+        ) from e
     metadata = _metadata(start_ns, data_as_of, pricer.unpriced, pricer.catalog_source, f.end_dt)
     return _respond({"data": data, "metadata": metadata}, LocalAnalyticsSessionsResponse)
 

@@ -29,6 +29,7 @@ import pytest
 from codemie.configs.llm_config import CostConfig
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
 from codemie.service.analytics.handlers.cli_analytics_handler import LocalAnalyticsHandler
+from tests.codemie.repository.cli_analytics.support.bounded import bounded_to_itself
 from tests.codemie.repository.cli_analytics.support.scopes import EXCLUDE_SCOPE
 
 CATALOG = "codemie.service.analytics.handlers.coding_agent_pricing.llm_service.get_all_llm_model_info"
@@ -106,6 +107,7 @@ def handler_over(sessions):
         ]
     )
     repo.get_session_page = AsyncMock(return_value=(len(sessions), list(sessions)))
+    repo.get_window_model_flags = AsyncMock(return_value=[(MODEL, (True, False, False, False, False))])
     for name in (
         "get_model_breakdown",
         "get_lines_totals",
@@ -122,7 +124,7 @@ def handler_over(sessions):
         "get_skill_names_by_session",
     ):
         setattr(repo, name, AsyncMock(return_value=[]))
-    return LocalAnalyticsHandler(repo), calls
+    return LocalAnalyticsHandler(bounded_to_itself(repo)), calls
 
 
 @pytest.mark.asyncio
