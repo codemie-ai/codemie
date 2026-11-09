@@ -520,3 +520,47 @@ class TestModelRatesFor:
 
         with _patch_config([]):
             assert model_rates_for("unknown-model") == ModelRates(model="unknown-model")
+
+
+class TestZeroRateEntry:
+    """A zero-rate catalog entry is no price, not a free model: it is treated exactly like a missing entry."""
+
+    _MODEL = "gpt-5.5-2026-04-24"
+
+    def _entry(self, **rates) -> MagicMock:
+        model = MagicMock()
+        model.deployment_name = None
+        model.base_name = self._MODEL
+        model.cost = CostConfig(**rates)
+        return model
+
+    @pytest.mark.parametrize("cache_read_rate", [0.0, None])
+    def test_zero_rate_entry_is_unpriced(self, cache_read_rate):
+        from codemie.service.analytics.handlers.coding_agent_pricing import CatalogPricer, TokenCounts
+
+        entry = self._entry(input=0.0, output=0.0, cache_read_input_token_cost=cache_read_rate)
+        with _patch_config([entry]):
+            pricer = CatalogPricer()
+            assert pricer.price(self._MODEL, TokenCounts(cache_read=40_110)) == 0.0
+            assert pricer.unpriced == [self._MODEL]
+            assert pricer.is_priced(self._MODEL) is False
+
+    def test_positive_cache_read_rate_alone_is_priced(self):
+        from codemie.service.analytics.handlers.coding_agent_pricing import CatalogPricer, TokenCounts
+
+        entry = self._entry(input=0.0, output=0.0, cache_read_input_token_cost=1e-08)
+        with _patch_config([entry]):
+            pricer = CatalogPricer()
+            assert pricer.price(self._MODEL, TokenCounts(cache_read=40_110)) == pytest.approx(40_110 * 1e-08)
+            assert pricer.unpriced == []
+            assert pricer.is_priced(self._MODEL) is True
+
+    def test_positive_output_rate_is_priced(self):
+        from codemie.service.analytics.handlers.coding_agent_pricing import CatalogPricer, TokenCounts
+
+        entry = self._entry(input=0.0, output=1e-06)
+        with _patch_config([entry]):
+            pricer = CatalogPricer()
+            assert pricer.price(self._MODEL, TokenCounts(output=1_000)) == pytest.approx(0.001)
+            assert pricer.unpriced == []
+            assert pricer.is_priced(self._MODEL) is True

@@ -52,9 +52,10 @@ def test_has_priced_model_false_for_an_empty_model_name():
         assert has_priced_model([""], CatalogPricer()) is False
 
 
-def test_has_priced_model_true_for_a_free_model_with_a_catalog_entry():
+def test_has_priced_model_false_for_a_zero_rate_catalog_entry():
+    """A zero-rate entry is no price, not a free model (EPMCDME-16522)."""
     with patch(_CATALOG, return_value=_catalog()):
-        assert has_priced_model(["free-model"], CatalogPricer()) is True
+        assert has_priced_model(["free-model"], CatalogPricer()) is False
 
 
 def test_has_priced_model_false_for_an_empty_iterable():

@@ -83,6 +83,11 @@ def lookup_cost_config(model: str) -> CostConfig | None:
     return None
 
 
+def _has_usable_rate(cost: CostConfig) -> bool:
+    """Zero input and output with no positive cache-read rate is no price, not a free model."""
+    return bool(cost.input or cost.output or (cost.cache_read_input_token_cost or 0) > 0)
+
+
 @dataclass(frozen=True)
 class TokenCounts:
     """Token counts of one model group; ``cache_5m`` / ``cache_1h`` are None when the source has no split."""
@@ -127,7 +132,8 @@ class CatalogPricer:
     """Prices token counts at the platform catalog; one instance per API request.
 
     Each distinct model name is resolved once. A model priced with a missing price for a token kind it used, or
-    with no catalog entry at all, lands in ``unpriced``; those tokens contribute 0.
+    with no catalog entry at all, lands in ``unpriced``; those tokens contribute 0. An entry with zero input and
+    output rates and no positive cache-read rate has no usable rate and counts as a missing entry.
     """
 
     def __init__(self) -> None:
@@ -141,11 +147,13 @@ class CatalogPricer:
 
     def _cost(self, model: str) -> CostConfig | None:
         if model not in self._costs:
-            self._costs[model] = lookup_cost_config(model) if model else None
+            cost = lookup_cost_config(model) if model else None
+            self._costs[model] = cost if cost is not None and _has_usable_rate(cost) else None
         return self._costs[model]
 
     def is_priced(self, model: str) -> bool:
-        """True when the catalog has a price entry for the model, whatever the token counts; it records nothing."""
+        """True when the catalog has a usable price entry for the model, whatever the token counts; a zero-rate entry
+        counts as missing. It records nothing."""
         return self._cost(model) is not None
 
     def price(self, model: str, counts: TokenCounts) -> float:

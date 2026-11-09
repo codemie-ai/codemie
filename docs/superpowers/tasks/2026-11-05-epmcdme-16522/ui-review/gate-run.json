@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-16522_unpriced-cost-marker",
+  "head": "80d62450bb52620071569ce334ac7b637317c257",
+  "runner": "custom",
+  "started_at": "2026-11-05T19:45:28Z",
+  "completed_at": "2026-11-05T19:56:41Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {"id": "lint", "source": "guide", "status": "PASS", "duration_ms": 36820, "command": "npm run lint", "exit_code": 0},
+    {"id": "typecheck", "source": "guide", "status": "PASS", "duration_ms": 29127, "command": "npm run typecheck", "exit_code": 0},
+    {"id": "license-check", "source": "guide", "status": "SKIPPED", "duration_ms": 0, "command": "npm run license-check", "notes": "Skip if condition met: diff vs merge base adds/removes/moves no dependency (package.json and package-lock.json unchanged)."},
+    {"id": "secrets", "source": "guide", "status": "PASS", "duration_ms": 17614, "command": "npm run secrets:check", "exit_code": 0, "notes": "Output contains 'no leaks found' (gitleaks image pulled and ran via docker); working tree scan only, per guide."},
+    {"id": "unit", "source": "guide", "status": "PASS", "duration_ms": 343628, "command": "npm run test:unit:slnt", "exit_code": 0, "notes": "833 files passed; 8515 passed, 1 skipped."},
+    {"id": "integration", "source": "guide", "status": "PASS", "duration_ms": 238791, "command": "npm run test:integration:slnt", "exit_code": 0, "notes": "57 files passed; 651 passed, 1 skipped."},
+    {"id": "test-harness", "source": "guide", "status": "SKIPPED", "duration_ms": 0, "command": "npm run test-harness", "notes": "Not run: guide says Skip if Never, but needs the stack up; ~/.codemie/test-harness.json points CODEMIE_API_DOMAIN at http://localhost:8080, which refused connection (curl exit 7; 5173/3000/8000 also down). Unverified, not passed. Owed before MR: start the local stack and run npm run test-harness; the MR '## Test harness' section is required by the compliance bot."},
+    {"id": "ui", "source": "guide", "status": "SKIPPED", "duration_ms": 0, "command": "", "notes": "UI surface changed but no configured UI test script; browser verification is a separate caller decision. (sanity-ui coverage would come from test-harness, which was not run.)"},
+    {"id": "lint-staged", "source": "hook", "status": "SKIPPED", "duration_ms": 1000, "command": "npx lint-staged", "exit_code": 0, "notes": "Self-skip: '→ No staged files found.' Branch changes are already committed; full-tree npm run lint covers the same files. Hook chain listed in guide as automatic, not as a gate."},
+    {"id": "license-headers", "source": "hook", "status": "PASS", "duration_ms": 1344, "command": "npm run license-headers:check", "exit_code": 0, "notes": "Checked 2602 files, 0 missing license headers. Guide documents this hook check only in prose; run here as a hook-sourced gate."},
+    {"id": "sonar-local", "source": "hook", "status": "SKIPPED", "duration_ms": 500, "command": "npm run sonar-local", "exit_code": 0, "notes": "Self-skip: '[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.' Enable by exporting SONAR_TOKEN (or adding it to .env.local, which the pre-commit hook sources) with SonarQube host from .sonarlint/connectedMode.json reachable. Still owed: only CI/Sonar server can settle this."},
+    {"id": "ci-pre-ci-guard", "source": "ci", "status": "N/A", "duration_ms": 0, "command": "(.gitlab-ci.yml wait-ci-init from external template)", "notes": "CI only waits for external contexts 'ci-pipeline' and 'compliance-report' (external pipeline + MR compliance bot); not reproducible locally. compliance-report depends on the test-harness MR section."}
+  ],
+  "failures": {}
+}

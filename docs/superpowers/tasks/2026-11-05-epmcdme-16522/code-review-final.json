@@ -1,0 +1,130 @@
+{
+  "schema": "sdlc-factory/code-review-final@1",
+  "passed": true,
+  "decision": "request-changes",
+  "gate_decision": {
+    "gate": "code-review.final",
+    "decision": "approve",
+    "source": "hitl",
+    "rationale": "User approved after fix-up 80d62450b closing CR-001 and CR-002; DF-001..003 deferred"
+  },
+  "gates": [
+    {
+      "gate": "code-review.final",
+      "decision": "request-changes",
+      "source": "hitl",
+      "rationale": "User: fix CR-001 and CR-002; deferred items stay deferred"
+    },
+    {
+      "gate": "code-review.final",
+      "decision": "approve",
+      "source": "hitl",
+      "rationale": "User approved after fix-up 80d62450b closing CR-001 and CR-002; DF-001..003 deferred"
+    }
+  ],
+  "reviewed_head": "4e3a3657139f41b2377c533d00433c4eee6dcfeb",
+  "rounds": [
+    "final"
+  ],
+  "rationale": "No-spec round (acceptance skipped; balanced profile ran only edge-case plus standards), so confidence is low; 2 blocking UI defects remain: Bedrock-wrapped unpriced names never match normalized row models, and Session Detail chart/timeline still show $0 for unknown cost. 3 deferred to code-review-deferred.local.md (CostView top-sessions $0.00, outside approved UI scope; zero-rate shadowing in _identity_cost and tier lookup, EPMCDME-16644 territory); 4 dismissed (cache-write-only and negative rates, no-token tooltip wording, missing sessions array).",
+  "confidence": "low",
+  "check_confidence": null,
+  "risk_flags": [],
+  "open": 0,
+  "closed": {
+    "fixed": 2,
+    "moot": 0,
+    "decided": 0,
+    "wont_fix": 0
+  },
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "codemie-ui/src/pages/analytics/components/cli-analytics/views/SessionBody.tsx",
+      "line": 165,
+      "title": "Session Detail chart and timeline show $0 cost",
+      "problem": "For a session with cost_available false, Session Detail still renders confirmed zero money outside the header metric: the 'Token & cost growth' chart accumulates e.cost_usd (0.0 from pricer.price for an unpriced model, cli_analytics_handler.py:1095) into a flat $0 cost line, and SessionTimeline.tsx:129/182 formats dispatch cost_usd 0 as $0.00. Only the Cost and Cache-read cost metric cards were switched to SessionCostValue.",
+      "impact": "The same Session Detail page shows the cost as unknown in the header while its chart and timeline assert $0.00, contradicting the task's expected behavior (mark cost unknown instead of a confirmed $0.00) on a surface inside the approved Session Detail scope.",
+      "recommendation": "In Session Detail, when session.cost_available === false, hide the cost series of the 'Token & cost growth' chart (or render it as unknown) and pass cost_available into SessionTimeline so dispatch cost (SessionTimeline.tsx:129 tooltip and :182 cell) renders ABSENT_VALUE_MARKER instead of formatCliAnalyticsCost(0). Add SessionBody tests for an unknown-cost session.",
+      "status": "fixed",
+      "fix": {
+        "change": "SessionBody drops the growth chart's cost series and axis when cost_available is false and passes costAvailable to SessionTimeline, which shows ABSENT_VALUE_MARKER instead of a dispatch's $0.00 cost in the row tooltip and the detail panel",
+        "test": "SessionBody.test.tsx > SessionBody chart and timeline cost (EPMCDME-16522)"
+      }
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "codemie-ui/src/store/cliAnalytics.ts",
+      "line": 39,
+      "title": "Unpriced names never match normalized row models",
+      "problem": "withRowUnpricedModels keeps metadata.unpriced_models entries only when models.has(name), where models comes from row.model_name. The backend fills unpriced with raw model keys (session_money.py:100 prices by the raw c.model_name, e.g. bedrock/converse/eu.anthropic.<model>-v1:0), while row.model_name is the comma-joined normalize_model() output (cli_analytics_handler.py:434). Any model whose raw name differs from its normalized form never matches.",
+      "impact": "In the sessions list a partly priced session using a Bedrock-wrapped/prefixed unpriced model shows a plain dollar amount with no understated marker, and a fully unknown row gets the generic 'no price for this model' tooltip; the understated-cost marker the task requires silently disappears for wrapped model names.",
+      "recommendation": "Normalize both sides before matching in withRowUnpricedModels: port normalize_model (strip ^(bedrock/)?(converse|invoke)/, a ^([a-z0-9-]+\\.)?anthropic\\. prefix, and a -vN:N tag after an 8-digit date) into the UI and test models.has(normalize(name)); keep the API unchanged. Add a store test with a Bedrock-wrapped unpriced name on a multi-model row.",
+      "status": "fixed",
+      "fix": {
+        "change": "the store ports normalize_model (normalizeModelName) and withRowUnpricedModels compares normalized names on both sides; unpriced_models keeps the raw names and the API is unchanged",
+        "test": "cliAnalytics.test.ts > fetchSessions matches a Bedrock-wrapped unpriced name to the normalized row model"
+      }
+    }
+  ],
+  "deferred": [
+    {
+      "id": "DF-001",
+      "severity": "major",
+      "file": "codemie-ui/src/pages/analytics/components/cli-analytics/views/CostView.tsx",
+      "line": 102,
+      "title": "Cost view top-sessions table shows $0.00 for unknown cost",
+      "problem": "CostCell renders formatCliAnalyticsCost(row.cost_usd ?? 0) and ignores cost_available, so an unpriced session reads $0.00 in the Cost view.",
+      "preexisting": "Renderer predates this change; user-approved UI scope is the sessions list and Session Detail only."
+    },
+    {
+      "id": "DF-002",
+      "severity": "major",
+      "file": "codemie/src/codemie/service/analytics/handlers/coding_agent_pricing.py",
+      "line": 39,
+      "title": "Zero-rate first entry hides a priced duplicate base_name",
+      "problem": "_identity_cost returns the first non-None tariff of a shared base_name; a zero-rate first entry is now dropped by _cost and a later priced duplicate is never used.",
+      "preexisting": "First-entry choice among conflicting tariffs predates the change; ambiguous tariffs are excluded to EPMCDME-16644 by the user."
+    },
+    {
+      "id": "DF-003",
+      "severity": "major",
+      "file": "codemie/src/codemie/service/analytics/handlers/coding_agent_pricing.py",
+      "line": 65,
+      "title": "Zero-rate stub at an earlier tier shadows the real tariff",
+      "problem": "lookup_cost_config returns at the first matching tier and never falls through, so a zero-rate raw/unwrapped entry masks a priced normalized entry.",
+      "preexisting": "No-fall-through tier matching predates the change; lookup_cost_config matching is excluded to EPMCDME-16644 by the user."
+    }
+  ],
+  "coverage_graded_at": "final",
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "codemie: 1 subject in cdfa7083e..HEAD and codemie-ui: 3 subjects in b9b49820d..989e2daf5 match the documented EPMCDME-####: Description format"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "codemie: _has_usable_rate is fully typed in the pricing module (153 lines); codemie-ui has no code-quality guide; SessionCostValue.tsx carries the Apache license header"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "codemie: pricing math and tests only; codemie-ui: no innerHTML sinks, untrusted navigation, postMessage or new env config. No concrete security issue found"
+    }
+  ],
+  "final_round": {
+    "decision": "request-changes",
+    "rationale": "No-spec round (acceptance skipped; balanced profile ran only edge-case plus standards), so confidence is low; 2 blocking UI defects remain: Bedrock-wrapped unpriced names never match normalized row models, and Session Detail chart/timeline still show $0 for unknown cost. 3 deferred to code-review-deferred.local.md (CostView top-sessions $0.00, outside approved UI scope; zero-rate shadowing in _identity_cost and tier lookup, EPMCDME-16644 territory); 4 dismissed (cache-write-only and negative rates, no-token tooltip wording, missing sessions array).",
+    "confidence": "low",
+    "risk_flags": []
+  }
+}

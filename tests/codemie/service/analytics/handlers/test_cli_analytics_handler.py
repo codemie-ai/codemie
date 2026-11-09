@@ -142,6 +142,56 @@ async def test_priced_session_has_cost_available_true():
     assert data["sessions"][0]["cost_available"] is True
 
 
+def _zero_rate_catalog():
+    """The runtime catalog with one entry whose input, output and cache-read rates are all zero."""
+    model = MagicMock()
+    model.base_name = "gpt-5.5-2026-04-24"
+    model.deployment_name = "gpt-5.5-2026-04-24"
+    model.cost = CostConfig(input=0.0, output=0.0, cache_read_input_token_cost=0.0)
+    return patch(
+        "codemie.service.analytics.handlers.coding_agent_pricing.llm_service.get_all_llm_model_info",
+        return_value=[model],
+    )
+
+
+_ZERO_RATE_MODEL_ROW = {
+    "session_id": "s1",
+    "model_name": "gpt-5.5-2026-04-24",
+    "normalized_model_name": "gpt-5.5-2026-04-24",
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "cache_read_tokens": 40_110,
+    "cache_creation_tokens": 0,
+    "cache_creation_5m_tokens": None,
+    "cache_creation_1h_tokens": None,
+}
+
+
+@pytest.mark.asyncio
+async def test_zero_rate_model_session_is_listed_with_cost_available_false():
+    row = {**BASE_COST_ROW, "model_name": "gpt-5.5-2026-04-24", "input_tokens": 0, "output_tokens": 0}
+    handler = make_handler(cost_facts=[{**row, "cache_read_tokens": 40_110}])
+    handler._repo.get_session_model_costs = AsyncMock(return_value=[_ZERO_RATE_MODEL_ROW])
+    with _zero_rate_catalog():
+        data, pricer, _ = await handler.get_sessions(
+            make_filter(), page=0, per_page=20, sort_by="start_time", search=None
+        )
+    session = data["sessions"][0]
+    assert session["cost_available"] is False
+    assert session["cost_usd"] == 0.0
+    assert pricer.unpriced == ["gpt-5.5-2026-04-24"]
+
+
+@pytest.mark.asyncio
+async def test_zero_rate_model_session_detail_has_cost_available_false():
+    handler = _priced_detail_handler([_ZERO_RATE_MODEL_ROW])
+    with _zero_rate_catalog():
+        detail, unpriced, _ = await handler.get_session_detail("s1", scope=DETAIL_SCOPE)
+    assert detail["cost_available"] is False
+    assert detail["cost_usd"] == 0.0
+    assert unpriced == ["gpt-5.5-2026-04-24"]
+
+
 @pytest.mark.asyncio
 async def test_costless_session_sorts_by_cost_without_error():
     handler = make_handler(cost_facts=[COSTLESS_ROW, BASE_COST_ROW])
@@ -498,7 +548,8 @@ async def test_session_with_one_priced_and_one_unpriced_model_is_cost_available_
 
 
 @pytest.mark.asyncio
-async def test_a_model_with_a_catalog_entry_priced_at_zero_counts_as_priced():
+async def test_a_model_with_a_catalog_entry_priced_at_zero_counts_as_unpriced():
+    """A zero-rate entry is no price (EPMCDME-16522): it never makes cost_available true."""
     free = MagicMock()
     free.base_name = "free-model"
     free.deployment_name = "free-model"
@@ -511,9 +562,12 @@ async def test_a_model_with_a_catalog_entry_priced_at_zero_counts_as_priced():
         "codemie.service.analytics.handlers.coding_agent_pricing.llm_service.get_all_llm_model_info",
         return_value=[free],
     ):
-        data, _, _ = await handler.get_sessions(make_filter(), page=0, per_page=20, sort_by="start_time", search=None)
-    assert data["sessions"][0]["cost_available"] is True
+        data, pricer, _ = await handler.get_sessions(
+            make_filter(), page=0, per_page=20, sort_by="start_time", search=None
+        )
+    assert data["sessions"][0]["cost_available"] is False
     assert data["sessions"][0]["cost_usd"] == 0.0
+    assert pricer.unpriced == ["free-model"]
 
 
 @pytest.mark.asyncio

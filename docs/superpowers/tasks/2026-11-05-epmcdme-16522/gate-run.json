@@ -1,0 +1,141 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-16522_reproduce-bug",
+  "head": "4e3a3657139f41b2377c533d00433c4eee6dcfeb",
+  "runner": "custom",
+  "started_at": "2026-11-05T19:45:42Z",
+  "completed_at": "2026-11-05T19:55:54Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "command": "make ruff",
+      "exit_code": 0,
+      "duration_ms": 2804,
+      "status": "PASS"
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "command": "make build",
+      "exit_code": 0,
+      "duration_ms": 10832,
+      "status": "PASS"
+    },
+    {
+      "id": "license-headers",
+      "source": "guide",
+      "command": "make license-check",
+      "exit_code": 0,
+      "duration_ms": 2136,
+      "status": "PASS"
+    },
+    {
+      "id": "secrets",
+      "source": "guide",
+      "command": "make gitleaks",
+      "exit_code": 0,
+      "duration_ms": 283207,
+      "status": "PASS",
+      "notes": "Docker available; full working tree scanned (~460 MB), 'no leaks found'."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "command": "make test",
+      "exit_code": 2,
+      "duration_ms": 276209,
+      "status": "FAIL",
+      "notes": "9 failed, 29250 passed, 751 skipped; all failures in tests/codemie/service/usage_attribution/test_analysis_service.py::TestService (not in the branch diff vs merge_base)."
+    },
+    {
+      "id": "cli-analytics-live",
+      "source": "guide",
+      "command": "make test-cli-analytics-live",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "notes": "Skip if: diff does not touch src/codemie/repository/cli_analytics/postgres/ - it does not."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "command": "make coverage",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "notes": "Skip if: coverage not requested by caller."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "command": "make sonar-local",
+      "exit_code": 0,
+      "duration_ms": 339,
+      "status": "SKIPPED",
+      "notes": "Self-skip, exit 0: '[sonar-local] Skipping Sonar scan because SONAR_TOKEN is not set.' Enable by setting SONAR_TOKEN in env or .env.local."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "command": "make verify",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "notes": "Composite of ruff, license, gitleaks, test - each run individually above; not re-run."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "command": "make test-harness",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "notes": "Skip if: not opening an MR in this run. Required before MR: paste its summary in '## Test harness' (needs docker stack, fixtures, ~/.codemie/test-harness.json)."
+    },
+    {
+      "id": "hook-ruff-staged",
+      "source": "hook",
+      "command": "bash scripts/git-hooks/_ruff_staged.sh",
+      "exit_code": 0,
+      "duration_ms": 124,
+      "status": "SKIPPED",
+      "notes": "Self-skip: '[pre-commit] No staged Python files - skipping Ruff format/fix check.' Covered by lint gate (make ruff, all files)."
+    },
+    {
+      "id": "hook-gitleaks-staged",
+      "source": "hook",
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": 0,
+      "duration_ms": 2411,
+      "status": "SKIPPED",
+      "notes": "Ran with docker but nothing staged: 'scanned ~0 bytes (0)'. Covered by secrets gate (make gitleaks, full tree)."
+    },
+    {
+      "id": "hook-commit-msg",
+      "source": "hook",
+      "command": "bash scripts/git-hooks/commit_msg.sh <file with git log -1 --format=%B>",
+      "exit_code": 0,
+      "duration_ms": 365,
+      "status": "PASS",
+      "notes": "Checked the single branch commit 4e3a36571 subject; EPMCDME-<n>: prefix present."
+    },
+    {
+      "id": "hook-pre-push",
+      "source": "hook",
+      "command": "bash scripts/git-hooks/pre_push.sh",
+      "status": "N/A",
+      "duration_ms": 0,
+      "notes": "Opt-in hook (CODEMIE_PREPUSH_ENABLED); its commands (pytest tests/ --ignore=tests/enterprise with coverage, then SONAR_SKIP_TESTS=1 make sonar-local) are covered by unit and sonar gates."
+    },
+    {
+      "id": "ci-pre-ci-guard",
+      "source": "ci",
+      "command": "wait-ci-init (pre-ci-guard template)",
+      "status": "N/A",
+      "duration_ms": 0,
+      "notes": "Guide says no pipeline exists, but .gitlab-ci.yml exists: it only waits for external contexts 'ci-pipeline' and 'compliance-report' on MRs to main; no local command to run. compliance-report is the MR-description bot (needs '## Test harness')."
+    }
+  ],
+  "failures": {
+    "unit": "\ntests/codemie/service/datasource/test_file_datasource_service.py::TestUploadAndPrepareFiles::test_combined_kept_and_new_over_limit_raises\n  /Users/Sviatoslav_Likhtarchyk/mdtu_gpt/codemie/tests/codemie/service/datasource/test_file_datasource_service.py:297: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    FileDatasourceService.upload_and_prepare_files(\n\ntests/codemie/service/datasource/test_file_datasource_service.py::TestUploadAndPrepareFiles::test_raises_422_when_json_file_has_invalid_content\n  /Users/Sviatoslav_Likhtarchyk/mdtu_gpt/codemie/src/codemie/service/datasource/file_datasource_service.py:287: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_json_file(file.filename, content)\n\ntests/codemie/service/datasource/test_file_datasource_service.py::TestValidateJsonFile::test_raises_422_on_missing_content_key\n  /Users/Sviatoslav_Likhtarchyk/mdtu_gpt/codemie/tests/codemie/service/datasource/test_file_datasource_service.py:416: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_json_file(\"file.json\", content)\n\ntests/codemie/service/datasource/test_file_datasource_service.py::TestValidateJsonFile::test_raises_422_on_missing_metadata_key\n  /Users/Sviatoslav_Likhtarchyk/mdtu_gpt/codemie/tests/codemie/service/datasource/test_file_datasource_service.py:422: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_json_file(\"file.json\", content)\n\ntests/codemie/service/datasource/test_file_datasource_service.py::TestValidateJsonFile::test_raises_422_on_invalid_json_bytes\n  /Users/Sviatoslav_Likhtarchyk/mdtu_gpt/codemie/tests/codemie/service/datasource/test_file_datasource_service.py:427: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_json_file(\"file.json\", b\"not-json-content\")\n\ntests/codemie/service/datasource/test_file_datasource_service.py::TestUploadAndPrepareFilesZip::test_upload_and_prepare_files_zip_validates_json_entries\n  /Users/Sviatoslav_Likhtarchyk/mdtu_gpt/codemie/src/codemie/service/datasource/file_datasource_service.py:214: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_json_file(name, content)\n\ntests/codemie/service/marketplace_management/test_gate_errors.py::test_body_carries_the_failing_rules_and_every_finding\n  /Users/Sviatoslav_Likhtarchyk/mdtu_gpt/codemie/tests/codemie/service/marketplace_management/test_gate_errors.py:28: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    error = critical_gate_blocked_error(\"a-1\", _FINDINGS, _FINDINGS[:1])\n\ntests/codemie/service/marketplace_management/test_gate_errors.py::test_only_the_help_text_may_differ_between_callers\n  /Users/Sviatoslav_Likhtarchyk/mdtu_gpt/codemie/tests/codemie/service/marketplace_management/test_gate_errors.py:41: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    publish = critical_gate_blocked_error(\"a-1\", _FINDINGS, _FINDINGS[:1])\n\ntests/codemie/service/marketplace_management/test_gate_errors.py::test_only_the_help_text_may_differ_between_callers\n  /Users/Sviatoslav_Likhtarchyk/mdtu_gpt/codemie/tests/codemie/service/marketplace_management/test_gate_errors.py:42: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    approve = critical_gate_blocked_error(\"a-1\", _FINDINGS, _FINDINGS[:1], help=\"use force-publish\")\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED tests/codemie/service/usage_attribution/test_analysis_service.py::TestService::test_classification_overrides_reuse_the_cached_inputs\nFAILED tests/codemie/service/usage_attribution/test_analysis_service.py::TestService::test_over_the_limit_the_last_good_analysis_answers_with_the_time_to_wait\nFAILED tests/codemie/service/usage_attribution/test_analysis_service.py::TestService::test_last_good_is_kept_a_day_only_for_standard_periods_with_default_settings\nFAILED tests/codemie/service/usage_attribution/test_analysis_service.py::TestService::test_failure_serves_the_last_good_analysis\nFAILED tests/codemie/service/usage_attribution/test_analysis_service.py::TestService::test_refresh_drops_the_cache_at_most_once_a_minute\nFAILED tests/codemie/service/usage_attribution/test_analysis_service.py::TestService::test_evidence_is_read_once_for_every_period_ending_at_the_same_time\nFAILED tests/codemie/service/usage_attribution/test_analysis_service.py::TestService::test_evidence_is_reused_for_the_rest_of_the_hour\nFAILED tests/codemie/service/usage_attribution/test_analysis_service.py::TestService::test_short_periods_reuse_only_the_evidence_of_their_quarter_hour\nFAILED tests/codemie/service/usage_attribution/test_analysis_service.py::TestService::test_cache_lifetimes\n==== 9 failed, 29250 passed, 751 skipped, 441 warnings in 267.66s (0:04:27) ====\nmake: *** [test] Error 1\n"
+  }
+}

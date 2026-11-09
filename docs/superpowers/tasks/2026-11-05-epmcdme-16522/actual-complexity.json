@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "generated": "2026-11-05T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 18,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 14,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Multi-repo changes with distinct content across 2 repos — scope scored additively. Backend: CatalogPricer zero-rate guard (_has_usable_rate) in coding_agent_pricing. UI: cliAnalytics store (per-row unpriced_models derivation with a client-side mirror of normalize_model), cliAnalytics types, new SessionCostValue component, and its wiring into SessionsView, SessionBody, SessionTimeline and the shared MetricCard widget." },
+    { "dimension": "file_change_estimate", "reason": "14 files changed in total (backend 4, UI 10; 601 insertions, 35 deletions); about half are tests. The production code change is small: 1 backend module, 6 UI source files, 1 new UI component." },
+    { "dimension": "technical_risk", "reason": "The backend fix follows the existing catalog lookup pattern and is easy to roll back. The risk is in the UI: it re-implements the backend model-name normalization regex, which creates a cross-repo contract that can drift. The output is money display, so a mistake understates or hides cost. No security surface." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}
