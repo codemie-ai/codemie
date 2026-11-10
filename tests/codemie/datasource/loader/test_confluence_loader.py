@@ -911,3 +911,70 @@ class TestIsPublicPageRetry:
             result = list(loader.lazy_load())
 
         assert [d.metadata["title"] for d in result] == ["Page 1", "Page 2", "Page 3"]
+
+
+class TestProcessPagesSkipsNotFound:
+    """Per-page 404 isolation (EPMCDME-15405): one gone page must not abort the whole run."""
+
+    @staticmethod
+    def _http_error(status_code: int) -> requests.exceptions.HTTPError:
+        response = MagicMock()
+        response.status_code = status_code
+        return requests.exceptions.HTTPError(response=response)
+
+    @pytest.fixture
+    def loader(self, confluence_loader):
+        confluence_loader.include_restricted_content = True  # bypass is_public_page in these tests
+        return confluence_loader
+
+    @staticmethod
+    def _call(loader, pages, process_page_side_effect):
+        from unittest.mock import patch as _patch
+
+        with _patch.object(loader, "process_page", side_effect=process_page_side_effect):
+            return list(
+                loader.process_pages(
+                    pages,
+                    include_restricted_content=True,
+                    include_attachments=False,
+                    include_comments=False,
+                    include_labels=False,
+                    content_format=None,
+                )
+            )
+
+    def test_404_page_is_skipped_others_yielded_and_logged(self, loader):
+        from codemie.datasource.loader.confluence_loader import logger as confluence_logger
+        from langchain_core.documents import Document
+
+        def fake_process_page(page, *_, **__):
+            if page["id"] == "2":
+                raise self._http_error(404)
+            return Document(page_content=page["id"])
+
+        with patch.object(confluence_logger, "warning") as mock_warning:
+            result = self._call(loader, [{"id": "1"}, {"id": "2"}, {"id": "3"}], fake_process_page)
+
+        assert [d.page_content for d in result] == ["1", "3"]
+        mock_warning.assert_called_once()
+        logged = str(mock_warning.call_args)
+        assert "2" in logged
+        assert loader.cql in logged
+
+    def test_403_during_page_processing_is_not_swallowed(self, loader):
+        with pytest.raises(requests.exceptions.HTTPError) as exc_info:
+            self._call(loader, [{"id": "1"}], self._http_error(403))
+
+        assert exc_info.value.response.status_code == 403
+
+    def test_404_page_recorded_in_get_load_stats(self, loader):
+        from langchain_core.documents import Document
+
+        def fake_process_page(page, *_, **__):
+            if page["id"] == "2":
+                raise self._http_error(404)
+            return Document(page_content=page["id"])
+
+        self._call(loader, [{"id": "1"}, {"id": "2"}], fake_process_page)
+
+        assert loader.get_load_stats() == {loader.FAILED_DOCUMENTS_KEY: 1}

@@ -17,6 +17,7 @@ from typing import Any, List, Dict, NoReturn, Optional, Iterator
 
 import requests
 from langchain_community.document_loaders import ConfluenceLoader
+from langchain_community.document_loaders.confluence import ContentFormat
 from langchain_core.documents import Document
 from tenacity import RetryCallState, before_sleep_log, retry, retry_if_exception, stop_after_attempt, wait_exponential
 
@@ -75,6 +76,8 @@ _confluence_retry = retry(
 
 
 class ConfluenceDatasourceLoader(ConfluenceLoader, BaseDatasourceLoader):
+    _failed_pages: int = 0
+
     def fetch_remote_stats(self) -> dict[str, Any]:
         response = self.confluence.cql(self.cql, start=0, limit=1)
         if not isinstance(response, dict):
@@ -86,6 +89,9 @@ class ConfluenceDatasourceLoader(ConfluenceLoader, BaseDatasourceLoader):
             self.TOTAL_DOCUMENTS_KEY: total_documents,
             self.SKIPPED_DOCUMENTS_KEY: total_documents - pages_count,
         }
+
+    def get_load_stats(self) -> dict[str, Any]:
+        return {self.FAILED_DOCUMENTS_KEY: self._failed_pages}
 
     @_confluence_retry
     def _search_content_by_cql(
@@ -118,12 +124,55 @@ class ConfluenceDatasourceLoader(ConfluenceLoader, BaseDatasourceLoader):
         """Retries transient failures of the page-restrictions call; the check itself is upstream's."""
         return super().is_public_page(page)
 
+    def process_pages(
+        self,
+        pages: List[dict],
+        include_restricted_content: bool,
+        include_attachments: bool,
+        include_comments: bool,
+        include_labels: bool,
+        content_format: ContentFormat,
+        ocr_languages: Optional[str] = None,
+        keep_markdown_format: Optional[bool] = False,
+        keep_newlines: bool = False,
+    ) -> Iterator[Document]:
+        """Isolate per-page 404s: the CQL search can list a page whose content API 404s
+        moments later (deleted/trashed). Skip that page and keep going; 403 and anything
+        else still propagates and aborts the run — this is not a transient error, so no
+        retry decorator applies here.
+        """
+        for page in pages:
+            try:
+                if not include_restricted_content and not self.is_public_page(page):
+                    continue
+                yield self.process_page(
+                    page,
+                    include_attachments,
+                    include_comments,
+                    include_labels,
+                    content_format,
+                    ocr_languages=ocr_languages,
+                    keep_markdown_format=keep_markdown_format,
+                    keep_newlines=keep_newlines,
+                )
+            except requests.exceptions.HTTPError as e:
+                if getattr(e.response, "status_code", None) != 404:
+                    raise
+                self._failed_pages += 1
+                logger.warning(
+                    "Confluence loader: skipping page id=%s — content not found (404). cql=%s. error=%s",
+                    page.get("id"),
+                    self.cql,
+                    e,
+                )
+
     def lazy_load(self) -> Iterator[Document]:
         """Stream the CQL result set, following the `_links.next` URL Confluence returns.
 
         Yields:
             Document: one per page produced by `process_pages`.
         """
+        self._failed_pages = 0
         expand = ",".join(
             [
                 self.content_format.value,
