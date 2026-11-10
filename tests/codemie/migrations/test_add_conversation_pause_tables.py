@@ -41,6 +41,9 @@ class _OpRecorder:
     def drop_table(self, table_name):
         self.calls.append(("drop_table", table_name))
 
+    def execute(self, sql):
+        self.calls.append(("execute", sql))
+
     def f(self, name):
         return name
 

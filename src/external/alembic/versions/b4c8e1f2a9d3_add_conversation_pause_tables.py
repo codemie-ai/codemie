@@ -21,9 +21,19 @@ Create Date: 2026-10-30 00:00:00.000000
 
 EPMCDME-16463: the pause of a tool confirmation moves out of the conversations.pending_checkpoint and
 conversations.pending_tool_call columns into two tables. The old columns are left in place and unmapped;
-nothing is copied. Old-format pauses end here: both columns are nulled in one set-based UPDATE, and for a
+nothing is copied. Old-format pauses end here: both columns are nulled wherever either is set, and for a
 conversation whose pending_tool_call is set the waiting steps of its last assistant entry become Cancelled. The
 runtime never reads the old columns.
+
+"Set" means a JSON value other than null. The columns were mapped as Column(JSONB), so a conversation saved with no
+pause holds the JSON 'null', not SQL NULL: `IS NOT NULL` matches almost every conversation and made this revision
+read and rewrite the whole table at startup. Those rows are left as they are; the columns are unmapped.
+
+Locks: the migrations run at startup in one transaction while the previous version keeps serving. The old pauses are
+ended before the tables are created, because a foreign key to conversations locks the table against writes until the
+commit; done first, the scan holds no such lock and only the found rows are locked, each while it is changed. The wait
+for any lock is bounded (`_LOCK_TIMEOUT`, for the rest of the transaction): a pod that cannot get one fails and retries
+instead of queueing every writer of conversations behind it.
 """
 
 from typing import Any, Sequence, Union
@@ -40,8 +50,10 @@ depends_on: Union[str, Sequence[str], None] = None
 
 # The text of a Cancelled step. A copy on purpose: a migration does not import runtime code.
 _CANCELLED_MESSAGE = "Tool call was cancelled without a decision."
-# Conversations with an old-format pause read per round trip.
-_BATCH_SIZE = 500
+# Conversations read or written per round trip, by primary key. Small: a history can take megabytes.
+_BATCH_SIZE = 50
+# The longest wait for a lock, for this and every later statement of the migration transaction.
+_LOCK_TIMEOUT = "10s"
 
 
 def _cancel_waiting_steps(thoughts: Any) -> Any:
@@ -76,12 +88,23 @@ def _cancelled_history(history: Any) -> list[Any]:
     return entries
 
 
+def _is_set(column: Any) -> Any:
+    """A stored pause: neither SQL NULL nor the JSON 'null' that Column(JSONB) wrote for Python None.
+
+    ``jsonb_typeof`` is SQL NULL for SQL NULL and 'null' for the JSON null, so the comparison is false for both.
+    """
+    return sa.func.jsonb_typeof(column) != "null"
+
+
 def _end_old_format_records(connection: sa.engine.Connection, batch_size: int = _BATCH_SIZE) -> None:
     """End every pause left in the old columns.
 
-    Only a conversation whose ``pending_tool_call`` is set has a waiting pause: those rows are read in batches
-    (ordered by id) and a history is written back only when a waiting step of its last assistant entry became
-    Cancelled. Then one set-based UPDATE nulls both columns wherever either is set.
+    The table is scanned once, without locking it (no index serves the filter), for the ids of the conversations where
+    either column is set (see ``_is_set``). Everything after that is by primary key, in batches, each row locked
+    (``FOR UPDATE``) and read again: a conversation the previous version changed after the scan is judged on what it
+    holds now, and a message it appends cannot be overwritten by the history written back here. Only a conversation
+    whose ``pending_tool_call`` is set has a waiting pause: its history is written back when a waiting step of its last
+    assistant entry became Cancelled. Both columns are then nulled on every row of the batch.
     """
     conversations = sa.table(
         "conversations",
@@ -90,30 +113,40 @@ def _end_old_format_records(connection: sa.engine.Connection, batch_size: int = 
         sa.column("pending_tool_call", postgresql.JSONB),
         sa.column("pending_checkpoint", postgresql.JSONB),
     )
-    paused = sa.select(conversations.c.id, conversations.c.history).where(
-        conversations.c.pending_tool_call.is_not(None)
+    found_ids = list(
+        connection.execute(
+            sa.select(conversations.c.id).where(
+                sa.or_(_is_set(conversations.c.pending_tool_call), _is_set(conversations.c.pending_checkpoint))
+            )
+        ).scalars()
     )
-    last_id = None
-    while True:
-        batch = paused if last_id is None else paused.where(conversations.c.id > last_id)
-        rows = connection.execute(batch.order_by(conversations.c.id).limit(batch_size)).all()
-        if not rows:
-            break
+    paused = _is_set(conversations.c.pending_tool_call)
+
+    for start in range(0, len(found_ids), batch_size):
+        batch = found_ids[start : start + batch_size]
+        rows = connection.execute(
+            sa.select(conversations.c.id, conversations.c.history)
+            .where(conversations.c.id.in_(batch), paused)
+            .with_for_update()
+        ).all()
+        # The other rows of the batch (a checkpoint only, or no longer paused) are locked by the UPDATE below.
         for conversation_id, history in rows:
             cancelled = _cancelled_history(history)
             if isinstance(history, list) and cancelled != history:
                 connection.execute(
                     sa.update(conversations).where(conversations.c.id == conversation_id).values(history=cancelled)
                 )
-        last_id = rows[-1][0]
-    connection.execute(
-        sa.update(conversations)
-        .where(sa.or_(conversations.c.pending_tool_call.is_not(None), conversations.c.pending_checkpoint.is_not(None)))
-        .values(pending_tool_call=sa.null(), pending_checkpoint=sa.null())
-    )
+        connection.execute(
+            sa.update(conversations)
+            .where(conversations.c.id.in_(batch))
+            .values(pending_tool_call=sa.null(), pending_checkpoint=sa.null())
+        )
 
 
 def upgrade() -> None:
+    op.execute(f"SET LOCAL lock_timeout = '{_LOCK_TIMEOUT}'")
+    # Before the tables: their foreign keys lock conversations against writes until the commit.
+    _end_old_format_records(op.get_bind())
     op.create_table(
         "conversation_checkpoints",
         sa.Column("conversation_id", sqlmodel.sql.sqltypes.AutoString(), nullable=False),
@@ -137,7 +170,6 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["conversation_id"], ["conversations.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("conversation_id"),
     )
-    _end_old_format_records(op.get_bind())
 
 
 def _end_new_format_pauses(connection: sa.engine.Connection, batch_size: int = _BATCH_SIZE) -> None:
